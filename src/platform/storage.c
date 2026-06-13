@@ -109,10 +109,19 @@ int storage_write(storage_t *s, int64_t offset, const uint8_t *data, size_t len)
         if (!fh->fp) return 0;
         size_t can_write = (size_t)(fh->length - local_off);
         if (can_write > len - written) can_write = len - written;
-        fseek(fh->fp, (long)local_off, SEEK_SET);
+        if (fseek(fh->fp, (long)local_off, SEEK_SET) != 0) return 0;
         size_t w = fwrite(data + written, 1, can_write, fh->fp);
         if (w != can_write) return 0;
         written += w;
+    }
+    return 1;
+}
+
+int storage_flush(storage_t *s) {
+    if (!s) return 0;
+    for (uint32_t i = 0; i < s->num_files; i++) {
+        if (!s->files[i].fp || fflush(s->files[i].fp) != 0)
+            return 0;
     }
     return 1;
 }
@@ -127,10 +136,11 @@ int storage_read(storage_t *s, int64_t offset, uint8_t *data, size_t len) {
         if (!fh->fp) return -1;
         size_t can_read = (size_t)(fh->length - local_off);
         if (can_read > len - done) can_read = len - done;
-        fseek(fh->fp, (long)local_off, SEEK_SET);
+        clearerr(fh->fp);
+        if (fseek(fh->fp, (long)local_off, SEEK_SET) != 0) return -1;
         size_t r = fread(data + done, 1, can_read, fh->fp);
         done += r;
-        if (r != can_read) break;
+        if (r != can_read) return -1;
     }
     return (int)done;
 }

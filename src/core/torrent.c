@@ -51,6 +51,8 @@ struct torrent {
     uint64_t last_tracker_ms;
     uint64_t last_dht_ms;
     uint64_t last_connect_ms;
+    uint32_t final_verify_index;
+    int      final_verifying;
 
 #ifdef __SWITCH__
     struct UPNPUrls upnp_urls;
@@ -65,7 +67,7 @@ struct torrent {
 static void queue_push(torrent_t *t, uint32_t ip, uint16_t port) {
     if (t->qsize >= MAX_PEER_QUEUE) return;
     /* Dedup: skip if already queued or connected */
-    for (int i = 0; i < t->num_peers; i++) {
+    for (int i = 0; i < MAX_ACTIVE_PEERS; i++) {
         if (t->peers[i] && t->peers[i]->addr.sin_addr.s_addr == ip &&
             t->peers[i]->addr.sin_port == port) return;
     }
@@ -170,7 +172,7 @@ static void schedule_requests(torrent_t *t, peer_t *p) {
 
         for (uint32_t b = 0; b < nb && p->pipeline_len < MAX_PIPELINE; b++) {
             /* Skip blocks already received */
-            if (b < 32 && (sl->have_blocks & (1u << b))) continue;
+            if (piece_mgr_has_block(t->pm, pidx, b)) continue;
             /* Skip blocks already in this peer's pipeline */
             uint32_t off  = b * BLOCK_SIZE;
             uint32_t blen = ((int64_t)off + BLOCK_SIZE <= plen)
@@ -185,6 +187,37 @@ static void schedule_requests(torrent_t *t, peer_t *p) {
         }
         if (!queued) break; /* nothing left to request for this piece */
     }
+}
+
+static int check_completion(torrent_t *t) {
+    if (t->pm->num_done != t->pm->num_pieces) {
+        t->final_verifying = 0;
+        t->final_verify_index = 0;
+        return 1;
+    }
+
+    if (!t->final_verifying) {
+        if (!storage_flush(t->store)) {
+            log_msg("[torrent] final storage flush failed\n");
+            return 1;
+        }
+        t->final_verifying = 1;
+        t->final_verify_index = 0;
+        log_msg("[torrent] final verification started\n");
+    }
+
+    if (t->final_verify_index < t->pm->num_pieces) {
+        uint32_t idx = t->final_verify_index;
+        if (!piece_mgr_verify_piece(t->pm, idx)) {
+            t->final_verifying = 0;
+            t->final_verify_index = 0;
+            return 1;
+        }
+        t->final_verify_index++;
+        return 1;
+    }
+
+    return 0;
 }
 
 /* ---- create ---- */
@@ -297,7 +330,8 @@ void torrent_destroy(torrent_t *t) {
 }
 
 int torrent_tick(torrent_t *t) {
-    if (t->pm->num_done == t->pm->num_pieces) return 0; /* done */
+    if (t->pm->num_done == t->pm->num_pieces)
+        return check_completion(t);
 
     uint64_t now = now_ms();
 
@@ -318,8 +352,12 @@ int torrent_tick(torrent_t *t) {
     /* Re-announce tracker */
     if (now - t->last_tracker_ms >= TRACKER_REANNOUNCE_MS) {
         uint8_t compact[200*6];
+        uint64_t announced_downloaded = t->downloaded;
+        if (announced_downloaded > (uint64_t)t->mi.total_length)
+            announced_downloaded = (uint64_t)t->mi.total_length;
         uint32_t n = tracker_announce(&t->mi, t->peer_id, t->listen_port,
-                                      t->downloaded, t->mi.total_length - t->downloaded,
+                                      announced_downloaded,
+                                      t->mi.total_length - (int64_t)announced_downloaded,
                                       compact, 200);
         for (uint32_t i = 0; i < n; i++)
             queue_push(t, *(uint32_t*)(compact+i*6), *(uint16_t*)(compact+i*6+4));
@@ -334,7 +372,7 @@ int torrent_tick(torrent_t *t) {
 
     /* Build poll set */
     struct pollfd pfds[MAX_ACTIVE_PEERS + 2];
-    int           pfd_peer[MAX_ACTIVE_PEERS];
+    int           pfd_peer[MAX_ACTIVE_PEERS + 2];
     int npfd = 0;
 
     /* DHT fd */
@@ -410,10 +448,11 @@ int torrent_tick(torrent_t *t) {
         }
     }
 
-    return (t->pm->num_done < t->pm->num_pieces) ? 1 : 0;
+    return check_completion(t);
 }
 
 void torrent_stat(const torrent_t *t, torrent_stat_t *s) {
+    memset(s, 0, sizeof(*s));
     s->num_pieces_done = t->pm->num_done;
     s->num_pieces      = t->pm->num_pieces;
     s->num_peers       = (uint32_t)t->num_peers;
@@ -425,5 +464,9 @@ void torrent_stat(const torrent_t *t, torrent_stat_t *s) {
     }
     s->downloaded = t->downloaded;
     s->speed_bps  = t->speed_bps;
-    s->complete   = (t->pm->num_done == t->pm->num_pieces);
+    s->num_pieces_verified = t->final_verify_index;
+    s->verifying = t->final_verifying;
+    s->complete = t->final_verifying &&
+                  t->final_verify_index == t->pm->num_pieces &&
+                  t->pm->num_done == t->pm->num_pieces;
 }

@@ -18,6 +18,40 @@
 #define DOWNLOAD_DIR "/switch/pipensx/downloads"
 #define DHT_NODE_DIR "/switch/pipensx"
 
+static void render_status(const metainfo_t *mi, const torrent_stat_t *s) {
+    int pct = s->complete ? 100 :
+              (s->num_pieces ? (int)(s->num_pieces_done * 100 / s->num_pieces) : 0);
+    char spd[16], dl[16];
+    fmt_speed(spd, sizeof(spd), s->speed_bps);
+    fmt_bytes(dl, sizeof(dl), s->downloaded);
+
+    consoleClear();
+    printf("pipensx " __DATE__ "\n\n");
+    printf("Name     : %s\n", mi->name);
+    printf("Files    : %u\n", mi->num_files);
+    printf("Progress : %3d%% (%u/%u pieces)\n",
+           pct, s->num_pieces_done, s->num_pieces);
+    if (s->verifying)
+        printf("Verifying: %u/%u pieces\n",
+               s->num_pieces_verified, s->num_pieces);
+    printf("Speed    : %s\n", spd);
+    printf("Received : %s\n", dl);
+    printf("Peers    : %u active\n", s->num_peers);
+    printf("DHT nodes: %u good / %u dubious\n\n",
+           s->dht_good, s->dht_dubious);
+    printf("Press + to exit.\n");
+    consoleUpdate(NULL);
+}
+
+static void render_message(const char *title, const char *detail) {
+    consoleClear();
+    printf("pipensx " __DATE__ "\n\n");
+    printf("%s\n", title);
+    if (detail && detail[0])
+        printf("%s\n", detail);
+    consoleUpdate(NULL);
+}
+
 static void make_dirs(void) {
     mkdir("/switch",                  0755);
     mkdir("/switch/pipensx",          0755);
@@ -43,6 +77,12 @@ static int find_torrent(const char *dir, char *out, size_t outsz) {
 }
 
 int main(int argc, char **argv) {
+    (void)argc;
+    (void)argv;
+    int nifm_ready = 0;
+    int sockets_ready = 0;
+    int curl_ready = 0;
+
     /* Init console (must be first for printf to work) */
     consoleInit(NULL);
 
@@ -59,6 +99,7 @@ int main(int argc, char **argv) {
         consoleExit(NULL);
         return 1;
     }
+    nifm_ready = 1;
 
     if (socketInitializeDefault() != 0) {
         printf("socketInitializeDefault failed\n");
@@ -68,8 +109,10 @@ int main(int argc, char **argv) {
         consoleExit(NULL);
         return 1;
     }
+    sockets_ready = 1;
 
     curl_global_init(CURL_GLOBAL_DEFAULT);
+    curl_ready = 1;
     make_dirs();
     log_init("/switch/pipensx/pipensx.log");
 
@@ -121,9 +164,14 @@ int main(int argc, char **argv) {
 
         uint64_t last_ui = 0;
         uint64_t last_log = 0;
+        int user_exit = 0;
         while (appletMainLoop()) {
             padUpdate(&pad);
-            if (padGetButtonsDown(&pad) & HidNpadButton_Plus) break;
+            if (padGetButtonsDown(&pad) & HidNpadButton_Plus) {
+                user_exit = 1;
+                render_message("Shutting down...", "Closing files and network.");
+                break;
+            }
 
             int r = torrent_tick(tor);
 
@@ -136,15 +184,7 @@ int main(int argc, char **argv) {
                 fmt_speed(spd, sizeof(spd), s.speed_bps);
                 fmt_bytes(dl,  sizeof(dl),  s.downloaded);
 
-                /* Clear & redraw status area (libnx console: just printf) */
-                printf("\033[4;0H"); /* move cursor to line 4 */
-                printf("Progress : %3d%% (%u/%u pieces)          \n",
-                       pct, s.num_pieces_done, s.num_pieces);
-                printf("Speed    : %-12s  Downloaded: %s          \n", spd, dl);
-                printf("Peers    : %u active                       \n", s.num_peers);
-                printf("DHT nodes: %u good / %u dubious           \n",
-                       s.dht_good, s.dht_dubious);
-                consoleUpdate(NULL);
+                render_status(&mi, &s);
                 last_ui = now;
 
                 /* Write status to log file every 2 seconds */
@@ -158,19 +198,21 @@ int main(int argc, char **argv) {
 
             if (!r) {
                 log_msg("[torrent] download complete: files saved to %s\n", DOWNLOAD_DIR);
-                printf("\033[9;0H");
-                printf("========================================\n");
-                printf("  Download complete!\n");
-                printf("  Files saved to:\n");
-                printf("    %s\n", DOWNLOAD_DIR);
-                printf("\n");
-                printf("  Press + to exit.\n");
-                printf("========================================\n");
+                torrent_stat_t s;
+                torrent_stat(tor, &s);
+                render_status(&mi, &s);
+                printf("\nDownload complete and verified.\n");
+                printf("Files saved to: %s\n", DOWNLOAD_DIR);
+                printf("Press + to exit.\n");
                 consoleUpdate(NULL);
                 /* Stay open until + pressed */
                 while (appletMainLoop()) {
                     padUpdate(&pad);
-                    if (padGetButtonsDown(&pad) & HidNpadButton_Plus) break;
+                    if (padGetButtonsDown(&pad) & HidNpadButton_Plus) {
+                        user_exit = 1;
+                        render_message("Shutting down...", "Closing files and network.");
+                        break;
+                    }
                 }
                 break;
             }
@@ -178,12 +220,15 @@ int main(int argc, char **argv) {
 
         torrent_destroy(tor);
         metainfo_free(&mi);
+        if (user_exit)
+            svcSleepThread(200000000ULL);
     }
 
 cleanup_exit:
-    curl_global_cleanup();
-    socketExit();
-    nifmExit();
+    log_close();
+    if (curl_ready) curl_global_cleanup();
+    if (sockets_ready) socketExit();
+    if (nifm_ready) nifmExit();
     consoleExit(NULL);
     return 0;
 }

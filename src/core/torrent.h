@@ -14,6 +14,8 @@ typedef struct {
     uint32_t dht_dubious;
     uint64_t downloaded;
     uint64_t speed_bps;   /* bytes/sec, updated ~1/sec */
+    uint32_t num_pieces_verified;
+    int      verifying;   /* final verification is in progress */
     int      complete;    /* 1 when all pieces verified */
 } torrent_stat_t;
 

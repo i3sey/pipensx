@@ -14,9 +14,10 @@ typedef enum {
 
 typedef struct {
     piece_state_t state;
-    uint8_t      *buf;      /* piece_length bytes, NULL until first request */
-    uint32_t      have_blocks; /* bitmask of received 16KB blocks */
+    uint8_t      *buf;         /* piece_length bytes, NULL until first request */
+    uint8_t      *have_blocks; /* bitmap of received 16KB blocks */
     uint32_t      num_blocks;
+    uint32_t      num_blocks_done;
 } piece_slot_t;
 
 typedef struct {
@@ -43,6 +44,19 @@ void piece_mgr_mark_pending(piece_mgr_t *pm, uint32_t idx);
  */
 int piece_mgr_got_block(piece_mgr_t *pm, uint32_t idx, uint32_t offset,
                         const uint8_t *data, uint32_t len);
+
+/* Verify one completed piece by reading it from storage. */
+int piece_mgr_verify_piece(piece_mgr_t *pm, uint32_t idx);
+
+/*
+ * Flush and verify every completed piece from storage.
+ * Corrupt pieces are reset for downloading again.
+ * Returns 1 when all pieces verify, 0 otherwise.
+ */
+int piece_mgr_verify_all(piece_mgr_t *pm);
+
+/* Returns non-zero when the block has already been received. */
+int piece_mgr_has_block(const piece_mgr_t *pm, uint32_t idx, uint32_t block);
 
 /*
  * Pick the next piece index to request from a peer.

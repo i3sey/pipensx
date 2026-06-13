@@ -18,6 +18,32 @@ uint32_t piece_num_blocks(const piece_mgr_t *pm, uint32_t idx) {
     return (uint32_t)((plen + BLOCK_SIZE - 1) / BLOCK_SIZE);
 }
 
+static size_t block_bitmap_size(uint32_t num_blocks) {
+    return (num_blocks + 7u) / 8u;
+}
+
+static int block_is_set(const piece_slot_t *sl, uint32_t block) {
+    if (!sl->have_blocks || block >= sl->num_blocks) return 0;
+    return (sl->have_blocks[block / 8] >> (block % 8)) & 1u;
+}
+
+static void block_set(piece_slot_t *sl, uint32_t block) {
+    sl->have_blocks[block / 8] |= (uint8_t)(1u << (block % 8));
+}
+
+static void reset_piece(piece_mgr_t *pm, uint32_t idx) {
+    piece_slot_t *sl = &pm->slots[idx];
+    if (sl->state == PS_DONE && pm->num_done > 0) {
+        pm->num_done--;
+        pm->have_bf[idx / 8] &= (uint8_t)~(1u << (7 - idx % 8));
+    }
+    if (sl->buf)
+        memset(sl->buf, 0, (size_t)pm->mi->piece_length);
+    memset(sl->have_blocks, 0, block_bitmap_size(sl->num_blocks));
+    sl->num_blocks_done = 0;
+    sl->state = PS_EMPTY;
+}
+
 piece_mgr_t *piece_mgr_create(const metainfo_t *mi, storage_t *store) {
     piece_mgr_t *pm = (piece_mgr_t*)calloc(1, sizeof(*pm));
     if (!pm) return NULL;
@@ -30,15 +56,24 @@ piece_mgr_t *piece_mgr_create(const metainfo_t *mi, storage_t *store) {
         free(pm->slots); free(pm->have_bf); free(pm);
         return NULL;
     }
-    for (uint32_t i = 0; i < mi->num_pieces; i++)
+    for (uint32_t i = 0; i < mi->num_pieces; i++) {
         pm->slots[i].num_blocks = piece_num_blocks(pm, i);
+        size_t bitmap_size = block_bitmap_size(pm->slots[i].num_blocks);
+        pm->slots[i].have_blocks = (uint8_t*)calloc(bitmap_size, 1);
+        if (!pm->slots[i].have_blocks) {
+            piece_mgr_destroy(pm);
+            return NULL;
+        }
+    }
     return pm;
 }
 
 void piece_mgr_destroy(piece_mgr_t *pm) {
     if (!pm) return;
-    for (uint32_t i = 0; i < pm->num_pieces; i++)
+    for (uint32_t i = 0; i < pm->num_pieces; i++) {
         free(pm->slots[i].buf);
+        free(pm->slots[i].have_blocks);
+    }
     free(pm->slots);
     free(pm->have_bf);
     free(pm);
@@ -56,12 +91,17 @@ void piece_mgr_mark_pending(piece_mgr_t *pm, uint32_t idx) {
 
 int piece_mgr_got_block(piece_mgr_t *pm, uint32_t idx, uint32_t offset,
                         const uint8_t *data, uint32_t len) {
-    if (idx >= pm->num_pieces) return -1;
+    if (idx >= pm->num_pieces || !data) return -1;
     piece_slot_t *sl = &pm->slots[idx];
     if (sl->state == PS_DONE) return 1; /* already have it */
 
     int64_t plen = piece_len(pm, idx);
-    if ((int64_t)offset + (int64_t)len > plen) return -1;
+    if (offset % BLOCK_SIZE != 0 || (int64_t)offset >= plen) return -1;
+
+    uint32_t blk = offset / BLOCK_SIZE;
+    uint32_t expected_len = ((int64_t)offset + BLOCK_SIZE <= plen)
+                          ? BLOCK_SIZE : (uint32_t)(plen - offset);
+    if (blk >= sl->num_blocks || len != expected_len) return -1;
 
     if (!sl->buf) {
         sl->buf = (uint8_t*)calloc(1, (size_t)pm->mi->piece_length);
@@ -70,14 +110,11 @@ int piece_mgr_got_block(piece_mgr_t *pm, uint32_t idx, uint32_t offset,
     sl->state = PS_PENDING;
     memcpy(sl->buf + offset, data, len);
 
-    /* Mark block bit */
-    uint32_t blk = offset / BLOCK_SIZE;
-    if (blk < 32) sl->have_blocks |= (1u << blk);
-
-    /* Check if all blocks received */
-    uint32_t total_blocks = sl->num_blocks;
-    uint32_t expected_mask = (total_blocks < 32) ? ((1u << total_blocks) - 1) : 0xFFFFFFFFu;
-    if ((sl->have_blocks & expected_mask) != expected_mask)
+    if (!block_is_set(sl, blk)) {
+        block_set(sl, blk);
+        sl->num_blocks_done++;
+    }
+    if (sl->num_blocks_done != sl->num_blocks)
         return 1; /* not yet complete */
 
     /* Verify SHA-1 */
@@ -86,17 +123,29 @@ int piece_mgr_got_block(piece_mgr_t *pm, uint32_t idx, uint32_t offset,
     const uint8_t *expected = pm->mi->piece_hashes + idx * 20;
     if (memcmp(digest, expected, 20) != 0) {
         log_msg("[piece] SHA1 MISMATCH piece %u — resetting\n", idx);
-        memset(sl->buf, 0, (size_t)pm->mi->piece_length);
-        sl->have_blocks = 0;
-        sl->state = PS_EMPTY;
+        reset_piece(pm, idx);
         return 0;
     }
 
-    /* Write to storage */
+    /* Write, flush, then verify the bytes read back from storage. */
     int64_t abs_off = (int64_t)idx * pm->mi->piece_length;
-    if (!storage_write(pm->store, abs_off, sl->buf, (size_t)plen)) {
+    if (!storage_write(pm->store, abs_off, sl->buf, (size_t)plen) ||
+        !storage_flush(pm->store)) {
         log_msg("[piece] write error piece %u\n", idx);
+        reset_piece(pm, idx);
         return -1;
+    }
+    memset(sl->buf, 0, (size_t)plen);
+    if (storage_read(pm->store, abs_off, sl->buf, (size_t)plen) != plen) {
+        log_msg("[piece] read-back error piece %u\n", idx);
+        reset_piece(pm, idx);
+        return -1;
+    }
+    sha1(sl->buf, (size_t)plen, digest);
+    if (memcmp(digest, expected, 20) != 0) {
+        log_msg("[piece] DISK SHA1 MISMATCH piece %u — resetting\n", idx);
+        reset_piece(pm, idx);
+        return 0;
     }
 
     sl->state = PS_DONE;
@@ -108,6 +157,49 @@ int piece_mgr_got_block(piece_mgr_t *pm, uint32_t idx, uint32_t offset,
     free(sl->buf);
     sl->buf = NULL;
     return 2;
+}
+
+int piece_mgr_verify_piece(piece_mgr_t *pm, uint32_t idx) {
+    if (!pm || idx >= pm->num_pieces) return 0;
+    piece_slot_t *sl = &pm->slots[idx];
+    if (sl->state != PS_DONE) return 0;
+
+    int64_t plen = piece_len(pm, idx);
+    int64_t abs_off = (int64_t)idx * pm->mi->piece_length;
+    uint8_t *buf = (uint8_t*)malloc((size_t)plen);
+    if (!buf) return 0;
+
+    uint8_t digest[20];
+    int valid = 1;
+    if (storage_read(pm->store, abs_off, buf, (size_t)plen) != plen) {
+        log_msg("[piece] final read error piece %u — resetting\n", idx);
+        valid = 0;
+    } else {
+        sha1(buf, (size_t)plen, digest);
+        if (memcmp(digest, pm->mi->piece_hashes + idx * 20, 20) != 0) {
+            log_msg("[piece] final SHA1 MISMATCH piece %u — resetting\n", idx);
+            valid = 0;
+        }
+    }
+    free(buf);
+    if (!valid) reset_piece(pm, idx);
+    return valid;
+}
+
+int piece_mgr_verify_all(piece_mgr_t *pm) {
+    if (!pm || !storage_flush(pm->store)) return 0;
+
+    int all_valid = 1;
+    for (uint32_t idx = 0; idx < pm->num_pieces; idx++) {
+        if (!piece_mgr_verify_piece(pm, idx))
+            all_valid = 0;
+    }
+    return all_valid && pm->num_done == pm->num_pieces;
+}
+
+int piece_mgr_has_block(const piece_mgr_t *pm, uint32_t idx, uint32_t block) {
+    if (!pm || idx >= pm->num_pieces) return 0;
+    return block_is_set(&pm->slots[idx], block);
 }
 
 uint32_t piece_mgr_pick(const piece_mgr_t *pm,

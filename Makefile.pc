@@ -25,6 +25,13 @@ SRCS = \
     src/main_pc.c
 
 OBJS = $(SRCS:.c=.o)
+TEST_TARGET = tests/test_piece
+TEST_SRCS = \
+    tests/test_piece.c       \
+    src/core/sha1.c          \
+    src/core/util.c          \
+    src/core/piece.c         \
+    src/platform/storage.c
 
 all: $(TARGET)
 
@@ -34,7 +41,13 @@ $(TARGET): $(OBJS)
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-clean:
-	rm -f $(OBJS) $(TARGET)
+$(TEST_TARGET): $(TEST_SRCS)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-.PHONY: all clean
+test: $(TEST_TARGET)
+	./$(TEST_TARGET)
+
+clean:
+	rm -f $(OBJS) $(TARGET) $(TEST_TARGET)
+
+.PHONY: all test clean

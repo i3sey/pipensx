@@ -27,6 +27,7 @@ static FILE *g_logfile = NULL;
 
 void log_init(const char *path) {
     if (!path) return;
+    log_close();
     g_logfile = fopen(path, "w");
     if (g_logfile) {
         fprintf(g_logfile, "=== pipensx log started ===\n");
@@ -34,13 +35,22 @@ void log_init(const char *path) {
     }
 }
 
+void log_close(void) {
+    if (!g_logfile) return;
+    fflush(g_logfile);
+    fclose(g_logfile);
+    g_logfile = NULL;
+}
+
 void log_msg(const char *fmt, ...) {
     va_list ap, ap2;
     va_start(ap, fmt);
     va_copy(ap2, ap);
 
+#ifndef __SWITCH__
     vprintf(fmt, ap);
     fflush(stdout);
+#endif
 
     if (g_logfile) {
         /* Prefix every line with elapsed ms */

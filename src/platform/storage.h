@@ -18,6 +18,9 @@ storage_t *storage_open(const metainfo_t *mi, const char *outdir);
  */
 int storage_write(storage_t *s, int64_t offset, const uint8_t *data, size_t len);
 
+/* Flush all output files. Returns 1 on success, 0 on error. */
+int storage_flush(storage_t *s);
+
 /*
  * Read data at the absolute torrent byte offset (for seeding / verify).
  * Returns bytes actually read, or -1 on error.
