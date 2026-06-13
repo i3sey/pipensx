@@ -1,0 +1,15 @@
+# Build artifacts
+/pipensx
+*.elf
+*.nro
+*.nacp
+*.map
+*.lst
+*.o
+*.d
+
+# Build directories
+build_switch/
+
+# Log files
+*.log
