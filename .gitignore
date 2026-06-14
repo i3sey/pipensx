@@ -1,5 +1,7 @@
 # Build artifacts
 /pipensx
+/tests/test_piece
+/tests/test_manager
 *.elf
 *.nro
 *.nacp
@@ -10,6 +12,7 @@
 
 # Build directories
 build_switch/
+build-switch/
 
 # Log files
 *.log

@@ -3,10 +3,14 @@
 # Requires: gcc, libcurl (apt: libcurl4-openssl-dev)
 
 CC      = gcc
+CXX     = g++
 TARGET  = pipensx
 CFLAGS  = -O2 -Wall -Wextra -std=c11 \
            -D_GNU_SOURCE \
            $(shell pkg-config --cflags libcurl)
+CXXFLAGS = -O2 -Wall -Wextra -std=c++17 \
+            -D_GNU_SOURCE \
+            $(shell pkg-config --cflags libcurl)
 LDFLAGS = $(shell pkg-config --libs libcurl) -lm
 
 SRCS = \
@@ -26,9 +30,12 @@ SRCS = \
 
 OBJS = $(SRCS:.c=.o)
 TEST_TARGET = tests/test_piece
+MANAGER_TEST_TARGET = tests/test_manager
 TEST_SRCS = \
     tests/test_piece.c       \
     src/core/sha1.c          \
+    src/core/bencode.c       \
+    src/core/metainfo.c      \
     src/core/util.c          \
     src/core/piece.c         \
     src/platform/storage.c
@@ -44,10 +51,21 @@ $(TARGET): $(OBJS)
 $(TEST_TARGET): $(TEST_SRCS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-test: $(TEST_TARGET)
+src/app/download_manager.o: src/app/download_manager.cpp
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+tests/test_manager.o: tests/test_manager.cpp
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+$(MANAGER_TEST_TARGET): tests/test_manager.o src/app/download_manager.o $(filter-out src/main_pc.o,$(OBJS))
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS) -pthread
+
+test: $(TEST_TARGET) $(MANAGER_TEST_TARGET)
 	./$(TEST_TARGET)
+	./$(MANAGER_TEST_TARGET)
 
 clean:
-	rm -f $(OBJS) $(TARGET) $(TEST_TARGET)
+	rm -f $(OBJS) src/app/download_manager.o tests/test_manager.o \
+		$(TARGET) $(TEST_TARGET) $(MANAGER_TEST_TARGET)
 
 .PHONY: all test clean

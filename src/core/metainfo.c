@@ -12,6 +12,30 @@ static void strncpy_safe(char *dst, size_t dsz, const char *src, size_t slen) {
     dst[n] = 0;
 }
 
+int metainfo_path_is_safe(const char *path) {
+    if (!path || !path[0] || path[0] == '/' || path[0] == '\\')
+        return 0;
+    if (strlen(path) >= MAX_NAME_LEN)
+        return 0;
+
+    const char *component = path;
+    for (const char *p = path;; p++) {
+        if (*p == '\\')
+            return 0;
+        if (*p == '/' || *p == '\0') {
+            size_t len = (size_t)(p - component);
+            if (len == 0 ||
+                (len == 1 && component[0] == '.') ||
+                (len == 2 && component[0] == '.' && component[1] == '.'))
+                return 0;
+            if (*p == '\0')
+                break;
+            component = p + 1;
+        }
+    }
+    return 1;
+}
+
 int metainfo_parse(const uint8_t *data, size_t len, metainfo_t *mi) {
     memset(mi, 0, sizeof(*mi));
     const char *buf = (const char*)data;
@@ -41,6 +65,10 @@ int metainfo_parse(const uint8_t *data, size_t len, metainfo_t *mi) {
         strncpy_safe(mi->name, MAX_NAME_LEN, v.sval, v.slen);
     else
         strncpy_safe(mi->name, MAX_NAME_LEN, "unknown", 7);
+    if (!metainfo_path_is_safe(mi->name)) {
+        log_msg("[meta] unsafe torrent name\n");
+        return 0;
+    }
 
     /* piece length */
     if (!be_dict_get(info_node.buf, info_node.buf + info_node.raw_len, "piece length", 12, &v) || v.type != BE_INT) {
@@ -107,6 +135,11 @@ int metainfo_parse(const uint8_t *data, size_t len, metainfo_t *mi) {
                     first = 0;
                 }
                 strncpy_safe(f->path, MAX_NAME_LEN, tmp, strlen(tmp));
+            }
+            if (!metainfo_path_is_safe(f->path)) {
+                log_msg("[meta] unsafe file path '%s'\n", f->path);
+                metainfo_free(mi);
+                return 0;
             }
             f->offset = offset;
             offset += f->length;

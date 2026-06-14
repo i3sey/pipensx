@@ -51,13 +51,16 @@ storage_t *storage_open(const metainfo_t *mi, const char *outdir) {
 
         /* Build full path — use snprintf with guaranteed NUL */
         char fullpath[512];
-        if (mi->is_multi) {
-            snprintf(fullpath, sizeof(fullpath)-1, "%s/%s/%s",
-                     outdir, mi->name, mf->path);
-        } else {
-            snprintf(fullpath, sizeof(fullpath)-1, "%s/%s", outdir, mf->path);
+        int path_len = mi->is_multi
+            ? snprintf(fullpath, sizeof(fullpath), "%s/%s/%s",
+                       outdir, mi->name, mf->path)
+            : snprintf(fullpath, sizeof(fullpath), "%s/%s",
+                       outdir, mf->path);
+        if (path_len < 0 || (size_t)path_len >= sizeof(fullpath)) {
+            log_msg("[storage] output path is too long\n");
+            storage_close(s);
+            return NULL;
         }
-        fullpath[sizeof(fullpath)-1] = '\0';
         memcpy(fh->path, fullpath, sizeof(fh->path));
         fh->path[sizeof(fh->path)-1] = '\0';
 
@@ -71,7 +74,8 @@ storage_t *storage_open(const metainfo_t *mi, const char *outdir) {
             fh->fp = fopen(fh->path, "w+b");
             if (!fh->fp) {
                 log_msg("[storage] cannot open '%s': %s\n", fh->path, strerror(errno));
-                /* continue — non-fatal for now */
+                storage_close(s);
+                return NULL;
             } else {
                 /* Pre-allocate / seek to size */
                 if (fh->length > 0) {

@@ -49,6 +49,12 @@ int piece_mgr_got_block(piece_mgr_t *pm, uint32_t idx, uint32_t offset,
 int piece_mgr_verify_piece(piece_mgr_t *pm, uint32_t idx);
 
 /*
+ * Check a piece already present in storage and update the have bitfield.
+ * Returns 1 when valid, 0 when absent/corrupt, and -1 on invalid arguments.
+ */
+int piece_mgr_check_existing(piece_mgr_t *pm, uint32_t idx);
+
+/*
  * Flush and verify every completed piece from storage.
  * Corrupt pieces are reset for downloading again.
  * Returns 1 when all pieces verify, 0 otherwise.

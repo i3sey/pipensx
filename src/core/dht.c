@@ -214,17 +214,12 @@ void dht_engine_save(dht_engine_t *e __attribute__((unused)), const char *path) 
 }
 
 void dht_engine_load(dht_engine_t *e __attribute__((unused)), const char *path) {
-    FILE *f = fopen(path, "rb");
-    if (!f) return;
-    int count;
-    fread(&count, sizeof(int), 1, f);
-    if (count < 0 || count > 1024) { fclose(f); return; }
-    struct sockaddr_in nodes[1024];
-    fread(nodes, sizeof(struct sockaddr_in), count, f);
-    fclose(f);
-    for (int i = 0; i < count; i++)
-        dht_insert_node(NULL, (struct sockaddr*)&nodes[i], sizeof(nodes[i]));
-    log_msg("[dht] loaded %d nodes from %s\n", count, path);
+    /*
+     * The old cache stored only socket addresses, but jech/dht requires the
+     * corresponding 20-byte node ID when restoring a node. Passing NULL here
+     * corrupts the DHT table. Ignore legacy caches and bootstrap normally.
+     */
+    (void)path;
 }
 
 void dht_engine_nodes(dht_engine_t *e __attribute__((unused)), int *good, int *dubious) {

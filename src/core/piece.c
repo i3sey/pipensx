@@ -186,6 +186,40 @@ int piece_mgr_verify_piece(piece_mgr_t *pm, uint32_t idx) {
     return valid;
 }
 
+int piece_mgr_check_existing(piece_mgr_t *pm, uint32_t idx) {
+    if (!pm || idx >= pm->num_pieces)
+        return -1;
+
+    piece_slot_t *sl = &pm->slots[idx];
+    int64_t plen = piece_len(pm, idx);
+    int64_t abs_off = (int64_t)idx * pm->mi->piece_length;
+    uint8_t *buf = (uint8_t*)malloc((size_t)plen);
+    if (!buf)
+        return 0;
+
+    uint8_t digest[20];
+    int valid = storage_read(pm->store, abs_off, buf, (size_t)plen) == plen;
+    if (valid) {
+        sha1(buf, (size_t)plen, digest);
+        valid = memcmp(digest, pm->mi->piece_hashes + idx * 20, 20) == 0;
+    }
+    free(buf);
+
+    if (valid) {
+        if (sl->state != PS_DONE) {
+            sl->state = PS_DONE;
+            sl->num_blocks_done = sl->num_blocks;
+            memset(sl->have_blocks, 0xff, block_bitmap_size(sl->num_blocks));
+            bf_set(pm->have_bf, idx);
+            pm->num_done++;
+        }
+        return 1;
+    }
+
+    reset_piece(pm, idx);
+    return 0;
+}
+
 int piece_mgr_verify_all(piece_mgr_t *pm) {
     if (!pm || !storage_flush(pm->store)) return 0;
 

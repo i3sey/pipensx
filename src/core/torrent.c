@@ -51,6 +51,8 @@ struct torrent {
     uint64_t last_tracker_ms;
     uint64_t last_dht_ms;
     uint64_t last_connect_ms;
+    uint32_t startup_verify_index;
+    int      startup_verifying;
     uint32_t final_verify_index;
     int      final_verifying;
 
@@ -65,6 +67,9 @@ struct torrent {
 
 /* ---- peer queue ---- */
 static void queue_push(torrent_t *t, uint32_t ip, uint16_t port) {
+    uint16_t host_port = ntohs(port);
+    if (ip == 0 || ip == INADDR_NONE || host_port < 2)
+        return;
     if (t->qsize >= MAX_PEER_QUEUE) return;
     /* Dedup: skip if already queued or connected */
     for (int i = 0; i < MAX_ACTIVE_PEERS; i++) {
@@ -110,10 +115,13 @@ static void cb_peers(void *ud, const uint8_t *compact, uint32_t cnt) {
 
 static void cb_dht_peer(void *ud, uint32_t ip_be, uint16_t port_be) {
     torrent_t *t = (torrent_t*)ud;
+    uint16_t host_port = ntohs(port_be);
+    if (ip_be == 0 || ip_be == INADDR_NONE || host_port < 2)
+        return;
     queue_push(t, ip_be, port_be);
     log_msg("[torrent] dht peer %u.%u.%u.%u:%u\n",
             ip_be&0xFF,(ip_be>>8)&0xFF,(ip_be>>16)&0xFF,(ip_be>>24)&0xFF,
-            ntohs(port_be));
+            host_port);
 }
 
 /* ---- peer_ctx helper ---- */
@@ -228,6 +236,7 @@ torrent_t *torrent_create(const metainfo_t *mi,
     if (!t) return NULL;
     memcpy(&t->mi, mi, sizeof(*mi));
     t->listen_port = listen_port;
+    t->startup_verifying = 1;
 
     /* Peer ID: "-PN0001-" + 12 random bytes */
     memcpy(t->peer_id, "-PN0001-", 8);
@@ -244,11 +253,6 @@ torrent_t *torrent_create(const metainfo_t *mi,
     rand_bytes(dht_id, 20);
     t->dht = dht_engine_create(listen_port, dht_id);
     if (t->dht) {
-#ifdef __SWITCH__
-        dht_engine_load(t->dht, "/switch/pipensx/dht_nodes.bin");
-#else
-        dht_engine_load(t->dht, "/tmp/pipensx_dht.bin");
-#endif
         dht_engine_bootstrap(t->dht);
         dht_engine_search(t->dht, mi->info_hash, cb_dht_peer, t);
     }
@@ -300,8 +304,10 @@ torrent_t *torrent_create(const metainfo_t *mi,
 
 void torrent_destroy(torrent_t *t) {
     if (!t) return;
+    log_msg("[torrent] destroy begin\n");
 #ifdef __SWITCH__
     if (t->upnp_mapped) {
+        log_msg("[torrent] removing UPnP mapping\n");
         UPNP_DeletePortMapping(t->upnp_urls.controlURL,
             t->upnp_data.first.servicetype,
             t->upnp_port_str, "TCP", NULL);
@@ -312,24 +318,43 @@ void torrent_destroy(torrent_t *t) {
     }
 #endif
     if (t->dht) {
-#ifdef __SWITCH__
-        dht_engine_save(t->dht, "/switch/pipensx/dht_nodes.bin");
-#else
-        dht_engine_save(t->dht, "/tmp/pipensx_dht.bin");
-#endif
+        log_msg("[torrent] destroying DHT\n");
         dht_engine_destroy(t->dht);
+        t->dht = NULL;
+        log_msg("[torrent] DHT destroyed\n");
     }
+    log_msg("[torrent] destroying peers\n");
     for (int i = 0; i < MAX_ACTIVE_PEERS; i++)
-        if (t->peers[i]) peer_destroy(t->peers[i]);
+        if (t->peers[i]) {
+            peer_destroy(t->peers[i]);
+            t->peers[i] = NULL;
+        }
+    log_msg("[torrent] peers destroyed\n");
     piece_mgr_destroy(t->pm);
+    t->pm = NULL;
+    log_msg("[torrent] piece manager destroyed\n");
     storage_close(t->store);
+    t->store = NULL;
+    log_msg("[torrent] storage closed\n");
     /* NOTE: t->mi is a shallow copy of the caller's metainfo_t — the caller
      * owns the heap members (piece_hashes, files) and must call metainfo_free()
      * on its own copy. Freeing here would cause a double-free on exit. */
     free(t);
+    log_msg("[torrent] destroy complete\n");
 }
 
 int torrent_tick(torrent_t *t) {
+    if (t->startup_verifying) {
+        if (t->startup_verify_index < t->pm->num_pieces) {
+            piece_mgr_check_existing(t->pm, t->startup_verify_index);
+            t->startup_verify_index++;
+            return 1;
+        }
+        t->startup_verifying = 0;
+        log_msg("[torrent] startup verification complete: %u/%u pieces\n",
+                t->pm->num_done, t->pm->num_pieces);
+    }
+
     if (t->pm->num_done == t->pm->num_pieces)
         return check_completion(t);
 
@@ -463,9 +488,17 @@ void torrent_stat(const torrent_t *t, torrent_stat_t *s) {
         s->dht_dubious = (uint32_t)d;
     }
     s->downloaded = t->downloaded;
+    s->total_bytes = (uint64_t)t->mi.total_length;
+    s->completed_bytes = 0;
+    for (uint32_t i = 0; i < t->pm->num_pieces; i++) {
+        if (t->pm->slots[i].state == PS_DONE)
+            s->completed_bytes += (uint64_t)piece_len(t->pm, i);
+    }
     s->speed_bps  = t->speed_bps;
-    s->num_pieces_verified = t->final_verify_index;
-    s->verifying = t->final_verifying;
+    s->num_pieces_verified = t->startup_verifying
+                           ? t->startup_verify_index
+                           : t->final_verify_index;
+    s->verifying = t->startup_verifying || t->final_verifying;
     s->complete = t->final_verifying &&
                   t->final_verify_index == t->pm->num_pieces &&
                   t->pm->num_done == t->pm->num_pieces;

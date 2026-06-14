@@ -192,10 +192,66 @@ static void test_final_verify_requeues_disk_corruption(void) {
     cleanup_output(outdir, "disk.bin");
 }
 
+static void test_existing_piece_scan_restores_progress(void) {
+    const size_t piece_length = 2 * BLOCK_SIZE;
+    char outdir[] = "/tmp/pipensx-piece-resume-XXXXXX";
+    assert(mkdtemp(outdir));
+
+    metainfo_t mi;
+    init_single_file_metainfo(&mi, "resume.bin", piece_length,
+                              piece_length * 2);
+
+    uint8_t *expected = (uint8_t*)malloc(piece_length * 2);
+    assert(expected);
+    fill_pattern(expected, piece_length * 2, 73);
+    sha1(expected, piece_length, mi.piece_hashes);
+    sha1(expected + piece_length, piece_length, mi.piece_hashes + 20);
+
+    storage_t *store = storage_open(&mi, outdir);
+    assert(store);
+    assert(storage_write(store, 0, expected, piece_length));
+    assert(storage_write(store, piece_length, expected + piece_length,
+                         piece_length));
+    assert(storage_flush(store));
+
+    piece_mgr_t *pm = piece_mgr_create(&mi, store);
+    assert(pm);
+    assert(piece_mgr_check_existing(pm, 0) == 1);
+    assert(piece_mgr_check_existing(pm, 1) == 1);
+    assert(pm->num_done == 2);
+
+    expected[piece_length + 1] ^= 0xff;
+    assert(storage_write(store, piece_length, expected + piece_length,
+                         piece_length));
+    assert(storage_flush(store));
+    assert(piece_mgr_check_existing(pm, 1) == 0);
+    assert(pm->num_done == 1);
+    assert(pm->slots[1].state == PS_EMPTY);
+
+    piece_mgr_destroy(pm);
+    storage_close(store);
+    free(expected);
+    free_test_metainfo(&mi);
+    cleanup_output(outdir, "resume.bin");
+}
+
+static void test_metainfo_path_safety(void) {
+    assert(metainfo_path_is_safe("file.bin"));
+    assert(metainfo_path_is_safe("folder/file.bin"));
+    assert(!metainfo_path_is_safe(""));
+    assert(!metainfo_path_is_safe("/absolute"));
+    assert(!metainfo_path_is_safe("../escape"));
+    assert(!metainfo_path_is_safe("folder/../escape"));
+    assert(!metainfo_path_is_safe("folder//file"));
+    assert(!metainfo_path_is_safe("folder\\file"));
+}
+
 int main(void) {
     test_large_piece_and_short_last_piece();
     test_hash_mismatch_resets_all_blocks();
     test_final_verify_requeues_disk_corruption();
+    test_existing_piece_scan_restores_progress();
+    test_metainfo_path_safety();
     puts("piece tests passed");
     return 0;
 }

@@ -28,7 +28,7 @@ static FILE *g_logfile = NULL;
 void log_init(const char *path) {
     if (!path) return;
     log_close();
-    g_logfile = fopen(path, "w");
+    g_logfile = fopen(path, "a");
     if (g_logfile) {
         fprintf(g_logfile, "=== pipensx log started ===\n");
         fflush(g_logfile);

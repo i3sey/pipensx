@@ -43,3 +43,6 @@ void metainfo_free(metainfo_t *mi);
 
 /* Load from file path */
 int metainfo_load(const char *path, metainfo_t *mi);
+
+/* Returns non-zero when a torrent path is safe to append to an output dir. */
+int metainfo_path_is_safe(const char *path);

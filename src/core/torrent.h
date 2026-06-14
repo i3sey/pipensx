@@ -12,10 +12,12 @@ typedef struct {
     uint32_t num_peers;
     uint32_t dht_good;
     uint32_t dht_dubious;
-    uint64_t downloaded;
+    uint64_t downloaded;  /* bytes received during this session */
+    uint64_t completed_bytes;
+    uint64_t total_bytes;
     uint64_t speed_bps;   /* bytes/sec, updated ~1/sec */
     uint32_t num_pieces_verified;
-    int      verifying;   /* final verification is in progress */
+    int      verifying;   /* startup or final verification is in progress */
     int      complete;    /* 1 when all pieces verified */
 } torrent_stat_t;
 
