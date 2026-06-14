@@ -21,8 +21,16 @@ enum class DownloadStatus {
     Paused,
     Verifying,
     Completed,
+    Installing,
+    Committing,
+    Installed,
     Error,
     Removing,
+};
+
+enum class TransferMode {
+    DownloadOnly,
+    StreamInstall,
 };
 
 struct DownloadTask {
@@ -32,6 +40,7 @@ struct DownloadTask {
     std::string dataPath;
     std::string error;
     DownloadStatus status = DownloadStatus::Queued;
+    TransferMode mode = TransferMode::DownloadOnly;
     uint64_t totalBytes = 0;
     uint64_t completedBytes = 0;
     uint64_t speedBytesPerSecond = 0;
@@ -41,6 +50,11 @@ struct DownloadTask {
     uint32_t piecesDone = 0;
     uint32_t piecesTotal = 0;
     uint32_t piecesVerified = 0;
+    uint32_t packageCount = 0;
+    uint32_t packagesInstalled = 0;
+    uint64_t installedBytes = 0;
+    uint64_t installTotalBytes = 0;
+    std::string currentPackage;
 };
 
 struct TorrentPreview {
@@ -49,6 +63,7 @@ struct TorrentPreview {
     uint64_t totalBytes = 0;
     uint32_t fileCount = 0;
     uint32_t trackerCount = 0;
+    uint32_t packageCount = 0;
 };
 
 class DownloadManager {
@@ -62,8 +77,12 @@ public:
     static bool previewTorrent(const std::string& path, TorrentPreview& preview,
                                std::string& error);
 
+    bool importTorrent(const std::string& path, TransferMode mode,
+                       std::string& taskId, std::string& error);
     bool importTorrent(const std::string& path, std::string& taskId,
-                       std::string& error);
+                       std::string& error) {
+        return importTorrent(path, TransferMode::DownloadOnly, taskId, error);
+    }
     bool pause(const std::string& taskId);
     bool resume(const std::string& taskId);
     bool retry(const std::string& taskId);

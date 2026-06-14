@@ -5,3 +5,9 @@
 [submodule "vendor/glm"]
 	path = vendor/glm
 	url = https://github.com/g-truc/glm.git
+[submodule "vendor/zstd"]
+	path = vendor/zstd
+	url = https://github.com/facebook/zstd.git
+[submodule "vendor/libnx-ext"]
+	path = vendor/libnx-ext
+	url = https://github.com/XorTroll/libnx-ext.git

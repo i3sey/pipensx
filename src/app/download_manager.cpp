@@ -1,4 +1,6 @@
 #include "download_manager.hpp"
+#include "../install/install_backend.hpp"
+#include "../install/package_stream.hpp"
 
 extern "C" {
 #include "../core/bencode.h"
@@ -12,12 +14,32 @@ extern "C" {
 #include <cstring>
 #include <dirent.h>
 #include <fstream>
+#include <functional>
+#include <map>
+#include <memory>
 #include <sstream>
 #include <sys/stat.h>
 #include <unistd.h>
 
 namespace pipensx {
 namespace {
+
+bool hasPackageExtension(const std::string& path) {
+    std::string lower = path;
+    for (char& c : lower)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return lower.size() >= 4 &&
+           (lower.substr(lower.size() - 4) == ".nsp" ||
+            lower.substr(lower.size() - 4) == ".nsz");
+}
+
+bool isCompressedPackage(const std::string& path) {
+    std::string lower = path;
+    for (char& c : lower)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return lower.size() >= 4 &&
+           lower.substr(lower.size() - 4) == ".nsz";
+}
 
 bool makeDirectories(const std::string& path) {
     if (path.empty())
@@ -127,11 +149,208 @@ bool dictionaryInteger(const be_node_t& dict, const char* key,
     return true;
 }
 
+class PackageCoordinator {
+public:
+    using Progress = std::function<void(
+        uint32_t, const std::string&, uint64_t, uint64_t, DownloadStatus)>;
+
+    PackageCoordinator(const metainfo_t& metainfo, std::string taskId,
+                       const std::string& workingRoot,
+                       uint32_t completedPackages, Progress progress)
+        : metainfo_(metainfo), taskId_(std::move(taskId)),
+          backend_(install::createInstallBackend(workingRoot)),
+          completedPackages_(completedPackages),
+          progress_(std::move(progress)) {
+        configs_.resize(metainfo_.num_files);
+        uint32_t ordinal = 0;
+        for (uint32_t i = 0; i < metainfo_.num_files; ++i) {
+            if (!hasPackageExtension(metainfo_.files[i].path)) {
+                configs_[i].mode = STORAGE_FILE_DISK;
+                continue;
+            }
+            packageOrdinals_[i] = ordinal;
+            configs_[i].mode = ordinal < completedPackages_
+                             ? STORAGE_FILE_SKIP : STORAGE_FILE_SINK;
+            configs_[i].sink = &PackageCoordinator::sinkThunk;
+            configs_[i].user = this;
+            ++ordinal;
+        }
+        packageCount_ = ordinal;
+        buildPieceOrder();
+    }
+
+    ~PackageCoordinator() {
+        if (backend_)
+            backend_->rollbackPackage();
+    }
+
+    const std::vector<storage_file_config_t>& configs() const {
+        return configs_;
+    }
+    const std::vector<uint32_t>& pieceOrder() const { return pieceOrder_; }
+    uint32_t packageCount() const { return packageCount_; }
+    const std::string& error() const { return error_; }
+
+private:
+    static int sinkThunk(void* user, uint32_t fileIndex,
+                         int64_t fileOffset, const uint8_t* data, size_t size) {
+        return static_cast<PackageCoordinator*>(user)->sink(
+            fileIndex, fileOffset, data, size) ? 1 : 0;
+    }
+
+    bool sink(uint32_t fileIndex, int64_t fileOffset,
+              const uint8_t* data, size_t size) {
+        auto ordinalIt = packageOrdinals_.find(fileIndex);
+        if (fileIndex >= metainfo_.num_files ||
+            ordinalIt == packageOrdinals_.end()) {
+            error_ = "Invalid package stream routing.";
+            return false;
+        }
+        if (ordinalIt->second < completedPackages_)
+            return true;
+        const mi_file_t& file = metainfo_.files[fileIndex];
+        if (!stream_) {
+            if (fileOffset != 0) {
+                error_ = "Package stream did not start at offset zero.";
+                return false;
+            }
+            if (!backend_->beginPackage(taskId_, file.path)) {
+                error_ = backend_->error();
+                return false;
+            }
+            activeFileIndex_ = fileIndex;
+            currentPackage_ = file.path;
+            install::PackageCallbacks callbacks;
+            callbacks.beginFile = [this](const std::string& name,
+                                         uint64_t fileSize) {
+                bool ok = backend_->beginFile(name, fileSize);
+                if (!ok)
+                    error_ = backend_->error();
+                return ok;
+            };
+            callbacks.setFileSize = [this](uint64_t fileSize) {
+                bool ok = backend_->setFileSize(fileSize);
+                if (!ok)
+                    error_ = backend_->error();
+                return ok;
+            };
+            callbacks.writeFile = [this](const uint8_t* bytes,
+                                         size_t byteCount) {
+                bool ok = backend_->writeFile(bytes, byteCount);
+                if (ok) {
+                    progress_(completedPackages_, currentPackage_,
+                              backend_->installedBytes(),
+                              backend_->expectedBytes(),
+                              DownloadStatus::Installing);
+                } else {
+                    error_ = backend_->error();
+                }
+                return ok;
+            };
+            callbacks.endFile = [this] {
+                bool ok = backend_->endFile();
+                if (!ok)
+                    error_ = backend_->error();
+                return ok;
+            };
+            stream_ = std::make_unique<install::PackageStream>(
+                isCompressedPackage(file.path), std::move(callbacks));
+            progress_(completedPackages_, currentPackage_, 0, 0,
+                      DownloadStatus::Installing);
+        }
+        if (activeFileIndex_ != fileIndex ||
+            static_cast<uint64_t>(fileOffset) != stream_->consumed()) {
+            error_ = "Package bytes arrived out of order.";
+            return false;
+        }
+        if (!stream_->write(data, size)) {
+            if (error_.empty())
+                error_ = stream_->error();
+            log_msg("[install] stream error package='%s' offset=%lld: %s\n",
+                    currentPackage_.c_str(),
+                    static_cast<long long>(fileOffset), error_.c_str());
+            backend_->rollbackPackage();
+            return false;
+        }
+        if (static_cast<uint64_t>(fileOffset) + size ==
+            static_cast<uint64_t>(file.length)) {
+            progress_(completedPackages_, currentPackage_,
+                      backend_->installedBytes(),
+                      backend_->expectedBytes(),
+                      DownloadStatus::Committing);
+            if (!stream_->finish()) {
+                if (error_.empty())
+                    error_ = stream_->error();
+                log_msg("[install] finalize error package='%s': %s\n",
+                        currentPackage_.c_str(), error_.c_str());
+                backend_->rollbackPackage();
+                return false;
+            }
+            bool alreadyInstalled = false;
+            if (!backend_->commitPackage(alreadyInstalled)) {
+                error_ = backend_->error();
+                log_msg("[install] commit error package='%s': %s\n",
+                        currentPackage_.c_str(), error_.c_str());
+                backend_->rollbackPackage();
+                return false;
+            }
+            ++completedPackages_;
+            stream_.reset();
+            activeFileIndex_ = UINT32_MAX;
+            progress_(completedPackages_, currentPackage_, 0, 0,
+                      DownloadStatus::Downloading);
+            currentPackage_.clear();
+        }
+        return true;
+    }
+
+    void buildPieceOrder() {
+        std::vector<uint8_t> added(metainfo_.num_pieces, 0);
+        for (const auto& item : packageOrdinals_) {
+            if (item.second < completedPackages_)
+                continue;
+            const mi_file_t& file = metainfo_.files[item.first];
+            if (file.length <= 0)
+                continue;
+            uint32_t first = static_cast<uint32_t>(
+                file.offset / metainfo_.piece_length);
+            uint32_t last = static_cast<uint32_t>(
+                (file.offset + file.length - 1) / metainfo_.piece_length);
+            for (uint32_t piece = first;
+                 piece <= last && piece < metainfo_.num_pieces; ++piece) {
+                if (!added[piece]) {
+                    added[piece] = 1;
+                    pieceOrder_.push_back(piece);
+                }
+            }
+        }
+        for (uint32_t piece = 0; piece < metainfo_.num_pieces; ++piece)
+            if (!added[piece])
+                pieceOrder_.push_back(piece);
+    }
+
+    const metainfo_t& metainfo_;
+    std::string taskId_;
+    std::unique_ptr<install::InstallBackend> backend_;
+    std::vector<storage_file_config_t> configs_;
+    std::vector<uint32_t> pieceOrder_;
+    std::map<uint32_t, uint32_t> packageOrdinals_;
+    std::unique_ptr<install::PackageStream> stream_;
+    uint32_t completedPackages_ = 0;
+    uint32_t packageCount_ = 0;
+    uint32_t activeFileIndex_ = UINT32_MAX;
+    std::string currentPackage_;
+    std::string error_;
+    Progress progress_;
+};
+
 DownloadStatus persistedStatus(const std::string& value) {
     if (value == "paused")
         return DownloadStatus::Paused;
     if (value == "completed")
         return DownloadStatus::Completed;
+    if (value == "installed")
+        return DownloadStatus::Installed;
     if (value == "error")
         return DownloadStatus::Error;
     return DownloadStatus::Queued;
@@ -141,9 +360,19 @@ std::string persistedStatus(DownloadStatus status) {
     switch (status) {
         case DownloadStatus::Paused: return "paused";
         case DownloadStatus::Completed: return "completed";
+        case DownloadStatus::Installed: return "installed";
         case DownloadStatus::Error: return "error";
         default: return "queued";
     }
+}
+
+TransferMode persistedMode(const std::string& value) {
+    return value == "install" ? TransferMode::StreamInstall
+                              : TransferMode::DownloadOnly;
+}
+
+const char* persistedMode(TransferMode mode) {
+    return mode == TransferMode::StreamInstall ? "install" : "download";
 }
 
 } // namespace
@@ -156,6 +385,9 @@ const char* statusName(DownloadStatus status) {
         case DownloadStatus::Paused: return "Paused";
         case DownloadStatus::Verifying: return "Verifying";
         case DownloadStatus::Completed: return "Completed";
+        case DownloadStatus::Installing: return "Installing";
+        case DownloadStatus::Committing: return "Committing";
+        case DownloadStatus::Installed: return "Installed";
         case DownloadStatus::Error: return "Error";
         case DownloadStatus::Removing: return "Removing";
     }
@@ -196,16 +428,24 @@ bool DownloadManager::previewTorrent(const std::string& path,
     preview.totalBytes = static_cast<uint64_t>(metainfo.total_length);
     preview.fileCount = metainfo.num_files;
     preview.trackerCount = metainfo.num_trackers;
+    for (uint32_t i = 0; i < metainfo.num_files; ++i)
+        if (hasPackageExtension(metainfo.files[i].path))
+            ++preview.packageCount;
     metainfo_free(&metainfo);
     return true;
 }
 
 bool DownloadManager::importTorrent(const std::string& path,
+                                    TransferMode mode,
                                     std::string& taskId,
                                     std::string& error) {
     TorrentPreview preview;
     if (!previewTorrent(path, preview, error))
         return false;
+    if (mode == TransferMode::StreamInstall && preview.packageCount == 0) {
+        error = "This torrent does not contain NSP or NSZ packages.";
+        return false;
+    }
 
     std::lock_guard<std::mutex> lock(mutex_);
     if (findLocked(preview.infoHash)) {
@@ -233,6 +473,8 @@ bool DownloadManager::importTorrent(const std::string& path,
     task.dataPath = dataPath;
     task.totalBytes = preview.totalBytes;
     task.status = DownloadStatus::Queued;
+    task.mode = mode;
+    task.packageCount = preview.packageCount;
     tasks_.push_back(std::move(task));
     taskId = preview.infoHash;
 
@@ -254,6 +496,8 @@ bool DownloadManager::pause(const std::string& taskId) {
     if (task->status != DownloadStatus::Queued &&
         task->status != DownloadStatus::Checking &&
         task->status != DownloadStatus::Downloading &&
+        task->status != DownloadStatus::Installing &&
+        task->status != DownloadStatus::Committing &&
         task->status != DownloadStatus::Verifying)
         return false;
     task->status = DownloadStatus::Paused;
@@ -307,6 +551,8 @@ bool DownloadManager::remove(const std::string& taskId, bool deleteData,
 
     if (task->status == DownloadStatus::Checking ||
         task->status == DownloadStatus::Downloading ||
+        task->status == DownloadStatus::Installing ||
+        task->status == DownloadStatus::Committing ||
         task->status == DownloadStatus::Verifying) {
         task->status = DownloadStatus::Removing;
         task->error = deleteData ? "delete-data" : "keep-data";
@@ -338,13 +584,16 @@ bool DownloadManager::saveLocked(std::string& error) const {
         state << "5:error" << bstr(task.error);
         state << "2:id" << bstr(task.id);
         state << "8:metainfo" << bstr(task.metainfoPath);
+        state << "4:mode" << bstr(persistedMode(task.mode));
         state << "4:name" << bstr(task.name);
+        state << "13:package-count" << bint(task.packageCount);
+        state << "13:packages-done" << bint(task.packagesInstalled);
         state << "6:status" << bstr(persistedStatus(task.status));
         state << "5:total" << bint(task.totalBytes);
         state << "e";
     }
     state << "e";
-    state << "7:versioni1e";
+    state << "7:versioni2e";
     state << "e";
 
     std::string temporary = statePath_ + ".tmp";
@@ -384,7 +633,8 @@ void DownloadManager::load() {
     be_node_t version;
     if (!be_dict_get(root.buf, root.buf + root.raw_len, "version", 7,
                      &version) ||
-        version.type != BE_INT || version.ival != 1)
+        version.type != BE_INT ||
+        (version.ival != 1 && version.ival != 2))
         return;
 
     be_node_t list;
@@ -408,8 +658,21 @@ void DownloadManager::load() {
             !dictionaryInteger(item, "total", task.totalBytes))
             continue;
         dictionaryString(item, "error", task.error);
+        if (version.ival >= 2) {
+            std::string mode;
+            uint64_t packageCount = 0;
+            uint64_t packagesDone = 0;
+            if (dictionaryString(item, "mode", mode))
+                task.mode = persistedMode(mode);
+            if (dictionaryInteger(item, "package-count", packageCount))
+                task.packageCount = static_cast<uint32_t>(packageCount);
+            if (dictionaryInteger(item, "packages-done", packagesDone))
+                task.packagesInstalled =
+                    static_cast<uint32_t>(packagesDone);
+        }
         task.status = persistedStatus(status);
-        if (task.status == DownloadStatus::Completed)
+        if (task.status == DownloadStatus::Completed ||
+            task.status == DownloadStatus::Installed)
             task.completedBytes = task.totalBytes;
         if (!isManagedChild(torrentRoot_, task.metainfoPath) ||
             !isManagedChild(downloadRoot_, task.dataPath)) {
@@ -472,6 +735,8 @@ void DownloadManager::workerMain() {
         std::string activeId;
         std::string metainfoPath;
         std::string dataPath;
+        TransferMode mode = TransferMode::DownloadOnly;
+        uint32_t packagesInstalled = 0;
         {
             std::unique_lock<std::mutex> lock(mutex_);
             condition_.wait(lock, [this] {
@@ -490,6 +755,8 @@ void DownloadManager::workerMain() {
                     activeId = task.id;
                     metainfoPath = task.metainfoPath;
                     dataPath = task.dataPath;
+                    mode = task.mode;
+                    packagesInstalled = task.packagesInstalled;
                     break;
                 }
             }
@@ -507,8 +774,45 @@ void DownloadManager::workerMain() {
             continue;
         }
 
-        torrent_t* torrent = torrent_create(&metainfo, 51413,
-                                            dataPath.c_str());
+        std::unique_ptr<PackageCoordinator> coordinator;
+        torrent_options_t options {};
+        if (mode == TransferMode::StreamInstall) {
+            coordinator = std::make_unique<PackageCoordinator>(
+                metainfo, activeId, rootPath_, packagesInstalled,
+                [this, activeId](uint32_t completed,
+                                 const std::string& package,
+                                 uint64_t installed, uint64_t expected,
+                                 DownloadStatus status) {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    DownloadTask* task = findLocked(activeId);
+                    if (!task || task->status == DownloadStatus::Removing ||
+                        task->status == DownloadStatus::Paused)
+                        return;
+                    bool packageCommitted =
+                        completed != task->packagesInstalled;
+                    task->packagesInstalled = completed;
+                    task->currentPackage = package;
+                    task->installedBytes = installed;
+                    task->installTotalBytes = expected;
+                    task->status = status;
+                    if (packageCommitted) {
+                        std::string ignored;
+                        saveLocked(ignored);
+                    }
+                });
+            options.files = coordinator->configs().data();
+            options.strict_piece_order = 1;
+            options.piece_order = coordinator->pieceOrder().data();
+            options.piece_order_count =
+                static_cast<uint32_t>(coordinator->pieceOrder().size());
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (DownloadTask* task = findLocked(activeId))
+                task->packageCount = coordinator->packageCount();
+        }
+
+        torrent_t* torrent = torrent_create_ex(
+            &metainfo, 51413, dataPath.c_str(),
+            mode == TransferMode::StreamInstall ? &options : nullptr);
         if (!torrent) {
             std::lock_guard<std::mutex> lock(mutex_);
             if (DownloadTask* task = findLocked(activeId)) {
@@ -549,22 +853,40 @@ void DownloadManager::workerMain() {
                 task->piecesTotal = stat.num_pieces;
                 task->piecesVerified = stat.num_pieces_verified;
                 if (task->status != DownloadStatus::Removing &&
-                    task->status != DownloadStatus::Paused) {
+                    task->status != DownloadStatus::Paused &&
+                    task->status != DownloadStatus::Installing &&
+                    task->status != DownloadStatus::Committing) {
                     if (stat.verifying)
                         task->status = DownloadStatus::Verifying;
                     else
                         task->status = DownloadStatus::Downloading;
                 }
-                if (!running) {
-                    task->status = DownloadStatus::Completed;
+                if (running < 0) {
+                    task->status = DownloadStatus::Error;
+                    task->error = coordinator && !coordinator->error().empty()
+                                ? coordinator->error()
+                                : torrent_last_error(torrent);
+                    task->speedBytesPerSecond = 0;
+                } else if (!running) {
+                    if (mode == TransferMode::StreamInstall &&
+                        task->packagesInstalled != task->packageCount) {
+                        task->status = DownloadStatus::Error;
+                        task->error =
+                            "Torrent ended before all packages were installed.";
+                    } else {
+                        task->status =
+                            mode == TransferMode::StreamInstall
+                            ? DownloadStatus::Installed
+                            : DownloadStatus::Completed;
+                        finished = true;
+                    }
                     task->completedBytes = task->totalBytes;
                     task->speedBytesPerSecond = 0;
-                    finished = true;
                     log_msg("[manager] completed %s, destroying torrent\n",
                             activeId.c_str());
                 }
             }
-            if (!running)
+            if (running <= 0)
                 break;
         }
 

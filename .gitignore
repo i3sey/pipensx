@@ -2,6 +2,7 @@
 /pipensx
 /tests/test_piece
 /tests/test_manager
+/tests/test_package_stream
 *.elf
 *.nro
 *.nacp

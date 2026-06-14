@@ -7,6 +7,13 @@
 typedef struct torrent torrent_t;
 
 typedef struct {
+    const storage_file_config_t *files; /* metainfo.num_files entries */
+    int strict_piece_order;
+    const uint32_t *piece_order;
+    uint32_t piece_order_count;
+} torrent_options_t;
+
+typedef struct {
     uint32_t num_pieces_done;
     uint32_t num_pieces;
     uint32_t num_peers;
@@ -30,6 +37,10 @@ typedef struct {
 torrent_t *torrent_create(const metainfo_t *mi,
                           uint16_t listen_port,
                           const char *outdir);
+torrent_t *torrent_create_ex(const metainfo_t *mi,
+                             uint16_t listen_port,
+                             const char *outdir,
+                             const torrent_options_t *options);
 void        torrent_destroy(torrent_t *t);
 
 /*
@@ -40,3 +51,4 @@ int  torrent_tick(torrent_t *t);
 
 /* Fill stats for UI */
 void torrent_stat(const torrent_t *t, torrent_stat_t *s);
+const char *torrent_last_error(const torrent_t *t);

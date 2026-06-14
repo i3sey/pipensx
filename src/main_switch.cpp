@@ -9,6 +9,7 @@ extern "C" {
 #include <curl/curl.h>
 #include <dirent.h>
 #include <switch.h>
+#include <switch-ipcext.h>
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -22,6 +23,7 @@ extern "C" {
 using pipensx::DownloadManager;
 using pipensx::DownloadStatus;
 using pipensx::DownloadTask;
+using pipensx::TransferMode;
 
 namespace {
 
@@ -147,7 +149,16 @@ public:
 
         std::string meta = formatBytes(task.completedBytes) + " / " +
                            formatBytes(task.totalBytes);
-        if (task.status == DownloadStatus::Downloading)
+        if (task.status == DownloadStatus::Installing ||
+            task.status == DownloadStatus::Committing) {
+            meta = "Package " + std::to_string(task.packagesInstalled + 1) +
+                   " / " + std::to_string(task.packageCount);
+            if (!task.currentPackage.empty())
+                meta += "   " + task.currentPackage;
+        } else if (task.status == DownloadStatus::Installed) {
+            meta = std::to_string(task.packagesInstalled) +
+                   " package(s) installed to SD";
+        } else if (task.status == DownloadStatus::Downloading)
             meta += "   " + formatSpeed(task.speedBytesPerSecond) +
                     "   " + std::to_string(task.peers) + " peers";
         else if (task.status == DownloadStatus::Queued)
@@ -220,6 +231,7 @@ public:
 
         status_ = addLine(content, 27);
         progress_ = addLine(content, 22);
+        install_ = addLine(content, 20);
         transfer_ = addLine(content, 22);
         peers_ = addLine(content, 22);
         pieces_ = addLine(content, 22);
@@ -250,6 +262,7 @@ public:
                 else if (task->status == DownloadStatus::Queued ||
                          task->status == DownloadStatus::Checking ||
                          task->status == DownloadStatus::Downloading ||
+                         task->status == DownloadStatus::Installing ||
                          task->status == DownloadStatus::Verifying)
                     manager_->pause(taskId_);
                 refresh();
@@ -302,6 +315,21 @@ private:
         progress_->setText("Progress: " + std::to_string(percent) + "%  (" +
                            formatBytes(task->completedBytes) + " / " +
                            formatBytes(task->totalBytes) + ")");
+        if (task->mode == TransferMode::StreamInstall) {
+            int installPercent = task->installTotalBytes
+                ? static_cast<int>(task->installedBytes * 100 /
+                                   task->installTotalBytes)
+                : 0;
+            install_->setText(
+                "Install: " + std::to_string(task->packagesInstalled) +
+                " / " + std::to_string(task->packageCount) + " packages" +
+                (task->currentPackage.empty()
+                    ? ""
+                    : "   " + task->currentPackage + "   " +
+                      std::to_string(installPercent) + "%"));
+        } else {
+            install_->setText("");
+        }
         transfer_->setText("Download speed: " +
                            formatSpeed(task->speedBytesPerSecond));
         peers_->setText("Peers: " + std::to_string(task->peers) +
@@ -341,6 +369,7 @@ private:
     brls::AppletFrame* frame_;
     brls::Label* status_;
     brls::Label* progress_;
+    brls::Label* install_;
     brls::Label* transfer_;
     brls::Label* peers_;
     brls::Label* pieces_;
@@ -429,17 +458,29 @@ public:
                            formatBytes(preview.totalBytes) + "   " +
                            std::to_string(preview.fileCount) + " files   " +
                            std::to_string(preview.trackerCount) + " trackers";
+        if (preview.packageCount)
+            text += "\n" + std::to_string(preview.packageCount) +
+                    " installable NSP/NSZ package(s)";
         auto* dialog = new brls::Dialog(text);
-        dialog->addButton("Add to queue", [this, path = entry.path] {
+        auto add = [this, path = entry.path](TransferMode mode) {
             std::string id;
             std::string error;
-            if (manager_->importTorrent(path, id, error)) {
+            if (manager_->importTorrent(path, mode, id, error)) {
                 brls::Application::notify("Torrent added to the queue.");
                 brls::Application::popActivity();
             } else {
                 brls::Application::notify(error);
             }
-        });
+        };
+        if (preview.packageCount) {
+            dialog->addButton("Install to SD while downloading",
+                [add] { add(TransferMode::StreamInstall); });
+            dialog->addButton("Download only",
+                [add] { add(TransferMode::DownloadOnly); });
+        } else {
+            dialog->addButton("Add to queue",
+                [add] { add(TransferMode::DownloadOnly); });
+        }
         dialog->addButton("Cancel", [] {});
         dialog->open();
     }
@@ -615,6 +656,13 @@ private:
                     changed = true;
                     break;
                 }
+                if (next[i].packagesInstalled !=
+                        tasks_[i].packagesInstalled ||
+                    next[i].installedBytes != tasks_[i].installedBytes ||
+                    next[i].currentPackage != tasks_[i].currentPackage) {
+                    changed = true;
+                    break;
+                }
             }
         }
         if (!changed)
@@ -667,6 +715,8 @@ void DownloadDataSource::setTasks(std::vector<DownloadTask> tasks) {
         {"Active", [](DownloadStatus s) {
             return s == DownloadStatus::Checking ||
                    s == DownloadStatus::Downloading ||
+                   s == DownloadStatus::Installing ||
+                   s == DownloadStatus::Committing ||
                    s == DownloadStatus::Verifying;
         }},
         {"Queue", [](DownloadStatus s) {
@@ -676,7 +726,8 @@ void DownloadDataSource::setTasks(std::vector<DownloadTask> tasks) {
             return s == DownloadStatus::Paused;
         }},
         {"Completed", [](DownloadStatus s) {
-            return s == DownloadStatus::Completed;
+            return s == DownloadStatus::Completed ||
+                   s == DownloadStatus::Installed;
         }},
         {"Errors", [](DownloadStatus s) {
             return s == DownloadStatus::Error;
@@ -821,6 +872,9 @@ int main(int, char**) {
     });
 
     bool curlReady = false;
+    bool ncmReady = false;
+    bool nsReady = false;
+    bool esReady = false;
     try {
         log_msg("[startup] applet_type=%d operation_mode=%d\n",
                 (int)appletGetAppletType(), (int)appletGetOperationMode());
@@ -846,6 +900,20 @@ int main(int, char**) {
             throw std::runtime_error("curl_global_init failed");
         }
         curlReady = true;
+
+        startupStage("installer services");
+        Result rc = ncmInitialize();
+        if (R_FAILED(rc))
+            throw std::runtime_error("ncmInitialize failed");
+        ncmReady = true;
+        rc = nsInitialize();
+        if (R_FAILED(rc))
+            throw std::runtime_error("nsInitialize failed");
+        nsReady = true;
+        rc = esInitialize();
+        if (R_FAILED(rc))
+            throw std::runtime_error("esInitialize failed");
+        esReady = true;
 
         startupStage("Borealis Application::init");
         brls::Platform::APP_LOCALE_DEFAULT = brls::LOCALE_EN_US;
@@ -884,6 +952,12 @@ int main(int, char**) {
     }
 
     startupStage("cleanup");
+    if (esReady)
+        esExit();
+    if (nsReady)
+        nsExit();
+    if (ncmReady)
+        ncmExit();
     if (curlReady)
         curl_global_cleanup();
     if (gBorealisLog) {

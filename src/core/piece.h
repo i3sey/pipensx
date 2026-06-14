@@ -27,9 +27,17 @@ typedef struct {
     uint32_t          num_done;
     uint32_t          num_pieces;
     uint8_t          *have_bf; /* bitfield of completed pieces (num_pieces bits) */
+    uint8_t          *available_bf; /* pieces retained on disk for upload */
+    int               strict_order;
+    uint32_t         *piece_order;
+    uint32_t          piece_order_count;
 } piece_mgr_t;
 
 piece_mgr_t *piece_mgr_create(const metainfo_t *mi, storage_t *store);
+piece_mgr_t *piece_mgr_create_ex(const metainfo_t *mi, storage_t *store,
+                                 int strict_order,
+                                 const uint32_t *piece_order,
+                                 uint32_t piece_order_count);
 void         piece_mgr_destroy(piece_mgr_t *pm);
 
 /* Mark a block as requested by a peer (sets PS_PENDING) */

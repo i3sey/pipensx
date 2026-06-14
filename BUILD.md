@@ -40,8 +40,9 @@ build-switch/pipensx.nro
 Run the NRO through hbmenu title override. Album applet mode is intentionally
 rejected before Borealis/deko3d initialization.
 
-The build embeds the pinned Borealis UI library, GLM headers, deko3d shaders,
-system-status images, Material icon font, application icon, and NACP metadata.
+The build embeds the pinned Borealis UI library, zstd decompressor, libnx-ext
+IPC helpers, GLM headers, deko3d shaders, system-status images, Material icon
+font, application icon, and NACP metadata.
 
 Use a non-default CMake executable when required:
 
@@ -51,7 +52,8 @@ CMAKE_BIN=/path/to/cmake ./scripts/build_switch.sh
 
 ## PC Core And Tests
 
-Requirements: GCC/G++, Make, pthreads, and libcurl development files.
+Requirements: GCC/G++, Make, pthreads, libcurl, zstd, and OpenSSL development
+files.
 
 ```bash
 make -f Makefile.pc
@@ -66,4 +68,4 @@ The PC command-line client remains available for torrent-engine development:
 
 The test suite covers piece verification, disk-corruption recovery, restart
 resume, metainfo path safety, queue persistence, duplicate import, pause/resume,
-and both task/data removal.
+task/data removal, incremental PFS0 parsing, and real zstd NCZ reconstruction.

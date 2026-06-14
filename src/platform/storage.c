@@ -15,11 +15,13 @@ struct file_handle {
     FILE *fp;
     int64_t offset; /* start in torrent flat space */
     int64_t length;
+    storage_file_config_t config;
 };
 
 struct storage {
     struct file_handle *files;
     uint32_t num_files;
+    char error[256];
 };
 
 /* mkdir -p equivalent (portable) */
@@ -36,7 +38,8 @@ static void mkdirs(const char *path) {
     mkdir(tmp, 0755);
 }
 
-storage_t *storage_open(const metainfo_t *mi, const char *outdir) {
+storage_t *storage_open_ex(const metainfo_t *mi, const char *outdir,
+                           const storage_file_config_t *configs) {
     storage_t *s = (storage_t*)calloc(1, sizeof(*s));
     if (!s) return NULL;
     s->num_files = mi->num_files;
@@ -48,6 +51,12 @@ storage_t *storage_open(const metainfo_t *mi, const char *outdir) {
         struct file_handle *fh = &s->files[i];
         fh->offset = mf->offset;
         fh->length = mf->length;
+        fh->config.mode = STORAGE_FILE_DISK;
+        if (configs)
+            fh->config = configs[i];
+
+        if (fh->config.mode != STORAGE_FILE_DISK)
+            continue;
 
         /* Build full path — use snprintf with guaranteed NUL */
         char fullpath[512];
@@ -89,6 +98,10 @@ storage_t *storage_open(const metainfo_t *mi, const char *outdir) {
     return s;
 }
 
+storage_t *storage_open(const metainfo_t *mi, const char *outdir) {
+    return storage_open_ex(mi, outdir, NULL);
+}
+
 static int find_file(storage_t *s, int64_t off,
                      int64_t len __attribute__((unused)),
                      struct file_handle **fh_out, int64_t *local_off) {
@@ -110,9 +123,27 @@ int storage_write(storage_t *s, int64_t offset, const uint8_t *data, size_t len)
         int64_t local_off;
         if (!find_file(s, offset + (int64_t)written, (int64_t)(len - written), &fh, &local_off))
             return 0;
-        if (!fh->fp) return 0;
         size_t can_write = (size_t)(fh->length - local_off);
         if (can_write > len - written) can_write = len - written;
+        if (fh->config.mode == STORAGE_FILE_SKIP) {
+            written += can_write;
+            continue;
+        }
+        if (fh->config.mode == STORAGE_FILE_SINK) {
+            if (!fh->config.sink ||
+                !fh->config.sink(fh->config.user,
+                                 (uint32_t)(fh - s->files), local_off,
+                                 data + written, can_write)) {
+                if (!s->error[0])
+                    snprintf(s->error, sizeof(s->error),
+                             "stream sink rejected file %u",
+                             (unsigned)(fh - s->files));
+                return 0;
+            }
+            written += can_write;
+            continue;
+        }
+        if (!fh->fp) return 0;
         if (fseek(fh->fp, (long)local_off, SEEK_SET) != 0) return 0;
         size_t w = fwrite(data + written, 1, can_write, fh->fp);
         if (w != can_write) return 0;
@@ -124,7 +155,8 @@ int storage_write(storage_t *s, int64_t offset, const uint8_t *data, size_t len)
 int storage_flush(storage_t *s) {
     if (!s) return 0;
     for (uint32_t i = 0; i < s->num_files; i++) {
-        if (!s->files[i].fp || fflush(s->files[i].fp) != 0)
+        if (s->files[i].config.mode == STORAGE_FILE_DISK &&
+            (!s->files[i].fp || fflush(s->files[i].fp) != 0))
             return 0;
     }
     return 1;
@@ -137,7 +169,7 @@ int storage_read(storage_t *s, int64_t offset, uint8_t *data, size_t len) {
         int64_t local_off;
         if (!find_file(s, offset + (int64_t)done, (int64_t)(len - done), &fh, &local_off))
             return -1;
-        if (!fh->fp) return -1;
+        if (fh->config.mode != STORAGE_FILE_DISK || !fh->fp) return -1;
         size_t can_read = (size_t)(fh->length - local_off);
         if (can_read > len - done) can_read = len - done;
         clearerr(fh->fp);
@@ -147,6 +179,37 @@ int storage_read(storage_t *s, int64_t offset, uint8_t *data, size_t len) {
         if (r != can_read) return -1;
     }
     return (int)done;
+}
+
+static int range_has_mode(storage_t *s, int64_t offset, size_t len,
+                          storage_file_mode_t mode) {
+    size_t done = 0;
+    while (done < len) {
+        struct file_handle *fh;
+        int64_t local_off;
+        if (!find_file(s, offset + (int64_t)done,
+                       (int64_t)(len - done), &fh, &local_off))
+            return 0;
+        if (fh->config.mode != mode)
+            return 0;
+        size_t count = (size_t)(fh->length - local_off);
+        if (count > len - done)
+            count = len - done;
+        done += count;
+    }
+    return 1;
+}
+
+int storage_range_readable(storage_t *s, int64_t offset, size_t len) {
+    return range_has_mode(s, offset, len, STORAGE_FILE_DISK);
+}
+
+int storage_range_skipped(storage_t *s, int64_t offset, size_t len) {
+    return range_has_mode(s, offset, len, STORAGE_FILE_SKIP);
+}
+
+const char *storage_error(storage_t *s) {
+    return s && s->error[0] ? s->error : "";
 }
 
 void storage_close(storage_t *s) {

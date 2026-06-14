@@ -13,7 +13,7 @@ set(BRLS_UNITY_BUILD OFF CACHE BOOL "" FORCE)
 include(${BOREALIS_LIBRARY}/cmake/commonOption.cmake)
 include(${BOREALIS_LIBRARY}/cmake/toolchain.cmake)
 
-project(pipensx VERSION 0.2.0 LANGUAGES C CXX)
+project(pipensx VERSION 0.3.0 LANGUAGES C CXX)
 
 set(APP_TITLE "pipensx")
 set(APP_AUTHOR "pipensx")
@@ -24,6 +24,21 @@ add_subdirectory(vendor/borealis/library)
 target_include_directories(borealis PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/glm
 )
+
+file(GLOB ZSTD_COMMON_SOURCES CONFIGURE_DEPENDS
+    vendor/zstd/lib/common/*.c
+)
+file(GLOB ZSTD_DECOMPRESS_SOURCES CONFIGURE_DEPENDS
+    vendor/zstd/lib/decompress/*.c
+)
+add_library(pipensx_zstd STATIC
+    ${ZSTD_COMMON_SOURCES}
+    ${ZSTD_DECOMPRESS_SOURCES}
+)
+target_include_directories(pipensx_zstd PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/vendor/zstd/lib
+)
+target_compile_definitions(pipensx_zstd PRIVATE ZSTD_MULTITHREAD=0)
 
 set(CORE_SOURCES
     src/core/sha1.c
@@ -44,7 +59,11 @@ set(CORE_SOURCES
 set(APP_SOURCES
     ${CORE_SOURCES}
     src/app/download_manager.cpp
+    src/install/package_stream.cpp
+    src/install/install_backend_switch.cpp
     src/main_switch.cpp
+    vendor/libnx-ext/libnx-ipcext/source/es.c
+    vendor/libnx-ext/libnx-ipcext/source/ns-ext.c
     ${BOREALIS_LIBRARY}/lib/platforms/switch/switch_wrapper.c
 )
 
@@ -59,6 +78,9 @@ target_include_directories(pipensx PRIVATE
     src/core
     src/platform
     vendor
+    vendor/zstd/lib
+    vendor/libnx-ext/libnx-ext/include
+    vendor/libnx-ext/libnx-ipcext/include
 )
 target_compile_definitions(pipensx PRIVATE
     __SWITCH__
@@ -73,6 +95,7 @@ target_compile_options(pipensx PRIVATE
 )
 target_link_libraries(pipensx PRIVATE
     borealis
+    pipensx_zstd
     curl
     mbedtls
     mbedx509

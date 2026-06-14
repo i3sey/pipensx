@@ -55,6 +55,8 @@ struct torrent {
     int      startup_verifying;
     uint32_t final_verify_index;
     int      final_verifying;
+    int      fatal_error;
+    char     error[256];
 
 #ifdef __SWITCH__
     struct UPNPUrls upnp_urls;
@@ -97,7 +99,13 @@ static void cb_block(void *ud, uint32_t idx, uint32_t off,
     torrent_t *t = (torrent_t*)ud;
     t->downloaded   += len;
     t->speed_bytes  += len;
-    piece_mgr_got_block(t->pm, idx, off, data, len);
+    if (piece_mgr_got_block(t->pm, idx, off, data, len) < 0) {
+        t->fatal_error = 1;
+        snprintf(t->error, sizeof(t->error), "%s",
+                 storage_error(t->store)[0]
+                    ? storage_error(t->store)
+                    : "piece processing failed");
+    }
 }
 
 static void cb_have(void *ud, uint32_t idx) {
@@ -130,7 +138,7 @@ static void fill_ctx(torrent_t *t, peer_ctx_t *ctx) {
     ctx->peer_id     = t->peer_id;
     ctx->num_pieces  = t->mi.num_pieces;
     ctx->bf_bytes    = (t->mi.num_pieces + 7) / 8;
-    ctx->our_bf      = t->pm->have_bf;
+    ctx->our_bf      = t->pm->available_bf;
     ctx->listen_port = t->listen_port;
 }
 
@@ -229,9 +237,10 @@ static int check_completion(torrent_t *t) {
 }
 
 /* ---- create ---- */
-torrent_t *torrent_create(const metainfo_t *mi,
-                          uint16_t listen_port,
-                          const char *outdir) {
+torrent_t *torrent_create_ex(const metainfo_t *mi,
+                             uint16_t listen_port,
+                             const char *outdir,
+                             const torrent_options_t *options) {
     torrent_t *t = (torrent_t*)calloc(1, sizeof(*t));
     if (!t) return NULL;
     memcpy(&t->mi, mi, sizeof(*mi));
@@ -242,10 +251,14 @@ torrent_t *torrent_create(const metainfo_t *mi,
     memcpy(t->peer_id, "-PN0001-", 8);
     rand_bytes(t->peer_id + 8, 12);
 
-    t->store = storage_open(mi, outdir);
+    t->store = storage_open_ex(mi, outdir,
+                               options ? options->files : NULL);
     if (!t->store) { free(t); return NULL; }
 
-    t->pm = piece_mgr_create(mi, t->store);
+    t->pm = piece_mgr_create_ex(mi, t->store,
+                                options ? options->strict_piece_order : 0,
+                                options ? options->piece_order : NULL,
+                                options ? options->piece_order_count : 0);
     if (!t->pm) { storage_close(t->store); free(t); return NULL; }
 
     /* DHT */
@@ -302,6 +315,12 @@ torrent_t *torrent_create(const metainfo_t *mi,
     return t;
 }
 
+torrent_t *torrent_create(const metainfo_t *mi,
+                          uint16_t listen_port,
+                          const char *outdir) {
+    return torrent_create_ex(mi, listen_port, outdir, NULL);
+}
+
 void torrent_destroy(torrent_t *t) {
     if (!t) return;
     log_msg("[torrent] destroy begin\n");
@@ -344,6 +363,8 @@ void torrent_destroy(torrent_t *t) {
 }
 
 int torrent_tick(torrent_t *t) {
+    if (t->fatal_error)
+        return -1;
     if (t->startup_verifying) {
         if (t->startup_verify_index < t->pm->num_pieces) {
             piece_mgr_check_existing(t->pm, t->startup_verify_index);
@@ -474,6 +495,10 @@ int torrent_tick(torrent_t *t) {
     }
 
     return check_completion(t);
+}
+
+const char *torrent_last_error(const torrent_t *t) {
+    return t && t->error[0] ? t->error : "";
 }
 
 void torrent_stat(const torrent_t *t, torrent_stat_t *s) {

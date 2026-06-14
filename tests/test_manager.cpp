@@ -12,6 +12,7 @@ extern "C" {
 
 using pipensx::DownloadManager;
 using pipensx::DownloadStatus;
+using pipensx::TransferMode;
 
 static std::string makeTorrent(const std::string& directory) {
     const std::string payload = "test payload";
@@ -21,7 +22,7 @@ static std::string makeTorrent(const std::string& directory) {
 
     std::string torrent = "d8:announce14:http://tracker4:infod6:lengthi";
     torrent += std::to_string(payload.size());
-    torrent += "e4:name8:test.bin12:piece lengthi";
+    torrent += "e4:name11:package.nsp12:piece lengthi";
     torrent += std::to_string(payload.size());
     torrent += "e6:pieces20:";
     torrent.append(reinterpret_cast<const char*>(digest), 20);
@@ -47,15 +48,19 @@ int main() {
         DownloadManager manager(appRoot, false);
         pipensx::TorrentPreview preview;
         assert(DownloadManager::previewTorrent(source, preview, error));
-        assert(preview.name == "test.bin");
+        assert(preview.name == "package.nsp");
         assert(preview.totalBytes == 12);
-        assert(manager.importTorrent(source, taskId, error));
+        assert(preview.packageCount == 1);
+        assert(manager.importTorrent(
+            source, TransferMode::StreamInstall, taskId, error));
         assert(taskId.size() == 40);
         assert(!manager.importTorrent(source, taskId, error));
 
         auto tasks = manager.snapshot();
         assert(tasks.size() == 1);
         assert(tasks[0].status == DownloadStatus::Queued);
+        assert(tasks[0].mode == TransferMode::StreamInstall);
+        assert(tasks[0].packageCount == 1);
         assert(manager.pause(tasks[0].id));
         assert(manager.snapshot()[0].status == DownloadStatus::Paused);
         assert(manager.resume(tasks[0].id));
@@ -68,6 +73,8 @@ int main() {
         assert(tasks.size() == 1);
         assert(tasks[0].id == taskId);
         assert(tasks[0].status == DownloadStatus::Queued);
+        assert(tasks[0].mode == TransferMode::StreamInstall);
+        assert(tasks[0].packageCount == 1);
         assert(manager.remove(taskId, true, error));
         assert(manager.snapshot().empty());
     }

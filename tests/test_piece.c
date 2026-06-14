@@ -235,6 +235,66 @@ static void test_existing_piece_scan_restores_progress(void) {
     cleanup_output(outdir, "resume.bin");
 }
 
+struct sink_capture {
+    uint8_t *data;
+    size_t size;
+    size_t written;
+};
+
+static int capture_sink(void *user, uint32_t file_index, int64_t file_offset,
+                        const uint8_t *data, size_t size) {
+    struct sink_capture *capture = (struct sink_capture*)user;
+    assert(file_index == 0);
+    assert(file_offset == (int64_t)capture->written);
+    assert(capture->written + size <= capture->size);
+    memcpy(capture->data + capture->written, data, size);
+    capture->written += size;
+    return 1;
+}
+
+static void test_stream_sink_piece_is_verified_without_disk_readback(void) {
+    const size_t piece_length = 2 * BLOCK_SIZE;
+    char outdir[] = "/tmp/pipensx-piece-sink-XXXXXX";
+    char path[512];
+    assert(mkdtemp(outdir));
+
+    metainfo_t mi;
+    init_single_file_metainfo(&mi, "package.nsp", piece_length, piece_length);
+    uint8_t *expected = (uint8_t*)malloc(piece_length);
+    uint8_t *captured = (uint8_t*)calloc(piece_length, 1);
+    assert(expected && captured);
+    fill_pattern(expected, piece_length, 113);
+    sha1(expected, piece_length, mi.piece_hashes);
+
+    struct sink_capture capture = {captured, piece_length, 0};
+    storage_file_config_t config = {
+        STORAGE_FILE_SINK, capture_sink, &capture
+    };
+    storage_t *store = storage_open_ex(&mi, outdir, &config);
+    assert(store);
+    piece_mgr_t *pm = piece_mgr_create(&mi, store);
+    assert(pm);
+
+    assert(piece_mgr_got_block(pm, 0, 0, expected, BLOCK_SIZE) == 1);
+    assert(piece_mgr_got_block(pm, 0, BLOCK_SIZE,
+                               expected + BLOCK_SIZE, BLOCK_SIZE) == 2);
+    assert(capture.written == piece_length);
+    assert(memcmp(captured, expected, piece_length) == 0);
+    assert(piece_mgr_verify_all(pm));
+    assert(bf_has(pm->have_bf, 0));
+    assert(!bf_has(pm->available_bf, 0));
+
+    snprintf(path, sizeof(path), "%s/%s", outdir, "package.nsp");
+    assert(access(path, F_OK) != 0);
+
+    piece_mgr_destroy(pm);
+    storage_close(store);
+    free(captured);
+    free(expected);
+    free_test_metainfo(&mi);
+    rmdir(outdir);
+}
+
 static void test_metainfo_path_safety(void) {
     assert(metainfo_path_is_safe("file.bin"));
     assert(metainfo_path_is_safe("folder/file.bin"));
@@ -251,6 +311,7 @@ int main(void) {
     test_hash_mismatch_resets_all_blocks();
     test_final_verify_requeues_disk_corruption();
     test_existing_piece_scan_restores_progress();
+    test_stream_sink_piece_is_verified_without_disk_readback();
     test_metainfo_path_safety();
     puts("piece tests passed");
     return 0;

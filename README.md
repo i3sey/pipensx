@@ -17,6 +17,9 @@ light/dark themes, and handheld/docked scaling.
 - removal with either preserved or deleted download data
 - duplicate detection by info hash
 - tracker, DHT, and PEX peer discovery
+- selectable download-only or streaming install mode
+- sequential `.nsp` and `.nsz` install to SD while torrent pieces arrive
+- application, update, and DLC packages; exact installed versions are skipped
 
 Magnet links and per-file selection are not supported.
 
@@ -58,9 +61,22 @@ SD:/switch/pipensx/pipensx.log
 
 The file picker also supports touch input.
 
+For torrents containing NSP/NSZ files, the confirmation dialog offers:
+
+- `Install to SD while downloading`: package files are reconstructed and
+  committed directly to Nintendo content storage without retaining a complete
+  package file.
+- `Download only`: all files are stored normally under `downloads/`.
+
 ## Platform Notes
 
 - Only one torrent downloads at a time; queued tasks start automatically.
+- Package files are processed in torrent file order. Ordinary files in the
+  same torrent are downloaded normally.
+- A package interrupted before its commit restarts from its beginning. Packages
+  already committed before the interruption remain installed and are skipped.
+- Stream install supports full Application, Patch, and AddOnContent metadata.
+  DeltaFragment and system-title packages are rejected.
 - Existing files are checked piece by piece before a task starts or resumes.
 - FAT32 cannot store an individual file larger than 4 GiB. Use exFAT for such
   torrents.
@@ -68,3 +84,6 @@ The file picker also supports touch input.
   a physical Switch.
 
 See [BUILD.md](BUILD.md) for build instructions.
+
+Third-party components and format references are listed in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
