@@ -88,6 +88,14 @@ bool parseContentId(const std::string& name, NcmContentId& id) {
     return true;
 }
 
+bool containsContentId(const std::vector<NcmContentId>& ids,
+                       const NcmContentId& id) {
+    for (const auto& candidate : ids)
+        if (std::memcmp(candidate.c, id.c, sizeof(id.c)) == 0)
+            return true;
+    return false;
+}
+
 std::string hexBytes(const uint8_t* data, size_t size) {
     static constexpr char Digits[] = "0123456789abcdef";
     std::string result(size * 2, '0');
@@ -120,8 +128,10 @@ struct Content {
 struct ParsedMeta {
     NcmExtPackagedContentMetaHeader header {};
     std::vector<uint8_t> extendedHeader;
-    std::vector<NcmPackagedContentInfo> contents;
+    std::vector<NcmPackagedContentInfo> contents;   // delta fragments removed
     std::vector<NcmContentMetaInfo> metaInfos;
+    std::vector<NcmContentId> deltaIds;             // content ids we skip
+    uint32_t extendedDataSize = 0;                  // patch delta history size
 };
 
 bool readPackagedMeta(const std::string& ncaPath, ParsedMeta& out,
@@ -207,18 +217,34 @@ bool readPackagedMeta(const std::string& ncaPath, ParsedMeta& out,
     out.extendedHeader.assign(cursor,
         cursor + out.header.extended_header_size);
     cursor += out.header.extended_header_size;
-    out.contents.resize(out.header.content_count);
-    std::memcpy(out.contents.data(), cursor,
-                out.contents.size() * sizeof(NcmPackagedContentInfo));
-    cursor += out.contents.size() * sizeof(NcmPackagedContentInfo);
+    std::vector<NcmPackagedContentInfo> packaged(out.header.content_count);
+    std::memcpy(packaged.data(), cursor,
+                packaged.size() * sizeof(NcmPackagedContentInfo));
+    cursor += packaged.size() * sizeof(NcmPackagedContentInfo);
     out.metaInfos.resize(out.header.content_meta_count);
     std::memcpy(out.metaInfos.data(), cursor,
                 out.metaInfos.size() * sizeof(NcmContentMetaInfo));
-    for (const auto& content : out.contents) {
-        if (content.info.content_type == NcmContentType_DeltaFragment) {
-            error = "Delta-only content is not supported.";
-            return false;
-        }
+
+    // Update packages bundle delta fragments alongside the full NCAs. They are
+    // not installed for a fresh, full install (matching Awoo/Tinfoil); keep
+    // them out of the registered content and the stored meta, but remember
+    // their ids so the streamed placeholders can be discarded.
+    for (const auto& content : packaged) {
+        if (content.info.content_type == NcmContentType_DeltaFragment)
+            out.deltaIds.push_back(content.info.content_id);
+        else
+            out.contents.push_back(content);
+    }
+
+    // A patch meta carries delta history as extended data after the records.
+    // The installed meta reserves the same space (zero-filled) so ns accepts
+    // it, even though we drop the deltas themselves.
+    if (type == NcmContentMetaType_Patch &&
+        out.extendedHeader.size() >= sizeof(NcmPatchMetaExtendedHeader)) {
+        NcmPatchMetaExtendedHeader patchHeader {};
+        std::memcpy(&patchHeader, out.extendedHeader.data(),
+                    sizeof(patchHeader));
+        out.extendedDataSize = patchHeader.extended_data_size;
     }
     return true;
 }
@@ -319,14 +345,6 @@ public:
             return false;
         }
         hashActive_ = true;
-        if (current_->meta) {
-            metaPath_ = tempDirectory_ + "/" + nameForPath(current_->name);
-            metaFile_ = std::fopen(metaPath_.c_str(), "w+b");
-            if (!metaFile_) {
-                error_ = "Unable to create temporary CNMT NCA.";
-                return false;
-            }
-        }
         return true;
     }
 
@@ -360,10 +378,6 @@ public:
                 errorResult("Unable to write content placeholder", rc);
                 return false;
             }
-        }
-        if (metaFile_ && std::fwrite(data, 1, size, metaFile_) != size) {
-            error_ = "Unable to write temporary CNMT NCA.";
-            return false;
         }
         if (mbedtls_sha256_update_ret(&sha_, data, size) != 0) {
             error_ = "Unable to update NCA hash.";
@@ -420,15 +434,6 @@ public:
                     hexBytes(current_->id.c, sizeof(current_->id.c)).c_str(),
                     hexBytes(digest.data(), sizeof(current_->id.c)).c_str());
         }
-        if (metaFile_) {
-            if (std::fflush(metaFile_) != 0 ||
-                std::fclose(metaFile_) != 0) {
-                metaFile_ = nullptr;
-                error_ = "Unable to flush temporary CNMT NCA.";
-                return false;
-            }
-            metaFile_ = nullptr;
-        }
         log_msg("[install] NCA complete '%s' bytes=%llu\n",
                 current_->name.c_str(),
                 static_cast<unsigned long long>(current_->written));
@@ -439,12 +444,38 @@ public:
 
     bool commitPackage(bool& alreadyInstalled) override {
         alreadyInstalled = false;
-        if (!active_ || current_ || metaPath_.empty()) {
+        Content* metaContent = nullptr;
+        for (auto& content : contents_)
+            if (content.meta)
+                metaContent = &content;
+        if (!active_ || current_ || !metaContent) {
             error_ = "Package does not contain a complete CNMT NCA.";
             return false;
         }
+
+        // FS resolves NCAs by their content-storage path, not by the libnx
+        // "sdmc:" devoptab path of the on-disk copy. Register the CNMT NCA so we
+        // can mount it through NCM. On an already-installed title the CNMT NCA's
+        // content id already exists (existing == true), so we never register here.
+        if (!metaContent->existing && !metaContent->registered) {
+            Result rc = ncmContentStorageRegister(
+                &storage_, &metaContent->id, &metaContent->placeholder);
+            if (R_FAILED(rc)) {
+                errorResult("Unable to register CNMT NCA", rc);
+                return false;
+            }
+            metaContent->registered = true;
+        }
+        char metaNcaPath[FS_MAX_PATH];
+        Result rc = ncmContentStorageGetPath(&storage_, metaNcaPath,
+                                             sizeof(metaNcaPath),
+                                             &metaContent->id);
+        if (R_FAILED(rc)) {
+            errorResult("Unable to resolve CNMT NCA path", rc);
+            return false;
+        }
         ParsedMeta meta;
-        if (!readPackagedMeta(metaPath_, meta, error_))
+        if (!readPackagedMeta(metaNcaPath, meta, error_))
             return false;
         log_msg("[install] CNMT parsed title=%016llx version=%u contents=%u\n",
                 static_cast<unsigned long long>(meta.header.id),
@@ -458,7 +489,7 @@ public:
             {}
         };
         bool exists = false;
-        Result rc = ncmContentMetaDatabaseHas(&database_, &exists, &key);
+        rc = ncmContentMetaDatabaseHas(&database_, &exists, &key);
         if (R_FAILED(rc)) {
             errorResult("Unable to query installed title metadata", rc);
             return false;
@@ -489,8 +520,14 @@ public:
         }
 
         for (auto& content : contents_) {
-            if (content.existing)
+            if (content.existing || content.registered)
                 continue;
+            if (containsContentId(meta.deltaIds, content.id)) {
+                // Delta fragment: streamed but not installed; drop placeholder.
+                ncmContentStorageDeletePlaceHolder(&storage_,
+                                                   &content.placeholder);
+                continue;
+            }
             rc = ncmContentStorageRegister(&storage_, &content.id,
                                            &content.placeholder);
             if (R_FAILED(rc)) {
@@ -500,14 +537,6 @@ public:
             content.registered = true;
         }
 
-        Content* metaContent = nullptr;
-        for (auto& content : contents_)
-            if (content.meta)
-                metaContent = &content;
-        if (!metaContent) {
-            error_ = "Installed package has no meta content.";
-            return false;
-        }
         NcmContentInfo self {};
         self.content_id = metaContent->id;
         self.content_type = NcmContentType_Meta;
@@ -518,7 +547,8 @@ public:
                           (meta.contents.size() + 1) *
                               sizeof(NcmContentInfo) +
                           meta.metaInfos.size() *
-                              sizeof(NcmContentMetaInfo);
+                              sizeof(NcmContentMetaInfo) +
+                          meta.extendedDataSize;
         std::vector<uint8_t> installMeta(metaSize);
         auto* header = reinterpret_cast<NcmContentMetaHeader*>(
             installMeta.data());
@@ -601,10 +631,6 @@ public:
     }
 
     void rollbackPackage() override {
-        if (metaFile_) {
-            std::fclose(metaFile_);
-            metaFile_ = nullptr;
-        }
         if (hashActive_) {
             mbedtls_sha256_free(&sha_);
             hashActive_ = false;
@@ -641,14 +667,6 @@ public:
     const std::string& error() const override { return error_; }
 
 private:
-    static std::string nameForPath(const std::string& value) {
-        std::string result = value;
-        for (char& c : result)
-            if (c == '/' || c == '\\')
-                c = '_';
-        return result;
-    }
-
     void errorResult(const char* message, Result rc) {
         char text[160];
         std::snprintf(text, sizeof(text), "%s (0x%08x).", message, rc);
@@ -691,7 +709,6 @@ private:
         auxiliary_.clear();
         auxiliaryKind_.clear();
         tempDirectory_.clear();
-        metaPath_.clear();
         expected_ = 0;
         installed_ = 0;
         ignoredRemaining_ = 0;
@@ -704,7 +721,6 @@ private:
     std::string root_;
     std::string packageName_;
     std::string tempDirectory_;
-    std::string metaPath_;
     std::string currentName_;
     std::string auxiliaryKind_;
     std::string error_;
@@ -717,7 +733,6 @@ private:
     std::vector<uint8_t> auxiliary_;
     std::vector<NsExtContentStorageMetaKey> previousRecords_;
     Content* current_ = nullptr;
-    FILE* metaFile_ = nullptr;
     mbedtls_sha256_context sha_ {};
     uint64_t auxiliaryExpected_ = 0;
     uint64_t ignoredRemaining_ = 0;
