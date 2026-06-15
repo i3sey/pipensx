@@ -1,4 +1,5 @@
 #include "app/download_manager.hpp"
+#include "app/rutracker_client.hpp"
 #include "platform/switch_crashlog.h"
 
 extern "C" {
@@ -11,18 +12,25 @@ extern "C" {
 #include <switch.h>
 #include <switch-ipcext.h>
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <exception>
+#include <fstream>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <sys/stat.h>
+#include <unistd.h>
 #include <vector>
 
 using pipensx::DownloadManager;
 using pipensx::DownloadStatus;
 using pipensx::DownloadTask;
+using pipensx::RuTrackerClient;
+using pipensx::RuTrackerConfig;
+using pipensx::RuTrackerResult;
 using pipensx::TransferMode;
 
 namespace {
@@ -611,6 +619,11 @@ public:
                 timer_.setPeriod(750);
             }
         });
+        registerAction("Add torrent", brls::BUTTON_X, [this](brls::View*) {
+            openFilePicker();
+            return true;
+        });
+        startRefreshing();
     }
 
     ~MainView() override {
@@ -804,11 +817,337 @@ void DownloadDataSource::didSelectRowAt(brls::RecyclerFrame*,
         owner_->openFilePicker();
 }
 
+// ---------------------------------------------------------------------------
+// RuTracker search tab
+// ---------------------------------------------------------------------------
+
+class ResultCell : public brls::RecyclerCell {
+public:
+    ResultCell() {
+        setFocusable(true);
+        setAxis(brls::Axis::COLUMN);
+        setPadding(12, 20, 12, 20);
+        setHeight(82);
+        title_ = new brls::Label();
+        title_->setSingleLine(true);
+        title_->setFontSize(21);
+        sub_ = new brls::Label();
+        sub_->setSingleLine(true);
+        sub_->setFontSize(16);
+        sub_->setMarginTop(6);
+        sub_->setTextColor(nvgRGB(160, 160, 170));
+        addView(title_);
+        addView(sub_);
+    }
+
+    void setResult(const RuTrackerResult& result) {
+        title_->setText(result.title);
+        std::string sub = result.sizeText.empty() ? "" : result.sizeText + "   ";
+        sub += "S: " + std::to_string(result.seeders) +
+               "   L: " + std::to_string(result.leechers);
+        sub_->setText(sub);
+    }
+
+private:
+    brls::Label* title_;
+    brls::Label* sub_;
+};
+
+class TextMessageCell : public brls::RecyclerCell {
+public:
+    TextMessageCell() {
+        setFocusable(true);
+        setHeight(100);
+        setPadding(24);
+        label_ = new brls::Label();
+        label_->setFontSize(20);
+        addView(label_);
+    }
+    void setMessage(const std::string& text) { label_->setText(text); }
+
+private:
+    brls::Label* label_;
+};
+
+class SearchView;
+
+class SearchDataSource : public brls::RecyclerDataSource {
+public:
+    explicit SearchDataSource(SearchView* owner) : owner_(owner) {}
+
+    void setResults(std::vector<RuTrackerResult> results) {
+        results_ = std::move(results);
+    }
+    void setMessage(const std::string& message) { message_ = message; }
+    bool empty() const { return results_.empty(); }
+    const RuTrackerResult* resultAt(int row) const {
+        if (row < 0 || static_cast<size_t>(row) >= results_.size())
+            return nullptr;
+        return &results_[static_cast<size_t>(row)];
+    }
+
+    int numberOfRows(brls::RecyclerFrame*, int) override {
+        return results_.empty() ? 1 : static_cast<int>(results_.size());
+    }
+    brls::RecyclerCell* cellForRow(brls::RecyclerFrame* recycler,
+                                    brls::IndexPath index) override {
+        if (results_.empty()) {
+            auto* cell = static_cast<TextMessageCell*>(
+                recycler->dequeueReusableCell("Message"));
+            cell->setMessage(message_);
+            return cell;
+        }
+        auto* cell = static_cast<ResultCell*>(
+            recycler->dequeueReusableCell("Result"));
+        cell->setResult(results_[static_cast<size_t>(index.row)]);
+        return cell;
+    }
+    void didSelectRowAt(brls::RecyclerFrame*, brls::IndexPath index) override;
+
+private:
+    SearchView* owner_;
+    std::vector<RuTrackerResult> results_;
+    std::string message_;
+};
+
+class SearchView : public brls::Box {
+public:
+    SearchView(DownloadManager* manager, RuTrackerClient* client)
+        : brls::Box(brls::Axis::COLUMN), manager_(manager), client_(client),
+          alive_(std::make_shared<std::atomic<bool>>(true)) {
+        recycler_ = new brls::RecyclerFrame();
+        recycler_->setGrow(1);
+        recycler_->setPadding(6, 32, 6, 32);
+        recycler_->estimatedRowHeight = 82;
+        recycler_->registerCell("Result", [] { return new ResultCell(); });
+        recycler_->registerCell("Message",
+            [] { return new TextMessageCell(); });
+        dataSource_ = new SearchDataSource(this);
+        dataSource_->setMessage(initialMessage());
+        recycler_->setDataSource(dataSource_);
+        addView(recycler_);
+
+        registerAction("Search", brls::BUTTON_X, [this](brls::View*) {
+            openSearchKeyboard();
+            return true;
+        });
+        registerAction("Settings", brls::BUTTON_Y, [this](brls::View*) {
+            openSettings();
+            return true;
+        });
+    }
+
+    ~SearchView() override { alive_->store(false); }
+
+    void openSearchKeyboard() {
+        if (busy_)
+            return;
+        brls::Application::getImeManager()->openForText(
+            [this](std::string text) {
+                if (!text.empty())
+                    doSearch(text);
+            },
+            "Search rutracker", "", 256, lastQuery_,
+            brls::KEYBOARD_DISABLE_NONE);
+    }
+
+    void onResultSelected(int row) {
+        const RuTrackerResult* picked = dataSource_->resultAt(row);
+        if (!picked || busy_)
+            return;
+        RuTrackerResult result = *picked;
+        busy_ = true;
+        brls::Application::notify("Downloading torrent...");
+        auto alive = alive_;
+        RuTrackerClient* client = client_;
+        std::string tmp = manager_->rootPath() + "/_rt_tmp.torrent";
+        brls::async([this, alive, client, result, tmp] {
+            std::vector<uint8_t> bytes;
+            std::string err;
+            bool ok = client->downloadTorrent(result.topicId, bytes, err);
+            if (ok) {
+                std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+                if (out)
+                    out.write(reinterpret_cast<const char*>(bytes.data()),
+                              static_cast<std::streamsize>(bytes.size()));
+                if (!out) {
+                    ok = false;
+                    err = "Unable to write the downloaded torrent.";
+                }
+            }
+            brls::sync([this, alive, ok, err, tmp,
+                        title = result.title] {
+                if (!alive->load())
+                    return;
+                busy_ = false;
+                if (!ok) {
+                    brls::Application::notify(err);
+                    return;
+                }
+                presentImport(tmp, title);
+            });
+        });
+    }
+
+private:
+    enum class Field { Username, Password, Site };
+
+    std::string initialMessage() const {
+        if (!client_->hasCredentials())
+            return "Press Y to set your rutracker login, then X to search.";
+        return "Press X to search rutracker.";
+    }
+
+    void showMessage(const std::string& text) {
+        dataSource_->setResults({});
+        dataSource_->setMessage(text);
+        recycler_->reloadData();
+    }
+
+    void doSearch(const std::string& query) {
+        if (busy_)
+            return;
+        busy_ = true;
+        lastQuery_ = query;
+        showMessage("Searching...");
+        auto alive = alive_;
+        RuTrackerClient* client = client_;
+        brls::async([this, alive, client, query] {
+            std::vector<RuTrackerResult> results;
+            std::string err;
+            bool ok = client->search(query, results, err);
+            brls::sync([this, alive, ok, results, err] {
+                if (!alive->load())
+                    return;
+                busy_ = false;
+                if (!ok) {
+                    showMessage(err);
+                    brls::Application::notify(err);
+                    return;
+                }
+                dataSource_->setResults(results);
+                if (results.empty())
+                    dataSource_->setMessage("Nothing found.");
+                recycler_->reloadData();
+            });
+        });
+    }
+
+    void presentImport(const std::string& path, const std::string& fallback) {
+        pipensx::TorrentPreview preview;
+        std::string error;
+        if (!DownloadManager::previewTorrent(path, preview, error)) {
+            brls::Application::notify(error);
+            ::unlink(path.c_str());
+            return;
+        }
+        std::string name = preview.name.empty() ? fallback : preview.name;
+        std::string text = name + "\n" + formatBytes(preview.totalBytes) +
+                           "   " + std::to_string(preview.fileCount) +
+                           " files   " + std::to_string(preview.trackerCount) +
+                           " trackers";
+        if (preview.packageCount)
+            text += "\n" + std::to_string(preview.packageCount) +
+                    " installable NSP/NSZ package(s)";
+        auto* dialog = new brls::Dialog(text);
+        auto add = [this, path](TransferMode mode) {
+            std::string id;
+            std::string err;
+            if (manager_->importTorrent(path, mode, id, err))
+                brls::Application::notify("Torrent added to the queue.");
+            else
+                brls::Application::notify(err);
+            ::unlink(path.c_str());
+        };
+        if (preview.packageCount) {
+            dialog->addButton("Install to SD while downloading",
+                [add] { add(TransferMode::StreamInstall); });
+            dialog->addButton("Download only",
+                [add] { add(TransferMode::DownloadOnly); });
+        } else {
+            dialog->addButton("Add to queue",
+                [add] { add(TransferMode::DownloadOnly); });
+        }
+        dialog->addButton("Cancel", [path] { ::unlink(path.c_str()); });
+        dialog->open();
+    }
+
+    void openSettings() {
+        const RuTrackerConfig& cfg = client_->config();
+        auto* dialog = new brls::Dialog(
+            std::string("RuTracker settings\n\nSite: ") + cfg.baseUrl +
+            "\nLogin: " + (cfg.username.empty() ? "(not set)" : cfg.username) +
+            "\nPassword: " + (cfg.password.empty() ? "(not set)" : "********"));
+        dialog->addButton("Set login", [this] { editField(Field::Username); });
+        dialog->addButton("Set password",
+            [this] { editField(Field::Password); });
+        dialog->addButton("Set site", [this] { editField(Field::Site); });
+        dialog->open();
+    }
+
+    void editField(Field field) {
+        const RuTrackerConfig& cfg = client_->config();
+        std::string header, initial;
+        switch (field) {
+            case Field::Username:
+                header = "RuTracker login";
+                initial = cfg.username;
+                break;
+            case Field::Password:
+                header = "RuTracker password";
+                initial = "";
+                break;
+            case Field::Site:
+                header = "Site URL (forum root)";
+                initial = cfg.baseUrl;
+                break;
+        }
+        brls::Application::getImeManager()->openForText(
+            [this, field](std::string text) {
+                if (text.empty())
+                    return;
+                switch (field) {
+                    case Field::Username: client_->setUsername(text); break;
+                    case Field::Password: client_->setPassword(text); break;
+                    case Field::Site: client_->setBaseUrl(text); break;
+                }
+                client_->saveConfig();
+                if (dataSource_->empty()) {
+                    dataSource_->setMessage(initialMessage());
+                    recycler_->reloadData();
+                }
+                brls::Application::notify("Saved.");
+            },
+            header, "", 256, initial, brls::KEYBOARD_DISABLE_NONE);
+    }
+
+    DownloadManager* manager_;
+    RuTrackerClient* client_;
+    brls::RecyclerFrame* recycler_;
+    SearchDataSource* dataSource_;
+    std::shared_ptr<std::atomic<bool>> alive_;
+    std::string lastQuery_;
+    bool busy_ = false;
+};
+
+void SearchDataSource::didSelectRowAt(brls::RecyclerFrame*,
+                                      brls::IndexPath index) {
+    if (results_.empty())
+        owner_->openSearchKeyboard();
+    else
+        owner_->onResultSelected(index.row);
+}
+
 class MainActivity : public brls::Activity {
 public:
-    explicit MainActivity(DownloadManager* manager) : manager_(manager) {
-        mainView_ = new MainView(manager);
-        frame_ = new brls::AppletFrame(mainView_);
+    MainActivity(DownloadManager* manager, RuTrackerClient* client)
+        : manager_(manager), client_(client) {
+        auto* tabs = new brls::TabFrame();
+        tabs->addTab("Downloads", [manager] { return new MainView(manager); });
+        tabs->addTab("Search", [manager, client] {
+            return new SearchView(manager, client);
+        });
+        frame_ = new brls::AppletFrame(tabs);
         frame_->setTitle("pipensx");
     }
 
@@ -817,32 +1156,17 @@ public:
     }
 
     void onContentAvailable() override {
-        mainView_->startRefreshing();
-        registerAction("Add torrent", brls::BUTTON_X,
-            [this](brls::View*) {
-                mainView_->openFilePicker();
-                return true;
-            });
         registerAction("Exit", brls::BUTTON_START,
             [this](brls::View*) {
                 startupStage("quit requested by Plus");
-                mainView_->stopRefreshing();
                 brls::Application::quit();
                 return true;
             });
     }
 
-    void onPause() override {
-        mainView_->stopRefreshing();
-    }
-
-    void onResume() override {
-        mainView_->startRefreshing(true);
-    }
-
 private:
     DownloadManager* manager_;
-    MainView* mainView_;
+    RuTrackerClient* client_;
     brls::AppletFrame* frame_;
 };
 
@@ -927,8 +1251,11 @@ int main(int, char**) {
         startupStage("DownloadManager construction");
         DownloadManager manager("sdmc:/switch/pipensx");
 
+        startupStage("RuTrackerClient construction");
+        RuTrackerClient rutracker("sdmc:/switch/pipensx");
+
         startupStage("MainActivity construction");
-        auto* activity = new MainActivity(&manager);
+        auto* activity = new MainActivity(&manager, &rutracker);
 
         startupStage("push MainActivity");
         brls::Application::pushActivity(activity);

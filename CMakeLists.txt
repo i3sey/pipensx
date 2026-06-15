@@ -59,6 +59,7 @@ set(CORE_SOURCES
 set(APP_SOURCES
     ${CORE_SOURCES}
     src/app/download_manager.cpp
+    src/app/rutracker_client.cpp
     src/install/package_stream.cpp
     src/install/install_backend_switch.cpp
     src/main_switch.cpp

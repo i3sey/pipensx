@@ -33,6 +33,7 @@ OBJS = $(SRCS:.c=.o)
 TEST_TARGET = tests/test_piece
 MANAGER_TEST_TARGET = tests/test_manager
 PACKAGE_TEST_TARGET = tests/test_package_stream
+RUTRACKER_TEST_TARGET = tests/test_rutracker
 TEST_SRCS = \
     tests/test_piece.c       \
     src/core/sha1.c          \
@@ -71,14 +72,25 @@ $(PACKAGE_TEST_TARGET): tests/test_package_stream.cpp \
 		src/install/package_stream.o src/install/install_backend_pc.o
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(INSTALL_LDFLAGS)
 
-test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET)
+src/app/rutracker_client.o: src/app/rutracker_client.cpp
+	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
+
+$(RUTRACKER_TEST_TARGET): tests/test_rutracker.cpp \
+		src/app/rutracker_client.o src/core/util.o
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
+
+test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
+		$(RUTRACKER_TEST_TARGET)
 	./$(TEST_TARGET)
 	./$(MANAGER_TEST_TARGET)
 	./$(PACKAGE_TEST_TARGET)
+	./$(RUTRACKER_TEST_TARGET)
 
 clean:
-	rm -f $(OBJS) src/app/download_manager.o src/install/*.o \
+	rm -f $(OBJS) src/app/download_manager.o src/app/rutracker_client.o \
+		src/install/*.o \
 		tests/test_manager.o $(TARGET) $(TEST_TARGET) \
-		$(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET)
+		$(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
+		$(RUTRACKER_TEST_TARGET)
 
 .PHONY: all test clean
