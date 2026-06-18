@@ -17,6 +17,10 @@ light/dark themes, and handheld/docked scaling.
 - removal with either preserved or deleted download data
 - duplicate detection by info hash
 - tracker, DHT, and PEX peer discovery
+- built-in Nintendo Switch catalog sourced from `bqio/switch-dumps`
+- game metadata enrichment from a compact TitleDB-derived index
+- magnet metadata resolution directly from RuTracker peers (BEP 9/10)
+- automatic AntiZapret fallback for RuTracker tracker announces
 - selectable download-only or streaming install mode
 - sequential `.nsp` and `.nsz` install to SD while torrent pieces arrive
 - application, update, and DLC packages; exact installed versions are skipped
@@ -48,6 +52,10 @@ SD:/switch/pipensx/queue.bencode
 SD:/switch/pipensx/torrents/
 SD:/switch/pipensx/downloads/
 SD:/switch/pipensx/dht_nodes.bin
+SD:/switch/pipensx/catalog/catalog.json
+SD:/switch/pipensx/catalog/metadata/
+SD:/switch/pipensx/catalog/images/
+SD:/switch/pipensx/antizapret.pac
 SD:/switch/pipensx/pipensx.log
 ```
 
@@ -68,9 +76,31 @@ For torrents containing NSP/NSZ files, the confirmation dialog offers:
   package file.
 - `Download only`: all files are stored normally under `downloads/`.
 
+## Catalog
+
+The `Catalog` tab works without a RuTracker account or access to the RuTracker
+website. A catalog snapshot is bundled in the NRO. Press `R` to update it from
+the latest `bqio/switch-dumps` GitHub release, `X` to filter by title, and `Y`
+to change sorting.
+
+Most catalog rows are matched to Nintendo Switch game metadata during the
+build from TitleDB. Selecting a row opens a details view with canonical game
+name, publisher/date/categories, description, and cached remote artwork when a
+safe match exists. Rows without a match still resolve and download by their
+RuTracker release data.
+
+Selecting an entry announces its magnet info hash to the included
+`bt*.t-ru.org` tracker and obtains the original torrent metadata from peers.
+The metadata SHA-1 is checked before the existing torrent preview and queue
+flow is opened.
+
 ## Platform Notes
 
 - Only one torrent downloads at a time; queued tasks start automatically.
+- RuTracker tracker announces connect directly first and use the supported
+  AntiZapret HTTP proxy only as a fallback.
+- The catalog continues using its cached or bundled snapshot when GitHub is
+  unavailable.
 - Package files are processed in torrent file order. Ordinary files in the
   same torrent are downloaded normally.
 - A package interrupted before its commit restarts from its beginning. Packages

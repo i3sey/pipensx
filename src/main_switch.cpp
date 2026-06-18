@@ -1,5 +1,8 @@
 #include "app/download_manager.hpp"
-#include "app/rutracker_client.hpp"
+#include "app/catalog_service.hpp"
+#include "app/magnet_resolver.hpp"
+#include "app/game_metadata_service.hpp"
+#include "core/antizapret.h"
 #include "platform/switch_crashlog.h"
 
 extern "C" {
@@ -16,11 +19,13 @@ extern "C" {
 #include <cctype>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <exception>
 #include <fstream>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <vector>
@@ -28,14 +33,17 @@ extern "C" {
 using pipensx::DownloadManager;
 using pipensx::DownloadStatus;
 using pipensx::DownloadTask;
-using pipensx::RuTrackerClient;
-using pipensx::RuTrackerConfig;
-using pipensx::RuTrackerResult;
+using pipensx::CatalogEntry;
+using pipensx::CatalogService;
+using pipensx::GameMetadata;
+using pipensx::GameMetadataService;
+using pipensx::MagnetResolver;
 using pipensx::TransferMode;
 
 namespace {
 
 FILE* gBorealisLog = nullptr;
+std::atomic<uint32_t> gCatalogTempSerial{0};
 
 void startupStage(const char* stage) {
     switch_crashlog_stage(stage);
@@ -818,38 +826,62 @@ void DownloadDataSource::didSelectRowAt(brls::RecyclerFrame*,
 }
 
 // ---------------------------------------------------------------------------
-// RuTracker search tab
+// RuTracker catalog tab
 // ---------------------------------------------------------------------------
 
-class ResultCell : public brls::RecyclerCell {
+std::string formatCatalogDate(int64_t timestamp) {
+    if (timestamp <= 0)
+        return "Unknown date";
+    std::time_t value = static_cast<std::time_t>(timestamp);
+    std::tm result{};
+    localtime_r(&value, &result);
+    char buffer[32];
+    std::strftime(buffer, sizeof(buffer), "%Y-%m-%d", &result);
+    return buffer;
+}
+
+class CatalogCell : public brls::RecyclerCell {
 public:
-    ResultCell() {
+    CatalogCell() {
         setFocusable(true);
         setAxis(brls::Axis::COLUMN);
         setPadding(12, 20, 12, 20);
         setHeight(82);
+
+        auto* top = new brls::Box(brls::Axis::ROW);
+        top->setAlignItems(brls::AlignItems::CENTER);
         title_ = new brls::Label();
         title_->setSingleLine(true);
         title_->setFontSize(21);
+        title_->setGrow(1);
+        badge_ = new brls::Label();
+        badge_->setSingleLine(true);
+        badge_->setFontSize(16);
+        badge_->setMarginLeft(12);
+        badge_->setTextColor(nvgRGB(0, 195, 227));
+        top->addView(title_);
+        top->addView(badge_);
+
         sub_ = new brls::Label();
         sub_->setSingleLine(true);
         sub_->setFontSize(16);
         sub_->setMarginTop(6);
         sub_->setTextColor(nvgRGB(160, 160, 170));
-        addView(title_);
+        addView(top);
         addView(sub_);
     }
 
-    void setResult(const RuTrackerResult& result) {
-        title_->setText(result.title);
-        std::string sub = result.sizeText.empty() ? "" : result.sizeText + "   ";
-        sub += "S: " + std::to_string(result.seeders) +
-               "   L: " + std::to_string(result.leechers);
+    void setEntry(const CatalogEntry& entry, const std::string& badge) {
+        title_->setText(entry.title);
+        badge_->setText(badge);
+        std::string sub = entry.size ? formatBytes(entry.size) : "Unknown size";
+        sub += "   " + formatCatalogDate(entry.publishedAt);
         sub_->setText(sub);
     }
 
 private:
     brls::Label* title_;
+    brls::Label* badge_;
     brls::Label* sub_;
 };
 
@@ -869,168 +901,546 @@ private:
     brls::Label* label_;
 };
 
-class SearchView;
+class CatalogView;
 
-class SearchDataSource : public brls::RecyclerDataSource {
+class CatalogDataSource : public brls::RecyclerDataSource {
 public:
-    explicit SearchDataSource(SearchView* owner) : owner_(owner) {}
+    explicit CatalogDataSource(CatalogView* owner) : owner_(owner) {}
 
-    void setResults(std::vector<RuTrackerResult> results) {
-        results_ = std::move(results);
+    void setEntries(std::vector<CatalogEntry> entries,
+                    std::vector<std::string> badges,
+                    std::vector<std::string> gameNames) {
+        entries_ = std::move(entries);
+        badges_ = std::move(badges);
+        gameNames_ = std::move(gameNames);
     }
     void setMessage(const std::string& message) { message_ = message; }
-    bool empty() const { return results_.empty(); }
-    const RuTrackerResult* resultAt(int row) const {
-        if (row < 0 || static_cast<size_t>(row) >= results_.size())
+    const CatalogEntry* entryAt(int row) const {
+        if (row < 0 || static_cast<size_t>(row) >= entries_.size())
             return nullptr;
-        return &results_[static_cast<size_t>(row)];
+        return &entries_[static_cast<size_t>(row)];
     }
 
     int numberOfRows(brls::RecyclerFrame*, int) override {
-        return results_.empty() ? 1 : static_cast<int>(results_.size());
+        return entries_.empty() ? 1 : static_cast<int>(entries_.size());
     }
     brls::RecyclerCell* cellForRow(brls::RecyclerFrame* recycler,
                                     brls::IndexPath index) override {
-        if (results_.empty()) {
+        if (entries_.empty()) {
             auto* cell = static_cast<TextMessageCell*>(
                 recycler->dequeueReusableCell("Message"));
             cell->setMessage(message_);
             return cell;
         }
-        auto* cell = static_cast<ResultCell*>(
-            recycler->dequeueReusableCell("Result"));
-        cell->setResult(results_[static_cast<size_t>(index.row)]);
+        auto* cell = static_cast<CatalogCell*>(
+            recycler->dequeueReusableCell("Catalog"));
+        size_t row = static_cast<size_t>(index.row);
+        CatalogEntry display = entries_[row];
+        if (row < gameNames_.size() && !gameNames_[row].empty())
+            display.title = gameNames_[row];
+        cell->setEntry(display,
+                       row < badges_.size() ? badges_[row] : std::string());
         return cell;
     }
     void didSelectRowAt(brls::RecyclerFrame*, brls::IndexPath index) override;
 
 private:
-    SearchView* owner_;
-    std::vector<RuTrackerResult> results_;
+    CatalogView* owner_;
+    std::vector<CatalogEntry> entries_;
+    std::vector<std::string> badges_;
+    std::vector<std::string> gameNames_;
     std::string message_;
 };
 
-class SearchView : public brls::Box {
+class CatalogView : public brls::Box {
 public:
-    SearchView(DownloadManager* manager, RuTrackerClient* client)
-        : brls::Box(brls::Axis::COLUMN), manager_(manager), client_(client),
-          alive_(std::make_shared<std::atomic<bool>>(true)) {
+    CatalogView(DownloadManager* manager, CatalogService* catalog,
+                GameMetadataService* metadata)
+        : brls::Box(brls::Axis::COLUMN), manager_(manager), catalog_(catalog),
+          metadata_(metadata),
+          alive_(std::make_shared<std::atomic<bool>>(true)),
+          cancelled_(std::make_shared<std::atomic<bool>>(false)) {
         recycler_ = new brls::RecyclerFrame();
         recycler_->setGrow(1);
         recycler_->setPadding(6, 32, 6, 32);
         recycler_->estimatedRowHeight = 82;
-        recycler_->registerCell("Result", [] { return new ResultCell(); });
+        recycler_->registerCell("Catalog", [] { return new CatalogCell(); });
         recycler_->registerCell("Message",
             [] { return new TextMessageCell(); });
-        dataSource_ = new SearchDataSource(this);
-        dataSource_->setMessage(initialMessage());
+        dataSource_ = new CatalogDataSource(this);
         recycler_->setDataSource(dataSource_);
+
+        status_ = new brls::Label();
+        status_->setFontSize(15);
+        status_->setMarginTop(10);
+        status_->setMarginLeft(34);
+        status_->setMarginBottom(2);
+        status_->setTextColor(nvgRGB(140, 140, 150));
+        addView(status_);
         addView(recycler_);
+        rebuildEntries();
 
         registerAction("Search", brls::BUTTON_X, [this](brls::View*) {
             openSearchKeyboard();
             return true;
         });
-        registerAction("Settings", brls::BUTTON_Y, [this](brls::View*) {
-            openSettings();
+        registerAction("Sort / Cancel", brls::BUTTON_Y, [this](brls::View*) {
+            if (busy_)
+                cancelled_->store(true);
+            else
+                cycleSort();
+            return true;
+        });
+        registerAction("Refresh", brls::BUTTON_RB, [this](brls::View*) {
+            refreshCatalog();
             return true;
         });
     }
 
-    ~SearchView() override { alive_->store(false); }
+    ~CatalogView() override {
+        alive_->store(false);
+        cancelled_->store(true);
+    }
 
     void openSearchKeyboard() {
         if (busy_)
             return;
         brls::Application::getImeManager()->openForText(
             [this](std::string text) {
-                if (!text.empty())
-                    doSearch(text);
+                query_ = std::move(text);
+                rebuildEntries();
             },
-            "Search rutracker", "", 256, lastQuery_,
+            "Search catalog", "", 256, query_,
             brls::KEYBOARD_DISABLE_NONE);
     }
 
-    void onResultSelected(int row) {
-        const RuTrackerResult* picked = dataSource_->resultAt(row);
+    void onEntrySelected(int row) {
+        const CatalogEntry* picked = dataSource_->entryAt(row);
         if (!picked || busy_)
             return;
-        RuTrackerResult result = *picked;
+        showDetails(*picked);
+    }
+
+private:
+    enum class SortMode { Latest, Alphabetical, Largest };
+
+    static std::string classifyResolveFailure(const std::string& error) {
+        std::string lower = lowerAscii(error);
+        if (lower.find("not registered") != std::string::npos ||
+            lower.find("stale") != std::string::npos)
+            return "Stale";
+        if (lower.find("metadata") != std::string::npos)
+            return "No metadata";
+        if (lower.find("no usable peers") != std::string::npos ||
+            lower.find("no peers") != std::string::npos)
+            return "No peers";
+        return "Resolve failed";
+    }
+
+    static std::string badgeForCatalogHealth(const CatalogEntry& entry) {
+        switch (entry.health) {
+            case pipensx::CatalogHealth::Ok:
+                return entry.metadataOk ? "Fresh" : "Checked";
+            case pipensx::CatalogHealth::NoPeers:
+                return "No peers";
+            case pipensx::CatalogHealth::MetadataTimeout:
+                return "No metadata";
+            case pipensx::CatalogHealth::TrackerNotRegistered:
+            case pipensx::CatalogHealth::Dead:
+                return "Dead";
+            case pipensx::CatalogHealth::Replaced:
+                return "Replaced";
+            case pipensx::CatalogHealth::Unknown:
+                break;
+        }
+        return entry.catalogGeneratedAt || entry.sourceUpdatedAt
+             ? "Unchecked" : std::string();
+    }
+
+    void resolveEntry(const CatalogEntry& entry) {
+        if (busy_)
+            return;
         busy_ = true;
-        brls::Application::notify("Downloading torrent...");
+        cancelled_->store(false);
+        status_->setText("Finding peers...   (Y to cancel)");
+        brls::Application::notify("Resolving torrent...");
         auto alive = alive_;
-        RuTrackerClient* client = client_;
-        std::string tmp = manager_->rootPath() + "/_rt_tmp.torrent";
-        brls::async([this, alive, client, result, tmp] {
-            std::vector<uint8_t> bytes;
+        auto cancelled = cancelled_;
+        uint32_t serial = gCatalogTempSerial.fetch_add(1);
+        std::string tmp = manager_->rootPath() + "/_catalog_tmp_" +
+                          lowerAscii(entry.infoHash) + "_" +
+                          std::to_string(serial) + ".torrent";
+        brls::async([this, alive, cancelled, entry, tmp] {
             std::string err;
-            bool ok = client->downloadTorrent(result.topicId, bytes, err);
-            if (ok) {
-                std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-                if (out)
-                    out.write(reinterpret_cast<const char*>(bytes.data()),
-                              static_cast<std::streamsize>(bytes.size()));
-                if (!out) {
-                    ok = false;
-                    err = "Unable to write the downloaded torrent.";
+            MagnetResolver resolver;
+            // Live stage feedback, marshalled onto the UI thread. The mutable
+            // capture keeps the last text so identical updates don't flood.
+            auto progress = [this, alive, last = std::string()](
+                                const pipensx::MagnetProgress& p) mutable {
+                std::string text;
+                switch (p.stage) {
+                    case pipensx::MagnetProgress::Stage::FindingPeers:
+                        text = "Finding peers...";
+                        break;
+                    case pipensx::MagnetProgress::Stage::Connecting:
+                        text = "Contacting peer " +
+                               std::to_string(p.peerIndex) + "/" +
+                               std::to_string(p.peerCount) + "...";
+                        break;
+                    case pipensx::MagnetProgress::Stage::FetchingMetadata:
+                        text = "Fetching metadata " +
+                               std::to_string(p.completedPieces) + "/" +
+                               std::to_string(p.totalPieces) + "...";
+                        break;
+                    case pipensx::MagnetProgress::Stage::Validating:
+                        text = "Validating...";
+                        break;
                 }
-            }
+                if (text == last)
+                    return;
+                last = text;
+                brls::sync([this, alive, text] {
+                    if (!alive->load())
+                        return;
+                    if (busy_)
+                        status_->setText(text + "   (Y to cancel)");
+                });
+            };
+            bool ok = resolver.resolveToFile(
+                entry.magnetUri, tmp, *cancelled, progress, err);
             brls::sync([this, alive, ok, err, tmp,
-                        title = result.title] {
+                        title = entry.title,
+                        infoHash = entry.infoHash] {
                 if (!alive->load())
                     return;
                 busy_ = false;
+                status_->setText(countText_);
                 if (!ok) {
+                    catalogFailures_[lowerAscii(infoHash)] =
+                        classifyResolveFailure(err);
+                    rebuildEntries();
                     brls::Application::notify(err);
                     return;
                 }
+                catalogFailures_.erase(lowerAscii(infoHash));
+                rebuildEntries();
                 presentImport(tmp, title);
             });
         });
     }
 
-private:
-    enum class Field { Username, Password, Site };
-
-    std::string initialMessage() const {
-        if (!client_->hasCredentials())
-            return "Press Y to set your rutracker login, then X to search.";
-        return "Press X to search rutracker.";
+    static std::string lowerAscii(std::string value) {
+        std::transform(value.begin(), value.end(), value.begin(),
+                       [](unsigned char c) {
+                           return static_cast<char>(std::tolower(c));
+                       });
+        return value;
     }
 
-    void showMessage(const std::string& text) {
-        dataSource_->setResults({});
-        dataSource_->setMessage(text);
+    void rebuildEntries() {
+        // Info-hash (lower-case hex) -> status for anything already managed,
+        // so rows can be badged. Task ids are lower-case hex; catalog info
+        // hashes are upper-case, hence the case fold on both sides.
+        std::unordered_map<std::string, DownloadStatus> added;
+        for (const DownloadTask& task : manager_->snapshot())
+            added[lowerAscii(task.id)] = task.status;
+
+        std::vector<CatalogEntry> visible;
+        std::string needle = lowerAscii(query_);
+        for (const CatalogEntry& entry : catalog_->entries()) {
+            if (entry.isHiddenByDefault())
+                continue;
+            if (!needle.empty() &&
+                lowerAscii(entry.title).find(needle) == std::string::npos)
+                continue;
+            visible.push_back(entry);
+        }
+        if (sort_ == SortMode::Alphabetical) {
+            std::stable_sort(visible.begin(), visible.end(),
+                [](const CatalogEntry& left, const CatalogEntry& right) {
+                    return lowerAscii(left.title) < lowerAscii(right.title);
+                });
+        } else if (sort_ == SortMode::Largest) {
+            std::stable_sort(visible.begin(), visible.end(),
+                [](const CatalogEntry& left, const CatalogEntry& right) {
+                    return left.size > right.size;
+                });
+        } else {
+            std::stable_sort(visible.begin(), visible.end(),
+                [](const CatalogEntry& left, const CatalogEntry& right) {
+                    return left.publishedAt > right.publishedAt;
+                });
+        }
+
+        std::vector<std::string> badges;
+        std::vector<std::string> gameNames;
+        badges.reserve(visible.size());
+        gameNames.reserve(visible.size());
+        for (const CatalogEntry& entry : visible) {
+            std::string hash = lowerAscii(entry.infoHash);
+            auto it = added.find(hash);
+            if (it != added.end()) {
+                badges.push_back(badgeForStatus(it->second));
+            } else {
+                auto fail = catalogFailures_.find(hash);
+                badges.push_back(fail == catalogFailures_.end()
+                    ? badgeForCatalogHealth(entry) : fail->second);
+            }
+            const GameMetadata* meta = metadata_->findByInfoHash(entry.infoHash);
+            gameNames.push_back(meta ? meta->name : std::string());
+        }
+
+        size_t count = visible.size();
+        dataSource_->setEntries(std::move(visible), std::move(badges),
+                                std::move(gameNames));
+        dataSource_->setMessage(query_.empty()
+            ? "Catalog is empty. Press R to refresh."
+            : "Nothing found. Press X to change the search.");
         recycler_->reloadData();
+
+        countText_ = query_.empty()
+            ? withThousands(count) + (count == 1 ? " release" : " releases")
+            : withThousands(count) + (count == 1 ? " match" : " matches");
+        if (!busy_)
+            status_->setText(countText_);
     }
 
-    void doSearch(const std::string& query) {
+    static std::string withThousands(size_t value) {
+        std::string digits = std::to_string(value);
+        int insertAt = static_cast<int>(digits.size()) - 3;
+        while (insertAt > 0) {
+            digits.insert(static_cast<size_t>(insertAt), ",");
+            insertAt -= 3;
+        }
+        return digits;
+    }
+
+    static std::string badgeForStatus(DownloadStatus status) {
+        switch (status) {
+            case DownloadStatus::Queued:      return "In queue";
+            case DownloadStatus::Checking:
+            case DownloadStatus::Downloading:
+            case DownloadStatus::Verifying:   return "Downloading";
+            case DownloadStatus::Paused:      return "Paused";
+            case DownloadStatus::Installing:
+            case DownloadStatus::Committing:  return "Installing";
+            case DownloadStatus::Completed:   return "Downloaded";
+            case DownloadStatus::Installed:   return "Installed";
+            case DownloadStatus::Error:       return "Error";
+            case DownloadStatus::Removing:    return "Removing";
+        }
+        return "";
+    }
+
+    void cycleSort() {
+        if (sort_ == SortMode::Latest)
+            sort_ = SortMode::Alphabetical;
+        else if (sort_ == SortMode::Alphabetical)
+            sort_ = SortMode::Largest;
+        else
+            sort_ = SortMode::Latest;
+        rebuildEntries();
+        brls::Application::notify(
+            sort_ == SortMode::Latest ? "Sorted by latest."
+          : sort_ == SortMode::Alphabetical ? "Sorted alphabetically."
+                                             : "Sorted by size.");
+    }
+
+    void refreshCatalog() {
         if (busy_)
             return;
         busy_ = true;
-        lastQuery_ = query;
-        showMessage("Searching...");
+        brls::Application::notify("Updating catalog from GitHub...");
         auto alive = alive_;
-        RuTrackerClient* client = client_;
-        brls::async([this, alive, client, query] {
-            std::vector<RuTrackerResult> results;
+        CatalogService* catalog = catalog_;
+        brls::async([this, alive, catalog] {
             std::string err;
-            bool ok = client->search(query, results, err);
-            brls::sync([this, alive, ok, results, err] {
+            bool ok = catalog->refresh(err);
+            brls::sync([this, alive, ok, err] {
                 if (!alive->load())
                     return;
                 busy_ = false;
                 if (!ok) {
-                    showMessage(err);
                     brls::Application::notify(err);
                     return;
                 }
-                dataSource_->setResults(results);
-                if (results.empty())
-                    dataSource_->setMessage("Nothing found.");
-                recycler_->reloadData();
+                rebuildEntries();
+                brls::Application::notify(
+                    "Catalog updated: " +
+                    std::to_string(catalog_->entries().size()) + " entries.");
             });
         });
+    }
+
+    static std::string joinStrings(const std::vector<std::string>& values,
+                                   const char* separator) {
+        std::string out;
+        for (const std::string& value : values) {
+            if (value.empty())
+                continue;
+            if (!out.empty())
+                out += separator;
+            out += value;
+        }
+        return out;
+    }
+
+    static std::string shortDescription(const std::string& value) {
+        if (value.size() <= 900)
+            return value;
+        return value.substr(0, 900) + "...";
+    }
+
+    void addAsyncImage(brls::Box* parent, const std::string& url,
+                       float height) {
+        if (url.empty())
+            return;
+        auto* image = new brls::Image();
+        image->setHeight(height);
+        image->setMarginBottom(12);
+        image->setScalingType(brls::ImageScalingType::FIT);
+        GameMetadataService* service = metadata_;
+        image->setImageAsync([service, url](
+            std::function<void(const std::string&, size_t)> done) {
+            brls::async([service, url, done] {
+                std::vector<uint8_t> bytes;
+                std::string error;
+                if (!service->loadImage(url, bytes, error)) {
+                    done("", 0);
+                    return;
+                }
+                done(std::string(reinterpret_cast<const char*>(bytes.data()),
+                                 bytes.size()), bytes.size());
+            });
+        });
+        parent->addView(image);
+    }
+
+    brls::Box* makeDetailsContent(const CatalogEntry& entry,
+                                  const GameMetadata* found) {
+        auto* content = new brls::Box(brls::Axis::COLUMN);
+        content->setPadding(20);
+
+        GameMetadata meta;
+        if (found)
+            meta = *found;
+
+        if (found)
+            addAsyncImage(content, !meta.bannerUrl.empty()
+                                     ? meta.bannerUrl : meta.iconUrl,
+                          190);
+
+        auto* title = new brls::Label();
+        title->setFontSize(24);
+        title->setText(found ? meta.name : entry.title);
+        content->addView(title);
+
+        auto* release = new brls::Label();
+        release->setFontSize(15);
+        release->setMarginTop(8);
+        release->setTextColor(nvgRGB(160, 160, 170));
+        release->setText("RuTracker release: " + entry.title);
+        content->addView(release);
+
+        if (found) {
+            std::string facts;
+            if (!meta.publisher.empty())
+                facts += meta.publisher;
+            if (!meta.releaseDate.empty()) {
+                if (!facts.empty())
+                    facts += "   ";
+                facts += meta.releaseDate;
+            }
+            std::string categories = joinStrings(meta.categories, ", ");
+            if (!categories.empty()) {
+                if (!facts.empty())
+                    facts += "   ";
+                facts += categories;
+            }
+            if (!facts.empty()) {
+                auto* factLabel = new brls::Label();
+                factLabel->setFontSize(16);
+                factLabel->setMarginTop(12);
+                factLabel->setTextColor(nvgRGB(190, 190, 200));
+                factLabel->setText(facts);
+                content->addView(factLabel);
+            }
+
+            std::string text = !meta.description.empty()
+                             ? meta.description : meta.intro;
+            if (!text.empty()) {
+                auto* desc = new brls::Label();
+                desc->setFontSize(17);
+                desc->setMarginTop(16);
+                desc->setText(shortDescription(text));
+                content->addView(desc);
+            }
+
+            if (!meta.screenshots.empty()) {
+                auto* shots = new brls::Label();
+                shots->setFontSize(16);
+                shots->setMarginTop(18);
+                shots->setMarginBottom(8);
+                shots->setTextColor(nvgRGB(190, 190, 200));
+                shots->setText("Screenshot");
+                content->addView(shots);
+                addAsyncImage(content, meta.screenshots.front(), 170);
+            }
+        } else {
+            auto* missing = new brls::Label();
+            missing->setFontSize(17);
+            missing->setMarginTop(16);
+            missing->setText("No game metadata match yet. Torrent resolving "
+                             "still works from the RuTracker release.");
+            content->addView(missing);
+        }
+
+        auto* torrent = new brls::Label();
+        torrent->setFontSize(15);
+        torrent->setMarginTop(16);
+        torrent->setTextColor(nvgRGB(160, 160, 170));
+        torrent->setText("Torrent size: " +
+                         (entry.size ? formatBytes(entry.size)
+                                     : std::string("Unknown")));
+        content->addView(torrent);
+
+        auto failure = catalogFailures_.find(lowerAscii(entry.infoHash));
+        if (failure != catalogFailures_.end()) {
+            auto* warning = new brls::Label();
+            warning->setFontSize(15);
+            warning->setMarginTop(10);
+            warning->setTextColor(nvgRGB(230, 150, 80));
+            warning->setText("Last resolve status: " + failure->second);
+            content->addView(warning);
+        } else {
+            std::string health = badgeForCatalogHealth(entry);
+            if (!health.empty() && health != "Fresh") {
+                auto* warning = new brls::Label();
+                warning->setFontSize(15);
+                warning->setMarginTop(10);
+                warning->setTextColor(nvgRGB(230, 150, 80));
+                std::string text = "Catalog health: " + health;
+                if (!entry.healthReason.empty())
+                    text += " (" + entry.healthReason + ")";
+                content->addView(warning);
+                warning->setText(text);
+            }
+        }
+
+        return content;
+    }
+
+    void showDetails(const CatalogEntry& entry) {
+        const GameMetadata* found = metadata_->findByInfoHash(entry.infoHash);
+        auto* scroll = new brls::ScrollingFrame();
+        scroll->setHeight(520);
+        scroll->setContentView(makeDetailsContent(entry, found));
+        auto* dialog = new brls::Dialog(scroll);
+        dialog->addButton("Check and resolve torrent", [this, entry] {
+            resolveEntry(entry);
+        });
+        dialog->addButton("Close", [] {});
+        dialog->open();
     }
 
     void presentImport(const std::string& path, const std::string& fallback) {
@@ -1053,10 +1463,21 @@ private:
         auto add = [this, path](TransferMode mode) {
             std::string id;
             std::string err;
-            if (manager_->importTorrent(path, mode, id, err))
-                brls::Application::notify("Torrent added to the queue.");
-            else
-                brls::Application::notify(err);
+            if (manager_->importTorrent(path, mode, id, err)) {
+                log_msg("[catalog] imported torrent %s\n", id.c_str());
+                brls::Application::notify("Added to downloads.");
+                rebuildEntries();  // reflect the new badge immediately
+            } else {
+                log_msg("[catalog] import failed from '%s': %s\n",
+                        path.c_str(), err.c_str());
+                if (lowerAscii(err).find("already in the download manager") !=
+                    std::string::npos) {
+                    brls::Application::notify("Already in downloads.");
+                    rebuildEntries();
+                } else {
+                    brls::Application::notify(err);
+                }
+            }
             ::unlink(path.c_str());
         };
         if (preview.packageCount) {
@@ -1072,80 +1493,38 @@ private:
         dialog->open();
     }
 
-    void openSettings() {
-        const RuTrackerConfig& cfg = client_->config();
-        auto* dialog = new brls::Dialog(
-            std::string("RuTracker settings\n\nSite: ") + cfg.baseUrl +
-            "\nLogin: " + (cfg.username.empty() ? "(not set)" : cfg.username) +
-            "\nPassword: " + (cfg.password.empty() ? "(not set)" : "********"));
-        dialog->addButton("Set login", [this] { editField(Field::Username); });
-        dialog->addButton("Set password",
-            [this] { editField(Field::Password); });
-        dialog->addButton("Set site", [this] { editField(Field::Site); });
-        dialog->open();
-    }
-
-    void editField(Field field) {
-        const RuTrackerConfig& cfg = client_->config();
-        std::string header, initial;
-        switch (field) {
-            case Field::Username:
-                header = "RuTracker login";
-                initial = cfg.username;
-                break;
-            case Field::Password:
-                header = "RuTracker password";
-                initial = "";
-                break;
-            case Field::Site:
-                header = "Site URL (forum root)";
-                initial = cfg.baseUrl;
-                break;
-        }
-        brls::Application::getImeManager()->openForText(
-            [this, field](std::string text) {
-                if (text.empty())
-                    return;
-                switch (field) {
-                    case Field::Username: client_->setUsername(text); break;
-                    case Field::Password: client_->setPassword(text); break;
-                    case Field::Site: client_->setBaseUrl(text); break;
-                }
-                client_->saveConfig();
-                if (dataSource_->empty()) {
-                    dataSource_->setMessage(initialMessage());
-                    recycler_->reloadData();
-                }
-                brls::Application::notify("Saved.");
-            },
-            header, "", 256, initial, brls::KEYBOARD_DISABLE_NONE);
-    }
-
     DownloadManager* manager_;
-    RuTrackerClient* client_;
+    CatalogService* catalog_;
+    GameMetadataService* metadata_;
     brls::RecyclerFrame* recycler_;
-    SearchDataSource* dataSource_;
+    CatalogDataSource* dataSource_;
+    brls::Label* status_;
     std::shared_ptr<std::atomic<bool>> alive_;
-    std::string lastQuery_;
+    std::shared_ptr<std::atomic<bool>> cancelled_;
+    std::unordered_map<std::string, std::string> catalogFailures_;
+    std::string query_;
+    std::string countText_;
+    SortMode sort_ = SortMode::Latest;
     bool busy_ = false;
 };
 
-void SearchDataSource::didSelectRowAt(brls::RecyclerFrame*,
-                                      brls::IndexPath index) {
-    if (results_.empty())
+void CatalogDataSource::didSelectRowAt(brls::RecyclerFrame*,
+                                       brls::IndexPath index) {
+    if (!entryAt(index.row))
         owner_->openSearchKeyboard();
     else
-        owner_->onResultSelected(index.row);
+        owner_->onEntrySelected(index.row);
 }
 
 class MainActivity : public brls::Activity {
 public:
-    MainActivity(DownloadManager* manager, RuTrackerClient* client)
-        : manager_(manager), client_(client) {
+    MainActivity(DownloadManager* manager, CatalogService* catalog,
+                 GameMetadataService* metadata)
+        : manager_(manager), catalog_(catalog), metadata_(metadata) {
         auto* tabs = new brls::TabFrame();
         tabs->addTab("Downloads", [manager] { return new MainView(manager); });
-        tabs->addTab("Search", [manager, client] {
-            return new SearchView(manager, client);
+        tabs->addTab("Catalog", [manager, catalog, metadata] {
+            return new CatalogView(manager, catalog, metadata);
         });
         frame_ = new brls::AppletFrame(tabs);
         frame_->setTitle("pipensx");
@@ -1166,7 +1545,8 @@ public:
 
 private:
     DownloadManager* manager_;
-    RuTrackerClient* client_;
+    CatalogService* catalog_;
+    GameMetadataService* metadata_;
     brls::AppletFrame* frame_;
 };
 
@@ -1248,14 +1628,28 @@ int main(int, char**) {
         brls::Application::createWindow("pipensx");
         brls::Application::setGlobalQuit(false);
 
+        startupStage("CatalogService construction");
+        antizapret_init("sdmc:/switch/pipensx");
+        antizapret_set_enabled(1);
+        unlink("sdmc:/switch/pipensx/rutracker.cfg");
+        unlink("sdmc:/switch/pipensx/rutracker_cookies.txt");
+        CatalogService catalog("sdmc:/switch/pipensx");
+        std::string catalogError;
+        if (!catalog.load(catalogError))
+            log_msg("[catalog] initial load failed: %s\n",
+                    catalogError.c_str());
+        startupStage("GameMetadataService construction");
+        GameMetadataService metadata("sdmc:/switch/pipensx");
+        std::string metadataError;
+        if (!metadata.load(metadataError))
+            log_msg("[metadata] initial load failed: %s\n",
+                    metadataError.c_str());
+
         startupStage("DownloadManager construction");
         DownloadManager manager("sdmc:/switch/pipensx");
 
-        startupStage("RuTrackerClient construction");
-        RuTrackerClient rutracker("sdmc:/switch/pipensx");
-
         startupStage("MainActivity construction");
-        auto* activity = new MainActivity(&manager, &rutracker);
+        auto* activity = new MainActivity(&manager, &catalog, &metadata);
 
         startupStage("push MainActivity");
         brls::Application::pushActivity(activity);

@@ -611,8 +611,22 @@ bool DownloadManager::saveLocked(std::string& error) const {
         }
     }
     if (rename(temporary.c_str(), statePath_.c_str()) != 0) {
+        int renameErrno = errno;
+        log_msg("[manager] queue state rename failed: %s\n",
+                std::strerror(renameErrno));
+        if (unlink(statePath_.c_str()) != 0 && errno != ENOENT) {
+            int unlinkErrno = errno;
+            unlink(temporary.c_str());
+            error = std::string("Unable to remove old queue state: ") +
+                    std::strerror(unlinkErrno);
+            return false;
+        }
+        if (rename(temporary.c_str(), statePath_.c_str()) == 0)
+            return true;
+        int replaceErrno = errno;
         unlink(temporary.c_str());
-        error = "Unable to replace queue state.";
+        error = std::string("Unable to replace queue state: ") +
+                std::strerror(replaceErrno);
         return false;
     }
     return true;

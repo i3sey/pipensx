@@ -5,6 +5,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <errno.h>
+#include <ctype.h>
 
 #ifndef _WIN32
 #  include <unistd.h>
@@ -27,7 +28,9 @@ struct storage {
 /* mkdir -p equivalent (portable) */
 static void mkdirs(const char *path) {
     char tmp[512];
-    snprintf(tmp, sizeof(tmp), "%s", path);
+    int len = snprintf(tmp, sizeof(tmp), "%s", path);
+    if (len < 0 || (size_t)len >= sizeof(tmp))
+        return;
     for (char *p = tmp + 1; *p; p++) {
         if (*p == '/') {
             *p = 0;
@@ -36,6 +39,69 @@ static void mkdirs(const char *path) {
         }
     }
     mkdir(tmp, 0755);
+}
+
+static const char *basename_component(const char *path) {
+    const char *slash = strrchr(path, '/');
+    return slash ? slash + 1 : path;
+}
+
+static void sanitize_component(const char *input, char *out, size_t out_size) {
+    size_t pos = 0;
+    if (out_size == 0)
+        return;
+
+    for (const char *p = input; *p && pos + 1 < out_size; p++) {
+        unsigned char ch = (unsigned char)*p;
+        if (isalnum(ch) || ch == '.' || ch == '-' || ch == '_') {
+            out[pos++] = (char)ch;
+        } else if ((ch == ' ' || ch == '[' || ch == ']' || ch == '(' || ch == ')') &&
+                   pos > 0 && out[pos - 1] != '_') {
+            out[pos++] = '_';
+        }
+    }
+
+    while (pos > 0 && (out[pos - 1] == '_' || out[pos - 1] == '.'))
+        pos--;
+    if (pos == 0) {
+        snprintf(out, out_size, "file");
+    } else {
+        out[pos] = '\0';
+    }
+}
+
+static int build_original_path(char *fullpath, size_t size, const metainfo_t *mi,
+                               const char *outdir, const mi_file_t *mf) {
+    int len = mi->is_multi
+        ? snprintf(fullpath, size, "%s/%s/%s", outdir, mi->name, mf->path)
+        : snprintf(fullpath, size, "%s/%s", outdir, mf->path);
+    return (len >= 0 && (size_t)len < size);
+}
+
+static int build_fallback_path(char *fullpath, size_t size, const char *outdir,
+                               uint32_t index, const mi_file_t *mf) {
+    char name[128];
+    sanitize_component(basename_component(mf->path), name, sizeof(name));
+    int len = snprintf(fullpath, size, "%s/_files/%06u_%s",
+                       outdir, index, name);
+    return (len >= 0 && (size_t)len < size);
+}
+
+static int open_disk_file(struct file_handle *fh) {
+    fh->fp = fopen(fh->path, "r+b");
+    if (fh->fp)
+        return 1;
+
+    fh->fp = fopen(fh->path, "w+b");
+    if (!fh->fp)
+        return 0;
+
+    if (fh->length > 0) {
+        fseek(fh->fp, (long)(fh->length - 1), SEEK_SET);
+        fputc(0, fh->fp);
+        fseek(fh->fp, 0, SEEK_SET);
+    }
+    return 1;
 }
 
 storage_t *storage_open_ex(const metainfo_t *mi, const char *outdir,
@@ -58,42 +124,44 @@ storage_t *storage_open_ex(const metainfo_t *mi, const char *outdir,
         if (fh->config.mode != STORAGE_FILE_DISK)
             continue;
 
-        /* Build full path — use snprintf with guaranteed NUL */
         char fullpath[512];
-        int path_len = mi->is_multi
-            ? snprintf(fullpath, sizeof(fullpath), "%s/%s/%s",
-                       outdir, mi->name, mf->path)
-            : snprintf(fullpath, sizeof(fullpath), "%s/%s",
-                       outdir, mf->path);
-        if (path_len < 0 || (size_t)path_len >= sizeof(fullpath)) {
-            log_msg("[storage] output path is too long\n");
+        int using_fallback = !build_original_path(fullpath, sizeof(fullpath),
+                                                  mi, outdir, mf);
+        if (using_fallback &&
+            !build_fallback_path(fullpath, sizeof(fullpath), outdir, i, mf)) {
+            log_msg("[storage] output path is too long, fallback failed\n");
             storage_close(s);
             return NULL;
         }
+
         memcpy(fh->path, fullpath, sizeof(fh->path));
         fh->path[sizeof(fh->path)-1] = '\0';
 
-        /* Create parent directories */
         char *slash = strrchr(fullpath, '/');
         if (slash) { *slash = 0; mkdirs(fullpath); *slash = '/'; }
 
-        /* Open for r+w; create if absent */
-        fh->fp = fopen(fh->path, "r+b");
-        if (!fh->fp) {
-            fh->fp = fopen(fh->path, "w+b");
+        if (!open_disk_file(fh)) {
+            int saved_errno = errno;
+            if (!using_fallback && saved_errno == ENAMETOOLONG &&
+                build_fallback_path(fullpath, sizeof(fullpath), outdir, i, mf)) {
+                memcpy(fh->path, fullpath, sizeof(fh->path));
+                fh->path[sizeof(fh->path)-1] = '\0';
+                slash = strrchr(fullpath, '/');
+                if (slash) { *slash = 0; mkdirs(fullpath); *slash = '/'; }
+                using_fallback = 1;
+                if (!open_disk_file(fh))
+                    saved_errno = errno;
+            }
             if (!fh->fp) {
-                log_msg("[storage] cannot open '%s': %s\n", fh->path, strerror(errno));
+                log_msg("[storage] cannot open '%s': %s\n",
+                        fh->path, strerror(saved_errno));
                 storage_close(s);
                 return NULL;
-            } else {
-                /* Pre-allocate / seek to size */
-                if (fh->length > 0) {
-                    fseek(fh->fp, (long)(fh->length - 1), SEEK_SET);
-                    fputc(0, fh->fp);
-                    fseek(fh->fp, 0, SEEK_SET);
-                }
             }
         }
+
+        if (using_fallback)
+            log_msg("[storage] long output path remapped to '%s'\n", fh->path);
     }
     return s;
 }

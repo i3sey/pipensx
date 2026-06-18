@@ -1,4 +1,5 @@
 #include "tracker.h"
+#include "antizapret.h"
 #include "bencode.h"
 #include "util.h"
 #include "net.h"
@@ -22,6 +23,22 @@ static void url_encode_hash(char *out, size_t outsz, const uint8_t *hash, size_t
     out[off] = 0;
 }
 
+static void tracker_result_init(tracker_announce_result_t *result) {
+    if (!result)
+        return;
+    memset(result, 0, sizeof(*result));
+}
+
+static void tracker_result_failure(tracker_announce_result_t *result,
+                                   const char *reason) {
+    if (!result || !reason)
+        return;
+    result->request_ok = 1;
+    result->tracker_failure = 1;
+    strncpy(result->failure_reason, reason, sizeof(result->failure_reason) - 1);
+    result->failure_reason[sizeof(result->failure_reason) - 1] = 0;
+}
+
 /* ---- HTTP tracker via libcurl ---- */
 #include <curl/curl.h>
 
@@ -42,22 +59,26 @@ static size_t curl_write_cb(void *ptr, size_t sz, size_t nmemb, void *ud) {
     return total;
 }
 
-static uint32_t http_announce(const char *url,
-                              const uint8_t *info_hash,
-                              const uint8_t *peer_id,
-                              uint16_t listen_port,
-                              int64_t downloaded, int64_t left,
-                              uint8_t *compact_out, uint32_t max_peers) {
+static uint32_t http_announce_once(const char *url,
+                                   const uint8_t *info_hash,
+                                   const uint8_t *peer_id,
+                                   uint16_t listen_port,
+                                   int64_t downloaded, int64_t left,
+                                   uint8_t *compact_out, uint32_t max_peers,
+                                   const antizapret_route_t *route,
+                                   int *request_ok,
+                                   tracker_announce_result_t *result) {
+    *request_ok = 0;
     char ih_enc[64], pid_enc[64];
     url_encode_hash(ih_enc, sizeof(ih_enc), info_hash, 20);
     url_encode_hash(pid_enc, sizeof(pid_enc), peer_id, 20);
 
     char full_url[1024];
     snprintf(full_url, sizeof(full_url),
-             "%s?info_hash=%s&peer_id=%s&port=%u"
+             "%s%cinfo_hash=%s&peer_id=%s&port=%u"
              "&uploaded=0&downloaded=%lld&left=%lld"
              "&compact=1&event=started&numwant=200",
-             url, ih_enc, pid_enc,
+             url, strchr(url, '?') ? '&' : '?', ih_enc, pid_enc,
              (unsigned)listen_port,
              (long long)downloaded, (long long)left);
 
@@ -66,23 +87,42 @@ static uint32_t http_announce(const char *url,
 
     curl_buf_t buf = {0};
     curl_easy_setopt(curl, CURLOPT_URL, full_url);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "pipensx/0.4");
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    long tls12_only = (long)CURL_SSLVERSION_TLSv1_2 |
+                      (long)CURL_SSLVERSION_MAX_TLSv1_2;
+    curl_easy_setopt(curl, CURLOPT_SSLVERSION, tls12_only);
+    curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
+    if (route && route->type != ANTIZAPRET_ROUTE_DIRECT) {
+        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 35L);
+    }
+    antizapret_apply_route(curl, route);
 
     CURLcode rc = curl_easy_perform(curl);
+    long status = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
     curl_easy_cleanup(curl);
 
-    if (rc != CURLE_OK) {
-        log_msg("[tracker] HTTP %s: %s\n", url, curl_easy_strerror(rc));
+    if (rc != CURLE_OK || status < 200 || status >= 300) {
+        if (rc != CURLE_OK)
+            log_msg("[tracker] HTTP %s: %s\n", url, curl_easy_strerror(rc));
+        else
+            log_msg("[tracker] HTTP %s: status %ld\n", url, status);
         free(buf.data);
         return 0;
     }
 
     if (!buf.data) return 0;
+    if (antizapret_response_looks_blocked((const char *)buf.data, buf.len)) {
+        free(buf.data);
+        return 0;
+    }
 
     /* Parse bencode response */
     const char *p = (const char*)buf.data;
@@ -92,6 +132,7 @@ static uint32_t http_announce(const char *url,
         free(buf.data);
         return 0;
     }
+    *request_ok = 1;
 
     /* Check for failure */
     be_node_t fail;
@@ -100,6 +141,7 @@ static uint32_t http_announce(const char *url,
         char tmp[128];
         size_t n = fail.slen < 127 ? fail.slen : 127;
         memcpy(tmp, fail.sval, n); tmp[n] = 0;
+        tracker_result_failure(result, tmp);
         log_msg("[tracker] HTTP failure: %s\n", tmp);
         free(buf.data);
         return 0;
@@ -114,9 +156,66 @@ static uint32_t http_announce(const char *url,
         memcpy(compact_out, peers.sval, count * 6);
         log_msg("[tracker] HTTP %s: %u peers\n", url, count);
     }
+    if (result) {
+        result->request_ok = 1;
+        result->peers = count;
+    }
 
     free(buf.data);
     return count;
+}
+
+static uint32_t http_announce(const char *url,
+                              const uint8_t *info_hash,
+                              const uint8_t *peer_id,
+                              uint16_t listen_port,
+                              int64_t downloaded, int64_t left,
+                              uint8_t *compact_out, uint32_t max_peers,
+                              tracker_announce_result_t *result) {
+    int target = antizapret_is_enabled() && antizapret_is_target_url(url);
+    int prefer_proxy = target && antizapret_proxy_preferred();
+    int request_ok = 0;
+    uint32_t count = 0;
+
+    if (!prefer_proxy) {
+        count = http_announce_once(url, info_hash, peer_id, listen_port,
+                                   downloaded, left, compact_out, max_peers,
+                                   NULL, &request_ok, result);
+        if (request_ok)
+            return count;
+    }
+
+    if (target) {
+        antizapret_route_t routes[ANTIZAPRET_MAX_ROUTES];
+        size_t route_count =
+            antizapret_get_routes(routes, ANTIZAPRET_MAX_ROUTES);
+        for (size_t i = 0; i < route_count; ++i) {
+            if (routes[i].type == ANTIZAPRET_ROUTE_DIRECT)
+                continue;
+            if (!antizapret_route_supported(&routes[i]))
+                continue;
+            for (int attempt = 1; attempt <= 3; ++attempt) {
+                count = http_announce_once(url, info_hash, peer_id,
+                                           listen_port, downloaded, left,
+                                           compact_out, max_peers, &routes[i],
+                                           &request_ok, result);
+                if (request_ok) {
+                    antizapret_note_proxy_success();
+                    log_msg("[tracker] RuTracker announce used %s\n",
+                            antizapret_route_name(&routes[i]));
+                    return count;
+                }
+                log_msg("[tracker] %s announce attempt %d/3 failed\n",
+                        antizapret_route_name(&routes[i]), attempt);
+            }
+        }
+    }
+
+    if (prefer_proxy)
+        return http_announce_once(url, info_hash, peer_id, listen_port,
+                                  downloaded, left, compact_out, max_peers,
+                                  NULL, &request_ok, result);
+    return 0;
 }
 
 /* ---- UDP tracker (BEP15) ---- */
@@ -205,6 +304,50 @@ static uint32_t udp_announce(const char *host, uint16_t tport,
 }
 
 /* ---- public API ---- */
+uint32_t tracker_announce_url_ex(const char *url,
+                                 const uint8_t *info_hash,
+                                 const uint8_t *peer_id,
+                                 uint16_t listen_port,
+                                 int64_t downloaded, int64_t left,
+                                 uint8_t *compact_out, uint32_t max_peers,
+                                 tracker_announce_result_t *result) {
+    tracker_result_init(result);
+    if (!url || !info_hash || !peer_id || !compact_out || !max_peers)
+        return 0;
+    uint32_t count = 0;
+    if (strncmp(url, "http", 4) == 0) {
+        count = http_announce(url, info_hash, peer_id, listen_port,
+                              downloaded, left, compact_out, max_peers,
+                              result);
+        if (result)
+            result->peers = count;
+        return count;
+    }
+    if (strncmp(url, "udp://", 6) == 0) {
+        char host[128] = "";
+        uint16_t port = 80;
+        if (sscanf(url + 6, "%127[^:/]:%hu", host, &port) < 1)
+            return 0;
+        count = udp_announce(host, port, info_hash, peer_id, listen_port,
+                             downloaded, left, compact_out, max_peers);
+        if (result)
+            result->peers = count;
+        return count;
+    }
+    return 0;
+}
+
+uint32_t tracker_announce_url(const char *url,
+                              const uint8_t *info_hash,
+                              const uint8_t *peer_id,
+                              uint16_t listen_port,
+                              int64_t downloaded, int64_t left,
+                              uint8_t *compact_out, uint32_t max_peers) {
+    return tracker_announce_url_ex(url, info_hash, peer_id, listen_port,
+                                   downloaded, left, compact_out, max_peers,
+                                   NULL);
+}
+
 uint32_t tracker_announce(const metainfo_t *mi,
                           const uint8_t *peer_id,
                           uint16_t listen_port,
@@ -217,17 +360,8 @@ uint32_t tracker_announce(const metainfo_t *mi,
         const char *url = mi->trackers[t];
         uint32_t n = 0;
 
-        if (strncmp(url, "http", 4) == 0) {
-            n = http_announce(url, mi->info_hash, peer_id, listen_port,
-                              downloaded, left, tmp, 200);
-        } else if (strncmp(url, "udp://", 6) == 0) {
-            /* Parse host:port from udp://host:port/announce */
-            char host[128] = "";
-            uint16_t port  = 80;
-            sscanf(url+6, "%127[^:/]:%hu", host, &port);
-            n = udp_announce(host, port, mi->info_hash, peer_id, listen_port,
-                             downloaded, left, tmp, 200);
-        }
+        n = tracker_announce_url(url, mi->info_hash, peer_id, listen_port,
+                                 downloaded, left, tmp, 200);
 
         uint32_t can = (total + n <= max_peers) ? n : max_peers - total;
         memcpy(compact_out + total*6, tmp, can*6);

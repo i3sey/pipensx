@@ -10,6 +10,7 @@ CFLAGS  = -O2 -Wall -Wextra -std=c11 \
            $(shell pkg-config --cflags libcurl)
 CXXFLAGS = -O2 -Wall -Wextra -std=c++17 \
             -D_GNU_SOURCE \
+            -Ivendor/borealis/library/include \
             $(shell pkg-config --cflags libcurl)
 LDFLAGS = $(shell pkg-config --libs libcurl) -lm
 INSTALL_LDFLAGS = -lzstd -lcrypto
@@ -19,6 +20,7 @@ SRCS = \
     src/core/bencode.c    \
     src/core/metainfo.c   \
     src/core/util.c       \
+    src/core/antizapret.c \
     src/core/net.c        \
     src/core/peer.c       \
     src/core/piece.c      \
@@ -33,7 +35,8 @@ OBJS = $(SRCS:.c=.o)
 TEST_TARGET = tests/test_piece
 MANAGER_TEST_TARGET = tests/test_manager
 PACKAGE_TEST_TARGET = tests/test_package_stream
-RUTRACKER_TEST_TARGET = tests/test_rutracker
+ANTIZAPRET_TEST_TARGET = tests/test_antizapret
+CATALOG_TEST_TARGET = tests/test_catalog
 TEST_SRCS = \
     tests/test_piece.c       \
     src/core/sha1.c          \
@@ -72,25 +75,40 @@ $(PACKAGE_TEST_TARGET): tests/test_package_stream.cpp \
 		src/install/package_stream.o src/install/install_backend_pc.o
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(INSTALL_LDFLAGS)
 
-src/app/rutracker_client.o: src/app/rutracker_client.cpp
+src/app/catalog_service.o: src/app/catalog_service.cpp
 	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
 
-$(RUTRACKER_TEST_TARGET): tests/test_rutracker.cpp \
-		src/app/rutracker_client.o src/core/util.o
+src/app/magnet_resolver.o: src/app/magnet_resolver.cpp
+	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
+
+src/app/game_metadata_service.o: src/app/game_metadata_service.cpp
+	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
+
+$(CATALOG_TEST_TARGET): tests/test_catalog.cpp \
+		src/app/catalog_service.o src/app/game_metadata_service.o \
+		src/app/magnet_resolver.o \
+		src/core/tracker.o src/core/antizapret.o src/core/net.o \
+		src/core/bencode.o src/core/metainfo.o src/core/sha1.o src/core/util.o
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
 
 test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
-		$(RUTRACKER_TEST_TARGET)
+		$(CATALOG_TEST_TARGET) $(ANTIZAPRET_TEST_TARGET)
 	./$(TEST_TARGET)
 	./$(MANAGER_TEST_TARGET)
 	./$(PACKAGE_TEST_TARGET)
-	./$(RUTRACKER_TEST_TARGET)
+	./$(CATALOG_TEST_TARGET)
+	./$(ANTIZAPRET_TEST_TARGET)
+
+$(ANTIZAPRET_TEST_TARGET): tests/test_antizapret.c \
+		src/core/antizapret.o src/core/util.o
+	$(CC) $(CFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
 
 clean:
-	rm -f $(OBJS) src/app/download_manager.o src/app/rutracker_client.o \
+	rm -f $(OBJS) src/app/download_manager.o src/app/catalog_service.o \
+		src/app/game_metadata_service.o src/app/magnet_resolver.o \
 		src/install/*.o \
 		tests/test_manager.o $(TARGET) $(TEST_TARGET) \
 		$(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
-		$(RUTRACKER_TEST_TARGET)
+		$(CATALOG_TEST_TARGET) $(ANTIZAPRET_TEST_TARGET)
 
 .PHONY: all test clean

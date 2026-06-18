@@ -13,7 +13,7 @@ set(BRLS_UNITY_BUILD OFF CACHE BOOL "" FORCE)
 include(${BOREALIS_LIBRARY}/cmake/commonOption.cmake)
 include(${BOREALIS_LIBRARY}/cmake/toolchain.cmake)
 
-project(pipensx VERSION 0.3.0 LANGUAGES C CXX)
+project(pipensx VERSION 0.4.0 LANGUAGES C CXX)
 
 set(APP_TITLE "pipensx")
 set(APP_AUTHOR "pipensx")
@@ -45,6 +45,7 @@ set(CORE_SOURCES
     src/core/bencode.c
     src/core/metainfo.c
     src/core/util.c
+    src/core/antizapret.c
     src/core/net.c
     src/core/peer.c
     src/core/piece.c
@@ -58,8 +59,10 @@ set(CORE_SOURCES
 
 set(APP_SOURCES
     ${CORE_SOURCES}
+    src/app/catalog_service.cpp
     src/app/download_manager.cpp
-    src/app/rutracker_client.cpp
+    src/app/game_metadata_service.cpp
+    src/app/magnet_resolver.cpp
     src/install/package_stream.cpp
     src/install/install_backend_switch.cpp
     src/main_switch.cpp
@@ -79,6 +82,7 @@ target_include_directories(pipensx PRIVATE
     src/core
     src/platform
     vendor
+    vendor/borealis/library/include
     vendor/zstd/lib
     vendor/libnx-ext/libnx-ext/include
     vendor/libnx-ext/libnx-ipcext/include
@@ -114,10 +118,20 @@ file(COPY
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/borealis/resources/material
     DESTINATION ${ROMFS_DIR}
 )
+file(GLOB_RECURSE CATALOG_ROMFS_FILES CONFIGURE_DEPENDS
+    ${CMAKE_CURRENT_SOURCE_DIR}/resources/catalog/*
+)
+add_custom_target(sync_catalog_romfs ALL
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_CURRENT_SOURCE_DIR}/resources/catalog
+        ${ROMFS_DIR}/catalog
+    DEPENDS ${CATALOG_ROMFS_FILES}
+    VERBATIM
+)
 gen_dksh(${ROMFS_DIR}/shaders)
 
 add_custom_target(pipensx.nro ALL
-    DEPENDS pipensx
+    DEPENDS pipensx sync_catalog_romfs
     COMMAND ${NX_NACPTOOL_EXE}
         --create "${APP_TITLE}" "${APP_AUTHOR}" "${PROJECT_VERSION}"
         pipensx.nacp
