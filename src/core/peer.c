@@ -168,7 +168,24 @@ int peer_request_block(peer_t *p, uint32_t piece, uint32_t offset, uint32_t len)
     req->index  = (int)piece;
     req->offset = (int)offset;
     req->length = (int)len;
+    req->requested_ms = now_ms();
     return 1;
+}
+
+int peer_expire_requests(peer_t *p, uint64_t now, uint64_t timeout_ms) {
+    int kept = 0;
+    int expired = 0;
+    for (int i = 0; i < p->pipeline_len; i++) {
+        block_req_t req = p->pipeline[i];
+        if (req.requested_ms <= now &&
+            now - req.requested_ms >= timeout_ms) {
+            expired++;
+            continue;
+        }
+        p->pipeline[kept++] = req;
+    }
+    p->pipeline_len = kept;
+    return expired;
 }
 
 int peer_flush(peer_t *p) { (void)p; return 1; } /* nonblocking; send_msg already sends */

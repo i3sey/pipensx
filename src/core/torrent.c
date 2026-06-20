@@ -20,6 +20,7 @@
 #define TRACKER_REANNOUNCE_MS (30*60*1000ULL)  /* 30 min */
 #define DHT_TICK_INTERVAL_MS  1000
 #define PEER_TIMEOUT_MS       60000
+#define REQUEST_TIMEOUT_MS    15000
 #define MAX_ACTIVE_PEERS      MAX_PEERS
 
 struct peer_addr {
@@ -48,6 +49,8 @@ struct torrent {
     uint64_t speed_bytes; /* accumulated since last speed update */
     uint64_t speed_bps;
     uint64_t speed_time_ms;
+    uint64_t last_health_ms;
+    uint32_t expired_requests;
 
     uint64_t last_tracker_ms;
     uint64_t last_dht_ms;
@@ -69,25 +72,34 @@ struct torrent {
 };
 
 /* ---- peer queue ---- */
-static void queue_push(torrent_t *t, uint32_t ip, uint16_t port) {
+static int queue_push(torrent_t *t, uint32_t ip, uint16_t port) {
     uint16_t host_port = ntohs(port);
     if (ip == 0 || ip == INADDR_NONE || host_port < 2)
-        return;
-    if (t->qsize >= MAX_PEER_QUEUE) return;
+        return 0;
+    uint32_t host_ip = ntohl(ip);
+    uint8_t first = (uint8_t)(host_ip >> 24);
+    uint8_t second = (uint8_t)(host_ip >> 16);
+    if (first == 0 || first == 10 || first == 127 || first >= 224 ||
+        (first == 169 && second == 254) ||
+        (first == 172 && second >= 16 && second <= 31) ||
+        (first == 192 && second == 168))
+        return 0;
+    if (t->qsize >= MAX_PEER_QUEUE) return 0;
     /* Dedup: skip if already queued or connected */
     for (int i = 0; i < MAX_ACTIVE_PEERS; i++) {
         if (t->peers[i] && t->peers[i]->addr.sin_addr.s_addr == ip &&
-            t->peers[i]->addr.sin_port == port) return;
+            t->peers[i]->addr.sin_port == port) return 0;
     }
     for (int i = 0; i < t->qsize; i++) {
         int index = (t->qhead + i) % MAX_PEER_QUEUE;
         if (t->queue[index].ip == ip && t->queue[index].port == port)
-            return;
+            return 0;
     }
     t->queue[t->qtail].ip   = ip;
     t->queue[t->qtail].port = port;
     t->qtail = (t->qtail + 1) % MAX_PEER_QUEUE;
     t->qsize++;
+    return 1;
 }
 
 static int queue_pop(torrent_t *t, uint32_t *ip, uint16_t *port) {
@@ -132,10 +144,11 @@ static void cb_dht_peer(void *ud, uint32_t ip_be, uint16_t port_be) {
     uint16_t host_port = ntohs(port_be);
     if (ip_be == 0 || ip_be == INADDR_NONE || host_port < 2)
         return;
-    queue_push(t, ip_be, port_be);
-    log_msg("[torrent] dht peer %u.%u.%u.%u:%u\n",
-            ip_be&0xFF,(ip_be>>8)&0xFF,(ip_be>>16)&0xFF,(ip_be>>24)&0xFF,
-            host_port);
+    if (queue_push(t, ip_be, port_be)) {
+        log_msg("[torrent] dht peer %u.%u.%u.%u:%u\n",
+                ip_be&0xFF,(ip_be>>8)&0xFF,(ip_be>>16)&0xFF,(ip_be>>24)&0xFF,
+                host_port);
+    }
 }
 
 /* ---- peer_ctx helper ---- */
@@ -316,6 +329,7 @@ torrent_t *torrent_create_ex(const metainfo_t *mi,
         queue_push(t, *(uint32_t*)(compact+i*6), *(uint16_t*)(compact+i*6+4));
     t->last_tracker_ms  = now_ms();
     t->speed_time_ms    = now_ms();
+    t->last_health_ms   = t->speed_time_ms;
 
     log_msg("[torrent] started: %u peers queued from trackers\n", n);
     return t;
@@ -393,6 +407,26 @@ int torrent_tick(torrent_t *t) {
         t->speed_bps      = t->speed_bytes * 1000 / (elapsed_ms + 1);
         t->speed_bytes    = 0;
         t->speed_time_ms  = now;
+    }
+    if (now - t->last_health_ms >= 10000) {
+        int active = 0;
+        int unchoked = 0;
+        int inflight = 0;
+        for (int i = 0; i < MAX_ACTIVE_PEERS; i++) {
+            peer_t *p = t->peers[i];
+            if (!p || p->state != PS_ACTIVE)
+                continue;
+            active++;
+            if (!p->am_choked)
+                unchoked++;
+            inflight += p->pipeline_len;
+        }
+        log_msg("[torrent] health active=%d unchoked=%d inflight=%d "
+                "expired=%u speed=%llu\n",
+                active, unchoked, inflight, t->expired_requests,
+                (unsigned long long)t->speed_bps);
+        t->expired_requests = 0;
+        t->last_health_ms = now;
     }
 
     /* DHT tick */
@@ -492,6 +526,11 @@ int torrent_tick(torrent_t *t) {
             continue;
         }
         if (p->state != PS_ACTIVE) continue;
+        int expired = peer_expire_requests(p, now2, REQUEST_TIMEOUT_MS);
+        if (expired > 0) {
+            t->expired_requests += (uint32_t)expired;
+            schedule_requests(t, p);
+        }
         /* Guard against unsigned underflow: only check if last_recv_ms <= now2 */
         if (p->last_recv_ms <= now2 && now2 - p->last_recv_ms > PEER_TIMEOUT_MS) {
             log_msg("[torrent] peer %s timeout\n", p->addr_str);

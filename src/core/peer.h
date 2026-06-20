@@ -3,7 +3,7 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#define MAX_PIPELINE   96      /* 1.5 MiB in flight keeps high-RTT peers busy */
+#define MAX_PIPELINE   256     /* one 4 MiB piece in flight per peer */
 #define MAX_PEERS     96
 #define BT_HANDSHAKE_LEN 68
 #define PEER_BUF_SIZE (4 + 1 + (1<<14) + 9)  /* enough for one piece msg */
@@ -37,6 +37,7 @@ typedef struct {
     int          index;   /* piece */
     int          offset;  /* byte offset within piece */
     int          length;  /* block size */
+    uint64_t     requested_ms;
 } block_req_t;
 
 typedef struct peer {
@@ -117,6 +118,9 @@ int peer_send_handshake(peer_t *p, const peer_ctx_t *ctx);
  * Queue a block request.  Returns 0 if pipeline full.
  */
 int peer_request_block(peer_t *p, uint32_t piece, uint32_t offset, uint32_t len);
+
+/* Drop requests a peer has not answered before the deadline. */
+int peer_expire_requests(peer_t *p, uint64_t now, uint64_t timeout_ms);
 
 /* Flush any queued sends */
 int peer_flush(peer_t *p);

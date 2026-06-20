@@ -24,14 +24,17 @@ time_t now_sec(void) {
 }
 
 static FILE *g_logfile = NULL;
+static uint64_t g_log_flush_ms = 0;
 
 void log_init(const char *path) {
     if (!path) return;
     log_close();
     g_logfile = fopen(path, "a");
     if (g_logfile) {
+        setvbuf(g_logfile, NULL, _IOFBF, 64 * 1024);
         fprintf(g_logfile, "=== pipensx log started ===\n");
         fflush(g_logfile);
+        g_log_flush_ms = now_ms();
     }
 }
 
@@ -53,13 +56,18 @@ void log_msg(const char *fmt, ...) {
 #endif
 
     if (g_logfile) {
+        flockfile(g_logfile);
         /* Prefix every line with elapsed ms */
         struct timespec ts;
         clock_gettime(CLOCK_ID, &ts);
         uint64_t ms = (uint64_t)ts.tv_sec * 1000u + ts.tv_nsec / 1000000u;
         fprintf(g_logfile, "[%7llu] ", (unsigned long long)ms % 10000000ULL);
         vfprintf(g_logfile, fmt, ap2);
-        fflush(g_logfile);
+        if (ms - g_log_flush_ms >= 1000) {
+            fflush(g_logfile);
+            g_log_flush_ms = ms;
+        }
+        funlockfile(g_logfile);
     }
 
     va_end(ap2);

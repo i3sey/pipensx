@@ -154,7 +154,6 @@ void dht_engine_tick(dht_engine_t *e) {
     uint8_t buf[4096];
     struct sockaddr_in from;
     socklen_t fromlen = sizeof(from);
-    int pkts = 0;
     for (;;) {
         fromlen = sizeof(from);
         /* Leave one byte at end so we can null-terminate: jech requires buf[buflen]=='\0' */
@@ -162,13 +161,10 @@ void dht_engine_tick(dht_engine_t *e) {
                              (struct sockaddr*)&from, &fromlen);
         if (n < 0) break;
         buf[n] = '\0';
-        pkts++;
         time_t tosend;
         dht_periodic(buf, (int)n, (struct sockaddr*)&from, (int)fromlen,
                      &tosend, dht_callback, NULL);
     }
-    if (pkts > 0)
-        log_msg("[dht] recv %d udp packets\n", pkts);
     /* Also call with no data to drive timers */
     time_t tosend;
     dht_periodic(NULL, 0, NULL, 0, &tosend, dht_callback, NULL);
