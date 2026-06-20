@@ -15,7 +15,8 @@
 #endif
 
 #define MAX_PEER_QUEUE 1024
-#define CONNECT_INTERVAL_MS 150
+#define CONNECT_INTERVAL_MS 50
+#define CONNECT_TIMEOUT_MS  12000
 #define TRACKER_REANNOUNCE_MS (30*60*1000ULL)  /* 30 min */
 #define DHT_TICK_INTERVAL_MS  1000
 #define PEER_TIMEOUT_MS       60000
@@ -446,7 +447,7 @@ int torrent_tick(torrent_t *t) {
         npfd++;
     }
 
-    int r = poll(pfds, npfd, 50); /* 50ms timeout */
+    int r = poll(pfds, npfd, 10);
     if (r < 0) return 1;
 
     /* DHT readable */
@@ -479,9 +480,10 @@ int torrent_tick(torrent_t *t) {
     for (int i = 0; i < MAX_ACTIVE_PEERS; i++) {
         peer_t *p = t->peers[i];
         if (!p) continue;
-        /* Kill peers stuck in CONNECTING or HANDSHAKE for > 30s */
+        /* Replace unreachable peers quickly so they do not occupy every slot. */
         if (p->state == PS_CONNECTING || p->state == PS_HANDSHAKE) {
-            if (p->connect_time_ms <= now2 && now2 - p->connect_time_ms > 30000) {
+            if (p->connect_time_ms <= now2 &&
+                now2 - p->connect_time_ms > CONNECT_TIMEOUT_MS) {
                 log_msg("[torrent] peer %s connect/handshake timeout\n", p->addr_str);
                 peer_destroy(p);
                 t->peers[i] = NULL;

@@ -201,7 +201,7 @@ public:
                 ? static_cast<uint64_t>(metainfo_.piece_length)
                 : 4 * 1024 * 1024;
             maxQueuedBytes_ = static_cast<size_t>(std::min<uint64_t>(
-                pieceLength * 2, 16 * 1024 * 1024));
+                pieceLength * 16, 64 * 1024 * 1024));
             installWorker_ = std::thread(&PackageCoordinator::installMain, this);
         }
     }
@@ -509,7 +509,7 @@ private:
     std::deque<InstallChunk> queue_;
     std::thread installWorker_;
     size_t queuedBytes_ = 0;
-    size_t maxQueuedBytes_ = 8 * 1024 * 1024;
+    size_t maxQueuedBytes_ = 32 * 1024 * 1024;
     uint32_t producerFileIndex_ = UINT32_MAX;
     uint32_t producerOrdinal_ = 0;
     uint64_t producerOffset_ = 0;

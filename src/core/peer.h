@@ -3,7 +3,7 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#define MAX_PIPELINE   24      /* requests in flight per peer */
+#define MAX_PIPELINE   96      /* 1.5 MiB in flight keeps high-RTT peers busy */
 #define MAX_PEERS     96
 #define BT_HANDSHAKE_LEN 68
 #define PEER_BUF_SIZE (4 + 1 + (1<<14) + 9)  /* enough for one piece msg */
