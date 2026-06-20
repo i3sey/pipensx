@@ -352,6 +352,24 @@ static void test_metainfo_path_safety(void) {
     assert(!metainfo_path_is_safe("folder\\file"));
 }
 
+static void test_strict_order_advances_past_lookahead_window(void) {
+    metainfo_t mi;
+    init_single_file_metainfo(&mi, "ordered.bin", BLOCK_SIZE,
+                              40 * BLOCK_SIZE);
+    piece_mgr_t *pm = piece_mgr_create_ex(&mi, NULL, 1, NULL, 0);
+    assert(pm);
+
+    for (uint32_t i = 0; i < 32; i++)
+        pm->slots[i].state = PS_DONE;
+
+    uint8_t peer_bf[5] = {0};
+    bf_set(peer_bf, 32);
+    assert(piece_mgr_pick(pm, peer_bf, sizeof(peer_bf)) == 32);
+
+    piece_mgr_destroy(pm);
+    free_test_metainfo(&mi);
+}
+
 int main(void) {
     test_large_piece_and_short_last_piece();
     test_hash_mismatch_resets_all_blocks();
@@ -360,6 +378,7 @@ int main(void) {
     test_stream_sink_piece_is_verified_without_disk_readback();
     test_long_disk_path_uses_short_fallback();
     test_metainfo_path_safety();
+    test_strict_order_advances_past_lookahead_window();
     puts("piece tests passed");
     return 0;
 }

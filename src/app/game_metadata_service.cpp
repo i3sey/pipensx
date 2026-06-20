@@ -7,6 +7,7 @@ extern "C" {
 
 #include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <cstdio>
 #include <curl/curl.h>
 #include <fstream>
@@ -14,12 +15,23 @@ extern "C" {
 #include <sys/stat.h>
 #include <unistd.h>
 
+#define STB_IMAGE_STATIC
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_NO_STDIO
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
+#include <borealis/extern/nanovg/stb_image.h>
+#pragma GCC diagnostic pop
+
 namespace pipensx {
 namespace {
 
 constexpr size_t kMaxIndexBytes = 24 * 1024 * 1024;
 constexpr size_t kMaxDetailsBytes = 256 * 1024;
 constexpr size_t kMaxImageBytes = 3 * 1024 * 1024;
+constexpr size_t kMaxImageCacheBytes = 24 * 1024 * 1024;
+constexpr uint64_t kImageRetryDelayMs = 30 * 1000;
+constexpr size_t kImageWorkerCount = 2;
 
 struct HttpBuffer {
     std::vector<uint8_t> data;
@@ -157,6 +169,12 @@ std::string cacheNameForUrl(const std::string& url) {
     return hex20String(digest) + ".img";
 }
 
+uint64_t monotonicMilliseconds() {
+    return static_cast<uint64_t>(std::chrono::duration_cast<
+        std::chrono::milliseconds>(std::chrono::steady_clock::now()
+                                      .time_since_epoch()).count());
+}
+
 std::string stringValue(const nlohmann::json& item, const char* key) {
     if (!item.contains(key) || !item[key].is_string())
         return "";
@@ -215,6 +233,28 @@ GameMetadataService::GameMetadataService(std::string rootPath,
       bundledPath_(std::move(bundledPath)) {
     makeDirectories(cacheRoot_);
     makeDirectories(imageRoot_);
+    imageWorkers_.reserve(kImageWorkerCount);
+    for (size_t i = 0; i < kImageWorkerCount; ++i)
+        imageWorkers_.emplace_back(&GameMetadataService::imageWorkerMain, this);
+}
+
+GameMetadataService::~GameMetadataService() {
+    std::vector<ImageCallback> cancelled;
+    {
+        std::lock_guard<std::mutex> lock(imageMutex_);
+        stoppingImages_ = true;
+        imageQueue_.clear();
+        for (auto& request : imageRequests_)
+            for (auto& callback : request.second)
+                cancelled.push_back(std::move(callback));
+        imageRequests_.clear();
+    }
+    imageReady_.notify_all();
+    for (auto& callback : cancelled)
+        callback(nullptr);
+    for (std::thread& worker : imageWorkers_)
+        if (worker.joinable())
+            worker.join();
 }
 
 bool GameMetadataService::parseIndex(const std::string& json,
@@ -319,6 +359,7 @@ bool GameMetadataService::loadImage(const std::string& url,
         error = "No image URL.";
         return false;
     }
+
     std::string path = imageRoot_ + "/" + cacheNameForUrl(url);
     if (readFile(path, bytes, kMaxImageBytes, error))
         return true;
@@ -332,6 +373,142 @@ bool GameMetadataService::loadImage(const std::string& url,
     std::string writeError;
     writeAtomic(path, bytes, writeError);
     return true;
+}
+
+void GameMetadataService::requestImage(const std::string& url,
+                                       ImageCallback callback) const {
+    if (!callback)
+        return;
+    if (url.empty()) {
+        callback(nullptr);
+        return;
+    }
+
+    bool rejected = false;
+    {
+        std::lock_guard<std::mutex> lock(imageMutex_);
+        const uint64_t now = monotonicMilliseconds();
+        auto retry = imageRetryAfter_.find(url);
+        if (stoppingImages_ ||
+            (retry != imageRetryAfter_.end() && retry->second > now)) {
+            rejected = true;
+        } else {
+            if (retry != imageRetryAfter_.end())
+                imageRetryAfter_.erase(retry);
+            auto request = imageRequests_.find(url);
+            if (request != imageRequests_.end()) {
+                request->second.push_back(std::move(callback));
+                return;
+            }
+            imageRequests_[url].push_back(std::move(callback));
+            imageQueue_.push_back(url);
+        }
+    }
+    if (rejected) {
+        callback(nullptr);
+        return;
+    }
+    imageReady_.notify_one();
+}
+
+void GameMetadataService::cacheImageLocked(
+    const std::string& url, ImageData image) const {
+    if (!image)
+        return;
+    auto existing = imageCache_.find(url);
+    if (existing != imageCache_.end()) {
+        imageCacheBytes_ -= existing->second.image->pixels.size();
+        imageCache_.erase(existing);
+    }
+    const size_t bytes = image->pixels.size();
+    if (bytes > kMaxImageCacheBytes)
+        return;
+
+    while (imageCacheBytes_ + bytes > kMaxImageCacheBytes &&
+           !imageCache_.empty()) {
+        auto oldest = std::min_element(
+            imageCache_.begin(), imageCache_.end(),
+            [](const auto& left, const auto& right) {
+                return left.second.access < right.second.access;
+            });
+        imageCacheBytes_ -= oldest->second.image->pixels.size();
+        imageCache_.erase(oldest);
+    }
+    CachedImage cached;
+    cached.image = std::move(image);
+    cached.access = ++imageAccess_;
+    imageCacheBytes_ += bytes;
+    imageCache_[url] = std::move(cached);
+}
+
+void GameMetadataService::imageWorkerMain() const {
+    while (true) {
+        std::string url;
+        {
+            std::unique_lock<std::mutex> lock(imageMutex_);
+            imageReady_.wait(lock, [this] {
+                return stoppingImages_ || !imageQueue_.empty();
+            });
+            if (stoppingImages_)
+                return;
+            url = std::move(imageQueue_.front());
+            imageQueue_.pop_front();
+        }
+
+        ImageData result;
+        {
+            std::lock_guard<std::mutex> lock(imageMutex_);
+            auto cached = imageCache_.find(url);
+            if (cached != imageCache_.end()) {
+                cached->second.access = ++imageAccess_;
+                result = cached->second.image;
+            }
+        }
+
+        std::string error;
+        if (!result) {
+            std::vector<uint8_t> bytes;
+            if (loadImage(url, bytes, error)) {
+                int width = 0;
+                int height = 0;
+                int channels = 0;
+                stbi_uc* pixels = stbi_load_from_memory(
+                    bytes.data(), static_cast<int>(bytes.size()),
+                    &width, &height, &channels, 4);
+                const uint64_t decodedBytes = width > 0 && height > 0
+                    ? static_cast<uint64_t>(width) * height * 4 : 0;
+                if (pixels && width <= 4096 && height <= 4096 &&
+                    decodedBytes <= 64 * 1024 * 1024) {
+                    auto decoded = std::make_shared<DecodedImage>();
+                    decoded->width = width;
+                    decoded->height = height;
+                    decoded->pixels.assign(pixels, pixels + decodedBytes);
+                    result = std::move(decoded);
+                } else {
+                    error = "Unable to decode cached image.";
+                }
+                if (pixels)
+                    stbi_image_free(pixels);
+            }
+        }
+        bool loaded = static_cast<bool>(result);
+        std::vector<ImageCallback> callbacks;
+        {
+            std::lock_guard<std::mutex> lock(imageMutex_);
+            if (loaded && imageCache_.find(url) == imageCache_.end())
+                cacheImageLocked(url, result);
+            auto request = imageRequests_.find(url);
+            if (request != imageRequests_.end()) {
+                callbacks = std::move(request->second);
+                imageRequests_.erase(request);
+            }
+            if (!loaded)
+                imageRetryAfter_[url] = monotonicMilliseconds() +
+                                        kImageRetryDelayMs;
+        }
+        for (auto& callback : callbacks)
+            callback(result);
+    }
 }
 
 } // namespace pipensx

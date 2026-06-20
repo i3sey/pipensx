@@ -48,6 +48,25 @@ typedef struct {
     size_t   cap;
 } curl_buf_t;
 
+typedef struct {
+    tracker_cancel_cb callback;
+    void *user;
+} tracker_cancel_t;
+
+static int tracker_cancelled(const tracker_cancel_t *cancel) {
+    return cancel && cancel->callback && cancel->callback(cancel->user);
+}
+
+static int curl_progress_cb(void *user, curl_off_t download_total,
+                            curl_off_t download_now, curl_off_t upload_total,
+                            curl_off_t upload_now) {
+    (void)download_total;
+    (void)download_now;
+    (void)upload_total;
+    (void)upload_now;
+    return tracker_cancelled((const tracker_cancel_t *)user);
+}
+
 static size_t curl_write_cb(void *ptr, size_t sz, size_t nmemb, void *ud) {
     curl_buf_t *b = (curl_buf_t*)ud;
     size_t total = sz * nmemb;
@@ -67,8 +86,11 @@ static uint32_t http_announce_once(const char *url,
                                    uint8_t *compact_out, uint32_t max_peers,
                                    const antizapret_route_t *route,
                                    int *request_ok,
-                                   tracker_announce_result_t *result) {
+                                   tracker_announce_result_t *result,
+                                   const tracker_cancel_t *cancel) {
     *request_ok = 0;
+    if (tracker_cancelled(cancel))
+        return 0;
     char ih_enc[64], pid_enc[64];
     url_encode_hash(ih_enc, sizeof(ih_enc), info_hash, 20);
     url_encode_hash(pid_enc, sizeof(pid_enc), peer_id, 20);
@@ -98,6 +120,11 @@ static uint32_t http_announce_once(const char *url,
                       (long)CURL_SSLVERSION_MAX_TLSv1_2;
     curl_easy_setopt(curl, CURLOPT_SSLVERSION, tls12_only);
     curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
+    if (cancel && cancel->callback) {
+        curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+        curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, curl_progress_cb);
+        curl_easy_setopt(curl, CURLOPT_XFERINFODATA, (void *)cancel);
+    }
     if (route && route->type != ANTIZAPRET_ROUTE_DIRECT) {
         curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, 35L);
@@ -110,7 +137,9 @@ static uint32_t http_announce_once(const char *url,
     curl_easy_cleanup(curl);
 
     if (rc != CURLE_OK || status < 200 || status >= 300) {
-        if (rc != CURLE_OK)
+        if (rc == CURLE_ABORTED_BY_CALLBACK && tracker_cancelled(cancel))
+            log_msg("[tracker] HTTP %s: cancelled\n", url);
+        else if (rc != CURLE_OK)
             log_msg("[tracker] HTTP %s: %s\n", url, curl_easy_strerror(rc));
         else
             log_msg("[tracker] HTTP %s: status %ld\n", url, status);
@@ -171,7 +200,8 @@ static uint32_t http_announce(const char *url,
                               uint16_t listen_port,
                               int64_t downloaded, int64_t left,
                               uint8_t *compact_out, uint32_t max_peers,
-                              tracker_announce_result_t *result) {
+                              tracker_announce_result_t *result,
+                              const tracker_cancel_t *cancel) {
     int target = antizapret_is_enabled() && antizapret_is_target_url(url);
     int prefer_proxy = target && antizapret_proxy_preferred();
     int request_ok = 0;
@@ -180,12 +210,12 @@ static uint32_t http_announce(const char *url,
     if (!prefer_proxy) {
         count = http_announce_once(url, info_hash, peer_id, listen_port,
                                    downloaded, left, compact_out, max_peers,
-                                   NULL, &request_ok, result);
+                                   NULL, &request_ok, result, cancel);
         if (request_ok)
             return count;
     }
 
-    if (target) {
+    if (target && !tracker_cancelled(cancel)) {
         antizapret_route_t routes[ANTIZAPRET_MAX_ROUTES];
         size_t route_count =
             antizapret_get_routes(routes, ANTIZAPRET_MAX_ROUTES);
@@ -195,18 +225,21 @@ static uint32_t http_announce(const char *url,
             if (!antizapret_route_supported(&routes[i]))
                 continue;
             for (int attempt = 1; attempt <= 3; ++attempt) {
+                if (tracker_cancelled(cancel))
+                    return 0;
                 count = http_announce_once(url, info_hash, peer_id,
                                            listen_port, downloaded, left,
                                            compact_out, max_peers, &routes[i],
-                                           &request_ok, result);
+                                           &request_ok, result, cancel);
                 if (request_ok) {
                     antizapret_note_proxy_success();
                     log_msg("[tracker] RuTracker announce used %s\n",
                             antizapret_route_name(&routes[i]));
                     return count;
                 }
-                log_msg("[tracker] %s announce attempt %d/3 failed\n",
-                        antizapret_route_name(&routes[i]), attempt);
+                if (!tracker_cancelled(cancel))
+                    log_msg("[tracker] %s announce attempt %d/3 failed\n",
+                            antizapret_route_name(&routes[i]), attempt);
             }
         }
     }
@@ -214,7 +247,7 @@ static uint32_t http_announce(const char *url,
     if (prefer_proxy)
         return http_announce_once(url, info_hash, peer_id, listen_port,
                                   downloaded, left, compact_out, max_peers,
-                                  NULL, &request_ok, result);
+                                  NULL, &request_ok, result, cancel);
     return 0;
 }
 
@@ -311,14 +344,32 @@ uint32_t tracker_announce_url_ex(const char *url,
                                  int64_t downloaded, int64_t left,
                                  uint8_t *compact_out, uint32_t max_peers,
                                  tracker_announce_result_t *result) {
+    return tracker_announce_url_ex_cancel(
+        url, info_hash, peer_id, listen_port, downloaded, left, compact_out,
+        max_peers, result, NULL, NULL);
+}
+
+uint32_t tracker_announce_url_ex_cancel(
+                                 const char *url,
+                                 const uint8_t *info_hash,
+                                 const uint8_t *peer_id,
+                                 uint16_t listen_port,
+                                 int64_t downloaded, int64_t left,
+                                 uint8_t *compact_out, uint32_t max_peers,
+                                 tracker_announce_result_t *result,
+                                 tracker_cancel_cb cancel_callback,
+                                 void *cancel_user) {
     tracker_result_init(result);
     if (!url || !info_hash || !peer_id || !compact_out || !max_peers)
         return 0;
     uint32_t count = 0;
+    tracker_cancel_t cancel = { cancel_callback, cancel_user };
+    if (tracker_cancelled(&cancel))
+        return 0;
     if (strncmp(url, "http", 4) == 0) {
         count = http_announce(url, info_hash, peer_id, listen_port,
                               downloaded, left, compact_out, max_peers,
-                              result);
+                              result, &cancel);
         if (result)
             result->peers = count;
         return count;

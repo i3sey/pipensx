@@ -73,7 +73,8 @@ $(MANAGER_TEST_TARGET): tests/test_manager.o src/app/download_manager.o \
 
 $(PACKAGE_TEST_TARGET): tests/test_package_stream.cpp \
 		src/install/package_stream.o src/install/install_backend_pc.o
-	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(INSTALL_LDFLAGS)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(INSTALL_LDFLAGS) -pthread
+
 
 src/app/catalog_service.o: src/app/catalog_service.cpp
 	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<

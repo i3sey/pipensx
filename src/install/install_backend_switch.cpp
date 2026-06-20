@@ -308,9 +308,16 @@ public:
         current_->id = id;
         current_->meta = name.size() >= 9 &&
                          name.substr(name.size() - 9) == ".cnmt.nca";
-        log_msg("[install] NCA begin '%s' size=%llu id=%s meta=%d\n",
-                name.c_str(), static_cast<unsigned long long>(size),
-                hexBytes(id.c, sizeof(id.c)).c_str(), current_->meta ? 1 : 0);
+        if (size == 0) {
+            log_msg("[install] NCA begin '%s' size=pending id=%s meta=%d\n",
+                    name.c_str(), hexBytes(id.c, sizeof(id.c)).c_str(),
+                    current_->meta ? 1 : 0);
+        } else {
+            log_msg("[install] NCA begin '%s' size=%llu id=%s meta=%d\n",
+                    name.c_str(), static_cast<unsigned long long>(size),
+                    hexBytes(id.c, sizeof(id.c)).c_str(),
+                    current_->meta ? 1 : 0);
+        }
         return size == 0 || setFileSize(size);
     }
 
@@ -321,6 +328,9 @@ public:
         }
         current_->size = size;
         expected_ += size;
+        log_msg("[install] NCA size resolved '%s' bytes=%llu\n",
+                current_->name.c_str(),
+                static_cast<unsigned long long>(size));
         bool exists = false;
         Result rc = ncmContentStorageHas(&storage_, &exists, &current_->id);
         if (R_FAILED(rc)) {

@@ -86,6 +86,8 @@ piece_mgr_t *piece_mgr_create_ex(const metainfo_t *mi, storage_t *store,
     return pm;
 }
 
+#define STRICT_ORDER_LOOKAHEAD 32
+
 piece_mgr_t *piece_mgr_create(const metainfo_t *mi, storage_t *store) {
     return piece_mgr_create_ex(mi, store, 0, NULL, 0);
 }
@@ -282,16 +284,25 @@ uint32_t piece_mgr_pick(const piece_mgr_t *pm,
     if (pm->strict_order) {
         uint32_t count = pm->piece_order_count
                        ? pm->piece_order_count : pm->num_pieces;
+        uint32_t unfinished = 0;
+        uint32_t pending_candidate = (uint32_t)-1;
         for (uint32_t n = 0; n < count; n++) {
             uint32_t i = pm->piece_order_count ? pm->piece_order[n] : n;
             if (i >= pm->num_pieces)
                 continue;
             if (pm->slots[i].state == PS_DONE)
                 continue;
-            if (i / 8 < bf_bytes && bf_has(peer_bf, i))
-                return i;
-            return (uint32_t)-1;
+            if (unfinished++ >= STRICT_ORDER_LOOKAHEAD)
+                break;
+            if (i / 8 < bf_bytes && bf_has(peer_bf, i)) {
+                if (pm->slots[i].state == PS_EMPTY)
+                    return i;
+                if (pending_candidate == (uint32_t)-1)
+                    pending_candidate = i;
+            }
         }
+        if (pending_candidate != (uint32_t)-1)
+            return pending_candidate;
         return (uint32_t)-1;
     }
 

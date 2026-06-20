@@ -10,15 +10,19 @@ extern "C" {
 
 #include <cerrno>
 #include <cctype>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <dirent.h>
 #include <fstream>
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <sys/stat.h>
+#include <thread>
 #include <unistd.h>
 
 namespace pipensx {
@@ -155,16 +159,31 @@ public:
         uint32_t, const std::string&, uint64_t, uint64_t, DownloadStatus)>;
 
     PackageCoordinator(const metainfo_t& metainfo, std::string taskId,
-                       const std::string& workingRoot,
+                       const std::string& workingRoot, bool streamInstall,
+                       const std::vector<uint8_t>& fileSelection,
                        uint32_t completedPackages, Progress progress)
         : metainfo_(metainfo), taskId_(std::move(taskId)),
-          backend_(install::createInstallBackend(workingRoot)),
+          backend_(streamInstall ? install::createInstallBackend(workingRoot)
+                                 : nullptr),
+          streamInstall_(streamInstall),
           completedPackages_(completedPackages),
+          initialCompletedPackages_(completedPackages),
+          producerOrdinal_(completedPackages),
           progress_(std::move(progress)) {
+        bool useSelection = !fileSelection.empty();
+        if (useSelection && fileSelection.size() != metainfo_.num_files) {
+            error_ = "Selected file mask does not match the torrent.";
+            return;
+        }
         configs_.resize(metainfo_.num_files);
         uint32_t ordinal = 0;
         for (uint32_t i = 0; i < metainfo_.num_files; ++i) {
-            if (!hasPackageExtension(metainfo_.files[i].path)) {
+            bool selected = !useSelection || fileSelection[i] != 0;
+            if (!selected) {
+                configs_[i].mode = STORAGE_FILE_SKIP;
+                continue;
+            }
+            if (!hasPackageExtension(metainfo_.files[i].path) || !streamInstall_) {
                 configs_[i].mode = STORAGE_FILE_DISK;
                 continue;
             }
@@ -177,9 +196,18 @@ public:
         }
         packageCount_ = ordinal;
         buildPieceOrder();
+        if (streamInstall_ && error_.empty() && packageCount_ > completedPackages_) {
+            const uint64_t pieceLength = metainfo_.piece_length > 0
+                ? static_cast<uint64_t>(metainfo_.piece_length)
+                : 4 * 1024 * 1024;
+            maxQueuedBytes_ = static_cast<size_t>(std::min<uint64_t>(
+                pieceLength * 2, 16 * 1024 * 1024));
+            installWorker_ = std::thread(&PackageCoordinator::installMain, this);
+        }
     }
 
     ~PackageCoordinator() {
+        cancel();
         if (backend_)
             backend_->rollbackPackage();
     }
@@ -189,9 +217,32 @@ public:
     }
     const std::vector<uint32_t>& pieceOrder() const { return pieceOrder_; }
     uint32_t packageCount() const { return packageCount_; }
-    const std::string& error() const { return error_; }
+    std::string error() const {
+        std::lock_guard<std::mutex> lock(queueMutex_);
+        return error_;
+    }
+
+    bool finish() {
+        if (!installWorker_.joinable())
+            return error().empty();
+        std::unique_lock<std::mutex> lock(queueMutex_);
+        accepting_ = false;
+        queueReady_.notify_all();
+        drained_.wait(lock, [this] {
+            return !error_.empty() || (queue_.empty() && !processing_);
+        });
+        drainComplete_ = error_.empty();
+        return drainComplete_;
+    }
 
 private:
+    struct InstallChunk {
+        uint32_t fileIndex = UINT32_MAX;
+        uint64_t fileOffset = 0;
+        std::vector<uint8_t> data;
+        bool final = false;
+    };
+
     static int sinkThunk(void* user, uint32_t fileIndex,
                          int64_t fileOffset, const uint8_t* data, size_t size) {
         return static_cast<PackageCoordinator*>(user)->sink(
@@ -203,35 +254,73 @@ private:
         auto ordinalIt = packageOrdinals_.find(fileIndex);
         if (fileIndex >= metainfo_.num_files ||
             ordinalIt == packageOrdinals_.end()) {
-            error_ = "Invalid package stream routing.";
-            return false;
+            return setError("Invalid package stream routing.");
         }
-        if (ordinalIt->second < completedPackages_)
+        if (ordinalIt->second < initialCompletedPackages_)
             return true;
         const mi_file_t& file = metainfo_.files[fileIndex];
+        if (fileOffset < 0 || !data || size == 0)
+            return setError("Invalid package stream chunk.");
+
+        std::unique_lock<std::mutex> lock(queueMutex_);
+        if (!error_.empty() || !accepting_)
+            return false;
+        if (producerFileIndex_ == UINT32_MAX) {
+            if (fileOffset != 0 || ordinalIt->second != producerOrdinal_)
+                return setErrorLocked("Package stream did not start in order.");
+            producerFileIndex_ = fileIndex;
+            producerOffset_ = 0;
+        }
+        if (producerFileIndex_ != fileIndex ||
+            static_cast<uint64_t>(fileOffset) != producerOffset_)
+            return setErrorLocked("Package bytes arrived out of order.");
+
+        queueSpace_.wait(lock, [this, size] {
+            return !error_.empty() || !accepting_ ||
+                   queuedBytes_ == 0 || queuedBytes_ + size <= maxQueuedBytes_;
+        });
+        if (!error_.empty() || !accepting_)
+            return false;
+
+        InstallChunk chunk;
+        chunk.fileIndex = fileIndex;
+        chunk.fileOffset = static_cast<uint64_t>(fileOffset);
+        chunk.data.assign(data, data + size);
+        chunk.final = chunk.fileOffset + size == static_cast<uint64_t>(file.length);
+        queuedBytes_ += size;
+        producerOffset_ += size;
+        queue_.push_back(std::move(chunk));
+        if (queue_.back().final) {
+            producerFileIndex_ = UINT32_MAX;
+            producerOffset_ = 0;
+            ++producerOrdinal_;
+        }
+        queueReady_.notify_one();
+        return true;
+    }
+
+    bool processChunk(const InstallChunk& chunk) {
+        const mi_file_t& file = metainfo_.files[chunk.fileIndex];
         if (!stream_) {
-            if (fileOffset != 0) {
-                error_ = "Package stream did not start at offset zero.";
-                return false;
-            }
+            if (chunk.fileOffset != 0)
+                return setError("Package stream did not start at offset zero.");
             if (!backend_->beginPackage(taskId_, file.path)) {
-                error_ = backend_->error();
-                return false;
+                return setError(backend_->error());
             }
-            activeFileIndex_ = fileIndex;
+            activeFileIndex_ = chunk.fileIndex;
             currentPackage_ = file.path;
             install::PackageCallbacks callbacks;
             callbacks.beginFile = [this](const std::string& name,
                                          uint64_t fileSize) {
                 bool ok = backend_->beginFile(name, fileSize);
                 if (!ok)
-                    error_ = backend_->error();
+                    setError(backend_->error());
                 return ok;
             };
             callbacks.setFileSize = [this](uint64_t fileSize) {
                 bool ok = backend_->setFileSize(fileSize);
                 if (!ok)
-                    error_ = backend_->error();
+                    setError(backend_->error());
                 return ok;
             };
             callbacks.writeFile = [this](const uint8_t* bytes,
@@ -243,14 +332,14 @@ private:
                               backend_->expectedBytes(),
                               DownloadStatus::Installing);
                 } else {
-                    error_ = backend_->error();
+                    setError(backend_->error());
                 }
                 return ok;
             };
             callbacks.endFile = [this] {
                 bool ok = backend_->endFile();
                 if (!ok)
-                    error_ = backend_->error();
+                    setError(backend_->error());
                 return ok;
             };
             stream_ = std::make_unique<install::PackageStream>(
@@ -258,39 +347,38 @@ private:
             progress_(completedPackages_, currentPackage_, 0, 0,
                       DownloadStatus::Installing);
         }
-        if (activeFileIndex_ != fileIndex ||
-            static_cast<uint64_t>(fileOffset) != stream_->consumed()) {
-            error_ = "Package bytes arrived out of order.";
-            return false;
-        }
-        if (!stream_->write(data, size)) {
-            if (error_.empty())
-                error_ = stream_->error();
+        if (activeFileIndex_ != chunk.fileIndex ||
+            chunk.fileOffset != stream_->consumed())
+            return setError("Install worker received bytes out of order.");
+        if (!stream_->write(chunk.data.data(), chunk.data.size())) {
+            if (error().empty())
+                setError(stream_->error());
             log_msg("[install] stream error package='%s' offset=%lld: %s\n",
                     currentPackage_.c_str(),
-                    static_cast<long long>(fileOffset), error_.c_str());
+                    static_cast<long long>(chunk.fileOffset), error().c_str());
             backend_->rollbackPackage();
             return false;
         }
-        if (static_cast<uint64_t>(fileOffset) + size ==
-            static_cast<uint64_t>(file.length)) {
+        if (chunk.final) {
+            if (cancelRequested_)
+                return false;
             progress_(completedPackages_, currentPackage_,
                       backend_->installedBytes(),
                       backend_->expectedBytes(),
                       DownloadStatus::Committing);
             if (!stream_->finish()) {
-                if (error_.empty())
-                    error_ = stream_->error();
+                if (error().empty())
+                    setError(stream_->error());
                 log_msg("[install] finalize error package='%s': %s\n",
-                        currentPackage_.c_str(), error_.c_str());
+                        currentPackage_.c_str(), error().c_str());
                 backend_->rollbackPackage();
                 return false;
             }
             bool alreadyInstalled = false;
             if (!backend_->commitPackage(alreadyInstalled)) {
-                error_ = backend_->error();
+                setError(backend_->error());
                 log_msg("[install] commit error package='%s': %s\n",
-                        currentPackage_.c_str(), error_.c_str());
+                        currentPackage_.c_str(), error().c_str());
                 backend_->rollbackPackage();
                 return false;
             }
@@ -302,6 +390,78 @@ private:
             currentPackage_.clear();
         }
         return true;
+    }
+
+    bool setError(const std::string& message) {
+        std::lock_guard<std::mutex> lock(queueMutex_);
+        return setErrorLocked(message);
+    }
+
+    bool setErrorLocked(const std::string& message) {
+        if (error_.empty())
+            error_ = message.empty() ? "Installation pipeline failed." : message;
+        accepting_ = false;
+        queueReady_.notify_all();
+        queueSpace_.notify_all();
+        drained_.notify_all();
+        return false;
+    }
+
+    void installMain() {
+        log_msg("[install] worker started queue=%zu bytes\n", maxQueuedBytes_);
+        while (true) {
+            InstallChunk chunk;
+            {
+                std::unique_lock<std::mutex> lock(queueMutex_);
+                queueReady_.wait(lock, [this] {
+                    return stopping_ || !queue_.empty();
+                });
+                if (stopping_)
+                    break;
+                chunk = std::move(queue_.front());
+                queue_.pop_front();
+                queuedBytes_ -= chunk.data.size();
+                processing_ = true;
+                queueSpace_.notify_all();
+            }
+
+            bool ok = processChunk(chunk);
+            {
+                std::lock_guard<std::mutex> lock(queueMutex_);
+                processing_ = false;
+                if (!ok) {
+                    queue_.clear();
+                    queuedBytes_ = 0;
+                }
+                if (queue_.empty())
+                    drained_.notify_all();
+            }
+            if (!ok)
+                break;
+        }
+        log_msg("[install] worker stopped\n");
+        std::lock_guard<std::mutex> lock(queueMutex_);
+        processing_ = false;
+        drained_.notify_all();
+        queueSpace_.notify_all();
+    }
+
+    void cancel() {
+        if (!installWorker_.joinable())
+            return;
+        cancelRequested_ = true;
+        {
+            std::lock_guard<std::mutex> lock(queueMutex_);
+            stopping_ = true;
+            accepting_ = false;
+            if (!drainComplete_) {
+                queue_.clear();
+                queuedBytes_ = 0;
+            }
+        }
+        queueReady_.notify_all();
+        queueSpace_.notify_all();
+        installWorker_.join();
     }
 
     void buildPieceOrder() {
@@ -332,14 +492,32 @@ private:
     const metainfo_t& metainfo_;
     std::string taskId_;
     std::unique_ptr<install::InstallBackend> backend_;
+    bool streamInstall_ = false;
     std::vector<storage_file_config_t> configs_;
     std::vector<uint32_t> pieceOrder_;
     std::map<uint32_t, uint32_t> packageOrdinals_;
     std::unique_ptr<install::PackageStream> stream_;
     uint32_t completedPackages_ = 0;
+    uint32_t initialCompletedPackages_ = 0;
     uint32_t packageCount_ = 0;
     uint32_t activeFileIndex_ = UINT32_MAX;
     std::string currentPackage_;
+    mutable std::mutex queueMutex_;
+    std::condition_variable queueReady_;
+    std::condition_variable queueSpace_;
+    std::condition_variable drained_;
+    std::deque<InstallChunk> queue_;
+    std::thread installWorker_;
+    size_t queuedBytes_ = 0;
+    size_t maxQueuedBytes_ = 8 * 1024 * 1024;
+    uint32_t producerFileIndex_ = UINT32_MAX;
+    uint32_t producerOrdinal_ = 0;
+    uint64_t producerOffset_ = 0;
+    bool accepting_ = true;
+    bool stopping_ = false;
+    bool processing_ = false;
+    bool drainComplete_ = false;
+    std::atomic<bool> cancelRequested_ {false};
     std::string error_;
     Progress progress_;
 };
@@ -428,24 +606,46 @@ bool DownloadManager::previewTorrent(const std::string& path,
     preview.totalBytes = static_cast<uint64_t>(metainfo.total_length);
     preview.fileCount = metainfo.num_files;
     preview.trackerCount = metainfo.num_trackers;
-    for (uint32_t i = 0; i < metainfo.num_files; ++i)
-        if (hasPackageExtension(metainfo.files[i].path))
+    preview.files.reserve(metainfo.num_files);
+    for (uint32_t i = 0; i < metainfo.num_files; ++i) {
+        TorrentPreview::File file;
+        file.path = metainfo.files[i].path;
+        file.length = static_cast<uint64_t>(metainfo.files[i].length);
+        file.package = hasPackageExtension(metainfo.files[i].path);
+        if (file.package)
             ++preview.packageCount;
+        preview.files.push_back(std::move(file));
+    }
     metainfo_free(&metainfo);
     return true;
 }
 
 bool DownloadManager::importTorrent(const std::string& path,
                                     TransferMode mode,
+                                    const std::vector<uint8_t>& selectedFiles,
                                     std::string& taskId,
                                     std::string& error) {
     TorrentPreview preview;
     if (!previewTorrent(path, preview, error))
         return false;
-    if (mode == TransferMode::StreamInstall && preview.packageCount == 0) {
-        error = "This torrent does not contain NSP or NSZ packages.";
+    if (!selectedFiles.empty() && selectedFiles.size() != preview.files.size()) {
+        error = "Selected file list does not match torrent contents.";
         return false;
     }
+
+    std::vector<uint8_t> selection = selectedFiles;
+    bool useSelection = !selection.empty();
+    uint32_t selectedPackageCount = 0;
+    bool hasSelectedPackages = false;
+    for (size_t i = 0; i < preview.files.size(); ++i) {
+        bool selected = !useSelection || selection[i] != 0;
+        if (selected && preview.files[i].package) {
+            hasSelectedPackages = true;
+            ++selectedPackageCount;
+        }
+    }
+    if (!hasSelectedPackages)
+        mode = TransferMode::DownloadOnly;
 
     std::lock_guard<std::mutex> lock(mutex_);
     if (findLocked(preview.infoHash)) {
@@ -474,7 +674,9 @@ bool DownloadManager::importTorrent(const std::string& path,
     task.totalBytes = preview.totalBytes;
     task.status = DownloadStatus::Queued;
     task.mode = mode;
-    task.packageCount = preview.packageCount;
+    task.packageCount = mode == TransferMode::StreamInstall
+                        ? selectedPackageCount : 0;
+    task.fileSelection = std::move(selection);
     tasks_.push_back(std::move(task));
     taskId = preview.infoHash;
 
@@ -588,12 +790,14 @@ bool DownloadManager::saveLocked(std::string& error) const {
         state << "4:name" << bstr(task.name);
         state << "13:package-count" << bint(task.packageCount);
         state << "13:packages-done" << bint(task.packagesInstalled);
+        state << "9:selection" << bstr(std::string(task.fileSelection.begin(),
+                                                   task.fileSelection.end()));
         state << "6:status" << bstr(persistedStatus(task.status));
         state << "5:total" << bint(task.totalBytes);
         state << "e";
     }
     state << "e";
-    state << "7:versioni2e";
+    state << "7:versioni3e";
     state << "e";
 
     std::string temporary = statePath_ + ".tmp";
@@ -612,8 +816,9 @@ bool DownloadManager::saveLocked(std::string& error) const {
     }
     if (rename(temporary.c_str(), statePath_.c_str()) != 0) {
         int renameErrno = errno;
-        log_msg("[manager] queue state rename failed: %s\n",
-                std::strerror(renameErrno));
+        if (renameErrno != EEXIST)
+            log_msg("[manager] queue state rename failed: %s\n",
+                    std::strerror(renameErrno));
         if (unlink(statePath_.c_str()) != 0 && errno != ENOENT) {
             int unlinkErrno = errno;
             unlink(temporary.c_str());
@@ -648,7 +853,7 @@ void DownloadManager::load() {
     if (!be_dict_get(root.buf, root.buf + root.raw_len, "version", 7,
                      &version) ||
         version.type != BE_INT ||
-        (version.ival != 1 && version.ival != 2))
+        (version.ival != 1 && version.ival != 2 && version.ival != 3))
         return;
 
     be_node_t list;
@@ -683,6 +888,12 @@ void DownloadManager::load() {
             if (dictionaryInteger(item, "packages-done", packagesDone))
                 task.packagesInstalled =
                     static_cast<uint32_t>(packagesDone);
+        }
+        if (version.ival >= 3) {
+            std::string selection;
+            if (dictionaryString(item, "selection", selection)) {
+                task.fileSelection.assign(selection.begin(), selection.end());
+            }
         }
         task.status = persistedStatus(status);
         if (task.status == DownloadStatus::Completed ||
@@ -751,6 +962,7 @@ void DownloadManager::workerMain() {
         std::string dataPath;
         TransferMode mode = TransferMode::DownloadOnly;
         uint32_t packagesInstalled = 0;
+        std::vector<uint8_t> fileSelection;
         {
             std::unique_lock<std::mutex> lock(mutex_);
             condition_.wait(lock, [this] {
@@ -771,6 +983,7 @@ void DownloadManager::workerMain() {
                     dataPath = task.dataPath;
                     mode = task.mode;
                     packagesInstalled = task.packagesInstalled;
+                    fileSelection = task.fileSelection;
                     break;
                 }
             }
@@ -790,9 +1003,11 @@ void DownloadManager::workerMain() {
 
         std::unique_ptr<PackageCoordinator> coordinator;
         torrent_options_t options {};
-        if (mode == TransferMode::StreamInstall) {
+        {
             coordinator = std::make_unique<PackageCoordinator>(
-                metainfo, activeId, rootPath_, packagesInstalled,
+                metainfo, activeId, rootPath_,
+                mode == TransferMode::StreamInstall, fileSelection,
+                packagesInstalled,
                 [this, activeId](uint32_t completed,
                                  const std::string& package,
                                  uint64_t installed, uint64_t expected,
@@ -814,11 +1029,25 @@ void DownloadManager::workerMain() {
                         saveLocked(ignored);
                     }
                 });
+            if (!coordinator->error().empty()) {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (DownloadTask* task = findLocked(activeId)) {
+                    task->status = DownloadStatus::Error;
+                    task->error = coordinator->error();
+                    std::string ignored;
+                    saveLocked(ignored);
+                }
+                coordinator.reset();
+                metainfo_free(&metainfo);
+                continue;
+            }
             options.files = coordinator->configs().data();
-            options.strict_piece_order = 1;
-            options.piece_order = coordinator->pieceOrder().data();
-            options.piece_order_count =
-                static_cast<uint32_t>(coordinator->pieceOrder().size());
+            if (mode == TransferMode::StreamInstall) {
+                options.strict_piece_order = 1;
+                options.piece_order = coordinator->pieceOrder().data();
+                options.piece_order_count =
+                    static_cast<uint32_t>(coordinator->pieceOrder().size());
+            }
             std::lock_guard<std::mutex> lock(mutex_);
             if (DownloadTask* task = findLocked(activeId))
                 task->packageCount = coordinator->packageCount();
@@ -835,6 +1064,7 @@ void DownloadManager::workerMain() {
                 std::string ignored;
                 saveLocked(ignored);
             }
+            coordinator.reset();
             metainfo_free(&metainfo);
             continue;
         }
@@ -877,19 +1107,32 @@ void DownloadManager::workerMain() {
                 }
                 if (running < 0) {
                     task->status = DownloadStatus::Error;
-                    task->error = coordinator && !coordinator->error().empty()
-                                ? coordinator->error()
-                                : torrent_last_error(torrent);
+                    std::string installError = coordinator
+                        ? coordinator->error() : std::string();
+                    task->error = !installError.empty()
+                        ? installError : torrent_last_error(torrent);
                     task->speedBytesPerSecond = 0;
-                } else if (!running) {
-                    if (mode == TransferMode::StreamInstall &&
-                        task->packagesInstalled != task->packageCount) {
+                }
+            }
+            if (running < 0)
+                break;
+            if (!running) {
+                bool installOk = mode != TransferMode::StreamInstall ||
+                                 coordinator->finish();
+                std::lock_guard<std::mutex> lock(mutex_);
+                DownloadTask* task = findLocked(activeId);
+                if (task && task->status != DownloadStatus::Removing &&
+                    task->status != DownloadStatus::Paused) {
+                    if (!installOk) {
+                        task->status = DownloadStatus::Error;
+                        task->error = coordinator->error();
+                    } else if (mode == TransferMode::StreamInstall &&
+                               task->packagesInstalled != task->packageCount) {
                         task->status = DownloadStatus::Error;
                         task->error =
                             "Torrent ended before all packages were installed.";
                     } else {
-                        task->status =
-                            mode == TransferMode::StreamInstall
+                        task->status = mode == TransferMode::StreamInstall
                             ? DownloadStatus::Installed
                             : DownloadStatus::Completed;
                         finished = true;
@@ -899,13 +1142,13 @@ void DownloadManager::workerMain() {
                     log_msg("[manager] completed %s, destroying torrent\n",
                             activeId.c_str());
                 }
-            }
-            if (running <= 0)
                 break;
+            }
         }
 
         torrent_destroy(torrent);
         log_msg("[manager] torrent destroyed %s\n", activeId.c_str());
+        coordinator.reset();
         metainfo_free(&metainfo);
 
         {

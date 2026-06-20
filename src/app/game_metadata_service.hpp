@@ -1,7 +1,13 @@
 #pragma once
 
+#include <condition_variable>
 #include <cstdint>
+#include <deque>
+#include <functional>
+#include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -24,9 +30,22 @@ struct GameMetadata {
 
 class GameMetadataService {
 public:
+    struct DecodedImage {
+        int width = 0;
+        int height = 0;
+        std::vector<uint8_t> pixels;
+    };
+
+    using ImageData = std::shared_ptr<const DecodedImage>;
+    using ImageCallback = std::function<void(ImageData)>;
+
     explicit GameMetadataService(std::string rootPath,
                                  std::string bundledPath =
                                      "romfs:/catalog/game_metadata_index.json");
+    ~GameMetadataService();
+
+    GameMetadataService(const GameMetadataService&) = delete;
+    GameMetadataService& operator=(const GameMetadataService&) = delete;
 
     bool load(std::string& error);
     const GameMetadata* findByInfoHash(const std::string& infoHash) const;
@@ -34,6 +53,7 @@ public:
                         std::string& error) const;
     bool loadImage(const std::string& url, std::vector<uint8_t>& bytes,
                    std::string& error) const;
+    void requestImage(const std::string& url, ImageCallback callback) const;
 
     size_t size() const { return byHash_.size(); }
 
@@ -42,10 +62,30 @@ public:
                            std::string& error);
 
 private:
+    struct CachedImage {
+        ImageData image;
+        uint64_t access = 0;
+    };
+
+    void imageWorkerMain() const;
+    void cacheImageLocked(const std::string& url,
+                          ImageData image) const;
+
     std::string rootPath_;
     std::string cacheRoot_;
     std::string imageRoot_;
     std::string bundledPath_;
+    mutable std::mutex imageMutex_;
+    mutable std::condition_variable imageReady_;
+    mutable std::deque<std::string> imageQueue_;
+    mutable std::unordered_map<std::string, std::vector<ImageCallback>>
+        imageRequests_;
+    mutable std::unordered_map<std::string, CachedImage> imageCache_;
+    mutable std::unordered_map<std::string, uint64_t> imageRetryAfter_;
+    mutable std::vector<std::thread> imageWorkers_;
+    mutable size_t imageCacheBytes_ = 0;
+    mutable uint64_t imageAccess_ = 0;
+    mutable bool stoppingImages_ = false;
     std::unordered_map<std::string, GameMetadata> byHash_;
 };
 

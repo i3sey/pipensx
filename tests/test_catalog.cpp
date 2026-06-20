@@ -4,15 +4,25 @@
 
 extern "C" {
 #include "core/sha1.h"
+#include "core/tracker.h"
 }
 
 #include <cassert>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <curl/curl.h>
+#include <fstream>
+#include <mutex>
+#include <netinet/in.h>
 #include <string>
+#include <sys/stat.h>
+#include <sys/socket.h>
+#include <thread>
+#include <unistd.h>
 #include <vector>
 
 using pipensx::CatalogEntry;
@@ -159,6 +169,125 @@ void testMetadataIndexParsing() {
     assert(!GameMetadataService::parseIndex("{}", items, error));
 }
 
+void testAsyncImageDiskCache() {
+    std::string root = "/tmp/pipensx-image-test-" +
+                       std::to_string(static_cast<long long>(getpid()));
+    std::string catalog = root + "/catalog";
+    std::string images = catalog + "/images";
+    mkdir(root.c_str(), 0755);
+    mkdir(catalog.c_str(), 0755);
+    mkdir(images.c_str(), 0755);
+
+    const std::string url = "https://example.invalid/cached-cover.jpg";
+    uint8_t digest[20];
+    sha1(url.data(), url.size(), digest);
+    static const char digits[] = "0123456789abcdef";
+    std::string cacheName(40, '0');
+    for (size_t i = 0; i < 20; ++i) {
+        cacheName[i * 2] = digits[digest[i] >> 4];
+        cacheName[i * 2 + 1] = digits[digest[i] & 15];
+    }
+    const std::vector<uint8_t> expected {
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+        0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+        0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+        0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+        0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41,
+        0x54, 0x08, 0xd7, 0x63, 0xf8, 0xcf, 0xc0, 0xf0,
+        0x1f, 0x00, 0x05, 0x00, 0x01, 0xff, 0x89, 0x99,
+        0x3d, 0x1d, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45,
+        0x4e, 0x44, 0xae, 0x42, 0x60, 0x82
+    };
+    {
+        std::ofstream output(images + "/" + cacheName + ".img",
+                             std::ios::binary | std::ios::trunc);
+        output.write(reinterpret_cast<const char*>(expected.data()),
+                     static_cast<std::streamsize>(expected.size()));
+        assert(output.good());
+    }
+
+    std::mutex mutex;
+    std::condition_variable ready;
+    std::vector<GameMetadataService::ImageData> results;
+    {
+        GameMetadataService service(root, root + "/missing-index.json");
+        auto callback = [&](GameMetadataService::ImageData data) {
+            std::lock_guard<std::mutex> lock(mutex);
+            results.push_back(std::move(data));
+            ready.notify_all();
+        };
+        service.requestImage(url, callback);
+        service.requestImage(url, callback);
+        std::unique_lock<std::mutex> lock(mutex);
+        assert(ready.wait_for(lock, std::chrono::seconds(5), [&] {
+            return results.size() == 2;
+        }));
+        assert(results[0] && results[1]);
+        assert(results[0]->width == 1 && results[0]->height == 1);
+        assert(results[0]->pixels.size() == 4);
+        assert(results[1]->pixels == results[0]->pixels);
+        assert(results[0].get() == results[1].get());
+    }
+    std::remove((images + "/" + cacheName + ".img").c_str());
+    rmdir(images.c_str());
+    rmdir(catalog.c_str());
+    rmdir(root.c_str());
+}
+
+int cancelTracker(void* user) {
+    return static_cast<std::atomic<bool>*>(user)->load() ? 1 : 0;
+}
+
+void testTrackerCancellation() {
+    int listener = socket(AF_INET, SOCK_STREAM, 0);
+    assert(listener >= 0);
+    sockaddr_in address {};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = 0;
+    assert(bind(listener, reinterpret_cast<sockaddr*>(&address),
+                sizeof(address)) == 0);
+    assert(listen(listener, 1) == 0);
+    socklen_t addressSize = sizeof(address);
+    assert(getsockname(listener, reinterpret_cast<sockaddr*>(&address),
+                       &addressSize) == 0);
+
+    std::atomic<bool> requestDone {false};
+    std::thread server([&] {
+        int client = accept(listener, nullptr, nullptr);
+        if (client >= 0) {
+            while (!requestDone)
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            close(client);
+        }
+    });
+
+    std::atomic<bool> cancelled {false};
+    std::thread canceller([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        cancelled = true;
+    });
+    char url[128];
+    std::snprintf(url, sizeof(url), "http://127.0.0.1:%u/announce",
+                  ntohs(address.sin_port));
+    uint8_t hash[20] {};
+    uint8_t peerId[20] {};
+    uint8_t peers[6] {};
+    tracker_announce_result_t result {};
+    auto started = std::chrono::steady_clock::now();
+    tracker_announce_url_ex_cancel(
+        url, hash, peerId, 6881, 0, 0, peers, 1, &result,
+        cancelTracker, &cancelled);
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started);
+    requestDone = true;
+    canceller.join();
+    server.join();
+    close(listener);
+    assert(cancelled);
+    assert(elapsed < std::chrono::seconds(2));
+}
+
 void runLiveResolutionIfRequested() {
     const char* magnet = std::getenv("PIPENSX_LIVE_MAGNET");
     if (!magnet || !*magnet)
@@ -191,6 +320,8 @@ int main() {
     testCatalogV2HealthParsing();
     testTorrentConstruction();
     testMetadataIndexParsing();
+    testAsyncImageDiskCache();
+    testTrackerCancellation();
     runLiveResolutionIfRequested();
     std::puts("catalog tests passed");
     return 0;

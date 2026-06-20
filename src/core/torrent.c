@@ -14,8 +14,8 @@
 #  include <miniupnpc/upnpcommands.h>
 #endif
 
-#define MAX_PEER_QUEUE 512
-#define CONNECT_INTERVAL_MS 500
+#define MAX_PEER_QUEUE 1024
+#define CONNECT_INTERVAL_MS 150
 #define TRACKER_REANNOUNCE_MS (30*60*1000ULL)  /* 30 min */
 #define DHT_TICK_INTERVAL_MS  1000
 #define PEER_TIMEOUT_MS       60000
@@ -77,6 +77,11 @@ static void queue_push(torrent_t *t, uint32_t ip, uint16_t port) {
     for (int i = 0; i < MAX_ACTIVE_PEERS; i++) {
         if (t->peers[i] && t->peers[i]->addr.sin_addr.s_addr == ip &&
             t->peers[i]->addr.sin_port == port) return;
+    }
+    for (int i = 0; i < t->qsize; i++) {
+        int index = (t->qhead + i) % MAX_PEER_QUEUE;
+        if (t->queue[index].ip == ip && t->queue[index].port == port)
+            return;
     }
     t->queue[t->qtail].ip   = ip;
     t->queue[t->qtail].port = port;

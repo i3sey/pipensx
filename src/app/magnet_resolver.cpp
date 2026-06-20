@@ -24,6 +24,10 @@ extern "C" {
 namespace pipensx {
 namespace {
 
+int trackerCancelled(void* user) {
+    return static_cast<std::atomic<bool>*>(user)->load() ? 1 : 0;
+}
+
 // The ut_metadata id we advertise in our extension handshake. Peers address
 // extended messages back to us using this id (BEP 10), regardless of the id
 // the peer advertised for its own ut_metadata implementation.
@@ -544,9 +548,12 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
             break;
         uint8_t batch[kMaxPeersPerTracker * 6];
         tracker_announce_result_t result;
-        uint32_t count = tracker_announce_url_ex(
+        uint32_t count = tracker_announce_url_ex_cancel(
             tracker.c_str(), spec.infoHash, peerId, 6881, 0, 0,
-            batch, kMaxPeersPerTracker, &result);
+            batch, kMaxPeersPerTracker, &result,
+            trackerCancelled, &cancelled);
+        if (cancelled)
+            break;
         if (result.tracker_failure) {
             sawTrackerFailure = true;
             if (firstFailure.empty())

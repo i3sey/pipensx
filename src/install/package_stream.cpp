@@ -60,11 +60,48 @@ public:
             mbedtls_aes_free(&aes);
             return false;
         }
+
+        size_t done = 0;
+        size_t skip = static_cast<size_t>(absoluteOffset & 15);
+        if (skip) {
+            uint8_t counter[16] {};
+            std::memcpy(counter, section.counter.data(), 8);
+            uint64_t block = absoluteOffset >> 4;
+            for (unsigned i = 0; i < 8; ++i)
+                counter[15 - i] = static_cast<uint8_t>(block >> (i * 8));
+            uint8_t stream[16];
+            if (mbedtls_aes_crypt_ecb(&aes, MBEDTLS_AES_ENCRYPT,
+                                      counter, stream) != 0) {
+                mbedtls_aes_free(&aes);
+                return false;
+            }
+            size_t count = std::min<size_t>(16 - skip, size);
+            for (size_t i = 0; i < count; ++i)
+                data[i] ^= stream[skip + i];
+            done = count;
+        }
+
+        if (done < size) {
+            uint64_t position = absoluteOffset + done;
+            uint64_t block = position >> 4;
+            uint8_t counter[16] {};
+            std::memcpy(counter, section.counter.data(), 8);
+            for (unsigned i = 0; i < 8; ++i)
+                counter[15 - i] = static_cast<uint8_t>(block >> (i * 8));
+            uint8_t stream[16] {};
+            size_t offset = 0;
+            if (mbedtls_aes_crypt_ctr(&aes, size - done, &offset, counter,
+                                      stream, data + done, data + done) != 0) {
+                mbedtls_aes_free(&aes);
+                return false;
+            }
+        }
+        mbedtls_aes_free(&aes);
+        return true;
 #else
         AES_KEY aes;
         if (AES_set_encrypt_key(section.key.data(), 128, &aes) != 0)
             return false;
-#endif
         size_t done = 0;
         while (done < size) {
             uint64_t position = absoluteOffset + done;
@@ -75,24 +112,14 @@ public:
             for (unsigned i = 0; i < 8; ++i)
                 counter[15 - i] = static_cast<uint8_t>(block >> (i * 8));
             uint8_t stream[16];
-#ifdef __SWITCH__
-            if (mbedtls_aes_crypt_ecb(&aes, MBEDTLS_AES_ENCRYPT,
-                                      counter, stream) != 0) {
-                mbedtls_aes_free(&aes);
-                return false;
-            }
-#else
             AES_encrypt(counter, stream, &aes);
-#endif
             size_t count = std::min<size_t>(16 - skip, size - done);
             for (size_t i = 0; i < count; ++i)
                 data[done + i] ^= stream[skip + i];
             done += count;
         }
-#ifdef __SWITCH__
-        mbedtls_aes_free(&aes);
-#endif
         return true;
+#endif
     }
 };
 
@@ -299,15 +326,14 @@ private:
         if (pending_.empty() || solidEnded_)
             return true;
         ZSTD_inBuffer input { pending_.data(), pending_.size(), 0 };
-        std::array<uint8_t, 256 * 1024> output {};
         while (input.pos < input.size) {
-            ZSTD_outBuffer out { output.data(), output.size(), 0 };
+            ZSTD_outBuffer out { outputBuffer_.data(), outputBuffer_.size(), 0 };
             size_t result = ZSTD_decompressStream(stream_, &out, &input);
             if (ZSTD_isError(result)) {
                 error = ZSTD_getErrorName(result);
                 return false;
             }
-            if (out.pos && !emit(output.data(), out.pos, error))
+            if (out.pos && !emit(outputBuffer_.data(), out.pos, error))
                 return false;
             if (result == 0)
                 solidEnded_ = true;
@@ -351,6 +377,8 @@ private:
     std::vector<uint8_t> pending_;
     std::vector<NczSection> sections_;
     std::vector<uint32_t> blockSizes_;
+    std::vector<uint8_t> outputBuffer_ =
+        std::vector<uint8_t>(256 * 1024);
     ZSTD_DStream* stream_ = nullptr;
     uint64_t outputSize_ = 0;
     uint64_t outputPosition_ = 0;

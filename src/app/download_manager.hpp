@@ -55,6 +55,7 @@ struct DownloadTask {
     uint64_t installedBytes = 0;
     uint64_t installTotalBytes = 0;
     std::string currentPackage;
+    std::vector<uint8_t> fileSelection;
 };
 
 struct TorrentPreview {
@@ -64,6 +65,12 @@ struct TorrentPreview {
     uint32_t fileCount = 0;
     uint32_t trackerCount = 0;
     uint32_t packageCount = 0;
+    struct File {
+        std::string path;
+        uint64_t length = 0;
+        bool package = false;
+    };
+    std::vector<File> files;
 };
 
 class DownloadManager {
@@ -78,7 +85,13 @@ public:
                                std::string& error);
 
     bool importTorrent(const std::string& path, TransferMode mode,
+                       const std::vector<uint8_t>& selectedFiles,
                        std::string& taskId, std::string& error);
+    bool importTorrent(const std::string& path, TransferMode mode,
+                       std::string& taskId, std::string& error) {
+        std::vector<uint8_t> selectedFiles;
+        return importTorrent(path, mode, selectedFiles, taskId, error);
+    }
     bool importTorrent(const std::string& path, std::string& taskId,
                        std::string& error) {
         return importTorrent(path, TransferMode::DownloadOnly, taskId, error);
