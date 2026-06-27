@@ -37,6 +37,8 @@ MANAGER_TEST_TARGET = tests/test_manager
 PACKAGE_TEST_TARGET = tests/test_package_stream
 ANTIZAPRET_TEST_TARGET = tests/test_antizapret
 CATALOG_TEST_TARGET = tests/test_catalog
+TELEMETRY_TEST_TARGET = tests/test_telemetry
+PEER_TEST_TARGET = tests/test_peer
 TEST_SRCS = \
     tests/test_piece.c       \
     src/core/sha1.c          \
@@ -72,7 +74,8 @@ $(MANAGER_TEST_TARGET): tests/test_manager.o src/app/download_manager.o \
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS) $(INSTALL_LDFLAGS) -pthread
 
 $(PACKAGE_TEST_TARGET): tests/test_package_stream.cpp \
-		src/install/package_stream.o src/install/install_backend_pc.o
+		src/install/package_stream.o src/install/install_backend_pc.o \
+		src/core/util.o
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(INSTALL_LDFLAGS) -pthread
 
 
@@ -93,12 +96,23 @@ $(CATALOG_TEST_TARGET): tests/test_catalog.cpp \
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
 
 test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
-		$(CATALOG_TEST_TARGET) $(ANTIZAPRET_TEST_TARGET)
+		$(CATALOG_TEST_TARGET) $(ANTIZAPRET_TEST_TARGET) \
+		$(TELEMETRY_TEST_TARGET) $(PEER_TEST_TARGET)
 	./$(TEST_TARGET)
 	./$(MANAGER_TEST_TARGET)
 	./$(PACKAGE_TEST_TARGET)
 	./$(CATALOG_TEST_TARGET)
 	./$(ANTIZAPRET_TEST_TARGET)
+	./$(TELEMETRY_TEST_TARGET)
+	./$(PEER_TEST_TARGET)
+	python3 tests/test_telemetry_analyzer.py
+
+$(TELEMETRY_TEST_TARGET): tests/test_telemetry.c src/core/util.c
+	$(CC) $(CFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
+
+$(PEER_TEST_TARGET): tests/test_peer.c src/core/peer.c src/core/net.c \
+		src/core/bencode.c src/core/util.c
+	$(CC) $(CFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
 
 $(ANTIZAPRET_TEST_TARGET): tests/test_antizapret.c \
 		src/core/antizapret.o src/core/util.o
@@ -110,6 +124,7 @@ clean:
 		src/install/*.o \
 		tests/test_manager.o $(TARGET) $(TEST_TARGET) \
 		$(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
-		$(CATALOG_TEST_TARGET) $(ANTIZAPRET_TEST_TARGET)
+		$(CATALOG_TEST_TARGET) $(ANTIZAPRET_TEST_TARGET) \
+		$(TELEMETRY_TEST_TARGET) $(PEER_TEST_TARGET)
 
 .PHONY: all test clean

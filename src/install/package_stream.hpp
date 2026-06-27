@@ -17,7 +17,8 @@ struct PackageCallbacks {
 
 class PackageStream {
 public:
-    PackageStream(bool compressed, PackageCallbacks callbacks);
+    PackageStream(bool compressed, PackageCallbacks callbacks,
+                  std::string telemetryTag = {});
     ~PackageStream();
 
     PackageStream(const PackageStream&) = delete;

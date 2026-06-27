@@ -244,6 +244,7 @@ public:
             return !error_.empty() ||
                    (pending_.empty() && queue_.empty() && !processing_);
         });
+        maybeEmitTelemetryLocked(now_ms(), true);
         drainComplete_ = error_.empty();
         return drainComplete_;
     }
@@ -323,7 +324,12 @@ private:
         chunk.final = chunk.fileOffset + size == static_cast<uint64_t>(file.length);
         pendingBytes_ += chunk.data.size();
         pending_.emplace(key, std::move(chunk));
+        telemetrySinkBytes_ += size;
+        telemetrySinkChunks_++;
+        telemetryHighBufferedBytes_ = std::max(
+            telemetryHighBufferedBytes_, bufferedBytesLocked());
         enqueueReadyLocked();
+        maybeEmitTelemetryLocked(now_ms(), false);
         return true;
     }
 
@@ -333,10 +339,31 @@ private:
 
     void waitForBufferSpaceLocked(std::unique_lock<std::mutex>& lock,
                                   size_t incomingBytes) {
+        bool trackedWait = false;
+        uint64_t waitStartedUs = 0;
         while (accepting_ && error_.empty() &&
                bufferedBytesLocked() + incomingBytes > maxBufferedBytes_ &&
                (queuedBytes_ > 0 || processingBytes_ > 0)) {
+            if (!trackedWait && telemetry_enabled()) {
+                trackedWait = true;
+                waitStartedUs = now_us();
+            }
             queueSpace_.wait(lock);
+        }
+        if (trackedWait) {
+            uint64_t waitUs = now_us() - waitStartedUs;
+            telemetryWaitCount_++;
+            telemetryWaitUs_ += waitUs;
+            telemetryWaitMaxUs_ = std::max(telemetryWaitMaxUs_, waitUs);
+            uint64_t now = now_ms();
+            if (waitUs >= 250000 && now - telemetryLastStallLogMs_ >= 1000) {
+                telemetry_log("buffer_stall", taskId_.c_str(),
+                    "wait_us=%llu incoming_bytes=%zu pending_bytes=%zu "
+                    "queued_bytes=%zu processing_bytes=%zu limit_bytes=%zu",
+                    (unsigned long long)waitUs, incomingBytes, pendingBytes_,
+                    queuedBytes_, processingBytes_, maxBufferedBytes_);
+                telemetryLastStallLogMs_ = now;
+            }
         }
     }
 
@@ -405,7 +432,7 @@ private:
                 return ok;
             };
             stream_ = std::make_unique<install::PackageStream>(
-                isCompressedPackage(file.path), std::move(callbacks));
+                isCompressedPackage(file.path), std::move(callbacks), taskId_);
             if (progress_)
                 progress_(completedPackages_, currentPackage_, 0, 0,
                           DownloadStatus::Installing);
@@ -496,9 +523,18 @@ private:
                 queueSpace_.notify_all();
             }
 
+            uint64_t processStartedUs = telemetry_enabled() ? now_us() : 0;
             bool ok = processChunk(chunk);
+            uint64_t processUs = processStartedUs ? now_us() - processStartedUs : 0;
             {
                 std::lock_guard<std::mutex> lock(queueMutex_);
+                if (processStartedUs) {
+                    telemetryProcessedBytes_ += chunk.data.size();
+                    telemetryProcessedChunks_++;
+                    telemetryProcessUs_ += processUs;
+                    telemetryProcessMaxUs_ = std::max(
+                        telemetryProcessMaxUs_, processUs);
+                }
                 processingBytes_ = 0;
                 processing_ = false;
                 if (!ok) {
@@ -512,6 +548,7 @@ private:
                 queueSpace_.notify_all();
                 if (pending_.empty() && queue_.empty())
                     drained_.notify_all();
+                maybeEmitTelemetryLocked(now_ms(), false);
             }
             if (!ok)
                 break;
@@ -521,6 +558,63 @@ private:
         processing_ = false;
         drained_.notify_all();
         queueSpace_.notify_all();
+    }
+
+    void resetTelemetryLocked(uint64_t now) {
+        telemetryGeneration_ = telemetry_generation();
+        telemetryLastMs_ = now;
+        telemetrySinkBytes_ = 0;
+        telemetryProcessedBytes_ = 0;
+        telemetrySinkChunks_ = 0;
+        telemetryProcessedChunks_ = 0;
+        telemetryWaitCount_ = 0;
+        telemetryWaitUs_ = 0;
+        telemetryWaitMaxUs_ = 0;
+        telemetryProcessUs_ = 0;
+        telemetryProcessMaxUs_ = 0;
+        telemetryHighBufferedBytes_ = bufferedBytesLocked();
+    }
+
+    void maybeEmitTelemetryLocked(uint64_t now, bool force) {
+        uint32_t generation = telemetry_generation();
+        if (!telemetry_enabled()) {
+            if (telemetryGeneration_ != generation)
+                resetTelemetryLocked(now);
+            return;
+        }
+        if (telemetryGeneration_ != generation) {
+            resetTelemetryLocked(now);
+            return;
+        }
+        if (!telemetryLastMs_)
+            resetTelemetryLocked(now);
+        uint64_t elapsedMs = now - telemetryLastMs_;
+        if (!force && elapsedMs < 5000)
+            return;
+        if (!elapsedMs)
+            elapsedMs = 1;
+        uint64_t sinkBps = telemetrySinkBytes_ * 1000 / elapsedMs;
+        uint64_t processedBps = telemetryProcessedBytes_ * 1000 / elapsedMs;
+        telemetry_log("buffer", taskId_.c_str(),
+            "interval_ms=%llu sink_bps=%llu processed_bps=%llu "
+            "sink_chunks=%u processed_chunks=%u pending_bytes=%zu "
+            "pending_chunks=%zu queued_bytes=%zu queued_chunks=%zu "
+            "processing_bytes=%zu high_bytes=%zu limit_bytes=%zu "
+            "waits=%u wait_total_us=%llu wait_max_us=%llu "
+            "process_total_us=%llu process_max_us=%llu "
+            "producer_ordinal=%u producer_offset=%llu force=%d",
+            (unsigned long long)elapsedMs,
+            (unsigned long long)sinkBps,
+            (unsigned long long)processedBps,
+            telemetrySinkChunks_, telemetryProcessedChunks_, pendingBytes_,
+            pending_.size(), queuedBytes_, queue_.size(), processingBytes_,
+            telemetryHighBufferedBytes_, maxBufferedBytes_,
+            telemetryWaitCount_, (unsigned long long)telemetryWaitUs_,
+            (unsigned long long)telemetryWaitMaxUs_,
+            (unsigned long long)telemetryProcessUs_,
+            (unsigned long long)telemetryProcessMaxUs_, producerOrdinal_,
+            (unsigned long long)producerOffset_, force ? 1 : 0);
+        resetTelemetryLocked(now);
     }
 
     void cancel() {
@@ -663,6 +757,19 @@ private:
     bool processing_ = false;
     bool drainComplete_ = false;
     bool bufferPressureLogged_ = false;
+    uint32_t telemetryGeneration_ = 0;
+    uint64_t telemetryLastMs_ = 0;
+    uint64_t telemetryLastStallLogMs_ = 0;
+    uint64_t telemetrySinkBytes_ = 0;
+    uint64_t telemetryProcessedBytes_ = 0;
+    uint64_t telemetryWaitUs_ = 0;
+    uint64_t telemetryWaitMaxUs_ = 0;
+    uint64_t telemetryProcessUs_ = 0;
+    uint64_t telemetryProcessMaxUs_ = 0;
+    size_t telemetryHighBufferedBytes_ = 0;
+    uint32_t telemetrySinkChunks_ = 0;
+    uint32_t telemetryProcessedChunks_ = 0;
+    uint32_t telemetryWaitCount_ = 0;
     std::atomic<bool> cancelRequested_ {false};
     std::string error_;
     Progress progress_;
@@ -1195,7 +1302,12 @@ void DownloadManager::workerMain() {
                     static_cast<uint32_t>(coordinator->pieceOrder().size());
                 options.request_allowed = &PackageCoordinator::requestAllowedThunk;
                 options.request_allowed_user = coordinator.get();
+                options.strict_order_lookahead = 16;
+                options.strict_fill_pending_first = 1;
+                options.request_pipeline_limit = 64;
+                options.hedge_after_ms = 5000;
             }
+            options.telemetry_tag = activeId.c_str();
             std::lock_guard<std::mutex> lock(mutex_);
             if (DownloadTask* task = findLocked(activeId))
                 task->packageCount = coordinator->packageCount();

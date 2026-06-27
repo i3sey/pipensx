@@ -260,6 +260,8 @@ public:
                       const std::string& packageName) override {
         rollbackPackage();
         error_.clear();
+        taskId_ = taskId;
+        packageStartedMs_ = now_ms();
         tempDirectory_ = std::string(TempRoot) + "/" + taskId;
         removeTree(tempDirectory_);
         if (!makeDirectories(tempDirectory_)) {
@@ -277,6 +279,7 @@ public:
         active_ = true;
         packageName_ = packageName;
         log_msg("[install] package begin '%s'\n", packageName_.c_str());
+        telemetry_log("ncm", taskId_.c_str(), "event=package_begin");
         return true;
     }
 
@@ -308,6 +311,7 @@ public:
         current_->id = id;
         current_->meta = name.size() >= 9 &&
                          name.substr(name.size() - 9) == ".cnmt.nca";
+        resetFileTelemetry(now_ms());
         if (size == 0) {
             log_msg("[install] NCA begin '%s' size=pending id=%s meta=%d\n",
                     name.c_str(), hexBytes(id.c, sizeof(id.c)).c_str(),
@@ -326,6 +330,7 @@ public:
             error_ = "Invalid NCA size.";
             return false;
         }
+        uint64_t setupStartedUs = telemetry_enabled() ? now_us() : 0;
         current_->size = size;
         expected_ += size;
         log_msg("[install] NCA size resolved '%s' bytes=%llu\n",
@@ -355,6 +360,13 @@ public:
             return false;
         }
         hashActive_ = true;
+        if (setupStartedUs) {
+            uint64_t setupUs = now_us() - setupStartedUs;
+            telemetry_log("ncm", taskId_.c_str(),
+                "event=file_setup bytes=%llu existing=%d setup_us=%llu",
+                (unsigned long long)size, current_->existing ? 1 : 0,
+                (unsigned long long)setupUs);
+        }
         return true;
     }
 
@@ -380,21 +392,55 @@ public:
             error_ = "NCA data exceeds declared size.";
             return false;
         }
+        prepareFileTelemetry();
+        bool track = telemetry_enabled();
+        uint64_t ncmUs = 0;
         if (!current_->existing) {
+            uint64_t ncmStartedUs = track ? now_us() : 0;
             Result rc = ncmContentStorageWritePlaceHolder(
                 &storage_, &current_->placeholder, current_->written,
                 data, size);
+            if (ncmStartedUs)
+                ncmUs = now_us() - ncmStartedUs;
             if (R_FAILED(rc)) {
                 errorResult("Unable to write content placeholder", rc);
                 return false;
             }
         }
-        if (mbedtls_sha256_update_ret(&sha_, data, size) != 0) {
+        uint64_t shaStartedUs = track ? now_us() : 0;
+        int shaResult = mbedtls_sha256_update_ret(&sha_, data, size);
+        uint64_t shaUs = shaStartedUs ? now_us() - shaStartedUs : 0;
+        if (shaResult != 0) {
             error_ = "Unable to update NCA hash.";
             return false;
         }
         current_->written += size;
         installed_ += size;
+        if (track) {
+            telemetryWriteBytes_ += size;
+            telemetryNcmUs_ += ncmUs;
+            telemetryShaUs_ += shaUs;
+            telemetryWriteCalls_++;
+            telemetryNcmMaxUs_ = std::max(telemetryNcmMaxUs_, ncmUs);
+            telemetryTotalWriteBytes_ += size;
+            telemetryTotalNcmUs_ += ncmUs;
+            telemetryTotalShaUs_ += shaUs;
+            telemetryTotalWriteCalls_++;
+            telemetryTotalNcmMaxUs_ = std::max(
+                telemetryTotalNcmMaxUs_, ncmUs);
+            if (current_->existing)
+                telemetryTotalExistingBytes_ += size;
+            uint64_t now = now_ms();
+            if (ncmUs >= 100000 && now - telemetryLastStallLogMs_ >= 1000) {
+                telemetry_log("ncm_stall", taskId_.c_str(),
+                    "write_us=%llu bytes=%zu offset=%llu existing=%d",
+                    (unsigned long long)ncmUs, size,
+                    (unsigned long long)(current_->written - size),
+                    current_->existing ? 1 : 0);
+                telemetryLastStallLogMs_ = now;
+            }
+            emitFileTelemetry(now, false, false);
+        }
         return true;
     }
 
@@ -429,6 +475,7 @@ public:
             return false;
         }
         std::array<uint8_t, 32> digest {};
+        uint64_t finishStartedUs = telemetry_enabled() ? now_us() : 0;
         if (!hashActive_ ||
             mbedtls_sha256_finish_ret(&sha_, digest.data()) != 0) {
             error_ = "Unable to finalize NCA hash.";
@@ -436,6 +483,11 @@ public:
         }
         mbedtls_sha256_free(&sha_);
         hashActive_ = false;
+        if (finishStartedUs) {
+            uint64_t finishUs = now_us() - finishStartedUs;
+            telemetryShaUs_ += finishUs;
+            telemetryTotalShaUs_ += finishUs;
+        }
         if (std::memcmp(digest.data(), current_->id.c, 16) != 0) {
             // Patched/translated NCAs commonly retain the original content ID.
             // Torrent piece hashes still protect the streamed bytes in transit.
@@ -447,12 +499,14 @@ public:
         log_msg("[install] NCA complete '%s' bytes=%llu\n",
                 current_->name.c_str(),
                 static_cast<unsigned long long>(current_->written));
+        emitFileTelemetry(now_ms(), true, true);
         current_ = nullptr;
         currentName_.clear();
         return true;
     }
 
     bool commitPackage(bool& alreadyInstalled) override {
+        uint64_t commitStartedUs = telemetry_enabled() ? now_us() : 0;
         alreadyInstalled = false;
         Content* metaContent = nullptr;
         for (auto& content : contents_)
@@ -508,6 +562,10 @@ public:
             alreadyInstalled = true;
             discardPlaceholders();
             finishSuccess();
+            telemetry_log("ncm", taskId_.c_str(),
+                "event=package_commit already_installed=1 commit_us=%llu",
+                (unsigned long long)(commitStartedUs
+                    ? now_us() - commitStartedUs : 0));
             return true;
         }
 
@@ -637,10 +695,22 @@ public:
 
         finishSuccess();
         log_msg("[install] package committed '%s'\n", packageName_.c_str());
+        telemetry_log("ncm", taskId_.c_str(),
+            "event=package_commit already_installed=0 commit_us=%llu package_ms=%llu",
+            (unsigned long long)(commitStartedUs
+                ? now_us() - commitStartedUs : 0),
+            (unsigned long long)(now_ms() - packageStartedMs_));
         return true;
     }
 
     void rollbackPackage() override {
+        if (active_) {
+            uint64_t rollbackNow = now_ms();
+            emitFileTelemetry(rollbackNow, true, true);
+            telemetry_log("ncm", taskId_.c_str(),
+                          "event=rollback package_ms=%llu",
+                          (unsigned long long)(rollbackNow - packageStartedMs_));
+        }
         if (hashActive_) {
             mbedtls_sha256_free(&sha_);
             hashActive_ = false;
@@ -677,6 +747,70 @@ public:
     const std::string& error() const override { return error_; }
 
 private:
+    void resetFileTelemetry(uint64_t now) {
+        telemetryGeneration_ = telemetry_generation();
+        telemetryFileStartedMs_ = now;
+        telemetryLastMs_ = now;
+        telemetryWriteBytes_ = 0;
+        telemetryNcmUs_ = 0;
+        telemetryShaUs_ = 0;
+        telemetryNcmMaxUs_ = 0;
+        telemetryWriteCalls_ = 0;
+        telemetryTotalWriteBytes_ = 0;
+        telemetryTotalExistingBytes_ = 0;
+        telemetryTotalNcmUs_ = 0;
+        telemetryTotalShaUs_ = 0;
+        telemetryTotalNcmMaxUs_ = 0;
+        telemetryTotalWriteCalls_ = 0;
+    }
+
+    void resetFileInterval(uint64_t now) {
+        telemetryLastMs_ = now;
+        telemetryWriteBytes_ = 0;
+        telemetryNcmUs_ = 0;
+        telemetryShaUs_ = 0;
+        telemetryNcmMaxUs_ = 0;
+        telemetryWriteCalls_ = 0;
+    }
+
+    void prepareFileTelemetry() {
+        if (!current_)
+            return;
+        uint32_t generation = telemetry_generation();
+        if (telemetryGeneration_ != generation)
+            resetFileTelemetry(now_ms());
+    }
+
+    void emitFileTelemetry(uint64_t now, bool force, bool summary) {
+        if (!telemetry_enabled() || !telemetryFileStartedMs_)
+            return;
+        uint64_t elapsedMs = summary
+            ? now - telemetryFileStartedMs_ : now - telemetryLastMs_;
+        if (!force && elapsedMs < 5000)
+            return;
+        if (!elapsedMs)
+            elapsedMs = 1;
+        uint64_t bytes = summary
+            ? telemetryTotalWriteBytes_ : telemetryWriteBytes_;
+        uint64_t ncmUs = summary ? telemetryTotalNcmUs_ : telemetryNcmUs_;
+        uint64_t shaUs = summary ? telemetryTotalShaUs_ : telemetryShaUs_;
+        uint64_t maxUs = summary
+            ? telemetryTotalNcmMaxUs_ : telemetryNcmMaxUs_;
+        uint32_t calls = summary
+            ? telemetryTotalWriteCalls_ : telemetryWriteCalls_;
+        telemetry_log("ncm", taskId_.c_str(),
+            "event=%s interval_ms=%llu bytes=%llu bps=%llu calls=%u "
+            "ncm_us=%llu sha_us=%llu ncm_max_us=%llu existing_bytes=%llu",
+            summary ? "summary" : "interval",
+            (unsigned long long)elapsedMs, (unsigned long long)bytes,
+            (unsigned long long)(bytes * 1000 / elapsedMs), calls,
+            (unsigned long long)ncmUs, (unsigned long long)shaUs,
+            (unsigned long long)maxUs,
+            (unsigned long long)(summary ? telemetryTotalExistingBytes_ : 0));
+        if (!summary)
+            resetFileInterval(now);
+    }
+
     void errorResult(const char* message, Result rc) {
         char text[160];
         std::snprintf(text, sizeof(text), "%s (0x%08x).", message, rc);
@@ -729,6 +863,7 @@ private:
     }
 
     std::string root_;
+    std::string taskId_;
     std::string packageName_;
     std::string tempDirectory_;
     std::string currentName_;
@@ -749,6 +884,22 @@ private:
     uint64_t expected_ = 0;
     uint64_t installed_ = 0;
     uint64_t applicationId_ = 0;
+    uint32_t telemetryGeneration_ = 0;
+    uint64_t packageStartedMs_ = 0;
+    uint64_t telemetryFileStartedMs_ = 0;
+    uint64_t telemetryLastMs_ = 0;
+    uint64_t telemetryLastStallLogMs_ = 0;
+    uint64_t telemetryWriteBytes_ = 0;
+    uint64_t telemetryNcmUs_ = 0;
+    uint64_t telemetryShaUs_ = 0;
+    uint64_t telemetryNcmMaxUs_ = 0;
+    uint32_t telemetryWriteCalls_ = 0;
+    uint64_t telemetryTotalWriteBytes_ = 0;
+    uint64_t telemetryTotalExistingBytes_ = 0;
+    uint64_t telemetryTotalNcmUs_ = 0;
+    uint64_t telemetryTotalShaUs_ = 0;
+    uint64_t telemetryTotalNcmMaxUs_ = 0;
+    uint32_t telemetryTotalWriteCalls_ = 0;
     bool active_ = false;
     bool hashActive_ = false;
     bool metaCommitted_ = false;

@@ -228,6 +228,33 @@ static void remove_pipeline(peer_t *p, int piece, int offset) {
     }
 }
 
+int peer_cancel_block(peer_t *p, uint32_t piece, uint32_t offset,
+                      uint32_t len) {
+    int found = 0;
+    for (int i = 0; i < p->pipeline_len; ++i) {
+        if (p->pipeline[i].index == (int)piece &&
+            p->pipeline[i].offset == (int)offset) {
+            found = 1;
+            break;
+        }
+    }
+    if (!found)
+        return 0;
+
+    uint8_t buf[13];
+    buf[0] = MSG_CANCEL;
+    buf[1] = (piece>>24)&0xFF; buf[2]=(piece>>16)&0xFF;
+    buf[3] = (piece>> 8)&0xFF; buf[4]=(piece    )&0xFF;
+    buf[5] = (offset>>24)&0xFF; buf[6]=(offset>>16)&0xFF;
+    buf[7] = (offset>> 8)&0xFF; buf[8]=(offset    )&0xFF;
+    buf[9] = (len>>24)&0xFF; buf[10]=(len>>16)&0xFF;
+    buf[11]= (len>> 8)&0xFF; buf[12]=(len    )&0xFF;
+    if (!send_msg(p, buf, sizeof(buf)))
+        return 0;
+    remove_pipeline(p, (int)piece, (int)offset);
+    return 1;
+}
+
 static int process_message(peer_t *p, const peer_ctx_t *ctx,
                            void (*on_block)(void*, uint32_t, uint32_t, const uint8_t*, uint32_t),
                            void (*on_have)(void*, uint32_t),
@@ -294,6 +321,10 @@ static int process_message(peer_t *p, const peer_ctx_t *ctx,
             uint32_t blen = plen - 8;
             remove_pipeline(p, (int)idx, (int)off);
             p->downloaded += blen;
+            p->telemetry_piece_bytes += blen;
+            p->last_piece_ms = now_ms();
+            if (p->timeout_strikes > 0)
+                p->timeout_strikes--;
             if (on_block) on_block(ud, idx, off, payload+8, blen);
         }
         break;

@@ -5,6 +5,8 @@
 
 /* Monotonic time in milliseconds */
 uint64_t now_ms(void);
+/* Monotonic time in microseconds, for aggregate performance timing. */
+uint64_t now_us(void);
 /* Wall-clock seconds (for DHT) */
 time_t   now_sec(void);
 
@@ -14,6 +16,12 @@ void log_close(void);
 
 /* Logging — file-only on Switch, stdout and file on PC. */
 void log_msg(const char *fmt, ...);
+
+/* Optional rate-limited throughput telemetry. Disabled by default. */
+void telemetry_set_enabled(int enabled);
+int telemetry_enabled(void);
+uint32_t telemetry_generation(void);
+void telemetry_log(const char *stage, const char *tag, const char *fmt, ...);
 
 /* Format bytes as "1.23 MB" etc. into buf (len >= 16) */
 void fmt_bytes(char *buf, size_t len, uint64_t bytes);

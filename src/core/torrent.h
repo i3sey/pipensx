@@ -13,6 +13,11 @@ typedef struct {
     uint32_t piece_order_count;
     int (*request_allowed)(void *user, uint32_t piece);
     void *request_allowed_user;
+    uint32_t strict_order_lookahead; /* 0 = default */
+    uint32_t request_pipeline_limit; /* per peer, 0 = MAX_PIPELINE */
+    uint32_t hedge_after_ms; /* duplicate critical requests after this age */
+    int strict_fill_pending_first;
+    const char *telemetry_tag; /* copied by torrent_create_ex */
 } torrent_options_t;
 
 typedef struct {

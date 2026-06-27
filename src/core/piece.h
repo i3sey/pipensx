@@ -16,7 +16,7 @@ typedef struct {
     piece_state_t state;
     uint8_t      *buf;         /* piece_length bytes, NULL until first request */
     uint8_t      *have_blocks; /* bitmap of received 16KB blocks */
-    uint8_t      *requested_blocks; /* bitmap of globally in-flight blocks */
+    uint8_t      *request_counts; /* number of peers requesting each block */
     uint32_t      num_blocks;
     uint32_t      num_blocks_done;
 } piece_slot_t;
@@ -31,6 +31,8 @@ typedef struct {
     uint8_t          *have_bf; /* bitfield of completed pieces (num_pieces bits) */
     uint8_t          *available_bf; /* pieces retained on disk for upload */
     int               strict_order;
+    uint32_t          strict_order_lookahead;
+    int               strict_fill_pending_first;
     uint32_t         *piece_order;
     uint32_t          piece_order_count;
     int             (*request_allowed)(void *user, uint32_t piece);
@@ -43,6 +45,9 @@ piece_mgr_t *piece_mgr_create_ex(const metainfo_t *mi, storage_t *store,
                                  const uint32_t *piece_order,
                                  uint32_t piece_order_count);
 void         piece_mgr_destroy(piece_mgr_t *pm);
+void         piece_mgr_set_strict_policy(piece_mgr_t *pm,
+                                         uint32_t lookahead,
+                                         int fill_pending_first);
 
 /* Mark a block as requested by a peer (sets PS_PENDING) */
 void piece_mgr_mark_pending(piece_mgr_t *pm, uint32_t idx);
@@ -77,10 +82,14 @@ int piece_mgr_verify_all(piece_mgr_t *pm);
 int piece_mgr_has_block(const piece_mgr_t *pm, uint32_t idx, uint32_t block);
 int piece_mgr_block_requested(const piece_mgr_t *pm, uint32_t idx,
                               uint32_t block);
+uint32_t piece_mgr_block_request_count(const piece_mgr_t *pm, uint32_t idx,
+                                       uint32_t block);
 void piece_mgr_mark_block_requested(piece_mgr_t *pm, uint32_t idx,
                                     uint32_t block);
 void piece_mgr_clear_block_requested(piece_mgr_t *pm, uint32_t idx,
                                      uint32_t block);
+void piece_mgr_clear_all_block_requests(piece_mgr_t *pm, uint32_t idx,
+                                        uint32_t block);
 
 /*
  * Pick the next piece index to request from a peer.

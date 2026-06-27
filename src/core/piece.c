@@ -5,6 +5,8 @@
 #include <string.h>
 #include <stdio.h>
 
+#define STRICT_ORDER_LOOKAHEAD 32
+
 int64_t piece_len(const piece_mgr_t *pm, uint32_t idx) {
     if (idx + 1 < pm->num_pieces)
         return pm->mi->piece_length;
@@ -52,7 +54,7 @@ static void reset_piece(piece_mgr_t *pm, uint32_t idx) {
     if (sl->buf)
         memset(sl->buf, 0, (size_t)pm->mi->piece_length);
     memset(sl->have_blocks, 0, block_bitmap_size(sl->num_blocks));
-    memset(sl->requested_blocks, 0, block_bitmap_size(sl->num_blocks));
+    memset(sl->request_counts, 0, sl->num_blocks);
     sl->num_blocks_done = 0;
     sl->state = PS_EMPTY;
 }
@@ -70,6 +72,7 @@ piece_mgr_t *piece_mgr_create_ex(const metainfo_t *mi, storage_t *store,
     pm->have_bf    = (uint8_t*)calloc((mi->num_pieces + 7) / 8, 1);
     pm->available_bf = (uint8_t*)calloc((mi->num_pieces + 7) / 8, 1);
     pm->strict_order = strict_order;
+    pm->strict_order_lookahead = STRICT_ORDER_LOOKAHEAD;
     if (piece_order && piece_order_count) {
         pm->piece_order = (uint32_t*)malloc(
             piece_order_count * sizeof(uint32_t));
@@ -89,16 +92,15 @@ piece_mgr_t *piece_mgr_create_ex(const metainfo_t *mi, storage_t *store,
         pm->slots[i].num_blocks = piece_num_blocks(pm, i);
         size_t bitmap_size = block_bitmap_size(pm->slots[i].num_blocks);
         pm->slots[i].have_blocks = (uint8_t*)calloc(bitmap_size, 1);
-        pm->slots[i].requested_blocks = (uint8_t*)calloc(bitmap_size, 1);
-        if (!pm->slots[i].have_blocks || !pm->slots[i].requested_blocks) {
+        pm->slots[i].request_counts = (uint8_t*)calloc(
+            pm->slots[i].num_blocks, 1);
+        if (!pm->slots[i].have_blocks || !pm->slots[i].request_counts) {
             piece_mgr_destroy(pm);
             return NULL;
         }
     }
     return pm;
 }
-
-#define STRICT_ORDER_LOOKAHEAD 32
 
 piece_mgr_t *piece_mgr_create(const metainfo_t *mi, storage_t *store) {
     return piece_mgr_create_ex(mi, store, 0, NULL, 0);
@@ -109,13 +111,22 @@ void piece_mgr_destroy(piece_mgr_t *pm) {
     for (uint32_t i = 0; i < pm->num_pieces; i++) {
         free(pm->slots[i].buf);
         free(pm->slots[i].have_blocks);
-        free(pm->slots[i].requested_blocks);
+        free(pm->slots[i].request_counts);
     }
     free(pm->slots);
     free(pm->have_bf);
     free(pm->available_bf);
     free(pm->piece_order);
     free(pm);
+}
+
+void piece_mgr_set_strict_policy(piece_mgr_t *pm, uint32_t lookahead,
+                                 int fill_pending_first) {
+    if (!pm)
+        return;
+    pm->strict_order_lookahead = lookahead ? lookahead
+                                           : STRICT_ORDER_LOOKAHEAD;
+    pm->strict_fill_pending_first = fill_pending_first != 0;
 }
 
 void piece_mgr_mark_pending(piece_mgr_t *pm, uint32_t idx) {
@@ -153,7 +164,7 @@ int piece_mgr_got_block(piece_mgr_t *pm, uint32_t idx, uint32_t offset,
         block_set(sl, blk);
         sl->num_blocks_done++;
     }
-    piece_mgr_clear_block_requested(pm, idx, blk);
+    piece_mgr_clear_all_block_requests(pm, idx, blk);
     if (sl->num_blocks_done != sl->num_blocks)
         return 1; /* not yet complete */
 
@@ -284,27 +295,51 @@ int piece_mgr_has_block(const piece_mgr_t *pm, uint32_t idx, uint32_t block) {
 
 int piece_mgr_block_requested(const piece_mgr_t *pm, uint32_t idx,
                               uint32_t block) {
+    return piece_mgr_block_request_count(pm, idx, block) != 0;
+}
+
+uint32_t piece_mgr_block_request_count(const piece_mgr_t *pm, uint32_t idx,
+                                       uint32_t block) {
     if (!pm || idx >= pm->num_pieces) return 0;
     const piece_slot_t *sl = &pm->slots[idx];
-    if (!sl->requested_blocks || block >= sl->num_blocks) return 0;
-    return (sl->requested_blocks[block / 8] >> (block % 8)) & 1u;
+    if (!sl->request_counts || block >= sl->num_blocks) return 0;
+    return sl->request_counts[block];
 }
 
 void piece_mgr_mark_block_requested(piece_mgr_t *pm, uint32_t idx,
                                     uint32_t block) {
     if (!pm || idx >= pm->num_pieces) return;
     piece_slot_t *sl = &pm->slots[idx];
-    if (!sl->requested_blocks || block >= sl->num_blocks) return;
-    sl->requested_blocks[block / 8] |= (uint8_t)(1u << (block % 8));
+    if (!sl->request_counts || block >= sl->num_blocks) return;
+    if (sl->request_counts[block] != UINT8_MAX)
+        sl->request_counts[block]++;
 }
 
 void piece_mgr_clear_block_requested(piece_mgr_t *pm, uint32_t idx,
                                      uint32_t block) {
     if (!pm || idx >= pm->num_pieces) return;
     piece_slot_t *sl = &pm->slots[idx];
-    if (!sl->requested_blocks || block >= sl->num_blocks) return;
-    sl->requested_blocks[block / 8] &=
-        (uint8_t)~(1u << (block % 8));
+    if (!sl->request_counts || block >= sl->num_blocks) return;
+    if (sl->request_counts[block] > 0)
+        sl->request_counts[block]--;
+}
+
+void piece_mgr_clear_all_block_requests(piece_mgr_t *pm, uint32_t idx,
+                                        uint32_t block) {
+    if (!pm || idx >= pm->num_pieces) return;
+    piece_slot_t *sl = &pm->slots[idx];
+    if (!sl->request_counts || block >= sl->num_blocks) return;
+    sl->request_counts[block] = 0;
+}
+
+static int slot_has_requestable_block(const piece_slot_t *slot) {
+    if (!slot || !slot->request_counts)
+        return 0;
+    for (uint32_t block = 0; block < slot->num_blocks; ++block) {
+        if (!block_is_set(slot, block) && slot->request_counts[block] == 0)
+            return 1;
+    }
+    return 0;
 }
 
 uint32_t piece_mgr_pick(const piece_mgr_t *pm,
@@ -314,6 +349,10 @@ uint32_t piece_mgr_pick(const piece_mgr_t *pm,
                        ? pm->piece_order_count : pm->num_pieces;
         uint32_t unfinished = 0;
         uint32_t pending_candidate = (uint32_t)-1;
+        uint32_t empty_candidate = (uint32_t)-1;
+        uint32_t lookahead = pm->strict_order_lookahead
+                           ? pm->strict_order_lookahead
+                           : STRICT_ORDER_LOOKAHEAD;
         for (uint32_t n = 0; n < count; n++) {
             uint32_t i = pm->piece_order_count ? pm->piece_order[n] : n;
             if (i >= pm->num_pieces)
@@ -322,17 +361,27 @@ uint32_t piece_mgr_pick(const piece_mgr_t *pm,
                 continue;
             if (!request_allowed(pm, i))
                 break;
-            if (unfinished++ >= STRICT_ORDER_LOOKAHEAD)
+            if (unfinished++ >= lookahead)
                 break;
             if (i / 8 < bf_bytes && bf_has(peer_bf, i)) {
-                if (pm->slots[i].state == PS_EMPTY)
-                    return i;
-                if (pending_candidate == (uint32_t)-1)
+                if (pm->slots[i].state == PS_PENDING &&
+                    slot_has_requestable_block(&pm->slots[i]) &&
+                    pending_candidate == (uint32_t)-1) {
                     pending_candidate = i;
+                    if (pm->strict_fill_pending_first)
+                        return i;
+                } else if (pm->slots[i].state == PS_EMPTY &&
+                           empty_candidate == (uint32_t)-1) {
+                    empty_candidate = i;
+                    if (!pm->strict_fill_pending_first)
+                        return i;
+                }
             }
         }
         if (pending_candidate != (uint32_t)-1)
             return pending_candidate;
+        if (empty_candidate != (uint32_t)-1)
+            return empty_candidate;
         return (uint32_t)-1;
     }
 

@@ -17,6 +17,7 @@ extern "C" {
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -44,6 +45,27 @@ namespace {
 
 FILE* gBorealisLog = nullptr;
 std::atomic<uint32_t> gCatalogTempSerial{0};
+constexpr const char* TelemetryFlagPath =
+    "sdmc:/switch/pipensx/throughput_telemetry.enabled";
+
+bool telemetryFlagEnabled() {
+    struct stat st {};
+    return stat(TelemetryFlagPath, &st) == 0;
+}
+
+bool persistTelemetryFlag(bool enabled) {
+    if (!enabled)
+        return unlink(TelemetryFlagPath) == 0 || errno == ENOENT;
+    FILE* file = std::fopen(TelemetryFlagPath, "wb");
+    if (!file)
+        return false;
+    static const char marker[] = "enabled\n";
+    bool ok = std::fwrite(marker, 1, sizeof(marker) - 1, file) ==
+              sizeof(marker) - 1;
+    if (std::fclose(file) != 0)
+        ok = false;
+    return ok;
+}
 
 void startupStage(const char* stage) {
     switch_crashlog_stage(stage);
@@ -2462,6 +2484,54 @@ void CatalogDataSource::didSelectRowAt(brls::RecyclerFrame*,
         owner_->onEntrySelected(index.row);
 }
 
+class SettingsView : public brls::Box {
+public:
+    SettingsView() : brls::Box(brls::Axis::COLUMN) {
+        setPadding(24);
+
+        auto* title = new brls::Label();
+        title->setText("Diagnostics");
+        title->setFontSize(28);
+        title->setMarginBottom(10);
+        addView(title);
+
+        auto* description = new brls::Label();
+        description->setText(
+            "Collects rate-limited torrent, buffer, decoder and NCM metrics "
+            "every 5 seconds. Enable before reproducing slow installation.");
+        description->setFontSize(18);
+        description->setTextColor(nvgRGB(175, 175, 185));
+        description->setMarginBottom(18);
+        addView(description);
+
+        toggle_ = new brls::BooleanCell();
+        toggle_->init("Throughput diagnostics", telemetry_enabled() != 0,
+            [this](bool enabled) {
+                if (!persistTelemetryFlag(enabled)) {
+                    toggle_->setOn(!enabled, false);
+                    brls::Application::notify(
+                        "Unable to save the diagnostics setting.");
+                    return;
+                }
+                telemetry_set_enabled(enabled ? 1 : 0);
+                brls::Application::notify(enabled
+                    ? "Throughput diagnostics enabled."
+                    : "Throughput diagnostics disabled.");
+            });
+        addView(toggle_);
+
+        auto* path = new brls::Label();
+        path->setText("Log: sdmc:/switch/pipensx/pipensx.log");
+        path->setFontSize(17);
+        path->setTextColor(nvgRGB(150, 150, 160));
+        path->setMarginTop(18);
+        addView(path);
+    }
+
+private:
+    brls::BooleanCell* toggle_ = nullptr;
+};
+
 class MainActivity : public brls::Activity {
 public:
     MainActivity(DownloadManager* manager, CatalogService* catalog,
@@ -2473,6 +2543,9 @@ public:
         });
         tabs->addTab("Catalog", [manager, catalog, metadata] {
             return new CatalogView(manager, catalog, metadata);
+        });
+        tabs->addTab("Settings", [] {
+            return new SettingsView();
         });
         frame_ = new brls::AppletFrame(tabs);
         frame_->setTitle("pipensx");
@@ -2506,6 +2579,9 @@ int main(int, char**) {
     mkdir("sdmc:/switch", 0755);
     mkdir("sdmc:/switch/pipensx", 0755);
     log_init("sdmc:/switch/pipensx/pipensx.log");
+    telemetry_set_enabled(telemetryFlagEnabled() ? 1 : 0);
+    log_msg("[telemetry] setting enabled=%d interval_ms=5000 build='%s %s'\n",
+            telemetry_enabled(), __DATE__, __TIME__);
     startupStage("entered main");
 
     gBorealisLog = std::fopen(

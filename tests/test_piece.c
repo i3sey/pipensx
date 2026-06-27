@@ -418,6 +418,46 @@ static void test_strict_order_stops_at_request_gate(void) {
     free_test_metainfo(&mi);
 }
 
+static void test_request_reference_counts(void) {
+    metainfo_t mi;
+    init_single_file_metainfo(&mi, "requests.bin", BLOCK_SIZE, BLOCK_SIZE);
+    piece_mgr_t *pm = piece_mgr_create(&mi, NULL);
+    assert(pm);
+
+    assert(piece_mgr_block_request_count(pm, 0, 0) == 0);
+    piece_mgr_mark_block_requested(pm, 0, 0);
+    piece_mgr_mark_block_requested(pm, 0, 0);
+    assert(piece_mgr_block_request_count(pm, 0, 0) == 2);
+    piece_mgr_clear_block_requested(pm, 0, 0);
+    assert(piece_mgr_block_request_count(pm, 0, 0) == 1);
+    piece_mgr_clear_all_block_requests(pm, 0, 0);
+    assert(!piece_mgr_block_requested(pm, 0, 0));
+
+    piece_mgr_destroy(pm);
+    free_test_metainfo(&mi);
+}
+
+static void test_strict_order_prefers_requestable_pending_piece(void) {
+    metainfo_t mi;
+    init_single_file_metainfo(&mi, "pending.bin", BLOCK_SIZE,
+                              3 * BLOCK_SIZE);
+    piece_mgr_t *pm = piece_mgr_create_ex(&mi, NULL, 1, NULL, 0);
+    assert(pm);
+    piece_mgr_set_strict_policy(pm, 2, 1);
+
+    pm->slots[0].state = PS_PENDING;
+    uint8_t peer_bf[1] = {0};
+    bf_set(peer_bf, 0);
+    bf_set(peer_bf, 1);
+    assert(piece_mgr_pick(pm, peer_bf, sizeof(peer_bf)) == 0);
+
+    piece_mgr_mark_block_requested(pm, 0, 0);
+    assert(piece_mgr_pick(pm, peer_bf, sizeof(peer_bf)) == 1);
+
+    piece_mgr_destroy(pm);
+    free_test_metainfo(&mi);
+}
+
 int main(void) {
     test_large_piece_and_short_last_piece();
     test_hash_mismatch_resets_all_blocks();
@@ -428,6 +468,8 @@ int main(void) {
     test_metainfo_path_safety();
     test_strict_order_advances_past_lookahead_window();
     test_strict_order_stops_at_request_gate();
+    test_request_reference_counts();
+    test_strict_order_prefers_requestable_pending_piece();
     puts("piece tests passed");
     return 0;
 }

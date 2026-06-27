@@ -9,6 +9,10 @@
 
 #include <zstd.h>
 
+extern "C" {
+#include "../core/util.h"
+}
+
 #ifdef __SWITCH__
 #include <mbedtls/aes.h>
 #else
@@ -148,11 +152,16 @@ public:
     using Ready = std::function<bool(uint64_t)>;
     using Writer = std::function<bool(const uint8_t*, size_t)>;
 
-    NczDecoder(uint64_t inputSize, Ready ready, Writer writer)
+    NczDecoder(uint64_t inputSize, std::string telemetryTag,
+               Ready ready, Writer writer)
         : inputSize_(inputSize), inputRemaining_(inputSize), ready_(std::move(ready)),
-          writer_(std::move(writer)) {}
+          writer_(std::move(writer)), telemetryTag_(std::move(telemetryTag)) {
+        telemetryStartMs_ = now_ms();
+        resetTelemetry(telemetryStartMs_);
+    }
 
     ~NczDecoder() {
+        emitTelemetry(now_ms(), true, true);
         if (stream_)
             ZSTD_freeDStream(stream_);
     }
@@ -163,12 +172,16 @@ public:
             return false;
         }
         inputRemaining_ -= size;
+        telemetryInputBytes_ += size;
+        telemetryTotalInputBytes_ += size;
         pending_.insert(pending_.end(), data, data + size);
+        bool ok = true;
         if (!headerReady_ && !parseHeader(error))
-            return error.empty();
-        if (!headerReady_)
-            return true;
-        return blockMode_ ? processBlocks(error) : processSolid(error);
+            ok = error.empty();
+        else if (headerReady_)
+            ok = blockMode_ ? processBlocks(error) : processSolid(error);
+        emitTelemetry(now_ms(), false, false);
+        return ok;
     }
 
     bool finish(std::string& error) {
@@ -410,17 +423,44 @@ private:
             }
         }
 
-        if (!ready_(outputSize_)) {
+        uint64_t readyStartedUs = telemetry_enabled() ? now_us() : 0;
+        bool ready = ready_(outputSize_);
+        if (readyStartedUs) {
+            uint64_t elapsedUs = now_us() - readyStartedUs;
+            telemetryReadyUs_ += elapsedUs;
+            telemetryTotalReadyUs_ += elapsedUs;
+        }
+        if (!ready) {
             error = "Installer rejected the NCZ output size.";
             return false;
         }
-        if (!writer_(pending_.data(), ncaHeaderSize)) {
+        uint64_t headerWriterStartedUs = telemetry_enabled() ? now_us() : 0;
+        bool headerWritten = writer_(pending_.data(), ncaHeaderSize);
+        if (headerWriterStartedUs) {
+            uint64_t elapsedUs = now_us() - headerWriterStartedUs;
+            telemetryWriterUs_ += elapsedUs;
+            telemetryTotalWriterUs_ += elapsedUs;
+            telemetryWriterCalls_++;
+            telemetryTotalWriterCalls_++;
+            telemetryWriterMaxUs_ = std::max(
+                telemetryWriterMaxUs_, elapsedUs);
+            telemetryTotalWriterMaxUs_ = std::max(
+                telemetryTotalWriterMaxUs_, elapsedUs);
+        }
+        if (!headerWritten) {
             error = "Installer rejected the NCZ NCA header.";
             return false;
         }
         outputPosition_ = ncaHeaderSize;
+        telemetryOutputBytes_ += ncaHeaderSize;
+        telemetryTotalOutputBytes_ += ncaHeaderSize;
         pending_.erase(pending_.begin(), pending_.begin() + headerSize);
         headerReady_ = true;
+        telemetry_log("decode", telemetryTag_.c_str(),
+            "event=header mode=%s output_bytes=%llu block_bytes=%llu blocks=%zu",
+            blockMode_ ? "block" : "solid",
+            (unsigned long long)outputSize_,
+            (unsigned long long)blockSize_, blockSizes_.size());
         return true;
     }
 
@@ -442,16 +482,38 @@ private:
                                  outputPosition_;
             size_t count = static_cast<size_t>(
                 std::min<uint64_t>(remaining, size - done));
-            if (!AesCtr::transform(*section, outputPosition_,
-                                   data + done, count)) {
+            uint64_t aesStartedUs = telemetry_enabled() ? now_us() : 0;
+            bool transformed = AesCtr::transform(*section, outputPosition_,
+                                                 data + done, count);
+            if (aesStartedUs) {
+                uint64_t elapsedUs = now_us() - aesStartedUs;
+                telemetryAesUs_ += elapsedUs;
+                telemetryTotalAesUs_ += elapsedUs;
+            }
+            if (!transformed) {
                 error = "Unable to restore NCZ AES-CTR section.";
                 return false;
             }
-            if (!writer_(data + done, count)) {
+            uint64_t writerStartedUs = telemetry_enabled() ? now_us() : 0;
+            bool written = writer_(data + done, count);
+            if (writerStartedUs) {
+                uint64_t elapsedUs = now_us() - writerStartedUs;
+                telemetryWriterUs_ += elapsedUs;
+                telemetryTotalWriterUs_ += elapsedUs;
+                telemetryWriterCalls_++;
+                telemetryTotalWriterCalls_++;
+                telemetryWriterMaxUs_ = std::max(
+                    telemetryWriterMaxUs_, elapsedUs);
+                telemetryTotalWriterMaxUs_ = std::max(
+                    telemetryTotalWriterMaxUs_, elapsedUs);
+            }
+            if (!written) {
                 error = "Installer rejected decompressed NCZ data.";
                 return false;
             }
             outputPosition_ += count;
+            telemetryOutputBytes_ += count;
+            telemetryTotalOutputBytes_ += count;
             done += count;
         }
         return true;
@@ -463,7 +525,13 @@ private:
         ZSTD_inBuffer input { pending_.data(), pending_.size(), 0 };
         while (input.pos < input.size) {
             ZSTD_outBuffer out { outputBuffer_.data(), outputBuffer_.size(), 0 };
+            uint64_t zstdStartedUs = telemetry_enabled() ? now_us() : 0;
             size_t result = ZSTD_decompressStream(stream_, &out, &input);
+            if (zstdStartedUs) {
+                uint64_t elapsedUs = now_us() - zstdStartedUs;
+                telemetryZstdUs_ += elapsedUs;
+                telemetryTotalZstdUs_ += elapsedUs;
+            }
             if (ZSTD_isError(result)) {
                 error = ZSTD_getErrorName(result);
                 return false;
@@ -491,8 +559,14 @@ private:
             if (compressed == expected) {
                 std::memcpy(output.data(), pending_.data(), expected);
             } else {
+                uint64_t zstdStartedUs = telemetry_enabled() ? now_us() : 0;
                 size_t result = ZSTD_decompress(output.data(), output.size(),
                                                 pending_.data(), compressed);
+                if (zstdStartedUs) {
+                    uint64_t elapsedUs = now_us() - zstdStartedUs;
+                    telemetryZstdUs_ += elapsedUs;
+                    telemetryTotalZstdUs_ += elapsedUs;
+                }
                 if (ZSTD_isError(result) || result != expected) {
                     error = "Invalid compressed NCZ block.";
                     return false;
@@ -506,10 +580,84 @@ private:
         return true;
     }
 
+    void resetTelemetry(uint64_t now) {
+        telemetryGeneration_ = telemetry_generation();
+        telemetryLastMs_ = now;
+        telemetryInputBytes_ = 0;
+        telemetryOutputBytes_ = 0;
+        telemetryZstdUs_ = 0;
+        telemetryAesUs_ = 0;
+        telemetryReadyUs_ = 0;
+        telemetryWriterUs_ = 0;
+        telemetryWriterMaxUs_ = 0;
+        telemetryWriterCalls_ = 0;
+    }
+
+    void emitTelemetry(uint64_t now, bool force, bool summary) {
+        uint32_t generation = telemetry_generation();
+        if (!telemetry_enabled()) {
+            if (telemetryGeneration_ != generation)
+                resetTelemetry(now);
+            return;
+        }
+        if (telemetryGeneration_ != generation) {
+            telemetryStartMs_ = now;
+            telemetryTotalInputBytes_ = 0;
+            telemetryTotalOutputBytes_ = 0;
+            telemetryTotalZstdUs_ = 0;
+            telemetryTotalAesUs_ = 0;
+            telemetryTotalReadyUs_ = 0;
+            telemetryTotalWriterUs_ = 0;
+            telemetryTotalWriterMaxUs_ = 0;
+            telemetryTotalWriterCalls_ = 0;
+            resetTelemetry(now);
+            return;
+        }
+        uint64_t elapsedMs = summary
+            ? now - telemetryStartMs_ : now - telemetryLastMs_;
+        if (!force && elapsedMs < 5000)
+            return;
+        if (!elapsedMs)
+            elapsedMs = 1;
+        uint64_t inputBytes = summary
+            ? telemetryTotalInputBytes_ : telemetryInputBytes_;
+        uint64_t outputBytes = summary
+            ? telemetryTotalOutputBytes_ : telemetryOutputBytes_;
+        uint64_t zstdUs = summary ? telemetryTotalZstdUs_ : telemetryZstdUs_;
+        uint64_t aesUs = summary ? telemetryTotalAesUs_ : telemetryAesUs_;
+        uint64_t readyUs = summary ? telemetryTotalReadyUs_ : telemetryReadyUs_;
+        uint64_t writerUs = summary ? telemetryTotalWriterUs_ : telemetryWriterUs_;
+        uint64_t writerMaxUs = summary
+            ? telemetryTotalWriterMaxUs_ : telemetryWriterMaxUs_;
+        uint32_t writerCalls = summary
+            ? telemetryTotalWriterCalls_ : telemetryWriterCalls_;
+        telemetry_log("decode", telemetryTag_.c_str(),
+            "event=%s interval_ms=%llu mode=%s input_bytes=%llu output_bytes=%llu "
+            "input_bps=%llu output_bps=%llu ratio_permille=%llu pending_bytes=%zu "
+            "zstd_us=%llu aes_us=%llu ready_us=%llu writer_us=%llu "
+            "writer_calls=%u writer_max_us=%llu",
+            summary ? "summary" : "interval",
+            (unsigned long long)elapsedMs,
+            blockMode_ ? "block" : (headerReady_ ? "solid" : "header"),
+            (unsigned long long)inputBytes,
+            (unsigned long long)outputBytes,
+            (unsigned long long)(inputBytes * 1000 / elapsedMs),
+            (unsigned long long)(outputBytes * 1000 / elapsedMs),
+            (unsigned long long)(inputBytes
+                ? outputBytes * 1000 / inputBytes : 0),
+            pending_.size(), (unsigned long long)zstdUs,
+            (unsigned long long)aesUs, (unsigned long long)readyUs,
+            (unsigned long long)writerUs, writerCalls,
+            (unsigned long long)writerMaxUs);
+        if (!summary)
+            resetTelemetry(now);
+    }
+
     uint64_t inputSize_;
     uint64_t inputRemaining_;
     Ready ready_;
     Writer writer_;
+    std::string telemetryTag_;
     std::vector<uint8_t> pending_;
     std::vector<NczSection> sections_;
     std::vector<uint32_t> blockSizes_;
@@ -524,14 +672,34 @@ private:
     bool headerReady_ = false;
     bool blockMode_ = false;
     bool solidEnded_ = false;
+    uint32_t telemetryGeneration_ = 0;
+    uint64_t telemetryStartMs_ = 0;
+    uint64_t telemetryLastMs_ = 0;
+    uint64_t telemetryInputBytes_ = 0;
+    uint64_t telemetryOutputBytes_ = 0;
+    uint64_t telemetryZstdUs_ = 0;
+    uint64_t telemetryAesUs_ = 0;
+    uint64_t telemetryReadyUs_ = 0;
+    uint64_t telemetryWriterUs_ = 0;
+    uint64_t telemetryWriterMaxUs_ = 0;
+    uint32_t telemetryWriterCalls_ = 0;
+    uint64_t telemetryTotalInputBytes_ = 0;
+    uint64_t telemetryTotalOutputBytes_ = 0;
+    uint64_t telemetryTotalZstdUs_ = 0;
+    uint64_t telemetryTotalAesUs_ = 0;
+    uint64_t telemetryTotalReadyUs_ = 0;
+    uint64_t telemetryTotalWriterUs_ = 0;
+    uint64_t telemetryTotalWriterMaxUs_ = 0;
+    uint32_t telemetryTotalWriterCalls_ = 0;
 };
 
 } // namespace
 
 class PackageStream::Impl {
 public:
-    Impl(bool compressed, PackageCallbacks callbacks)
-        : compressed_(compressed), callbacks_(std::move(callbacks)) {}
+    Impl(bool compressed, PackageCallbacks callbacks, std::string telemetryTag)
+        : compressed_(compressed), callbacks_(std::move(callbacks)),
+          telemetryTag_(std::move(telemetryTag)) {}
 
     bool write(const uint8_t* data, size_t size) {
         if (failed_ || finished_ || (!data && size)) {
@@ -585,6 +753,7 @@ private:
     bool parseHeader() {
         if (pending_.size() < 16)
             return true;
+        uint64_t parseStartedUs = telemetry_enabled() ? now_us() : 0;
         if (std::memcmp(pending_.data(), "PFS0", 4) != 0) {
             error_ = "Package is not a PFS0 NSP/NSZ.";
             return fail();
@@ -643,6 +812,10 @@ private:
         dataPosition_ = 0;
         pending_.erase(pending_.begin(), pending_.begin() + header);
         headerReady_ = true;
+        telemetry_log("package", telemetryTag_.c_str(),
+            "event=header entries=%u header_bytes=%zu parse_us=%llu",
+            count, header,
+            (unsigned long long)(parseStartedUs ? now_us() - parseStartedUs : 0));
         return true;
     }
 
@@ -664,7 +837,7 @@ private:
         fileOpen_ = true;
         if (ncz) {
             currentDecoder_ = std::make_unique<NczDecoder>(
-                entry.size,
+                entry.size, telemetryTag_,
                 [this](uint64_t size) {
                     return callbacks_.setFileSize &&
                            callbacks_.setFileSize(size);
@@ -737,6 +910,7 @@ private:
 
     bool compressed_;
     PackageCallbacks callbacks_;
+    std::string telemetryTag_;
     std::vector<uint8_t> pending_;
     std::vector<PfsEntry> entries_;
     std::unique_ptr<NczDecoder> currentDecoder_;
@@ -753,8 +927,10 @@ private:
     bool failed_ = false;
 };
 
-PackageStream::PackageStream(bool compressed, PackageCallbacks callbacks)
-    : impl_(std::make_unique<Impl>(compressed, std::move(callbacks))) {}
+PackageStream::PackageStream(bool compressed, PackageCallbacks callbacks,
+                             std::string telemetryTag)
+    : impl_(std::make_unique<Impl>(compressed, std::move(callbacks),
+                                   std::move(telemetryTag))) {}
 
 PackageStream::~PackageStream() = default;
 

@@ -22,6 +22,16 @@
 #define PEER_TIMEOUT_MS       60000
 #define REQUEST_TIMEOUT_MS    15000
 #define MAX_ACTIVE_PEERS      MAX_PEERS
+#define TELEMETRY_INTERVAL_MS 5000
+#define MIN_REQUEST_PIPELINE  8
+#define TIMEOUT_COOLDOWN_BASE_MS 2000
+#define TIMEOUT_COOLDOWN_MAX_MS  10000
+#define TIMEOUT_DISCONNECT_STRIKES 3
+#define TIMEOUT_DISCONNECT_IDLE_MS (REQUEST_TIMEOUT_MS * 2)
+#define MAX_HEDGES_PER_TICK   4
+#define MAX_HEDGED_BLOCKS     16
+#define HEDGE_INTERVAL_MS     250
+#define MAX_PEER_TELEMETRY    8
 
 struct peer_addr {
     uint32_t ip;   /* network byte order */
@@ -51,6 +61,24 @@ struct torrent {
     uint64_t speed_time_ms;
     uint64_t last_health_ms;
     uint32_t expired_requests;
+
+    char     telemetry_tag[48];
+    uint32_t telemetry_generation;
+    uint64_t telemetry_last_ms;
+    uint64_t telemetry_cb_bytes;
+    uint64_t telemetry_verified_bytes;
+    uint64_t telemetry_cb_work_us;
+    uint64_t telemetry_cb_max_us;
+    uint32_t telemetry_cb_calls;
+    uint32_t telemetry_expired_requests;
+    uint32_t telemetry_hedged_requests;
+    uint32_t telemetry_cancelled_requests;
+    uint32_t telemetry_released_requests;
+
+    uint32_t request_pipeline_limit;
+    uint32_t hedge_after_ms;
+    uint32_t schedule_cursor;
+    uint64_t last_hedge_ms;
 
     uint64_t last_tracker_ms;
     uint64_t last_dht_ms;
@@ -111,19 +139,211 @@ static int queue_pop(torrent_t *t, uint32_t *ip, uint16_t *port) {
     return 1;
 }
 
+static void cancel_duplicate_requests(torrent_t *t, uint32_t piece,
+                                      uint32_t offset, uint32_t len) {
+    for (int i = 0; i < MAX_ACTIVE_PEERS; ++i) {
+        peer_t *peer = t->peers[i];
+        if (!peer || peer->state != PS_ACTIVE)
+            continue;
+        if (peer_cancel_block(peer, piece, offset, len)) {
+            peer->telemetry_cancelled_requests++;
+            t->telemetry_cancelled_requests++;
+        }
+    }
+}
+
 /* ---- callbacks ---- */
 static void cb_block(void *ud, uint32_t idx, uint32_t off,
                      const uint8_t *data, uint32_t len) {
     torrent_t *t = (torrent_t*)ud;
+    uint64_t started_us = telemetry_enabled() ? now_us() : 0;
     t->downloaded   += len;
     t->speed_bytes  += len;
-    if (piece_mgr_got_block(t->pm, idx, off, data, len) < 0) {
+    uint32_t block = off / BLOCK_SIZE;
+    int duplicated = piece_mgr_block_request_count(t->pm, idx, block) > 1;
+    int result = piece_mgr_got_block(t->pm, idx, off, data, len);
+    if (result >= 1 && duplicated)
+        cancel_duplicate_requests(t, idx, off, len);
+    if (started_us) {
+        uint64_t elapsed_us = now_us() - started_us;
+        t->telemetry_cb_bytes += len;
+        t->telemetry_cb_work_us += elapsed_us;
+        if (elapsed_us > t->telemetry_cb_max_us)
+            t->telemetry_cb_max_us = elapsed_us;
+        t->telemetry_cb_calls++;
+        if (result == 2)
+            t->telemetry_verified_bytes += (uint64_t)piece_len(t->pm, idx);
+    }
+    if (result < 0) {
         t->fatal_error = 1;
         snprintf(t->error, sizeof(t->error), "%s",
                  storage_error(t->store)[0]
                     ? storage_error(t->store)
                     : "piece processing failed");
     }
+}
+
+static void reset_telemetry_window(torrent_t *t, uint64_t now) {
+    t->telemetry_generation = telemetry_generation();
+    t->telemetry_last_ms = now;
+    t->telemetry_cb_bytes = 0;
+    t->telemetry_verified_bytes = 0;
+    t->telemetry_cb_work_us = 0;
+    t->telemetry_cb_max_us = 0;
+    t->telemetry_cb_calls = 0;
+    t->telemetry_expired_requests = 0;
+    t->telemetry_hedged_requests = 0;
+    t->telemetry_cancelled_requests = 0;
+    t->telemetry_released_requests = 0;
+    for (int i = 0; i < MAX_ACTIVE_PEERS; ++i) {
+        peer_t *peer = t->peers[i];
+        if (!peer)
+            continue;
+        peer->telemetry_piece_bytes = 0;
+        peer->telemetry_expired_requests = 0;
+        peer->telemetry_hedged_requests = 0;
+        peer->telemetry_cancelled_requests = 0;
+        peer->telemetry_released_requests = 0;
+    }
+}
+
+static void emit_telemetry(torrent_t *t, uint64_t now) {
+    uint32_t generation = telemetry_generation();
+    if (!telemetry_enabled()) {
+        if (t->telemetry_generation != generation)
+            reset_telemetry_window(t, now);
+        return;
+    }
+    if (t->telemetry_generation != generation) {
+        reset_telemetry_window(t, now);
+        return;
+    }
+    uint64_t elapsed_ms = now - t->telemetry_last_ms;
+    if (elapsed_ms < TELEMETRY_INTERVAL_MS)
+        return;
+
+    int connecting = 0, handshaking = 0, active = 0;
+    int unchoked = 0, choked = 0, inflight = 0;
+    int cooldown_peers = 0, penalized_peers = 0;
+    uint64_t oldest_request_ms = 0;
+    for (int i = 0; i < MAX_ACTIVE_PEERS; ++i) {
+        peer_t *p = t->peers[i];
+        if (!p)
+            continue;
+        if (p->state == PS_CONNECTING) {
+            connecting++;
+            continue;
+        }
+        if (p->state == PS_HANDSHAKE || p->state == PS_EXTENSION) {
+            handshaking++;
+            continue;
+        }
+        if (p->state != PS_ACTIVE)
+            continue;
+        active++;
+        if (p->am_choked) choked++; else unchoked++;
+        if (p->request_cooldown_until_ms > now) cooldown_peers++;
+        if (p->timeout_strikes > 0) penalized_peers++;
+        inflight += p->pipeline_len;
+        for (int j = 0; j < p->pipeline_len; ++j) {
+            uint64_t requested = p->pipeline[j].requested_ms;
+            if (requested <= now && now - requested > oldest_request_ms)
+                oldest_request_ms = now - requested;
+        }
+    }
+
+    uint32_t head = UINT32_MAX;
+    uint32_t head_done = 0, head_total = 0, head_requested = 0;
+    uint32_t head_request_copies = 0, head_hedged = 0;
+    uint32_t count = t->pm->piece_order_count
+                   ? t->pm->piece_order_count : t->pm->num_pieces;
+    for (uint32_t n = 0; n < count; ++n) {
+        uint32_t idx = t->pm->piece_order_count
+                     ? t->pm->piece_order[n] : n;
+        if (idx >= t->pm->num_pieces ||
+            t->pm->slots[idx].state == PS_DONE)
+            continue;
+        head = idx;
+        piece_slot_t *slot = &t->pm->slots[idx];
+        head_done = slot->num_blocks_done;
+        head_total = slot->num_blocks;
+        for (uint32_t block = 0; block < slot->num_blocks; ++block) {
+            uint32_t requests = piece_mgr_block_request_count(
+                t->pm, idx, block);
+            if (requests > 0)
+                head_requested++;
+            head_request_copies += requests;
+            if (requests > 1)
+                head_hedged++;
+        }
+        break;
+    }
+
+    uint64_t rx_bps = t->telemetry_cb_bytes * 1000 / (elapsed_ms + 1);
+    uint64_t verified_bps = t->telemetry_verified_bytes * 1000 /
+                            (elapsed_ms + 1);
+    uint64_t cb_busy_permille = t->telemetry_cb_work_us * 1000 /
+                                (elapsed_ms * 1000 + 1);
+    telemetry_log("torrent", t->telemetry_tag,
+        "interval_ms=%llu rx_bps=%llu verified_bps=%llu speed_bps=%llu "
+        "connecting=%d handshaking=%d active=%d unchoked=%d choked=%d "
+        "inflight=%d expired=%u oldest_request_ms=%llu peer_queue=%d "
+        "cooldown_peers=%d penalized_peers=%d request_limit=%u "
+        "hedged=%u cancelled=%u released=%u "
+        "head_piece=%u head_done=%u head_total=%u head_requested=%u "
+        "head_request_copies=%u head_hedged=%u "
+        "piece_cb_calls=%u piece_cb_busy_permille=%llu piece_cb_max_us=%llu",
+        (unsigned long long)elapsed_ms,
+        (unsigned long long)rx_bps,
+        (unsigned long long)verified_bps,
+        (unsigned long long)t->speed_bps,
+        connecting, handshaking, active, unchoked, choked, inflight,
+        t->telemetry_expired_requests,
+        (unsigned long long)oldest_request_ms,
+        t->qsize, cooldown_peers, penalized_peers,
+        t->request_pipeline_limit, t->telemetry_hedged_requests,
+        t->telemetry_cancelled_requests, t->telemetry_released_requests,
+        head, head_done, head_total, head_requested,
+        head_request_copies, head_hedged,
+        t->telemetry_cb_calls, (unsigned long long)cb_busy_permille,
+        (unsigned long long)t->telemetry_cb_max_us);
+
+    int selected[MAX_ACTIVE_PEERS] = {0};
+    int emitted = 0;
+    for (int pass = 0; pass < 2 && emitted < MAX_PEER_TELEMETRY; ++pass) {
+        for (int i = 0; i < MAX_ACTIVE_PEERS &&
+                        emitted < MAX_PEER_TELEMETRY; ++i) {
+            peer_t *peer = t->peers[i];
+            if (!peer || peer->state != PS_ACTIVE || selected[i])
+                continue;
+            int unhealthy = peer->timeout_strikes > 0 ||
+                            peer->telemetry_expired_requests > 0;
+            if ((pass == 0) != unhealthy)
+                continue;
+            selected[i] = 1;
+            emitted++;
+            uint64_t peer_rx_bps = peer->telemetry_piece_bytes * 1000 /
+                                   (elapsed_ms + 1);
+            uint64_t last_piece_age = peer->last_piece_ms <= now
+                                    ? now - peer->last_piece_ms : 0;
+            uint64_t cooldown_ms = peer->request_cooldown_until_ms > now
+                                 ? peer->request_cooldown_until_ms - now : 0;
+            telemetry_log("peer", t->telemetry_tag,
+                "address=%s rx_bps=%llu pipeline=%d unchoked=%d "
+                "expired=%u hedged=%u cancelled=%u released=%u strikes=%u "
+                "cooldown_ms=%llu last_piece_age_ms=%llu",
+                peer->addr_str, (unsigned long long)peer_rx_bps,
+                peer->pipeline_len, !peer->am_choked,
+                peer->telemetry_expired_requests,
+                peer->telemetry_hedged_requests,
+                peer->telemetry_cancelled_requests,
+                peer->telemetry_released_requests,
+                peer->timeout_strikes,
+                (unsigned long long)cooldown_ms,
+                (unsigned long long)last_piece_age);
+        }
+    }
+    reset_telemetry_window(t, now);
 }
 
 static void cb_have(void *ud, uint32_t idx) {
@@ -205,9 +425,34 @@ static void try_connect(torrent_t *t) {
 }
 
 /* ---- schedule block requests ---- */
-static void schedule_requests(torrent_t *t, peer_t *p) {
-    if (p->am_choked || p->state != PS_ACTIVE) return;
-    while (p->pipeline_len < MAX_PIPELINE) {
+static uint32_t peer_pipeline_limit(const torrent_t *t, const peer_t *p) {
+    uint32_t limit = t->request_pipeline_limit;
+    uint32_t shifts = p->timeout_strikes > 2 ? 2 : p->timeout_strikes;
+    limit >>= shifts;
+    return limit < MIN_REQUEST_PIPELINE ? MIN_REQUEST_PIPELINE : limit;
+}
+
+static int peer_has_piece(const peer_t *peer, uint32_t piece) {
+    return peer && piece / 8 < peer->bf_bytes &&
+           bf_has(peer->bitfield, piece);
+}
+
+static int peer_has_request(const peer_t *peer, uint32_t piece,
+                            uint32_t offset) {
+    for (int i = 0; peer && i < peer->pipeline_len; ++i) {
+        if (peer->pipeline[i].index == (int)piece &&
+            peer->pipeline[i].offset == (int)offset)
+            return 1;
+    }
+    return 0;
+}
+
+static void schedule_requests(torrent_t *t, peer_t *p, uint64_t now) {
+    if (p->am_choked || p->state != PS_ACTIVE ||
+        p->request_cooldown_until_ms > now)
+        return;
+    uint32_t limit = peer_pipeline_limit(t, p);
+    while ((uint32_t)p->pipeline_len < limit) {
         uint32_t pidx = piece_mgr_pick(t->pm, p->bitfield, p->bf_bytes);
         if (pidx == (uint32_t)-1) break;
         piece_mgr_mark_pending(t->pm, pidx);
@@ -217,7 +462,8 @@ static void schedule_requests(torrent_t *t, peer_t *p) {
         uint32_t nb   = sl->num_blocks;
         int queued = 0;
 
-        for (uint32_t b = 0; b < nb && p->pipeline_len < MAX_PIPELINE; b++) {
+        for (uint32_t b = 0; b < nb &&
+                           (uint32_t)p->pipeline_len < limit; b++) {
             /* Skip blocks already received */
             if (piece_mgr_has_block(t->pm, pidx, b)) continue;
             if (piece_mgr_block_requested(t->pm, pidx, b)) continue;
@@ -237,6 +483,108 @@ static void schedule_requests(torrent_t *t, peer_t *p) {
             }
         }
         if (!queued) break; /* nothing left to request for this piece */
+    }
+}
+
+static void schedule_all_peers(torrent_t *t, uint64_t now) {
+    uint32_t start = t->schedule_cursor++ % MAX_ACTIVE_PEERS;
+    for (uint32_t n = 0; n < MAX_ACTIVE_PEERS; ++n) {
+        uint32_t index = (start + n) % MAX_ACTIVE_PEERS;
+        peer_t *peer = t->peers[index];
+        if (peer)
+            schedule_requests(t, peer, now);
+    }
+}
+
+static uint32_t current_head_piece(const torrent_t *t) {
+    uint32_t count = t->pm->piece_order_count
+                   ? t->pm->piece_order_count : t->pm->num_pieces;
+    for (uint32_t n = 0; n < count; ++n) {
+        uint32_t piece = t->pm->piece_order_count
+                       ? t->pm->piece_order[n] : n;
+        if (piece < t->pm->num_pieces &&
+            t->pm->slots[piece].state != PS_DONE)
+            return piece;
+    }
+    return UINT32_MAX;
+}
+
+static peer_t *pick_hedge_peer(torrent_t *t, const peer_t *primary,
+                               uint32_t piece, uint32_t offset,
+                               uint64_t now) {
+    peer_t *best = NULL;
+    for (int i = 0; i < MAX_ACTIVE_PEERS; ++i) {
+        peer_t *peer = t->peers[i];
+        if (!peer || peer == primary || peer->state != PS_ACTIVE ||
+            peer->am_choked || peer->request_cooldown_until_ms > now ||
+            !peer_has_piece(peer, piece) ||
+            peer_has_request(peer, piece, offset) ||
+            (uint32_t)peer->pipeline_len >= peer_pipeline_limit(t, peer))
+            continue;
+        if (!best || peer->timeout_strikes < best->timeout_strikes ||
+            (peer->timeout_strikes == best->timeout_strikes &&
+             peer->last_piece_ms > best->last_piece_ms) ||
+            (peer->timeout_strikes == best->timeout_strikes &&
+             peer->last_piece_ms == best->last_piece_ms &&
+             peer->pipeline_len < best->pipeline_len)) {
+            best = peer;
+        }
+    }
+    return best;
+}
+
+static void schedule_hedged_requests(torrent_t *t, uint64_t now) {
+    if (!t->hedge_after_ms || !t->pm->strict_order)
+        return;
+    if (t->last_hedge_ms <= now &&
+        now - t->last_hedge_ms < HEDGE_INTERVAL_MS)
+        return;
+    t->last_hedge_ms = now;
+    uint32_t head = current_head_piece(t);
+    if (head == UINT32_MAX)
+        return;
+
+    uint32_t outstanding = 0;
+    piece_slot_t *headSlot = &t->pm->slots[head];
+    for (uint32_t block = 0; block < headSlot->num_blocks; ++block) {
+        if (piece_mgr_block_request_count(t->pm, head, block) > 1)
+            outstanding++;
+    }
+    if (outstanding >= MAX_HEDGED_BLOCKS)
+        return;
+    uint32_t budget = MAX_HEDGED_BLOCKS - outstanding;
+    if (budget > MAX_HEDGES_PER_TICK)
+        budget = MAX_HEDGES_PER_TICK;
+    uint32_t hedged = 0;
+    for (int i = 0; i < MAX_ACTIVE_PEERS &&
+                    hedged < budget; ++i) {
+        peer_t *primary = t->peers[i];
+        if (!primary || primary->state != PS_ACTIVE)
+            continue;
+        for (int j = 0; j < primary->pipeline_len &&
+                        hedged < budget; ++j) {
+            block_req_t request = primary->pipeline[j];
+            if (request.index != (int)head || request.offset < 0 ||
+                request.requested_ms > now ||
+                now - request.requested_ms < t->hedge_after_ms)
+                continue;
+            uint32_t block = (uint32_t)request.offset / BLOCK_SIZE;
+            if (piece_mgr_has_block(t->pm, head, block) ||
+                piece_mgr_block_request_count(t->pm, head, block) != 1)
+                continue;
+            peer_t *candidate = pick_hedge_peer(
+                t, primary, head, (uint32_t)request.offset, now);
+            if (!candidate)
+                continue;
+            if (peer_request_block(candidate, head,
+                                   (uint32_t)request.offset,
+                                   (uint32_t)request.length)) {
+                piece_mgr_mark_block_requested(t->pm, head, block);
+                candidate->telemetry_hedged_requests++;
+                t->telemetry_hedged_requests++;
+                hedged++;
+            }
+        }
     }
 }
 
@@ -281,6 +629,20 @@ torrent_t *torrent_create_ex(const metainfo_t *mi,
     memcpy(&t->mi, mi, sizeof(*mi));
     t->listen_port = listen_port;
     t->startup_verifying = 1;
+    t->request_pipeline_limit = options && options->request_pipeline_limit
+                              ? options->request_pipeline_limit
+                              : MAX_PIPELINE;
+    if (t->request_pipeline_limit > MAX_PIPELINE)
+        t->request_pipeline_limit = MAX_PIPELINE;
+    if (t->request_pipeline_limit < MIN_REQUEST_PIPELINE)
+        t->request_pipeline_limit = MIN_REQUEST_PIPELINE;
+    t->hedge_after_ms = options ? options->hedge_after_ms : 0;
+    if (options && options->telemetry_tag)
+        snprintf(t->telemetry_tag, sizeof(t->telemetry_tag), "%s",
+                 options->telemetry_tag);
+    else
+        snprintf(t->telemetry_tag, sizeof(t->telemetry_tag), "-");
+    reset_telemetry_window(t, now_ms());
 
     /* Peer ID: "-PN0001-" + 12 random bytes */
     memcpy(t->peer_id, "-PN0001-", 8);
@@ -298,6 +660,9 @@ torrent_t *torrent_create_ex(const metainfo_t *mi,
     if (options) {
         t->pm->request_allowed = options->request_allowed;
         t->pm->request_allowed_user = options->request_allowed_user;
+        piece_mgr_set_strict_policy(t->pm,
+                                    options->strict_order_lookahead,
+                                    options->strict_fill_pending_first);
     }
 
     /* DHT */
@@ -352,6 +717,15 @@ torrent_t *torrent_create_ex(const metainfo_t *mi,
     t->last_health_ms   = t->speed_time_ms;
 
     log_msg("[torrent] started: %u peers queued from trackers\n", n);
+    telemetry_log("torrent", t->telemetry_tag,
+                  "event=start pieces=%u piece_bytes=%lld trackers=%u "
+                  "tracker_peers=%u "
+                  "request_limit=%u lookahead=%u pending_first=%d "
+                  "hedge_after_ms=%u",
+                  mi->num_pieces, (long long)mi->piece_length,
+                  mi->num_trackers, n, t->request_pipeline_limit,
+                  t->pm->strict_order_lookahead,
+                  t->pm->strict_fill_pending_first, t->hedge_after_ms);
     return t;
 }
 
@@ -428,6 +802,7 @@ int torrent_tick(torrent_t *t) {
         t->speed_bytes    = 0;
         t->speed_time_ms  = now;
     }
+    emit_telemetry(t, now);
     if (now - t->last_health_ms >= 10000) {
         int active = 0;
         int unchoked = 0;
@@ -526,8 +901,14 @@ int torrent_tick(torrent_t *t) {
             t->num_peers--;
             continue;
         }
-        /* Schedule requests */
-        schedule_requests(t, p);
+        if (p->am_choked && p->pipeline_len > 0) {
+            uint32_t released = (uint32_t)p->pipeline_len;
+            clear_peer_requests(t, p);
+            p->telemetry_released_requests += released;
+            t->telemetry_released_requests += released;
+            p->request_cooldown_until_ms = now_ms() +
+                                           TIMEOUT_COOLDOWN_BASE_MS;
+        }
     }
 
     /* Timeout sweep — separate pass after poll so last_recv_ms is fully updated */
@@ -551,7 +932,35 @@ int torrent_tick(torrent_t *t) {
                                            clear_request, t);
         if (expired > 0) {
             t->expired_requests += (uint32_t)expired;
-            schedule_requests(t, p);
+            t->telemetry_expired_requests += (uint32_t)expired;
+            p->telemetry_expired_requests += (uint32_t)expired;
+            if (p->timeout_strikes != UINT32_MAX)
+                p->timeout_strikes++;
+            uint64_t cooldown = TIMEOUT_COOLDOWN_BASE_MS *
+                                (uint64_t)p->timeout_strikes;
+            if (cooldown > TIMEOUT_COOLDOWN_MAX_MS)
+                cooldown = TIMEOUT_COOLDOWN_MAX_MS;
+            p->request_cooldown_until_ms = now2 + cooldown;
+            telemetry_log("peer", t->telemetry_tag,
+                "event=request_timeout address=%s expired=%d strikes=%u "
+                "cooldown_ms=%llu pipeline=%d",
+                p->addr_str, expired, p->timeout_strikes,
+                (unsigned long long)cooldown, p->pipeline_len);
+
+            uint64_t progress_ms = p->last_piece_ms
+                                 ? p->last_piece_ms : p->connect_time_ms;
+            if (p->timeout_strikes >= TIMEOUT_DISCONNECT_STRIKES &&
+                progress_ms <= now2 &&
+                now2 - progress_ms >= TIMEOUT_DISCONNECT_IDLE_MS) {
+                log_msg("[torrent] peer %s dropped after %u request "
+                        "timeout strikes\n",
+                        p->addr_str, p->timeout_strikes);
+                clear_peer_requests(t, p);
+                peer_destroy(p);
+                t->peers[i] = NULL;
+                t->num_peers--;
+                continue;
+            }
         }
         /* Guard against unsigned underflow: only check if last_recv_ms <= now2 */
         if (p->last_recv_ms <= now2 && now2 - p->last_recv_ms > PEER_TIMEOUT_MS) {
@@ -562,6 +971,10 @@ int torrent_tick(torrent_t *t) {
             t->num_peers--;
         }
     }
+
+    /* Hedging runs before refill so old critical blocks get first choice. */
+    schedule_hedged_requests(t, now2);
+    schedule_all_peers(t, now2);
 
     return check_completion(t);
 }

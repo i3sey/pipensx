@@ -73,7 +73,17 @@ typedef struct peer {
 
     uint64_t connect_time_ms;
     uint64_t last_recv_ms;
+    uint64_t last_piece_ms;
     uint64_t downloaded;
+
+    /* Request scheduler health (single-owner torrent thread). */
+    uint64_t request_cooldown_until_ms;
+    uint64_t telemetry_piece_bytes;
+    uint32_t timeout_strikes;
+    uint32_t telemetry_expired_requests;
+    uint32_t telemetry_hedged_requests;
+    uint32_t telemetry_cancelled_requests;
+    uint32_t telemetry_released_requests;
 
     /* PEX data received (raw bencode, owned) */
     uint8_t *pex_buf;
@@ -118,6 +128,7 @@ int peer_send_handshake(peer_t *p, const peer_ctx_t *ctx);
  * Queue a block request.  Returns 0 if pipeline full.
  */
 int peer_request_block(peer_t *p, uint32_t piece, uint32_t offset, uint32_t len);
+int peer_cancel_block(peer_t *p, uint32_t piece, uint32_t offset, uint32_t len);
 
 /* Drop requests a peer has not answered before the deadline. */
 int peer_expire_requests(peer_t *p, uint64_t now, uint64_t timeout_ms,
