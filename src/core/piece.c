@@ -27,6 +27,12 @@ static int block_is_set(const piece_slot_t *sl, uint32_t block) {
     return (sl->have_blocks[block / 8] >> (block % 8)) & 1u;
 }
 
+static int request_allowed(const piece_mgr_t *pm, uint32_t idx) {
+    if (!pm->request_allowed)
+        return 1;
+    return pm->request_allowed(pm->request_allowed_user, idx);
+}
+
 static void block_set(piece_slot_t *sl, uint32_t block) {
     sl->have_blocks[block / 8] |= (uint8_t)(1u << (block % 8));
 }
@@ -34,7 +40,11 @@ static void block_set(piece_slot_t *sl, uint32_t block) {
 static void reset_piece(piece_mgr_t *pm, uint32_t idx) {
     piece_slot_t *sl = &pm->slots[idx];
     if (sl->state == PS_DONE && pm->num_done > 0) {
+        uint64_t len = (uint64_t)piece_len(pm, idx);
         pm->num_done--;
+        pm->completed_bytes = pm->completed_bytes >= len
+            ? pm->completed_bytes - len
+            : 0;
         pm->have_bf[idx / 8] &= (uint8_t)~(1u << (7 - idx % 8));
         pm->available_bf[idx / 8] &=
             (uint8_t)~(1u << (7 - idx % 8));
@@ -42,6 +52,7 @@ static void reset_piece(piece_mgr_t *pm, uint32_t idx) {
     if (sl->buf)
         memset(sl->buf, 0, (size_t)pm->mi->piece_length);
     memset(sl->have_blocks, 0, block_bitmap_size(sl->num_blocks));
+    memset(sl->requested_blocks, 0, block_bitmap_size(sl->num_blocks));
     sl->num_blocks_done = 0;
     sl->state = PS_EMPTY;
 }
@@ -78,7 +89,8 @@ piece_mgr_t *piece_mgr_create_ex(const metainfo_t *mi, storage_t *store,
         pm->slots[i].num_blocks = piece_num_blocks(pm, i);
         size_t bitmap_size = block_bitmap_size(pm->slots[i].num_blocks);
         pm->slots[i].have_blocks = (uint8_t*)calloc(bitmap_size, 1);
-        if (!pm->slots[i].have_blocks) {
+        pm->slots[i].requested_blocks = (uint8_t*)calloc(bitmap_size, 1);
+        if (!pm->slots[i].have_blocks || !pm->slots[i].requested_blocks) {
             piece_mgr_destroy(pm);
             return NULL;
         }
@@ -97,6 +109,7 @@ void piece_mgr_destroy(piece_mgr_t *pm) {
     for (uint32_t i = 0; i < pm->num_pieces; i++) {
         free(pm->slots[i].buf);
         free(pm->slots[i].have_blocks);
+        free(pm->slots[i].requested_blocks);
     }
     free(pm->slots);
     free(pm->have_bf);
@@ -140,6 +153,7 @@ int piece_mgr_got_block(piece_mgr_t *pm, uint32_t idx, uint32_t offset,
         block_set(sl, blk);
         sl->num_blocks_done++;
     }
+    piece_mgr_clear_block_requested(pm, idx, blk);
     if (sl->num_blocks_done != sl->num_blocks)
         return 1; /* not yet complete */
 
@@ -153,27 +167,13 @@ int piece_mgr_got_block(piece_mgr_t *pm, uint32_t idx, uint32_t offset,
         return 0;
     }
 
-    /* Write, flush, then verify the bytes read back from storage. */
     int64_t abs_off = (int64_t)idx * pm->mi->piece_length;
-    if (!storage_write(pm->store, abs_off, sl->buf, (size_t)plen) ||
-        !storage_flush(pm->store)) {
-        log_msg("[piece] write error piece %u\n", idx);
+    if (!storage_write(pm->store, abs_off, sl->buf, (size_t)plen)) {
+        const char *error = storage_error(pm->store);
+        log_msg("[piece] write error piece %u: %s\n", idx,
+                error[0] ? error : "storage_write failed");
         reset_piece(pm, idx);
         return -1;
-    }
-    if (storage_range_readable(pm->store, abs_off, (size_t)plen)) {
-        memset(sl->buf, 0, (size_t)plen);
-        if (storage_read(pm->store, abs_off, sl->buf, (size_t)plen) != plen) {
-            log_msg("[piece] read-back error piece %u\n", idx);
-            reset_piece(pm, idx);
-            return -1;
-        }
-        sha1(sl->buf, (size_t)plen, digest);
-        if (memcmp(digest, expected, 20) != 0) {
-            log_msg("[piece] DISK SHA1 MISMATCH piece %u — resetting\n", idx);
-            reset_piece(pm, idx);
-            return 0;
-        }
     }
 
     sl->state = PS_DONE;
@@ -181,6 +181,7 @@ int piece_mgr_got_block(piece_mgr_t *pm, uint32_t idx, uint32_t offset,
     if (storage_range_readable(pm->store, abs_off, (size_t)plen))
         bf_set(pm->available_bf, idx);
     pm->num_done++;
+    pm->completed_bytes += (uint64_t)plen;
     log_msg("[piece] verified piece %u/%u\n", pm->num_done, pm->num_pieces);
 
     /* Free buffer — piece is written */
@@ -232,6 +233,7 @@ int piece_mgr_check_existing(piece_mgr_t *pm, uint32_t idx) {
             memset(sl->have_blocks, 0xff, block_bitmap_size(sl->num_blocks));
             bf_set(pm->have_bf, idx);
             pm->num_done++;
+            pm->completed_bytes += (uint64_t)plen;
         }
         return 1;
     }
@@ -255,6 +257,7 @@ int piece_mgr_check_existing(piece_mgr_t *pm, uint32_t idx) {
             bf_set(pm->have_bf, idx);
             bf_set(pm->available_bf, idx);
             pm->num_done++;
+            pm->completed_bytes += (uint64_t)plen;
         }
         return 1;
     }
@@ -279,6 +282,31 @@ int piece_mgr_has_block(const piece_mgr_t *pm, uint32_t idx, uint32_t block) {
     return block_is_set(&pm->slots[idx], block);
 }
 
+int piece_mgr_block_requested(const piece_mgr_t *pm, uint32_t idx,
+                              uint32_t block) {
+    if (!pm || idx >= pm->num_pieces) return 0;
+    const piece_slot_t *sl = &pm->slots[idx];
+    if (!sl->requested_blocks || block >= sl->num_blocks) return 0;
+    return (sl->requested_blocks[block / 8] >> (block % 8)) & 1u;
+}
+
+void piece_mgr_mark_block_requested(piece_mgr_t *pm, uint32_t idx,
+                                    uint32_t block) {
+    if (!pm || idx >= pm->num_pieces) return;
+    piece_slot_t *sl = &pm->slots[idx];
+    if (!sl->requested_blocks || block >= sl->num_blocks) return;
+    sl->requested_blocks[block / 8] |= (uint8_t)(1u << (block % 8));
+}
+
+void piece_mgr_clear_block_requested(piece_mgr_t *pm, uint32_t idx,
+                                     uint32_t block) {
+    if (!pm || idx >= pm->num_pieces) return;
+    piece_slot_t *sl = &pm->slots[idx];
+    if (!sl->requested_blocks || block >= sl->num_blocks) return;
+    sl->requested_blocks[block / 8] &=
+        (uint8_t)~(1u << (block % 8));
+}
+
 uint32_t piece_mgr_pick(const piece_mgr_t *pm,
                         const uint8_t *peer_bf, uint32_t bf_bytes) {
     if (pm->strict_order) {
@@ -292,6 +320,8 @@ uint32_t piece_mgr_pick(const piece_mgr_t *pm,
                 continue;
             if (pm->slots[i].state == PS_DONE)
                 continue;
+            if (!request_allowed(pm, i))
+                break;
             if (unfinished++ >= STRICT_ORDER_LOOKAHEAD)
                 break;
             if (i / 8 < bf_bytes && bf_has(peer_bf, i)) {
@@ -309,6 +339,7 @@ uint32_t piece_mgr_pick(const piece_mgr_t *pm,
     /* Rarest-first would be ideal, but for minimality we do sequential:
        find the first piece the peer has and we don't (not DONE, not PENDING). */
     for (uint32_t i = 0; i < pm->num_pieces; i++) {
+        if (!request_allowed(pm, i)) continue;
         if (pm->slots[i].state != PS_EMPTY) continue;
         if (!bf_has(pm->have_bf, i)) {
             if (i / 8 < bf_bytes && bf_has(peer_bf, i))
@@ -317,6 +348,7 @@ uint32_t piece_mgr_pick(const piece_mgr_t *pm,
     }
     /* Second pass: allow re-requesting PENDING pieces (from a different peer) */
     for (uint32_t i = 0; i < pm->num_pieces; i++) {
+        if (!request_allowed(pm, i)) continue;
         if (pm->slots[i].state == PS_DONE) continue;
         if (!bf_has(pm->have_bf, i)) {
             if (i / 8 < bf_bytes && bf_has(peer_bf, i))

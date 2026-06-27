@@ -11,6 +11,8 @@ typedef struct {
     int strict_piece_order;
     const uint32_t *piece_order;
     uint32_t piece_order_count;
+    int (*request_allowed)(void *user, uint32_t piece);
+    void *request_allowed_user;
 } torrent_options_t;
 
 typedef struct {

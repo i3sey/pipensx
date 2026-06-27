@@ -172,13 +172,17 @@ int peer_request_block(peer_t *p, uint32_t piece, uint32_t offset, uint32_t len)
     return 1;
 }
 
-int peer_expire_requests(peer_t *p, uint64_t now, uint64_t timeout_ms) {
+int peer_expire_requests(peer_t *p, uint64_t now, uint64_t timeout_ms,
+                         void (*on_expired)(void*, const block_req_t*),
+                         void *ud) {
     int kept = 0;
     int expired = 0;
     for (int i = 0; i < p->pipeline_len; i++) {
         block_req_t req = p->pipeline[i];
         if (req.requested_ms <= now &&
             now - req.requested_ms >= timeout_ms) {
+            if (on_expired)
+                on_expired(ud, &req);
             expired++;
             continue;
         }
@@ -252,11 +256,11 @@ static int process_message(peer_t *p, const peer_ctx_t *ctx,
     switch (id) {
     case MSG_CHOKE:
         p->am_choked = 1;
-        p->pipeline_len = 0;
         break;
     case MSG_UNCHOKE:
+        if (p->am_choked)
+            log_msg("[peer] %s: unchoked\n", p->addr_str);
         p->am_choked = 0;
-        log_msg("[peer] %s: unchoked\n", p->addr_str);
         break;
     case MSG_INTERESTED:
         p->peer_interested = 1;

@@ -16,6 +16,7 @@ typedef struct {
     piece_state_t state;
     uint8_t      *buf;         /* piece_length bytes, NULL until first request */
     uint8_t      *have_blocks; /* bitmap of received 16KB blocks */
+    uint8_t      *requested_blocks; /* bitmap of globally in-flight blocks */
     uint32_t      num_blocks;
     uint32_t      num_blocks_done;
 } piece_slot_t;
@@ -26,11 +27,14 @@ typedef struct {
     piece_slot_t     *slots;  /* [num_pieces] */
     uint32_t          num_done;
     uint32_t          num_pieces;
+    uint64_t          completed_bytes;
     uint8_t          *have_bf; /* bitfield of completed pieces (num_pieces bits) */
     uint8_t          *available_bf; /* pieces retained on disk for upload */
     int               strict_order;
     uint32_t         *piece_order;
     uint32_t          piece_order_count;
+    int             (*request_allowed)(void *user, uint32_t piece);
+    void             *request_allowed_user;
 } piece_mgr_t;
 
 piece_mgr_t *piece_mgr_create(const metainfo_t *mi, storage_t *store);
@@ -71,6 +75,12 @@ int piece_mgr_verify_all(piece_mgr_t *pm);
 
 /* Returns non-zero when the block has already been received. */
 int piece_mgr_has_block(const piece_mgr_t *pm, uint32_t idx, uint32_t block);
+int piece_mgr_block_requested(const piece_mgr_t *pm, uint32_t idx,
+                              uint32_t block);
+void piece_mgr_mark_block_requested(piece_mgr_t *pm, uint32_t idx,
+                                    uint32_t block);
+void piece_mgr_clear_block_requested(piece_mgr_t *pm, uint32_t idx,
+                                     uint32_t block);
 
 /*
  * Pick the next piece index to request from a peer.

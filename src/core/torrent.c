@@ -139,16 +139,28 @@ static void cb_peers(void *ud, const uint8_t *compact, uint32_t cnt) {
     }
 }
 
+static void clear_request(void *ud, const block_req_t *req) {
+    torrent_t *t = (torrent_t*)ud;
+    if (!t || !req || req->index < 0 || req->offset < 0)
+        return;
+    piece_mgr_clear_block_requested(t->pm, (uint32_t)req->index,
+                                    (uint32_t)req->offset / BLOCK_SIZE);
+}
+
+static void clear_peer_requests(torrent_t *t, peer_t *p) {
+    if (!t || !p)
+        return;
+    for (int i = 0; i < p->pipeline_len; i++)
+        clear_request(t, &p->pipeline[i]);
+    p->pipeline_len = 0;
+}
+
 static void cb_dht_peer(void *ud, uint32_t ip_be, uint16_t port_be) {
     torrent_t *t = (torrent_t*)ud;
     uint16_t host_port = ntohs(port_be);
     if (ip_be == 0 || ip_be == INADDR_NONE || host_port < 2)
         return;
-    if (queue_push(t, ip_be, port_be)) {
-        log_msg("[torrent] dht peer %u.%u.%u.%u:%u\n",
-                ip_be&0xFF,(ip_be>>8)&0xFF,(ip_be>>16)&0xFF,(ip_be>>24)&0xFF,
-                host_port);
-    }
+    queue_push(t, ip_be, port_be);
 }
 
 /* ---- peer_ctx helper ---- */
@@ -208,6 +220,7 @@ static void schedule_requests(torrent_t *t, peer_t *p) {
         for (uint32_t b = 0; b < nb && p->pipeline_len < MAX_PIPELINE; b++) {
             /* Skip blocks already received */
             if (piece_mgr_has_block(t->pm, pidx, b)) continue;
+            if (piece_mgr_block_requested(t->pm, pidx, b)) continue;
             /* Skip blocks already in this peer's pipeline */
             uint32_t off  = b * BLOCK_SIZE;
             uint32_t blen = ((int64_t)off + BLOCK_SIZE <= plen)
@@ -218,7 +231,10 @@ static void schedule_requests(torrent_t *t, peer_t *p) {
                     p->pipeline[j].offset == (int)off) { in_pipe = 1; break; }
             }
             if (in_pipe) continue;
-            if (peer_request_block(p, pidx, off, blen)) queued++;
+            if (peer_request_block(p, pidx, off, blen)) {
+                piece_mgr_mark_block_requested(t->pm, pidx, b);
+                queued++;
+            }
         }
         if (!queued) break; /* nothing left to request for this piece */
     }
@@ -279,6 +295,10 @@ torrent_t *torrent_create_ex(const metainfo_t *mi,
                                 options ? options->piece_order : NULL,
                                 options ? options->piece_order_count : 0);
     if (!t->pm) { storage_close(t->store); free(t); return NULL; }
+    if (options) {
+        t->pm->request_allowed = options->request_allowed;
+        t->pm->request_allowed_user = options->request_allowed_user;
+    }
 
     /* DHT */
     uint8_t dht_id[20];
@@ -500,6 +520,7 @@ int torrent_tick(torrent_t *t) {
         int err = peer_recv(p, &ctx, cb_block, cb_have, cb_peers, t);
         if (err < 0) {
             log_msg("[torrent] peer %s dead\n", p->addr_str);
+            clear_peer_requests(t, p);
             peer_destroy(p);
             t->peers[slot] = NULL;
             t->num_peers--;
@@ -526,7 +547,8 @@ int torrent_tick(torrent_t *t) {
             continue;
         }
         if (p->state != PS_ACTIVE) continue;
-        int expired = peer_expire_requests(p, now2, REQUEST_TIMEOUT_MS);
+        int expired = peer_expire_requests(p, now2, REQUEST_TIMEOUT_MS,
+                                           clear_request, t);
         if (expired > 0) {
             t->expired_requests += (uint32_t)expired;
             schedule_requests(t, p);
@@ -534,6 +556,7 @@ int torrent_tick(torrent_t *t) {
         /* Guard against unsigned underflow: only check if last_recv_ms <= now2 */
         if (p->last_recv_ms <= now2 && now2 - p->last_recv_ms > PEER_TIMEOUT_MS) {
             log_msg("[torrent] peer %s timeout\n", p->addr_str);
+            clear_peer_requests(t, p);
             peer_destroy(p);
             t->peers[i] = NULL;
             t->num_peers--;
@@ -560,11 +583,7 @@ void torrent_stat(const torrent_t *t, torrent_stat_t *s) {
     }
     s->downloaded = t->downloaded;
     s->total_bytes = (uint64_t)t->mi.total_length;
-    s->completed_bytes = 0;
-    for (uint32_t i = 0; i < t->pm->num_pieces; i++) {
-        if (t->pm->slots[i].state == PS_DONE)
-            s->completed_bytes += (uint64_t)piece_len(t->pm, i);
-    }
+    s->completed_bytes = t->pm->completed_bytes;
     s->speed_bps  = t->speed_bps;
     s->num_pieces_verified = t->startup_verifying
                            ? t->startup_verify_index

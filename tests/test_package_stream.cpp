@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <pthread.h>
 #include <string>
 #include <utility>
@@ -28,6 +29,12 @@ void append64(std::vector<uint8_t>& out, uint64_t value) {
     for (unsigned i = 0; i < 8; ++i)
         out.push_back(static_cast<uint8_t>(value >> (i * 8)));
 }
+
+enum class NczTestLayout {
+    LegacyCountAfterMagic,
+    OfficialCountBeforeSections,
+    LegacySectionList,
+};
 
 std::vector<uint8_t> makePfs0(
     const std::vector<std::pair<std::string, std::vector<uint8_t>>>& files) {
@@ -80,8 +87,28 @@ void cryptCtr(std::vector<uint8_t>& data, uint64_t absoluteOffset,
     }
 }
 
+void appendNczSection(std::vector<uint8_t>& out, NczTestLayout layout,
+                      uint64_t offset, uint64_t size, uint64_t cryptoType,
+                      const std::array<uint8_t, 16>& key,
+                      const std::array<uint8_t, 16>& counter,
+                      uint64_t reserved = 0) {
+    if (layout != NczTestLayout::LegacyCountAfterMagic)
+        out.insert(out.end(), {'N', 'C', 'Z', 'S', 'E', 'C', 'T', 'N'});
+    append64(out, offset);
+    append64(out, size);
+    append64(out, cryptoType);
+    append64(out, reserved);
+    out.insert(out.end(), key.begin(), key.end());
+    out.insert(out.end(), counter.begin(), counter.end());
+}
+
 std::vector<uint8_t> makeSolidNcz(const std::vector<uint8_t>& nca,
-                                  bool encrypted = false) {
+                                  bool encrypted = false,
+                                  NczTestLayout layout =
+                                      NczTestLayout::LegacyCountAfterMagic,
+                                  uint64_t cryptoTypeOverride =
+                                      std::numeric_limits<uint64_t>::max(),
+                                  uint64_t reserved = 0) {
     assert(nca.size() > 0x4000);
     const uint64_t bodySize = nca.size() - 0x4000;
     std::array<uint8_t, 16> key {};
@@ -101,19 +128,49 @@ std::vector<uint8_t> makeSolidNcz(const std::vector<uint8_t>& nca,
     compressed.resize(compressedSize);
 
     std::vector<uint8_t> out(nca.begin(), nca.begin() + 0x4000);
-    out.insert(out.end(), {'N', 'C', 'Z', 'S', 'E', 'C', 'T', 'N'});
-    append64(out, 1);
-    append64(out, 0x4000);
-    append64(out, bodySize);
-    append64(out, encrypted ? 3 : 1);
-    append64(out, 0);
-    out.insert(out.end(), key.begin(), key.end());
-    out.insert(out.end(), counter.begin(), counter.end());
+    if (layout == NczTestLayout::OfficialCountBeforeSections)
+        append64(out, 1);
+    if (layout == NczTestLayout::LegacyCountAfterMagic) {
+        out.insert(out.end(), {'N', 'C', 'Z', 'S', 'E', 'C', 'T', 'N'});
+        append64(out, 1);
+    }
+    uint64_t cryptoType = cryptoTypeOverride;
+    if (cryptoType == std::numeric_limits<uint64_t>::max())
+        cryptoType = encrypted ? 3 : 1;
+    appendNczSection(out, layout, 0x4000, bodySize, cryptoType,
+                     key, counter, reserved);
     out.insert(out.end(), compressed.begin(), compressed.end());
     return out;
 }
 
-std::vector<uint8_t> makeBlockNcz(const std::vector<uint8_t>& nca) {
+std::vector<uint8_t> makeSolidNczWithSections(
+    const std::vector<uint8_t>& nca,
+    const std::vector<std::pair<uint64_t, uint64_t>>& sections) {
+    assert(nca.size() > 0x4000);
+    const uint64_t bodySize = nca.size() - 0x4000;
+    size_t bound = ZSTD_compressBound(bodySize);
+    std::vector<uint8_t> compressed(bound);
+    size_t compressedSize = ZSTD_compress(
+        compressed.data(), compressed.size(), nca.data() + 0x4000,
+        bodySize, 3);
+    assert(!ZSTD_isError(compressedSize));
+    compressed.resize(compressedSize);
+
+    std::array<uint8_t, 16> empty {};
+    std::vector<uint8_t> out(nca.begin(), nca.begin() + 0x4000);
+    out.insert(out.end(), {'N', 'C', 'Z', 'S', 'E', 'C', 'T', 'N'});
+    append64(out, sections.size());
+    for (const auto& section : sections) {
+        appendNczSection(out, NczTestLayout::LegacyCountAfterMagic,
+                         section.first, section.second, 1, empty, empty);
+    }
+    out.insert(out.end(), compressed.begin(), compressed.end());
+    return out;
+}
+
+std::vector<uint8_t> makeBlockNcz(
+    const std::vector<uint8_t>& nca,
+    NczTestLayout layout = NczTestLayout::LegacyCountAfterMagic) {
     constexpr uint8_t exponent = 16;
     constexpr size_t blockSize = size_t{1} << exponent;
     const size_t bodySize = nca.size() - 0x4000;
@@ -137,13 +194,14 @@ std::vector<uint8_t> makeBlockNcz(const std::vector<uint8_t>& nca) {
     }
 
     std::vector<uint8_t> out(nca.begin(), nca.begin() + 0x4000);
-    out.insert(out.end(), {'N', 'C', 'Z', 'S', 'E', 'C', 'T', 'N'});
-    append64(out, 1);
-    append64(out, 0x4000);
-    append64(out, bodySize);
-    append64(out, 1);
-    append64(out, 0);
-    out.insert(out.end(), 32, 0);
+    if (layout == NczTestLayout::OfficialCountBeforeSections)
+        append64(out, 1);
+    if (layout == NczTestLayout::LegacyCountAfterMagic) {
+        out.insert(out.end(), {'N', 'C', 'Z', 'S', 'E', 'C', 'T', 'N'});
+        append64(out, 1);
+    }
+    std::array<uint8_t, 16> empty {};
+    appendNczSection(out, layout, 0x4000, bodySize, 1, empty, empty);
     out.insert(out.end(), {'N', 'C', 'Z', 'B', 'L', 'O', 'C', 'K'});
     out.insert(out.end(), {0, 0, 0, exponent});
     append32(out, static_cast<uint32_t>(blocks.size()));
@@ -196,7 +254,10 @@ void feed(PackageStream& stream, const std::vector<uint8_t>& data) {
     size_t index = 0;
     while (offset < data.size()) {
         size_t count = std::min(chunks[index++ % 6], data.size() - offset);
-        assert(stream.write(data.data() + offset, count));
+        if (!stream.write(data.data() + offset, count)) {
+            std::cerr << stream.error() << '\n';
+            assert(false);
+        }
         offset += count;
     }
     if (!stream.finish()) {
@@ -247,12 +308,109 @@ void testEncryptedNsz() {
     assert(capture.files[0] == nca);
 }
 
+void testOfficialLayoutNsz() {
+    std::vector<uint8_t> nca(0x4000 + 210123);
+    for (size_t i = 0; i < nca.size(); ++i)
+        nca[i] = static_cast<uint8_t>((i * 37) ^ (i >> 6));
+    auto package = makePfs0({{"00112233445566778899aabbccddeeff.ncz",
+                              makeSolidNcz(
+                                  nca, false,
+                                  NczTestLayout::OfficialCountBeforeSections)}});
+    Capture capture;
+    PackageStream stream(true, capture.callbacks());
+    feed(stream, package);
+    assert(capture.files.size() == 1);
+    assert(capture.files[0] == nca);
+}
+
+void testLegacySectionListNsz() {
+    std::vector<uint8_t> nca(0x4000 + 90000);
+    for (size_t i = 0; i < nca.size(); ++i)
+        nca[i] = static_cast<uint8_t>((i * 19) ^ (i >> 4));
+    auto package = makePfs0({{"00112233445566778899aabbccddeeff.ncz",
+                              makeSolidNcz(
+                                  nca, false,
+                                  NczTestLayout::LegacySectionList)}});
+    Capture capture;
+    PackageStream stream(true, capture.callbacks());
+    feed(stream, package);
+    assert(capture.files.size() == 1);
+    assert(capture.files[0] == nca);
+}
+
+void testLooseNczSectionFields() {
+    std::vector<uint8_t> nca(0x4000 + 85000);
+    for (size_t i = 0; i < nca.size(); ++i)
+        nca[i] = static_cast<uint8_t>((i * 11) ^ (i >> 3));
+    auto package = makePfs0({{"00112233445566778899aabbccddeeff.ncz",
+                              makeSolidNcz(
+                                  nca, false,
+                                  NczTestLayout::LegacyCountAfterMagic,
+                                  9, 0x12345678)}});
+    Capture capture;
+    PackageStream stream(true, capture.callbacks());
+    feed(stream, package);
+    assert(capture.files.size() == 1);
+    assert(capture.files[0] == nca);
+}
+
+void testManyNczSections() {
+    constexpr size_t sectionCount = 96;
+    constexpr size_t sectionSize = 1024;
+    std::vector<uint8_t> nca(0x4000 + sectionCount * sectionSize);
+    for (size_t i = 0; i < nca.size(); ++i)
+        nca[i] = static_cast<uint8_t>((i * 7) ^ (i >> 2));
+    std::vector<std::pair<uint64_t, uint64_t>> sections;
+    for (size_t i = 0; i < sectionCount; ++i) {
+        sections.emplace_back(0x4000 + i * sectionSize, sectionSize);
+    }
+    auto package = makePfs0({{"00112233445566778899aabbccddeeff.ncz",
+                              makeSolidNczWithSections(nca, sections)}});
+    Capture capture;
+    PackageStream stream(true, capture.callbacks());
+    feed(stream, package);
+    assert(capture.files.size() == 1);
+    assert(capture.files[0] == nca);
+}
+
+void testNczSectionStartsBeforeHeaderEnd() {
+    std::vector<uint8_t> nca(0x4000 + 50000);
+    for (size_t i = 0; i < nca.size(); ++i)
+        nca[i] = static_cast<uint8_t>((i * 31) ^ (i >> 9));
+    std::vector<std::pair<uint64_t, uint64_t>> sections {
+        {0x3000, 0x3000},
+        {0x6000, static_cast<uint64_t>(nca.size() - 0x6000)},
+    };
+    auto package = makePfs0({{"00112233445566778899aabbccddeeff.ncz",
+                              makeSolidNczWithSections(nca, sections)}});
+    Capture capture;
+    PackageStream stream(true, capture.callbacks());
+    feed(stream, package);
+    assert(capture.files.size() == 1);
+    assert(capture.files[0] == nca);
+}
+
 void testBlockNsz() {
     std::vector<uint8_t> nca(0x4000 + 190321);
     for (size_t i = 0; i < nca.size(); ++i)
         nca[i] = static_cast<uint8_t>((i * 17) + (i >> 7));
     auto package = makePfs0({{"00112233445566778899aabbccddeeff.ncz",
                               makeBlockNcz(nca)}});
+    Capture capture;
+    PackageStream stream(true, capture.callbacks());
+    feed(stream, package);
+    assert(capture.files.size() == 1);
+    assert(capture.files[0] == nca);
+}
+
+void testOfficialBlockNsz() {
+    std::vector<uint8_t> nca(0x4000 + 190321);
+    for (size_t i = 0; i < nca.size(); ++i)
+        nca[i] = static_cast<uint8_t>((i * 23) + (i >> 9));
+    auto package = makePfs0({{"00112233445566778899aabbccddeeff.ncz",
+                              makeBlockNcz(
+                                  nca,
+                                  NczTestLayout::OfficialCountBeforeSections)}});
     Capture capture;
     PackageStream stream(true, capture.callbacks());
     feed(stream, package);
@@ -282,7 +440,13 @@ int main() {
     testNsp();
     testNsz();
     testEncryptedNsz();
+    testOfficialLayoutNsz();
+    testLegacySectionListNsz();
+    testLooseNczSectionFields();
+    testManyNczSections();
+    testNczSectionStartsBeforeHeaderEnd();
     testBlockNsz();
+    testOfficialBlockNsz();
     testNszSmallWorkerStack();
     std::cout << "package stream tests passed\n";
     return 0;

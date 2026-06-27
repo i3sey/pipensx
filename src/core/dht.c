@@ -45,7 +45,19 @@ int dht_blacklisted(const struct sockaddr *sa, int salen) {
 int dht_sendto(int s, const void *buf, int len, int flags,
                const struct sockaddr *to, int tolen) {
     ssize_t r = sendto(s, buf, len, flags, to, (socklen_t)tolen);
-    if (r < 0) log_msg("[dht] sendto failed errno=%d\n", errno);
+    if (r < 0) {
+        static uint64_t last_log_ms = 0;
+        static uint32_t suppressed = 0;
+        uint64_t now = now_ms();
+        if (now - last_log_ms >= 10000) {
+            log_msg("[dht] sendto failed errno=%d suppressed=%u\n",
+                    errno, suppressed);
+            last_log_ms = now;
+            suppressed = 0;
+        } else {
+            suppressed++;
+        }
+    }
     return (int)r;
 }
 

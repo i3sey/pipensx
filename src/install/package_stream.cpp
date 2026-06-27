@@ -32,6 +32,26 @@ uint64_t read64(const uint8_t* p) {
     return value;
 }
 
+uint64_t read64be(const uint8_t* p) {
+    uint64_t value = 0;
+    for (unsigned i = 0; i < 8; ++i)
+        value = (value << 8) | static_cast<uint64_t>(p[i]);
+    return value;
+}
+
+std::string hexPreview(const uint8_t* data, size_t size) {
+    static const char hex[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(size * 3);
+    for (size_t i = 0; i < size; ++i) {
+        if (i)
+            out.push_back(' ');
+        out.push_back(hex[data[i] >> 4]);
+        out.push_back(hex[data[i] & 0xf]);
+    }
+    return out;
+}
+
 struct PfsEntry {
     uint64_t offset = 0;
     uint64_t size = 0;
@@ -129,7 +149,7 @@ public:
     using Writer = std::function<bool(const uint8_t*, size_t)>;
 
     NczDecoder(uint64_t inputSize, Ready ready, Writer writer)
-        : inputRemaining_(inputSize), ready_(std::move(ready)),
+        : inputSize_(inputSize), inputRemaining_(inputSize), ready_(std::move(ready)),
           writer_(std::move(writer)) {}
 
     ~NczDecoder() {
@@ -187,55 +207,171 @@ public:
     uint64_t outputSize() const { return outputSize_; }
 
 private:
-    bool parseHeader(std::string& error) {
-        constexpr size_t ncaHeaderSize = 0x4000;
-        if (pending_.size() < ncaHeaderSize + 16)
-            return true;
-        if (std::memcmp(pending_.data() + ncaHeaderSize, "NCZSECTN", 8) != 0) {
-            error = "NCZSECTN header is missing.";
-            return false;
-        }
-        uint64_t count = read64(pending_.data() + ncaHeaderSize + 8);
-        if (count == 0 || count > 64) {
-            error = "Invalid NCZ section count.";
-            return false;
-        }
-        uint64_t headerSize64 = ncaHeaderSize + 16 + count * 64;
-        if (headerSize64 > std::numeric_limits<size_t>::max()) {
-            error = "NCZ header is too large.";
-            return false;
-        }
-        size_t headerSize = static_cast<size_t>(headerSize64);
-        if (pending_.size() < headerSize + 8)
-            return true;
+    struct NczLayout {
+        const char* name;
+        bool hasCount;
+        size_t countOffset;
+        size_t firstEntryOffset;
+        size_t entrySize;
+        bool prefixMagic;
+        bool entryMagic;
+        size_t offsetOffset;
+        size_t sizeOffset;
+        size_t cryptoOffset;
+        size_t keyOffset;
+        size_t counterOffset;
+    };
 
-        sections_.reserve(static_cast<size_t>(count));
-        const uint8_t* p = pending_.data() + ncaHeaderSize + 16;
-        outputSize_ = ncaHeaderSize;
+    enum class HeaderResult {
+        Parsed,
+        NeedMore,
+        Invalid,
+    };
+
+    HeaderResult tryParseLayout(const NczLayout& layout, size_t& headerSize,
+                                uint64_t& outputSize,
+                                std::vector<NczSection>& parsed) const {
+        constexpr size_t ncaHeaderSize = 0x4000;
+        constexpr uint64_t hardMaxSections = 1u << 20;
+        constexpr const char* sectionMagic = "NCZSECTN";
+        uint64_t maxSections = hardMaxSections;
+        uint64_t headerBase = ncaHeaderSize + layout.firstEntryOffset;
+        if (inputSize_ <= headerBase)
+            return HeaderResult::Invalid;
+        maxSections = std::min<uint64_t>(
+            maxSections, (inputSize_ - headerBase) / layout.entrySize);
+        if (maxSections == 0)
+            return HeaderResult::Invalid;
+
+        if (layout.prefixMagic) {
+            if (pending_.size() < ncaHeaderSize + 8)
+                return HeaderResult::NeedMore;
+            if (std::memcmp(pending_.data() + ncaHeaderSize,
+                            sectionMagic, 8) != 0) {
+                return HeaderResult::Invalid;
+            }
+        }
+
+        uint64_t count = 0;
+        if (layout.hasCount) {
+            if (pending_.size() < ncaHeaderSize + layout.countOffset + 8)
+                return HeaderResult::NeedMore;
+            const uint8_t* countPtr =
+                pending_.data() + ncaHeaderSize + layout.countOffset;
+            count = read64(countPtr);
+            if (count == 0 || count > maxSections)
+                count = read64be(countPtr);
+            if (count == 0 || count > maxSections)
+                return HeaderResult::Invalid;
+        } else {
+            size_t position = ncaHeaderSize + layout.firstEntryOffset;
+            while (count < maxSections) {
+                if (pending_.size() < position + 8)
+                    return HeaderResult::NeedMore;
+                if (std::memcmp(pending_.data() + position,
+                                sectionMagic, 8) != 0) {
+                    break;
+                }
+                ++count;
+                position += layout.entrySize;
+            }
+            if (count == 0 || count > maxSections)
+                return HeaderResult::Invalid;
+        }
+
+        uint64_t headerSize64 = ncaHeaderSize + layout.firstEntryOffset +
+                                count * layout.entrySize;
+        if (headerSize64 > std::numeric_limits<size_t>::max())
+            return HeaderResult::Invalid;
+        headerSize = static_cast<size_t>(headerSize64);
+        if (pending_.size() < headerSize)
+            return HeaderResult::NeedMore;
+
+        std::vector<NczSection> sections;
+        sections.reserve(static_cast<size_t>(count) * 2);
         uint64_t previousEnd = ncaHeaderSize;
-        for (uint64_t i = 0; i < count; ++i, p += 64) {
+        outputSize = ncaHeaderSize;
+        const uint8_t* entry =
+            pending_.data() + ncaHeaderSize + layout.firstEntryOffset;
+        for (uint64_t i = 0; i < count; ++i, entry += layout.entrySize) {
+            if (layout.entryMagic &&
+                std::memcmp(entry, sectionMagic, 8) != 0) {
+                return HeaderResult::Invalid;
+            }
             NczSection section;
-            section.offset = read64(p);
-            section.size = read64(p + 8);
-            section.cryptoType = read64(p + 16);
-            std::memcpy(section.key.data(), p + 32, 16);
-            std::memcpy(section.counter.data(), p + 48, 16);
-            if (section.offset < previousEnd ||
+            section.offset = read64(entry + layout.offsetOffset);
+            section.size = read64(entry + layout.sizeOffset);
+            section.cryptoType = read64(entry + layout.cryptoOffset);
+            std::memcpy(section.key.data(), entry + layout.keyOffset, 16);
+            std::memcpy(section.counter.data(),
+                        entry + layout.counterOffset, 16);
+            if (section.size == 0 ||
                 section.size > std::numeric_limits<uint64_t>::max() -
                                    section.offset) {
-                error = "NCZ output size overflows.";
-                return false;
+                return HeaderResult::Invalid;
             }
+            uint64_t sectionEnd = section.offset + section.size;
+            if (sectionEnd <= previousEnd)
+                continue;
             if (section.offset > previousEnd) {
                 NczSection gap;
                 gap.offset = previousEnd;
                 gap.size = section.offset - previousEnd;
-                sections_.push_back(gap);
+                sections.push_back(gap);
             }
-            sections_.push_back(section);
-            previousEnd = section.offset + section.size;
-            outputSize_ = std::max(outputSize_, previousEnd);
+            sections.push_back(section);
+            previousEnd = sectionEnd;
+            outputSize = std::max(outputSize, previousEnd);
         }
+
+        parsed = std::move(sections);
+        return HeaderResult::Parsed;
+    }
+
+    bool parseHeader(std::string& error) {
+        constexpr size_t ncaHeaderSize = 0x4000;
+        if (pending_.size() < ncaHeaderSize + 8)
+            return true;
+
+        static const NczLayout layouts[] = {
+            {"official", true, 0, 8, 72, false, true,
+             8, 16, 24, 40, 56},
+            {"legacy-count-after-magic", true, 8, 16, 64, true, false,
+             0, 8, 16, 32, 48},
+            {"legacy-section-list", false, 0, 0, 72, false, true,
+             8, 16, 24, 40, 56},
+        };
+
+        bool waitingForMore = false;
+        size_t headerSize = 0;
+        uint64_t parsedOutputSize = 0;
+        std::vector<NczSection> parsedSections;
+        bool parsed = false;
+        for (const auto& layout : layouts) {
+            HeaderResult result =
+                tryParseLayout(layout, headerSize, parsedOutputSize,
+                               parsedSections);
+            if (result == HeaderResult::Parsed) {
+                parsed = true;
+                break;
+            }
+            if (result == HeaderResult::NeedMore)
+                waitingForMore = true;
+        }
+        if (!parsed) {
+            if (waitingForMore)
+                return true;
+            error = "Invalid NCZ section header at 0x4000: " +
+                    hexPreview(pending_.data() + ncaHeaderSize,
+                               std::min<size_t>(
+                                   32, pending_.size() - ncaHeaderSize));
+            return false;
+        }
+        if (pending_.size() < headerSize + 8)
+            return true;
+
+        sections_ = std::move(parsedSections);
+        outputSize_ = parsedOutputSize;
 
         blockMode_ = std::memcmp(pending_.data() + headerSize,
                                  "NCZBLOCK", 8) == 0;
@@ -250,7 +386,7 @@ private:
                 error = "Invalid NCZBLOCK header.";
                 return false;
             }
-            uint64_t fullHeader = headerSize64 + 24 +
+            uint64_t fullHeader = static_cast<uint64_t>(headerSize) + 24 +
                                   static_cast<uint64_t>(countBlocks) * 4;
             if (fullHeader > std::numeric_limits<size_t>::max())
                 return false;
@@ -291,18 +427,17 @@ private:
     bool emit(uint8_t* data, size_t size, std::string& error) {
         size_t done = 0;
         while (done < size) {
-            const NczSection* section = nullptr;
-            for (const auto& candidate : sections_) {
-                if (outputPosition_ >= candidate.offset &&
-                    outputPosition_ < candidate.offset + candidate.size) {
-                    section = &candidate;
-                    break;
-                }
+            while (currentSection_ < sections_.size() &&
+                   outputPosition_ >= sections_[currentSection_].offset +
+                                      sections_[currentSection_].size) {
+                ++currentSection_;
             }
-            if (!section) {
+            if (currentSection_ >= sections_.size() ||
+                outputPosition_ < sections_[currentSection_].offset) {
                 error = "NCZ output does not map to a section.";
                 return false;
             }
+            const NczSection* section = &sections_[currentSection_];
             uint64_t remaining = section->offset + section->size -
                                  outputPosition_;
             size_t count = static_cast<size_t>(
@@ -371,6 +506,7 @@ private:
         return true;
     }
 
+    uint64_t inputSize_;
     uint64_t inputRemaining_;
     Ready ready_;
     Writer writer_;
@@ -383,6 +519,7 @@ private:
     uint64_t outputSize_ = 0;
     uint64_t outputPosition_ = 0;
     uint64_t blockSize_ = 0;
+    size_t currentSection_ = 0;
     size_t nextBlock_ = 0;
     bool headerReady_ = false;
     bool blockMode_ = false;

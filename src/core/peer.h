@@ -120,7 +120,9 @@ int peer_send_handshake(peer_t *p, const peer_ctx_t *ctx);
 int peer_request_block(peer_t *p, uint32_t piece, uint32_t offset, uint32_t len);
 
 /* Drop requests a peer has not answered before the deadline. */
-int peer_expire_requests(peer_t *p, uint64_t now, uint64_t timeout_ms);
+int peer_expire_requests(peer_t *p, uint64_t now, uint64_t timeout_ms,
+                         void (*on_expired)(void*, const block_req_t*),
+                         void *ud);
 
 /* Flush any queued sends */
 int peer_flush(peer_t *p);

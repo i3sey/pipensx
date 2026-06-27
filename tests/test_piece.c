@@ -65,11 +65,14 @@ static void test_large_piece_and_short_last_piece(void) {
     assert(pm);
     assert(pm->slots[0].num_blocks == 64);
 
+    piece_mgr_mark_block_requested(pm, 0, 0);
+    assert(piece_mgr_block_requested(pm, 0, 0));
     for (uint32_t block = 0; block < 32; block++) {
         int result = piece_mgr_got_block(pm, 0, block * BLOCK_SIZE,
                                          expected + block * BLOCK_SIZE, BLOCK_SIZE);
         assert(result == 1);
     }
+    assert(!piece_mgr_block_requested(pm, 0, 0));
     assert(pm->num_done == 0);
     assert(pm->slots[0].state == PS_PENDING);
 
@@ -79,10 +82,12 @@ static void test_large_piece_and_short_last_piece(void) {
         assert(result == (block == 63 ? 2 : 1));
     }
     assert(pm->num_done == 1);
+    assert(pm->completed_bytes == (uint64_t)piece_length);
 
     assert(piece_mgr_got_block(pm, 1, 0, expected + piece_length,
                                (uint32_t)tail_length) == 2);
     assert(pm->num_done == 2);
+    assert(pm->completed_bytes == (uint64_t)total_length);
     assert(piece_mgr_verify_all(pm));
     assert(storage_read(store, 0, actual, total_length) == (int)total_length);
     assert(memcmp(actual, expected, total_length) == 0);
@@ -118,14 +123,18 @@ static void test_hash_mismatch_resets_all_blocks(void) {
     assert(pm);
 
     for (uint32_t block = 0; block < 4; block++) {
+        piece_mgr_mark_block_requested(pm, 0, block);
         int result = piece_mgr_got_block(pm, 0, block * BLOCK_SIZE,
                                          corrupt + block * BLOCK_SIZE, BLOCK_SIZE);
         assert(result == (block == 3 ? 0 : 1));
     }
     assert(pm->slots[0].state == PS_EMPTY);
+    assert(pm->completed_bytes == 0);
     assert(pm->slots[0].num_blocks_done == 0);
-    for (uint32_t block = 0; block < 4; block++)
+    for (uint32_t block = 0; block < 4; block++) {
         assert(!piece_mgr_has_block(pm, 0, block));
+        assert(!piece_mgr_block_requested(pm, 0, block));
+    }
 
     assert(piece_mgr_got_block(pm, 0, 0, expected, BLOCK_SIZE - 1) == -1);
     for (uint32_t block = 0; block < 4; block++) {
@@ -134,6 +143,7 @@ static void test_hash_mismatch_resets_all_blocks(void) {
         assert(result == (block == 3 ? 2 : 1));
     }
     assert(pm->num_done == 1);
+    assert(pm->completed_bytes == (uint64_t)piece_length);
 
     piece_mgr_destroy(pm);
     storage_close(store);
@@ -165,6 +175,7 @@ static void test_final_verify_requeues_disk_corruption(void) {
     assert(piece_mgr_got_block(pm, 0, 0, expected, BLOCK_SIZE) == 1);
     assert(piece_mgr_got_block(pm, 0, BLOCK_SIZE,
                                expected + BLOCK_SIZE, BLOCK_SIZE) == 2);
+    assert(pm->completed_bytes == (uint64_t)piece_length);
     assert(piece_mgr_verify_all(pm));
 
     snprintf(path, sizeof(path), "%s/%s", outdir, "disk.bin");
@@ -177,12 +188,14 @@ static void test_final_verify_requeues_disk_corruption(void) {
 
     assert(!piece_mgr_verify_all(pm));
     assert(pm->num_done == 0);
+    assert(pm->completed_bytes == 0);
     assert(pm->slots[0].state == PS_EMPTY);
     assert(!bf_has(pm->have_bf, 0));
 
     assert(piece_mgr_got_block(pm, 0, 0, expected, BLOCK_SIZE) == 1);
     assert(piece_mgr_got_block(pm, 0, BLOCK_SIZE,
                                expected + BLOCK_SIZE, BLOCK_SIZE) == 2);
+    assert(pm->completed_bytes == (uint64_t)piece_length);
     assert(piece_mgr_verify_all(pm));
 
     piece_mgr_destroy(pm);
@@ -217,8 +230,10 @@ static void test_existing_piece_scan_restores_progress(void) {
     piece_mgr_t *pm = piece_mgr_create(&mi, store);
     assert(pm);
     assert(piece_mgr_check_existing(pm, 0) == 1);
+    assert(pm->completed_bytes == (uint64_t)piece_length);
     assert(piece_mgr_check_existing(pm, 1) == 1);
     assert(pm->num_done == 2);
+    assert(pm->completed_bytes == (uint64_t)piece_length * 2);
 
     expected[piece_length + 1] ^= 0xff;
     assert(storage_write(store, piece_length, expected + piece_length,
@@ -226,6 +241,7 @@ static void test_existing_piece_scan_restores_progress(void) {
     assert(storage_flush(store));
     assert(piece_mgr_check_existing(pm, 1) == 0);
     assert(pm->num_done == 1);
+    assert(pm->completed_bytes == (uint64_t)piece_length);
     assert(pm->slots[1].state == PS_EMPTY);
 
     piece_mgr_destroy(pm);
@@ -278,6 +294,7 @@ static void test_stream_sink_piece_is_verified_without_disk_readback(void) {
     assert(piece_mgr_got_block(pm, 0, 0, expected, BLOCK_SIZE) == 1);
     assert(piece_mgr_got_block(pm, 0, BLOCK_SIZE,
                                expected + BLOCK_SIZE, BLOCK_SIZE) == 2);
+    assert(pm->completed_bytes == (uint64_t)piece_length);
     assert(capture.written == piece_length);
     assert(memcmp(captured, expected, piece_length) == 0);
     assert(piece_mgr_verify_all(pm));
@@ -370,6 +387,37 @@ static void test_strict_order_advances_past_lookahead_window(void) {
     free_test_metainfo(&mi);
 }
 
+static int allow_pieces_below_limit(void *user, uint32_t piece) {
+    uint32_t limit = *(uint32_t*)user;
+    return piece < limit;
+}
+
+static void test_strict_order_stops_at_request_gate(void) {
+    metainfo_t mi;
+    init_single_file_metainfo(&mi, "ordered.bin", BLOCK_SIZE,
+                              40 * BLOCK_SIZE);
+    piece_mgr_t *pm = piece_mgr_create_ex(&mi, NULL, 1, NULL, 0);
+    assert(pm);
+
+    for (uint32_t i = 0; i < 32; i++)
+        pm->slots[i].state = PS_DONE;
+
+    uint32_t limit = 32;
+    pm->request_allowed = allow_pieces_below_limit;
+    pm->request_allowed_user = &limit;
+
+    uint8_t peer_bf[5] = {0};
+    bf_set(peer_bf, 32);
+    bf_set(peer_bf, 33);
+    assert(piece_mgr_pick(pm, peer_bf, sizeof(peer_bf)) == (uint32_t)-1);
+
+    limit = 34;
+    assert(piece_mgr_pick(pm, peer_bf, sizeof(peer_bf)) == 32);
+
+    piece_mgr_destroy(pm);
+    free_test_metainfo(&mi);
+}
+
 int main(void) {
     test_large_piece_and_short_last_piece();
     test_hash_mismatch_resets_all_blocks();
@@ -379,6 +427,7 @@ int main(void) {
     test_long_disk_path_uses_short_fallback();
     test_metainfo_path_safety();
     test_strict_order_advances_past_lookahead_window();
+    test_strict_order_stops_at_request_gate();
     puts("piece tests passed");
     return 0;
 }

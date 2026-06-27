@@ -8,6 +8,7 @@ extern "C" {
 #include "../core/util.h"
 }
 
+#include <algorithm>
 #include <cerrno>
 #include <cctype>
 #include <condition_variable>
@@ -195,13 +196,20 @@ public:
             ++ordinal;
         }
         packageCount_ = ordinal;
+        pieceLengthBytes_ = metainfo_.piece_length > 0
+            ? static_cast<uint64_t>(metainfo_.piece_length)
+            : 4 * 1024 * 1024;
         buildPieceOrder();
         if (streamInstall_ && error_.empty() && packageCount_ > completedPackages_) {
-            const uint64_t pieceLength = metainfo_.piece_length > 0
-                ? static_cast<uint64_t>(metainfo_.piece_length)
-                : 4 * 1024 * 1024;
             maxQueuedBytes_ = static_cast<size_t>(std::min<uint64_t>(
-                pieceLength * 16, 64 * 1024 * 1024));
+                pieceLengthBytes_ * 16, 64 * 1024 * 1024));
+            maxBufferedBytes_ = static_cast<size_t>(std::min<uint64_t>(
+                std::max<uint64_t>(pieceLengthBytes_ * 64,
+                                   96 * 1024 * 1024),
+                256 * 1024 * 1024));
+            requestAheadBytes_ = maxBufferedBytes_ > maxQueuedBytes_
+                ? maxBufferedBytes_ - maxQueuedBytes_
+                : maxBufferedBytes_;
             installWorker_ = std::thread(&PackageCoordinator::installMain, this);
         }
     }
@@ -217,6 +225,10 @@ public:
     }
     const std::vector<uint32_t>& pieceOrder() const { return pieceOrder_; }
     uint32_t packageCount() const { return packageCount_; }
+    static int requestAllowedThunk(void* user, uint32_t piece) {
+        return static_cast<PackageCoordinator*>(user)->canRequestPiece(piece)
+            ? 1 : 0;
+    }
     std::string error() const {
         std::lock_guard<std::mutex> lock(queueMutex_);
         return error_;
@@ -229,7 +241,8 @@ public:
         accepting_ = false;
         queueReady_.notify_all();
         drained_.wait(lock, [this] {
-            return !error_.empty() || (queue_.empty() && !processing_);
+            return !error_.empty() ||
+                   (pending_.empty() && queue_.empty() && !processing_);
         });
         drainComplete_ = error_.empty();
         return drainComplete_;
@@ -241,6 +254,23 @@ private:
         uint64_t fileOffset = 0;
         std::vector<uint8_t> data;
         bool final = false;
+    };
+
+    struct PendingKey {
+        uint32_t ordinal = 0;
+        uint64_t offset = 0;
+
+        bool operator<(const PendingKey& other) const {
+            if (ordinal != other.ordinal)
+                return ordinal < other.ordinal;
+            return offset < other.offset;
+        }
+    };
+
+    struct PieceGate {
+        bool package = false;
+        uint32_t ordinal = UINT32_MAX;
+        uint64_t offset = 0;
     };
 
     static int sinkThunk(void* user, uint32_t fileIndex,
@@ -265,38 +295,68 @@ private:
         std::unique_lock<std::mutex> lock(queueMutex_);
         if (!error_.empty() || !accepting_)
             return false;
-        if (producerFileIndex_ == UINT32_MAX) {
-            if (fileOffset != 0 || ordinalIt->second != producerOrdinal_)
-                return setErrorLocked("Package stream did not start in order.");
-            producerFileIndex_ = fileIndex;
-            producerOffset_ = 0;
-        }
-        if (producerFileIndex_ != fileIndex ||
-            static_cast<uint64_t>(fileOffset) != producerOffset_)
-            return setErrorLocked("Package bytes arrived out of order.");
 
-        queueSpace_.wait(lock, [this, size] {
-            return !error_.empty() || !accepting_ ||
-                   queuedBytes_ == 0 || queuedBytes_ + size <= maxQueuedBytes_;
-        });
+        uint32_t ordinal = ordinalIt->second;
+        if (ordinal < producerOrdinal_)
+            return true;
+        uint64_t offset = static_cast<uint64_t>(fileOffset);
+        if (offset >= static_cast<uint64_t>(file.length))
+            return setErrorLocked("Invalid package stream offset.");
+
+        PendingKey key {ordinal, offset};
+        if (pending_.find(key) != pending_.end())
+            return setErrorLocked("Duplicate package stream chunk.");
+        waitForBufferSpaceLocked(lock, size);
         if (!error_.empty() || !accepting_)
             return false;
-
+        if (bufferedBytesLocked() + size > maxBufferedBytes_ &&
+            !bufferPressureLogged_) {
+            log_msg("[install] reorder buffer pressure buffered=%zu limit=%zu, "
+                    "accepting in-flight chunk\n",
+                    bufferedBytesLocked(), maxBufferedBytes_);
+            bufferPressureLogged_ = true;
+        }
         InstallChunk chunk;
         chunk.fileIndex = fileIndex;
-        chunk.fileOffset = static_cast<uint64_t>(fileOffset);
+        chunk.fileOffset = offset;
         chunk.data.assign(data, data + size);
         chunk.final = chunk.fileOffset + size == static_cast<uint64_t>(file.length);
-        queuedBytes_ += size;
-        producerOffset_ += size;
-        queue_.push_back(std::move(chunk));
-        if (queue_.back().final) {
-            producerFileIndex_ = UINT32_MAX;
-            producerOffset_ = 0;
-            ++producerOrdinal_;
-        }
-        queueReady_.notify_one();
+        pendingBytes_ += chunk.data.size();
+        pending_.emplace(key, std::move(chunk));
+        enqueueReadyLocked();
         return true;
+    }
+
+    size_t bufferedBytesLocked() const {
+        return pendingBytes_ + queuedBytes_ + processingBytes_;
+    }
+
+    void waitForBufferSpaceLocked(std::unique_lock<std::mutex>& lock,
+                                  size_t incomingBytes) {
+        while (accepting_ && error_.empty() &&
+               bufferedBytesLocked() + incomingBytes > maxBufferedBytes_ &&
+               (queuedBytes_ > 0 || processingBytes_ > 0)) {
+            queueSpace_.wait(lock);
+        }
+    }
+
+    bool canRequestPiece(uint32_t piece) const {
+        std::lock_guard<std::mutex> lock(queueMutex_);
+        if (!error_.empty() || stopping_)
+            return false;
+        if (piece >= pieceGates_.size())
+            return true;
+        const PieceGate& gate = pieceGates_[piece];
+        if (!gate.package)
+            return producerOrdinal_ >= packageCount_;
+        if (gate.ordinal < producerOrdinal_)
+            return true;
+        if (gate.ordinal > producerOrdinal_)
+            return false;
+        uint64_t limit = producerOffset_ + requestAheadBytes_;
+        if (limit < producerOffset_)
+            limit = UINT64_MAX;
+        return gate.offset <= limit;
     }
 
     bool processChunk(const InstallChunk& chunk) {
@@ -327,10 +387,12 @@ private:
                                          size_t byteCount) {
                 bool ok = backend_->writeFile(bytes, byteCount);
                 if (ok) {
-                    progress_(completedPackages_, currentPackage_,
-                              backend_->installedBytes(),
-                              backend_->expectedBytes(),
-                              DownloadStatus::Installing);
+                    if (progress_) {
+                        progress_(completedPackages_, currentPackage_,
+                                  backend_->installedBytes(),
+                                  backend_->expectedBytes(),
+                                  DownloadStatus::Installing);
+                    }
                 } else {
                     setError(backend_->error());
                 }
@@ -344,8 +406,9 @@ private:
             };
             stream_ = std::make_unique<install::PackageStream>(
                 isCompressedPackage(file.path), std::move(callbacks));
-            progress_(completedPackages_, currentPackage_, 0, 0,
-                      DownloadStatus::Installing);
+            if (progress_)
+                progress_(completedPackages_, currentPackage_, 0, 0,
+                          DownloadStatus::Installing);
         }
         if (activeFileIndex_ != chunk.fileIndex ||
             chunk.fileOffset != stream_->consumed())
@@ -362,10 +425,12 @@ private:
         if (chunk.final) {
             if (cancelRequested_)
                 return false;
-            progress_(completedPackages_, currentPackage_,
-                      backend_->installedBytes(),
-                      backend_->expectedBytes(),
-                      DownloadStatus::Committing);
+            if (progress_) {
+                progress_(completedPackages_, currentPackage_,
+                          backend_->installedBytes(),
+                          backend_->expectedBytes(),
+                          DownloadStatus::Committing);
+            }
             if (!stream_->finish()) {
                 if (error().empty())
                     setError(stream_->error());
@@ -385,8 +450,9 @@ private:
             ++completedPackages_;
             stream_.reset();
             activeFileIndex_ = UINT32_MAX;
-            progress_(completedPackages_, currentPackage_, 0, 0,
-                      DownloadStatus::Downloading);
+            if (progress_)
+                progress_(completedPackages_, currentPackage_, 0, 0,
+                          DownloadStatus::Downloading);
             currentPackage_.clear();
         }
         return true;
@@ -398,8 +464,10 @@ private:
     }
 
     bool setErrorLocked(const std::string& message) {
-        if (error_.empty())
+        if (error_.empty()) {
             error_ = message.empty() ? "Installation pipeline failed." : message;
+            log_msg("[install] pipeline error: %s\n", error_.c_str());
+        }
         accepting_ = false;
         queueReady_.notify_all();
         queueSpace_.notify_all();
@@ -408,7 +476,9 @@ private:
     }
 
     void installMain() {
-        log_msg("[install] worker started queue=%zu bytes\n", maxQueuedBytes_);
+        log_msg("[install] worker started queue=%zu buffer=%zu window=%llu bytes\n",
+                maxQueuedBytes_, maxBufferedBytes_,
+                static_cast<unsigned long long>(requestAheadBytes_));
         while (true) {
             InstallChunk chunk;
             {
@@ -421,6 +491,7 @@ private:
                 chunk = std::move(queue_.front());
                 queue_.pop_front();
                 queuedBytes_ -= chunk.data.size();
+                processingBytes_ = chunk.data.size();
                 processing_ = true;
                 queueSpace_.notify_all();
             }
@@ -428,12 +499,18 @@ private:
             bool ok = processChunk(chunk);
             {
                 std::lock_guard<std::mutex> lock(queueMutex_);
+                processingBytes_ = 0;
                 processing_ = false;
                 if (!ok) {
                     queue_.clear();
+                    pending_.clear();
                     queuedBytes_ = 0;
+                    pendingBytes_ = 0;
+                } else {
+                    enqueueReadyLocked();
                 }
-                if (queue_.empty())
+                queueSpace_.notify_all();
+                if (pending_.empty() && queue_.empty())
                     drained_.notify_all();
             }
             if (!ok)
@@ -456,7 +533,9 @@ private:
             accepting_ = false;
             if (!drainComplete_) {
                 queue_.clear();
+                pending_.clear();
                 queuedBytes_ = 0;
+                pendingBytes_ = 0;
             }
         }
         queueReady_.notify_all();
@@ -464,18 +543,78 @@ private:
         installWorker_.join();
     }
 
+    bool enqueueReadyLocked() {
+        bool queued = false;
+        while (true) {
+            PendingKey key {producerOrdinal_, producerOffset_};
+            auto item = pending_.find(key);
+            if (item == pending_.end())
+                break;
+            size_t size = item->second.data.size();
+            if (queuedBytes_ > 0 && queuedBytes_ + size > maxQueuedBytes_)
+                break;
+            const mi_file_t& file = metainfo_.files[item->second.fileIndex];
+            bool final = item->second.final;
+            pendingBytes_ -= size;
+            queuedBytes_ += size;
+            producerOffset_ += size;
+            queue_.push_back(std::move(item->second));
+            pending_.erase(item);
+            queued = true;
+            if (final) {
+                producerOffset_ = 0;
+                ++producerOrdinal_;
+            } else if (producerOffset_ >= static_cast<uint64_t>(file.length)) {
+                setErrorLocked("Package stream missed final chunk.");
+                break;
+            }
+        }
+        if (queued) {
+            queueReady_.notify_one();
+            queueSpace_.notify_all();
+        }
+        return queued;
+    }
+
+    void markPieceGate(uint32_t fileIndex, uint32_t ordinal) {
+        const mi_file_t& file = metainfo_.files[fileIndex];
+        if (file.length <= 0 || pieceLengthBytes_ == 0)
+            return;
+        uint64_t fileOffset = static_cast<uint64_t>(file.offset);
+        uint64_t fileLength = static_cast<uint64_t>(file.length);
+        uint32_t first = static_cast<uint32_t>(fileOffset / pieceLengthBytes_);
+        uint32_t last = static_cast<uint32_t>(
+            (fileOffset + fileLength - 1) / pieceLengthBytes_);
+        for (uint32_t piece = first;
+             piece <= last && piece < pieceGates_.size(); ++piece) {
+            uint64_t pieceStart = static_cast<uint64_t>(piece) *
+                                  pieceLengthBytes_;
+            uint64_t localOffset = pieceStart > fileOffset
+                ? pieceStart - fileOffset : 0;
+            PieceGate& gate = pieceGates_[piece];
+            if (!gate.package || ordinal < gate.ordinal ||
+                (ordinal == gate.ordinal && localOffset < gate.offset)) {
+                gate.package = true;
+                gate.ordinal = ordinal;
+                gate.offset = localOffset;
+            }
+        }
+    }
+
     void buildPieceOrder() {
         std::vector<uint8_t> added(metainfo_.num_pieces, 0);
+        pieceGates_.assign(metainfo_.num_pieces, PieceGate {});
         for (const auto& item : packageOrdinals_) {
             if (item.second < completedPackages_)
                 continue;
             const mi_file_t& file = metainfo_.files[item.first];
             if (file.length <= 0)
                 continue;
+            markPieceGate(item.first, item.second);
             uint32_t first = static_cast<uint32_t>(
-                file.offset / metainfo_.piece_length);
+                file.offset / pieceLengthBytes_);
             uint32_t last = static_cast<uint32_t>(
-                (file.offset + file.length - 1) / metainfo_.piece_length);
+                (file.offset + file.length - 1) / pieceLengthBytes_);
             for (uint32_t piece = first;
                  piece <= last && piece < metainfo_.num_pieces; ++piece) {
                 if (!added[piece]) {
@@ -495,6 +634,7 @@ private:
     bool streamInstall_ = false;
     std::vector<storage_file_config_t> configs_;
     std::vector<uint32_t> pieceOrder_;
+    std::vector<PieceGate> pieceGates_;
     std::map<uint32_t, uint32_t> packageOrdinals_;
     std::unique_ptr<install::PackageStream> stream_;
     uint32_t completedPackages_ = 0;
@@ -507,16 +647,22 @@ private:
     std::condition_variable queueSpace_;
     std::condition_variable drained_;
     std::deque<InstallChunk> queue_;
+    std::map<PendingKey, InstallChunk> pending_;
     std::thread installWorker_;
     size_t queuedBytes_ = 0;
+    size_t pendingBytes_ = 0;
+    size_t processingBytes_ = 0;
     size_t maxQueuedBytes_ = 32 * 1024 * 1024;
-    uint32_t producerFileIndex_ = UINT32_MAX;
+    size_t maxBufferedBytes_ = 64 * 1024 * 1024;
+    uint64_t pieceLengthBytes_ = 4 * 1024 * 1024;
+    uint64_t requestAheadBytes_ = 64 * 1024 * 1024;
     uint32_t producerOrdinal_ = 0;
     uint64_t producerOffset_ = 0;
     bool accepting_ = true;
     bool stopping_ = false;
     bool processing_ = false;
     bool drainComplete_ = false;
+    bool bufferPressureLogged_ = false;
     std::atomic<bool> cancelRequested_ {false};
     std::string error_;
     Progress progress_;
@@ -1047,6 +1193,8 @@ void DownloadManager::workerMain() {
                 options.piece_order = coordinator->pieceOrder().data();
                 options.piece_order_count =
                     static_cast<uint32_t>(coordinator->pieceOrder().size());
+                options.request_allowed = &PackageCoordinator::requestAllowedThunk;
+                options.request_allowed_user = coordinator.get();
             }
             std::lock_guard<std::mutex> lock(mutex_);
             if (DownloadTask* task = findLocked(activeId))
@@ -1079,7 +1227,9 @@ void DownloadManager::workerMain() {
                     break;
             }
 
-            int running = torrent_tick(torrent);
+            std::string installError = coordinator
+                ? coordinator->error() : std::string();
+            int running = installError.empty() ? torrent_tick(torrent) : -1;
             torrent_stat_t stat;
             torrent_stat(torrent, &stat);
             {
@@ -1107,8 +1257,6 @@ void DownloadManager::workerMain() {
                 }
                 if (running < 0) {
                     task->status = DownloadStatus::Error;
-                    std::string installError = coordinator
-                        ? coordinator->error() : std::string();
                     task->error = !installError.empty()
                         ? installError : torrent_last_error(torrent);
                     task->speedBytesPerSecond = 0;
