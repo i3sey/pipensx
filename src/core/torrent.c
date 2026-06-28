@@ -16,7 +16,7 @@
 
 #define MAX_PEER_QUEUE 1024
 #define CONNECT_INTERVAL_MS 50
-#define CONNECT_TIMEOUT_MS  12000
+#define CONNECT_TIMEOUT_MS  6000
 #define TRACKER_REANNOUNCE_MS (30*60*1000ULL)  /* 30 min */
 #define DHT_TICK_INTERVAL_MS  1000
 #define PEER_TIMEOUT_MS       60000
@@ -32,11 +32,19 @@
 #define MAX_HEDGED_BLOCKS     16
 #define HEDGE_INTERVAL_MS     250
 #define MAX_PEER_TELEMETRY    8
+#define PEER_BLOCKLIST_SIZE   64
+#define PEER_BLOCKLIST_MS     60000
 
 struct peer_addr {
     uint32_t ip;   /* network byte order */
     uint16_t port; /* network byte order */
 };
+
+static uint64_t ema_update(uint64_t previous, uint64_t sample) {
+    if (sample >= previous)
+        return previous + (sample - previous) * 3 / 10;
+    return previous - (previous - sample) * 3 / 10;
+}
 
 struct torrent {
     metainfo_t   mi;
@@ -51,6 +59,13 @@ struct torrent {
 
     struct peer_addr queue[MAX_PEER_QUEUE];
     int      qhead, qtail, qsize;
+
+    struct {
+        uint32_t ip;
+        uint16_t port;
+        uint64_t until_ms;
+    } blocklist[PEER_BLOCKLIST_SIZE];
+    uint32_t blocklist_next;
 
     uint16_t listen_port;
 
@@ -99,6 +114,24 @@ struct torrent {
 #endif
 };
 
+static void blocklist_add(torrent_t *t, uint32_t ip, uint16_t port,
+                          uint64_t now) {
+    uint32_t index = t->blocklist_next++ % PEER_BLOCKLIST_SIZE;
+    t->blocklist[index].ip = ip;
+    t->blocklist[index].port = port;
+    t->blocklist[index].until_ms = now + PEER_BLOCKLIST_MS;
+}
+
+static int blocklist_blocked(const torrent_t *t, uint32_t ip, uint16_t port,
+                             uint64_t now) {
+    for (uint32_t i = 0; i < PEER_BLOCKLIST_SIZE; ++i) {
+        if (t->blocklist[i].ip == ip && t->blocklist[i].port == port &&
+            t->blocklist[i].until_ms > now)
+            return 1;
+    }
+    return 0;
+}
+
 /* ---- peer queue ---- */
 static int queue_push(torrent_t *t, uint32_t ip, uint16_t port) {
     uint16_t host_port = ntohs(port);
@@ -123,6 +156,8 @@ static int queue_push(torrent_t *t, uint32_t ip, uint16_t port) {
         if (t->queue[index].ip == ip && t->queue[index].port == port)
             return 0;
     }
+    if (blocklist_blocked(t, ip, port, now_ms()))
+        return 0;
     t->queue[t->qtail].ip   = ip;
     t->queue[t->qtail].port = port;
     t->qtail = (t->qtail + 1) % MAX_PEER_QUEUE;
@@ -406,11 +441,18 @@ static void try_connect(torrent_t *t) {
     addr.sin_port = port;
 
     socket_t fd = net_tcp_connect(&addr);
-    if (fd == INVALID_SOCK) return;
+    if (fd == INVALID_SOCK) {
+        blocklist_add(t, ip, port, now_ms());
+        return;
+    }
 
     peer_ctx_t ctx; fill_ctx(t, &ctx);
     peer_t *p = peer_create(fd, addr, &ctx);
-    if (!p) { net_close(fd); return; }
+    if (!p) {
+        net_close(fd);
+        blocklist_add(t, ip, port, now_ms());
+        return;
+    }
 
     /* Find free slot */
     for (int i = 0; i < MAX_ACTIVE_PEERS; i++) {
@@ -421,6 +463,7 @@ static void try_connect(torrent_t *t) {
             return;
         }
     }
+    blocklist_add(t, ip, port, now_ms());
     peer_destroy(p);
 }
 
@@ -798,7 +841,8 @@ int torrent_tick(torrent_t *t) {
     /* Speed update every 1 second */
     if (now - t->speed_time_ms >= 1000) {
         uint64_t elapsed_ms = now - t->speed_time_ms;
-        t->speed_bps      = t->speed_bytes * 1000 / (elapsed_ms + 1);
+        uint64_t sample_bps = t->speed_bytes * 1000 / (elapsed_ms + 1);
+        t->speed_bps      = ema_update(t->speed_bps, sample_bps);
         t->speed_bytes    = 0;
         t->speed_time_ms  = now;
     }
@@ -895,6 +939,7 @@ int torrent_tick(torrent_t *t) {
         int err = peer_recv(p, &ctx, cb_block, cb_have, cb_peers, t);
         if (err < 0) {
             log_msg("[torrent] peer %s dead\n", p->addr_str);
+            blocklist_add(t, p->addr.sin_addr.s_addr, p->addr.sin_port, now);
             clear_peer_requests(t, p);
             peer_destroy(p);
             t->peers[slot] = NULL;
@@ -921,6 +966,8 @@ int torrent_tick(torrent_t *t) {
             if (p->connect_time_ms <= now2 &&
                 now2 - p->connect_time_ms > CONNECT_TIMEOUT_MS) {
                 log_msg("[torrent] peer %s connect/handshake timeout\n", p->addr_str);
+                blocklist_add(t, p->addr.sin_addr.s_addr,
+                              p->addr.sin_port, now2);
                 peer_destroy(p);
                 t->peers[i] = NULL;
                 t->num_peers--;
@@ -955,6 +1002,8 @@ int torrent_tick(torrent_t *t) {
                 log_msg("[torrent] peer %s dropped after %u request "
                         "timeout strikes\n",
                         p->addr_str, p->timeout_strikes);
+                blocklist_add(t, p->addr.sin_addr.s_addr,
+                              p->addr.sin_port, now2);
                 clear_peer_requests(t, p);
                 peer_destroy(p);
                 t->peers[i] = NULL;
@@ -965,6 +1014,8 @@ int torrent_tick(torrent_t *t) {
         /* Guard against unsigned underflow: only check if last_recv_ms <= now2 */
         if (p->last_recv_ms <= now2 && now2 - p->last_recv_ms > PEER_TIMEOUT_MS) {
             log_msg("[torrent] peer %s timeout\n", p->addr_str);
+            blocklist_add(t, p->addr.sin_addr.s_addr,
+                          p->addr.sin_port, now2);
             clear_peer_requests(t, p);
             peer_destroy(p);
             t->peers[i] = NULL;

@@ -111,6 +111,12 @@ std::string formatSpeed(uint64_t bytes) {
     return buffer;
 }
 
+uint64_t emaUpdate(uint64_t previous, uint64_t sample) {
+    if (sample >= previous)
+        return previous + (sample - previous) * 3 / 10;
+    return previous - (previous - sample) * 3 / 10;
+}
+
 float progressOf(const DownloadTask& task) {
     if (!task.totalBytes)
         return 0.0f;
@@ -677,9 +683,15 @@ private:
         } else {
             install_->setText("");
         }
-        transfer_->setText("Download speed: " +
-                           formatSpeed(task->speedBytesPerSecond));
         recordSpeedSample(*task);
+        if (task->mode == TransferMode::StreamInstall) {
+            transfer_->setText(
+                "Download: " + formatSpeed(task->speedBytesPerSecond) +
+                "   Install: " + formatSpeed(installSpeedSmoothed_));
+        } else {
+            transfer_->setText(
+                "Download: " + formatSpeed(task->speedBytesPerSecond));
+        }
         peers_->setText("Peers: " + std::to_string(task->peers) +
                         "   DHT: " + std::to_string(task->dhtGood) + " good / " +
                         std::to_string(task->dhtDubious) + " dubious");
@@ -714,11 +726,14 @@ private:
             lastInstallBytes_ = task.installedBytes;
             lastInstallSampleMs_ = now;
             hasInstallSample_ = true;
-            appendSpeedSample(installSpeedSamples_, installSpeed);
+            installSpeedSmoothed_ = emaUpdate(installSpeedSmoothed_,
+                                              installSpeed);
+            appendSpeedSample(installSpeedSamples_, installSpeedSmoothed_);
         } else {
             hasInstallSample_ = false;
             lastInstallBytes_ = 0;
             lastInstallSampleMs_ = now;
+            installSpeedSmoothed_ = 0;
             installSpeedSamples_.clear();
         }
 
@@ -762,6 +777,7 @@ private:
     std::vector<DownloadTask> cache_;
     std::vector<uint64_t> downloadSpeedSamples_;
     std::vector<uint64_t> installSpeedSamples_;
+    uint64_t installSpeedSmoothed_ = 0;
     uint64_t lastInstallBytes_ = 0;
     uint64_t lastInstallSampleMs_ = 0;
     bool hasInstallSample_ = false;

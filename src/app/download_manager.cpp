@@ -1302,7 +1302,7 @@ void DownloadManager::workerMain() {
                     static_cast<uint32_t>(coordinator->pieceOrder().size());
                 options.request_allowed = &PackageCoordinator::requestAllowedThunk;
                 options.request_allowed_user = coordinator.get();
-                options.strict_order_lookahead = 16;
+                options.strict_order_lookahead = 32;
                 options.strict_fill_pending_first = 1;
                 options.request_pipeline_limit = 64;
                 options.hedge_after_ms = 5000;

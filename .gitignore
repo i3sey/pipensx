@@ -3,6 +3,7 @@
 /tests/test_piece
 /tests/test_manager
 /tests/test_package_stream
+/tests/test_torrent
 *.elf
 *.nro
 *.nacp
