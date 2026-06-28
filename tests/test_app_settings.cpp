@@ -9,7 +9,6 @@
 using pipensx::AppSettings;
 using pipensx::AppSettingsData;
 using pipensx::CatalogFilter;
-using pipensx::PreferredAction;
 using pipensx::StreamSelection;
 
 namespace {
@@ -31,7 +30,6 @@ void testMissingFileUsesSafeDefaults() {
     const AppSettingsData& values = settings.get();
     assert(values.catalogFilter == CatalogFilter::All);
     assert(!values.refreshCatalogOnLaunch);
-    assert(values.preferredAction == PreferredAction::StreamInstall);
     assert(values.streamSelection == StreamSelection::AllFiles);
     assert(values.showCompletedDownloads);
     assert(!values.extendedTelemetry);
@@ -45,7 +43,6 @@ void testUpdatePersistsEveryPublicSetting() {
     AppSettingsData changed = settings.get();
     changed.catalogFilter = CatalogFilter::Games;
     changed.refreshCatalogOnLaunch = true;
-    changed.preferredAction = PreferredAction::Download;
     changed.streamSelection = StreamSelection::PackagesOnly;
     changed.showCompletedDownloads = false;
     changed.extendedTelemetry = true;

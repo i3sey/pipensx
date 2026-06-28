@@ -46,6 +46,15 @@ bool isCompressedPackage(const std::string& path) {
            lower.substr(lower.size() - 4) == ".nsz";
 }
 
+bool isCartridgeDump(const std::string& path) {
+    std::string lower = path;
+    for (char& c : lower)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return lower.size() >= 4 &&
+           (lower.substr(lower.size() - 4) == ".xci" ||
+            lower.substr(lower.size() - 4) == ".xcz");
+}
+
 bool makeDirectories(const std::string& path) {
     if (path.empty())
         return false;
@@ -867,6 +876,9 @@ bool DownloadManager::previewTorrent(const std::string& path,
         file.package = hasPackageExtension(metainfo.files[i].path);
         if (file.package)
             ++preview.packageCount;
+        file.cartridge = isCartridgeDump(metainfo.files[i].path);
+        if (file.cartridge)
+            ++preview.cartridgeCount;
         preview.files.push_back(std::move(file));
     }
     metainfo_free(&metainfo);

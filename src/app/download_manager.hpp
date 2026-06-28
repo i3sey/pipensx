@@ -65,10 +65,12 @@ struct TorrentPreview {
     uint32_t fileCount = 0;
     uint32_t trackerCount = 0;
     uint32_t packageCount = 0;
+    uint32_t cartridgeCount = 0;
     struct File {
         std::string path;
         uint64_t length = 0;
         bool package = false;
+        bool cartridge = false;
     };
     std::vector<File> files;
 };

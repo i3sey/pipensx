@@ -29,7 +29,6 @@ extern "C" {
 using pipensx::CatalogEntry;
 using pipensx::CatalogHealth;
 using pipensx::CatalogService;
-using pipensx::catalogContentBadge;
 using pipensx::GameMetadata;
 using pipensx::GameMetadataService;
 using pipensx::MagnetResolver;
@@ -191,8 +190,6 @@ void testCatalogPresentationUsesGameMetadata() {
         "https://example/catalog-4.jpg",
         "https://example/catalog-5.jpg",
     };
-    assert(catalogContentBadge(&metadata) == "Contains NSP/NSZ");
-    assert(catalogContentBadge(nullptr) == "Does not contain NSP/NSZ");
     std::vector<std::string> screenshots =
         mergeScreenshotUrls(&metadata, entry, 6);
     assert(screenshots.size() == 6);

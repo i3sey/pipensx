@@ -18,10 +18,6 @@ const char* catalogFilterName(CatalogFilter value) {
     return value == CatalogFilter::Games ? "games" : "all";
 }
 
-const char* preferredActionName(PreferredAction value) {
-    return value == PreferredAction::Download ? "download" : "stream_install";
-}
-
 const char* streamSelectionName(StreamSelection value) {
     return value == StreamSelection::PackagesOnly ? "packages_only" : "all_files";
 }
@@ -64,12 +60,10 @@ bool parseSettings(const std::string& text, AppSettingsData& values,
     }
 
     std::string catalog = catalogFilterName(values.catalogFilter);
-    std::string action = preferredActionName(values.preferredAction);
     std::string selection = streamSelectionName(values.streamSelection);
     if (!readString(root, "catalog_filter", catalog, error) ||
         !readBool(root, "refresh_catalog_on_launch",
                   values.refreshCatalogOnLaunch, error) ||
-        !readString(root, "preferred_action", action, error) ||
         !readString(root, "stream_selection", selection, error) ||
         !readBool(root, "show_completed_downloads",
                   values.showCompletedDownloads, error) ||
@@ -84,14 +78,6 @@ bool parseSettings(const std::string& text, AppSettingsData& values,
         values.catalogFilter = CatalogFilter::Games;
     else {
         error = "Setting 'catalog_filter' has an unknown value.";
-        return false;
-    }
-    if (action == "stream_install")
-        values.preferredAction = PreferredAction::StreamInstall;
-    else if (action == "download")
-        values.preferredAction = PreferredAction::Download;
-    else {
-        error = "Setting 'preferred_action' has an unknown value.";
         return false;
     }
     if (selection == "all_files")
@@ -110,7 +96,6 @@ std::string serializeSettings(const AppSettingsData& values) {
     root["version"] = 1;
     root["catalog_filter"] = catalogFilterName(values.catalogFilter);
     root["refresh_catalog_on_launch"] = values.refreshCatalogOnLaunch;
-    root["preferred_action"] = preferredActionName(values.preferredAction);
     root["stream_selection"] = streamSelectionName(values.streamSelection);
     root["show_completed_downloads"] = values.showCompletedDownloads;
     root["extended_telemetry"] = values.extendedTelemetry;
@@ -122,7 +107,6 @@ std::string serializeSettings(const AppSettingsData& values) {
 bool AppSettingsData::operator==(const AppSettingsData& other) const {
     return catalogFilter == other.catalogFilter &&
            refreshCatalogOnLaunch == other.refreshCatalogOnLaunch &&
-           preferredAction == other.preferredAction &&
            streamSelection == other.streamSelection &&
            showCompletedDownloads == other.showCompletedDownloads &&
            extendedTelemetry == other.extendedTelemetry;

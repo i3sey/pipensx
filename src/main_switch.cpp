@@ -46,7 +46,6 @@ using pipensx::AppSettingsData;
 using pipensx::CatalogFilter;
 using pipensx::InstalledTitle;
 using pipensx::InstalledTitleService;
-using pipensx::PreferredAction;
 using pipensx::StreamSelection;
 using pipensx::GameMetadata;
 using pipensx::GameMetadataService;
@@ -1324,28 +1323,16 @@ public:
         sub_->setMarginTop(6);
         sub_->setTextColor(nvgRGB(160, 160, 170));
 
-        auto* metaRow = new brls::Box(brls::Axis::ROW);
-        metaRow->setAlignItems(brls::AlignItems::CENTER);
-        contentBadge_ = new brls::Label();
-        contentBadge_->setSingleLine(true);
-        contentBadge_->setFontSize(15);
-        contentBadge_->setTextColor(nvgRGB(100, 205, 145));
-        contentBadge_->setMarginRight(14);
-        metaRow->addView(contentBadge_);
-        metaRow->addView(sub_);
-
         right->addView(top);
-        right->addView(metaRow);
+        right->addView(sub_);
         addView(right);
     }
 
     void setEntry(const CatalogEntry& entry, const std::string& stateBadge,
-                  const std::string& contentBadge,
                   const std::string& iconUrl, GameMetadataService* service) {
         title_->setText(entry.title);
         placeholder_->setText(placeholderLetter(entry.title));
         badge_->setText(stateBadge);
-        contentBadge_->setText(contentBadge);
         std::string sub = entry.size ? formatBytes(entry.size) : "Unknown size";
         sub += "   " + formatCatalogDate(entry.publishedAt);
         sub_->setText(sub);
@@ -1358,7 +1345,6 @@ private:
     AsyncRgbaImage* image_;
     brls::Label* title_;
     brls::Label* badge_;
-    brls::Label* contentBadge_;
     brls::Label* sub_;
     std::string currentIconUrl_;
     std::shared_ptr<ImageRequestState> imageState_ =
@@ -1389,13 +1375,11 @@ public:
 
     void setEntries(std::vector<CatalogEntry> entries,
                     std::vector<std::string> stateBadges,
-                    std::vector<std::string> contentBadges,
                     std::vector<std::string> gameNames,
                     std::vector<std::string> iconUrls,
                     GameMetadataService* metadata) {
         entries_ = std::move(entries);
         stateBadges_ = std::move(stateBadges);
-        contentBadges_ = std::move(contentBadges);
         gameNames_ = std::move(gameNames);
         iconUrls_ = std::move(iconUrls);
         metadata_ = metadata;
@@ -1427,8 +1411,6 @@ public:
         cell->setEntry(display,
                        row < stateBadges_.size() ? stateBadges_[row]
                                                  : std::string(),
-                       row < contentBadges_.size() ? contentBadges_[row]
-                                                   : std::string(),
                        row < iconUrls_.size() ? iconUrls_[row] : std::string(),
                        metadata_);
         return cell;
@@ -1439,7 +1421,6 @@ private:
     CatalogView* owner_;
     std::vector<CatalogEntry> entries_;
     std::vector<std::string> stateBadges_;
-    std::vector<std::string> contentBadges_;
     std::vector<std::string> gameNames_;
     std::vector<std::string> iconUrls_;
     GameMetadataService* metadata_ = nullptr;
@@ -1761,7 +1742,7 @@ public:
             setAllSelected(false);
             return true;
         });
-        registerAction("Install selected", brls::BUTTON_RB,
+        registerAction("Install", brls::BUTTON_RB,
                        [this](brls::View*) {
                            confirmSelection();
                            return true;
@@ -1946,9 +1927,7 @@ public:
         refreshButtons();
         timer_.setCallback([this] { refreshButtons(); });
         timer_.start(500);
-        brls::Button* focus = settings_ &&
-            settings_->get().preferredAction == PreferredAction::Download
-            ? secondary_ : primary_;
+        brls::Button* focus = primary_;
         if (focus)
             brls::Application::giveFocus(focus);
     }
@@ -1993,14 +1972,12 @@ private:
         auto* row = new brls::Box(brls::Axis::ROW);
 
         secondary_ = new brls::Button();
-        secondary_->setStyle(settings_ &&
-            settings_->get().preferredAction == PreferredAction::Download
-            ? &brls::BUTTONSTYLE_PRIMARY : &brls::BUTTONSTYLE_DEFAULT);
+        secondary_->setStyle(&brls::BUTTONSTYLE_DEFAULT);
         secondary_->setFontSize(21);
         secondary_->setHeight(64);
         secondary_->setGrow(1);
         secondary_->setMarginRight(12);
-        secondary_->setText("Download");
+        secondary_->setText("Options");
         secondary_->registerClickAction([this](brls::View*) {
             onSecondary();
             return true;
@@ -2008,13 +1985,11 @@ private:
         row->addView(secondary_);
 
         primary_ = new brls::Button();
-        primary_->setStyle(!settings_ ||
-            settings_->get().preferredAction == PreferredAction::StreamInstall
-            ? &brls::BUTTONSTYLE_PRIMARY : &brls::BUTTONSTYLE_DEFAULT);
+        primary_->setStyle(&brls::BUTTONSTYLE_PRIMARY);
         primary_->setFontSize(21);
         primary_->setHeight(64);
         primary_->setGrow(1);
-        primary_->setText("Stream install");
+        primary_->setText("Install");
         primary_->registerClickAction([this](brls::View*) {
             onPrimary();
             return true;
@@ -2026,7 +2001,7 @@ private:
         statusLabel_->setFontSize(16);
         statusLabel_->setMarginTop(12);
         statusLabel_->setTextColor(nvgRGB(0, 195, 227));
-        statusLabel_->setText("Stream install adds packages as they arrive.");
+        statusLabel_->setText("Install adds this game to your console.");
         actions->addView(statusLabel_);
 
         content->addView(actions);
@@ -2162,7 +2137,7 @@ private:
             case DownloadStatus::Removing:
                 return "Removing";
         }
-        return "Stream install";
+        return "Install";
     }
 
     // Reflect live task state on the buttons. Skipped while resolving so the
@@ -2187,9 +2162,9 @@ private:
             if (task->status == DownloadStatus::Error && !task->error.empty())
                 statusLabel_->setText(task->error);
         } else {
-            primary_->setText("Stream install");
+            primary_->setText("Install");
             primary_->setState(brls::ButtonState::ENABLED);
-            secondary_->setText("Download");
+            secondary_->setText("Options");
             secondary_->setState(brls::ButtonState::ENABLED);
             if (!operationMessage_.empty())
                 statusLabel_->setText(operationMessage_);
@@ -2198,7 +2173,7 @@ private:
                     "Installed on this console. You can still install updates or DLC.");
             else
                 statusLabel_->setText(
-                    "Stream install adds packages as they arrive.");
+                    "Install adds this game to your console.");
         }
     }
 
@@ -2212,9 +2187,8 @@ private:
                 manager_->resume(task->id);
             return;
         }
-        // Default to Install; the actual mode is chosen after resolve from the
-        // package count, so a base-only torrent gracefully falls back.
-        startInstall(TransferMode::StreamInstall);
+        // One-tap install: resolve, then queue silently (picker only on Options).
+        startInstall(false);
     }
 
     void onSecondary() {
@@ -2226,13 +2200,14 @@ private:
                 new DetailsActivity(task->id, manager_));
             return;
         }
-        startInstall(TransferMode::DownloadOnly);
+        // Options: always open the per-file picker after resolve.
+        startInstall(true);
     }
 
     // One-tap: resolve the magnet inline, then import immediately (no second
-    // dialog). preferred is the mode to use when the torrent has installable
-    // packages; package-less torrents always import as DownloadOnly.
-    void startInstall(TransferMode preferred) {
+    // dialog) unless forcePicker is set (the "Options" path), which always
+    // opens the per-file selection screen after resolve.
+    void startInstall(bool forcePicker) {
         if (busy_)
             return;
         busy_ = true;
@@ -2252,7 +2227,7 @@ private:
         std::string magnet = entry_.magnetUri;
         std::string telemetryTag = catalogLower(entry_.infoHash);
         uint64_t startedMs = now_ms();
-        brls::async([this, alive, cancelled, magnet, tmp, preferred,
+        brls::async([this, alive, cancelled, magnet, tmp, forcePicker,
                      telemetryTag, startedMs] {
             std::string err;
             MagnetResolver resolver;
@@ -2291,7 +2266,7 @@ private:
                           "event=resolve ok=%d cancelled=%d duration_ms=%llu",
                           ok ? 1 : 0, cancelled->load() ? 1 : 0,
                           (unsigned long long)(now_ms() - startedMs));
-            brls::sync([this, alive, ok, err, tmp, preferred] {
+            brls::sync([this, alive, ok, err, tmp, forcePicker] {
                 if (!alive->load()) {
                     ::unlink(tmp.c_str());
                     return;
@@ -2312,12 +2287,12 @@ private:
                 }
                 if (onFailure_)
                     onFailure_(hash, "");  // clear stale failure
-                finishImport(tmp, preferred);
+                finishImport(tmp, forcePicker);
             });
         });
     }
 
-    void finishImport(const std::string& path, TransferMode preferred) {
+    void finishImport(const std::string& path, bool forcePicker) {
         pipensx::TorrentPreview preview;
         std::string error;
         if (!DownloadManager::previewTorrent(path, preview, error)) {
@@ -2329,22 +2304,55 @@ private:
             ::unlink(path.c_str());
             return;
         }
-        if (preview.files.size() > 1 && preview.packageCount > 0) {
+
+        StreamSelection selection = settings_
+            ? settings_->get().streamSelection : StreamSelection::AllFiles;
+
+        // Options path: always hand off to the per-file picker. The picker owns
+        // the temp file (unlinks it on cancel) and derives the mode from the
+        // selection, so no further work here.
+        if (forcePicker) {
             brls::Application::pushActivity(new TorrentSelectionActivity(
-                manager_, path, std::move(preview), preferred,
-                settings_ ? settings_->get().streamSelection
-                          : StreamSelection::AllFiles));
+                manager_, path, std::move(preview),
+                TransferMode::StreamInstall, selection));
             return;
         }
-        TransferMode mode = preview.packageCount ? preferred
-                                                 : TransferMode::DownloadOnly;
+
+        // One-tap path. No installable packages -> nothing to silently install.
+        if (preview.packageCount == 0) {
+            operationMessage_ = preview.cartridgeCount > 0
+                ? "Cartridge dump (XCI) — open Options to download it."
+                : "No installable game files. Open Options to download.";
+            refreshButtons();
+            brls::Application::notify(operationMessage_);
+            ::unlink(path.c_str());
+            return;
+        }
+
+        // Packages present. Install them silently. On a mixed release (anything
+        // that is not an install package) auto-select packages only; on a clean
+        // package-only release an empty mask means "all files".
+        uint32_t extras = preview.fileCount - preview.packageCount;
+        std::vector<uint8_t> mask;
+        if (extras > 0) {
+            mask.reserve(preview.files.size());
+            for (const auto& file : preview.files)
+                mask.push_back(file.package ? 1 : 0);
+        }
+
         std::string id;
         std::string err;
-        if (manager_->importTorrent(path, mode, id, err)) {
+        if (manager_->importTorrent(path, TransferMode::StreamInstall, mask,
+                                    id, err)) {
             log_msg("[catalog] imported torrent %s\n", id.c_str());
-            statusLabel_->setText(preview.packageCount
-                ? "Added. Installing to SD..."
-                : "Added to downloads.");
+            if (extras > 0) {
+                statusLabel_->setText("Installing game files. Extra files "
+                                      "skipped — use Options to include them.");
+                brls::Application::notify(
+                    "Installing game files. Extra files skipped.");
+            } else {
+                statusLabel_->setText("Added. Installing to SD...");
+            }
             if (onChange_)
                 onChange_();
         } else if (catalogLower(err).find("already in the download manager") !=
@@ -2418,7 +2426,7 @@ public:
             openSearchKeyboard();
             return true;
         });
-        registerAction("Sort / Stop", brls::BUTTON_Y, [this](brls::View*) {
+        registerAction("Sort", brls::BUTTON_Y, [this](brls::View*) {
             if (busy_)
                 cancelled_->store(true);
             else
@@ -2427,10 +2435,6 @@ public:
         });
         registerAction("Refresh", brls::BUTTON_RB, [this](brls::View*) {
             refreshCatalog();
-            return true;
-        });
-        registerAction("All / Games", brls::BUTTON_LB, [this](brls::View*) {
-            toggleFilter();
             return true;
         });
         observedSettingsGeneration_ = settings_ ? settings_->generation() : 0;
@@ -2536,11 +2540,9 @@ private:
         }
 
         std::vector<std::string> stateBadges;
-        std::vector<std::string> contentBadges;
         std::vector<std::string> gameNames;
         std::vector<std::string> iconUrls;
         stateBadges.reserve(visible.size());
-        contentBadges.reserve(visible.size());
         gameNames.reserve(visible.size());
         iconUrls.reserve(visible.size());
         for (const CatalogEntry& entry : visible) {
@@ -2554,14 +2556,12 @@ private:
             if (it == added.end() && meta && installed_ &&
                 installed_->contains(meta->titleId))
                 stateBadges.back() = "Installed";
-            contentBadges.emplace_back(pipensx::catalogContentBadge(meta));
             gameNames.push_back(meta ? meta->name : std::string());
             iconUrls.push_back(meta ? meta->iconUrl : std::string());
         }
 
         size_t count = visible.size();
         dataSource_->setEntries(std::move(visible), std::move(stateBadges),
-                                std::move(contentBadges),
                                 std::move(gameNames), std::move(iconUrls),
                                 metadata_);
         dataSource_->setMessage(query_.empty()
@@ -2580,23 +2580,11 @@ private:
         }
     }
 
-    void toggleFilter() {
-        if (!settings_ || busy_)
-            return;
-        AppSettingsData values = settings_->get();
-        values.catalogFilter = values.catalogFilter == CatalogFilter::All
-            ? CatalogFilter::Games : CatalogFilter::All;
-        std::string error;
-        if (!settings_->update(values, error)) {
-            diagnostic_error("settings", "catalog_filter", "error=%s",
-                             error.c_str());
-            brls::Application::notify(error);
-            return;
-        }
-        observedSettingsGeneration_ = settings_->generation();
-        rebuildEntries();
-        brls::Application::notify(values.catalogFilter == CatalogFilter::Games
-            ? "Showing game releases." : "Showing all releases.");
+    // While busy (catalog refresh) Y cancels instead of sorting; reflect that
+    // in the bottom-bar hint so the label always matches the action.
+    void setBusy(bool busy) {
+        busy_ = busy;
+        updateActionHint(brls::BUTTON_Y, busy ? "Stop" : "Sort");
     }
 
     uint64_t taskSignature() const {
@@ -2702,7 +2690,7 @@ private:
     void refreshCatalog() {
         if (busy_)
             return;
-        busy_ = true;
+        setBusy(true);
         brls::Application::notify("Updating catalog from GitHub...");
         auto alive = alive_;
         CatalogService* catalog = catalog_;
@@ -2718,7 +2706,7 @@ private:
             brls::sync([this, alive, ok, err] {
                 if (!alive->load())
                     return;
-                busy_ = false;
+                setBusy(false);
                 if (!ok) {
                     diagnostic_error("catalog", "refresh", "error=%s",
                                      err.c_str());
@@ -2981,23 +2969,6 @@ public:
         content->addView(refreshCatalog_);
 
         addSection(content, "Downloads");
-        preferredAction_ = new brls::SelectorCell();
-        preferredAction_->init("Preferred catalog action",
-            {"Stream install", "Download"},
-            settings_->get().preferredAction == PreferredAction::Download
-                ? 1 : 0,
-            [this](int selected) {
-                AppSettingsData values = settings_->get();
-                PreferredAction previous = values.preferredAction;
-                values.preferredAction = selected == 1
-                    ? PreferredAction::Download
-                    : PreferredAction::StreamInstall;
-                if (!persist(values, "preferred_action"))
-                    preferredAction_->setSelection(
-                        previous == PreferredAction::Download ? 1 : 0, true);
-            });
-        content->addView(preferredAction_);
-
         streamSelection_ = new brls::SelectorCell();
         streamSelection_->init("Default streaming file selection",
             {"All files", "NSP/NSZ only"},
@@ -3116,9 +3087,6 @@ private:
         catalogFilter_->setSelection(
             values.catalogFilter == CatalogFilter::Games ? 1 : 0, true);
         refreshCatalog_->setOn(values.refreshCatalogOnLaunch, false);
-        preferredAction_->setSelection(
-            values.preferredAction == PreferredAction::Download ? 1 : 0,
-            true);
         streamSelection_->setSelection(
             values.streamSelection == StreamSelection::PackagesOnly ? 1 : 0,
             true);
@@ -3208,7 +3176,6 @@ private:
     InstalledTitleService* installed_;
     brls::SelectorCell* catalogFilter_ = nullptr;
     brls::BooleanCell* refreshCatalog_ = nullptr;
-    brls::SelectorCell* preferredAction_ = nullptr;
     brls::SelectorCell* streamSelection_ = nullptr;
     brls::BooleanCell* showCompleted_ = nullptr;
     brls::BooleanCell* extendedTelemetry_ = nullptr;
@@ -3227,6 +3194,9 @@ public:
             "A Nintendo Switch storefront and BitTorrent client for "
             "downloading or streaming NSP/NSZ packages to SD.",
             19, nvgRGB(220, 220, 225));
+        addLine(content,
+            "Questions or feedback? Message @i3sey on Telegram.",
+            19, nvgRGB(0, 195, 227));
         addLine(content,
             "Catalog: cached on SD with a bundled offline fallback.\n"
             "Log: sdmc:/switch/pipensx/pipensx.log\n"

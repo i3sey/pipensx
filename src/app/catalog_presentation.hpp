@@ -9,8 +9,6 @@
 
 namespace pipensx {
 
-const char* catalogContentBadge(const GameMetadata* metadata);
-
 std::vector<std::string> mergeScreenshotUrls(
     const GameMetadata* metadata, const CatalogEntry& entry,
     size_t limit = 6);

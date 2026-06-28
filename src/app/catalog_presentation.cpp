@@ -4,10 +4,6 @@
 
 namespace pipensx {
 
-const char* catalogContentBadge(const GameMetadata* metadata) {
-    return metadata ? "Contains NSP/NSZ" : "Does not contain NSP/NSZ";
-}
-
 std::vector<std::string> mergeScreenshotUrls(
     const GameMetadata* metadata, const CatalogEntry& entry, size_t limit) {
     std::vector<std::string> result;

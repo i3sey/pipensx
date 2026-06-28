@@ -10,11 +10,6 @@ enum class CatalogFilter {
     Games,
 };
 
-enum class PreferredAction {
-    StreamInstall,
-    Download,
-};
-
 enum class StreamSelection {
     AllFiles,
     PackagesOnly,
@@ -23,7 +18,6 @@ enum class StreamSelection {
 struct AppSettingsData {
     CatalogFilter catalogFilter = CatalogFilter::All;
     bool refreshCatalogOnLaunch = false;
-    PreferredAction preferredAction = PreferredAction::StreamInstall;
     StreamSelection streamSelection = StreamSelection::AllFiles;
     bool showCompletedDownloads = true;
     bool extendedTelemetry = false;
