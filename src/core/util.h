@@ -13,6 +13,8 @@ time_t   now_sec(void);
 /* Open log file (call once at startup, path = NULL to disable) */
 void log_init(const char *path);
 void log_close(void);
+void log_flush(void);
+int log_clear(void);
 
 /* Logging — file-only on Switch, stdout and file on PC. */
 void log_msg(const char *fmt, ...);
@@ -22,6 +24,12 @@ void telemetry_set_enabled(int enabled);
 int telemetry_enabled(void);
 uint32_t telemetry_generation(void);
 void telemetry_log(const char *stage, const char *tag, const char *fmt, ...);
+
+/* Structured problem records. Errors and explicit snapshots are always kept. */
+void diagnostic_error(const char *stage, const char *tag,
+                      const char *fmt, ...);
+void diagnostic_snapshot(const char *stage, const char *tag,
+                         const char *fmt, ...);
 
 /* Format bytes as "1.23 MB" etc. into buf (len >= 16) */
 void fmt_bytes(char *buf, size_t len, uint64_t bytes);

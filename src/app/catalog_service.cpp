@@ -234,6 +234,15 @@ bool CatalogService::parseJson(const std::string& json,
             entry.posterUrl = item["poster"].get<std::string>();
         if (entry.posterUrl.size() > 2048)
             entry.posterUrl.clear();
+        if (item.contains("screenshots") && item["screenshots"].is_array()) {
+            for (const auto& value : item["screenshots"]) {
+                if (!value.is_string() || entry.screenshots.size() >= 6)
+                    continue;
+                std::string url = value.get<std::string>();
+                if (!url.empty() && url.size() <= 2048)
+                    entry.screenshots.push_back(std::move(url));
+            }
+        }
         entry.size = readUnsigned(item, "size");
         entry.topicId = readUnsigned(item, "topic_id");
         entry.forumId = static_cast<uint32_t>(readUnsigned(item, "forum_id"));

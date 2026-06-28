@@ -1,4 +1,5 @@
 #include "app/catalog_service.hpp"
+#include "app/catalog_presentation.hpp"
 #include "app/game_metadata_service.hpp"
 #include "app/magnet_resolver.hpp"
 
@@ -28,10 +29,12 @@ extern "C" {
 using pipensx::CatalogEntry;
 using pipensx::CatalogHealth;
 using pipensx::CatalogService;
+using pipensx::catalogContentBadge;
 using pipensx::GameMetadata;
 using pipensx::GameMetadataService;
 using pipensx::MagnetResolver;
 using pipensx::MagnetSpec;
+using pipensx::mergeScreenshotUrls;
 
 namespace {
 
@@ -98,7 +101,9 @@ void testCatalogV2HealthParsing() {
         "http://bt.t-ru.org/ann?magnet\",\"topic_id\":123,"
         "\"forum_id\":1605,\"tracker_id\":2,\"source_updated_at\":1000,"
         "\"catalog_generated_at\":2000,\"last_checked_at\":3000,"
-        "\"peer_count\":12,\"metadata_ok\":true,\"health\":\"ok\"},"
+        "\"peer_count\":12,\"metadata_ok\":true,\"health\":\"ok\","
+        "\"screenshots\":[\"https://example/s1.jpg\","
+        "\"https://example/s2.jpg\"]},"
         "{\"title\":\"Dead\",\"magnetURI\":\"magnet:?xt=urn:btih:"
         "2222222222222222222222222222222222222222&tr="
         "http://bt2.t-ru.org/ann?magnet\",\"health\":\"tracker_not_registered\","
@@ -117,6 +122,8 @@ void testCatalogV2HealthParsing() {
     assert(entries[0].lastCheckedAt == 3000);
     assert(entries[0].peerCount == 12);
     assert(entries[0].metadataOk);
+    assert(entries[0].screenshots.size() == 2);
+    assert(entries[0].screenshots[1] == "https://example/s2.jpg");
     assert(!entries[0].isHiddenByDefault());
     assert(entries[1].health == CatalogHealth::TrackerNotRegistered);
     assert(entries[1].healthReason == "Torrent not registered");
@@ -167,6 +174,31 @@ void testMetadataIndexParsing() {
     assert(items[0].screenshots.size() == 1);
     assert(items[0].categories.size() == 2);
     assert(!GameMetadataService::parseIndex("{}", items, error));
+}
+
+void testCatalogPresentationUsesGameMetadata() {
+    GameMetadata metadata;
+    metadata.screenshots = {
+        "https://example/meta-1.jpg",
+        "https://example/shared.jpg",
+    };
+    CatalogEntry entry;
+    entry.screenshots = {
+        "https://example/shared.jpg",
+        "https://example/catalog-1.jpg",
+        "https://example/catalog-2.jpg",
+        "https://example/catalog-3.jpg",
+        "https://example/catalog-4.jpg",
+        "https://example/catalog-5.jpg",
+    };
+    assert(catalogContentBadge(&metadata) == "Contains NSP/NSZ");
+    assert(catalogContentBadge(nullptr) == "Does not contain NSP/NSZ");
+    std::vector<std::string> screenshots =
+        mergeScreenshotUrls(&metadata, entry, 6);
+    assert(screenshots.size() == 6);
+    assert(screenshots[0] == "https://example/meta-1.jpg");
+    assert(screenshots[1] == "https://example/shared.jpg");
+    assert(screenshots[2] == "https://example/catalog-1.jpg");
 }
 
 void testAsyncImageDiskCache() {
@@ -320,6 +352,7 @@ int main() {
     testCatalogV2HealthParsing();
     testTorrentConstruction();
     testMetadataIndexParsing();
+    testCatalogPresentationUsesGameMetadata();
     testAsyncImageDiskCache();
     testTrackerCancellation();
     runLiveResolutionIfRequested();

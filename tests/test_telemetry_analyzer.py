@@ -90,8 +90,7 @@ class TelemetryAnalyzerTests(unittest.TestCase):
                  expired=4, oldest_request_ms=12000,
                  hedged=3, cancelled=2, released=5,
                  piece_cb_busy_permille=10),
-            line("peer", event="request_timeout", address="1.2.3.4:5",
-                 expired=4, strikes=2),
+            line("peer", event="request_timeout", expired=4, strikes=2),
             line("peer", interval_ms=5000, rx_bps=1000,
                  expired=4, strikes=2),
         ])
@@ -101,6 +100,21 @@ class TelemetryAnalyzerTests(unittest.TestCase):
         self.assertEqual(report["requests"]["released"], 5)
         self.assertEqual(report["requests"]["peer_timeout_events"], 1)
         self.assertEqual(report["requests"]["max_peer_strikes"], 2)
+
+    def test_summarizes_always_on_diagnostics(self):
+        text = "\n".join([
+            "[diagnostic] schema=1 level=error stage=image tag=load error=timeout",
+            "[diagnostic] schema=1 level=error stage=catalog tag=refresh error=http failure",
+            "[diagnostic] schema=1 level=snapshot stage=app tag=manual active=2",
+        ])
+        diagnostics = MODULE.parse_diagnostics(text)
+        summary = MODULE.analyze_diagnostics(diagnostics)
+        self.assertEqual(summary["records"], 3)
+        self.assertEqual(summary["errors"], 2)
+        self.assertEqual(summary["snapshots"], 1)
+        self.assertEqual(summary["errors_by_stage"], {"catalog": 1, "image": 1})
+        self.assertEqual(summary["latest_error"]["stage"], "catalog")
+        self.assertEqual(summary["latest_error"]["error"], "http failure")
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@
 #include <time.h>
 #include <stdatomic.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #ifdef __SWITCH__
 #  include <switch.h>
@@ -72,6 +73,29 @@ void log_close(void) {
     g_logfile = NULL;
 }
 
+void log_flush(void) {
+    if (!g_logfile) return;
+    flockfile(g_logfile);
+    fflush(g_logfile);
+    g_log_flush_ms = now_ms();
+    funlockfile(g_logfile);
+}
+
+int log_clear(void) {
+    if (!g_logfile) return 0;
+    flockfile(g_logfile);
+    int fd = fileno(g_logfile);
+    int ok = fflush(g_logfile) == 0 && fd >= 0 && ftruncate(fd, 0) == 0;
+    if (ok) {
+        rewind(g_logfile);
+        ok = fprintf(g_logfile, "=== pipensx log cleared ===\n") > 0 &&
+             fflush(g_logfile) == 0;
+        g_log_flush_ms = now_ms();
+    }
+    funlockfile(g_logfile);
+    return ok;
+}
+
 void log_msg(const char *fmt, ...) {
     va_list ap, ap2;
     va_start(ap, fmt);
@@ -132,6 +156,38 @@ void telemetry_log(const char *stage, const char *tag, const char *fmt, ...) {
     va_end(ap);
     log_msg("[telemetry] schema=1 stage=%s tag=%s %s\n",
             stage ? stage : "unknown", tag && tag[0] ? tag : "-", body);
+}
+
+static void diagnostic_log(const char *level, const char *stage,
+                           const char *tag, const char *fmt, va_list ap) {
+    char body[1024];
+    vsnprintf(body, sizeof(body), fmt ? fmt : "", ap);
+    for (char *cursor = body; *cursor; ++cursor) {
+        if (*cursor == '\n' || *cursor == '\r' || *cursor == '\t')
+            *cursor = ' ';
+        else if (*cursor == '\'' || *cursor == '"' || *cursor == '\\')
+            *cursor = '_';
+    }
+    log_msg("[diagnostic] schema=1 level=%s stage=%s tag=%s %s\n",
+            level ? level : "info", stage ? stage : "unknown",
+            tag && tag[0] ? tag : "-", body);
+    log_flush();
+}
+
+void diagnostic_error(const char *stage, const char *tag,
+                      const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    diagnostic_log("error", stage, tag, fmt, ap);
+    va_end(ap);
+}
+
+void diagnostic_snapshot(const char *stage, const char *tag,
+                         const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    diagnostic_log("snapshot", stage, tag, fmt, ap);
+    va_end(ap);
 }
 
 void fmt_bytes(char *buf, size_t len, uint64_t b) {

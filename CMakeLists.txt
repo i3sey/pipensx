@@ -59,9 +59,12 @@ set(CORE_SOURCES
 
 set(APP_SOURCES
     ${CORE_SOURCES}
+    src/app/app_settings.cpp
     src/app/catalog_service.cpp
+    src/app/catalog_presentation.cpp
     src/app/download_manager.cpp
     src/app/game_metadata_service.cpp
+    src/app/installed_title_service.cpp
     src/app/magnet_resolver.cpp
     src/install/package_stream.cpp
     src/install/install_backend_switch.cpp
@@ -90,6 +93,7 @@ target_include_directories(pipensx PRIVATE
 target_compile_definitions(pipensx PRIVATE
     __SWITCH__
     USE_MBEDTLS
+    PIPENSX_VERSION="${PROJECT_VERSION}"
 )
 target_compile_options(pipensx PRIVATE
     -Wall
@@ -117,6 +121,10 @@ file(COPY
 file(COPY
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/borealis/resources/material
     DESTINATION ${ROMFS_DIR}
+)
+file(COPY
+    ${CMAKE_CURRENT_SOURCE_DIR}/vendor/borealis/resources/i18n/en-US
+    DESTINATION ${ROMFS_DIR}/i18n
 )
 file(GLOB_RECURSE CATALOG_ROMFS_FILES CONFIGURE_DEPENDS
     ${CMAKE_CURRENT_SOURCE_DIR}/resources/catalog/*

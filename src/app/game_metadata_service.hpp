@@ -54,6 +54,7 @@ public:
     bool loadImage(const std::string& url, std::vector<uint8_t>& bytes,
                    std::string& error) const;
     void requestImage(const std::string& url, ImageCallback callback) const;
+    bool clearImageCache(std::string& error) const;
 
     size_t size() const { return byHash_.size(); }
 

@@ -1,7 +1,10 @@
+#include "app/app_settings.hpp"
 #include "app/download_manager.hpp"
 #include "app/catalog_service.hpp"
+#include "app/catalog_presentation.hpp"
 #include "app/magnet_resolver.hpp"
 #include "app/game_metadata_service.hpp"
+#include "app/installed_title_service.hpp"
 #include "core/antizapret.h"
 #include "platform/switch_crashlog.h"
 
@@ -27,7 +30,9 @@ extern "C" {
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <unistd.h>
 #include <vector>
 
@@ -36,6 +41,13 @@ using pipensx::DownloadStatus;
 using pipensx::DownloadTask;
 using pipensx::CatalogEntry;
 using pipensx::CatalogService;
+using pipensx::AppSettings;
+using pipensx::AppSettingsData;
+using pipensx::CatalogFilter;
+using pipensx::InstalledTitle;
+using pipensx::InstalledTitleService;
+using pipensx::PreferredAction;
+using pipensx::StreamSelection;
 using pipensx::GameMetadata;
 using pipensx::GameMetadataService;
 using pipensx::MagnetResolver;
@@ -47,23 +59,30 @@ FILE* gBorealisLog = nullptr;
 std::atomic<uint32_t> gCatalogTempSerial{0};
 constexpr const char* TelemetryFlagPath =
     "sdmc:/switch/pipensx/throughput_telemetry.enabled";
+constexpr const char* SettingsPath =
+    "sdmc:/switch/pipensx/settings.json";
+constexpr const char* LogPath =
+    "sdmc:/switch/pipensx/pipensx.log";
 
-bool telemetryFlagEnabled() {
-    struct stat st {};
-    return stat(TelemetryFlagPath, &st) == 0;
+void openBorealisLog() {
+    if (gBorealisLog)
+        return;
+    gBorealisLog = std::fopen(LogPath, "a");
+    if (gBorealisLog) {
+        brls::Logger::setLogOutput(gBorealisLog);
+        brls::Logger::setLogLevel(brls::LogLevel::LOG_DEBUG);
+    }
 }
 
-bool persistTelemetryFlag(bool enabled) {
-    if (!enabled)
-        return unlink(TelemetryFlagPath) == 0 || errno == ENOENT;
-    FILE* file = std::fopen(TelemetryFlagPath, "wb");
-    if (!file)
-        return false;
-    static const char marker[] = "enabled\n";
-    bool ok = std::fwrite(marker, 1, sizeof(marker) - 1, file) ==
-              sizeof(marker) - 1;
-    if (std::fclose(file) != 0)
-        ok = false;
+bool clearApplicationLog() {
+    if (gBorealisLog) {
+        std::fflush(gBorealisLog);
+        brls::Logger::setLogOutput(nullptr);
+        std::fclose(gBorealisLog);
+        gBorealisLog = nullptr;
+    }
+    bool ok = log_clear() != 0;
+    openBorealisLog();
     return ok;
 }
 
@@ -996,8 +1015,10 @@ void FileDataSource::didSelectRowAt(brls::RecyclerFrame*,
 
 class MainView : public brls::Box {
 public:
-    MainView(DownloadManager* manager, GameMetadataService* metadata)
-        : brls::Box(brls::Axis::COLUMN), manager_(manager), metadata_(metadata) {
+    MainView(DownloadManager* manager, GameMetadataService* metadata,
+             AppSettings* settings)
+        : brls::Box(brls::Axis::COLUMN), manager_(manager), metadata_(metadata),
+          settings_(settings) {
         recycler_ = new brls::RecyclerFrame();
         recycler_->setGrow(1);
         recycler_->setPadding(6, 32, 6, 32);
@@ -1050,7 +1071,17 @@ public:
 private:
     void refresh() {
         auto next = manager_->snapshot();
-        bool structureChanged = !initialized_ || next.size() != tasks_.size();
+        if (settings_ && !settings_->get().showCompletedDownloads) {
+            next.erase(std::remove_if(next.begin(), next.end(),
+                [](const DownloadTask& task) {
+                    return task.status == DownloadStatus::Completed ||
+                           task.status == DownloadStatus::Installed;
+                }), next.end());
+        }
+        uint64_t settingsGeneration = settings_ ? settings_->generation() : 0;
+        bool settingsChanged = settingsGeneration != settingsGeneration_;
+        bool structureChanged = !initialized_ || settingsChanged ||
+                                next.size() != tasks_.size();
         bool changed = structureChanged;
         if (!structureChanged) {
             for (size_t i = 0; i < next.size(); ++i) {
@@ -1091,6 +1122,7 @@ private:
             focusedTaskId =
                 dataSource_->taskIdAt(focusedCell->getIndexPath());
         tasks_ = std::move(next);
+        settingsGeneration_ = settingsGeneration;
         initialized_ = true;
         dataSource_->setTasks(tasks_);
         recycler_->setDefaultCellFocus(
@@ -1110,12 +1142,14 @@ private:
 
     DownloadManager* manager_;
     GameMetadataService* metadata_;
+    AppSettings* settings_;
     brls::RecyclerFrame* recycler_;
     DownloadDataSource* dataSource_;
     brls::RepeatingTimer timer_;
     std::vector<DownloadTask> tasks_;
     bool initialized_ = false;
     bool fastRefresh_ = false;
+    uint64_t settingsGeneration_ = 0;
 };
 
 void DownloadDataSource::setTasks(std::vector<DownloadTask> tasks) {
@@ -1265,7 +1299,7 @@ public:
         thumb_->addView(image_);
         addView(thumb_);
 
-        // Right: title + badge on top, size/date underneath.
+        // Right: title + state on top, content classification underneath.
         auto* right = new brls::Box(brls::Axis::COLUMN);
         right->setGrow(1);
         right->setJustifyContent(brls::JustifyContent::CENTER);
@@ -1290,16 +1324,28 @@ public:
         sub_->setMarginTop(6);
         sub_->setTextColor(nvgRGB(160, 160, 170));
 
+        auto* metaRow = new brls::Box(brls::Axis::ROW);
+        metaRow->setAlignItems(brls::AlignItems::CENTER);
+        contentBadge_ = new brls::Label();
+        contentBadge_->setSingleLine(true);
+        contentBadge_->setFontSize(15);
+        contentBadge_->setTextColor(nvgRGB(100, 205, 145));
+        contentBadge_->setMarginRight(14);
+        metaRow->addView(contentBadge_);
+        metaRow->addView(sub_);
+
         right->addView(top);
-        right->addView(sub_);
+        right->addView(metaRow);
         addView(right);
     }
 
-    void setEntry(const CatalogEntry& entry, const std::string& badge,
+    void setEntry(const CatalogEntry& entry, const std::string& stateBadge,
+                  const std::string& contentBadge,
                   const std::string& iconUrl, GameMetadataService* service) {
         title_->setText(entry.title);
         placeholder_->setText(placeholderLetter(entry.title));
-        badge_->setText(badge);
+        badge_->setText(stateBadge);
+        contentBadge_->setText(contentBadge);
         std::string sub = entry.size ? formatBytes(entry.size) : "Unknown size";
         sub += "   " + formatCatalogDate(entry.publishedAt);
         sub_->setText(sub);
@@ -1312,6 +1358,7 @@ private:
     AsyncRgbaImage* image_;
     brls::Label* title_;
     brls::Label* badge_;
+    brls::Label* contentBadge_;
     brls::Label* sub_;
     std::string currentIconUrl_;
     std::shared_ptr<ImageRequestState> imageState_ =
@@ -1341,12 +1388,14 @@ public:
     explicit CatalogDataSource(CatalogView* owner) : owner_(owner) {}
 
     void setEntries(std::vector<CatalogEntry> entries,
-                    std::vector<std::string> badges,
+                    std::vector<std::string> stateBadges,
+                    std::vector<std::string> contentBadges,
                     std::vector<std::string> gameNames,
                     std::vector<std::string> iconUrls,
                     GameMetadataService* metadata) {
         entries_ = std::move(entries);
-        badges_ = std::move(badges);
+        stateBadges_ = std::move(stateBadges);
+        contentBadges_ = std::move(contentBadges);
         gameNames_ = std::move(gameNames);
         iconUrls_ = std::move(iconUrls);
         metadata_ = metadata;
@@ -1376,7 +1425,10 @@ public:
         if (row < gameNames_.size() && !gameNames_[row].empty())
             display.title = gameNames_[row];
         cell->setEntry(display,
-                       row < badges_.size() ? badges_[row] : std::string(),
+                       row < stateBadges_.size() ? stateBadges_[row]
+                                                 : std::string(),
+                       row < contentBadges_.size() ? contentBadges_[row]
+                                                   : std::string(),
                        row < iconUrls_.size() ? iconUrls_[row] : std::string(),
                        metadata_);
         return cell;
@@ -1386,7 +1438,8 @@ public:
 private:
     CatalogView* owner_;
     std::vector<CatalogEntry> entries_;
-    std::vector<std::string> badges_;
+    std::vector<std::string> stateBadges_;
+    std::vector<std::string> contentBadges_;
     std::vector<std::string> gameNames_;
     std::vector<std::string> iconUrls_;
     GameMetadataService* metadata_ = nullptr;
@@ -1603,9 +1656,11 @@ public:
 
     TorrentSelectionActivity(DownloadManager* manager, std::string path,
                              pipensx::TorrentPreview preview,
-                             TransferMode preferred)
+                             TransferMode preferred,
+                             StreamSelection initialSelection)
         : manager_(manager), path_(std::move(path)),
-          preview_(std::move(preview)), preferred_(preferred) {
+          preview_(std::move(preview)), preferred_(preferred),
+          initialSelection_(initialSelection) {
         auto* content = new brls::Box(brls::Axis::COLUMN);
         content->setGrow(1);
         content->setPadding(24, 38, 24, 34);
@@ -1622,7 +1677,7 @@ public:
         summary_->setMarginTop(8);
         summary_->setMarginBottom(14);
         summary_->setTextColor(nvgRGB(170, 170, 180));
-        summary_->setText("A toggles a file. Default keeps everything selected.");
+        summary_->setText("A toggles a file. Selection follows Settings.");
         content->addView(summary_);
 
         recycler_ = new brls::RecyclerFrame();
@@ -1722,7 +1777,9 @@ private:
             entry.path = file.path;
             entry.length = file.length;
             entry.package = file.package;
-            entry.selected = true;
+            entry.selected = initialSelection_ == StreamSelection::AllFiles ||
+                             preferred_ != TransferMode::StreamInstall ||
+                             file.package;
             entries.push_back(std::move(entry));
         }
         dataSource_->setEntries(std::move(entries));
@@ -1796,6 +1853,7 @@ private:
     std::string path_;
     pipensx::TorrentPreview preview_;
     TransferMode preferred_;
+    StreamSelection initialSelection_;
     brls::AppletFrame* frame_ = nullptr;
     brls::Label* title_ = nullptr;
     brls::Label* summary_ = nullptr;
@@ -1844,13 +1902,16 @@ public:
 
     GameDetailActivity(CatalogEntry entry, std::string lastFailure,
                        DownloadManager* manager, GameMetadataService* metadata,
+                       InstalledTitleService* installed, AppSettings* settings,
                        FailureCallback onFailure, ChangeCallback onChange)
         : entry_(std::move(entry)), lastFailure_(std::move(lastFailure)),
-          manager_(manager), metadata_(metadata),
+          manager_(manager), metadata_(metadata), installed_(installed),
+          settings_(settings),
           onFailure_(std::move(onFailure)), onChange_(std::move(onChange)),
           alive_(std::make_shared<std::atomic<bool>>(true)),
           cancelled_(std::make_shared<std::atomic<bool>>(false)) {
         const GameMetadata* found = metadata_->findByInfoHash(entry_.infoHash);
+        titleId_ = found ? found->titleId : std::string();
 
         auto* content = new brls::Box(brls::Axis::COLUMN);
         content->setPadding(24, 40, 24, 40);
@@ -1885,8 +1946,11 @@ public:
         refreshButtons();
         timer_.setCallback([this] { refreshButtons(); });
         timer_.start(500);
-        if (primary_)
-            brls::Application::giveFocus(primary_);
+        brls::Button* focus = settings_ &&
+            settings_->get().preferredAction == PreferredAction::Download
+            ? secondary_ : primary_;
+        if (focus)
+            brls::Application::giveFocus(focus);
     }
 
 private:
@@ -1926,29 +1990,37 @@ private:
         actions->setMarginTop(20);
         actions->setMarginBottom(8);
 
+        auto* row = new brls::Box(brls::Axis::ROW);
+
+        secondary_ = new brls::Button();
+        secondary_->setStyle(settings_ &&
+            settings_->get().preferredAction == PreferredAction::Download
+            ? &brls::BUTTONSTYLE_PRIMARY : &brls::BUTTONSTYLE_DEFAULT);
+        secondary_->setFontSize(21);
+        secondary_->setHeight(64);
+        secondary_->setGrow(1);
+        secondary_->setMarginRight(12);
+        secondary_->setText("Download");
+        secondary_->registerClickAction([this](brls::View*) {
+            onSecondary();
+            return true;
+        });
+        row->addView(secondary_);
+
         primary_ = new brls::Button();
-        primary_->setStyle(&brls::BUTTONSTYLE_PRIMARY);
-        primary_->setFontSize(23);
+        primary_->setStyle(!settings_ ||
+            settings_->get().preferredAction == PreferredAction::StreamInstall
+            ? &brls::BUTTONSTYLE_PRIMARY : &brls::BUTTONSTYLE_DEFAULT);
+        primary_->setFontSize(21);
         primary_->setHeight(64);
-        primary_->setMarginBottom(12);
+        primary_->setGrow(1);
         primary_->setText("Stream install");
         primary_->registerClickAction([this](brls::View*) {
             onPrimary();
             return true;
         });
-        actions->addView(primary_);
-
-        secondary_ = new brls::Button();
-        secondary_->setStyle(&brls::BUTTONSTYLE_DEFAULT);
-        secondary_->setFontSize(20);
-        secondary_->setHeight(56);
-        secondary_->setText("Download only");
-        secondary_->registerClickAction([this](brls::View*) {
-            if (!busy_)
-                startInstall(TransferMode::DownloadOnly);
-            return true;
-        });
-        actions->addView(secondary_);
+        row->addView(primary_);
+        actions->addView(row);
 
         statusLabel_ = new brls::Label();
         statusLabel_->setFontSize(16);
@@ -1978,17 +2050,6 @@ private:
                 desc->setText(shortDescription(text));
                 content->addView(desc);
             }
-            if (!found->screenshots.empty()) {
-                auto* shots = new brls::Label();
-                shots->setFontSize(16);
-                shots->setMarginTop(18);
-                shots->setMarginBottom(8);
-                shots->setTextColor(nvgRGB(190, 190, 200));
-                shots->setText("Screenshot");
-                content->addView(shots);
-                appendAsyncImage(content, metadata_,
-                                 found->screenshots.front(), 170);
-            }
         } else {
             auto* missing = new brls::Label();
             missing->setFontSize(17);
@@ -1996,6 +2057,36 @@ private:
             missing->setText("No game artwork match yet. Install still works "
                              "from the catalog release.");
             content->addView(missing);
+        }
+
+        std::vector<std::string> screenshots =
+            pipensx::mergeScreenshotUrls(found, entry_, 6);
+        if (!screenshots.empty()) {
+            auto* shots = new brls::Label();
+            shots->setFontSize(16);
+            shots->setMarginTop(18);
+            shots->setMarginBottom(8);
+            shots->setTextColor(nvgRGB(190, 190, 200));
+            shots->setText("Screenshots");
+            content->addView(shots);
+
+            auto* rail = new brls::Box(brls::Axis::ROW);
+            rail->setHeight(180);
+            for (const std::string& url : screenshots) {
+                auto* image = new AsyncRgbaImage();
+                image->setWidth(300);
+                image->setHeight(170);
+                image->setMarginRight(12);
+                image->setCornerRadius(6);
+                image->setFocusable(true);
+                image->setScalingType(brls::ImageScalingType::FIT);
+                loadImageInto(image, metadata_, url);
+                rail->addView(image);
+            }
+            auto* gallery = new brls::HScrollingFrame();
+            gallery->setHeight(190);
+            gallery->setContentView(rail);
+            content->addView(gallery);
         }
 
         auto* size = new brls::Label();
@@ -2081,24 +2172,61 @@ private:
             return;
         const DownloadTask* task = currentTask();
         if (task) {
+            operationMessage_.clear();
             primary_->setText(installButtonLabel(*task));
-            primary_->setState(brls::ButtonState::DISABLED);
-            secondary_->setState(brls::ButtonState::DISABLED);
+            primary_->setState(
+                task->status == DownloadStatus::Paused ||
+                task->status == DownloadStatus::Error
+                ? brls::ButtonState::ENABLED
+                : brls::ButtonState::DISABLED);
+            if (task->status == DownloadStatus::Paused ||
+                task->status == DownloadStatus::Error)
+                primary_->setText("Resume");
+            secondary_->setText("View download");
+            secondary_->setState(brls::ButtonState::ENABLED);
             if (task->status == DownloadStatus::Error && !task->error.empty())
                 statusLabel_->setText(task->error);
         } else {
             primary_->setText("Stream install");
             primary_->setState(brls::ButtonState::ENABLED);
+            secondary_->setText("Download");
             secondary_->setState(brls::ButtonState::ENABLED);
+            if (!operationMessage_.empty())
+                statusLabel_->setText(operationMessage_);
+            else if (installed_ && installed_->contains(titleId_))
+                statusLabel_->setText(
+                    "Installed on this console. You can still install updates or DLC.");
+            else
+                statusLabel_->setText(
+                    "Stream install adds packages as they arrive.");
         }
     }
 
     void onPrimary() {
         if (busy_)
             return;
+        const DownloadTask* task = currentTask();
+        if (task) {
+            if (task->status == DownloadStatus::Paused ||
+                task->status == DownloadStatus::Error)
+                manager_->resume(task->id);
+            return;
+        }
         // Default to Install; the actual mode is chosen after resolve from the
         // package count, so a base-only torrent gracefully falls back.
         startInstall(TransferMode::StreamInstall);
+    }
+
+    void onSecondary() {
+        if (busy_)
+            return;
+        const DownloadTask* task = currentTask();
+        if (task) {
+            brls::Application::pushActivity(
+                new DetailsActivity(task->id, manager_));
+            return;
+        }
+        startInstall(TransferMode::DownloadOnly);
     }
 
     // One-tap: resolve the magnet inline, then import immediately (no second
@@ -2108,6 +2236,7 @@ private:
         if (busy_)
             return;
         busy_ = true;
+        operationMessage_.clear();
         cancelled_->store(false);
         primary_->setState(brls::ButtonState::DISABLED);
         secondary_->setState(brls::ButtonState::DISABLED);
@@ -2121,7 +2250,10 @@ private:
                           catalogLower(entry_.infoHash) + "_" +
                           std::to_string(serial) + ".torrent";
         std::string magnet = entry_.magnetUri;
-        brls::async([this, alive, cancelled, magnet, tmp, preferred] {
+        std::string telemetryTag = catalogLower(entry_.infoHash);
+        uint64_t startedMs = now_ms();
+        brls::async([this, alive, cancelled, magnet, tmp, preferred,
+                     telemetryTag, startedMs] {
             std::string err;
             MagnetResolver resolver;
             auto progress = [this, alive, last = std::string()](
@@ -2155,6 +2287,10 @@ private:
             };
             bool ok = resolver.resolveToFile(magnet, tmp, *cancelled,
                                              progress, err);
+            telemetry_log("magnet", telemetryTag.c_str(),
+                          "event=resolve ok=%d cancelled=%d duration_ms=%llu",
+                          ok ? 1 : 0, cancelled->load() ? 1 : 0,
+                          (unsigned long long)(now_ms() - startedMs));
             brls::sync([this, alive, ok, err, tmp, preferred] {
                 if (!alive->load()) {
                     ::unlink(tmp.c_str());
@@ -2166,10 +2302,10 @@ private:
                     std::string reason = classifyResolveFailure(err);
                     if (onFailure_)
                         onFailure_(hash, reason);
-                    statusLabel_->setText(reason);
-                    primary_->setText("Stream install");
-                    primary_->setState(brls::ButtonState::ENABLED);
-                    secondary_->setState(brls::ButtonState::ENABLED);
+                    diagnostic_error("magnet", hash.c_str(), "error=%s",
+                                     err.c_str());
+                    operationMessage_ = reason;
+                    refreshButtons();
                     brls::Application::notify(err);
                     ::unlink(tmp.c_str());
                     return;
@@ -2185,17 +2321,19 @@ private:
         pipensx::TorrentPreview preview;
         std::string error;
         if (!DownloadManager::previewTorrent(path, preview, error)) {
-            statusLabel_->setText(error);
-            primary_->setText("Stream install");
-            primary_->setState(brls::ButtonState::ENABLED);
-            secondary_->setState(brls::ButtonState::ENABLED);
+            diagnostic_error("catalog", "preview", "error=%s",
+                             error.c_str());
+            operationMessage_ = error;
+            refreshButtons();
             brls::Application::notify(error);
             ::unlink(path.c_str());
             return;
         }
         if (preview.files.size() > 1 && preview.packageCount > 0) {
             brls::Application::pushActivity(new TorrentSelectionActivity(
-                manager_, path, std::move(preview), preferred));
+                manager_, path, std::move(preview), preferred,
+                settings_ ? settings_->get().streamSelection
+                          : StreamSelection::AllFiles));
             return;
         }
         TransferMode mode = preview.packageCount ? preferred
@@ -2217,10 +2355,9 @@ private:
         } else {
             log_msg("[catalog] import failed from '%s': %s\n",
                     path.c_str(), err.c_str());
-            statusLabel_->setText(err);
-            primary_->setText("Stream install");
-            primary_->setState(brls::ButtonState::ENABLED);
-            secondary_->setState(brls::ButtonState::ENABLED);
+            diagnostic_error("catalog", "import", "error=%s", err.c_str());
+            operationMessage_ = err;
+            refreshButtons();
             brls::Application::notify(err);
         }
         ::unlink(path.c_str());
@@ -2231,6 +2368,10 @@ private:
     std::string lastFailure_;
     DownloadManager* manager_;
     GameMetadataService* metadata_;
+    InstalledTitleService* installed_;
+    AppSettings* settings_;
+    std::string titleId_;
+    std::string operationMessage_;
     FailureCallback onFailure_;
     ChangeCallback onChange_;
     std::shared_ptr<std::atomic<bool>> alive_;
@@ -2247,9 +2388,10 @@ private:
 class CatalogView : public brls::Box {
 public:
     CatalogView(DownloadManager* manager, CatalogService* catalog,
-                GameMetadataService* metadata)
+                GameMetadataService* metadata,
+                InstalledTitleService* installed, AppSettings* settings)
         : brls::Box(brls::Axis::COLUMN), manager_(manager), catalog_(catalog),
-          metadata_(metadata),
+          metadata_(metadata), installed_(installed), settings_(settings),
           alive_(std::make_shared<std::atomic<bool>>(true)),
           cancelled_(std::make_shared<std::atomic<bool>>(false)) {
         recycler_ = new brls::RecyclerFrame();
@@ -2287,11 +2429,22 @@ public:
             refreshCatalog();
             return true;
         });
+        registerAction("All / Games", brls::BUTTON_LB, [this](brls::View*) {
+            toggleFilter();
+            return true;
+        });
+        observedSettingsGeneration_ = settings_ ? settings_->generation() : 0;
+        taskSignature_ = taskSignature();
+        timer_.setCallback([this] { refreshLiveState(); });
+        timer_.start(1000);
+        if (settings_ && settings_->get().refreshCatalogOnLaunch)
+            refreshCatalog();
     }
 
     ~CatalogView() override {
         alive_->store(false);
         cancelled_->store(true);
+        timer_.stop();
     }
 
     void openSearchKeyboard() {
@@ -2324,6 +2477,7 @@ public:
         auto onChange = [this] { rebuildEntries(); };
         brls::Application::pushActivity(new GameDetailActivity(
             std::move(entry), std::move(lastFailure), manager_, metadata_,
+            installed_, settings_,
             std::move(onFailure), std::move(onChange)));
     }
 
@@ -2351,8 +2505,16 @@ private:
         for (const CatalogEntry& entry : catalog_->entries()) {
             if (entry.isHiddenByDefault())
                 continue;
-            if (!needle.empty() &&
-                lowerAscii(entry.title).find(needle) == std::string::npos)
+            const GameMetadata* meta = metadata_->findByInfoHash(entry.infoHash);
+            if (settings_ &&
+                settings_->get().catalogFilter == CatalogFilter::Games &&
+                !meta)
+                continue;
+            bool matches = needle.empty() ||
+                lowerAscii(entry.title).find(needle) != std::string::npos ||
+                (meta && lowerAscii(meta->name).find(needle) !=
+                             std::string::npos);
+            if (!matches)
                 continue;
             visible.push_back(entry);
         }
@@ -2373,29 +2535,33 @@ private:
                 });
         }
 
-        std::vector<std::string> badges;
+        std::vector<std::string> stateBadges;
+        std::vector<std::string> contentBadges;
         std::vector<std::string> gameNames;
         std::vector<std::string> iconUrls;
-        badges.reserve(visible.size());
+        stateBadges.reserve(visible.size());
+        contentBadges.reserve(visible.size());
         gameNames.reserve(visible.size());
         iconUrls.reserve(visible.size());
         for (const CatalogEntry& entry : visible) {
             std::string hash = lowerAscii(entry.infoHash);
             auto it = added.find(hash);
             if (it != added.end()) {
-                badges.push_back(badgeForStatus(it->second));
-            } else {
-                auto fail = catalogFailures_.find(hash);
-                badges.push_back(fail == catalogFailures_.end()
-                    ? badgeForCatalogHealth(entry) : fail->second);
-            }
+                stateBadges.push_back(badgeForStatus(it->second));
+            } else
+                stateBadges.emplace_back();
             const GameMetadata* meta = metadata_->findByInfoHash(entry.infoHash);
+            if (it == added.end() && meta && installed_ &&
+                installed_->contains(meta->titleId))
+                stateBadges.back() = "Installed";
+            contentBadges.emplace_back(pipensx::catalogContentBadge(meta));
             gameNames.push_back(meta ? meta->name : std::string());
             iconUrls.push_back(meta ? meta->iconUrl : std::string());
         }
 
         size_t count = visible.size();
-        dataSource_->setEntries(std::move(visible), std::move(badges),
+        dataSource_->setEntries(std::move(visible), std::move(stateBadges),
+                                std::move(contentBadges),
                                 std::move(gameNames), std::move(iconUrls),
                                 metadata_);
         dataSource_->setMessage(query_.empty()
@@ -2406,8 +2572,90 @@ private:
         countText_ = query_.empty()
             ? withThousands(count) + (count == 1 ? " release" : " releases")
             : withThousands(count) + (count == 1 ? " match" : " matches");
-        if (!busy_)
-            status_->setText(countText_);
+        if (!busy_) {
+            std::string filter = settings_ &&
+                settings_->get().catalogFilter == CatalogFilter::Games
+                ? "Games" : "All";
+            status_->setText(countText_ + "   Filter: " + filter);
+        }
+    }
+
+    void toggleFilter() {
+        if (!settings_ || busy_)
+            return;
+        AppSettingsData values = settings_->get();
+        values.catalogFilter = values.catalogFilter == CatalogFilter::All
+            ? CatalogFilter::Games : CatalogFilter::All;
+        std::string error;
+        if (!settings_->update(values, error)) {
+            diagnostic_error("settings", "catalog_filter", "error=%s",
+                             error.c_str());
+            brls::Application::notify(error);
+            return;
+        }
+        observedSettingsGeneration_ = settings_->generation();
+        rebuildEntries();
+        brls::Application::notify(values.catalogFilter == CatalogFilter::Games
+            ? "Showing game releases." : "Showing all releases.");
+    }
+
+    uint64_t taskSignature() const {
+        uint64_t signature = 1469598103934665603ULL;
+        for (const DownloadTask& task : manager_->snapshot()) {
+            for (unsigned char c : task.id)
+                signature = (signature ^ c) * 1099511628211ULL;
+            signature = (signature ^ static_cast<uint64_t>(task.status)) *
+                        1099511628211ULL;
+        }
+        return signature;
+    }
+
+    void refreshLiveState() {
+        if (busy_)
+            return;
+        bool changed = false;
+        if (settings_ && settings_->generation() !=
+                             observedSettingsGeneration_) {
+            observedSettingsGeneration_ = settings_->generation();
+            changed = true;
+        }
+        uint64_t signature = taskSignature();
+        if (signature != taskSignature_) {
+            taskSignature_ = signature;
+            changed = true;
+            bool installedFinished = false;
+            for (const DownloadTask& task : manager_->snapshot())
+                installedFinished = installedFinished ||
+                    task.status == DownloadStatus::Installed;
+            if (installedFinished && installed_ &&
+                installedRefreshSignature_ != signature) {
+                installedRefreshSignature_ = signature;
+                refreshInstalledAsync();
+            }
+        }
+        if (changed)
+            rebuildEntries();
+    }
+
+    void refreshInstalledAsync() {
+        if (installedRefreshInFlight_)
+            return;
+        installedRefreshInFlight_ = true;
+        auto alive = alive_;
+        InstalledTitleService* installed = installed_;
+        brls::async([this, alive, installed] {
+            std::string error;
+            bool ok = installed->refresh(error);
+            brls::sync([this, alive, ok, error] {
+                if (!alive->load())
+                    return;
+                installedRefreshInFlight_ = false;
+                if (!ok)
+                    diagnostic_error("installed", "auto_refresh", "error=%s",
+                                     error.c_str());
+                rebuildEntries();
+            });
+        });
     }
 
     static std::string withThousands(size_t value) {
@@ -2458,14 +2706,22 @@ private:
         brls::Application::notify("Updating catalog from GitHub...");
         auto alive = alive_;
         CatalogService* catalog = catalog_;
-        brls::async([this, alive, catalog] {
+        uint64_t startedMs = now_ms();
+        brls::async([this, alive, catalog, startedMs] {
             std::string err;
             bool ok = catalog->refresh(err);
+            telemetry_log("catalog", "-",
+                          "event=refresh ok=%d duration_ms=%llu entries=%zu",
+                          ok ? 1 : 0,
+                          (unsigned long long)(now_ms() - startedMs),
+                          catalog->entries().size());
             brls::sync([this, alive, ok, err] {
                 if (!alive->load())
                     return;
                 busy_ = false;
                 if (!ok) {
+                    diagnostic_error("catalog", "refresh", "error=%s",
+                                     err.c_str());
                     brls::Application::notify(err);
                     return;
                 }
@@ -2480,6 +2736,8 @@ private:
     DownloadManager* manager_;
     CatalogService* catalog_;
     GameMetadataService* metadata_;
+    InstalledTitleService* installed_;
+    AppSettings* settings_;
     brls::RecyclerFrame* recycler_;
     CatalogDataSource* dataSource_;
     brls::Label* status_;
@@ -2490,6 +2748,11 @@ private:
     std::string countText_;
     SortMode sort_ = SortMode::Latest;
     bool busy_ = false;
+    brls::RepeatingTimer timer_;
+    uint64_t observedSettingsGeneration_ = 0;
+    uint64_t taskSignature_ = 0;
+    uint64_t installedRefreshSignature_ = 0;
+    bool installedRefreshInFlight_ = false;
 };
 
 void CatalogDataSource::didSelectRowAt(brls::RecyclerFrame*,
@@ -2500,68 +2763,527 @@ void CatalogDataSource::didSelectRowAt(brls::RecyclerFrame*,
         owner_->onEntrySelected(index.row);
 }
 
+class InstalledCell : public brls::RecyclerCell {
+public:
+    InstalledCell() {
+        setFocusable(true);
+        setAxis(brls::Axis::ROW);
+        setAlignItems(brls::AlignItems::CENTER);
+        setPadding(10, 18, 10, 18);
+        setHeight(92);
+
+        image_ = new AsyncRgbaImage();
+        image_->setWidth(64);
+        image_->setHeight(64);
+        image_->setCornerRadius(8);
+        image_->setMarginRight(16);
+        image_->setScalingType(brls::ImageScalingType::FILL);
+        addView(image_);
+
+        auto* labels = new brls::Box(brls::Axis::COLUMN);
+        labels->setGrow(1);
+        title_ = new brls::Label();
+        title_->setSingleLine(true);
+        title_->setFontSize(21);
+        subtitle_ = new brls::Label();
+        subtitle_->setSingleLine(true);
+        subtitle_->setFontSize(15);
+        subtitle_->setMarginTop(6);
+        subtitle_->setTextColor(nvgRGB(160, 160, 170));
+        labels->addView(title_);
+        labels->addView(subtitle_);
+        addView(labels);
+    }
+
+    void setTitle(const InstalledTitle& title,
+                  GameMetadataService* metadata) {
+        title_->setText(title.name);
+        std::string subtitle = title.publisher;
+        if (!subtitle.empty())
+            subtitle += "   ";
+        subtitle += title.titleId;
+        subtitle_->setText(subtitle);
+        setArtworkUrl(image_, metadata, title.iconPath, currentIconPath_,
+                      imageState_);
+    }
+
+private:
+    AsyncRgbaImage* image_ = nullptr;
+    brls::Label* title_ = nullptr;
+    brls::Label* subtitle_ = nullptr;
+    std::string currentIconPath_;
+    std::shared_ptr<ImageRequestState> imageState_ =
+        std::make_shared<ImageRequestState>();
+};
+
+class InstalledDataSource : public brls::RecyclerDataSource {
+public:
+    explicit InstalledDataSource(GameMetadataService* metadata)
+        : metadata_(metadata) {}
+
+    void setTitles(std::vector<InstalledTitle> titles) {
+        titles_ = std::move(titles);
+    }
+
+    int numberOfRows(brls::RecyclerFrame*, int) override {
+        return titles_.empty() ? 1 : static_cast<int>(titles_.size());
+    }
+
+    brls::RecyclerCell* cellForRow(brls::RecyclerFrame* recycler,
+                                    brls::IndexPath index) override {
+        if (titles_.empty()) {
+            auto* cell = static_cast<TextMessageCell*>(
+                recycler->dequeueReusableCell("Message"));
+            cell->setMessage("No installed applications found. Press R to refresh.");
+            return cell;
+        }
+        auto* cell = static_cast<InstalledCell*>(
+            recycler->dequeueReusableCell("Installed"));
+        cell->setTitle(titles_[static_cast<size_t>(index.row)], metadata_);
+        return cell;
+    }
+
+private:
+    GameMetadataService* metadata_;
+    std::vector<InstalledTitle> titles_;
+};
+
+class InstalledView : public brls::Box {
+public:
+    InstalledView(InstalledTitleService* installed, DownloadManager* manager,
+                  GameMetadataService* metadata)
+        : brls::Box(brls::Axis::COLUMN), installed_(installed),
+          manager_(manager), alive_(std::make_shared<std::atomic<bool>>(true)) {
+        status_ = new brls::Label();
+        status_->setFontSize(15);
+        status_->setMarginTop(10);
+        status_->setMarginLeft(34);
+        status_->setTextColor(nvgRGB(140, 140, 150));
+        addView(status_);
+
+        recycler_ = new brls::RecyclerFrame();
+        recycler_->setGrow(1);
+        recycler_->setPadding(6, 32, 6, 32);
+        recycler_->estimatedRowHeight = 92;
+        recycler_->registerCell("Installed", [] { return new InstalledCell(); });
+        recycler_->registerCell("Message", [] { return new TextMessageCell(); });
+        dataSource_ = new InstalledDataSource(metadata);
+        recycler_->setDataSource(dataSource_);
+        addView(recycler_);
+        reload();
+
+        registerAction("Refresh", brls::BUTTON_RB, [this](brls::View*) {
+            refresh();
+            return true;
+        });
+    }
+
+    ~InstalledView() override { alive_->store(false); }
+
+private:
+    bool hasActiveStreamInstall() const {
+        for (const DownloadTask& task : manager_->snapshot()) {
+            if (task.mode != TransferMode::StreamInstall)
+                continue;
+            if (task.status == DownloadStatus::Queued ||
+                task.status == DownloadStatus::Checking ||
+                task.status == DownloadStatus::Downloading ||
+                task.status == DownloadStatus::Installing ||
+                task.status == DownloadStatus::Committing ||
+                task.status == DownloadStatus::Verifying)
+                return true;
+        }
+        return false;
+    }
+
+    void reload() {
+        std::vector<InstalledTitle> titles = installed_->titles();
+        size_t count = titles.size();
+        dataSource_->setTitles(std::move(titles));
+        recycler_->reloadData();
+        status_->setText(std::to_string(count) +
+            (count == 1 ? " installed application" : " installed applications"));
+    }
+
+    void refresh() {
+        if (refreshing_)
+            return;
+        if (hasActiveStreamInstall()) {
+            brls::Application::notify(
+                "Installed games will refresh after streaming installation finishes.");
+            return;
+        }
+        refreshing_ = true;
+        status_->setText("Refreshing installed applications...");
+        auto alive = alive_;
+        InstalledTitleService* installed = installed_;
+        brls::async([this, alive, installed] {
+            std::string error;
+            bool ok = installed->refresh(error);
+            brls::sync([this, alive, ok, error] {
+                if (!alive->load())
+                    return;
+                refreshing_ = false;
+                if (!ok) {
+                    status_->setText(error);
+                    brls::Application::notify(error);
+                    return;
+                }
+                reload();
+            });
+        });
+    }
+
+    InstalledTitleService* installed_;
+    DownloadManager* manager_;
+    brls::Label* status_ = nullptr;
+    brls::RecyclerFrame* recycler_ = nullptr;
+    InstalledDataSource* dataSource_ = nullptr;
+    std::shared_ptr<std::atomic<bool>> alive_;
+    bool refreshing_ = false;
+};
+
 class SettingsView : public brls::Box {
 public:
-    SettingsView() : brls::Box(brls::Axis::COLUMN) {
-        setPadding(24);
+    SettingsView(AppSettings* settings, DownloadManager* manager,
+                 CatalogService* catalog, GameMetadataService* metadata,
+                 InstalledTitleService* installed)
+        : brls::Box(brls::Axis::COLUMN), settings_(settings), manager_(manager),
+          catalog_(catalog), metadata_(metadata), installed_(installed) {
+        auto* content = new brls::Box(brls::Axis::COLUMN);
+        content->setPadding(24, 34, 24, 34);
 
-        auto* title = new brls::Label();
-        title->setText("Diagnostics");
-        title->setFontSize(28);
-        title->setMarginBottom(10);
-        addView(title);
+        addSection(content, "Catalog");
+        catalogFilter_ = new brls::SelectorCell();
+        catalogFilter_->init("Visible releases", {"All", "Games"},
+            settings_->get().catalogFilter == CatalogFilter::Games ? 1 : 0,
+            [this](int selected) {
+                AppSettingsData values = settings_->get();
+                CatalogFilter previous = values.catalogFilter;
+                values.catalogFilter = selected == 1
+                    ? CatalogFilter::Games : CatalogFilter::All;
+                if (!persist(values, "catalog_filter"))
+                    catalogFilter_->setSelection(
+                        previous == CatalogFilter::Games ? 1 : 0, true);
+            });
+        content->addView(catalogFilter_);
 
+        refreshCatalog_ = new brls::BooleanCell();
+        refreshCatalog_->init("Refresh catalog on launch",
+            settings_->get().refreshCatalogOnLaunch,
+            [this](bool enabled) {
+                AppSettingsData values = settings_->get();
+                bool previous = values.refreshCatalogOnLaunch;
+                values.refreshCatalogOnLaunch = enabled;
+                if (!persist(values, "catalog_refresh"))
+                    refreshCatalog_->setOn(previous, false);
+            });
+        content->addView(refreshCatalog_);
+
+        addSection(content, "Downloads");
+        preferredAction_ = new brls::SelectorCell();
+        preferredAction_->init("Preferred catalog action",
+            {"Stream install", "Download"},
+            settings_->get().preferredAction == PreferredAction::Download
+                ? 1 : 0,
+            [this](int selected) {
+                AppSettingsData values = settings_->get();
+                PreferredAction previous = values.preferredAction;
+                values.preferredAction = selected == 1
+                    ? PreferredAction::Download
+                    : PreferredAction::StreamInstall;
+                if (!persist(values, "preferred_action"))
+                    preferredAction_->setSelection(
+                        previous == PreferredAction::Download ? 1 : 0, true);
+            });
+        content->addView(preferredAction_);
+
+        streamSelection_ = new brls::SelectorCell();
+        streamSelection_->init("Default streaming file selection",
+            {"All files", "NSP/NSZ only"},
+            settings_->get().streamSelection == StreamSelection::PackagesOnly
+                ? 1 : 0,
+            [this](int selected) {
+                AppSettingsData values = settings_->get();
+                StreamSelection previous = values.streamSelection;
+                values.streamSelection = selected == 1
+                    ? StreamSelection::PackagesOnly
+                    : StreamSelection::AllFiles;
+                if (!persist(values, "stream_selection"))
+                    streamSelection_->setSelection(
+                        previous == StreamSelection::PackagesOnly ? 1 : 0,
+                        true);
+            });
+        content->addView(streamSelection_);
+
+        showCompleted_ = new brls::BooleanCell();
+        showCompleted_->init("Show completed downloads",
+            settings_->get().showCompletedDownloads,
+            [this](bool enabled) {
+                AppSettingsData values = settings_->get();
+                bool previous = values.showCompletedDownloads;
+                values.showCompletedDownloads = enabled;
+                if (!persist(values, "show_completed"))
+                    showCompleted_->setOn(previous, false);
+            });
+        content->addView(showCompleted_);
+
+        addSection(content, "Diagnostics");
         auto* description = new brls::Label();
         description->setText(
-            "Collects rate-limited torrent, buffer, decoder and NCM metrics "
-            "every 5 seconds. Enable before reproducing slow installation.");
-        description->setFontSize(18);
-        description->setTextColor(nvgRGB(175, 175, 185));
-        description->setMarginBottom(18);
-        addView(description);
+            "Errors are always recorded. Extended mode adds rate-limited "
+            "torrent, buffer, decoder, image and NCM metrics every 5 seconds.");
+        description->setFontSize(16);
+        description->setTextColor(nvgRGB(170, 170, 180));
+        description->setMarginBottom(10);
+        content->addView(description);
 
-        toggle_ = new brls::BooleanCell();
-        toggle_->init("Throughput diagnostics", telemetry_enabled() != 0,
+        extendedTelemetry_ = new brls::BooleanCell();
+        extendedTelemetry_->init("Extended telemetry",
+            settings_->get().extendedTelemetry,
             [this](bool enabled) {
-                if (!persistTelemetryFlag(enabled)) {
-                    toggle_->setOn(!enabled, false);
-                    brls::Application::notify(
-                        "Unable to save the diagnostics setting.");
+                AppSettingsData values = settings_->get();
+                bool previous = values.extendedTelemetry;
+                values.extendedTelemetry = enabled;
+                if (!persist(values, "extended_telemetry")) {
+                    extendedTelemetry_->setOn(previous, false);
                     return;
                 }
                 telemetry_set_enabled(enabled ? 1 : 0);
                 brls::Application::notify(enabled
-                    ? "Throughput diagnostics enabled."
-                    : "Throughput diagnostics disabled.");
+                    ? "Extended telemetry enabled."
+                    : "Extended telemetry disabled.");
             });
-        addView(toggle_);
+        content->addView(extendedTelemetry_);
+
+        content->addView(actionCell("Capture diagnostic snapshot", "Write now",
+            [this] { captureSnapshot(); }));
+        content->addView(actionCell("Clear log", "32 MB rotation",
+            [this] { confirmClearLog(); }));
+        content->addView(actionCell("Clear artwork cache", "Downloaded images",
+            [this] { confirmClearArtwork(); }));
+        content->addView(actionCell("Reset settings", "Restore defaults",
+            [this] { confirmReset(); }));
 
         auto* path = new brls::Label();
-        path->setText("Log: sdmc:/switch/pipensx/pipensx.log");
-        path->setFontSize(17);
-        path->setTextColor(nvgRGB(150, 150, 160));
+        path->setText(std::string("Log: ") + LogPath);
+        path->setFontSize(15);
+        path->setTextColor(nvgRGB(145, 145, 155));
         path->setMarginTop(18);
-        addView(path);
+        content->addView(path);
+
+        auto* scroll = new brls::ScrollingFrame();
+        scroll->setGrow(1);
+        scroll->setContentView(content);
+        addView(scroll);
     }
 
 private:
-    brls::BooleanCell* toggle_ = nullptr;
+    static void addSection(brls::Box* content, const std::string& text) {
+        auto* title = new brls::Label();
+        title->setText(text);
+        title->setFontSize(25);
+        title->setMarginTop(14);
+        title->setMarginBottom(8);
+        content->addView(title);
+    }
+
+    static brls::DetailCell* actionCell(const std::string& title,
+                                        const std::string& detail,
+                                        std::function<void()> callback) {
+        auto* cell = new brls::DetailCell();
+        cell->setText(title);
+        cell->setDetailText(detail);
+        cell->registerClickAction(
+            [callback = std::move(callback)](brls::View*) {
+                callback();
+                return true;
+            });
+        return cell;
+    }
+
+    bool persist(const AppSettingsData& values, const char* tag) {
+        std::string error;
+        if (settings_->update(values, error))
+            return true;
+        diagnostic_error("settings", tag, "error=%s", error.c_str());
+        brls::Application::notify(error);
+        return false;
+    }
+
+    void applyValues() {
+        const AppSettingsData& values = settings_->get();
+        catalogFilter_->setSelection(
+            values.catalogFilter == CatalogFilter::Games ? 1 : 0, true);
+        refreshCatalog_->setOn(values.refreshCatalogOnLaunch, false);
+        preferredAction_->setSelection(
+            values.preferredAction == PreferredAction::Download ? 1 : 0,
+            true);
+        streamSelection_->setSelection(
+            values.streamSelection == StreamSelection::PackagesOnly ? 1 : 0,
+            true);
+        showCompleted_->setOn(values.showCompletedDownloads, false);
+        extendedTelemetry_->setOn(values.extendedTelemetry, false);
+        telemetry_set_enabled(values.extendedTelemetry ? 1 : 0);
+    }
+
+    void captureSnapshot() {
+        size_t active = 0;
+        size_t errors = 0;
+        for (const DownloadTask& task : manager_->snapshot()) {
+            if (task.status == DownloadStatus::Error)
+                ++errors;
+            else if (task.status != DownloadStatus::Completed &&
+                     task.status != DownloadStatus::Installed &&
+                     task.status != DownloadStatus::Paused)
+                ++active;
+        }
+        uint64_t freeBytes = 0;
+        struct statvfs storage {};
+        if (statvfs("sdmc:/", &storage) == 0)
+            freeBytes = static_cast<uint64_t>(storage.f_bavail) *
+                        static_cast<uint64_t>(storage.f_frsize);
+        uint32_t hos = hosversionGet();
+        diagnostic_snapshot("system", "manual",
+            "version=%s hos=%u.%u.%u operation_mode=%d telemetry=%d "
+            "catalog=%zu metadata=%zu installed=%zu active=%zu errors=%zu "
+            "sd_free_bytes=%llu",
+            PIPENSX_VERSION, HOSVER_MAJOR(hos), HOSVER_MINOR(hos),
+            HOSVER_MICRO(hos), static_cast<int>(appletGetOperationMode()),
+            telemetry_enabled(), catalog_->entries().size(), metadata_->size(),
+            installed_->titles().size(), active, errors,
+            static_cast<unsigned long long>(freeBytes));
+        brls::Application::notify("Diagnostic snapshot written to pipensx.log.");
+    }
+
+    void confirmClearLog() {
+        auto* dialog = new brls::Dialog("Clear pipensx.log now?");
+        dialog->addButton("Clear log", [] {
+            if (!clearApplicationLog())
+                brls::Application::notify("Unable to clear pipensx.log.");
+            else
+                brls::Application::notify("Log cleared.");
+        });
+        dialog->addButton("Cancel", [] {});
+        dialog->open();
+    }
+
+    void confirmClearArtwork() {
+        auto* dialog = new brls::Dialog("Clear downloaded artwork cache?");
+        dialog->addButton("Clear artwork", [this] {
+            std::string error;
+            if (!metadata_->clearImageCache(error)) {
+                diagnostic_error("metadata", "clear_cache", "error=%s",
+                                 error.c_str());
+                brls::Application::notify(error);
+            } else {
+                brls::Application::notify("Artwork cache cleared.");
+            }
+        });
+        dialog->addButton("Cancel", [] {});
+        dialog->open();
+    }
+
+    void confirmReset() {
+        auto* dialog = new brls::Dialog("Reset all pipensx settings?");
+        dialog->addButton("Reset settings", [this] {
+            std::string error;
+            if (!settings_->reset(error)) {
+                diagnostic_error("settings", "reset", "error=%s",
+                                 error.c_str());
+                brls::Application::notify(error);
+                return;
+            }
+            applyValues();
+            brls::Application::notify("Settings restored to defaults.");
+        });
+        dialog->addButton("Cancel", [] {});
+        dialog->open();
+    }
+
+    AppSettings* settings_;
+    DownloadManager* manager_;
+    CatalogService* catalog_;
+    GameMetadataService* metadata_;
+    InstalledTitleService* installed_;
+    brls::SelectorCell* catalogFilter_ = nullptr;
+    brls::BooleanCell* refreshCatalog_ = nullptr;
+    brls::SelectorCell* preferredAction_ = nullptr;
+    brls::SelectorCell* streamSelection_ = nullptr;
+    brls::BooleanCell* showCompleted_ = nullptr;
+    brls::BooleanCell* extendedTelemetry_ = nullptr;
+};
+
+class AboutView : public brls::Box {
+public:
+    AboutView() : brls::Box(brls::Axis::COLUMN) {
+        auto* content = new brls::Box(brls::Axis::COLUMN);
+        content->setPadding(30, 50, 30, 50);
+        addLine(content, "pipensx", 32, nvgRGB(245, 245, 250));
+        addLine(content, std::string("Version ") + PIPENSX_VERSION +
+            "   Built " + __DATE__ + " " + __TIME__, 18,
+            nvgRGB(180, 180, 190));
+        addLine(content,
+            "A Nintendo Switch storefront and BitTorrent client for "
+            "downloading or streaming NSP/NSZ packages to SD.",
+            19, nvgRGB(220, 220, 225));
+        addLine(content,
+            "Catalog: cached on SD with a bundled offline fallback.\n"
+            "Log: sdmc:/switch/pipensx/pipensx.log\n"
+            "Settings: sdmc:/switch/pipensx/settings.json",
+            17, nvgRGB(175, 175, 185));
+        addLine(content,
+            "Built with libnx, Borealis, libcurl, zstd, mbedTLS and "
+            "miniupnpc. See THIRD_PARTY_NOTICES.md for licenses.",
+            17, nvgRGB(175, 175, 185));
+        addLine(content,
+            "pipensx is an independent open-source project and is not "
+            "affiliated with Nintendo.",
+            16, nvgRGB(150, 150, 160));
+        auto* scroll = new brls::ScrollingFrame();
+        scroll->setGrow(1);
+        scroll->setContentView(content);
+        addView(scroll);
+    }
+
+private:
+    static void addLine(brls::Box* content, const std::string& text,
+                        float size, NVGcolor color) {
+        auto* label = new brls::Label();
+        label->setText(text);
+        label->setFontSize(size);
+        label->setTextColor(color);
+        label->setMarginBottom(22);
+        content->addView(label);
+    }
 };
 
 class MainActivity : public brls::Activity {
 public:
     MainActivity(DownloadManager* manager, CatalogService* catalog,
-                 GameMetadataService* metadata)
-        : manager_(manager), catalog_(catalog), metadata_(metadata) {
+                 GameMetadataService* metadata,
+                 InstalledTitleService* installed, AppSettings* settings)
+        : manager_(manager), catalog_(catalog), metadata_(metadata),
+          installed_(installed), settings_(settings) {
         auto* tabs = new brls::TabFrame();
-        tabs->addTab("Downloads", [manager, metadata] {
-            return new MainView(manager, metadata);
+        tabs->addTab("Catalog", [manager, catalog, metadata, installed,
+                                  settings] {
+            return new CatalogView(manager, catalog, metadata, installed,
+                                   settings);
         });
-        tabs->addTab("Catalog", [manager, catalog, metadata] {
-            return new CatalogView(manager, catalog, metadata);
+        tabs->addTab("Downloads", [manager, metadata, settings] {
+            return new MainView(manager, metadata, settings);
         });
-        tabs->addTab("Settings", [] {
-            return new SettingsView();
+        tabs->addTab("Installed", [installed, manager, metadata] {
+            return new InstalledView(installed, manager, metadata);
+        });
+        tabs->addTab("Settings", [settings, manager, catalog, metadata,
+                                   installed] {
+            return new SettingsView(settings, manager, catalog, metadata,
+                                    installed);
+        });
+        tabs->addTab("About", [] {
+            return new AboutView();
         });
         frame_ = new brls::AppletFrame(tabs);
         frame_->setTitle("pipensx");
@@ -2584,6 +3306,8 @@ private:
     DownloadManager* manager_;
     CatalogService* catalog_;
     GameMetadataService* metadata_;
+    InstalledTitleService* installed_;
+    AppSettings* settings_;
     brls::AppletFrame* frame_;
 };
 
@@ -2594,18 +3318,18 @@ int main(int, char**) {
     switch_crashlog_stage("creating application directories");
     mkdir("sdmc:/switch", 0755);
     mkdir("sdmc:/switch/pipensx", 0755);
-    log_init("sdmc:/switch/pipensx/pipensx.log");
-    telemetry_set_enabled(telemetryFlagEnabled() ? 1 : 0);
+    log_init(LogPath);
+    AppSettings settings(SettingsPath, TelemetryFlagPath);
+    std::string settingsError;
+    if (!settings.load(settingsError))
+        diagnostic_error("settings", "startup", "error=%s",
+                         settingsError.c_str());
+    telemetry_set_enabled(settings.get().extendedTelemetry ? 1 : 0);
     log_msg("[telemetry] setting enabled=%d interval_ms=5000 build='%s %s'\n",
             telemetry_enabled(), __DATE__, __TIME__);
     startupStage("entered main");
 
-    gBorealisLog = std::fopen(
-        "sdmc:/switch/pipensx/pipensx.log", "a");
-    if (gBorealisLog) {
-        brls::Logger::setLogOutput(gBorealisLog);
-        brls::Logger::setLogLevel(brls::LogLevel::LOG_DEBUG);
-    }
+    openBorealisLog();
 
     std::set_terminate([] {
         switch_crashlog_stage("uncaught C++ exception");
@@ -2671,6 +3395,7 @@ int main(int, char**) {
         startupStage("CatalogService construction");
         antizapret_init("sdmc:/switch/pipensx");
         antizapret_set_enabled(1);
+        log_msg("[startup] image relay: relays-first + disk cache (rev4)\n");
         unlink("sdmc:/switch/pipensx/rutracker.cfg");
         unlink("sdmc:/switch/pipensx/rutracker_cookies.txt");
         CatalogService catalog("sdmc:/switch/pipensx");
@@ -2685,11 +3410,19 @@ int main(int, char**) {
             log_msg("[metadata] initial load failed: %s\n",
                     metadataError.c_str());
 
+        startupStage("InstalledTitleService refresh");
+        InstalledTitleService installed("sdmc:/switch/pipensx");
+        std::string installedError;
+        if (!installed.refresh(installedError))
+            diagnostic_error("installed", "startup", "error=%s",
+                             installedError.c_str());
+
         startupStage("DownloadManager construction");
         DownloadManager manager("sdmc:/switch/pipensx");
 
         startupStage("MainActivity construction");
-        auto* activity = new MainActivity(&manager, &catalog, &metadata);
+        auto* activity = new MainActivity(&manager, &catalog, &metadata,
+                                          &installed, &settings);
 
         startupStage("push MainActivity");
         brls::Application::pushActivity(activity);

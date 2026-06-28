@@ -37,9 +37,24 @@ int main(void) {
     telemetry_log("test", "unit", "value=%d", 42);
     telemetry_set_enabled(0);
     telemetry_log("test", "unit", "suppressed=1");
+    diagnostic_error("settings", "unit", "event=save_failed code=%d", 7);
+    diagnostic_snapshot("system", "unit", "installed=%d", 12);
     log_close();
     assert(file_contains(path, "stage=test tag=unit value=42"));
     assert(!file_contains(path, "suppressed=1"));
+    assert(file_contains(path,
+        "[diagnostic] schema=1 level=error stage=settings tag=unit "
+        "event=save_failed code=7"));
+    assert(file_contains(path,
+        "[diagnostic] schema=1 level=snapshot stage=system tag=unit "
+        "installed=12"));
+
+    log_init(path);
+    assert(log_clear());
+    diagnostic_error("after_clear", "unit", "kept=1");
+    log_close();
+    assert(!file_contains(path, "save_failed"));
+    assert(file_contains(path, "stage=after_clear tag=unit kept=1"));
 
     FILE *large = fopen(path, "wb");
     assert(large);

@@ -1,15 +1,19 @@
 #include "game_metadata_service.hpp"
 
 extern "C" {
+#include "../core/antizapret.h"
 #include "../core/sha1.h"
 #include "../core/util.h"
 }
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <curl/curl.h>
+#include <dirent.h>
 #include <fstream>
 #include <borealis/extern/nlohmann/json.hpp>
 #include <sys/stat.h>
@@ -32,6 +36,12 @@ constexpr size_t kMaxImageBytes = 3 * 1024 * 1024;
 constexpr size_t kMaxImageCacheBytes = 24 * 1024 * 1024;
 constexpr uint64_t kImageRetryDelayMs = 30 * 1000;
 constexpr size_t kImageWorkerCount = 2;
+
+std::atomic<bool> imageProxyLogged{false};
+#ifdef __SWITCH__
+std::atomic<bool> imageRelayLogged{false};
+#endif
+std::atomic<uint32_t> imageFailureLogs{0};
 
 struct HttpBuffer {
     std::vector<uint8_t> data;
@@ -56,7 +66,14 @@ bool makeDirectories(const std::string& path) {
     if (path.empty() || path.size() >= sizeof(buffer))
         return false;
     std::snprintf(buffer, sizeof(buffer), "%s", path.c_str());
-    for (char* cursor = buffer + 1; *cursor; ++cursor) {
+    // Skip a "device:" mount prefix (e.g. "sdmc:/") — mkdir on the bare mount
+    // root fails with a non-EEXIST errno on libnx and would abort the walk
+    // before the real subdirectories get created.
+    char* start = buffer + 1;
+    char* colon = std::strchr(buffer, ':');
+    if (colon && colon[1] == '/')
+        start = colon + 2;
+    for (char* cursor = start; *cursor; ++cursor) {
         if (*cursor != '/')
             continue;
         *cursor = '\0';
@@ -116,8 +133,10 @@ bool writeAtomic(const std::string& path, const std::vector<uint8_t>& data,
     return true;
 }
 
-bool httpGet(const std::string& url, size_t limit, std::vector<uint8_t>& data,
-             std::string& error) {
+bool httpGetOnce(const std::string& url, size_t limit,
+                 const antizapret_route_t* route,
+                 std::vector<uint8_t>& data, std::string& error) {
+    data.clear();
     CURL* curl = curl_easy_init();
     if (!curl) {
         error = "Unable to initialize HTTP.";
@@ -129,12 +148,19 @@ bool httpGet(const std::string& url, size_t limit, std::vector<uint8_t>& data,
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "pipensx/0.4");
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 8L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 25L);
+    const bool relayRequest =
+        url.find("weserv.nl/") != std::string::npos ||
+        url.find("i0.wp.com/") != std::string::npos ||
+        url.find("duckduckgo.com/") != std::string::npos;
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, relayRequest ? 20L : 25L);
+    curl_easy_setopt(curl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeBytes);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buffer);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
     curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
+    if (route)
+        antizapret_apply_route(curl, route);
     CURLcode result = curl_easy_perform(curl);
     long status = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
@@ -151,6 +177,144 @@ bool httpGet(const std::string& url, size_t limit, std::vector<uint8_t>& data,
     }
     data = std::move(buffer.data);
     return true;
+}
+
+bool blockedResponse(const std::vector<uint8_t>& data) {
+    return !data.empty() && antizapret_response_looks_blocked(
+        reinterpret_cast<const char*>(data.data()), data.size());
+}
+
+#ifdef __SWITCH__
+bool isNintendoImageUrl(const std::string& url) {
+    static const std::string prefix =
+        "https://img-eshop.cdn.nintendo.net/";
+    return url.compare(0, prefix.size(), prefix) == 0;
+}
+
+std::string percentEncode(const std::string& value) {
+    static const char digits[] = "0123456789ABCDEF";
+    std::string encoded;
+    encoded.reserve(value.size() * 3);
+    for (unsigned char byte : value) {
+        if ((byte >= 'a' && byte <= 'z') ||
+            (byte >= 'A' && byte <= 'Z') ||
+            (byte >= '0' && byte <= '9') || byte == '-' || byte == '_' ||
+            byte == '.' || byte == '~') {
+            encoded.push_back(static_cast<char>(byte));
+        } else {
+            encoded.push_back('%');
+            encoded.push_back(digits[byte >> 4]);
+            encoded.push_back(digits[byte & 15]);
+        }
+    }
+    return encoded;
+}
+
+std::string weservRelayUrl(const std::string& sourceUrl, bool secure) {
+    return std::string(secure ? "https://images.weserv.nl/?url="
+                              : "http://images.weserv.nl/?url=") +
+           percentEncode(sourceUrl) + "&output=jpg";
+}
+
+// Jetpack Photon (Automattic infra, not Cloudflare). Wants the source host
+// and path with the scheme stripped, ?ssl=1 to fetch the origin over HTTPS.
+std::string photonRelayUrl(const std::string& sourceUrl) {
+    static const std::string https = "https://";
+    std::string rest = sourceUrl.compare(0, https.size(), https) == 0
+                           ? sourceUrl.substr(https.size())
+                           : sourceUrl;
+    return "https://i0.wp.com/" + rest + "?ssl=1";
+}
+
+// DuckDuckGo image proxy (DDG/Bing infra, not Cloudflare).
+std::string ddgRelayUrl(const std::string& sourceUrl) {
+    return "https://external-content.duckduckgo.com/iu/?u=" +
+           percentEncode(sourceUrl);
+}
+
+bool isRelayHost(const std::string& url) {
+    return url.find("weserv.nl/") != std::string::npos ||
+           url.find("i0.wp.com/") != std::string::npos ||
+           url.find("duckduckgo.com/") != std::string::npos;
+}
+#endif
+
+bool httpGet(const std::string& url, size_t limit, std::vector<uint8_t>& data,
+             std::string& error) {
+    const bool target = antizapret_is_enabled() &&
+                        antizapret_is_target_url(url.c_str());
+#ifdef __SWITCH__
+    const bool preferProxy = target;
+#else
+    const bool preferProxy = target && antizapret_proxy_preferred();
+#endif
+
+    auto attempt = [&](const std::string& requestUrl,
+                       const antizapret_route_t* route) {
+        std::string attemptError;
+        if (!httpGetOnce(requestUrl, limit, route, data, attemptError)) {
+            error = std::move(attemptError);
+            return false;
+        }
+        if (target && blockedResponse(data)) {
+            data.clear();
+            error = "HTTP response appears to be blocked.";
+            return false;
+        }
+        if (route && route->type != ANTIZAPRET_ROUTE_DIRECT) {
+            antizapret_note_proxy_success();
+            bool expected = false;
+            if (imageProxyLogged.compare_exchange_strong(expected, true))
+                log_msg("[metadata] image proxy active: %s\n",
+                        antizapret_route_name(route));
+        }
+        return true;
+    };
+
+#ifdef __SWITCH__
+    if (isNintendoImageUrl(url)) {
+        // img-eshop is geo-blocked for RU and the antizapret proxy only
+        // un-blocks RKN-listed hosts, so every direct/proxy path to it dead-
+        // ends. Skip them entirely and fan out across relays on diverse infra
+        // (so one ASN slips past the censor); whichever answers first wins.
+        const std::string relays[] = {
+            photonRelayUrl(url),          // Automattic
+            ddgRelayUrl(url),             // DuckDuckGo / Bing
+            weservRelayUrl(url, false),   // Cloudflare, http
+            weservRelayUrl(url, true),    // Cloudflare, https
+        };
+        for (const std::string& relayUrl : relays) {
+            if (attempt(relayUrl, nullptr)) {
+                bool expected = false;
+                if (imageRelayLogged.compare_exchange_strong(expected, true))
+                    log_msg("[metadata] image relay active: %s\n",
+                            relayUrl.c_str());
+                return true;
+            }
+        }
+        return false;
+    }
+#endif
+
+    if (!preferProxy && attempt(url, nullptr))
+        return true;
+
+    if (target) {
+        antizapret_route_t routes[ANTIZAPRET_MAX_ROUTES];
+        size_t routeCount = antizapret_get_routes(routes,
+                                                  ANTIZAPRET_MAX_ROUTES);
+        for (size_t i = 0; i < routeCount; ++i) {
+            if (routes[i].type == ANTIZAPRET_ROUTE_DIRECT ||
+                !antizapret_route_supported(&routes[i]))
+                continue;
+            if (attempt(url, &routes[i]))
+                return true;
+        }
+    }
+
+    if (preferProxy && attempt(url, nullptr))
+        return true;
+    return false;
 }
 
 std::string hex20String(const uint8_t digest[20]) {
@@ -360,9 +524,36 @@ bool GameMetadataService::loadImage(const std::string& url,
         return false;
     }
 
-    std::string path = imageRoot_ + "/" + cacheNameForUrl(url);
-    if (readFile(path, bytes, kMaxImageBytes, error))
+    const bool localImage = url.compare(0, 5, "sdmc:") == 0 ||
+                            (!url.empty() && url[0] == '/');
+    if (localImage) {
+        if (!readFile(url, bytes, kMaxImageBytes, error))
+            return false;
+        int width = 0;
+        int height = 0;
+        int channels = 0;
+        if (!stbi_info_from_memory(bytes.data(), static_cast<int>(bytes.size()),
+                                   &width, &height, &channels)) {
+            error = "Local image is not valid.";
+            return false;
+        }
         return true;
+    }
+
+    std::string path = imageRoot_ + "/" + cacheNameForUrl(url);
+    if (readFile(path, bytes, kMaxImageBytes, error)) {
+        int width = 0;
+        int height = 0;
+        int channels = 0;
+        if (stbi_info_from_memory(bytes.data(),
+                                  static_cast<int>(bytes.size()),
+                                  &width, &height, &channels))
+            return true;
+        unlink(path.c_str());
+        bytes.clear();
+        log_msg("[metadata] removed invalid image cache '%s'\n",
+                path.c_str());
+    }
     error.clear();
     if (!httpGet(url, kMaxImageBytes, bytes, error))
         return false;
@@ -370,8 +561,60 @@ bool GameMetadataService::loadImage(const std::string& url,
         error = "Downloaded image is too small.";
         return false;
     }
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    if (!stbi_info_from_memory(bytes.data(), static_cast<int>(bytes.size()),
+                               &width, &height, &channels)) {
+        error = "Downloaded response is not an image.";
+        return false;
+    }
     std::string writeError;
-    writeAtomic(path, bytes, writeError);
+    if (!writeAtomic(path, bytes, writeError)) {
+        static std::atomic<bool> cacheWriteLogged{false};
+        bool expected = false;
+        if (cacheWriteLogged.compare_exchange_strong(expected, true))
+            log_msg("[metadata] image cache write failed '%s': %s\n",
+                    path.c_str(), writeError.c_str());
+    }
+    return true;
+}
+
+bool GameMetadataService::clearImageCache(std::string& error) const {
+    {
+        std::lock_guard<std::mutex> lock(imageMutex_);
+        imageCache_.clear();
+        imageCacheBytes_ = 0;
+        imageRetryAfter_.clear();
+    }
+    DIR* directory = opendir(imageRoot_.c_str());
+    if (!directory) {
+        if (errno == ENOENT) {
+            error.clear();
+            return true;
+        }
+        error = std::string("Unable to open artwork cache: ") +
+                std::strerror(errno);
+        return false;
+    }
+    bool ok = true;
+    int failure = 0;
+    while (dirent* entry = readdir(directory)) {
+        if (entry->d_name[0] == '.')
+            continue;
+        std::string path = imageRoot_ + "/" + entry->d_name;
+        if (unlink(path.c_str()) != 0 && errno != ENOENT) {
+            ok = false;
+            failure = errno;
+        }
+    }
+    closedir(directory);
+    if (!ok) {
+        error = std::string("Unable to clear artwork cache: ") +
+                std::strerror(failure);
+        return false;
+    }
+    error.clear();
     return true;
 }
 
@@ -454,14 +697,17 @@ void GameMetadataService::imageWorkerMain() const {
             url = std::move(imageQueue_.front());
             imageQueue_.pop_front();
         }
+        const uint64_t startedMs = monotonicMilliseconds();
 
         ImageData result;
+        bool memoryCacheHit = false;
         {
             std::lock_guard<std::mutex> lock(imageMutex_);
             auto cached = imageCache_.find(url);
             if (cached != imageCache_.end()) {
                 cached->second.access = ++imageAccess_;
                 result = cached->second.image;
+                memoryCacheHit = true;
             }
         }
 
@@ -492,6 +738,18 @@ void GameMetadataService::imageWorkerMain() const {
             }
         }
         bool loaded = static_cast<bool>(result);
+        if (!loaded) {
+            uint32_t logIndex = imageFailureLogs.fetch_add(1);
+            if (logIndex < 8) {
+                diagnostic_error("image", "load", "error=%s",
+                                 error.empty() ? "unknown" : error.c_str());
+            }
+        }
+        telemetry_log("image", "-",
+                      "event=load cache=%s ok=%d duration_ms=%llu bytes=%zu",
+                      memoryCacheHit ? "memory" : "source", loaded ? 1 : 0,
+                      (unsigned long long)(monotonicMilliseconds() - startedMs),
+                      result ? result->pixels.size() : 0);
         std::vector<ImageCallback> callbacks;
         {
             std::lock_guard<std::mutex> lock(imageMutex_);

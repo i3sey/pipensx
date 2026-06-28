@@ -199,11 +199,11 @@ static int process_handshake(peer_t *p, const peer_ctx_t *ctx) {
     if (p->rbuf_len < BT_HANDSHAKE_LEN) return 0; /* wait */
     uint8_t *hs = p->rbuf;
     if (hs[0] != 19 || memcmp(hs+1, "BitTorrent protocol", 19) != 0) {
-        log_msg("[peer] %s: bad handshake\n", p->addr_str);
+        log_msg("[peer] bad handshake\n");
         return -1;
     }
     if (memcmp(hs+28, ctx->info_hash, 20) != 0) {
-        log_msg("[peer] %s: info_hash mismatch\n", p->addr_str);
+        log_msg("[peer] info_hash mismatch\n");
         return -1;
     }
     /* Check extension bit (byte 25 of reserved = hs[25], bit 4) */
@@ -213,7 +213,7 @@ static int process_handshake(peer_t *p, const peer_ctx_t *ctx) {
     p->rbuf_len -= BT_HANDSHAKE_LEN;
     p->state = PS_ACTIVE;
     p->last_recv_ms = now_ms();
-    log_msg("[peer] %s: handshake ok ext=%d\n", p->addr_str, p->supports_ext);
+    log_msg("[peer] handshake ok ext=%d\n", p->supports_ext);
     return 1; /* keep processing */
 }
 
@@ -264,7 +264,7 @@ static int process_message(peer_t *p, const peer_ctx_t *ctx,
     uint32_t msg_len = ((uint32_t)p->rbuf[0]<<24)|((uint32_t)p->rbuf[1]<<16)|
                        ((uint32_t)p->rbuf[2]<<8 )| (uint32_t)p->rbuf[3];
     if (msg_len > 1<<18) { /* 256KB max message */
-        log_msg("[peer] %s: oversized message %u\n", p->addr_str, msg_len);
+        log_msg("[peer] oversized message %u\n", msg_len);
         return -1;
     }
     if (p->rbuf_len < 4 + msg_len) return 0; /* wait */
@@ -286,7 +286,7 @@ static int process_message(peer_t *p, const peer_ctx_t *ctx,
         break;
     case MSG_UNCHOKE:
         if (p->am_choked)
-            log_msg("[peer] %s: unchoked\n", p->addr_str);
+            log_msg("[peer] unchoked\n");
         p->am_choked = 0;
         break;
     case MSG_INTERESTED:
@@ -363,7 +363,7 @@ int peer_recv(peer_t *p, const peer_ctx_t *ctx,
         socklen_t elen = sizeof(err);
         getsockopt(p->fd, SOL_SOCKET, SO_ERROR, &err, &elen);
         if (err) {
-            log_msg("[peer] %s: connect failed: %s\n", p->addr_str, strerror(err));
+            log_msg("[peer] connect failed: %s\n", strerror(err));
             return -1;
         }
         p->state = PS_HANDSHAKE;
@@ -375,7 +375,7 @@ int peer_recv(peer_t *p, const peer_ctx_t *ctx,
     /* Read available data */
     size_t space = sizeof(p->rbuf) - p->rbuf_len;
     if (space == 0) {
-        log_msg("[peer] %s: recv buffer full\n", p->addr_str);
+        log_msg("[peer] recv buffer full\n");
         return -1;
     }
     int n = net_recv(p->fd, p->rbuf + p->rbuf_len, space);

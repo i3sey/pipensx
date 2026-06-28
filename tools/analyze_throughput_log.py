@@ -13,6 +13,7 @@ from pathlib import Path
 
 
 TELEMETRY_RE = re.compile(r"\[telemetry\]\s+(.*)$")
+DIAGNOSTIC_RE = re.compile(r"\[diagnostic\]\s+(.*)$")
 
 
 def parse_value(value: str):
@@ -33,11 +34,15 @@ def parse_records(text: str) -> list[dict]:
             fields = shlex.split(match.group(1))
         except ValueError:
             continue
+        previous_key = None
         for field in fields:
             if "=" not in field:
+                if previous_key:
+                    record[previous_key] = f"{record[previous_key]} {field}"
                 continue
             key, value = field.split("=", 1)
             record[key] = parse_value(value)
+            previous_key = key
         if record.get("schema") == 1 and "stage" in record:
             records.append(record)
     enabled = [
@@ -47,6 +52,52 @@ def parse_records(text: str) -> list[dict]:
     if enabled:
         records = records[enabled[-1]:]
     return records
+
+
+def parse_diagnostics(text: str) -> list[dict]:
+    records: list[dict] = []
+    for line in text.splitlines():
+        match = DIAGNOSTIC_RE.search(line)
+        if not match:
+            continue
+        record = {}
+        try:
+            fields = shlex.split(match.group(1))
+        except ValueError:
+            continue
+        previous_key = None
+        for field in fields:
+            if "=" not in field:
+                if previous_key:
+                    record[previous_key] = f"{record[previous_key]} {field}"
+                continue
+            key, value = field.split("=", 1)
+            record[key] = parse_value(value)
+            previous_key = key
+        if record.get("schema") == 1 and "stage" in record:
+            records.append(record)
+    return records
+
+
+def analyze_diagnostics(records: list[dict]) -> dict:
+    errors = [record for record in records if record.get("level") == "error"]
+    snapshots = [
+        record for record in records if record.get("level") == "snapshot"
+    ]
+    by_stage: dict[str, int] = defaultdict(int)
+    for record in errors:
+        by_stage[str(record["stage"])] += 1
+    latest = None
+    if errors:
+        allowed = ("stage", "tag", "event", "error", "result")
+        latest = {key: errors[-1][key] for key in allowed if key in errors[-1]}
+    return {
+        "records": len(records),
+        "errors": len(errors),
+        "snapshots": len(snapshots),
+        "errors_by_stage": dict(sorted(by_stage.items())),
+        "latest_error": latest,
+    }
 
 
 def percentile(values: list[int], fraction: float) -> int:
@@ -261,6 +312,17 @@ def print_report(report: dict) -> None:
         f"ncm+sha={busy_text(busy['ncm_sha'])} "
         f"piece={busy_text(busy['piece_callback'])}"
     )
+    diagnostics = report.get("diagnostics")
+    if diagnostics:
+        stages = ", ".join(
+            f"{stage}={count}"
+            for stage, count in diagnostics["errors_by_stage"].items()
+        ) or "none"
+        print(
+            "Diagnostics: "
+            f"errors={diagnostics['errors']} "
+            f"snapshots={diagnostics['snapshots']} stages={stages}"
+        )
 
 
 def main() -> None:
@@ -270,10 +332,13 @@ def main() -> None:
     parser.add_argument("log", type=Path)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
-    records = parse_records(args.log.read_text(encoding="utf-8", errors="replace"))
-    if not records:
-        raise SystemExit("No schema=1 telemetry records found")
+    text = args.log.read_text(encoding="utf-8", errors="replace")
+    records = parse_records(text)
+    diagnostics = parse_diagnostics(text)
+    if not records and not diagnostics:
+        raise SystemExit("No schema=1 telemetry or diagnostic records found")
     report = analyze(records)
+    report["diagnostics"] = analyze_diagnostics(diagnostics)
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:

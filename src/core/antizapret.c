@@ -48,7 +48,11 @@ static int ascii_equal_nocase(const char *a, const char *b, size_t len) {
 }
 
 static int host_is_target(const char *host, size_t len) {
-    static const char *const domains[] = {"rutracker.org", "t-ru.org"};
+    static const char *const domains[] = {
+        "rutracker.org",
+        "t-ru.org",
+        "img-eshop.cdn.nintendo.net",
+    };
     while (len && host[len - 1] == '.')
         --len;
     for (size_t i = 0; i < sizeof(domains) / sizeof(domains[0]); ++i) {

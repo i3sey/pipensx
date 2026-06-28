@@ -364,10 +364,10 @@ static void emit_telemetry(torrent_t *t, uint64_t now) {
             uint64_t cooldown_ms = peer->request_cooldown_until_ms > now
                                  ? peer->request_cooldown_until_ms - now : 0;
             telemetry_log("peer", t->telemetry_tag,
-                "address=%s rx_bps=%llu pipeline=%d unchoked=%d "
+                "rx_bps=%llu pipeline=%d unchoked=%d "
                 "expired=%u hedged=%u cancelled=%u released=%u strikes=%u "
                 "cooldown_ms=%llu last_piece_age_ms=%llu",
-                peer->addr_str, (unsigned long long)peer_rx_bps,
+                (unsigned long long)peer_rx_bps,
                 peer->pipeline_len, !peer->am_choked,
                 peer->telemetry_expired_requests,
                 peer->telemetry_hedged_requests,
@@ -459,7 +459,7 @@ static void try_connect(torrent_t *t) {
         if (!t->peers[i]) {
             t->peers[i] = p;
             t->num_peers++;
-            log_msg("[torrent] connecting %s\n", p->addr_str);
+            log_msg("[torrent] connecting peer\n");
             return;
         }
     }
@@ -938,7 +938,7 @@ int torrent_tick(torrent_t *t) {
 
         int err = peer_recv(p, &ctx, cb_block, cb_have, cb_peers, t);
         if (err < 0) {
-            log_msg("[torrent] peer %s dead\n", p->addr_str);
+            log_msg("[torrent] peer connection closed\n");
             blocklist_add(t, p->addr.sin_addr.s_addr, p->addr.sin_port, now);
             clear_peer_requests(t, p);
             peer_destroy(p);
@@ -965,7 +965,7 @@ int torrent_tick(torrent_t *t) {
         if (p->state == PS_CONNECTING || p->state == PS_HANDSHAKE) {
             if (p->connect_time_ms <= now2 &&
                 now2 - p->connect_time_ms > CONNECT_TIMEOUT_MS) {
-                log_msg("[torrent] peer %s connect/handshake timeout\n", p->addr_str);
+                log_msg("[torrent] peer connect/handshake timeout\n");
                 blocklist_add(t, p->addr.sin_addr.s_addr,
                               p->addr.sin_port, now2);
                 peer_destroy(p);
@@ -989,9 +989,9 @@ int torrent_tick(torrent_t *t) {
                 cooldown = TIMEOUT_COOLDOWN_MAX_MS;
             p->request_cooldown_until_ms = now2 + cooldown;
             telemetry_log("peer", t->telemetry_tag,
-                "event=request_timeout address=%s expired=%d strikes=%u "
+                "event=request_timeout expired=%d strikes=%u "
                 "cooldown_ms=%llu pipeline=%d",
-                p->addr_str, expired, p->timeout_strikes,
+                expired, p->timeout_strikes,
                 (unsigned long long)cooldown, p->pipeline_len);
 
             uint64_t progress_ms = p->last_piece_ms
@@ -999,9 +999,8 @@ int torrent_tick(torrent_t *t) {
             if (p->timeout_strikes >= TIMEOUT_DISCONNECT_STRIKES &&
                 progress_ms <= now2 &&
                 now2 - progress_ms >= TIMEOUT_DISCONNECT_IDLE_MS) {
-                log_msg("[torrent] peer %s dropped after %u request "
-                        "timeout strikes\n",
-                        p->addr_str, p->timeout_strikes);
+                log_msg("[torrent] peer dropped after %u request "
+                        "timeout strikes\n", p->timeout_strikes);
                 blocklist_add(t, p->addr.sin_addr.s_addr,
                               p->addr.sin_port, now2);
                 clear_peer_requests(t, p);
@@ -1013,7 +1012,7 @@ int torrent_tick(torrent_t *t) {
         }
         /* Guard against unsigned underflow: only check if last_recv_ms <= now2 */
         if (p->last_recv_ms <= now2 && now2 - p->last_recv_ms > PEER_TIMEOUT_MS) {
-            log_msg("[torrent] peer %s timeout\n", p->addr_str);
+            log_msg("[torrent] peer timeout\n");
             blocklist_add(t, p->addr.sin_addr.s_addr,
                           p->addr.sin_port, now2);
             clear_peer_requests(t, p);
