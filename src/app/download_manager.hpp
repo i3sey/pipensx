@@ -70,6 +70,7 @@ struct TorrentPreview {
         std::string path;
         uint64_t length = 0;
         bool package = false;
+        bool compressed = false;
         bool cartridge = false;
     };
     std::vector<File> files;

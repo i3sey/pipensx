@@ -60,11 +60,13 @@ set(CORE_SOURCES
 set(APP_SOURCES
     ${CORE_SOURCES}
     src/app/app_settings.cpp
+    src/app/catalog_batch_installer.cpp
     src/app/catalog_service.cpp
     src/app/catalog_presentation.cpp
     src/app/download_manager.cpp
     src/app/game_metadata_service.cpp
     src/app/installed_title_service.cpp
+    src/app/install_space.cpp
     src/app/magnet_resolver.cpp
     src/install/package_stream.cpp
     src/install/install_backend_switch.cpp

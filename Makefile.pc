@@ -41,6 +41,8 @@ TELEMETRY_TEST_TARGET = tests/test_telemetry
 PEER_TEST_TARGET = tests/test_peer
 TORRENT_TEST_TARGET = tests/test_torrent
 SETTINGS_TEST_TARGET = tests/test_app_settings
+INSTALL_SPACE_TEST_TARGET = tests/test_install_space
+BATCH_INSTALL_TEST_TARGET = tests/test_batch_install
 TEST_SRCS = \
     tests/test_piece.c       \
     src/core/sha1.c          \
@@ -104,7 +106,8 @@ $(CATALOG_TEST_TARGET): tests/test_catalog.cpp \
 test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 		$(CATALOG_TEST_TARGET) $(ANTIZAPRET_TEST_TARGET) \
 		$(TELEMETRY_TEST_TARGET) $(PEER_TEST_TARGET) \
-		$(TORRENT_TEST_TARGET) $(SETTINGS_TEST_TARGET)
+		$(TORRENT_TEST_TARGET) $(SETTINGS_TEST_TARGET) \
+		$(INSTALL_SPACE_TEST_TARGET) $(BATCH_INSTALL_TEST_TARGET)
 	./$(TEST_TARGET)
 	./$(MANAGER_TEST_TARGET)
 	./$(PACKAGE_TEST_TARGET)
@@ -114,10 +117,24 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 	./$(PEER_TEST_TARGET)
 	./$(TORRENT_TEST_TARGET)
 	./$(SETTINGS_TEST_TARGET)
+	./$(INSTALL_SPACE_TEST_TARGET)
+	./$(BATCH_INSTALL_TEST_TARGET)
 	python3 tests/test_telemetry_analyzer.py
 
 $(SETTINGS_TEST_TARGET): tests/test_app_settings.cpp src/app/app_settings.cpp
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
+
+$(INSTALL_SPACE_TEST_TARGET): tests/test_install_space.cpp \
+		src/app/install_space.cpp
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
+
+$(BATCH_INSTALL_TEST_TARGET): tests/test_batch_install.cpp \
+		src/app/catalog_batch_installer.cpp src/app/install_space.cpp \
+		src/app/download_manager.o src/install/package_stream.o \
+		src/install/install_backend_pc.o \
+		$(filter-out src/main_pc.o,$(OBJS))
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) \
+		$(INSTALL_LDFLAGS) -pthread
 
 $(TELEMETRY_TEST_TARGET): tests/test_telemetry.c src/core/util.c
 	$(CC) $(CFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
@@ -143,6 +160,7 @@ clean:
 		$(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 		$(CATALOG_TEST_TARGET) $(ANTIZAPRET_TEST_TARGET) \
 		$(TELEMETRY_TEST_TARGET) $(PEER_TEST_TARGET) \
-		$(TORRENT_TEST_TARGET) $(SETTINGS_TEST_TARGET)
+		$(TORRENT_TEST_TARGET) $(SETTINGS_TEST_TARGET) \
+		$(INSTALL_SPACE_TEST_TARGET) $(BATCH_INSTALL_TEST_TARGET)
 
 .PHONY: all test clean

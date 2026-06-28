@@ -344,6 +344,26 @@ public:
         }
         current_->existing = exists;
         if (!exists) {
+            s64 freeSpace = 0;
+            rc = ncmContentStorageGetFreeSpaceSize(&storage_, &freeSpace);
+            if (R_FAILED(rc)) {
+                errorResult("Unable to query free SD content space", rc);
+                return false;
+            }
+            if (freeSpace < 0 || static_cast<uint64_t>(freeSpace) < size) {
+                char required[32];
+                char available[32];
+                fmt_bytes(required, sizeof(required), size);
+                fmt_bytes(available, sizeof(available),
+                          freeSpace > 0 ? static_cast<uint64_t>(freeSpace) : 0);
+                error_ = "Not enough SD space for " + current_->name +
+                         ": need " + required + ", free " + available + ".";
+                log_msg("[install] insufficient space name='%s' need=%llu free=%lld\n",
+                        current_->name.c_str(),
+                        static_cast<unsigned long long>(size),
+                        static_cast<long long>(freeSpace));
+                return false;
+            }
             rc = ncmContentStorageGeneratePlaceHolderId(
                 &storage_, &current_->placeholder);
             if (R_SUCCEEDED(rc))

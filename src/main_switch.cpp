@@ -1,10 +1,12 @@
 #include "app/app_settings.hpp"
+#include "app/catalog_batch_installer.hpp"
 #include "app/download_manager.hpp"
 #include "app/catalog_service.hpp"
 #include "app/catalog_presentation.hpp"
 #include "app/magnet_resolver.hpp"
 #include "app/game_metadata_service.hpp"
 #include "app/installed_title_service.hpp"
+#include "app/install_space.hpp"
 #include "core/antizapret.h"
 #include "platform/switch_crashlog.h"
 
@@ -26,6 +28,7 @@ extern "C" {
 #include <ctime>
 #include <exception>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -40,6 +43,7 @@ using pipensx::DownloadManager;
 using pipensx::DownloadStatus;
 using pipensx::DownloadTask;
 using pipensx::CatalogEntry;
+using pipensx::CatalogBatchInstaller;
 using pipensx::CatalogService;
 using pipensx::AppSettings;
 using pipensx::AppSettingsData;
@@ -50,6 +54,11 @@ using pipensx::StreamSelection;
 using pipensx::GameMetadata;
 using pipensx::GameMetadataService;
 using pipensx::MagnetResolver;
+using pipensx::BatchPreparation;
+using pipensx::PreparedCatalogInstall;
+using pipensx::StorageSpaceSnapshot;
+using pipensx::InstallSpaceCheckStatus;
+using pipensx::SpaceEstimateCertainty;
 using pipensx::TransferMode;
 
 namespace {
@@ -1273,6 +1282,12 @@ public:
         setPadding(10, 18, 10, 18);
         setHeight(96);
 
+        mark_ = new brls::Label();
+        mark_->setWidth(0);
+        mark_->setFontSize(21);
+        mark_->setTextColor(nvgRGB(0, 195, 227));
+        addView(mark_);
+
         // Left: rounded box-art thumbnail. The box's background color is the
         // placeholder shown until art loads (or for entries without metadata).
         thumb_ = new brls::Box();
@@ -1329,7 +1344,14 @@ public:
     }
 
     void setEntry(const CatalogEntry& entry, const std::string& stateBadge,
-                  const std::string& iconUrl, GameMetadataService* service) {
+                  const std::string& iconUrl, GameMetadataService* service,
+                  bool selectionMode, bool selected, bool selectable) {
+        mark_->setWidth(selectionMode ? 42 : 0);
+        mark_->setMarginRight(selectionMode ? 8 : 0);
+        mark_->setText(!selectionMode ? "" : !selectable ? "[-]"
+                                             : selected ? "[x]" : "[ ]");
+        mark_->setTextColor(selectable ? nvgRGB(0, 195, 227)
+                                       : nvgRGB(115, 115, 125));
         title_->setText(entry.title);
         placeholder_->setText(placeholderLetter(entry.title));
         badge_->setText(stateBadge);
@@ -1340,6 +1362,7 @@ public:
     }
 
 private:
+    brls::Label* mark_;
     brls::Box* thumb_;
     brls::Label* placeholder_;
     AsyncRgbaImage* image_;
@@ -1377,18 +1400,29 @@ public:
                     std::vector<std::string> stateBadges,
                     std::vector<std::string> gameNames,
                     std::vector<std::string> iconUrls,
-                    GameMetadataService* metadata) {
+                    std::vector<uint8_t> selected,
+                    std::vector<uint8_t> selectable,
+                    GameMetadataService* metadata,
+                    bool selectionMode) {
         entries_ = std::move(entries);
         stateBadges_ = std::move(stateBadges);
         gameNames_ = std::move(gameNames);
         iconUrls_ = std::move(iconUrls);
+        selected_ = std::move(selected);
+        selectable_ = std::move(selectable);
         metadata_ = metadata;
+        selectionMode_ = selectionMode;
     }
     void setMessage(const std::string& message) { message_ = message; }
     const CatalogEntry* entryAt(int row) const {
         if (row < 0 || static_cast<size_t>(row) >= entries_.size())
             return nullptr;
         return &entries_[static_cast<size_t>(row)];
+    }
+    const std::vector<CatalogEntry>& entries() const { return entries_; }
+    bool selectableAt(int row) const {
+        return row >= 0 && static_cast<size_t>(row) < selectable_.size() &&
+               selectable_[static_cast<size_t>(row)] != 0;
     }
 
     int numberOfRows(brls::RecyclerFrame*, int) override {
@@ -1412,7 +1446,9 @@ public:
                        row < stateBadges_.size() ? stateBadges_[row]
                                                  : std::string(),
                        row < iconUrls_.size() ? iconUrls_[row] : std::string(),
-                       metadata_);
+                       metadata_, selectionMode_,
+                       row < selected_.size() && selected_[row] != 0,
+                       row < selectable_.size() && selectable_[row] != 0);
         return cell;
     }
     void didSelectRowAt(brls::RecyclerFrame*, brls::IndexPath index) override;
@@ -1423,8 +1459,11 @@ private:
     std::vector<std::string> stateBadges_;
     std::vector<std::string> gameNames_;
     std::vector<std::string> iconUrls_;
+    std::vector<uint8_t> selected_;
+    std::vector<uint8_t> selectable_;
     GameMetadataService* metadata_ = nullptr;
     std::string message_;
+    bool selectionMode_ = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -1776,17 +1815,38 @@ private:
     void refreshSummary() {
         size_t selected = dataSource_->selectedCount();
         size_t selectedPackages = dataSource_->selectedPackageCount();
+        std::vector<uint8_t> mask = dataSource_->selectionMask();
+        const TransferMode mode = selectedPackages > 0 &&
+                                  preferred_ == TransferMode::StreamInstall
+            ? TransferMode::StreamInstall
+            : TransferMode::DownloadOnly;
+        const auto estimate = pipensx::estimateInstallSpace(preview_, mask,
+                                                            mode);
+        const StorageSpaceSnapshot storage =
+            pipensx::queryStorageSpace(manager_->rootPath());
+        const auto check = pipensx::assessInstallSpace(estimate, storage);
         std::string text = std::to_string(selected) + " / " +
                            std::to_string(preview_.files.size()) +
-                           " files selected";
+                           " files   " + formatBytes(estimate.requiredBytes);
+        text += storage.available
+            ? "   SD free: " + formatBytes(storage.freeBytes)
+            : "   SD free: unavailable";
         if (selectedPackages > 0) {
             text += "   " + std::to_string(selectedPackages) +
-                    " package file(s) selected";
+                    " package(s)";
         } else {
             text += "   Download-only selection";
         }
+        if (estimate.certainty ==
+            SpaceEstimateCertainty::CompressedUnknown) {
+            text += "   NSZ may expand";
+        }
+        if (check.status == InstallSpaceCheckStatus::Insufficient)
+            text += "   Need " + formatBytes(check.shortfallBytes) + " more";
         summary_->setText(text);
-        installSelected_->setState(selected == 0
+        installSelected_->setState(selected == 0 || estimate.overflow ||
+                                    check.status ==
+                                        InstallSpaceCheckStatus::Insufficient
             ? brls::ButtonState::DISABLED
             : brls::ButtonState::ENABLED);
     }
@@ -1816,6 +1876,16 @@ private:
                              preferred_ == TransferMode::StreamInstall)
             ? TransferMode::StreamInstall
             : TransferMode::DownloadOnly;
+        const auto estimate = pipensx::estimateInstallSpace(preview_, mask,
+                                                            mode);
+        const StorageSpaceSnapshot storage =
+            pipensx::queryStorageSpace(manager_->rootPath());
+        if (pipensx::assessInstallSpace(estimate, storage).status ==
+            InstallSpaceCheckStatus::Insufficient) {
+            refreshSummary();
+            brls::Application::notify("Not enough free space on SD.");
+            return;
+        }
         std::string id;
         std::string error;
         if (!manager_->importTorrent(path_, mode, mask, id, error)) {
@@ -2393,13 +2463,466 @@ private:
     bool busy_ = false;
 };
 
+class BatchInstallActivity;
+
+class BatchInstallCell : public brls::RecyclerCell {
+public:
+    BatchInstallCell() {
+        setFocusable(true);
+        setAxis(brls::Axis::ROW);
+        setAlignItems(brls::AlignItems::CENTER);
+        setPadding(12, 20, 12, 20);
+        setHeight(82);
+
+        mark_ = new brls::Label();
+        mark_->setWidth(38);
+        mark_->setFontSize(21);
+        mark_->setTextColor(nvgRGB(0, 195, 227));
+        mark_->setMarginRight(10);
+        addView(mark_);
+
+        auto* body = new brls::Box(brls::Axis::COLUMN);
+        body->setGrow(1);
+        body->setJustifyContent(brls::JustifyContent::CENTER);
+        title_ = new brls::Label();
+        title_->setSingleLine(true);
+        title_->setFontSize(18);
+        meta_ = new brls::Label();
+        meta_->setSingleLine(true);
+        meta_->setFontSize(14);
+        meta_->setMarginTop(4);
+        meta_->setTextColor(nvgRGB(160, 160, 170));
+        body->addView(title_);
+        body->addView(meta_);
+        addView(body);
+    }
+
+    void setReady(const PreparedCatalogInstall& item) {
+        mark_->setText(item.selected ? "[x]" : "[ ]");
+        mark_->setTextColor(nvgRGB(0, 195, 227));
+        title_->setText(item.entry.title);
+        std::string meta = formatBytes(item.space.requiredBytes) + " selected";
+        if (item.space.packageFiles)
+            meta += "   " + std::to_string(item.space.packageFiles) +
+                    " package(s)";
+        if (item.space.certainty ==
+            SpaceEstimateCertainty::CompressedUnknown) {
+            meta += "   NSZ: installed size may be larger";
+        }
+        meta_->setText(meta);
+    }
+
+    void setFailure(const pipensx::BatchItemFailure& failure) {
+        mark_->setText("!");
+        mark_->setTextColor(nvgRGB(235, 105, 105));
+        title_->setText(failure.entry.title);
+        meta_->setText(failure.error);
+    }
+
+private:
+    brls::Label* mark_ = nullptr;
+    brls::Label* title_ = nullptr;
+    brls::Label* meta_ = nullptr;
+};
+
+class BatchInstallDataSource : public brls::RecyclerDataSource {
+public:
+    explicit BatchInstallDataSource(BatchInstallActivity* owner)
+        : owner_(owner) {}
+
+    void setPreparation(std::shared_ptr<BatchPreparation> prepared) {
+        prepared_ = std::move(prepared);
+    }
+
+    int numberOfRows(brls::RecyclerFrame*, int) override {
+        if (!prepared_)
+            return 0;
+        return static_cast<int>(prepared_->items().size() +
+                                prepared_->failures().size());
+    }
+
+    brls::RecyclerCell* cellForRow(brls::RecyclerFrame* recycler,
+                                   brls::IndexPath index) override {
+        auto* cell = static_cast<BatchInstallCell*>(
+            recycler->dequeueReusableCell("BatchItem"));
+        const size_t row = static_cast<size_t>(index.row);
+        if (row < prepared_->items().size())
+            cell->setReady(prepared_->items()[row]);
+        else
+            cell->setFailure(
+                prepared_->failures()[row - prepared_->items().size()]);
+        return cell;
+    }
+
+    void didSelectRowAt(brls::RecyclerFrame*, brls::IndexPath index) override;
+
+private:
+    BatchInstallActivity* owner_ = nullptr;
+    std::shared_ptr<BatchPreparation> prepared_;
+};
+
+class BatchInstallActivity : public brls::Activity {
+public:
+    using CompletionCallback =
+        std::function<void(const std::unordered_set<std::string>&)>;
+
+    BatchInstallActivity(DownloadManager* manager,
+                         std::vector<CatalogEntry> entries,
+                         StreamSelection selection,
+                         CompletionCallback completion,
+                         std::function<void()> viewDownloads)
+        : manager_(manager), entries_(std::move(entries)),
+          selection_(selection), completion_(std::move(completion)),
+          viewDownloads_(std::move(viewDownloads)),
+          alive_(std::make_shared<std::atomic<bool>>(true)),
+          cancelled_(std::make_shared<std::atomic<bool>>(false)) {
+        for (const CatalogEntry& entry : entries_)
+            remaining_.insert(catalogLower(entry.infoHash));
+
+        auto resolver = [](const std::string& magnet, const std::string& path,
+                           std::atomic<bool>& cancelled,
+                           const MagnetResolver::ProgressCallback& progress,
+                           std::string& error) {
+            MagnetResolver instance;
+            return instance.resolveToFile(magnet, path, cancelled, progress,
+                                          error);
+        };
+        installer_ = std::make_shared<CatalogBatchInstaller>(
+            manager_->rootPath(), std::move(resolver));
+
+        auto* content = new brls::Box(brls::Axis::COLUMN);
+        content->setGrow(1);
+        content->setPadding(24, 38, 24, 34);
+        content->setBackgroundColor(nvgRGBA(35, 35, 40, 235));
+        content->setCornerRadius(12);
+
+        status_ = new brls::Label();
+        status_->setFontSize(17);
+        status_->setMarginBottom(12);
+        status_->setTextColor(nvgRGB(180, 180, 190));
+        status_->setText("Preparing selected games...");
+        content->addView(status_);
+
+        recycler_ = new brls::RecyclerFrame();
+        recycler_->setGrow(1);
+        recycler_->setPadding(6, 0, 6, 0);
+        recycler_->estimatedRowHeight = 82;
+        recycler_->registerCell("BatchItem",
+                                [] { return new BatchInstallCell(); });
+        dataSource_ = new BatchInstallDataSource(this);
+        recycler_->setDataSource(dataSource_);
+        recycler_->setVisibility(brls::Visibility::GONE);
+        content->addView(recycler_);
+
+        controls_ = new brls::Box(brls::Axis::COLUMN);
+        controls_->setMarginTop(14);
+        controls_->setVisibility(brls::Visibility::GONE);
+        auto* row = new brls::Box(brls::Axis::ROW);
+        row->setMarginBottom(10);
+        auto* selectAll = new brls::Button();
+        selectAll->setStyle(&brls::BUTTONSTYLE_DEFAULT);
+        selectAll->setGrow(1);
+        selectAll->setHeight(48);
+        selectAll->setMarginRight(10);
+        selectAll->setText("Select ready");
+        selectAll->registerClickAction([this](brls::View*) {
+            setAllPrepared(true);
+            return true;
+        });
+        row->addView(selectAll);
+        auto* clear = new brls::Button();
+        clear->setStyle(&brls::BUTTONSTYLE_DEFAULT);
+        clear->setGrow(1);
+        clear->setHeight(48);
+        clear->setText("Clear");
+        clear->registerClickAction([this](brls::View*) {
+            setAllPrepared(false);
+            return true;
+        });
+        row->addView(clear);
+        controls_->addView(row);
+
+        enqueue_ = new brls::Button();
+        enqueue_->setStyle(&brls::BUTTONSTYLE_PRIMARY);
+        enqueue_->setHeight(58);
+        enqueue_->setText("Add to queue");
+        enqueue_->registerClickAction([this](brls::View*) {
+            enqueuePrepared();
+            return true;
+        });
+        controls_->addView(enqueue_);
+        content->addView(controls_);
+
+        resultControls_ = new brls::Box(brls::Axis::ROW);
+        resultControls_->setMarginTop(14);
+        resultControls_->setVisibility(brls::Visibility::GONE);
+        auto* downloads = new brls::Button();
+        downloads->setStyle(&brls::BUTTONSTYLE_PRIMARY);
+        downloads->setGrow(1);
+        downloads->setHeight(54);
+        downloads->setMarginRight(10);
+        downloads->setText("View downloads");
+        downloads->registerClickAction([this](brls::View*) {
+            auto callback = viewDownloads_;
+            brls::delay(100, [callback] {
+                if (callback)
+                    callback();
+            });
+            brls::Application::popActivity();
+            return true;
+        });
+        resultControls_->addView(downloads);
+        resultBack_ = new brls::Button();
+        resultBack_->setStyle(&brls::BUTTONSTYLE_DEFAULT);
+        resultBack_->setGrow(1);
+        resultBack_->setHeight(54);
+        resultBack_->setText("Back to catalog");
+        resultBack_->registerClickAction([](brls::View*) {
+            brls::Application::popActivity();
+            return true;
+        });
+        resultControls_->addView(resultBack_);
+        content->addView(resultControls_);
+
+        frame_ = new brls::AppletFrame(content);
+        frame_->setTitle("Batch install");
+    }
+
+    ~BatchInstallActivity() override {
+        alive_->store(false);
+        cancelled_->store(true);
+    }
+
+    brls::View* createContentView() override { return frame_; }
+
+    void onContentAvailable() override {
+        cancelAction_ = registerAction("Cancel", brls::BUTTON_Y,
+                                       [this](brls::View*) {
+            cancelled_->store(true);
+            status_->setText("Cancelling preparation...");
+            return true;
+        });
+        startPreparation();
+    }
+
+    void togglePrepared(size_t index) {
+        if (!prepared_ || index >= prepared_->items().size())
+            return;
+        prepared_->items()[index].selected =
+            !prepared_->items()[index].selected;
+        recycler_->reloadData();
+        refreshSummary();
+    }
+
+private:
+    void startPreparation() {
+        auto alive = alive_;
+        auto cancelled = cancelled_;
+        auto installer = installer_;
+        auto entries = entries_;
+        StreamSelection selection = selection_;
+        brls::async([this, alive, cancelled, installer, entries, selection] {
+            auto progress = [this, alive](
+                                const pipensx::BatchPrepareProgress& value) {
+                std::string stage;
+                switch (value.magnet.stage) {
+                    case pipensx::MagnetProgress::Stage::FindingPeers:
+                        stage = "Finding peers";
+                        break;
+                    case pipensx::MagnetProgress::Stage::Connecting:
+                        stage = "Connecting";
+                        break;
+                    case pipensx::MagnetProgress::Stage::FetchingMetadata:
+                        stage = "Fetching metadata";
+                        break;
+                    case pipensx::MagnetProgress::Stage::Validating:
+                        stage = "Validating";
+                        break;
+                }
+                std::string text = "Preparing " +
+                    std::to_string(value.index) + "/" +
+                    std::to_string(value.total) + ": " + value.title +
+                    "\n" + stage + "...   (Y to cancel)";
+                brls::sync([this, alive, text] {
+                    if (alive->load())
+                        status_->setText(text);
+                });
+            };
+            auto prepared = std::make_shared<BatchPreparation>(
+                installer->prepare(entries, selection, *cancelled, progress));
+            brls::sync([this, alive, prepared] {
+                if (!alive->load())
+                    return;
+                prepared_ = prepared;
+                if (prepared_->cancelled()) {
+                    status_->setText("Preparation cancelled. Press B to return.");
+                    return;
+                }
+                dataSource_->setPreparation(prepared_);
+                recycler_->setVisibility(brls::Visibility::VISIBLE);
+                controls_->setVisibility(brls::Visibility::VISIBLE);
+                recycler_->reloadData();
+                if (cancelAction_ != ACTION_NONE) {
+                    unregisterAction(cancelAction_);
+                    cancelAction_ = ACTION_NONE;
+                }
+                queueAction_ = registerAction(
+                    "Add to queue", brls::BUTTON_RB,
+                    [this](brls::View*) {
+                        enqueuePrepared();
+                        return true;
+                    });
+                refreshSummary();
+            });
+        });
+    }
+
+    void setAllPrepared(bool selected) {
+        if (!prepared_)
+            return;
+        for (PreparedCatalogInstall& item : prepared_->items())
+            item.selected = selected;
+        recycler_->reloadData();
+        refreshSummary();
+    }
+
+    void refreshSummary() {
+        if (!prepared_)
+            return;
+        size_t selected = 0;
+        for (const PreparedCatalogInstall& item : prepared_->items())
+            selected += item.selected ? 1 : 0;
+        const auto estimate = prepared_->selectedSpace();
+        storage_ = pipensx::queryStorageSpace(manager_->rootPath());
+        const auto check = pipensx::assessInstallSpace(estimate, storage_);
+
+        std::string text = std::to_string(selected) + " ready selected";
+        if (!prepared_->failures().empty())
+            text += "   " + std::to_string(prepared_->failures().size()) +
+                    " failed";
+        text += "\nSelected: " + formatBytes(estimate.requiredBytes);
+        if (storage_.available)
+            text += "   SD free: " + formatBytes(storage_.freeBytes);
+        else
+            text += "   SD free: unavailable";
+        if (estimate.certainty ==
+            SpaceEstimateCertainty::CompressedUnknown) {
+            text += "\nNSZ is compressed; exact installed size is checked per NCA.";
+        }
+        if (check.status == InstallSpaceCheckStatus::Insufficient)
+            text += "\nNot enough space. Free " +
+                    formatBytes(check.shortfallBytes) + " more.";
+        else if (!storage_.available && !storage_.error.empty())
+            text += "\n" + storage_.error;
+        status_->setText(text);
+
+        const bool enabled = selected > 0 && !estimate.overflow &&
+            check.status != InstallSpaceCheckStatus::Insufficient;
+        enqueue_->setState(enabled ? brls::ButtonState::ENABLED
+                                   : brls::ButtonState::DISABLED);
+        enqueue_->setText("Add " + std::to_string(selected) + " to queue");
+    }
+
+    void enqueuePrepared() {
+        if (!prepared_ || enqueueFinished_)
+            return;
+        const auto estimate = prepared_->selectedSpace();
+        if (estimate.selectedFiles == 0 || estimate.overflow) {
+            refreshSummary();
+            brls::Application::notify("Select at least one ready game.");
+            return;
+        }
+        storage_ = pipensx::queryStorageSpace(manager_->rootPath());
+        const auto check = pipensx::assessInstallSpace(estimate, storage_);
+        if (check.status == InstallSpaceCheckStatus::Insufficient) {
+            refreshSummary();
+            brls::Application::notify("Not enough free space on SD.");
+            return;
+        }
+
+        pipensx::BatchEnqueueResult result =
+            installer_->enqueue(*prepared_, *manager_);
+        for (const std::string& hash : result.queuedInfoHashes)
+            remaining_.erase(catalogLower(hash));
+        if (completion_)
+            completion_(remaining_);
+        enqueueFinished_ = true;
+        std::string message = "Added " +
+            std::to_string(result.taskIds.size()) + " to the queue.";
+        const size_t failures = prepared_->failures().size() +
+                                result.failures.size();
+        if (failures)
+            message += " " + std::to_string(failures) + " failed.";
+        if (result.skipped)
+            message += " " + std::to_string(result.skipped) + " skipped.";
+        if (!remaining_.empty())
+            message += "\nUnfinished games stay selected for retry.";
+        size_t shown = 0;
+        for (const pipensx::BatchItemFailure& failure :
+             prepared_->failures()) {
+            if (shown++ == 3)
+                break;
+            message += "\n" + failure.entry.title + ": " + failure.error;
+        }
+        for (const pipensx::BatchItemFailure& failure : result.failures) {
+            if (shown++ == 3)
+                break;
+            message += "\n" + failure.entry.title + ": " + failure.error;
+        }
+        status_->setText(message);
+        recycler_->setVisibility(brls::Visibility::GONE);
+        controls_->setVisibility(brls::Visibility::GONE);
+        resultControls_->setVisibility(brls::Visibility::VISIBLE);
+        resultBack_->setText(remaining_.empty() ? "Back to catalog"
+                                                : "Back to selected");
+        if (queueAction_ != ACTION_NONE) {
+            unregisterAction(queueAction_);
+            queueAction_ = ACTION_NONE;
+        }
+    }
+
+    DownloadManager* manager_ = nullptr;
+    std::vector<CatalogEntry> entries_;
+    StreamSelection selection_ = StreamSelection::AllFiles;
+    CompletionCallback completion_;
+    std::function<void()> viewDownloads_;
+    std::unordered_set<std::string> remaining_;
+    std::shared_ptr<std::atomic<bool>> alive_;
+    std::shared_ptr<std::atomic<bool>> cancelled_;
+    std::shared_ptr<CatalogBatchInstaller> installer_;
+    std::shared_ptr<BatchPreparation> prepared_;
+    StorageSpaceSnapshot storage_;
+    brls::AppletFrame* frame_ = nullptr;
+    brls::Label* status_ = nullptr;
+    brls::RecyclerFrame* recycler_ = nullptr;
+    BatchInstallDataSource* dataSource_ = nullptr;
+    brls::Box* controls_ = nullptr;
+    brls::Button* enqueue_ = nullptr;
+    brls::Box* resultControls_ = nullptr;
+    brls::Button* resultBack_ = nullptr;
+    brls::ActionIdentifier cancelAction_ = ACTION_NONE;
+    brls::ActionIdentifier queueAction_ = ACTION_NONE;
+    bool enqueueFinished_ = false;
+};
+
+void BatchInstallDataSource::didSelectRowAt(brls::RecyclerFrame*,
+                                            brls::IndexPath index) {
+    if (!prepared_ || index.row < 0)
+        return;
+    const size_t row = static_cast<size_t>(index.row);
+    if (row < prepared_->items().size())
+        owner_->togglePrepared(row);
+}
+
 class CatalogView : public brls::Box {
 public:
     CatalogView(DownloadManager* manager, CatalogService* catalog,
                 GameMetadataService* metadata,
-                InstalledTitleService* installed, AppSettings* settings)
+                InstalledTitleService* installed, AppSettings* settings,
+                std::function<void()> openDownloads)
         : brls::Box(brls::Axis::COLUMN), manager_(manager), catalog_(catalog),
           metadata_(metadata), installed_(installed), settings_(settings),
+          openDownloads_(std::move(openDownloads)),
           alive_(std::make_shared<std::atomic<bool>>(true)),
           cancelled_(std::make_shared<std::atomic<bool>>(false)) {
         recycler_ = new brls::RecyclerFrame();
@@ -2418,7 +2941,48 @@ public:
         status_->setMarginLeft(34);
         status_->setMarginBottom(2);
         status_->setTextColor(nvgRGB(140, 140, 150));
+
+        batchControls_ = new brls::Box(brls::Axis::ROW);
+        batchControls_->setMarginTop(8);
+        batchControls_->setMarginLeft(34);
+        batchControls_->setMarginRight(34);
+        batchControls_->setVisibility(brls::Visibility::GONE);
+        auto* selectVisible = new brls::Button();
+        selectVisible->setStyle(&brls::BUTTONSTYLE_DEFAULT);
+        selectVisible->setGrow(1);
+        selectVisible->setHeight(44);
+        selectVisible->setMarginRight(8);
+        selectVisible->setText("Select visible");
+        selectVisible->registerClickAction([this](brls::View*) {
+            selectVisibleEntries();
+            return true;
+        });
+        batchControls_->addView(selectVisible);
+        auto* clearSelection = new brls::Button();
+        clearSelection->setStyle(&brls::BUTTONSTYLE_DEFAULT);
+        clearSelection->setGrow(1);
+        clearSelection->setHeight(44);
+        clearSelection->setMarginRight(8);
+        clearSelection->setText("Clear");
+        clearSelection->registerClickAction([this](brls::View*) {
+            selectedHashes_.clear();
+            rebuildEntries();
+            return true;
+        });
+        batchControls_->addView(clearSelection);
+        prepareBatch_ = new brls::Button();
+        prepareBatch_->setStyle(&brls::BUTTONSTYLE_PRIMARY);
+        prepareBatch_->setGrow(1);
+        prepareBatch_->setHeight(44);
+        prepareBatch_->setText("Prepare");
+        prepareBatch_->registerClickAction([this](brls::View*) {
+            prepareSelectedEntries();
+            return true;
+        });
+        batchControls_->addView(prepareBatch_);
+
         addView(status_);
+        addView(batchControls_);
         addView(recycler_);
         rebuildEntries();
 
@@ -2434,7 +2998,15 @@ public:
             return true;
         });
         registerAction("Refresh", brls::BUTTON_RB, [this](brls::View*) {
-            refreshCatalog();
+            if (batchMode_)
+                prepareSelectedEntries();
+            else
+                refreshCatalog();
+            return true;
+        });
+        registerAction("Batch install", brls::BUTTON_LB,
+                       [this](brls::View*) {
+            toggleBatchMode();
             return true;
         });
         observedSettingsGeneration_ = settings_ ? settings_->generation() : 0;
@@ -2467,6 +3039,17 @@ public:
         const CatalogEntry* picked = dataSource_->entryAt(row);
         if (!picked || busy_)
             return;
+        if (batchMode_) {
+            if (!dataSource_->selectableAt(row)) {
+                brls::Application::notify("This item is already in Downloads.");
+                return;
+            }
+            const std::string hash = lowerAscii(picked->infoHash);
+            if (selectedHashes_.erase(hash) == 0)
+                selectedHashes_.insert(hash);
+            rebuildEntries();
+            return;
+        }
         CatalogEntry entry = *picked;
         auto it = catalogFailures_.find(lowerAscii(entry.infoHash));
         std::string lastFailure =
@@ -2494,6 +3077,117 @@ private:
                            return static_cast<char>(std::tolower(c));
                        });
         return value;
+    }
+
+    void toggleBatchMode() {
+        if (busy_)
+            return;
+        batchMode_ = !batchMode_;
+        batchControls_->setVisibility(batchMode_ ? brls::Visibility::VISIBLE
+                                                 : brls::Visibility::GONE);
+        updateActionHint(brls::BUTTON_LB,
+                         batchMode_ ? "Close batch" : "Batch install");
+        updateActionHint(brls::BUTTON_RB,
+                         batchMode_ ? "Prepare" : "Refresh");
+        rebuildEntries();
+    }
+
+    void selectVisibleEntries() {
+        if (!batchMode_)
+            return;
+        for (size_t row = 0; row < dataSource_->entries().size(); ++row) {
+            if (dataSource_->selectableAt(static_cast<int>(row)))
+                selectedHashes_.insert(
+                    lowerAscii(dataSource_->entries()[row].infoHash));
+        }
+        rebuildEntries();
+    }
+
+    void prepareSelectedEntries() {
+        if (!batchMode_ || selectedHashes_.empty() || busy_)
+            return;
+
+        std::unordered_set<std::string> managed;
+        for (const DownloadTask& task : manager_->snapshot())
+            managed.insert(lowerAscii(task.id));
+
+        std::vector<CatalogEntry> entries;
+        for (const CatalogEntry& entry : catalog_->entries()) {
+            const std::string hash = lowerAscii(entry.infoHash);
+            if (selectedHashes_.count(hash) && !managed.count(hash))
+                entries.push_back(entry);
+        }
+        if (sort_ == SortMode::Alphabetical) {
+            std::stable_sort(entries.begin(), entries.end(),
+                [](const CatalogEntry& left, const CatalogEntry& right) {
+                    return lowerAscii(left.title) < lowerAscii(right.title);
+                });
+        } else if (sort_ == SortMode::Largest) {
+            std::stable_sort(entries.begin(), entries.end(),
+                [](const CatalogEntry& left, const CatalogEntry& right) {
+                    return left.size > right.size;
+                });
+        } else {
+            std::stable_sort(entries.begin(), entries.end(),
+                [](const CatalogEntry& left, const CatalogEntry& right) {
+                    return left.publishedAt > right.publishedAt;
+                });
+        }
+        for (const std::string& hash : managed)
+            selectedHashes_.erase(hash);
+        if (entries.empty()) {
+            rebuildEntries();
+            brls::Application::notify("Select at least one available game.");
+            return;
+        }
+
+        auto alive = alive_;
+        auto completion = [this, alive](
+                              const std::unordered_set<std::string>& remaining) {
+            if (!alive->load())
+                return;
+            selectedHashes_ = remaining;
+            rebuildEntries();
+        };
+        const StreamSelection selection = settings_
+            ? settings_->get().streamSelection
+            : StreamSelection::AllFiles;
+        brls::Application::pushActivity(new BatchInstallActivity(
+            manager_, std::move(entries), selection, std::move(completion),
+            openDownloads_));
+    }
+
+    void refreshBatchStatus() {
+        uint64_t bytes = 0;
+        size_t unknown = 0;
+        for (const CatalogEntry& entry : catalog_->entries()) {
+            if (!selectedHashes_.count(lowerAscii(entry.infoHash)))
+                continue;
+            if (!entry.size) {
+                ++unknown;
+                continue;
+            }
+            if (entry.size > std::numeric_limits<uint64_t>::max() - bytes)
+                bytes = std::numeric_limits<uint64_t>::max();
+            else
+                bytes += entry.size;
+        }
+        const StorageSpaceSnapshot storage =
+            pipensx::queryStorageSpace(manager_->rootPath());
+        std::string text = std::to_string(selectedHashes_.size()) +
+                           " selected   Catalog size: " + formatBytes(bytes);
+        if (unknown)
+            text += " + " + std::to_string(unknown) + " unknown";
+        text += storage.available
+            ? "   SD free: " + formatBytes(storage.freeBytes)
+            : "   SD free: unavailable";
+        status_->setText(text);
+        const bool available = !selectedHashes_.empty();
+        prepareBatch_->setState(available ? brls::ButtonState::ENABLED
+                                          : brls::ButtonState::DISABLED);
+        prepareBatch_->setText("Prepare " +
+                               std::to_string(selectedHashes_.size()));
+        setActionAvailable(brls::BUTTON_RB, available);
     }
 
     void rebuildEntries() {
@@ -2542,14 +3236,20 @@ private:
         std::vector<std::string> stateBadges;
         std::vector<std::string> gameNames;
         std::vector<std::string> iconUrls;
+        std::vector<uint8_t> selected;
+        std::vector<uint8_t> selectable;
         stateBadges.reserve(visible.size());
         gameNames.reserve(visible.size());
         iconUrls.reserve(visible.size());
+        selected.reserve(visible.size());
+        selectable.reserve(visible.size());
         for (const CatalogEntry& entry : visible) {
             std::string hash = lowerAscii(entry.infoHash);
             auto it = added.find(hash);
+            const bool canSelect = it == added.end();
             if (it != added.end()) {
                 stateBadges.push_back(badgeForStatus(it->second));
+                selectedHashes_.erase(hash);
             } else
                 stateBadges.emplace_back();
             const GameMetadata* meta = metadata_->findByInfoHash(entry.infoHash);
@@ -2558,12 +3258,15 @@ private:
                 stateBadges.back() = "Installed";
             gameNames.push_back(meta ? meta->name : std::string());
             iconUrls.push_back(meta ? meta->iconUrl : std::string());
+            selected.push_back(selectedHashes_.count(hash) ? 1 : 0);
+            selectable.push_back(canSelect ? 1 : 0);
         }
 
         size_t count = visible.size();
         dataSource_->setEntries(std::move(visible), std::move(stateBadges),
                                 std::move(gameNames), std::move(iconUrls),
-                                metadata_);
+                                std::move(selected), std::move(selectable),
+                                metadata_, batchMode_);
         dataSource_->setMessage(query_.empty()
             ? "Catalog is empty. Press R to refresh."
             : "Nothing found. Press X to change the search.");
@@ -2572,11 +3275,14 @@ private:
         countText_ = query_.empty()
             ? withThousands(count) + (count == 1 ? " release" : " releases")
             : withThousands(count) + (count == 1 ? " match" : " matches");
-        if (!busy_) {
+        if (!busy_ && batchMode_) {
+            refreshBatchStatus();
+        } else if (!busy_) {
             std::string filter = settings_ &&
                 settings_->get().catalogFilter == CatalogFilter::Games
                 ? "Games" : "All";
             status_->setText(countText_ + "   Filter: " + filter);
+            setActionAvailable(brls::BUTTON_RB, true);
         }
     }
 
@@ -2726,16 +3432,21 @@ private:
     GameMetadataService* metadata_;
     InstalledTitleService* installed_;
     AppSettings* settings_;
+    std::function<void()> openDownloads_;
     brls::RecyclerFrame* recycler_;
     CatalogDataSource* dataSource_;
     brls::Label* status_;
+    brls::Box* batchControls_ = nullptr;
+    brls::Button* prepareBatch_ = nullptr;
     std::shared_ptr<std::atomic<bool>> alive_;
     std::shared_ptr<std::atomic<bool>> cancelled_;
     std::unordered_map<std::string, std::string> catalogFailures_;
+    std::unordered_set<std::string> selectedHashes_;
     std::string query_;
     std::string countText_;
     SortMode sort_ = SortMode::Latest;
     bool busy_ = false;
+    bool batchMode_ = false;
     brls::RepeatingTimer timer_;
     uint64_t observedSettingsGeneration_ = 0;
     uint64_t taskSignature_ = 0;
@@ -3237,9 +3948,9 @@ public:
           installed_(installed), settings_(settings) {
         auto* tabs = new brls::TabFrame();
         tabs->addTab("Catalog", [manager, catalog, metadata, installed,
-                                  settings] {
+                                  settings, tabs] {
             return new CatalogView(manager, catalog, metadata, installed,
-                                   settings);
+                                   settings, [tabs] { tabs->focusTab(1); });
         });
         tabs->addTab("Downloads", [manager, metadata, settings] {
             return new MainView(manager, metadata, settings);

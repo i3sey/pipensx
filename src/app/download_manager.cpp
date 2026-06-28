@@ -874,6 +874,7 @@ bool DownloadManager::previewTorrent(const std::string& path,
         file.path = metainfo.files[i].path;
         file.length = static_cast<uint64_t>(metainfo.files[i].length);
         file.package = hasPackageExtension(metainfo.files[i].path);
+        file.compressed = isCompressedPackage(metainfo.files[i].path);
         if (file.package)
             ++preview.packageCount;
         file.cartridge = isCartridgeDump(metainfo.files[i].path);
