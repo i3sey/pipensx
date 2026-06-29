@@ -114,12 +114,6 @@ BatchPreparation CatalogBatchInstaller::prepare(
                                       : error});
             continue;
         }
-        if (cancelled.load()) {
-            ::unlink(path.c_str());
-            result.cancelled_ = true;
-            break;
-        }
-
         TorrentPreview preview;
         if (!DownloadManager::previewTorrent(path, preview, error)) {
             ::unlink(path.c_str());

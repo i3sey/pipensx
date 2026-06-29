@@ -133,6 +133,25 @@ int main() {
     }
 
     {
+        CatalogBatchInstaller installer(
+            root,
+            [source](const std::string&, const std::string& target,
+                     std::atomic<bool>& cancelled,
+                     const MagnetResolver::ProgressCallback&,
+                     std::string&) {
+                const bool copied = copyFile(source, target);
+                cancelled.store(true);
+                return copied;
+            });
+        std::atomic<bool> cancelled{false};
+        BatchPreparation prepared = installer.prepare(
+            {entry}, StreamSelection::PackagesOnly, cancelled, {});
+        assert(!prepared.cancelled());
+        assert(prepared.failures().empty());
+        assert(prepared.items().size() == 1);
+    }
+
+    {
         std::string temporary;
         CatalogBatchInstaller installer(
             root,

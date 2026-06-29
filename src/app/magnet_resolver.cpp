@@ -327,9 +327,10 @@ bool fetchMetadataFromPeer(const uint8_t* compact,
                            uint32_t peerCount,
                            uint64_t deadline,
                            std::atomic<bool>& cancelled,
+                           std::atomic<bool>& stopWorkers,
                            const MagnetResolver::ProgressCallback& progress,
                            std::vector<uint8_t>& metadata) {
-    if (cancelled || now_ms() >= deadline)
+    if (cancelled || stopWorkers || now_ms() >= deadline)
         return false;
     if (progress)
         progress({MagnetProgress::Stage::Connecting, 0, 0, peerIndex + 1,
@@ -363,7 +364,8 @@ bool fetchMetadataFromPeer(const uint8_t* compact,
     uint32_t completed = 0;
     uint32_t inFlight = 0;
 
-    while (!cancelled && now_ms() < deadline && completed < received.size()) {
+    while (!cancelled && !stopWorkers && now_ms() < deadline &&
+           completed < received.size()) {
         for (uint32_t piece = 0;
              piece < received.size() && inFlight < kRequestPipeline; ++piece) {
             if (received[piece] || requested[piece])
@@ -591,12 +593,13 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
     std::mutex mutex;
     uint32_t nextPeer = 0;
     bool resolved = false;
+    std::atomic<bool> stopWorkers{false};
     std::vector<uint8_t> metadata;
     std::vector<std::thread> workers;
     uint32_t workerCount = std::min(peerCount, kMaxConcurrentPeers);
     for (uint32_t worker = 0; worker < workerCount; ++worker) {
         workers.emplace_back([&] {
-            while (!cancelled && now_ms() < deadline) {
+            while (!cancelled && !stopWorkers && now_ms() < deadline) {
                 uint32_t peerIndex = 0;
                 {
                     std::lock_guard<std::mutex> lock(mutex);
@@ -608,7 +611,8 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
                 std::vector<uint8_t> candidate;
                 if (!fetchMetadataFromPeer(peers.data() + peerIndex * 6, spec,
                                            peerId, peerIndex, peerCount,
-                                           deadline, cancelled, progress,
+                                           deadline, cancelled, stopWorkers,
+                                           progress,
                                            candidate))
                     continue;
 
@@ -625,7 +629,7 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
                     if (!resolved) {
                         metadata = std::move(candidate);
                         resolved = true;
-                        cancelled.store(true);
+                        stopWorkers.store(true);
                     }
                 }
                 return;
