@@ -21,6 +21,7 @@ build-switch/
 
 # Local scratch / working directories
 .tmp/
+/rutracker-*.xml.xz
 
 # Python bytecode
 __pycache__/
