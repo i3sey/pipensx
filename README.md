@@ -2,6 +2,11 @@
 
 Native BitTorrent download manager for Nintendo Switch homebrew.
 
+> [!NOTE]
+> This project was written with substantial assistance from AI tools. AI was
+> used for code generation, refactoring, testing, review, and documentation;
+> generated changes are still built and validated before release.
+
 The Switch interface uses Borealis with its native NanoVG/deko3d renderer. It
 follows the system UI conventions for focus, controller hints, touch input,
 light/dark themes, and handheld/docked scaling.
@@ -26,6 +31,69 @@ light/dark themes, and handheld/docked scaling.
 - application, update, and DLC packages; exact installed versions are skipped
 
 Magnet links and per-file selection are not supported.
+
+## Building
+
+### Nintendo Switch
+
+Requirements:
+
+- [devkitPro](https://devkitpro.org/wiki/Getting_Started) with devkitA64 and
+  libnx
+- CMake 3.13 or newer
+- `switch-curl`, `switch-mbedtls`, `switch-zlib`, and `switch-miniupnpc`
+
+Clone the repository together with its pinned submodules:
+
+```bash
+git clone --recurse-submodules https://github.com/i3sey/pipensx.git
+cd pipensx
+```
+
+If the repository was cloned without `--recurse-submodules`, initialize the
+dependencies separately:
+
+```bash
+git submodule update --init --recursive
+```
+
+Install the Switch dependencies on a devkitPro pacman installation:
+
+```bash
+sudo dkp-pacman -S switch-dev switch-curl switch-mbedtls \
+  switch-zlib switch-miniupnpc
+```
+
+Build the release NRO:
+
+```bash
+export DEVKITPRO=/opt/devkitpro
+make -f Makefile.switch
+```
+
+The resulting application is written to:
+
+```text
+build-switch/pipensx.nro
+```
+
+If CMake is not available through `PATH`, specify it explicitly:
+
+```bash
+CMAKE_BIN=/path/to/cmake make -f Makefile.switch
+```
+
+### PC core and tests
+
+The portable torrent core can be built and tested on Linux or macOS with a
+C/C++ toolchain, Make, pthreads, libcurl, zstd, and OpenSSL development files:
+
+```bash
+make -f Makefile.pc
+make -f Makefile.pc test
+```
+
+See [BUILD.md](BUILD.md) for additional build details.
 
 ## Install
 
@@ -112,8 +180,6 @@ flow is opened.
   torrents.
 - Runtime behavior such as sleep/wake and long downloads must be validated on
   a physical Switch.
-
-See [BUILD.md](BUILD.md) for build instructions.
 
 Third-party components and format references are listed in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
