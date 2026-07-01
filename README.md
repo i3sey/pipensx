@@ -117,3 +117,9 @@ See [BUILD.md](BUILD.md) for build instructions.
 
 Third-party components and format references are listed in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+## License
+
+pipensx is licensed under the GNU General Public License v3.0. See
+[LICENSE](LICENSE) for the full text. Third-party components retain their
+original licenses as described in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

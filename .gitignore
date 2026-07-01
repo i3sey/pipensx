@@ -1,9 +1,9 @@
 # Build artifacts
 /pipensx
-/tests/test_piece
-/tests/test_manager
-/tests/test_package_stream
-/tests/test_torrent
+/tests/test_*
+!/tests/test_*.c
+!/tests/test_*.cpp
+!/tests/test_*.py
 *.elf
 *.nro
 *.nacp
@@ -18,3 +18,10 @@ build-switch/
 
 # Log files
 *.log
+
+# Local scratch / working directories
+.tmp/
+
+# Python bytecode
+__pycache__/
+*.pyc

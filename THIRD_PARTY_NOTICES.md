@@ -1,5 +1,9 @@
 # Third-Party Notices
 
+pipensx itself is licensed under the GNU General Public License v3.0 (see
+[LICENSE](LICENSE)). The third-party components bundled in `vendor/` and
+referenced below retain their original licenses.
+
 ## zstd
 
 Source: <https://github.com/facebook/zstd>
