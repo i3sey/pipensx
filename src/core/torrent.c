@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <pthread.h>
 
 #ifdef __SWITCH__
 #  include <miniupnpc/miniupnpc.h>
@@ -98,6 +99,21 @@ struct torrent {
     uint64_t last_tracker_ms;
     uint64_t last_dht_ms;
     uint64_t last_connect_ms;
+
+    /* Async tracker announce: tracker_announce() blocks up to 5 s per tracker,
+       so it runs on a worker thread instead of freezing the event loop. The
+       loop launches a run (announce_start), keeps servicing peers, and drains
+       results on a later tick (announce_collect). async_ok is 0 only if the
+       mutex failed to init, in which case announces fall back to synchronous. */
+    pthread_t       announce_thread;
+    pthread_mutex_t announce_mutex;
+    int             async_ok;
+    int             announce_active;  /* thread launched, not yet collected */
+    int             announce_done;    /* guarded by announce_mutex */
+    uint32_t        announce_count;   /* guarded by announce_mutex */
+    uint8_t         announce_compact[200*6];
+    int64_t         announce_downloaded;
+    int64_t         announce_left;
     uint32_t startup_verify_index;
     int      startup_verifying;
     uint32_t final_verify_index;
@@ -106,6 +122,8 @@ struct torrent {
     char     error[256];
 
 #ifdef __SWITCH__
+    pthread_t       upnp_thread;
+    int             upnp_thread_active;
     struct UPNPUrls upnp_urls;
     struct IGDdatas upnp_data;
     char            upnp_lanaddr[64];
@@ -662,6 +680,103 @@ static int check_completion(torrent_t *t) {
     return 0;
 }
 
+/* ---- async tracker announce ---- */
+static void announce_push_results(torrent_t *t, const uint8_t *compact,
+                                  uint32_t n) {
+    for (uint32_t i = 0; i < n; i++)
+        queue_push(t, *(uint32_t*)(compact+i*6), *(uint16_t*)(compact+i*6+4));
+}
+
+static void *announce_worker(void *arg) {
+    torrent_t *t = (torrent_t*)arg;
+    /* mi/peer_id/listen_port are immutable for the torrent's life;
+       downloaded/left were snapshotted before the thread was launched. */
+    uint8_t compact[200*6];
+    uint32_t n = tracker_announce(&t->mi, t->peer_id, t->listen_port,
+                                  t->announce_downloaded, t->announce_left,
+                                  compact, 200);
+    pthread_mutex_lock(&t->announce_mutex);
+    memcpy(t->announce_compact, compact, (size_t)n*6);
+    t->announce_count = n;
+    t->announce_done  = 1;
+    pthread_mutex_unlock(&t->announce_mutex);
+    return NULL;
+}
+
+/* Kick off an announce. No-op if one is already in flight. Falls back to a
+   synchronous announce if threading is unavailable or spawn fails. */
+static void announce_start(torrent_t *t, int64_t downloaded, int64_t left) {
+    if (t->announce_active)
+        return;
+    t->announce_downloaded = downloaded;
+    t->announce_left       = left;
+    if (t->async_ok) {
+        t->announce_done  = 0;
+        t->announce_count = 0;
+        if (pthread_create(&t->announce_thread, NULL, announce_worker, t) == 0) {
+            t->announce_active = 1;
+            return;
+        }
+        log_msg("[torrent] announce thread spawn failed, running inline\n");
+    }
+    uint8_t compact[200*6];
+    uint32_t n = tracker_announce(&t->mi, t->peer_id, t->listen_port,
+                                  downloaded, left, compact, 200);
+    announce_push_results(t, compact, n);
+    log_msg("[torrent] announce (sync): %u peers\n", n);
+}
+
+/* Drain a finished async announce into the peer queue. Called every tick. */
+static void announce_collect(torrent_t *t) {
+    if (!t->announce_active)
+        return;
+    pthread_mutex_lock(&t->announce_mutex);
+    int done = t->announce_done;
+    pthread_mutex_unlock(&t->announce_mutex);
+    if (!done)
+        return;
+    pthread_join(t->announce_thread, NULL); /* publishes worker's writes */
+    t->announce_active = 0;
+    announce_push_results(t, t->announce_compact, t->announce_count);
+    log_msg("[torrent] announce (async): %u peers\n", t->announce_count);
+}
+
+#ifdef __SWITCH__
+/* UPnP discover + port mapping blocks ~2 s; run it once in the background at
+   start so torrent_create_ex returns immediately. Joined in torrent_destroy. */
+static void *upnp_worker(void *arg) {
+    torrent_t *t = (torrent_t*)arg;
+    int upnp_err = 0;
+    struct UPNPDev *devlist = upnpDiscover(2000, NULL, NULL, 0, 0, 2, &upnp_err);
+    if (devlist) {
+        int ret = UPNP_GetValidIGD(devlist, &t->upnp_urls, &t->upnp_data,
+                                   t->upnp_lanaddr, sizeof(t->upnp_lanaddr));
+        if (ret == 1) {
+            snprintf(t->upnp_port_str, sizeof(t->upnp_port_str), "%u",
+                     (unsigned)t->listen_port);
+            int r1 = UPNP_AddPortMapping(t->upnp_urls.controlURL,
+                t->upnp_data.first.servicetype,
+                t->upnp_port_str, t->upnp_port_str,
+                t->upnp_lanaddr, "pipensx", "TCP", NULL, "0");
+            int r2 = UPNP_AddPortMapping(t->upnp_urls.controlURL,
+                t->upnp_data.first.servicetype,
+                t->upnp_port_str, t->upnp_port_str,
+                t->upnp_lanaddr, "pipensx", "UDP", NULL, "0");
+            t->upnp_mapped = (r1 == UPNPCOMMAND_SUCCESS || r2 == UPNPCOMMAND_SUCCESS);
+            log_msg("[upnp] port %u: TCP=%s UDP=%s\n", (unsigned)t->listen_port,
+                    r1 == UPNPCOMMAND_SUCCESS ? "ok" : "fail",
+                    r2 == UPNPCOMMAND_SUCCESS ? "ok" : "fail");
+        } else {
+            log_msg("[upnp] no IGD found (ret=%d)\n", ret);
+        }
+        freeUPNPDevlist(devlist);
+    } else {
+        log_msg("[upnp] discover failed (err=%d)\n", upnp_err);
+    }
+    return NULL;
+}
+#endif
+
 /* ---- create ---- */
 torrent_t *torrent_create_ex(const metainfo_t *mi,
                              uint16_t listen_port,
@@ -717,56 +832,34 @@ torrent_t *torrent_create_ex(const metainfo_t *mi,
         dht_engine_search(t->dht, mi->info_hash, cb_dht_peer, t);
     }
 
+    t->async_ok = (pthread_mutex_init(&t->announce_mutex, NULL) == 0);
+    if (!t->async_ok)
+        log_msg("[torrent] announce mutex init failed, announces run inline\n");
+
 #ifdef __SWITCH__
-    /* UPnP port mapping — best-effort, helps with NAT traversal for DHT/peers */
-    {
-        int upnp_err = 0;
-        struct UPNPDev *devlist = upnpDiscover(2000, NULL, NULL, 0, 0, 2, &upnp_err);
-        if (devlist) {
-            int ret = UPNP_GetValidIGD(devlist, &t->upnp_urls, &t->upnp_data,
-                                       t->upnp_lanaddr, sizeof(t->upnp_lanaddr));
-            if (ret == 1) {
-                snprintf(t->upnp_port_str, sizeof(t->upnp_port_str), "%u", listen_port);
-                int r1 = UPNP_AddPortMapping(t->upnp_urls.controlURL,
-                    t->upnp_data.first.servicetype,
-                    t->upnp_port_str, t->upnp_port_str,
-                    t->upnp_lanaddr, "pipensx", "TCP", NULL, "0");
-                int r2 = UPNP_AddPortMapping(t->upnp_urls.controlURL,
-                    t->upnp_data.first.servicetype,
-                    t->upnp_port_str, t->upnp_port_str,
-                    t->upnp_lanaddr, "pipensx", "UDP", NULL, "0");
-                t->upnp_mapped = (r1 == UPNPCOMMAND_SUCCESS || r2 == UPNPCOMMAND_SUCCESS);
-                log_msg("[upnp] port %u: TCP=%s UDP=%s\n", listen_port,
-                        r1 == UPNPCOMMAND_SUCCESS ? "ok" : "fail",
-                        r2 == UPNPCOMMAND_SUCCESS ? "ok" : "fail");
-            } else {
-                log_msg("[upnp] no IGD found (ret=%d)\n", ret);
-            }
-            freeUPNPDevlist(devlist);
-        } else {
-            log_msg("[upnp] discover failed (err=%d)\n", upnp_err);
-        }
-    }
+    /* UPnP port mapping — best-effort, one-shot in the background so it does
+       not block startup. Joined in torrent_destroy. */
+    if (pthread_create(&t->upnp_thread, NULL, upnp_worker, t) == 0)
+        t->upnp_thread_active = 1;
+    else
+        log_msg("[upnp] worker spawn failed\n");
 #endif
 
-    /* Tracker announce (async-ish: blocking but short timeout) */
-    uint8_t compact[200*6];
-    uint32_t n = tracker_announce(mi, t->peer_id, listen_port,
-                                  0, mi->total_length, compact, 200);
-    for (uint32_t i = 0; i < n; i++)
-        queue_push(t, *(uint32_t*)(compact+i*6), *(uint16_t*)(compact+i*6+4));
+    /* Kick off the first tracker announce off-thread; peers are drained by
+       announce_collect on an upcoming torrent_tick. */
     t->last_tracker_ms  = now_ms();
     t->speed_time_ms    = now_ms();
     t->last_health_ms   = t->speed_time_ms;
+    announce_start(t, 0, (int64_t)mi->total_length);
 
-    log_msg("[torrent] started: %u peers queued from trackers\n", n);
+    log_msg("[torrent] started: tracker announce dispatched\n");
     telemetry_log("torrent", t->telemetry_tag,
                   "event=start pieces=%u piece_bytes=%lld trackers=%u "
                   "tracker_peers=%u "
                   "request_limit=%u lookahead=%u pending_first=%d "
                   "hedge_after_ms=%u",
                   mi->num_pieces, (long long)mi->piece_length,
-                  mi->num_trackers, n, t->request_pipeline_limit,
+                  mi->num_trackers, 0u, t->request_pipeline_limit,
                   t->pm->strict_order_lookahead,
                   t->pm->strict_fill_pending_first, t->hedge_after_ms);
     return t;
@@ -781,7 +874,22 @@ torrent_t *torrent_create(const metainfo_t *mi,
 void torrent_destroy(torrent_t *t) {
     if (!t) return;
     log_msg("[torrent] destroy begin\n");
+    /* Join any in-flight announce (bounded by the tracker curl timeout) before
+       tearing down state it reads. */
+    if (t->announce_active) {
+        pthread_join(t->announce_thread, NULL);
+        t->announce_active = 0;
+    }
+    if (t->async_ok) {
+        pthread_mutex_destroy(&t->announce_mutex);
+        t->async_ok = 0;
+    }
 #ifdef __SWITCH__
+    /* Join the UPnP worker so upnp_mapped/urls are fully written before use. */
+    if (t->upnp_thread_active) {
+        pthread_join(t->upnp_thread, NULL);
+        t->upnp_thread_active = 0;
+    }
     if (t->upnp_mapped) {
         log_msg("[torrent] removing UPnP mapping\n");
         UPNP_DeletePortMapping(t->upnp_urls.controlURL,
@@ -874,18 +982,15 @@ int torrent_tick(torrent_t *t) {
         t->last_dht_ms = now;
     }
 
-    /* Re-announce tracker */
-    if (now - t->last_tracker_ms >= TRACKER_REANNOUNCE_MS) {
-        uint8_t compact[200*6];
+    /* Re-announce tracker off-thread. Drain a finished run, then start the
+       next one if due and none is in flight — never block the event loop. */
+    announce_collect(t);
+    if (!t->announce_active && now - t->last_tracker_ms >= TRACKER_REANNOUNCE_MS) {
         uint64_t announced_downloaded = t->downloaded;
         if (announced_downloaded > (uint64_t)t->mi.total_length)
             announced_downloaded = (uint64_t)t->mi.total_length;
-        uint32_t n = tracker_announce(&t->mi, t->peer_id, t->listen_port,
-                                      announced_downloaded,
-                                      t->mi.total_length - (int64_t)announced_downloaded,
-                                      compact, 200);
-        for (uint32_t i = 0; i < n; i++)
-            queue_push(t, *(uint32_t*)(compact+i*6), *(uint16_t*)(compact+i*6+4));
+        announce_start(t, (int64_t)announced_downloaded,
+                       (int64_t)t->mi.total_length - (int64_t)announced_downloaded);
         t->last_tracker_ms = now;
     }
 

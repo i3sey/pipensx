@@ -41,10 +41,13 @@ send-буфера и вмещает payload 256 KiB плюс 4-байтовый 
 пировых и metadata-сокетов; невозможность применить настройку не рвёт соединение.
 
 ### 1.5. Убрать блокировки event loop
-`tracker_announce` — синхронный curl с таймаутом 5 c (`src/core/tracker.c:115`),
-`upnpDiscover(2000)` (`src/core/torrent.c:724`). Оба зовутся из торрент-потока:
-при (ре)аннонсе все 96 пиров стоят до 5 секунд. Вынести в curl_multi или
-отдельный поток; UPnP — one-shot фоном при старте.
+Реализовано: tracker announce вынесен на worker-поток (`announce_worker`) —
+event loop запускает прогон (`announce_start`), продолжает обслуживать пиров и
+забирает результат на следующем тике (`announce_collect`), не блокируясь.
+Первичный и ре-аннонс оба async; при недоступности потоков — синхронный fallback.
+UPnP discover+mapping — one-shot фоновый поток при старте (`upnp_worker`, Switch),
+joined в `torrent_destroy`. Поток аннонса тоже joined в destroy (ограничен
+curl-таймаутом, не влияет на loop во время загрузки).
 
 ## Фаза 2 — аппаратное крипто (средне по усилию, большой выигрыш по install)
 
