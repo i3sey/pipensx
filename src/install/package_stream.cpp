@@ -62,6 +62,44 @@ struct PfsEntry {
     std::string name;
 };
 
+// Append-at-back / consume-from-front byte buffer with an O(1) consume cursor.
+// consume() advances head_ instead of erase(begin, ...), which would memmove
+// the whole remaining tail on every call — expensive at PFS0/NCZ boundaries
+// where a small consume leaves a large tail. The consumed prefix is reclaimed
+// lazily on the next append: O(1) clear when fully drained, otherwise a single
+// move of just the (small) unconsumed remainder. Exposes the read-only subset
+// of the std::vector surface the parsers use (data/size/empty/operator[]).
+class ByteQueue {
+public:
+    const uint8_t* data() const { return buf_.data() + head_; }
+    size_t size() const { return buf_.size() - head_; }
+    bool empty() const { return head_ == buf_.size(); }
+    uint8_t operator[](size_t index) const { return buf_[head_ + index]; }
+
+    void append(const uint8_t* data, size_t size) {
+        if (head_ > 0) {
+            if (head_ == buf_.size())
+                buf_.clear();
+            else
+                buf_.erase(buf_.begin(), buf_.begin() + head_);
+            head_ = 0;
+        }
+        buf_.insert(buf_.end(), data, data + size);
+    }
+
+    // Caller guarantees count <= size().
+    void consume(size_t count) { head_ += count; }
+
+    void clear() {
+        buf_.clear();
+        head_ = 0;
+    }
+
+private:
+    std::vector<uint8_t> buf_;
+    size_t head_ = 0;
+};
+
 struct NczSection {
     uint64_t offset = 0;
     uint64_t size = 0;
@@ -174,7 +212,7 @@ public:
         inputRemaining_ -= size;
         telemetryInputBytes_ += size;
         telemetryTotalInputBytes_ += size;
-        pending_.insert(pending_.end(), data, data + size);
+        pending_.append(data, size);
         bool ok = true;
         if (!headerReady_ && !parseHeader(error))
             ok = error.empty();
@@ -454,7 +492,7 @@ private:
         outputPosition_ = ncaHeaderSize;
         telemetryOutputBytes_ += ncaHeaderSize;
         telemetryTotalOutputBytes_ += ncaHeaderSize;
-        pending_.erase(pending_.begin(), pending_.begin() + headerSize);
+        pending_.consume(headerSize);
         headerReady_ = true;
         telemetry_log("decode", telemetryTag_.c_str(),
             "event=header mode=%s output_bytes=%llu block_bytes=%llu blocks=%zu",
@@ -543,7 +581,7 @@ private:
             if (out.pos == 0 && input.pos == input.size)
                 break;
         }
-        pending_.erase(pending_.begin(), pending_.begin() + input.pos);
+        pending_.consume(input.pos);
         return true;
     }
 
@@ -574,7 +612,7 @@ private:
             }
             if (!emit(output.data(), output.size(), error))
                 return false;
-            pending_.erase(pending_.begin(), pending_.begin() + compressed);
+            pending_.consume(compressed);
             ++nextBlock_;
         }
         return true;
@@ -658,7 +696,7 @@ private:
     Ready ready_;
     Writer writer_;
     std::string telemetryTag_;
-    std::vector<uint8_t> pending_;
+    ByteQueue pending_;
     std::vector<NczSection> sections_;
     std::vector<uint32_t> blockSizes_;
     std::vector<uint8_t> outputBuffer_ =
@@ -708,7 +746,7 @@ public:
             return false;
         }
         consumed_ += size;
-        pending_.insert(pending_.end(), data, data + size);
+        pending_.append(data, size);
         if (!headerReady_ && !parseHeader())
             return false;
         if (!headerReady_)
@@ -810,7 +848,7 @@ private:
         }
         headerSize_ = header;
         dataPosition_ = 0;
-        pending_.erase(pending_.begin(), pending_.begin() + header);
+        pending_.consume(header);
         headerReady_ = true;
         telemetry_log("package", telemetryTag_.c_str(),
             "event=header entries=%u header_bytes=%zu parse_us=%llu",
@@ -874,7 +912,7 @@ private:
                     uint64_t skip64 = entry.offset - dataPosition_;
                     size_t skip = static_cast<size_t>(
                         std::min<uint64_t>(skip64, pending_.size()));
-                    pending_.erase(pending_.begin(), pending_.begin() + skip);
+                    pending_.consume(skip);
                     dataPosition_ += skip;
                     if (dataPosition_ < entry.offset)
                         return true;
@@ -899,7 +937,7 @@ private:
                     error_ = "Installer failed while consuming " + currentName_;
                 return fail();
             }
-            pending_.erase(pending_.begin(), pending_.begin() + count);
+            pending_.consume(count);
             dataPosition_ += count;
             currentInputRemaining_ -= count;
             if (currentInputRemaining_ == 0 && !endCurrentFile())
@@ -911,7 +949,7 @@ private:
     bool compressed_;
     PackageCallbacks callbacks_;
     std::string telemetryTag_;
-    std::vector<uint8_t> pending_;
+    ByteQueue pending_;
     std::vector<PfsEntry> entries_;
     std::unique_ptr<NczDecoder> currentDecoder_;
     std::string currentName_;
