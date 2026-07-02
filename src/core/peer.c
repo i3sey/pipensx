@@ -372,36 +372,35 @@ int peer_recv(peer_t *p, const peer_ctx_t *ctx,
         return 0;
     }
 
-    /* Read available data */
-    size_t space = sizeof(p->rbuf) - p->rbuf_len;
-    if (space == 0) {
-        log_msg("[peer] recv buffer full\n");
-        return -1;
-    }
-    int n = net_recv(p->fd, p->rbuf + p->rbuf_len, space);
-    if (n < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) return 0;
-        return -1;
-    }
-    if (n == 0) return -1; /* EOF */
-    p->rbuf_len += (uint32_t)n;
+    for (;;) {
+        if (p->state == PS_HANDSHAKE) {
+            int r = process_handshake(p, ctx);
+            if (r < 0) return -1;
+            if (r > 0) {
+                if (p->supports_ext)
+                    peer_send_ext_handshake(p, ctx->listen_port);
+                peer_send_bitfield(p, ctx->our_bf, ctx->bf_bytes);
+                peer_send_interested(p);
+            }
+        }
 
-    if (p->state == PS_HANDSHAKE) {
-        int r = process_handshake(p, ctx);
-        if (r < 0) return -1;
-        if (r == 0) return 0;
-        /* If nothing more: send extension handshake + bitfield immediately */
-        if (p->supports_ext)
-            peer_send_ext_handshake(p, ctx->listen_port);
-        peer_send_bitfield(p, ctx->our_bf, ctx->bf_bytes);
-        peer_send_interested(p);
-    }
+        while (p->state == PS_ACTIVE) {
+            int r = process_message(p, ctx, on_block, on_have, on_peers, ud);
+            if (r < 0) return -1;
+            if (r == 0) break;
+        }
 
-    /* Process queued messages */
-    while (p->state == PS_ACTIVE) {
-        int r = process_message(p, ctx, on_block, on_have, on_peers, ud);
-        if (r < 0) return -1;
-        if (r == 0) break;
+        size_t space = sizeof(p->rbuf) - p->rbuf_len;
+        if (space == 0) {
+            log_msg("[peer] recv buffer full\n");
+            return -1;
+        }
+        int n = net_recv(p->fd, p->rbuf + p->rbuf_len, space);
+        if (n < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) return 0;
+            return -1;
+        }
+        if (n == 0) return -1; /* EOF */
+        p->rbuf_len += (uint32_t)n;
     }
-    return 0;
 }

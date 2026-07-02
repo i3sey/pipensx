@@ -7,6 +7,7 @@
 #define MAX_PEERS     96
 #define BT_HANDSHAKE_LEN 68
 #define PEER_BUF_SIZE (4 + 1 + (1<<14) + 9)  /* enough for one piece msg */
+#define PEER_RECV_BUFFER_SIZE ((256 * 1024) + 4) /* max payload + length */
 
 /* BT message IDs */
 #define MSG_CHOKE        0
@@ -48,7 +49,7 @@ typedef struct peer {
     char               addr_str[32];
 
     /* Send/recv buffers */
-    uint8_t  rbuf[PEER_BUF_SIZE * 2];
+    uint8_t  rbuf[PEER_RECV_BUFFER_SIZE];
     uint32_t rbuf_len;
     uint8_t  sbuf[PEER_BUF_SIZE];
     uint32_t sbuf_len;

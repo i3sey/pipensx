@@ -13,10 +13,35 @@ typedef struct {
     int count;
 } expired_capture_t;
 
+typedef struct {
+    int count;
+    uint64_t bytes;
+} block_capture_t;
+
 static void capture_expired(void *user, const block_req_t *request) {
     expired_capture_t *capture = (expired_capture_t*)user;
     assert(capture->count < 4);
     capture->requests[capture->count++] = *request;
+}
+
+static void capture_block(void *user, uint32_t index, uint32_t offset,
+                          const uint8_t *data, uint32_t length) {
+    block_capture_t *capture = (block_capture_t*)user;
+    assert(index == (uint32_t)capture->count);
+    assert(offset == 0);
+    assert(length == 8192);
+    assert(data[0] == (uint8_t)index);
+    capture->count++;
+    capture->bytes += length;
+}
+
+static void send_all(int fd, const uint8_t *data, size_t length) {
+    size_t sent = 0;
+    while (sent < length) {
+        ssize_t count = send(fd, data + sent, length - sent, 0);
+        assert(count > 0);
+        sent += (size_t)count;
+    }
 }
 
 static void test_expiry_compacts_pipeline(void) {
@@ -92,10 +117,57 @@ static void test_tcp_connect_uses_large_receive_buffer(void) {
     close(listener);
 }
 
+static void test_recv_drains_socket_until_would_block(void) {
+    int sockets[2];
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
+    assert(net_set_nonblock(sockets[0]));
+
+    enum { BLOCK_SIZE = 8192, MESSAGE_SIZE = 4 + 1 + 8 + BLOCK_SIZE };
+    uint8_t message[MESSAGE_SIZE];
+    memset(message, 0, sizeof(message));
+    uint32_t payloadSize = 1 + 8 + BLOCK_SIZE;
+    message[0] = (uint8_t)(payloadSize >> 24);
+    message[1] = (uint8_t)(payloadSize >> 16);
+    message[2] = (uint8_t)(payloadSize >> 8);
+    message[3] = (uint8_t)payloadSize;
+    message[4] = MSG_PIECE;
+    for (uint32_t index = 0; index < 8; ++index) {
+        message[5] = (uint8_t)(index >> 24);
+        message[6] = (uint8_t)(index >> 16);
+        message[7] = (uint8_t)(index >> 8);
+        message[8] = (uint8_t)index;
+        memset(message + 13, (int)index, BLOCK_SIZE);
+        send_all(sockets[1], message, sizeof(message));
+    }
+
+    peer_t peer;
+    memset(&peer, 0, sizeof(peer));
+    peer.fd = sockets[0];
+    peer.state = PS_ACTIVE;
+    peer_ctx_t context;
+    memset(&context, 0, sizeof(context));
+    context.num_pieces = 8;
+
+    block_capture_t capture = {0};
+    assert(peer_recv(&peer, &context, capture_block, NULL, NULL, &capture) == 0);
+    assert(capture.count == 8);
+    assert(capture.bytes == 8 * BLOCK_SIZE);
+    assert(peer.rbuf_len == 0);
+
+    close(sockets[0]);
+    close(sockets[1]);
+}
+
+static void test_receive_buffer_holds_256_kib(void) {
+    assert(sizeof(((peer_t*)0)->rbuf) >= 256 * 1024);
+}
+
 int main(void) {
     test_expiry_compacts_pipeline();
     test_cancel_sends_message_and_removes_request();
     test_tcp_connect_uses_large_receive_buffer();
+    test_recv_drains_socket_until_would_block();
+    test_receive_buffer_holds_256_kib();
     puts("peer tests passed");
     return 0;
 }
