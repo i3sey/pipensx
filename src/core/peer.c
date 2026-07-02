@@ -236,8 +236,8 @@ int peer_expire_requests(peer_t *p, uint64_t now, uint64_t timeout_ms,
 
 /* --- recv/dispatch --- */
 static int process_handshake(peer_t *p, const peer_ctx_t *ctx) {
-    if (p->rbuf_len < BT_HANDSHAKE_LEN) return 0; /* wait */
-    uint8_t *hs = p->rbuf;
+    if (p->rbuf_len - p->rbuf_head < BT_HANDSHAKE_LEN) return 0; /* wait */
+    uint8_t *hs = p->rbuf + p->rbuf_head;
     if (hs[0] != 19 || memcmp(hs+1, "BitTorrent protocol", 19) != 0) {
         log_msg("[peer] bad handshake\n");
         return -1;
@@ -249,8 +249,7 @@ static int process_handshake(peer_t *p, const peer_ctx_t *ctx) {
     /* Check extension bit (byte 25 of reserved = hs[25], bit 4) */
     p->supports_ext = (hs[25] & 0x10) != 0;
     /* Consume handshake */
-    memmove(p->rbuf, p->rbuf + BT_HANDSHAKE_LEN, p->rbuf_len - BT_HANDSHAKE_LEN);
-    p->rbuf_len -= BT_HANDSHAKE_LEN;
+    p->rbuf_head += BT_HANDSHAKE_LEN;
     p->state = PS_ACTIVE;
     p->last_recv_ms = now_ms();
     log_msg("[peer] handshake ok ext=%d\n", p->supports_ext);
@@ -300,20 +299,21 @@ static int process_message(peer_t *p, const peer_ctx_t *ctx,
                            void (*on_have)(void*, uint32_t),
                            void (*on_peers)(void*, const uint8_t*, uint32_t),
                            void *ud) {
-    if (p->rbuf_len < 4) return 0;
-    uint32_t msg_len = ((uint32_t)p->rbuf[0]<<24)|((uint32_t)p->rbuf[1]<<16)|
-                       ((uint32_t)p->rbuf[2]<<8 )| (uint32_t)p->rbuf[3];
+    uint32_t avail = p->rbuf_len - p->rbuf_head;
+    if (avail < 4) return 0;
+    const uint8_t *base = p->rbuf + p->rbuf_head;
+    uint32_t msg_len = ((uint32_t)base[0]<<24)|((uint32_t)base[1]<<16)|
+                       ((uint32_t)base[2]<<8 )| (uint32_t)base[3];
     if (msg_len > 1<<18) { /* 256KB max message */
         log_msg("[peer] oversized message %u\n", msg_len);
         return -1;
     }
-    if (p->rbuf_len < 4 + msg_len) return 0; /* wait */
+    if (avail < 4 + msg_len) return 0; /* wait */
 
-    const uint8_t *msg = p->rbuf + 4;
+    const uint8_t *msg = base + 4;
     if (msg_len == 0) {
         /* keepalive */
-        memmove(p->rbuf, p->rbuf + 4, p->rbuf_len - 4);
-        p->rbuf_len -= 4;
+        p->rbuf_head += 4;
         return 1;
     }
     uint8_t id = msg[0];
@@ -386,9 +386,7 @@ static int process_message(peer_t *p, const peer_ctx_t *ctx,
     }
 
     p->last_recv_ms = now_ms();
-    uint32_t total = 4 + msg_len;
-    memmove(p->rbuf, p->rbuf + total, p->rbuf_len - total);
-    p->rbuf_len -= total;
+    p->rbuf_head += 4 + msg_len;
     return 1;
 }
 
@@ -430,10 +428,26 @@ int peer_recv(peer_t *p, const peer_ctx_t *ctx,
             if (r == 0) break;
         }
 
+        /* Fully drained: reset the cursor to the front for free (no copy). */
+        if (p->rbuf_head == p->rbuf_len) {
+            p->rbuf_head = 0;
+            p->rbuf_len  = 0;
+        }
         size_t space = sizeof(p->rbuf) - p->rbuf_len;
         if (space == 0) {
-            log_msg("[peer] recv buffer full\n");
-            return -1;
+            /* Tail is full but a partial message sits past rbuf_head; slide it
+               to the front to reclaim the consumed prefix, then retry. */
+            if (p->rbuf_head > 0) {
+                memmove(p->rbuf, p->rbuf + p->rbuf_head,
+                        p->rbuf_len - p->rbuf_head);
+                p->rbuf_len -= p->rbuf_head;
+                p->rbuf_head = 0;
+                space = sizeof(p->rbuf) - p->rbuf_len;
+            }
+            if (space == 0) {
+                log_msg("[peer] recv buffer full\n");
+                return -1;
+            }
         }
         int n = net_recv(p->fd, p->rbuf + p->rbuf_len, space);
         if (n < 0) {
