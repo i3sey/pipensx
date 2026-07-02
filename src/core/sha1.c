@@ -1,8 +1,29 @@
+#include "sha1.h"
+
+#ifdef __SWITCH__
+/* Hardware SHA-1 via libnx (ARMv8 Crypto Extensions). */
+
+void sha1_init(sha1_ctx_t *ctx) {
+    sha1ContextCreate(ctx);
+}
+
+void sha1_update(sha1_ctx_t *ctx, const void *data, size_t len) {
+    sha1ContextUpdate(ctx, data, len);
+}
+
+void sha1_final(sha1_ctx_t *ctx, uint8_t digest[20]) {
+    sha1ContextGetHash(ctx, digest);
+}
+
+void sha1(const void *data, size_t len, uint8_t digest[20]) {
+    sha1CalculateHash(digest, data, len);
+}
+
+#else /* !__SWITCH__ */
 /*
  * SHA-1 — public domain implementation based on Steve Reid's classic code.
  * Modified for portability (no system includes beyond stdint/string).
  */
-#include "sha1.h"
 #include <string.h>
 
 #define ROL(v,b) (((v)<<(b))|((v)>>(32-(b))))
@@ -91,3 +112,5 @@ void sha1(const void *data, size_t len, uint8_t digest[20]) {
     sha1_update(&ctx, data, len);
     sha1_final(&ctx, digest);
 }
+
+#endif /* !__SWITCH__ */

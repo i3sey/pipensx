@@ -9,8 +9,6 @@ extern "C" {
 #include <switch.h>
 #include <switch-ipcext.h>
 
-#include <mbedtls/sha256.h>
-
 #include <algorithm>
 #include <array>
 #include <cerrno>
@@ -374,11 +372,7 @@ public:
                 return false;
             }
         }
-        mbedtls_sha256_init(&sha_);
-        if (mbedtls_sha256_starts_ret(&sha_, 0) != 0) {
-            error_ = "Unable to initialize NCA hash.";
-            return false;
-        }
+        sha256ContextCreate(&sha_);
         hashActive_ = true;
         if (setupStartedUs) {
             uint64_t setupUs = now_us() - setupStartedUs;
@@ -428,12 +422,8 @@ public:
             }
         }
         uint64_t shaStartedUs = track ? now_us() : 0;
-        int shaResult = mbedtls_sha256_update_ret(&sha_, data, size);
+        sha256ContextUpdate(&sha_, data, size);
         uint64_t shaUs = shaStartedUs ? now_us() - shaStartedUs : 0;
-        if (shaResult != 0) {
-            error_ = "Unable to update NCA hash.";
-            return false;
-        }
         current_->written += size;
         installed_ += size;
         if (track) {
@@ -496,12 +486,11 @@ public:
         }
         std::array<uint8_t, 32> digest {};
         uint64_t finishStartedUs = telemetry_enabled() ? now_us() : 0;
-        if (!hashActive_ ||
-            mbedtls_sha256_finish_ret(&sha_, digest.data()) != 0) {
+        if (!hashActive_) {
             error_ = "Unable to finalize NCA hash.";
             return false;
         }
-        mbedtls_sha256_free(&sha_);
+        sha256ContextGetHash(&sha_, digest.data());
         hashActive_ = false;
         if (finishStartedUs) {
             uint64_t finishUs = now_us() - finishStartedUs;
@@ -731,10 +720,7 @@ public:
                           "event=rollback package_ms=%llu",
                           (unsigned long long)(rollbackNow - packageStartedMs_));
         }
-        if (hashActive_) {
-            mbedtls_sha256_free(&sha_);
-            hashActive_ = false;
-        }
+        hashActive_ = false;
         if (active_) {
             if (applicationRecordTouched_) {
                 nsextDeleteApplicationRecord(applicationId_);
@@ -898,7 +884,7 @@ private:
     std::vector<uint8_t> auxiliary_;
     std::vector<NsExtContentStorageMetaKey> previousRecords_;
     Content* current_ = nullptr;
-    mbedtls_sha256_context sha_ {};
+    Sha256Context sha_ {};
     uint64_t auxiliaryExpected_ = 0;
     uint64_t ignoredRemaining_ = 0;
     uint64_t expected_ = 0;
