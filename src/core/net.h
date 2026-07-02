@@ -42,6 +42,9 @@ int net_set_nonblock(socket_t fd);
 /* Close a socket */
 void net_close(socket_t fd);
 
-/* Portable send/recv wrappers (handle EINTR) */
-int net_send(socket_t fd, const uint8_t *buf, size_t len);
+/* Portable send/recv wrappers (handle EINTR).
+   net_send writes as much as the socket accepts without blocking:
+   returns bytes sent (possibly 0 if the socket buffer is full),
+   or -1 on a hard error.  The caller must queue the unsent tail. */
+ssize_t net_send(socket_t fd, const uint8_t *buf, size_t len);
 int net_recv(socket_t fd, uint8_t *buf, size_t len);

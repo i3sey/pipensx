@@ -70,7 +70,7 @@ void net_close(socket_t fd) {
     if (fd >= 0) close(fd);
 }
 
-int net_send(socket_t fd, const uint8_t *buf, size_t len) {
+ssize_t net_send(socket_t fd, const uint8_t *buf, size_t len) {
     size_t sent = 0;
     while (sent < len) {
         ssize_t n = send(fd, buf + sent, len - sent,
@@ -82,11 +82,13 @@ int net_send(socket_t fd, const uint8_t *buf, size_t len) {
                          );
         if (n < 0) {
             if (errno == EINTR) continue;
-            return 0;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+            return -1;
         }
+        if (n == 0) break;
         sent += (size_t)n;
     }
-    return 1;
+    return (ssize_t)sent;
 }
 
 int net_recv(socket_t fd, uint8_t *buf, size_t len) {

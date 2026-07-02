@@ -914,7 +914,8 @@ int torrent_tick(torrent_t *t) {
         peer_t *p = t->peers[i];
         if (!p || p->state == PS_DEAD) continue;
         pfds[npfd].fd     = p->fd;
-        pfds[npfd].events = POLLIN | (p->state == PS_CONNECTING ? POLLOUT : 0);
+        pfds[npfd].events = POLLIN |
+            ((p->state == PS_CONNECTING || p->sbuf_len > 0) ? POLLOUT : 0);
         pfds[npfd].revents = 0;
         pfd_peer[npfd] = i;
         npfd++;
@@ -936,7 +937,12 @@ int torrent_tick(torrent_t *t) {
         peer_t *p = t->peers[slot];
         if (!p) continue;
 
-        int err = peer_recv(p, &ctx, cb_block, cb_have, cb_peers, t);
+        int err = 0;
+        if (p->state != PS_CONNECTING && (pfds[pi].revents & POLLOUT) &&
+            !peer_flush(p))
+            err = -1;
+        if (err == 0)
+            err = peer_recv(p, &ctx, cb_block, cb_have, cb_peers, t);
         if (err < 0) {
             log_msg("[torrent] peer connection closed\n");
             blocklist_add(t, p->addr.sin_addr.s_addr, p->addr.sin_port, now);

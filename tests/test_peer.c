@@ -2,6 +2,7 @@
 #include "../src/core/net.h"
 
 #include <assert.h>
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -91,6 +92,50 @@ static void test_cancel_sends_message_and_removes_request(void) {
     close(sockets[1]);
 }
 
+static void test_partial_send_queues_tail_and_flush_completes_frame(void) {
+    int sockets[2];
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
+    assert(net_set_nonblock(sockets[0]));
+    int sndbuf = 1;
+    assert(setsockopt(sockets[0], SOL_SOCKET, SO_SNDBUF, &sndbuf,
+                      sizeof(sndbuf)) == 0);
+
+    peer_t peer;
+    memset(&peer, 0, sizeof(peer));
+    peer.fd = sockets[0];
+
+    enum { BF_BYTES = 16000, FRAME = 4 + 1 + BF_BYTES };
+    uint8_t bitfield[BF_BYTES];
+    for (int i = 0; i < BF_BYTES; i++)
+        bitfield[i] = (uint8_t)i;
+
+    assert(peer_send_bitfield(&peer, bitfield, BF_BYTES));
+    assert(peer.sbuf_len > 0); /* kernel buffer too small for whole frame */
+
+    uint8_t frame[FRAME];
+    size_t got = 0;
+    while (got < sizeof(frame)) {
+        ssize_t n = recv(sockets[1], frame + got, sizeof(frame) - got,
+                         MSG_DONTWAIT);
+        if (n > 0) {
+            got += (size_t)n;
+            continue;
+        }
+        assert(n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK));
+        assert(peer.sbuf_len > 0); /* otherwise the frame was truncated */
+        assert(peer_flush(&peer));
+    }
+    assert(peer.sbuf_len == 0);
+    assert(frame[0] == 0 && frame[1] == 0 &&
+           frame[2] == ((1 + BF_BYTES) >> 8) &&
+           frame[3] == ((1 + BF_BYTES) & 0xFF));
+    assert(frame[4] == MSG_BITFIELD);
+    assert(memcmp(frame + 5, bitfield, BF_BYTES) == 0);
+
+    close(sockets[0]);
+    close(sockets[1]);
+}
+
 static void test_tcp_connect_uses_large_receive_buffer(void) {
     int listener = socket(AF_INET, SOCK_STREAM, 0);
     assert(listener >= 0);
@@ -165,6 +210,7 @@ static void test_receive_buffer_holds_256_kib(void) {
 int main(void) {
     test_expiry_compacts_pipeline();
     test_cancel_sends_message_and_removes_request();
+    test_partial_send_queues_tail_and_flush_completes_frame();
     test_tcp_connect_uses_large_receive_buffer();
     test_recv_drains_socket_until_would_block();
     test_receive_buffer_holds_256_kib();

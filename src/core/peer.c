@@ -7,6 +7,38 @@
 #include <stdio.h>
 #include <errno.h>
 
+/* --- buffered send ---
+ * The socket is nonblocking: whatever the kernel does not accept immediately
+ * is queued in p->sbuf and drained by peer_flush() when the torrent loop
+ * gets POLLOUT for this peer. */
+static int peer_send_raw(peer_t *p, const uint8_t *data, uint32_t len) {
+    if (p->sbuf_len == 0 && len > 0) {
+        ssize_t n = net_send(p->fd, data, len);
+        if (n < 0) return 0;
+        data += (size_t)n;
+        len  -= (uint32_t)n;
+    }
+    if (len == 0) return 1;
+    if ((size_t)p->sbuf_len + len > sizeof(p->sbuf)) {
+        log_msg("[peer] send queue overflow (%u+%u)\n", p->sbuf_len, len);
+        return 0;
+    }
+    memcpy(p->sbuf + p->sbuf_len, data, len);
+    p->sbuf_len += len;
+    return 1;
+}
+
+int peer_flush(peer_t *p) {
+    if (p->sbuf_len == 0) return 1;
+    ssize_t n = net_send(p->fd, p->sbuf, p->sbuf_len);
+    if (n < 0) return 0;
+    if (n > 0) {
+        memmove(p->sbuf, p->sbuf + (size_t)n, p->sbuf_len - (uint32_t)n);
+        p->sbuf_len -= (uint32_t)n;
+    }
+    return 1;
+}
+
 /* --- message framing --- */
 static int send_msg(peer_t *p, const uint8_t *payload, uint32_t plen) {
     uint8_t hdr[4];
@@ -14,8 +46,18 @@ static int send_msg(peer_t *p, const uint8_t *payload, uint32_t plen) {
     hdr[1] = (plen>>16)&0xFF;
     hdr[2] = (plen>> 8)&0xFF;
     hdr[3] = (plen    )&0xFF;
-    if (!net_send(p->fd, hdr, 4)) return 0;
-    if (plen > 0) return net_send(p->fd, payload, plen);
+    /* Reserve room for the whole frame up front: several callers ignore
+       failures, so a partially queued frame must never reach the wire. */
+    if ((size_t)p->sbuf_len + 4 + plen > sizeof(p->sbuf)) {
+        if (!peer_flush(p) ||
+            (size_t)p->sbuf_len + 4 + plen > sizeof(p->sbuf)) {
+            log_msg("[peer] send queue full, dropping frame (%u+%u)\n",
+                    p->sbuf_len, 4 + plen);
+            return 0;
+        }
+    }
+    if (!peer_send_raw(p, hdr, 4)) return 0;
+    if (plen > 0) return peer_send_raw(p, payload, plen);
     return 1;
 }
 
@@ -35,7 +77,7 @@ int peer_send_handshake(peer_t *p, const peer_ctx_t *ctx) {
     memcpy(hs+28, ctx->info_hash, 20);
     memcpy(hs+48, ctx->peer_id,   20);
     p->state = PS_HANDSHAKE;
-    return net_send(p->fd, hs, BT_HANDSHAKE_LEN);
+    return peer_send_raw(p, hs, BT_HANDSHAKE_LEN);
 }
 
 /* --- allocate --- */
@@ -191,8 +233,6 @@ int peer_expire_requests(peer_t *p, uint64_t now, uint64_t timeout_ms,
     p->pipeline_len = kept;
     return expired;
 }
-
-int peer_flush(peer_t *p) { (void)p; return 1; } /* nonblocking; send_msg already sends */
 
 /* --- recv/dispatch --- */
 static int process_handshake(peer_t *p, const peer_ctx_t *ctx) {
