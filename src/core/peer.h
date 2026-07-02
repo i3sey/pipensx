@@ -48,8 +48,13 @@ typedef struct peer {
     struct sockaddr_in addr;
     char               addr_str[32];
 
-    /* Send/recv buffers */
+    /* Send/recv buffers. rbuf is a linear buffer with a read cursor: valid
+       unprocessed bytes are rbuf[rbuf_head .. rbuf_len). Consuming a message
+       advances rbuf_head instead of memmoving the tail to the front, so the
+       common case costs no copy. The tail is compacted to the front only when
+       it runs out of room (see peer_recv). */
     uint8_t  rbuf[PEER_RECV_BUFFER_SIZE];
+    uint32_t rbuf_head;
     uint32_t rbuf_len;
     uint8_t  sbuf[PEER_BUF_SIZE];
     uint32_t sbuf_len;

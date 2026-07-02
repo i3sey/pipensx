@@ -45,6 +45,23 @@ static void send_all(int fd, const uint8_t *data, size_t length) {
     }
 }
 
+/* Build one MSG_PIECE frame (index, offset 0, 8192-byte block of `index`)
+   into a caller buffer of 4 + 1 + 8 + 8192 bytes. */
+static void fill_piece(uint8_t *message, uint32_t index) {
+    uint32_t payloadSize = 1 + 8 + 8192;
+    message[0] = (uint8_t)(payloadSize >> 24);
+    message[1] = (uint8_t)(payloadSize >> 16);
+    message[2] = (uint8_t)(payloadSize >> 8);
+    message[3] = (uint8_t)payloadSize;
+    message[4] = MSG_PIECE;
+    message[5] = (uint8_t)(index >> 24);
+    message[6] = (uint8_t)(index >> 16);
+    message[7] = (uint8_t)(index >> 8);
+    message[8] = (uint8_t)index;
+    message[9] = message[10] = message[11] = message[12] = 0; /* offset 0 */
+    memset(message + 13, (int)index, 8192);
+}
+
 static void test_expiry_compacts_pipeline(void) {
     peer_t peer;
     memset(&peer, 0, sizeof(peer));
@@ -207,6 +224,49 @@ static void test_receive_buffer_holds_256_kib(void) {
     assert(sizeof(((peer_t*)0)->rbuf) >= 256 * 1024);
 }
 
+/* A message torn across two reads must reassemble, and the second message
+   must be parsed from a nonzero rbuf_head — i.e. the cursor advances instead
+   of memmoving the tail to the front on every consume. */
+static void test_recv_reassembles_message_split_across_reads(void) {
+    int sockets[2];
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
+    assert(net_set_nonblock(sockets[0]));
+
+    enum { BLOCK_SIZE = 8192, MESSAGE_SIZE = 4 + 1 + 8 + BLOCK_SIZE };
+    uint8_t first[MESSAGE_SIZE], second[MESSAGE_SIZE];
+    fill_piece(first, 0);
+    fill_piece(second, 1);
+
+    peer_t peer;
+    memset(&peer, 0, sizeof(peer));
+    peer.fd = sockets[0];
+    peer.state = PS_ACTIVE;
+    peer_ctx_t context;
+    memset(&context, 0, sizeof(context));
+    context.num_pieces = 8;
+
+    block_capture_t capture = {0};
+
+    /* Whole first message plus a torn 3-byte prefix of the second: leaves a
+       partial frame parked at a nonzero rbuf_head. */
+    send_all(sockets[1], first, sizeof(first));
+    send_all(sockets[1], second, 3);
+    assert(peer_recv(&peer, &context, capture_block, NULL, NULL, &capture) == 0);
+    assert(capture.count == 1);
+    assert(peer.rbuf_head == sizeof(first)); /* consumed via cursor, no memmove */
+    assert(peer.rbuf_len == sizeof(first) + 3);
+
+    /* Rest of the second message: it must parse starting at rbuf_head. */
+    send_all(sockets[1], second + 3, sizeof(second) - 3);
+    assert(peer_recv(&peer, &context, capture_block, NULL, NULL, &capture) == 0);
+    assert(capture.count == 2);
+    assert(capture.bytes == 2 * BLOCK_SIZE);
+    assert(peer.rbuf_len == 0);              /* fully drained → cursor reset */
+
+    close(sockets[0]);
+    close(sockets[1]);
+}
+
 int main(void) {
     test_expiry_compacts_pipeline();
     test_cancel_sends_message_and_removes_request();
@@ -214,6 +274,7 @@ int main(void) {
     test_tcp_connect_uses_large_receive_buffer();
     test_recv_drains_socket_until_would_block();
     test_receive_buffer_holds_256_kib();
+    test_recv_reassembles_message_split_across_reads();
     puts("peer tests passed");
     return 0;
 }
