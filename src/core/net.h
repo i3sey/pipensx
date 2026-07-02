@@ -25,6 +25,7 @@
 
 typedef int socket_t;
 #define INVALID_SOCK (-1)
+#define NET_TCP_RECEIVE_BUFFER_SIZE (256 * 1024)
 
 /* Resolve hostname to IPv4 address; returns 1 on success */
 int net_resolve(const char *host, uint16_t port, struct sockaddr_in *out);

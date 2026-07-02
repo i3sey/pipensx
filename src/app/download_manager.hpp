@@ -106,6 +106,7 @@ public:
     bool remove(const std::string& taskId, bool deleteData,
                 std::string& error);
 
+    bool hasActiveTransfer() const;
     std::vector<DownloadTask> snapshot() const;
     bool save(std::string& error) const;
     void shutdown();

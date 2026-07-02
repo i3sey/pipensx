@@ -54,6 +54,7 @@ set(CORE_SOURCES
     src/core/torrent.c
     src/platform/storage.c
     src/platform/switch_crashlog.c
+    src/platform/switch_performance.cpp
     vendor/dht/dht.c
 )
 

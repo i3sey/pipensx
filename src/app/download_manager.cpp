@@ -1035,6 +1035,28 @@ std::vector<DownloadTask> DownloadManager::snapshot() const {
     return tasks_;
 }
 
+bool DownloadManager::hasActiveTransfer() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const DownloadTask& task : tasks_) {
+        switch (task.status) {
+            case DownloadStatus::Queued:
+            case DownloadStatus::Checking:
+            case DownloadStatus::Downloading:
+            case DownloadStatus::Verifying:
+            case DownloadStatus::Installing:
+            case DownloadStatus::Committing:
+                return true;
+            case DownloadStatus::Paused:
+            case DownloadStatus::Completed:
+            case DownloadStatus::Installed:
+            case DownloadStatus::Error:
+            case DownloadStatus::Removing:
+                break;
+        }
+    }
+    return false;
+}
+
 bool DownloadManager::save(std::string& error) const {
     std::lock_guard<std::mutex> lock(mutex_);
     return saveLocked(error);

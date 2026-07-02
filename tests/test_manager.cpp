@@ -46,6 +46,7 @@ int main() {
     std::string error;
     {
         DownloadManager manager(appRoot, false);
+        assert(!manager.hasActiveTransfer());
         pipensx::TorrentPreview preview;
         assert(DownloadManager::previewTorrent(source, preview, error));
         assert(preview.name == "package.nsp");
@@ -61,10 +62,13 @@ int main() {
         assert(tasks[0].status == DownloadStatus::Queued);
         assert(tasks[0].mode == TransferMode::StreamInstall);
         assert(tasks[0].packageCount == 1);
+        assert(manager.hasActiveTransfer());
         assert(manager.pause(tasks[0].id));
         assert(manager.snapshot()[0].status == DownloadStatus::Paused);
+        assert(!manager.hasActiveTransfer());
         assert(manager.resume(tasks[0].id));
         assert(manager.snapshot()[0].status == DownloadStatus::Queued);
+        assert(manager.hasActiveTransfer());
     }
 
     {

@@ -9,6 +9,7 @@
 #include "app/install_space.hpp"
 #include "core/antizapret.h"
 #include "platform/switch_crashlog.h"
+#include "platform/switch_performance.hpp"
 
 extern "C" {
 #include "core/util.h"
@@ -59,6 +60,7 @@ using pipensx::PreparedCatalogInstall;
 using pipensx::StorageSpaceSnapshot;
 using pipensx::InstallSpaceCheckStatus;
 using pipensx::SpaceEstimateCertainty;
+using pipensx::SwitchPerformanceController;
 using pipensx::TransferMode;
 
 namespace {
@@ -4099,6 +4101,7 @@ int main(int, char**) {
                              installedError.c_str());
 
         startupStage("DownloadManager construction");
+        SwitchPerformanceController performance;
         DownloadManager manager("sdmc:/switch/pipensx");
 
         startupStage("MainActivity construction");
@@ -4110,7 +4113,10 @@ int main(int, char**) {
 
         startupStage("first main loop");
         bool firstFrame = true;
-        while (brls::Application::mainLoop()) {
+        while (true) {
+            performance.setActive(manager.hasActiveTransfer());
+            if (!brls::Application::mainLoop())
+                break;
             if (firstFrame) {
                 startupStage("main loop running");
                 firstFrame = false;
@@ -4119,6 +4125,7 @@ int main(int, char**) {
 
         startupStage("manager shutdown");
         manager.shutdown();
+        performance.setActive(false);
     } catch (const std::exception& error) {
         log_msg("[crash] exception at stage '%s': %s\n",
                 "see previous startup marker", error.what());

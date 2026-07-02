@@ -1,4 +1,5 @@
 #include "../src/core/peer.h"
+#include "../src/core/net.h"
 
 #include <assert.h>
 #include <stdint.h>
@@ -65,9 +66,36 @@ static void test_cancel_sends_message_and_removes_request(void) {
     close(sockets[1]);
 }
 
+static void test_tcp_connect_uses_large_receive_buffer(void) {
+    int listener = socket(AF_INET, SOCK_STREAM, 0);
+    assert(listener >= 0);
+
+    struct sockaddr_in address;
+    memset(&address, 0, sizeof(address));
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    assert(bind(listener, (struct sockaddr*)&address, sizeof(address)) == 0);
+    assert(listen(listener, 1) == 0);
+
+    socklen_t addressSize = sizeof(address);
+    assert(getsockname(listener, (struct sockaddr*)&address, &addressSize) == 0);
+
+    socket_t client = net_tcp_connect(&address);
+    assert(client != INVALID_SOCK);
+    int receiveBufferSize = 0;
+    socklen_t optionSize = sizeof(receiveBufferSize);
+    assert(getsockopt(client, SOL_SOCKET, SO_RCVBUF, &receiveBufferSize,
+                      &optionSize) == 0);
+    assert(receiveBufferSize >= NET_TCP_RECEIVE_BUFFER_SIZE);
+
+    net_close(client);
+    close(listener);
+}
+
 int main(void) {
     test_expiry_compacts_pipeline();
     test_cancel_sends_message_and_removes_request();
+    test_tcp_connect_uses_large_receive_buffer();
     puts("peer tests passed");
     return 0;
 }

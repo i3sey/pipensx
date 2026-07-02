@@ -32,6 +32,11 @@ socket_t net_tcp_connect(const struct sockaddr_in *addr) {
     net_set_nonblock(fd);
     int opt = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    int receive_buffer_size = NET_TCP_RECEIVE_BUFFER_SIZE;
+    if (setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &receive_buffer_size,
+                   sizeof(receive_buffer_size)) < 0) {
+        log_msg("[net] set TCP receive buffer: %s\n", strerror(errno));
+    }
     int r = connect(fd, (struct sockaddr*)addr, sizeof(*addr));
     if (r < 0 && errno != EINPROGRESS) {
         close(fd);
