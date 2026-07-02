@@ -79,10 +79,12 @@ Consume больше не memmove'ит хвост на каждой границ
 (1/7/31/4093/17/65537 байт) через все PFS0/NCZ/block-пути.
 
 ### 3.2. Увеличить выходной чанк в ncm
-`outputBuffer_` = 256 KiB (`src/install/package_stream.cpp:664-665`) — каждый
-`ncmContentStorageWritePlaceHolder` IPC-вызов ≤256 KiB. Поднять до 1–2 MiB,
-проверить по `ncm_stall`/`write_us` (порог сегодня 100 мс,
-`src/install/install_backend_switch.cpp:454`).
+Реализовано: `outputBuffer_` поднят с 256 KiB до 1 MiB
+(`src/install/package_stream.cpp:678-679`) — каждый
+`ncmContentStorageWritePlaceHolder` IPC-вызов теперь ≤1 MiB вместо ≤256 KiB
+(solid-режим; block-режим уже писал по `blockSize_`, не затронут). Замер
+`ncm_stall`/`write_us` (порог 100 мс, `src/install/install_backend_switch.cpp:444`)
+— на реальном железе.
 
 ### 3.3. Распараллелить стадии install
 Один `installWorker_` (`src/app/download_manager.cpp:222`) последовательно

@@ -676,7 +676,7 @@ private:
     std::vector<NczSection> sections_;
     std::vector<uint32_t> blockSizes_;
     std::vector<uint8_t> outputBuffer_ =
-        std::vector<uint8_t>(256 * 1024);
+        std::vector<uint8_t>(1024 * 1024);
     ZSTD_DStream* stream_ = nullptr;
     uint64_t outputSize_ = 0;
     uint64_t outputPosition_ = 0;
