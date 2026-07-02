@@ -14,7 +14,9 @@ extern "C" {
 }
 
 #ifdef __SWITCH__
-#include <mbedtls/aes.h>
+extern "C" {
+#include <switch/crypto/aes_ctr.h>
+}
 #else
 #include <openssl/aes.h>
 #endif
@@ -116,49 +118,23 @@ public:
             return true;
 
 #ifdef __SWITCH__
-        mbedtls_aes_context aes;
-        mbedtls_aes_init(&aes);
-        if (mbedtls_aes_setkey_enc(&aes, section.key.data(), 128) != 0) {
-            mbedtls_aes_free(&aes);
-            return false;
-        }
+        uint8_t counter[16] {};
+        std::memcpy(counter, section.counter.data(), 8);
+        uint64_t block = absoluteOffset >> 4;
+        for (unsigned i = 0; i < 8; ++i)
+            counter[15 - i] = static_cast<uint8_t>(block >> (i * 8));
 
-        size_t done = 0;
+        Aes128CtrContext aes;
+        aes128CtrContextCreate(&aes, section.key.data(), counter);
+
+        // Keystream starts at the block boundary; burn the intra-block
+        // prefix so it lines up with absoluteOffset.
         size_t skip = static_cast<size_t>(absoluteOffset & 15);
         if (skip) {
-            uint8_t counter[16] {};
-            std::memcpy(counter, section.counter.data(), 8);
-            uint64_t block = absoluteOffset >> 4;
-            for (unsigned i = 0; i < 8; ++i)
-                counter[15 - i] = static_cast<uint8_t>(block >> (i * 8));
-            uint8_t stream[16];
-            if (mbedtls_aes_crypt_ecb(&aes, MBEDTLS_AES_ENCRYPT,
-                                      counter, stream) != 0) {
-                mbedtls_aes_free(&aes);
-                return false;
-            }
-            size_t count = std::min<size_t>(16 - skip, size);
-            for (size_t i = 0; i < count; ++i)
-                data[i] ^= stream[skip + i];
-            done = count;
+            uint8_t scratch[16] {};
+            aes128CtrCrypt(&aes, scratch, scratch, skip);
         }
-
-        if (done < size) {
-            uint64_t position = absoluteOffset + done;
-            uint64_t block = position >> 4;
-            uint8_t counter[16] {};
-            std::memcpy(counter, section.counter.data(), 8);
-            for (unsigned i = 0; i < 8; ++i)
-                counter[15 - i] = static_cast<uint8_t>(block >> (i * 8));
-            uint8_t stream[16] {};
-            size_t offset = 0;
-            if (mbedtls_aes_crypt_ctr(&aes, size - done, &offset, counter,
-                                      stream, data + done, data + done) != 0) {
-                mbedtls_aes_free(&aes);
-                return false;
-            }
-        }
-        mbedtls_aes_free(&aes);
+        aes128CtrCrypt(&aes, data, data, size);
         return true;
 #else
         AES_KEY aes;
