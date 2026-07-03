@@ -240,6 +240,7 @@ void testAsyncImageDiskCache() {
     std::vector<GameMetadataService::ImageData> results;
     {
         GameMetadataService service(root, root + "/missing-index.json");
+        service.setImageNetworkPaused(true);
         auto callback = [&](GameMetadataService::ImageData data) {
             std::lock_guard<std::mutex> lock(mutex);
             results.push_back(std::move(data));
@@ -260,6 +261,42 @@ void testAsyncImageDiskCache() {
     std::remove((images + "/" + cacheName + ".img").c_str());
     rmdir(images.c_str());
     rmdir(catalog.c_str());
+    rmdir(root.c_str());
+}
+
+void testImageNetworkWaitsForActiveTransfer() {
+    std::string root = "/tmp/pipensx-image-defer-test-" +
+                       std::to_string(static_cast<long long>(getpid()));
+    std::mutex mutex;
+    std::condition_variable ready;
+    int callbacks = 0;
+    GameMetadataService::ImageData result;
+    {
+        GameMetadataService service(root, root + "/missing-index.json");
+        service.setImageNetworkPaused(true);
+        service.requestImage("http://127.0.0.1:1/deferred-cover.jpg",
+            [&](GameMetadataService::ImageData data) {
+                std::lock_guard<std::mutex> lock(mutex);
+                result = std::move(data);
+                callbacks++;
+                ready.notify_all();
+            });
+        {
+            std::unique_lock<std::mutex> lock(mutex);
+            assert(!ready.wait_for(lock, std::chrono::milliseconds(250), [&] {
+                return callbacks > 0;
+            }));
+        }
+        service.setImageNetworkPaused(false);
+        std::unique_lock<std::mutex> lock(mutex);
+        assert(ready.wait_for(lock, std::chrono::seconds(5), [&] {
+            return callbacks == 1;
+        }));
+        assert(!result);
+    }
+    rmdir((root + "/catalog/metadata").c_str());
+    rmdir((root + "/catalog/images").c_str());
+    rmdir((root + "/catalog").c_str());
     rmdir(root.c_str());
 }
 
@@ -351,6 +388,7 @@ int main() {
     testMetadataIndexParsing();
     testCatalogPresentationUsesGameMetadata();
     testAsyncImageDiskCache();
+    testImageNetworkWaitsForActiveTransfer();
     testTrackerCancellation();
     runLiveResolutionIfRequested();
     std::puts("catalog tests passed");

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -54,6 +55,7 @@ public:
     bool loadImage(const std::string& url, std::vector<uint8_t>& bytes,
                    std::string& error) const;
     void requestImage(const std::string& url, ImageCallback callback) const;
+    void setImageNetworkPaused(bool paused) const;
     bool clearImageCache(std::string& error) const;
 
     size_t size() const { return byHash_.size(); }
@@ -63,12 +65,21 @@ public:
                            std::string& error);
 
 private:
+    enum class ImageLoadResult {
+        Loaded,
+        Deferred,
+        Failed,
+    };
+
     struct CachedImage {
         ImageData image;
         uint64_t access = 0;
     };
 
     void imageWorkerMain() const;
+    ImageLoadResult loadImageInternal(const std::string& url,
+                                      std::vector<uint8_t>& bytes,
+                                      std::string& error) const;
     void cacheImageLocked(const std::string& url,
                           ImageData image) const;
 
@@ -86,6 +97,7 @@ private:
     mutable std::vector<std::thread> imageWorkers_;
     mutable size_t imageCacheBytes_ = 0;
     mutable uint64_t imageAccess_ = 0;
+    mutable std::atomic<bool> imageNetworkPaused_{false};
     mutable bool stoppingImages_ = false;
     std::unordered_map<std::string, GameMetadata> byHash_;
 };

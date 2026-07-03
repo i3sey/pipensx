@@ -518,26 +518,32 @@ bool GameMetadataService::refreshDetails(const std::string& titleId,
 bool GameMetadataService::loadImage(const std::string& url,
                                     std::vector<uint8_t>& bytes,
                                     std::string& error) const {
+    return loadImageInternal(url, bytes, error) == ImageLoadResult::Loaded;
+}
+
+GameMetadataService::ImageLoadResult GameMetadataService::loadImageInternal(
+    const std::string& url, std::vector<uint8_t>& bytes,
+    std::string& error) const {
     bytes.clear();
     if (url.empty()) {
         error = "No image URL.";
-        return false;
+        return ImageLoadResult::Failed;
     }
 
     const bool localImage = url.compare(0, 5, "sdmc:") == 0 ||
                             (!url.empty() && url[0] == '/');
     if (localImage) {
         if (!readFile(url, bytes, kMaxImageBytes, error))
-            return false;
+            return ImageLoadResult::Failed;
         int width = 0;
         int height = 0;
         int channels = 0;
         if (!stbi_info_from_memory(bytes.data(), static_cast<int>(bytes.size()),
                                    &width, &height, &channels)) {
             error = "Local image is not valid.";
-            return false;
+            return ImageLoadResult::Failed;
         }
-        return true;
+        return ImageLoadResult::Loaded;
     }
 
     std::string path = imageRoot_ + "/" + cacheNameForUrl(url);
@@ -548,18 +554,22 @@ bool GameMetadataService::loadImage(const std::string& url,
         if (stbi_info_from_memory(bytes.data(),
                                   static_cast<int>(bytes.size()),
                                   &width, &height, &channels))
-            return true;
+            return ImageLoadResult::Loaded;
         unlink(path.c_str());
         bytes.clear();
         log_msg("[metadata] removed invalid image cache '%s'\n",
                 path.c_str());
     }
     error.clear();
+    if (imageNetworkPaused_.load(std::memory_order_relaxed)) {
+        error = "Image network deferred during active transfer.";
+        return ImageLoadResult::Deferred;
+    }
     if (!httpGet(url, kMaxImageBytes, bytes, error))
-        return false;
+        return ImageLoadResult::Failed;
     if (bytes.size() < 8) {
         error = "Downloaded image is too small.";
-        return false;
+        return ImageLoadResult::Failed;
     }
     int width = 0;
     int height = 0;
@@ -567,7 +577,7 @@ bool GameMetadataService::loadImage(const std::string& url,
     if (!stbi_info_from_memory(bytes.data(), static_cast<int>(bytes.size()),
                                &width, &height, &channels)) {
         error = "Downloaded response is not an image.";
-        return false;
+        return ImageLoadResult::Failed;
     }
     std::string writeError;
     if (!writeAtomic(path, bytes, writeError)) {
@@ -577,7 +587,7 @@ bool GameMetadataService::loadImage(const std::string& url,
             log_msg("[metadata] image cache write failed '%s': %s\n",
                     path.c_str(), writeError.c_str());
     }
-    return true;
+    return ImageLoadResult::Loaded;
 }
 
 bool GameMetadataService::clearImageCache(std::string& error) const {
@@ -654,6 +664,13 @@ void GameMetadataService::requestImage(const std::string& url,
     imageReady_.notify_one();
 }
 
+void GameMetadataService::setImageNetworkPaused(bool paused) const {
+    bool previous = imageNetworkPaused_.exchange(
+        paused, std::memory_order_relaxed);
+    if (previous && !paused)
+        imageReady_.notify_all();
+}
+
 void GameMetadataService::cacheImageLocked(
     const std::string& url, ImageData image) const {
     if (!image)
@@ -712,9 +729,12 @@ void GameMetadataService::imageWorkerMain() const {
         }
 
         std::string error;
+        bool deferred = false;
         if (!result) {
             std::vector<uint8_t> bytes;
-            if (loadImage(url, bytes, error)) {
+            ImageLoadResult loadResult = loadImageInternal(url, bytes, error);
+            deferred = loadResult == ImageLoadResult::Deferred;
+            if (loadResult == ImageLoadResult::Loaded) {
                 int width = 0;
                 int height = 0;
                 int channels = 0;
@@ -736,6 +756,19 @@ void GameMetadataService::imageWorkerMain() const {
                 if (pixels)
                     stbi_image_free(pixels);
             }
+        }
+        if (deferred) {
+            telemetry_log("image", "-",
+                          "event=deferred reason=active_transfer");
+            std::unique_lock<std::mutex> lock(imageMutex_);
+            imageQueue_.push_back(std::move(url));
+            imageReady_.wait(lock, [this] {
+                return stoppingImages_ ||
+                       !imageNetworkPaused_.load(std::memory_order_relaxed);
+            });
+            if (stoppingImages_)
+                return;
+            continue;
         }
         bool loaded = static_cast<bool>(result);
         if (!loaded) {

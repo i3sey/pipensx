@@ -4103,6 +4103,7 @@ int main(int, char**) {
         startupStage("DownloadManager construction");
         SwitchPerformanceController performance;
         DownloadManager manager("sdmc:/switch/pipensx");
+        metadata.setImageNetworkPaused(manager.hasActiveTransfer());
 
         startupStage("MainActivity construction");
         auto* activity = new MainActivity(&manager, &catalog, &metadata,
@@ -4114,7 +4115,9 @@ int main(int, char**) {
         startupStage("first main loop");
         bool firstFrame = true;
         while (true) {
-            performance.setActive(manager.hasActiveTransfer());
+            bool activeTransfer = manager.hasActiveTransfer();
+            performance.setActive(activeTransfer);
+            metadata.setImageNetworkPaused(activeTransfer);
             if (!brls::Application::mainLoop())
                 break;
             if (firstFrame) {
