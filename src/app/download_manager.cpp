@@ -438,6 +438,9 @@ private:
             activeFileIndex_ = chunk.fileIndex;
             currentPackage_ = file.path;
             install::PackageCallbacks callbacks;
+            callbacks.skipFile = [this](const std::string& name) {
+                return backend_->shouldSkipFile(name);
+            };
             callbacks.beginFile = [this](const std::string& name,
                                          uint64_t fileSize) {
                 bool ok = backend_->beginFile(name, fileSize);

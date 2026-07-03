@@ -13,6 +13,11 @@ struct PackageCallbacks {
     std::function<bool(uint64_t)> setFileSize;
     std::function<bool(const uint8_t*, size_t)> writeFile;
     std::function<bool()> endFile;
+    // Optional. Asked once per PFS0 entry (with the announced .nca name)
+    // before any processing; returning true drops the entry: its bytes are
+    // consumed raw with no NCZ decode, AES, hashing or installer callbacks
+    // (PERF_PLAN 3.4 — delta fragments of updates).
+    std::function<bool(const std::string&)> skipFile;
 };
 
 class PackageStream {

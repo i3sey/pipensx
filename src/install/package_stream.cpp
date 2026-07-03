@@ -843,6 +843,20 @@ private:
         std::string announcedName = currentName_;
         if (ncz)
             announcedName.replace(announcedName.size() - 4, 4, ".nca");
+        // Unwanted entries (delta fragments, PERF_PLAN 3.4) are dropped
+        // whole: their bytes are consumed raw below, with no NCZ decode,
+        // AES, hashing or installer callbacks.
+        if (callbacks_.skipFile && callbacks_.skipFile(announcedName)) {
+            currentSkipped_ = true;
+            fileOpen_ = true;
+            log_msg("[install] skipping package entry '%s' bytes=%llu\n",
+                    currentName_.c_str(),
+                    static_cast<unsigned long long>(entry.size));
+            telemetry_log("package", telemetryTag_.c_str(),
+                "event=skip name=%s bytes=%llu", currentName_.c_str(),
+                (unsigned long long)entry.size);
+            return true;
+        }
         if (!callbacks_.beginFile ||
             !callbacks_.beginFile(announcedName, announcedSize)) {
             error_ = "Installer rejected PFS0 file " + entry.name;
@@ -870,7 +884,9 @@ private:
                 return fail();
             currentDecoder_.reset();
         }
-        if (!callbacks_.endFile || !callbacks_.endFile()) {
+        if (currentSkipped_) {
+            currentSkipped_ = false;
+        } else if (!callbacks_.endFile || !callbacks_.endFile()) {
             error_ = "Installer failed to finalize PFS0 file " + currentName_;
             return fail();
         }
@@ -903,7 +919,9 @@ private:
             size_t count = static_cast<size_t>(
                 std::min<uint64_t>(currentInputRemaining_, pending_.size()));
             bool ok;
-            if (currentDecoder_)
+            if (currentSkipped_)
+                ok = true;
+            else if (currentDecoder_)
                 ok = currentDecoder_->write(pending_.data(), count, error_);
             else
                 ok = callbacks_.writeFile &&
@@ -937,6 +955,7 @@ private:
     size_t entryIndex_ = 0;
     bool headerReady_ = false;
     bool fileOpen_ = false;
+    bool currentSkipped_ = false;
     bool finished_ = false;
     bool failed_ = false;
 };

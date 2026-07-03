@@ -433,6 +433,58 @@ void testOfficialBlockNsz() {
     assert(capture.files[0] == nca);
 }
 
+void testSkipFileDropsEntryWithoutCallbacks() {
+    std::vector<uint8_t> first {1, 2, 3, 4, 5};
+    std::vector<uint8_t> delta(50000, 0xAB);
+    std::vector<uint8_t> last(1000);
+    for (size_t i = 0; i < last.size(); ++i)
+        last[i] = static_cast<uint8_t>(i * 3);
+    const std::string deltaName = "0123456789abcdef0123456789abcdef.nca";
+    auto package = makePfs0({{"first.nca", first},
+                             {deltaName, delta},
+                             {"last.nca", last}});
+    Capture capture;
+    PackageCallbacks callbacks = capture.callbacks();
+    std::vector<std::string> queried;
+    callbacks.skipFile = [&](const std::string& name) {
+        queried.push_back(name);
+        return name == deltaName;
+    };
+    PackageStream stream(false, std::move(callbacks));
+    feed(stream, package);
+    assert((queried == std::vector<std::string>{
+        "first.nca", deltaName, "last.nca"}));
+    assert((capture.names == std::vector<std::string>{
+        "first.nca", "last.nca"}));
+    assert(capture.files[0] == first);
+    assert(capture.files[1] == last);
+    assert(stream.consumed() == package.size());
+}
+
+void testSkippedNczEntryBypassesDecoder() {
+    // The skipped entry is deliberately NOT a valid NCZ: if the stream tried
+    // to decode it instead of raw-consuming its bytes, the feed would fail.
+    std::vector<uint8_t> garbage(0x5000, 0x5A);
+    std::vector<uint8_t> nca(0x4000 + 200000);
+    for (size_t i = 0; i < nca.size(); ++i)
+        nca[i] = static_cast<uint8_t>((i * 29) ^ (i >> 8));
+    auto package = makePfs0(
+        {{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.ncz", garbage},
+         {"00112233445566778899aabbccddeeff.ncz", makeSolidNcz(nca)}});
+    Capture capture;
+    PackageCallbacks callbacks = capture.callbacks();
+    callbacks.skipFile = [](const std::string& name) {
+        // The stream must announce the .nca name, matching what the backend
+        // parses for content ids.
+        return name == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.nca";
+    };
+    PackageStream stream(true, std::move(callbacks));
+    feed(stream, package);
+    assert(capture.names.size() == 1);
+    assert(capture.names[0] == "00112233445566778899aabbccddeeff.nca");
+    assert(capture.files[0] == nca);
+}
+
 void* runNszOnSmallStack(void*) {
     testNsz();
     return nullptr;
@@ -463,6 +515,8 @@ int main() {
     testNczSectionStartsBeforeHeaderEnd();
     testBlockNsz();
     testOfficialBlockNsz();
+    testSkipFileDropsEntryWithoutCallbacks();
+    testSkippedNczEntryBypassesDecoder();
     testNszSmallWorkerStack();
     std::cout << "package stream tests passed\n";
     return 0;

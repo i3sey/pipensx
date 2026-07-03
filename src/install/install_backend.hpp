@@ -13,6 +13,12 @@ public:
 
     virtual bool beginPackage(const std::string& taskId,
                               const std::string& packageName) = 0;
+    // Entries the backend wants dropped before any processing (PERF_PLAN 3.4:
+    // delta fragments identified by an early CNMT parse). Default: keep all.
+    virtual bool shouldSkipFile(const std::string& name) const {
+        (void)name;
+        return false;
+    }
     virtual bool beginFile(const std::string& name, uint64_t size) = 0;
     virtual bool setFileSize(uint64_t size) = 0;
     virtual bool writeFile(const uint8_t* data, size_t size) = 0;

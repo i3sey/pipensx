@@ -513,8 +513,27 @@ public:
                 current_->name.c_str(),
                 static_cast<unsigned long long>(current_->written));
         emitFileTelemetry(now_ms(), true, true);
+        if (current_->meta)
+            prepareEarlyMeta(*current_);
         current_ = nullptr;
         currentName_.clear();
+        return true;
+    }
+
+    // Delta fragments identified by the early CNMT parse are dropped by the
+    // package stream before decode/AES/SHA/ncm (PERF_PLAN 3.4). Only works
+    // for deltas that follow the CNMT NCA in the PFS0; earlier ones stream
+    // as before and their placeholders are discarded at commit.
+    bool shouldSkipFile(const std::string& name) const override {
+        if (!earlyMetaValid_)
+            return false;
+        NcmContentId id {};
+        if (!parseContentId(name, id))
+            return false;
+        if (!containsContentId(earlyMeta_.deltaIds, id))
+            return false;
+        log_msg("[install] delta fragment '%s' excluded from install\n",
+                name.c_str());
         return true;
     }
 
@@ -543,17 +562,21 @@ public:
             }
             metaContent->registered = true;
         }
-        char metaNcaPath[FS_MAX_PATH];
-        Result rc = ncmContentStorageGetPath(&storage_, metaNcaPath,
-                                             sizeof(metaNcaPath),
-                                             &metaContent->id);
-        if (R_FAILED(rc)) {
-            errorResult("Unable to resolve CNMT NCA path", rc);
-            return false;
-        }
         ParsedMeta meta;
-        if (!readPackagedMeta(metaNcaPath, meta, error_))
-            return false;
+        if (earlyMetaValid_) {
+            meta = earlyMeta_;
+        } else {
+            char metaNcaPath[FS_MAX_PATH];
+            Result pathRc = ncmContentStorageGetPath(&storage_, metaNcaPath,
+                                                     sizeof(metaNcaPath),
+                                                     &metaContent->id);
+            if (R_FAILED(pathRc)) {
+                errorResult("Unable to resolve CNMT NCA path", pathRc);
+                return false;
+            }
+            if (!readPackagedMeta(metaNcaPath, meta, error_))
+                return false;
+        }
         log_msg("[install] CNMT parsed title=%016llx version=%u contents=%u\n",
                 static_cast<unsigned long long>(meta.header.id),
                 meta.header.version, meta.header.content_count);
@@ -566,7 +589,7 @@ public:
             {}
         };
         bool exists = false;
-        rc = ncmContentMetaDatabaseHas(&database_, &exists, &key);
+        Result rc = ncmContentMetaDatabaseHas(&database_, &exists, &key);
         if (R_FAILED(rc)) {
             errorResult("Unable to query installed title metadata", rc);
             return false;
@@ -758,6 +781,43 @@ public:
     const std::string& error() const override { return error_; }
 
 private:
+    // PERF_PLAN 3.4: parse the CNMT as soon as its NCA completes, so delta
+    // fragments that follow it in the PFS0 can be skipped by shouldSkipFile
+    // instead of being streamed through zstd/AES/SHA/ncm and dropped at
+    // commit. Best effort: any failure here is retried authoritatively at
+    // commitPackage, which then fails with a proper error.
+    void prepareEarlyMeta(Content& metaContent) {
+        if (earlyMetaValid_)
+            return;
+        if (!metaContent.existing && !metaContent.registered) {
+            Result rc = ncmContentStorageRegister(
+                &storage_, &metaContent.id, &metaContent.placeholder);
+            if (R_FAILED(rc)) {
+                log_msg("[install] early CNMT register failed (0x%08x)\n", rc);
+                return;
+            }
+            metaContent.registered = true;
+        }
+        char path[FS_MAX_PATH];
+        Result rc = ncmContentStorageGetPath(&storage_, path, sizeof(path),
+                                             &metaContent.id);
+        if (R_FAILED(rc)) {
+            log_msg("[install] early CNMT path failed (0x%08x)\n", rc);
+            return;
+        }
+        ParsedMeta meta;
+        std::string parseError;
+        if (!readPackagedMeta(path, meta, parseError)) {
+            log_msg("[install] early CNMT parse failed: %s\n",
+                    parseError.c_str());
+            return;
+        }
+        earlyMeta_ = std::move(meta);
+        earlyMetaValid_ = true;
+        log_msg("[install] CNMT parsed early: contents=%zu deltas=%zu\n",
+                earlyMeta_.contents.size(), earlyMeta_.deltaIds.size());
+    }
+
     void resetFileTelemetry(uint64_t now) {
         telemetryGeneration_ = telemetry_generation();
         telemetryFileStartedMs_ = now;
@@ -854,6 +914,8 @@ private:
         ticket_.clear();
         certificate_.clear();
         current_ = nullptr;
+        earlyMeta_ = ParsedMeta {};
+        earlyMetaValid_ = false;
     }
 
     void resetState() {
@@ -868,6 +930,8 @@ private:
         expected_ = 0;
         installed_ = 0;
         ignoredRemaining_ = 0;
+        earlyMeta_ = ParsedMeta {};
+        earlyMetaValid_ = false;
         metaCommitted_ = false;
         applicationRecordTouched_ = false;
         applicationId_ = 0;
@@ -891,6 +955,8 @@ private:
     std::vector<NsExtContentStorageMetaKey> previousRecords_;
     Content* current_ = nullptr;
     Sha256Context sha_ {};
+    ParsedMeta earlyMeta_;
+    bool earlyMetaValid_ = false;
     uint64_t auxiliaryExpected_ = 0;
     uint64_t ignoredRemaining_ = 0;
     uint64_t expected_ = 0;
