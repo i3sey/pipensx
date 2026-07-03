@@ -3,12 +3,14 @@
 
 extern "C" {
 #include "../core/antizapret.h"
+#include "../core/sha1.h"
 #include "../core/util.h"
 }
 
 #include <algorithm>
 #include <cerrno>
 #include <cstdio>
+#include <cstring>
 #include <curl/curl.h>
 #include <fstream>
 #include <borealis/extern/nlohmann/json.hpp>
@@ -21,8 +23,49 @@ namespace {
 
 constexpr size_t kMaxCatalogBytes = 16 * 1024 * 1024;
 constexpr size_t kMaxCatalogEntries = 20000;
+constexpr size_t kMaxInfoDictBytes = 8 * 1024 * 1024;
 constexpr const char* kLatestReleaseApi =
     "https://api.github.com/repos/bqio/switch-dumps/releases/latest";
+
+int base64Value(char c) {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '+') return 62;
+    if (c == '/') return 63;
+    return -1;
+}
+
+bool decodeBase64(const std::string& text, std::vector<uint8_t>& out) {
+    out.clear();
+    if (text.empty() || text.size() % 4 != 0)
+        return false;
+    out.reserve(text.size() / 4 * 3);
+    for (size_t i = 0; i < text.size(); i += 4) {
+        int values[4];
+        int padding = 0;
+        for (size_t j = 0; j < 4; ++j) {
+            char c = text[i + j];
+            if (c == '=' && i + 4 == text.size() && j >= 2) {
+                values[j] = 0;
+                ++padding;
+                continue;
+            }
+            if (padding || (values[j] = base64Value(c)) < 0)
+                return false;
+        }
+        uint32_t block = (static_cast<uint32_t>(values[0]) << 18) |
+                         (static_cast<uint32_t>(values[1]) << 12) |
+                         (static_cast<uint32_t>(values[2]) << 6) |
+                         static_cast<uint32_t>(values[3]);
+        out.push_back(static_cast<uint8_t>(block >> 16));
+        if (padding < 2)
+            out.push_back(static_cast<uint8_t>(block >> 8));
+        if (padding < 1)
+            out.push_back(static_cast<uint8_t>(block));
+    }
+    return true;
+}
 
 struct HttpBuffer {
     std::string data;
@@ -319,6 +362,27 @@ bool CatalogService::parseJson(const std::string& json,
             entry.healthReason = item["failure_reason"].get<std::string>();
             if (entry.healthReason.size() > 512)
                 entry.healthReason.resize(512);
+        }
+        /* Pre-resolved info dictionary (RF_ACCESS_PLAN П2.1). A dictionary
+           that fails to decode or does not hash to the magnet's btih is
+           dropped here, so entry.infoDict non-empty always means verified;
+           the entry itself stays usable through the network resolve. */
+        if (item.contains("info_dict") && item["info_dict"].is_string()) {
+            const std::string& encoded =
+                item["info_dict"].get_ref<const std::string&>();
+            if (encoded.size() <= kMaxInfoDictBytes / 3 * 4 + 4 &&
+                decodeBase64(encoded, entry.infoDict)) {
+                uint8_t digest[20];
+                sha1(entry.infoDict.data(), entry.infoDict.size(), digest);
+                if (entry.infoDict.size() > kMaxInfoDictBytes ||
+                    std::memcmp(digest, magnet.infoHash, 20) != 0) {
+                    log_msg("[catalog] info_dict for %s rejected\n",
+                            entry.infoHash.c_str());
+                    entry.infoDict.clear();
+                }
+            } else {
+                entry.infoDict.clear();
+            }
         }
         if (!hashes.insert(entry.infoHash).second)
             continue;

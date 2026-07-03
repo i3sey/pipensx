@@ -67,7 +67,7 @@ struct BatchEnqueueResult {
 class CatalogBatchInstaller {
 public:
     using ResolveTorrent = std::function<bool(
-        const std::string&, const std::string&, std::atomic<bool>&,
+        const CatalogEntry&, const std::string&, std::atomic<bool>&,
         const MagnetResolver::ProgressCallback&, std::vector<uint8_t>&,
         std::string&)>;
     using ProgressCallback = std::function<void(const BatchPrepareProgress&)>;

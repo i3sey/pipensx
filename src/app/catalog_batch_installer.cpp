@@ -103,7 +103,7 @@ BatchPreparation CatalogBatchInstaller::prepare(
 
         std::string error;
         std::vector<uint8_t> initialPeers;
-        if (!resolver_(entry.magnetUri, path, cancelled, forwardProgress,
+        if (!resolver_(entry, path, cancelled, forwardProgress,
                        initialPeers, error)) {
             ::unlink(path.c_str());
             if (cancelled.load()) {

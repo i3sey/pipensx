@@ -168,10 +168,39 @@ uint32_t dhtPeerCount(DhtSearch& search) {
     return static_cast<uint32_t>(search.peers.size() / 6);
 }
 
+bool writeTorrentAtomic(const std::string& path,
+                        const std::vector<uint8_t>& torrent,
+                        std::string& error) {
+    std::string temporary = path + ".tmp";
+    {
+        std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+        if (!output) {
+            error = "Unable to create the resolved torrent file.";
+            return false;
+        }
+        output.write(reinterpret_cast<const char*>(torrent.data()),
+                     static_cast<std::streamsize>(torrent.size()));
+        output.flush();
+        if (!output.good()) {
+            unlink(temporary.c_str());
+            error = "Unable to write the resolved torrent file.";
+            return false;
+        }
+    }
+    if (rename(temporary.c_str(), path.c_str()) != 0) {
+        unlink(temporary.c_str());
+        error = "Unable to replace the resolved torrent file.";
+        return false;
+    }
+    return true;
+}
+
 void runDhtSearch(const uint8_t infoHash[20],
                   std::atomic<bool>& cancelled,
                   std::atomic<bool>& stop,
                   DhtSearch& search) {
+    if (cancelled || stop)
+        return;
     uint8_t nodeId[20];
     rand_bytes(nodeId, 20);
     /* Fails when a running download already owns the DHT singleton or the
@@ -598,12 +627,33 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
                                    std::atomic<bool>& cancelled,
                                    const ProgressCallback& progress,
                                    std::string& error,
-                                   std::vector<uint8_t>* verifiedPeers) const {
+                                   std::vector<uint8_t>* verifiedPeers,
+                                   const std::vector<uint8_t>* presetInfo)
+    const {
     if (verifiedPeers)
         verifiedPeers->clear();
     MagnetSpec spec;
     if (!parse(uri, spec, error))
         return false;
+
+    /* Pre-resolved info dictionary from the catalog (RF_ACCESS_PLAN П2.1):
+       CI resolves the magnet outside RF and embeds the dictionary, so the
+       client skips the tracker→peer→ut_metadata phase entirely. buildTorrent
+       still SHA-1-checks it against the magnet hash, so a tampered
+       dictionary falls through to the normal network resolve. */
+    if (presetInfo && !presetInfo->empty()) {
+        if (progress)
+            progress({MagnetProgress::Stage::Validating, 1, 1});
+        std::vector<uint8_t> torrent;
+        std::string presetError;
+        if (buildTorrent(spec, *presetInfo, torrent, presetError)) {
+            log_msg("[magnet] resolved from catalog info_dict (%zu bytes)\n",
+                    presetInfo->size());
+            return writeTorrentAtomic(path, torrent, error);
+        }
+        log_msg("[magnet] catalog info_dict rejected: %s\n",
+                presetError.c_str());
+    }
 
     uint8_t peerId[20];
     std::memcpy(peerId, "-PN0001-", 8);
@@ -755,28 +805,8 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
     std::vector<uint8_t> torrent;
     if (!buildTorrent(spec, metadata, torrent, error))
         return false;
-
-    std::string temporary = path + ".tmp";
-    {
-        std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
-        if (!output) {
-            error = "Unable to create the resolved torrent file.";
-            return false;
-        }
-        output.write(reinterpret_cast<const char*>(torrent.data()),
-                     static_cast<std::streamsize>(torrent.size()));
-        output.flush();
-        if (!output.good()) {
-            unlink(temporary.c_str());
-            error = "Unable to write the resolved torrent file.";
-            return false;
-        }
-    }
-    if (rename(temporary.c_str(), path.c_str()) != 0) {
-        unlink(temporary.c_str());
-        error = "Unable to replace the resolved torrent file.";
+    if (!writeTorrentAtomic(path, torrent, error))
         return false;
-    }
     if (verifiedPeers)
         *verifiedPeers = std::move(verifiedEndpoints);
     return true;

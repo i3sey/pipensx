@@ -2360,10 +2360,11 @@ private:
                           catalogLower(entry_.infoHash) + "_" +
                           std::to_string(serial) + ".torrent";
         std::string magnet = entry_.magnetUri;
+        std::vector<uint8_t> infoDict = entry_.infoDict;
         std::string telemetryTag = catalogLower(entry_.infoHash);
         uint64_t startedMs = now_ms();
-        brls::async([this, alive, cancelled, magnet, tmp, forcePicker,
-                     telemetryTag, startedMs] {
+        brls::async([this, alive, cancelled, magnet, infoDict, tmp,
+                     forcePicker, telemetryTag, startedMs] {
             std::string err;
             MagnetResolver resolver;
             auto progress = [this, alive, last = std::string()](
@@ -2396,8 +2397,9 @@ private:
                 });
             };
             std::vector<uint8_t> initialPeers;
-            bool ok = resolver.resolveToFile(magnet, tmp, *cancelled,
-                                             progress, err, &initialPeers);
+            bool ok = resolver.resolveToFile(
+                magnet, tmp, *cancelled, progress, err, &initialPeers,
+                infoDict.empty() ? nullptr : &infoDict);
             telemetry_log("magnet", telemetryTag.c_str(),
                           "event=resolve ok=%d cancelled=%d duration_ms=%llu "
                           "verified_peers=%u",
@@ -2650,14 +2652,16 @@ public:
         for (const CatalogEntry& entry : entries_)
             remaining_.insert(catalogLower(entry.infoHash));
 
-        auto resolver = [](const std::string& magnet, const std::string& path,
+        auto resolver = [](const CatalogEntry& entry, const std::string& path,
                            std::atomic<bool>& cancelled,
                            const MagnetResolver::ProgressCallback& progress,
                            std::vector<uint8_t>& initialPeers,
                            std::string& error) {
             MagnetResolver instance;
-            return instance.resolveToFile(magnet, path, cancelled, progress,
-                                          error, &initialPeers);
+            return instance.resolveToFile(
+                entry.magnetUri, path, cancelled, progress, error,
+                &initialPeers,
+                entry.infoDict.empty() ? nullptr : &entry.infoDict);
         };
         installer_ = std::make_shared<CatalogBatchInstaller>(
             manager_->rootPath(), std::move(resolver));

@@ -24,6 +24,10 @@ struct CatalogEntry {
     std::string posterUrl;
     std::vector<std::string> screenshots;
     std::string healthReason;
+    /* Pre-resolved bencoded info dictionary (RF_ACCESS_PLAN П2.1), decoded
+       from the catalog's base64 "info_dict" and SHA-1-verified against the
+       magnet hash at parse time. Empty when the catalog carries none. */
+    std::vector<uint8_t> infoDict;
     uint64_t topicId = 0;
     uint64_t size = 0;
     int64_t publishedAt = 0;

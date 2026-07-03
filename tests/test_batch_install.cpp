@@ -57,7 +57,7 @@ int main() {
     {
         CatalogBatchInstaller installer(
             root,
-            [source](const std::string&, const std::string& target,
+            [source](const CatalogEntry&, const std::string& target,
                      std::atomic<bool>&,
                      const MagnetResolver::ProgressCallback&,
                      std::vector<uint8_t>&,
@@ -80,12 +80,12 @@ int main() {
         bad.magnetUri = "magnet:bad";
         CatalogBatchInstaller installer(
             root,
-            [source](const std::string& magnet, const std::string& target,
+            [source](const CatalogEntry& entry, const std::string& target,
                      std::atomic<bool>&,
                      const MagnetResolver::ProgressCallback&,
                      std::vector<uint8_t>&,
                      std::string& error) {
-                if (magnet == "magnet:bad") {
+                if (entry.magnetUri == "magnet:bad") {
                     error = "No usable peers.";
                     return false;
                 }
@@ -110,7 +110,7 @@ int main() {
         CatalogBatchInstaller installer(
             root,
             [source, initialPeers](
-                const std::string&, const std::string& target,
+                const CatalogEntry&, const std::string& target,
                 std::atomic<bool>&,
                 const MagnetResolver::ProgressCallback&,
                 std::vector<uint8_t>& peers, std::string&) {
@@ -147,7 +147,7 @@ int main() {
     {
         CatalogBatchInstaller installer(
             root,
-            [source](const std::string&, const std::string& target,
+            [source](const CatalogEntry&, const std::string& target,
                      std::atomic<bool>& cancelled,
                      const MagnetResolver::ProgressCallback&,
                      std::vector<uint8_t>&,
@@ -168,7 +168,7 @@ int main() {
         std::string temporary;
         CatalogBatchInstaller installer(
             root,
-            [&temporary](const std::string&, const std::string& target,
+            [&temporary](const CatalogEntry&, const std::string& target,
                          std::atomic<bool>& cancelled,
                          const MagnetResolver::ProgressCallback&,
                          std::vector<uint8_t>&,

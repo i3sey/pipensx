@@ -129,6 +129,88 @@ void testCatalogV2HealthParsing() {
     assert(entries[1].isHiddenByDefault());
 }
 
+/* Base64 of the info dictionary used by testTorrentConstruction; its SHA-1
+   is 9E2B6F8ACD7B3DA966E5FF4BA4C0E00750AC2595. */
+constexpr const char* kInfoDictB64 =
+    "ZDY6bGVuZ3RoaTFlNDpuYW1lODp0ZXN0Lm5zcDEyOnBpZWNlIGxlbmd0aGkxNjM4NGU2On"
+    "BpZWNlczIwOjAxMjM0NTY3ODkwMTIzNDU2Nzg5ZQ==";
+
+void testInfoDictParsing() {
+    const std::string good =
+        "[{\"title\":\"Preset\",\"magnetURI\":\"magnet:?xt=urn:btih:"
+        "9E2B6F8ACD7B3DA966E5FF4BA4C0E00750AC2595&tr="
+        "http://bt.t-ru.org/ann?magnet\",\"info_dict\":\"" +
+        std::string(kInfoDictB64) + "\"}]";
+    std::vector<CatalogEntry> entries;
+    std::string error;
+    assert(CatalogService::parseJson(good, entries, error));
+    assert(entries.size() == 1);
+    assert(entries[0].infoDict.size() == 82);
+    assert(entries[0].infoDict.front() == 'd');
+    assert(entries[0].infoDict.back() == 'e');
+
+    /* A dictionary that hashes to a different btih must be dropped while
+       the entry itself survives for the network resolve. */
+    const std::string mismatched =
+        "[{\"title\":\"Mismatch\",\"magnetURI\":\"magnet:?xt=urn:btih:"
+        "E21269D03D34B557F63CE915DEA14F765C9C9798&tr="
+        "http://bt.t-ru.org/ann?magnet\",\"info_dict\":\"" +
+        std::string(kInfoDictB64) + "\"}]";
+    assert(CatalogService::parseJson(mismatched, entries, error));
+    assert(entries.size() == 1);
+    assert(entries[0].infoDict.empty());
+
+    const char* invalid =
+        "[{\"title\":\"BadB64\",\"magnetURI\":\"magnet:?xt=urn:btih:"
+        "E21269D03D34B557F63CE915DEA14F765C9C9798&tr="
+        "http://bt.t-ru.org/ann?magnet\",\"info_dict\":\"@@not base64@@\"}]";
+    assert(CatalogService::parseJson(invalid, entries, error));
+    assert(entries.size() == 1);
+    assert(entries[0].infoDict.empty());
+}
+
+void testResolveFromPresetInfoDict() {
+    const std::string info =
+        "d6:lengthi1e4:name8:test.nsp12:piece lengthi16384e6:pieces20:"
+        "01234567890123456789e";
+    uint8_t digest[20];
+    sha1(info.data(), info.size(), digest);
+    std::string magnet = "magnet:?xt=urn:btih:" + hexHash(digest) +
+                         "&tr=http://bt.t-ru.org/ann?magnet";
+    std::vector<uint8_t> preset(info.begin(), info.end());
+
+    char pathTemplate[] = "/tmp/pipensx-preset-XXXXXX";
+    int fd = mkstemp(pathTemplate);
+    assert(fd >= 0);
+    close(fd);
+    std::string path = pathTemplate;
+
+    /* Offline: a valid preset dictionary resolves without any network. */
+    MagnetResolver resolver;
+    std::atomic<bool> cancelled{false};
+    std::string error;
+    assert(resolver.resolveToFile(magnet, path, cancelled, nullptr, error,
+                                  nullptr, &preset));
+    std::ifstream input(path, std::ios::binary);
+    std::string torrent((std::istreambuf_iterator<char>(input)),
+                        std::istreambuf_iterator<char>());
+    assert(torrent.rfind("d8:announce", 0) == 0);
+    assert(torrent.find(info) != std::string::npos);
+
+    /* A preset that does not match the magnet hash must fall through to
+       the network resolve; with cancellation pre-set that path exits
+       without producing a file. */
+    std::string wrongMagnet =
+        "magnet:?xt=urn:btih:E21269D03D34B557F63CE915DEA14F765C9C9798"
+        "&tr=http://bt.t-ru.org/ann?magnet";
+    std::atomic<bool> stop{true};
+    unlink(path.c_str());
+    assert(!resolver.resolveToFile(wrongMagnet, path, stop, nullptr, error,
+                                   nullptr, &preset));
+    assert(access(path.c_str(), F_OK) != 0);
+    unlink(path.c_str());
+}
+
 void testTorrentConstruction() {
     const std::string info =
         "d6:lengthi1e4:name8:test.nsp12:piece lengthi16384e6:pieces20:"
@@ -384,6 +466,8 @@ int main() {
     testMagnetParsing();
     testCatalogParsing();
     testCatalogV2HealthParsing();
+    testInfoDictParsing();
+    testResolveFromPresetInfoDict();
     testTorrentConstruction();
     testMetadataIndexParsing();
     testCatalogPresentationUsesGameMetadata();
