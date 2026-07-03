@@ -171,6 +171,51 @@ int percentOf(float progress) {
     return static_cast<int>(std::clamp(progress, 0.0f, 1.0f) * 100.0f);
 }
 
+std::string formatEta(uint64_t remainingBytes, uint64_t speedBytesPerSecond) {
+    if (!remainingBytes || !speedBytesPerSecond)
+        return {};
+
+    uint64_t seconds = remainingBytes / speedBytesPerSecond;
+    if (remainingBytes % speedBytesPerSecond)
+        ++seconds;
+    if (seconds < 60)
+        return std::to_string(seconds) + "s";
+
+    uint64_t minutes = seconds / 60;
+    if (minutes < 60)
+        return std::to_string(minutes) + "m " +
+               std::to_string(seconds % 60) + "s";
+
+    uint64_t hours = minutes / 60;
+    if (hours < 24)
+        return std::to_string(hours) + "h " +
+               std::to_string(minutes % 60) + "m";
+
+    return std::to_string(hours / 24) + "d " +
+           std::to_string(hours % 24) + "h";
+}
+
+NVGcolor statusColor(DownloadStatus status) {
+    switch (status) {
+        case DownloadStatus::Error:
+            return nvgRGB(255, 69, 84);
+        case DownloadStatus::Completed:
+        case DownloadStatus::Installed:
+            return nvgRGB(96, 220, 130);
+        case DownloadStatus::Paused:
+        case DownloadStatus::Removing:
+            return nvgRGB(170, 170, 180);
+        case DownloadStatus::Queued:
+        case DownloadStatus::Checking:
+        case DownloadStatus::Downloading:
+        case DownloadStatus::Verifying:
+        case DownloadStatus::Installing:
+        case DownloadStatus::Committing:
+            return nvgRGB(0, 195, 227);
+    }
+    return nvgRGB(0, 195, 227);
+}
+
 std::string taskStatusText(const DownloadTask& task) {
     auto withPercent = [](const std::string& label, int percent) {
         return label + " " + std::to_string(percent) + "%";
@@ -513,6 +558,7 @@ public:
         title_->setText(task.name);
         placeholder_->setText(placeholderLetter(task.name));
         status_->setText(taskStatusText(task));
+        status_->setTextColor(statusColor(task.status));
         float progress = (task.status == DownloadStatus::Installing ||
                           task.status == DownloadStatus::Committing)
             ? installProgressOf(task)
@@ -530,10 +576,16 @@ public:
         } else if (task.status == DownloadStatus::Installed) {
             meta = std::to_string(task.packagesInstalled) +
                    " package(s) installed to SD";
-        } else if (task.status == DownloadStatus::Downloading)
+        } else if (task.status == DownloadStatus::Downloading) {
             meta += "   " + formatSpeed(task.speedBytesPerSecond) +
                     "   " + std::to_string(task.peers) + " peers";
-        else if (task.status == DownloadStatus::Queued)
+            if (task.totalBytes > task.completedBytes) {
+                std::string eta = formatEta(task.totalBytes - task.completedBytes,
+                                            task.speedBytesPerSecond);
+                if (!eta.empty())
+                    meta += "   ETA " + eta;
+            }
+        } else if (task.status == DownloadStatus::Queued)
             meta += "   Waiting for the active download";
         else if (task.status == DownloadStatus::Error && !task.error.empty())
             meta += "   " + task.error;
