@@ -19,7 +19,7 @@
 | П3.1 | Зеркала каталога (jsDelivr / R2 / IPFS) | Opus | M | — |
 | П1.2 | PEX-усиление тонкого списка пиров | Opus | M | П0.1 или П1.1 |
 | П0.3 | Тумблер / автодетект antizapret | Sonnet | S | П0.1, П0.2 |
-| П0.2 | Фетч каталога через antizapret-прокси | Sonnet | S | — |
+| П0.2 | Фетч каталога через antizapret-прокси ✅ | Sonnet | S | — |
 | ПX.1 | Health-check через прокси в CI | Sonnet | S | — |
 | ПX.2 | Публичные open-трекеры в кандидаты | Sonnet | S | — |
 | ПX.3 | Телеметрия источника резолва | Sonnet | S | — |
@@ -101,10 +101,10 @@ BEP11 ut_pex в core уже есть. Когда прокси/DHT дали 1–3
 
 ## Тир Sonnet (простые)
 
-### П0.2 — Фетч каталога через antizapret-прокси
+### П0.2 — Фетч каталога через antizapret-прокси ✅
 **Оценка: S.**
 
-В `httpGet` каталога (`src/app/catalog_service.cpp:81`) добавить тот же путь, что в `game_metadata_service.cpp:242`: `antizapret_apply_route` + проверка `antizapret_response_looks_blocked` на теле. При желании добавить GitHub-домены в `host_is_target` (`src/core/antizapret.c:51`).
+В `httpGet` каталога (`src/app/catalog_service.cpp:127`) добавить тот же путь, что в `game_metadata_service.cpp:242`: `antizapret_apply_route` + проверка `antizapret_response_looks_blocked` на теле. При желании добавить GitHub-домены в `host_is_target` (`src/core/antizapret.c:51`).
 
 **Почему Sonnet:** копирование готового паттерна из соседнего файла.
 

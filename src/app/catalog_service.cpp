@@ -2,6 +2,7 @@
 #include "magnet_resolver.hpp"
 
 extern "C" {
+#include "../core/antizapret.h"
 #include "../core/util.h"
 }
 
@@ -78,7 +79,8 @@ bool readFile(const std::string& path, std::string& data,
     return true;
 }
 
-bool httpGet(const std::string& url, std::string& body, std::string& error) {
+bool httpGetOnce(const std::string& url, const antizapret_route_t* route,
+                 std::string& body, std::string& error) {
     CURL* curl = curl_easy_init();
     if (!curl) {
         error = "Unable to initialize HTTP.";
@@ -99,6 +101,8 @@ bool httpGet(const std::string& url, std::string& body, std::string& error) {
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
     curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
+    if (route)
+        antizapret_apply_route(curl, route);
     CURLcode result = curl_easy_perform(curl);
     long status = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
@@ -118,6 +122,59 @@ bool httpGet(const std::string& url, std::string& body, std::string& error) {
     }
     body = std::move(buffer.data);
     return true;
+}
+
+bool httpGet(const std::string& url, std::string& body, std::string& error) {
+    body.clear();
+    const bool target = antizapret_is_enabled() &&
+                        antizapret_is_target_url(url.c_str());
+#ifdef __SWITCH__
+    const bool preferProxy = target;
+#else
+    const bool preferProxy = target && antizapret_proxy_preferred();
+#endif
+
+    auto attempt = [&](const antizapret_route_t* route) {
+        std::string attemptBody;
+        std::string attemptError;
+        if (!httpGetOnce(url, route, attemptBody, attemptError)) {
+            error = std::move(attemptError);
+            return false;
+        }
+        if (target && antizapret_response_looks_blocked(
+                          attemptBody.data(), attemptBody.size())) {
+            error = "Catalog response appears to be blocked.";
+            return false;
+        }
+        body = std::move(attemptBody);
+        error.clear();
+        if (route && route->type != ANTIZAPRET_ROUTE_DIRECT) {
+            antizapret_note_proxy_success();
+            log_msg("[catalog] proxy active: %s\n",
+                    antizapret_route_name(route));
+        }
+        return true;
+    };
+
+    if (!preferProxy && attempt(nullptr))
+        return true;
+
+    if (target) {
+        antizapret_route_t routes[ANTIZAPRET_MAX_ROUTES];
+        size_t routeCount = antizapret_get_routes(routes,
+                                                  ANTIZAPRET_MAX_ROUTES);
+        for (size_t i = 0; i < routeCount; ++i) {
+            if (routes[i].type == ANTIZAPRET_ROUTE_DIRECT ||
+                !antizapret_route_supported(&routes[i]))
+                continue;
+            if (attempt(&routes[i]))
+                return true;
+        }
+    }
+
+    if (preferProxy && attempt(nullptr))
+        return true;
+    return false;
 }
 
 bool writeAtomic(const std::string& path, const std::string& data,

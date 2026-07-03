@@ -9,9 +9,15 @@ static void test_domains(void) {
     assert(antizapret_is_target_url("http://bt4.t-ru.org/ann"));
     assert(antizapret_is_target_url("https://API.RUTRACKER.ORG/x"));
     assert(antizapret_is_target_url(
+        "https://api.github.com/repos/bqio/switch-dumps/releases/latest"));
+    assert(antizapret_is_target_url(
+        "https://github.com/bqio/switch-dumps/releases/download/catalog.json"));
+    assert(antizapret_is_target_url(
         "https://img-eshop.cdn.nintendo.net/i/icon.jpg"));
     assert(!antizapret_is_target_url("https://evilrutracker.org/"));
     assert(!antizapret_is_target_url("https://rutracker.org.example/"));
+    assert(!antizapret_is_target_url("https://notgithub.com/"));
+    assert(!antizapret_is_target_url("https://github.com.example/"));
     assert(!antizapret_is_target_url(
         "https://img-eshop.cdn.nintendo.net.example/icon.jpg"));
     assert(antizapret_is_target_url("udp://bt4.t-ru.org:80/announce"));

@@ -51,6 +51,7 @@ static int host_is_target(const char *host, size_t len) {
     static const char *const domains[] = {
         "rutracker.org",
         "t-ru.org",
+        "github.com",
         "img-eshop.cdn.nintendo.net",
     };
     while (len && host[len - 1] == '.')
