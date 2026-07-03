@@ -505,8 +505,20 @@ bool MagnetResolver::buildTorrent(const MagnetSpec& spec,
         return false;
     }
 
+    /* Bake every known RuTracker mirror into the torrent as an announce-list,
+       not just the single tr= carried by the magnet (PERF_PLAN 1.6). Without
+       this the resolved torrent had trackers=1 and the client only announced
+       to one mirror, starving the swarm. metainfo_parse flattens every
+       announce-list tier into mi->trackers[] and announces to all of them.
+       Dict keys stay sorted: announce < announce-list < info. */
+    std::vector<std::string> trackers =
+        rutrackerTrackerCandidates(spec.trackerUrl);
+    std::string announceList = "13:announce-listl";
+    for (const std::string& tracker : trackers)
+        announceList += "l" + bencodeString(tracker) + "e";
+    announceList += "e";
     std::string prefix = "d8:announce" + bencodeString(spec.trackerUrl) +
-                         "4:info";
+                         announceList + "4:info";
     torrent.assign(prefix.begin(), prefix.end());
     torrent.insert(torrent.end(), info.begin(), info.end());
     torrent.push_back('e');

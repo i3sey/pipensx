@@ -19,6 +19,11 @@
 #define CONNECT_INTERVAL_MS 50
 #define CONNECT_TIMEOUT_MS  6000
 #define TRACKER_REANNOUNCE_MS (30*60*1000ULL)  /* 30 min */
+/* When the swarm is peer-starved, don't wait the full interval — re-announce
+   early to pull in a fresh peer set (PERF_PLAN 1.6). Rate-limited so we never
+   hammer the tracker more than once per this window. */
+#define TRACKER_STARVED_REANNOUNCE_MS 15000ULL
+#define TRACKER_STARVED_ACTIVE_PEERS  5
 #define DHT_TICK_INTERVAL_MS  1000
 #define PEER_TIMEOUT_MS       60000
 #define REQUEST_TIMEOUT_MS    15000
@@ -985,13 +990,36 @@ int torrent_tick(torrent_t *t) {
     /* Re-announce tracker off-thread. Drain a finished run, then start the
        next one if due and none is in flight — never block the event loop. */
     announce_collect(t);
-    if (!t->announce_active && now - t->last_tracker_ms >= TRACKER_REANNOUNCE_MS) {
-        uint64_t announced_downloaded = t->downloaded;
-        if (announced_downloaded > (uint64_t)t->mi.total_length)
-            announced_downloaded = (uint64_t)t->mi.total_length;
-        announce_start(t, (int64_t)announced_downloaded,
-                       (int64_t)t->mi.total_length - (int64_t)announced_downloaded);
-        t->last_tracker_ms = now;
+    if (!t->announce_active) {
+        uint64_t since = now - t->last_tracker_ms;
+        int due = since >= TRACKER_REANNOUNCE_MS;
+        /* Not yet due on the normal 30-min interval, but past the starved
+           window: re-announce early if we are short on active peers. The
+           starved-window gate both rate-limits the tracker and keeps this
+           active-peer count off the per-tick hot path. */
+        if (!due && since >= TRACKER_STARVED_REANNOUNCE_MS) {
+            int active = 0;
+            for (int i = 0; i < MAX_ACTIVE_PEERS; i++) {
+                peer_t *p = t->peers[i];
+                if (p && p->state == PS_ACTIVE &&
+                    ++active >= TRACKER_STARVED_ACTIVE_PEERS)
+                    break;
+            }
+            if (active < TRACKER_STARVED_ACTIVE_PEERS) {
+                due = 1;
+                log_msg("[torrent] peer-starved (active=%d), re-announcing "
+                        "early\n", active);
+            }
+        }
+        if (due) {
+            uint64_t announced_downloaded = t->downloaded;
+            if (announced_downloaded > (uint64_t)t->mi.total_length)
+                announced_downloaded = (uint64_t)t->mi.total_length;
+            announce_start(t, (int64_t)announced_downloaded,
+                           (int64_t)t->mi.total_length -
+                               (int64_t)announced_downloaded);
+            t->last_tracker_ms = now;
+        }
     }
 
     /* Connect new peers */
