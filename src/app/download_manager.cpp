@@ -1,4 +1,5 @@
 #include "download_manager.hpp"
+#include "stream_ram_budget.hpp"
 #include "../install/install_backend.hpp"
 #include "../install/package_stream.hpp"
 
@@ -210,15 +211,35 @@ public:
             : 4 * 1024 * 1024;
         buildPieceOrder();
         if (streamInstall_ && error_.empty() && packageCount_ > completedPackages_) {
-            maxQueuedBytes_ = static_cast<size_t>(std::min<uint64_t>(
-                pieceLengthBytes_ * 16, 64 * 1024 * 1024));
-            maxBufferedBytes_ = static_cast<size_t>(std::min<uint64_t>(
-                std::max<uint64_t>(pieceLengthBytes_ * 64,
-                                   96 * 1024 * 1024),
-                256 * 1024 * 1024));
-            requestAheadBytes_ = maxBufferedBytes_ > maxQueuedBytes_
-                ? maxBufferedBytes_ - maxQueuedBytes_
-                : maxBufferedBytes_;
+            StreamRamBudget budget = detectStreamRamBudget(pieceLengthBytes_);
+            if (!budget.valid) {
+                error_ = "Not enough free memory for stream installation.";
+                return;
+            }
+            maxQueuedBytes_ = budget.maxQueuedBytes;
+            maxBufferedBytes_ = budget.maxBufferedBytes;
+            requestAheadBytes_ = budget.requestAheadBytes;
+            lookaheadMin_ = budget.lookaheadMin;
+            lookaheadMax_ = budget.lookaheadMax;
+            lookaheadWindow_ = budget.lookaheadStart;
+            log_msg("[install] RAM budget source=%s available=%llu reserve=%llu "
+                    "peak=%llu reorder=%zu queue=%zu lookahead=%u/%u/%u\n",
+                    budget.memoryDetected ? "system" : "fallback",
+                    static_cast<unsigned long long>(budget.availableBytes),
+                    static_cast<unsigned long long>(budget.reserveBytes),
+                    static_cast<unsigned long long>(budget.peakBytes),
+                    maxBufferedBytes_, maxQueuedBytes_, lookaheadMin_,
+                    lookaheadWindow_, lookaheadMax_);
+            telemetry_log("ram_budget", taskId_.c_str(),
+                "source=%s available_bytes=%llu reserve_bytes=%llu "
+                "peak_bytes=%llu reorder_bytes=%zu queue_bytes=%zu "
+                "lookahead_min=%u lookahead_start=%u lookahead_max=%u",
+                budget.memoryDetected ? "system" : "fallback",
+                static_cast<unsigned long long>(budget.availableBytes),
+                static_cast<unsigned long long>(budget.reserveBytes),
+                static_cast<unsigned long long>(budget.peakBytes),
+                maxBufferedBytes_, maxQueuedBytes_, lookaheadMin_,
+                lookaheadWindow_, lookaheadMax_);
             installWorker_ = std::thread(&PackageCoordinator::installMain, this);
         }
     }
@@ -234,6 +255,7 @@ public:
     }
     const std::vector<uint32_t>& pieceOrder() const { return pieceOrder_; }
     uint32_t packageCount() const { return packageCount_; }
+    uint32_t initialLookahead() const { return lookaheadWindow_; }
     static int requestAllowedThunk(void* user, uint32_t piece) {
         return static_cast<PackageCoordinator*>(user)->canRequestPiece(piece)
             ? 1 : 0;
@@ -260,9 +282,9 @@ public:
         lookaheadStallEvents_ = 0;
         size_t buffered = bufferedBytesLocked();
         if (stalled || buffered > maxBufferedBytes_ / 4 * 3)
-            lookaheadWindow_ = std::max(kLookaheadMin, lookaheadWindow_ / 2);
+            lookaheadWindow_ = std::max(lookaheadMin_, lookaheadWindow_ / 2);
         else if (buffered < maxBufferedBytes_ / 2)
-            lookaheadWindow_ = std::min(kLookaheadMax,
+            lookaheadWindow_ = std::min(lookaheadMax_,
                                         lookaheadWindow_ + kLookaheadStep);
         return lookaheadWindow_;
     }
@@ -795,12 +817,11 @@ private:
     // queueMutex_. Window bounds in pieces: at 4 MiB pieces the max adds at
     // most 128 MiB of concurrently pending piece buffers, and the
     // requestAheadBytes_ gate still caps the total in-flight span.
-    static constexpr uint32_t kLookaheadMin = 8;
-    static constexpr uint32_t kLookaheadStart = 32;
-    static constexpr uint32_t kLookaheadMax = 64;
     static constexpr uint32_t kLookaheadStep = 4;
     static constexpr uint64_t kLookaheadAdaptIntervalMs = 1000;
-    uint32_t lookaheadWindow_ = kLookaheadStart;
+    uint32_t lookaheadMin_ = 8;
+    uint32_t lookaheadMax_ = 32;
+    uint32_t lookaheadWindow_ = 32;
     uint32_t lookaheadStallEvents_ = 0;
     uint64_t lookaheadLastAdaptMs_ = 0;
     // Request gate state (PERF_PLAN 5.3); guarded by queueMutex_.
@@ -1382,7 +1403,7 @@ void DownloadManager::workerMain() {
                 options.request_allowed_user = coordinator.get();
                 // Initial window only; the loop below resizes it from the
                 // install sink's backlog (PERF_PLAN 5.1).
-                options.strict_order_lookahead = 32;
+                options.strict_order_lookahead = coordinator->initialLookahead();
                 options.strict_fill_pending_first = 1;
                 // Per-peer in-flight ceiling (4 MiB = 256 x 16 KiB blocks =
                 // MAX_PIPELINE). The engine scales the actual window per peer by
