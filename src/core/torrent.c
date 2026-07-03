@@ -175,7 +175,7 @@ static int blocklist_blocked(const torrent_t *t, uint32_t ip, uint16_t port,
 }
 
 /* ---- peer queue ---- */
-static int queue_push(torrent_t *t, uint32_t ip, uint16_t port) {
+static int queue_insert(torrent_t *t, uint32_t ip, uint16_t port, int front) {
     uint16_t host_port = ntohs(port);
     if (ip == 0 || ip == INADDR_NONE || host_port < 2)
         return 0;
@@ -200,11 +200,26 @@ static int queue_push(torrent_t *t, uint32_t ip, uint16_t port) {
     }
     if (blocklist_blocked(t, ip, port, now_ms()))
         return 0;
-    t->queue[t->qtail].ip   = ip;
-    t->queue[t->qtail].port = port;
-    t->qtail = (t->qtail + 1) % MAX_PEER_QUEUE;
+    int index;
+    if (front) {
+        t->qhead = (t->qhead + MAX_PEER_QUEUE - 1) % MAX_PEER_QUEUE;
+        index = t->qhead;
+    } else {
+        index = t->qtail;
+        t->qtail = (t->qtail + 1) % MAX_PEER_QUEUE;
+    }
+    t->queue[index].ip   = ip;
+    t->queue[index].port = port;
     t->qsize++;
     return 1;
+}
+
+static int queue_push(torrent_t *t, uint32_t ip, uint16_t port) {
+    return queue_insert(t, ip, port, 0);
+}
+
+static int queue_push_front(torrent_t *t, uint32_t ip, uint16_t port) {
+    return queue_insert(t, ip, port, 1);
 }
 
 static int queue_pop(torrent_t *t, uint32_t *ip, uint16_t *port) {
@@ -214,6 +229,36 @@ static int queue_pop(torrent_t *t, uint32_t *ip, uint16_t *port) {
     t->qhead = (t->qhead + 1) % MAX_PEER_QUEUE;
     t->qsize--;
     return 1;
+}
+
+uint32_t torrent_add_initial_peers(torrent_t *t, const uint8_t *compact,
+                                   uint32_t count) {
+    if (!t || !compact || count == 0)
+        return 0;
+    uint32_t accepted = 0;
+    for (uint32_t i = count; i > 0; --i) {
+        uint32_t ip;
+        uint16_t port;
+        const uint8_t *endpoint = compact + (i - 1) * 6;
+        int seen_earlier = 0;
+        for (uint32_t j = 0; j + 1 < i; ++j) {
+            if (memcmp(endpoint, compact + j * 6, 6) == 0) {
+                seen_earlier = 1;
+                break;
+            }
+        }
+        if (seen_earlier)
+            continue;
+        memcpy(&ip, endpoint, sizeof(ip));
+        memcpy(&port, endpoint + sizeof(ip), sizeof(port));
+        accepted += (uint32_t)queue_push_front(t, ip, port);
+    }
+    log_msg("[torrent] queued %u/%u verified initial peers\n",
+            accepted, count);
+    telemetry_log("torrent", t->telemetry_tag,
+                  "event=initial_peers supplied=%u accepted=%u",
+                  count, accepted);
+    return accepted;
 }
 
 static void cancel_duplicate_requests(torrent_t *t, uint32_t piece,

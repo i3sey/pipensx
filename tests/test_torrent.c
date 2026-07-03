@@ -143,6 +143,34 @@ static void test_blocklist_cooldown_and_wrap(void) {
     assert(blocklist_blocked(&torrent, htonl(0x0b000041u), port, 3000));
 }
 
+static void test_initial_peers_keep_verified_order(void) {
+    torrent_t torrent = {0};
+    uint32_t laterIp = htonl(0x08080808u);
+    uint16_t laterPort = htons(6881);
+    assert(queue_push(&torrent, laterIp, laterPort));
+    const uint8_t compact[] = {
+        93, 184, 216, 34, 0x1a, 0xe1,
+        1, 1, 1, 1, 0xc8, 0xd5,
+        93, 184, 216, 34, 0x1a, 0xe1,
+    };
+
+    assert(torrent_add_initial_peers(&torrent, compact, 3) == 2);
+    assert(torrent.qsize == 3);
+
+    uint32_t ip = 0;
+    uint16_t port = 0;
+    assert(queue_pop(&torrent, &ip, &port));
+    assert(memcmp(&ip, compact, 4) == 0);
+    assert(memcmp(&port, compact + 4, 2) == 0);
+    assert(queue_pop(&torrent, &ip, &port));
+    assert(memcmp(&ip, compact + 6, 4) == 0);
+    assert(memcmp(&port, compact + 10, 2) == 0);
+    assert(queue_pop(&torrent, &ip, &port));
+    assert(ip == laterIp);
+    assert(port == laterPort);
+    assert(!queue_pop(&torrent, &ip, &port));
+}
+
 int main(void) {
     test_ema_update();
     test_last_piece_age_marks_missing_sample();
@@ -150,6 +178,7 @@ int main(void) {
     test_rate_freeze_preserves_peer_dl_rate();
     test_stat_counts_active_peers();
     test_blocklist_cooldown_and_wrap();
+    test_initial_peers_keep_verified_order();
     puts("torrent tests passed");
     return 0;
 }

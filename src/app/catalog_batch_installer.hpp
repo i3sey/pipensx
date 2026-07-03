@@ -17,6 +17,7 @@ struct PreparedCatalogInstall {
     std::string torrentPath;
     TorrentPreview preview;
     std::vector<uint8_t> selection;
+    std::vector<uint8_t> initialPeers;
     TransferMode mode = TransferMode::DownloadOnly;
     InstallSpaceEstimate space;
     bool selected = true;
@@ -67,7 +68,8 @@ class CatalogBatchInstaller {
 public:
     using ResolveTorrent = std::function<bool(
         const std::string&, const std::string&, std::atomic<bool>&,
-        const MagnetResolver::ProgressCallback&, std::string&)>;
+        const MagnetResolver::ProgressCallback&, std::vector<uint8_t>&,
+        std::string&)>;
     using ProgressCallback = std::function<void(const BatchPrepareProgress&)>;
 
     CatalogBatchInstaller(std::string rootPath, ResolveTorrent resolver);

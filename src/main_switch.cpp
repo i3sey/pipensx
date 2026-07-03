@@ -1686,10 +1686,12 @@ public:
     TorrentSelectionActivity(DownloadManager* manager, std::string path,
                              pipensx::TorrentPreview preview,
                              TransferMode preferred,
-                             StreamSelection initialSelection)
+                             StreamSelection initialSelection,
+                             std::vector<uint8_t> initialPeers = {})
         : manager_(manager), path_(std::move(path)),
           preview_(std::move(preview)), preferred_(preferred),
-          initialSelection_(initialSelection) {
+          initialSelection_(initialSelection),
+          initialPeers_(std::move(initialPeers)) {
         auto* content = new brls::Box(brls::Axis::COLUMN);
         content->setGrow(1);
         content->setPadding(24, 38, 24, 34);
@@ -1897,7 +1899,8 @@ private:
         }
         std::string id;
         std::string error;
-        if (!manager_->importTorrent(path_, mode, mask, id, error)) {
+        if (!manager_->importTorrent(path_, mode, mask, id, error,
+                                     initialPeers_)) {
             brls::Application::notify(error);
             return;
         }
@@ -1914,6 +1917,7 @@ private:
     pipensx::TorrentPreview preview_;
     TransferMode preferred_;
     StreamSelection initialSelection_;
+    std::vector<uint8_t> initialPeers_;
     brls::AppletFrame* frame_ = nullptr;
     brls::Label* title_ = nullptr;
     brls::Label* summary_ = nullptr;
@@ -2339,13 +2343,17 @@ private:
                         statusLabel_->setText(text + "   (Y to cancel)");
                 });
             };
+            std::vector<uint8_t> initialPeers;
             bool ok = resolver.resolveToFile(magnet, tmp, *cancelled,
-                                             progress, err);
+                                             progress, err, &initialPeers);
             telemetry_log("magnet", telemetryTag.c_str(),
-                          "event=resolve ok=%d cancelled=%d duration_ms=%llu",
+                          "event=resolve ok=%d cancelled=%d duration_ms=%llu "
+                          "verified_peers=%u",
                           ok ? 1 : 0, cancelled->load() ? 1 : 0,
-                          (unsigned long long)(now_ms() - startedMs));
-            brls::sync([this, alive, ok, err, tmp, forcePicker] {
+                          (unsigned long long)(now_ms() - startedMs),
+                          static_cast<unsigned>(initialPeers.size() / 6));
+            brls::sync([this, alive, ok, err, tmp, forcePicker,
+                        initialPeers = std::move(initialPeers)]() mutable {
                 if (!alive->load()) {
                     ::unlink(tmp.c_str());
                     return;
@@ -2366,12 +2374,13 @@ private:
                 }
                 if (onFailure_)
                     onFailure_(hash, "");  // clear stale failure
-                finishImport(tmp, forcePicker);
+                finishImport(tmp, forcePicker, std::move(initialPeers));
             });
         });
     }
 
-    void finishImport(const std::string& path, bool forcePicker) {
+    void finishImport(const std::string& path, bool forcePicker,
+                      std::vector<uint8_t> initialPeers) {
         pipensx::TorrentPreview preview;
         std::string error;
         if (!DownloadManager::previewTorrent(path, preview, error)) {
@@ -2393,7 +2402,8 @@ private:
         if (forcePicker) {
             brls::Application::pushActivity(new TorrentSelectionActivity(
                 manager_, path, std::move(preview),
-                TransferMode::StreamInstall, selection));
+                TransferMode::StreamInstall, selection,
+                std::move(initialPeers)));
             return;
         }
 
@@ -2422,7 +2432,7 @@ private:
         std::string id;
         std::string err;
         if (manager_->importTorrent(path, TransferMode::StreamInstall, mask,
-                                    id, err)) {
+                                    id, err, initialPeers)) {
             log_msg("[catalog] imported torrent %s\n", id.c_str());
             if (extras > 0) {
                 statusLabel_->setText("Installing game files. Extra files "
@@ -2591,10 +2601,11 @@ public:
         auto resolver = [](const std::string& magnet, const std::string& path,
                            std::atomic<bool>& cancelled,
                            const MagnetResolver::ProgressCallback& progress,
+                           std::vector<uint8_t>& initialPeers,
                            std::string& error) {
             MagnetResolver instance;
             return instance.resolveToFile(magnet, path, cancelled, progress,
-                                          error);
+                                          error, &initialPeers);
         };
         installer_ = std::make_shared<CatalogBatchInstaller>(
             manager_->rootPath(), std::move(resolver));

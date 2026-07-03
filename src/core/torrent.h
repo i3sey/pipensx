@@ -51,6 +51,12 @@ torrent_t *torrent_create_ex(const metainfo_t *mi,
                              const torrent_options_t *options);
 void        torrent_destroy(torrent_t *t);
 
+/* Queue compact IPv4 endpoints (4-byte address + 2-byte port, network order)
+ * before the first tick. Returns the number accepted after validation and
+ * deduplication. */
+uint32_t torrent_add_initial_peers(torrent_t *t, const uint8_t *compact,
+                                   uint32_t count);
+
 /*
  * Run one tick of the event loop.
  * Returns 0 when download is complete.

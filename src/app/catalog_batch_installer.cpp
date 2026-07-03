@@ -102,8 +102,9 @@ BatchPreparation CatalogBatchInstaller::prepare(
             progress({index + 1, entries.size(), entry.title, {}});
 
         std::string error;
+        std::vector<uint8_t> initialPeers;
         if (!resolver_(entry.magnetUri, path, cancelled, forwardProgress,
-                       error)) {
+                       initialPeers, error)) {
             ::unlink(path.c_str());
             if (cancelled.load()) {
                 result.cancelled_ = true;
@@ -155,6 +156,7 @@ BatchPreparation CatalogBatchInstaller::prepare(
         item.torrentPath = path;
         item.preview = std::move(preview);
         item.selection = std::move(mask);
+        item.initialPeers = std::move(initialPeers);
         item.mode = mode;
         item.space = space;
         result.items_.push_back(std::move(item));
@@ -174,7 +176,7 @@ BatchEnqueueResult CatalogBatchInstaller::enqueue(
         std::string taskId;
         std::string error;
         if (manager.importTorrent(item.torrentPath, item.mode, item.selection,
-                                  taskId, error)) {
+                                  taskId, error, item.initialPeers)) {
             result.taskIds.push_back(std::move(taskId));
             result.queuedInfoHashes.push_back(item.entry.infoHash);
         } else {

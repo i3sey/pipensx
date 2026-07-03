@@ -58,6 +58,9 @@ struct DownloadTask {
     uint64_t installTotalBytes = 0;
     std::string currentPackage;
     std::vector<uint8_t> fileSelection;
+    /* Compact IPv4 endpoints verified during magnet resolution. Ephemeral:
+       queued before tracker/DHT results and intentionally not persisted. */
+    std::vector<uint8_t> initialPeers;
 };
 
 struct TorrentPreview {
@@ -91,7 +94,8 @@ public:
 
     bool importTorrent(const std::string& path, TransferMode mode,
                        const std::vector<uint8_t>& selectedFiles,
-                       std::string& taskId, std::string& error);
+                       std::string& taskId, std::string& error,
+                       const std::vector<uint8_t>& initialPeers = {});
     bool importTorrent(const std::string& path, TransferMode mode,
                        std::string& taskId, std::string& error) {
         std::vector<uint8_t> selectedFiles;

@@ -43,7 +43,8 @@ public:
     bool resolveToFile(const std::string& uri, const std::string& path,
                        std::atomic<bool>& cancelled,
                        const ProgressCallback& progress,
-                       std::string& error) const;
+                       std::string& error,
+                       std::vector<uint8_t>* verifiedPeers = nullptr) const;
 };
 
 } // namespace pipensx

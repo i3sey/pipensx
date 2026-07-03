@@ -1066,12 +1066,17 @@ bool DownloadManager::importTorrent(const std::string& path,
                                     TransferMode mode,
                                     const std::vector<uint8_t>& selectedFiles,
                                     std::string& taskId,
-                                    std::string& error) {
+                                    std::string& error,
+                                    const std::vector<uint8_t>& initialPeers) {
     TorrentPreview preview;
     if (!previewTorrent(path, preview, error))
         return false;
     if (!selectedFiles.empty() && selectedFiles.size() != preview.files.size()) {
         error = "Selected file list does not match torrent contents.";
+        return false;
+    }
+    if (initialPeers.size() % 6 != 0) {
+        error = "Initial peer endpoint list is malformed.";
         return false;
     }
 
@@ -1119,6 +1124,7 @@ bool DownloadManager::importTorrent(const std::string& path,
     task.packageCount = mode == TransferMode::StreamInstall
                         ? selectedPackageCount : 0;
     task.fileSelection = std::move(selection);
+    task.initialPeers = initialPeers;
     tasks_.push_back(std::move(task));
     taskId = preview.infoHash;
 
@@ -1427,6 +1433,7 @@ void DownloadManager::workerMain() {
         TransferMode mode = TransferMode::DownloadOnly;
         uint32_t packagesInstalled = 0;
         std::vector<uint8_t> fileSelection;
+        std::vector<uint8_t> initialPeers;
         {
             std::unique_lock<std::mutex> lock(mutex_);
             condition_.wait(lock, [this] {
@@ -1448,6 +1455,7 @@ void DownloadManager::workerMain() {
                     mode = task.mode;
                     packagesInstalled = task.packagesInstalled;
                     fileSelection = task.fileSelection;
+                    initialPeers = task.initialPeers;
                     break;
                 }
             }
@@ -1545,6 +1553,11 @@ void DownloadManager::workerMain() {
             coordinator.reset();
             metainfo_free(&metainfo);
             continue;
+        }
+        if (!initialPeers.empty()) {
+            torrent_add_initial_peers(
+                torrent, initialPeers.data(),
+                static_cast<uint32_t>(initialPeers.size() / 6));
         }
 
         bool finished = false;

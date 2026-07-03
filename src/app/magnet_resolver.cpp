@@ -330,7 +330,9 @@ bool fetchMetadataFromPeer(const uint8_t* compact,
                            std::atomic<bool>& cancelled,
                            std::atomic<bool>& stopWorkers,
                            const MagnetResolver::ProgressCallback& progress,
-                           std::vector<uint8_t>& metadata) {
+                           std::vector<uint8_t>& metadata,
+                           bool& handshakeVerified) {
+    handshakeVerified = false;
     if (cancelled || stopWorkers || now_ms() >= deadline)
         return false;
     if (progress)
@@ -346,6 +348,7 @@ bool fetchMetadataFromPeer(const uint8_t* compact,
     }
     log_msg("[magnet] peer %u/%u BitTorrent handshake ok\n",
             peerIndex + 1, peerCount);
+    handshakeVerified = true;
 
     uint8_t extension = 0;
     size_t metadataSize = 0;
@@ -542,7 +545,10 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
                                    const std::string& path,
                                    std::atomic<bool>& cancelled,
                                    const ProgressCallback& progress,
-                                   std::string& error) const {
+                                   std::string& error,
+                                   std::vector<uint8_t>* verifiedPeers) const {
+    if (verifiedPeers)
+        verifiedPeers->clear();
     MagnetSpec spec;
     if (!parse(uri, spec, error))
         return false;
@@ -608,6 +614,7 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
     bool resolved = false;
     std::atomic<bool> stopWorkers{false};
     std::vector<uint8_t> metadata;
+    std::vector<uint8_t> verifiedEndpoints;
     std::vector<std::thread> workers;
     uint32_t workerCount = std::min(peerCount, kMaxConcurrentPeers);
     for (uint32_t worker = 0; worker < workerCount; ++worker) {
@@ -622,11 +629,17 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
                 }
 
                 std::vector<uint8_t> candidate;
-                if (!fetchMetadataFromPeer(peers.data() + peerIndex * 6, spec,
-                                           peerId, peerIndex, peerCount,
-                                           deadline, cancelled, stopWorkers,
-                                           progress,
-                                           candidate))
+                bool handshakeVerified = false;
+                bool fetched = fetchMetadataFromPeer(
+                    peers.data() + peerIndex * 6, spec, peerId, peerIndex,
+                    peerCount, deadline, cancelled, stopWorkers, progress,
+                    candidate, handshakeVerified);
+                if (handshakeVerified) {
+                    std::lock_guard<std::mutex> lock(mutex);
+                    appendUniquePeers(verifiedEndpoints,
+                                      peers.data() + peerIndex * 6, 1);
+                }
+                if (!fetched)
                     continue;
 
                 std::vector<uint8_t> torrentProbe;
@@ -691,6 +704,8 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
         error = "Unable to replace the resolved torrent file.";
         return false;
     }
+    if (verifiedPeers)
+        *verifiedPeers = std::move(verifiedEndpoints);
     return true;
 }
 

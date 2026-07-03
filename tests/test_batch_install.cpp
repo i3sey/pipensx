@@ -60,6 +60,7 @@ int main() {
             [source](const std::string&, const std::string& target,
                      std::atomic<bool>&,
                      const MagnetResolver::ProgressCallback&,
+                     std::vector<uint8_t>&,
                      std::string&) { return copyFile(source, target); });
         std::atomic<bool> cancelled{false};
         BatchPreparation prepared = installer.prepare(
@@ -82,6 +83,7 @@ int main() {
             [source](const std::string& magnet, const std::string& target,
                      std::atomic<bool>&,
                      const MagnetResolver::ProgressCallback&,
+                     std::vector<uint8_t>&,
                      std::string& error) {
                 if (magnet == "magnet:bad") {
                     error = "No usable peers.";
@@ -101,16 +103,25 @@ int main() {
     }
 
     {
+        const std::vector<uint8_t> initialPeers{
+            93, 184, 216, 34, 0x1a, 0xe1,
+            1, 1, 1, 1, 0xc8, 0xd5,
+        };
         CatalogBatchInstaller installer(
             root,
-            [source](const std::string&, const std::string& target,
-                     std::atomic<bool>&,
-                     const MagnetResolver::ProgressCallback&,
-                     std::string&) { return copyFile(source, target); });
+            [source, initialPeers](
+                const std::string&, const std::string& target,
+                std::atomic<bool>&,
+                const MagnetResolver::ProgressCallback&,
+                std::vector<uint8_t>& peers, std::string&) {
+                peers = initialPeers;
+                return copyFile(source, target);
+            });
         std::atomic<bool> cancelled{false};
         BatchPreparation prepared = installer.prepare(
             {entry}, StreamSelection::PackagesOnly, cancelled, {});
         assert(prepared.items().size() == 1);
+        assert(prepared.items()[0].initialPeers == initialPeers);
         const std::string temporary = prepared.items()[0].torrentPath;
         assert(access(temporary.c_str(), F_OK) == 0);
 
@@ -124,6 +135,7 @@ int main() {
         assert(access(temporary.c_str(), F_OK) != 0);
         assert(manager.snapshot().size() == 1);
         assert(manager.snapshot()[0].mode == TransferMode::StreamInstall);
+        assert(manager.snapshot()[0].initialPeers == initialPeers);
 
         assert(manager.remove(queued.taskIds[0], true, error));
         unlink((appRoot + "/queue.bencode").c_str());
@@ -138,6 +150,7 @@ int main() {
             [source](const std::string&, const std::string& target,
                      std::atomic<bool>& cancelled,
                      const MagnetResolver::ProgressCallback&,
+                     std::vector<uint8_t>&,
                      std::string&) {
                 const bool copied = copyFile(source, target);
                 cancelled.store(true);
@@ -158,6 +171,7 @@ int main() {
             [&temporary](const std::string&, const std::string& target,
                          std::atomic<bool>& cancelled,
                          const MagnetResolver::ProgressCallback&,
+                         std::vector<uint8_t>&,
                          std::string& error) {
                 temporary = target;
                 std::ofstream partial(target, std::ios::binary);
