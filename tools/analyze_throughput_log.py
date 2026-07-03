@@ -167,8 +167,14 @@ def analyze(records: list[dict]) -> dict:
         "ncm": stage_rate(ncm, "bps"),
     }
 
-    waits = sum(numeric(buffer, "waits"))
-    wait_max = max(numeric(buffer, "wait_max_us"), default=0)
+    # Buffer pressure: request-gate pauses (PERF_PLAN 5.3). Older logs report
+    # blocking sink waits (waits/wait_max_us) instead — fold both in.
+    pauses = sum(numeric(buffer, "pauses")) + sum(numeric(buffer, "waits"))
+    pause_max_ms = max(
+        numeric(buffer, "pause_max_ms")
+        + [value // 1000 for value in numeric(buffer, "wait_max_us")],
+        default=0,
+    )
     high_ratios = []
     for record in buffer:
         high = record.get("high_bytes")
@@ -204,10 +210,10 @@ def analyze(records: list[dict]) -> dict:
     bottleneck = "insufficient telemetry"
     if rates["network_rx"]["samples"]:
         bottleneck = "no dominant bottleneck detected"
-        if waits > 0 or high_ratio >= 900:
+        if pauses > 0 or high_ratio >= 900:
             evidence.append(
-                f"install buffer pressure: waits={waits}, "
-                f"max_wait_ms={wait_max / 1000:.1f}, high={high_ratio / 10:.1f}%"
+                f"install buffer pressure: pauses={pauses}, "
+                f"max_pause_ms={pause_max_ms}, high={high_ratio / 10:.1f}%"
             )
             if (ncm_busy is not None and ncm_busy >= 400 and
                     (decode_busy is None or ncm_busy >= decode_busy)):
@@ -260,8 +266,8 @@ def analyze(records: list[dict]) -> dict:
             "piece_callback": piece_busy,
         },
         "buffer": {
-            "waits": waits,
-            "wait_max_us": wait_max,
+            "pauses": pauses,
+            "pause_max_ms": pause_max_ms,
             "high_ratio_permille": high_ratio,
         },
         "requests": {

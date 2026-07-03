@@ -28,8 +28,8 @@ class TelemetryAnalyzerTests(unittest.TestCase):
                  expired=0, oldest_request_ms=1000,
                  piece_cb_busy_permille=100),
             line("buffer", interval_ms=5000, sink_bps=4000000,
-                 processed_bps=800000, waits=3, wait_max_us=900000,
-                 high_bytes=950, limit_bytes=1000),
+                 processed_bps=800000, pauses=3, pause_max_ms=900,
+                 gate_paused=0, high_bytes=950, limit_bytes=1000),
             line("decode", interval_ms=5000, input_bps=800000,
                  output_bps=1200000, zstd_us=200000, aes_us=100000,
                  writer_us=3500000),
@@ -38,6 +38,26 @@ class TelemetryAnalyzerTests(unittest.TestCase):
         ])
         report = MODULE.analyze(MODULE.parse_records(text))
         self.assertEqual(report["bottleneck"], "NCM/SD writer")
+        self.assertEqual(report["buffer"]["pauses"], 3)
+        self.assertEqual(report["buffer"]["pause_max_ms"], 900)
+
+    def test_detects_backpressure_from_legacy_wait_fields(self):
+        text = "\n".join([
+            line("control", enabled=1, generation=2),
+            line("torrent", interval_ms=5000, rx_bps=4000000,
+                 verified_bps=4000000, unchoked=4, inflight=120,
+                 expired=0, oldest_request_ms=1000,
+                 piece_cb_busy_permille=100),
+            line("buffer", interval_ms=5000, sink_bps=4000000,
+                 processed_bps=800000, waits=3, wait_max_us=900000,
+                 high_bytes=950, limit_bytes=1000),
+            line("ncm", interval_ms=5000, bps=800000,
+                 ncm_us=3000000, sha_us=300000),
+        ])
+        report = MODULE.analyze(MODULE.parse_records(text))
+        self.assertEqual(report["bottleneck"], "NCM/SD writer")
+        self.assertEqual(report["buffer"]["pauses"], 3)
+        self.assertEqual(report["buffer"]["pause_max_ms"], 900)
 
     def test_detects_slow_peer(self):
         text = "\n".join([
@@ -47,8 +67,8 @@ class TelemetryAnalyzerTests(unittest.TestCase):
                  expired=12, oldest_request_ms=15000,
                  piece_cb_busy_permille=20),
             line("buffer", interval_ms=5000, sink_bps=500000,
-                 processed_bps=500000, waits=0, wait_max_us=0,
-                 high_bytes=100, limit_bytes=1000),
+                 processed_bps=500000, pauses=0, pause_max_ms=0,
+                 gate_paused=0, high_bytes=100, limit_bytes=1000),
         ])
         report = MODULE.analyze(MODULE.parse_records(text))
         self.assertEqual(

@@ -240,12 +240,12 @@ public:
     }
 
     // Adaptive strict-order lookahead (PERF_PLAN 5.1). AIMD driven by the
-    // install sink: a buffer stall or a nearly full buffer halves the window
-    // (the sink is the bottleneck, a wide window only builds an avalanche),
-    // a comfortably empty buffer grows it additively so more of the swarm is
-    // usable. The band between the two thresholds holds the window steady,
-    // which keeps the loop from oscillating. Rate-limited internally; callers
-    // may invoke it every tick.
+    // install sink: a request-gate pause (PERF_PLAN 5.3) or a nearly full
+    // buffer halves the window (the sink is the bottleneck, a wide window
+    // only builds an avalanche), a comfortably empty buffer grows it
+    // additively so more of the swarm is usable. The band between the two
+    // thresholds holds the window steady, which keeps the loop from
+    // oscillating. Rate-limited internally; callers may invoke it every tick.
     uint32_t adaptiveLookahead() {
         std::lock_guard<std::mutex> lock(queueMutex_);
         uint64_t now = now_ms();
@@ -344,16 +344,11 @@ private:
         PendingKey key {ordinal, offset};
         if (pending_.find(key) != pending_.end())
             return setErrorLocked("Duplicate package stream chunk.");
-        waitForBufferSpaceLocked(lock, size);
-        if (!error_.empty() || !accepting_)
-            return false;
-        if (bufferedBytesLocked() + size > maxBufferedBytes_ &&
-            !bufferPressureLogged_) {
-            log_msg("[install] reorder buffer pressure buffered=%zu limit=%zu, "
-                    "accepting in-flight chunk\n",
-                    bufferedBytesLocked(), maxBufferedBytes_);
-            bufferPressureLogged_ = true;
-        }
+        // Never wait for buffer space here (PERF_PLAN 5.3): this runs inside
+        // the torrent thread's piece callback, so blocking would stall the
+        // whole event loop. Chunks already in flight are always accepted —
+        // the request gate below stops new requests once the buffer is full,
+        // and the strict-order window bounds the overshoot.
         InstallChunk chunk;
         chunk.fileIndex = fileIndex;
         chunk.fileOffset = offset;
@@ -366,7 +361,9 @@ private:
         telemetryHighBufferedBytes_ = std::max(
             telemetryHighBufferedBytes_, bufferedBytesLocked());
         enqueueReadyLocked();
-        maybeEmitTelemetryLocked(now_ms(), false);
+        uint64_t now = now_ms();
+        updateRequestGateLocked(now);
+        maybeEmitTelemetryLocked(now, false);
         return true;
     }
 
@@ -374,43 +371,46 @@ private:
         return pendingBytes_ + queuedBytes_ + processingBytes_;
     }
 
-    void waitForBufferSpaceLocked(std::unique_lock<std::mutex>& lock,
-                                  size_t incomingBytes) {
-        bool trackedWait = false;
-        bool waited = false;
-        uint64_t waitStartedUs = 0;
-        while (accepting_ && error_.empty() &&
-               bufferedBytesLocked() + incomingBytes > maxBufferedBytes_ &&
-               (queuedBytes_ > 0 || processingBytes_ > 0)) {
-            waited = true;
-            if (!trackedWait && telemetry_enabled()) {
-                trackedWait = true;
-                waitStartedUs = now_us();
-            }
-            queueSpace_.wait(lock);
-        }
-        if (waited)
+    // Backpressure without blocking the event loop (PERF_PLAN 5.3): when the
+    // reorder buffer fills up, pause new piece requests through
+    // canRequestPiece instead of making the torrent thread wait inside the
+    // piece callback — the loop keeps servicing handshakes, keepalives and
+    // POLLOUT while the install worker drains. Hysteresis (pause at the
+    // limit, resume at 75%) keeps the gate from flapping at the threshold.
+    // Call whenever bufferedBytesLocked() changes.
+    void updateRequestGateLocked(uint64_t now) {
+        size_t buffered = bufferedBytesLocked();
+        if (!requestGatePaused_ && buffered >= maxBufferedBytes_) {
+            requestGatePaused_ = true;
+            requestGatePausedSinceMs_ = now;
             lookaheadStallEvents_++;
-        if (trackedWait) {
-            uint64_t waitUs = now_us() - waitStartedUs;
-            telemetryWaitCount_++;
-            telemetryWaitUs_ += waitUs;
-            telemetryWaitMaxUs_ = std::max(telemetryWaitMaxUs_, waitUs);
-            uint64_t now = now_ms();
-            if (waitUs >= 250000 && now - telemetryLastStallLogMs_ >= 1000) {
-                telemetry_log("buffer_stall", taskId_.c_str(),
-                    "wait_us=%llu incoming_bytes=%zu pending_bytes=%zu "
-                    "queued_bytes=%zu processing_bytes=%zu limit_bytes=%zu",
-                    (unsigned long long)waitUs, incomingBytes, pendingBytes_,
-                    queuedBytes_, processingBytes_, maxBufferedBytes_);
-                telemetryLastStallLogMs_ = now;
-            }
+            telemetryPauseCount_++;
+            log_msg("[install] request gate paused buffered=%zu limit=%zu\n",
+                    buffered, maxBufferedBytes_);
+            telemetry_log("request_gate", taskId_.c_str(),
+                "event=pause buffered_bytes=%zu limit_bytes=%zu",
+                buffered, maxBufferedBytes_);
+        } else if (requestGatePaused_ &&
+                   buffered <= maxBufferedBytes_ / 4 * 3) {
+            requestGatePaused_ = false;
+            uint64_t pausedMs = now >= requestGatePausedSinceMs_
+                ? now - requestGatePausedSinceMs_ : 0;
+            telemetryPausedMs_ += pausedMs;
+            telemetryPauseMaxMs_ = std::max(telemetryPauseMaxMs_, pausedMs);
+            log_msg("[install] request gate resumed after %llu ms "
+                    "buffered=%zu\n",
+                    static_cast<unsigned long long>(pausedMs), buffered);
+            telemetry_log("request_gate", taskId_.c_str(),
+                "event=resume paused_ms=%llu buffered_bytes=%zu",
+                static_cast<unsigned long long>(pausedMs), buffered);
         }
     }
 
     bool canRequestPiece(uint32_t piece) const {
         std::lock_guard<std::mutex> lock(queueMutex_);
         if (!error_.empty() || stopping_)
+            return false;
+        if (requestGatePaused_)
             return false;
         if (piece >= pieceGates_.size())
             return true;
@@ -538,7 +538,6 @@ private:
         }
         accepting_ = false;
         queueReady_.notify_all();
-        queueSpace_.notify_all();
         drained_.notify_all();
         return false;
     }
@@ -561,7 +560,6 @@ private:
                 queuedBytes_ -= chunk.data.size();
                 processingBytes_ = chunk.data.size();
                 processing_ = true;
-                queueSpace_.notify_all();
             }
 
             uint64_t processStartedUs = telemetry_enabled() ? now_us() : 0;
@@ -586,10 +584,11 @@ private:
                 } else {
                     enqueueReadyLocked();
                 }
-                queueSpace_.notify_all();
+                uint64_t now = now_ms();
+                updateRequestGateLocked(now);
                 if (pending_.empty() && queue_.empty())
                     drained_.notify_all();
-                maybeEmitTelemetryLocked(now_ms(), false);
+                maybeEmitTelemetryLocked(now, false);
             }
             if (!ok)
                 break;
@@ -598,7 +597,6 @@ private:
         std::lock_guard<std::mutex> lock(queueMutex_);
         processing_ = false;
         drained_.notify_all();
-        queueSpace_.notify_all();
     }
 
     void resetTelemetryLocked(uint64_t now) {
@@ -608,9 +606,9 @@ private:
         telemetryProcessedBytes_ = 0;
         telemetrySinkChunks_ = 0;
         telemetryProcessedChunks_ = 0;
-        telemetryWaitCount_ = 0;
-        telemetryWaitUs_ = 0;
-        telemetryWaitMaxUs_ = 0;
+        telemetryPauseCount_ = 0;
+        telemetryPausedMs_ = 0;
+        telemetryPauseMaxMs_ = 0;
         telemetryProcessUs_ = 0;
         telemetryProcessMaxUs_ = 0;
         telemetryHighBufferedBytes_ = bufferedBytesLocked();
@@ -641,7 +639,7 @@ private:
             "sink_chunks=%u processed_chunks=%u pending_bytes=%zu "
             "pending_chunks=%zu queued_bytes=%zu queued_chunks=%zu "
             "processing_bytes=%zu high_bytes=%zu limit_bytes=%zu "
-            "waits=%u wait_total_us=%llu wait_max_us=%llu "
+            "pauses=%u paused_ms=%llu pause_max_ms=%llu gate_paused=%d "
             "process_total_us=%llu process_max_us=%llu "
             "producer_ordinal=%u producer_offset=%llu force=%d",
             (unsigned long long)elapsedMs,
@@ -650,8 +648,9 @@ private:
             telemetrySinkChunks_, telemetryProcessedChunks_, pendingBytes_,
             pending_.size(), queuedBytes_, queue_.size(), processingBytes_,
             telemetryHighBufferedBytes_, maxBufferedBytes_,
-            telemetryWaitCount_, (unsigned long long)telemetryWaitUs_,
-            (unsigned long long)telemetryWaitMaxUs_,
+            telemetryPauseCount_, (unsigned long long)telemetryPausedMs_,
+            (unsigned long long)telemetryPauseMaxMs_,
+            requestGatePaused_ ? 1 : 0,
             (unsigned long long)telemetryProcessUs_,
             (unsigned long long)telemetryProcessMaxUs_, producerOrdinal_,
             (unsigned long long)producerOffset_, force ? 1 : 0);
@@ -674,7 +673,6 @@ private:
             }
         }
         queueReady_.notify_all();
-        queueSpace_.notify_all();
         installWorker_.join();
     }
 
@@ -704,10 +702,8 @@ private:
                 break;
             }
         }
-        if (queued) {
+        if (queued)
             queueReady_.notify_one();
-            queueSpace_.notify_all();
-        }
         return queued;
     }
 
@@ -779,7 +775,6 @@ private:
     std::string currentPackage_;
     mutable std::mutex queueMutex_;
     std::condition_variable queueReady_;
-    std::condition_variable queueSpace_;
     std::condition_variable drained_;
     std::deque<InstallChunk> queue_;
     std::map<PendingKey, InstallChunk> pending_;
@@ -805,24 +800,25 @@ private:
     uint32_t lookaheadWindow_ = kLookaheadStart;
     uint32_t lookaheadStallEvents_ = 0;
     uint64_t lookaheadLastAdaptMs_ = 0;
+    // Request gate state (PERF_PLAN 5.3); guarded by queueMutex_.
+    bool requestGatePaused_ = false;
+    uint64_t requestGatePausedSinceMs_ = 0;
     bool accepting_ = true;
     bool stopping_ = false;
     bool processing_ = false;
     bool drainComplete_ = false;
-    bool bufferPressureLogged_ = false;
     uint32_t telemetryGeneration_ = 0;
     uint64_t telemetryLastMs_ = 0;
-    uint64_t telemetryLastStallLogMs_ = 0;
     uint64_t telemetrySinkBytes_ = 0;
     uint64_t telemetryProcessedBytes_ = 0;
-    uint64_t telemetryWaitUs_ = 0;
-    uint64_t telemetryWaitMaxUs_ = 0;
+    uint64_t telemetryPausedMs_ = 0;
+    uint64_t telemetryPauseMaxMs_ = 0;
     uint64_t telemetryProcessUs_ = 0;
     uint64_t telemetryProcessMaxUs_ = 0;
     size_t telemetryHighBufferedBytes_ = 0;
     uint32_t telemetrySinkChunks_ = 0;
     uint32_t telemetryProcessedChunks_ = 0;
-    uint32_t telemetryWaitCount_ = 0;
+    uint32_t telemetryPauseCount_ = 0;
     std::atomic<bool> cancelRequested_ {false};
     std::string error_;
     Progress progress_;
