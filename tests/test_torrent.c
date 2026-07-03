@@ -26,6 +26,12 @@ static void test_ema_update(void) {
     }
 }
 
+static void test_last_piece_age_marks_missing_sample(void) {
+    assert(last_piece_age_ms(10000, 0) == -1);
+    assert(last_piece_age_ms(10000, 9500) == 500);
+    assert(last_piece_age_ms(10000, 10001) == -1);
+}
+
 static void test_adaptive_hedge_follows_median_latency(void) {
     torrent_t torrent = {0};
     torrent.hedge_after_ms = 5000;
@@ -89,6 +95,7 @@ static void test_blocklist_cooldown_and_wrap(void) {
 
 int main(void) {
     test_ema_update();
+    test_last_piece_age_marks_missing_sample();
     test_adaptive_hedge_follows_median_latency();
     test_blocklist_cooldown_and_wrap();
     puts("torrent tests passed");

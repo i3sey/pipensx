@@ -280,6 +280,12 @@ static void reset_telemetry_window(torrent_t *t, uint64_t now) {
     }
 }
 
+static int64_t last_piece_age_ms(uint64_t now, uint64_t last_piece_ms) {
+    if (!last_piece_ms || last_piece_ms > now)
+        return -1;
+    return (int64_t)(now - last_piece_ms);
+}
+
 static void emit_telemetry(torrent_t *t, uint64_t now) {
     uint32_t generation = telemetry_generation();
     if (!telemetry_enabled()) {
@@ -400,14 +406,14 @@ static void emit_telemetry(torrent_t *t, uint64_t now) {
             emitted++;
             uint64_t peer_rx_bps = peer->telemetry_piece_bytes * 1000 /
                                    (elapsed_ms + 1);
-            uint64_t last_piece_age = peer->last_piece_ms <= now
-                                    ? now - peer->last_piece_ms : 0;
+            int64_t last_piece_age = last_piece_age_ms(
+                now, peer->last_piece_ms);
             uint64_t cooldown_ms = peer->request_cooldown_until_ms > now
                                  ? peer->request_cooldown_until_ms - now : 0;
             telemetry_log("peer", t->telemetry_tag,
                 "rx_bps=%llu pipeline=%d unchoked=%d "
                 "expired=%u hedged=%u cancelled=%u released=%u strikes=%u "
-                "cooldown_ms=%llu last_piece_age_ms=%llu",
+                "cooldown_ms=%llu last_piece_age_ms=%lld",
                 (unsigned long long)peer_rx_bps,
                 peer->pipeline_len, !peer->am_choked,
                 peer->telemetry_expired_requests,
@@ -416,7 +422,7 @@ static void emit_telemetry(torrent_t *t, uint64_t now) {
                 peer->telemetry_released_requests,
                 peer->timeout_strikes,
                 (unsigned long long)cooldown_ms,
-                (unsigned long long)last_piece_age);
+                (long long)last_piece_age);
         }
     }
     reset_telemetry_window(t, now);
