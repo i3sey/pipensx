@@ -213,6 +213,27 @@ public:
         if (streamInstall_ && error_.empty() && packageCount_ > completedPackages_) {
             StreamRamBudget budget = detectStreamRamBudget(pieceLengthBytes_);
             if (!budget.valid) {
+                log_msg("[install] RAM budget rejected source=%s available=%llu "
+                        "reserve=%llu piece=%llu kernel_headroom=%llu "
+                        "kernel_detected=%d\n",
+                        budget.memoryDetected ? "heap" : "fallback",
+                        static_cast<unsigned long long>(budget.availableBytes),
+                        static_cast<unsigned long long>(budget.reserveBytes),
+                        static_cast<unsigned long long>(pieceLengthBytes_),
+                        static_cast<unsigned long long>(
+                            budget.kernelHeadroomBytes),
+                        budget.kernelHeadroomDetected ? 1 : 0);
+                telemetry_log("ram_budget", taskId_.c_str(),
+                    "valid=0 source=%s available_bytes=%llu reserve_bytes=%llu "
+                    "piece_bytes=%llu kernel_headroom_bytes=%llu "
+                    "kernel_headroom_detected=%d",
+                    budget.memoryDetected ? "heap" : "fallback",
+                    static_cast<unsigned long long>(budget.availableBytes),
+                    static_cast<unsigned long long>(budget.reserveBytes),
+                    static_cast<unsigned long long>(pieceLengthBytes_),
+                    static_cast<unsigned long long>(
+                        budget.kernelHeadroomBytes),
+                    budget.kernelHeadroomDetected ? 1 : 0);
                 error_ = "Not enough free memory for stream installation.";
                 return;
             }
@@ -223,20 +244,29 @@ public:
             lookaheadMax_ = budget.lookaheadMax;
             lookaheadWindow_ = budget.lookaheadStart;
             log_msg("[install] RAM budget source=%s available=%llu reserve=%llu "
-                    "peak=%llu reorder=%zu queue=%zu lookahead=%u/%u/%u\n",
-                    budget.memoryDetected ? "system" : "fallback",
+                    "piece=%llu kernel_headroom=%llu peak=%llu reorder=%zu "
+                    "queue=%zu lookahead=%u/%u/%u\n",
+                    budget.memoryDetected ? "heap" : "fallback",
                     static_cast<unsigned long long>(budget.availableBytes),
                     static_cast<unsigned long long>(budget.reserveBytes),
+                    static_cast<unsigned long long>(pieceLengthBytes_),
+                    static_cast<unsigned long long>(
+                        budget.kernelHeadroomBytes),
                     static_cast<unsigned long long>(budget.peakBytes),
                     maxBufferedBytes_, maxQueuedBytes_, lookaheadMin_,
                     lookaheadWindow_, lookaheadMax_);
             telemetry_log("ram_budget", taskId_.c_str(),
-                "source=%s available_bytes=%llu reserve_bytes=%llu "
-                "peak_bytes=%llu reorder_bytes=%zu queue_bytes=%zu "
-                "lookahead_min=%u lookahead_start=%u lookahead_max=%u",
-                budget.memoryDetected ? "system" : "fallback",
+                "valid=1 source=%s available_bytes=%llu reserve_bytes=%llu "
+                "piece_bytes=%llu kernel_headroom_bytes=%llu "
+                "kernel_headroom_detected=%d peak_bytes=%llu "
+                "reorder_bytes=%zu queue_bytes=%zu lookahead_min=%u "
+                "lookahead_start=%u lookahead_max=%u",
+                budget.memoryDetected ? "heap" : "fallback",
                 static_cast<unsigned long long>(budget.availableBytes),
                 static_cast<unsigned long long>(budget.reserveBytes),
+                static_cast<unsigned long long>(pieceLengthBytes_),
+                static_cast<unsigned long long>(budget.kernelHeadroomBytes),
+                budget.kernelHeadroomDetected ? 1 : 0,
                 static_cast<unsigned long long>(budget.peakBytes),
                 maxBufferedBytes_, maxQueuedBytes_, lookaheadMin_,
                 lookaheadWindow_, lookaheadMax_);
