@@ -170,6 +170,9 @@ def analyze(records: list[dict]) -> dict:
     # Buffer pressure: request-gate pauses (PERF_PLAN 5.3). Older logs report
     # blocking sink waits (waits/wait_max_us) instead — fold both in.
     pauses = sum(numeric(buffer, "pauses")) + sum(numeric(buffer, "waits"))
+    # Rate-matched throttle episodes (PERF_PLAN 7.1); absent in older logs.
+    throttles = sum(numeric(buffer, "throttles"))
+    throttled_ms = sum(numeric(buffer, "throttled_ms"))
     pause_max_ms = max(
         numeric(buffer, "pause_max_ms")
         + [value // 1000 for value in numeric(buffer, "wait_max_us")],
@@ -210,10 +213,11 @@ def analyze(records: list[dict]) -> dict:
     bottleneck = "insufficient telemetry"
     if rates["network_rx"]["samples"]:
         bottleneck = "no dominant bottleneck detected"
-        if pauses > 0 or high_ratio >= 900:
+        if pauses > 0 or throttles > 0 or high_ratio >= 900:
             evidence.append(
                 f"install buffer pressure: pauses={pauses}, "
-                f"max_pause_ms={pause_max_ms}, high={high_ratio / 10:.1f}%"
+                f"max_pause_ms={pause_max_ms}, throttles={throttles}, "
+                f"throttled_ms={throttled_ms}, high={high_ratio / 10:.1f}%"
             )
             if (ncm_busy is not None and ncm_busy >= 400 and
                     (decode_busy is None or ncm_busy >= decode_busy)):
@@ -268,6 +272,8 @@ def analyze(records: list[dict]) -> dict:
         "buffer": {
             "pauses": pauses,
             "pause_max_ms": pause_max_ms,
+            "throttles": throttles,
+            "throttled_ms": throttled_ms,
             "high_ratio_permille": high_ratio,
         },
         "requests": {

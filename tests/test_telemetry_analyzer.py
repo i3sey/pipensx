@@ -59,6 +59,27 @@ class TelemetryAnalyzerTests(unittest.TestCase):
         self.assertEqual(report["buffer"]["pauses"], 3)
         self.assertEqual(report["buffer"]["pause_max_ms"], 900)
 
+    def test_detects_backpressure_from_rate_matched_throttle(self):
+        text = "\n".join([
+            line("control", enabled=1, generation=2),
+            line("torrent", interval_ms=5000, rx_bps=4000000,
+                 verified_bps=4000000, unchoked=4, inflight=120,
+                 expired=0, oldest_request_ms=1000,
+                 piece_cb_busy_permille=100),
+            line("buffer", interval_ms=5000, sink_bps=4000000,
+                 processed_bps=800000, pauses=0, pause_max_ms=0,
+                 throttles=2, throttled_ms=8000, gate_throttled=1,
+                 drain_bps=800000, gate_paused=0,
+                 high_bytes=800, limit_bytes=1000),
+            line("ncm", interval_ms=5000, bps=800000,
+                 ncm_us=3000000, sha_us=300000),
+        ])
+        report = MODULE.analyze(MODULE.parse_records(text))
+        self.assertEqual(report["bottleneck"], "NCM/SD writer")
+        self.assertEqual(report["buffer"]["pauses"], 0)
+        self.assertEqual(report["buffer"]["throttles"], 2)
+        self.assertEqual(report["buffer"]["throttled_ms"], 8000)
+
     def test_detects_slow_peer(self):
         text = "\n".join([
             line("control", enabled=1, generation=3),

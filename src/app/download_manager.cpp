@@ -1,4 +1,5 @@
 #include "download_manager.hpp"
+#include "request_gate.hpp"
 #include "stream_ram_budget.hpp"
 #include "../install/install_backend.hpp"
 #include "../install/package_stream.hpp"
@@ -243,6 +244,8 @@ public:
             lookaheadMin_ = budget.lookaheadMin;
             lookaheadMax_ = budget.lookaheadMax;
             lookaheadWindow_ = budget.lookaheadStart;
+            requestGate_.configure(maxBufferedBytes_, requestAheadBytes_,
+                                   pieceLengthBytes_, producerOrdinal_);
             log_msg("[install] RAM budget source=%s available=%llu reserve=%llu "
                     "piece=%llu kernel_headroom=%llu peak=%llu reorder=%zu "
                     "queue=%zu lookahead=%u/%u/%u\n",
@@ -301,6 +304,10 @@ public:
     uint32_t adaptiveLookahead() {
         std::lock_guard<std::mutex> lock(queueMutex_);
         uint64_t now = now_ms();
+        // Heartbeat for the rate-matched gate (PERF_PLAN 7.1): the manager
+        // loop calls this every tick, so the token bucket keeps refilling
+        // even when no sink or install events fire (rx lull).
+        updateRequestGateLocked(now);
         if (!lookaheadLastAdaptMs_) {
             lookaheadLastAdaptMs_ = now;
             return lookaheadWindow_;
@@ -408,6 +415,7 @@ private:
         chunk.final = chunk.fileOffset + size == static_cast<uint64_t>(file.length);
         pendingBytes_ += chunk.data.size();
         pending_.emplace(key, std::move(chunk));
+        requestGate_.onArrived(ordinal, offset + size);
         telemetrySinkBytes_ += size;
         telemetrySinkChunks_++;
         telemetryHighBufferedBytes_ = std::max(
@@ -423,18 +431,42 @@ private:
         return pendingBytes_ + queuedBytes_ + processingBytes_;
     }
 
-    // Backpressure without blocking the event loop (PERF_PLAN 5.3): when the
-    // reorder buffer fills up, pause new piece requests through
-    // canRequestPiece instead of making the torrent thread wait inside the
-    // piece callback — the loop keeps servicing handshakes, keepalives and
-    // POLLOUT while the install worker drains. Hysteresis (pause at the
-    // limit, resume at 75%) keeps the gate from flapping at the threshold.
-    // Call whenever bufferedBytesLocked() changes.
+    // Backpressure without blocking the event loop (PERF_PLAN 5.3 + 7.1):
+    // the reorder buffer state drives a rate-matched request gate instead of
+    // making the torrent thread wait inside the piece callback. Above the
+    // throttle threshold new requests are admitted at the measured drain
+    // rate; the hard pause at the buffer limit remains as an emergency
+    // ceiling. Call whenever bufferedBytesLocked() changes and as a
+    // periodic heartbeat so the token bucket refills during rx lulls.
     void updateRequestGateLocked(uint64_t now) {
+        using GateState = pipensx::RequestGate::State;
+        requestGate_.update(bufferedBytesLocked(), producerOrdinal_,
+                            producerOffset_, now);
+        GateState state = requestGate_.state();
+        GateState previous = requestGateState_;
+        if (state == previous)
+            return;
+        uint64_t stateMs = requestGateStateSinceMs_ &&
+                           now >= requestGateStateSinceMs_
+            ? now - requestGateStateSinceMs_ : 0;
+        requestGateState_ = state;
+        requestGateStateSinceMs_ = now;
         size_t buffered = bufferedBytesLocked();
-        if (!requestGatePaused_ && buffered >= maxBufferedBytes_) {
-            requestGatePaused_ = true;
-            requestGatePausedSinceMs_ = now;
+        if (previous == GateState::Paused) {
+            telemetryPausedMs_ += stateMs;
+            telemetryPauseMaxMs_ = std::max(telemetryPauseMaxMs_, stateMs);
+            log_msg("[install] request gate resumed after %llu ms "
+                    "buffered=%zu throttled=%d\n",
+                    static_cast<unsigned long long>(stateMs), buffered,
+                    state == GateState::Throttled ? 1 : 0);
+            telemetry_log("request_gate", taskId_.c_str(),
+                "event=resume paused_ms=%llu buffered_bytes=%zu throttled=%d",
+                static_cast<unsigned long long>(stateMs), buffered,
+                state == GateState::Throttled ? 1 : 0);
+        } else if (previous == GateState::Throttled) {
+            telemetryThrottledMs_ += stateMs;
+        }
+        if (state == GateState::Paused) {
             lookaheadStallEvents_++;
             telemetryPauseCount_++;
             log_msg("[install] request gate paused buffered=%zu limit=%zu\n",
@@ -442,19 +474,17 @@ private:
             telemetry_log("request_gate", taskId_.c_str(),
                 "event=pause buffered_bytes=%zu limit_bytes=%zu",
                 buffered, maxBufferedBytes_);
-        } else if (requestGatePaused_ &&
-                   buffered <= maxBufferedBytes_ / 4 * 3) {
-            requestGatePaused_ = false;
-            uint64_t pausedMs = now >= requestGatePausedSinceMs_
-                ? now - requestGatePausedSinceMs_ : 0;
-            telemetryPausedMs_ += pausedMs;
-            telemetryPauseMaxMs_ = std::max(telemetryPauseMaxMs_, pausedMs);
-            log_msg("[install] request gate resumed after %llu ms "
-                    "buffered=%zu\n",
-                    static_cast<unsigned long long>(pausedMs), buffered);
+        } else if (state == GateState::Throttled) {
+            telemetryThrottleCount_++;
             telemetry_log("request_gate", taskId_.c_str(),
-                "event=resume paused_ms=%llu buffered_bytes=%zu",
-                static_cast<unsigned long long>(pausedMs), buffered);
+                "event=throttle buffered_bytes=%zu limit_bytes=%zu "
+                "drain_bps=%llu",
+                buffered, maxBufferedBytes_,
+                static_cast<unsigned long long>(requestGate_.drainBps()));
+        } else if (previous == GateState::Throttled) {
+            telemetry_log("request_gate", taskId_.c_str(),
+                "event=throttle_end throttled_ms=%llu buffered_bytes=%zu",
+                static_cast<unsigned long long>(stateMs), buffered);
         }
     }
 
@@ -462,7 +492,7 @@ private:
         std::lock_guard<std::mutex> lock(queueMutex_);
         if (!error_.empty() || stopping_)
             return false;
-        if (requestGatePaused_)
+        if (requestGate_.paused())
             return false;
         if (piece >= pieceGates_.size())
             return true;
@@ -473,10 +503,7 @@ private:
             return true;
         if (gate.ordinal > producerOrdinal_)
             return false;
-        uint64_t limit = producerOffset_ + requestAheadBytes_;
-        if (limit < producerOffset_)
-            limit = UINT64_MAX;
-        return gate.offset <= limit;
+        return requestGate_.allows(gate.offset);
     }
 
     bool processChunk(const InstallChunk& chunk) {
@@ -631,6 +658,7 @@ private:
                 }
                 processingBytes_ = 0;
                 processing_ = false;
+                requestGate_.onProcessed(chunk.data.size());
                 if (!ok) {
                     queue_.clear();
                     pending_.clear();
@@ -664,6 +692,8 @@ private:
         telemetryPauseCount_ = 0;
         telemetryPausedMs_ = 0;
         telemetryPauseMaxMs_ = 0;
+        telemetryThrottleCount_ = 0;
+        telemetryThrottledMs_ = 0;
         telemetryProcessUs_ = 0;
         telemetryProcessMaxUs_ = 0;
         telemetryHighBufferedBytes_ = bufferedBytesLocked();
@@ -695,6 +725,7 @@ private:
             "pending_chunks=%zu queued_bytes=%zu queued_chunks=%zu "
             "processing_bytes=%zu high_bytes=%zu limit_bytes=%zu "
             "pauses=%u paused_ms=%llu pause_max_ms=%llu gate_paused=%d "
+            "throttles=%u throttled_ms=%llu gate_throttled=%d drain_bps=%llu "
             "process_total_us=%llu process_max_us=%llu "
             "producer_ordinal=%u producer_offset=%llu force=%d",
             (unsigned long long)elapsedMs,
@@ -705,7 +736,12 @@ private:
             telemetryHighBufferedBytes_, maxBufferedBytes_,
             telemetryPauseCount_, (unsigned long long)telemetryPausedMs_,
             (unsigned long long)telemetryPauseMaxMs_,
-            requestGatePaused_ ? 1 : 0,
+            requestGate_.paused() ? 1 : 0,
+            telemetryThrottleCount_,
+            (unsigned long long)telemetryThrottledMs_,
+            requestGate_.state() == pipensx::RequestGate::State::Throttled
+                ? 1 : 0,
+            (unsigned long long)requestGate_.drainBps(),
             (unsigned long long)telemetryProcessUs_,
             (unsigned long long)telemetryProcessMaxUs_, producerOrdinal_,
             (unsigned long long)producerOffset_, force ? 1 : 0);
@@ -854,9 +890,11 @@ private:
     uint32_t lookaheadWindow_ = 32;
     uint32_t lookaheadStallEvents_ = 0;
     uint64_t lookaheadLastAdaptMs_ = 0;
-    // Request gate state (PERF_PLAN 5.3); guarded by queueMutex_.
-    bool requestGatePaused_ = false;
-    uint64_t requestGatePausedSinceMs_ = 0;
+    // Request gate state (PERF_PLAN 5.3 + 7.1); guarded by queueMutex_.
+    pipensx::RequestGate requestGate_;
+    pipensx::RequestGate::State requestGateState_ =
+        pipensx::RequestGate::State::Free;
+    uint64_t requestGateStateSinceMs_ = 0;
     bool accepting_ = true;
     bool stopping_ = false;
     bool processing_ = false;
@@ -867,12 +905,14 @@ private:
     uint64_t telemetryProcessedBytes_ = 0;
     uint64_t telemetryPausedMs_ = 0;
     uint64_t telemetryPauseMaxMs_ = 0;
+    uint64_t telemetryThrottledMs_ = 0;
     uint64_t telemetryProcessUs_ = 0;
     uint64_t telemetryProcessMaxUs_ = 0;
     size_t telemetryHighBufferedBytes_ = 0;
     uint32_t telemetrySinkChunks_ = 0;
     uint32_t telemetryProcessedChunks_ = 0;
     uint32_t telemetryPauseCount_ = 0;
+    uint32_t telemetryThrottleCount_ = 0;
     std::atomic<bool> cancelRequested_ {false};
     std::string error_;
     Progress progress_;

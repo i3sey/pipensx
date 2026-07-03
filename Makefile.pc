@@ -44,6 +44,7 @@ SETTINGS_TEST_TARGET = tests/test_app_settings
 INSTALL_SPACE_TEST_TARGET = tests/test_install_space
 BATCH_INSTALL_TEST_TARGET = tests/test_batch_install
 RAM_BUDGET_TEST_TARGET = tests/test_stream_ram_budget
+REQUEST_GATE_TEST_TARGET = tests/test_request_gate
 TEST_SRCS = \
     tests/test_piece.c       \
     src/core/sha1.c          \
@@ -70,6 +71,9 @@ src/app/download_manager.o: src/app/download_manager.cpp
 src/app/stream_ram_budget.o: src/app/stream_ram_budget.cpp
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
+src/app/request_gate.o: src/app/request_gate.cpp
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
 src/install/%.o: src/install/%.cpp
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
@@ -77,7 +81,7 @@ tests/test_manager.o: tests/test_manager.cpp
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
 $(MANAGER_TEST_TARGET): tests/test_manager.o src/app/download_manager.o \
-		src/app/stream_ram_budget.o \
+		src/app/stream_ram_budget.o src/app/request_gate.o \
 		src/install/package_stream.o src/install/install_backend_pc.o \
 		$(filter-out src/main_pc.o,$(OBJS))
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS) $(INSTALL_LDFLAGS) -pthread
@@ -113,7 +117,7 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 		$(TELEMETRY_TEST_TARGET) $(PEER_TEST_TARGET) \
 		$(TORRENT_TEST_TARGET) $(SETTINGS_TEST_TARGET) \
 		$(INSTALL_SPACE_TEST_TARGET) $(BATCH_INSTALL_TEST_TARGET) \
-		$(RAM_BUDGET_TEST_TARGET)
+		$(RAM_BUDGET_TEST_TARGET) $(REQUEST_GATE_TEST_TARGET)
 	./$(TEST_TARGET)
 	./$(MANAGER_TEST_TARGET)
 	./$(PACKAGE_TEST_TARGET)
@@ -126,6 +130,7 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 	./$(INSTALL_SPACE_TEST_TARGET)
 	./$(BATCH_INSTALL_TEST_TARGET)
 	./$(RAM_BUDGET_TEST_TARGET)
+	./$(REQUEST_GATE_TEST_TARGET)
 	python3 tests/test_telemetry_analyzer.py
 
 $(SETTINGS_TEST_TARGET): tests/test_app_settings.cpp src/app/app_settings.cpp
@@ -138,6 +143,7 @@ $(INSTALL_SPACE_TEST_TARGET): tests/test_install_space.cpp \
 $(BATCH_INSTALL_TEST_TARGET): tests/test_batch_install.cpp \
 		src/app/catalog_batch_installer.cpp src/app/install_space.cpp \
 		src/app/download_manager.o src/app/stream_ram_budget.o \
+		src/app/request_gate.o \
 		src/install/package_stream.o \
 		src/install/install_backend_pc.o \
 		$(filter-out src/main_pc.o,$(OBJS))
@@ -146,6 +152,10 @@ $(BATCH_INSTALL_TEST_TARGET): tests/test_batch_install.cpp \
 
 $(RAM_BUDGET_TEST_TARGET): tests/test_stream_ram_budget.cpp \
 		src/app/stream_ram_budget.cpp
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
+
+$(REQUEST_GATE_TEST_TARGET): tests/test_request_gate.cpp \
+		src/app/request_gate.cpp
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
 
 $(TELEMETRY_TEST_TARGET): tests/test_telemetry.c src/core/util.c
@@ -165,6 +175,7 @@ $(ANTIZAPRET_TEST_TARGET): tests/test_antizapret.c \
 
 clean:
 	rm -f $(OBJS) src/app/download_manager.o src/app/stream_ram_budget.o \
+		src/app/request_gate.o \
 		src/app/catalog_service.o \
 		src/app/catalog_presentation.o src/app/game_metadata_service.o \
 		src/app/magnet_resolver.o \
@@ -175,6 +186,6 @@ clean:
 		$(TELEMETRY_TEST_TARGET) $(PEER_TEST_TARGET) \
 		$(TORRENT_TEST_TARGET) $(SETTINGS_TEST_TARGET) \
 		$(INSTALL_SPACE_TEST_TARGET) $(BATCH_INSTALL_TEST_TARGET) \
-		$(RAM_BUDGET_TEST_TARGET)
+		$(RAM_BUDGET_TEST_TARGET) $(REQUEST_GATE_TEST_TARGET)
 
 .PHONY: all test clean
