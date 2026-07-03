@@ -59,3 +59,9 @@ int  torrent_tick(torrent_t *t);
 /* Fill stats for UI */
 void torrent_stat(const torrent_t *t, torrent_stat_t *s);
 const char *torrent_last_error(const torrent_t *t);
+
+/*
+ * Resize the strict-order lookahead window at runtime (PERF_PLAN 5.1).
+ * No-op unless the torrent runs in strict piece order; lookahead 0 is ignored.
+ */
+void torrent_set_strict_lookahead(torrent_t *t, uint32_t lookahead);

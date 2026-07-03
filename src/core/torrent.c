@@ -42,6 +42,15 @@
 #define MAX_HEDGES_PER_TICK   4
 #define MAX_HEDGED_BLOCKS     16
 #define HEDGE_INTERVAL_MS     250
+/* Adaptive hedge threshold (PERF_PLAN 5.1): duplicate a head-window request
+   once it is HEDGE_LATENCY_MULT times older than the median active-peer block
+   latency, instead of waiting for the static hedge_after_ms. The static value
+   stays as the upper bound; the floor keeps a noisy estimate from spraying
+   duplicates. Below HEDGE_MIN_LATENCY_PEERS sampled peers the static value is
+   used — with one peer there is nobody to hedge to anyway. */
+#define HEDGE_LATENCY_MULT      4
+#define HEDGE_ADAPTIVE_MIN_MS   500
+#define HEDGE_MIN_LATENCY_PEERS 2
 #define MAX_PEER_TELEMETRY    8
 #define PEER_BLOCKLIST_SIZE   64
 #define PEER_BLOCKLIST_MS     60000
@@ -103,6 +112,7 @@ struct torrent {
 
     uint32_t request_pipeline_limit;
     uint32_t hedge_after_ms;
+    uint32_t hedge_effective_ms; /* last adaptive threshold, for telemetry */
     uint32_t schedule_cursor;
     uint64_t last_hedge_ms;
 
@@ -352,6 +362,7 @@ static void emit_telemetry(torrent_t *t, uint64_t now) {
         "connecting=%d handshaking=%d active=%d unchoked=%d choked=%d "
         "inflight=%d expired=%u oldest_request_ms=%llu peer_queue=%d "
         "cooldown_peers=%d penalized_peers=%d request_limit=%u "
+        "lookahead=%u hedge_ms=%u "
         "hedged=%u cancelled=%u released=%u "
         "head_piece=%u head_done=%u head_total=%u head_requested=%u "
         "head_request_copies=%u head_hedged=%u "
@@ -364,7 +375,9 @@ static void emit_telemetry(torrent_t *t, uint64_t now) {
         t->telemetry_expired_requests,
         (unsigned long long)oldest_request_ms,
         t->qsize, cooldown_peers, penalized_peers,
-        t->request_pipeline_limit, t->telemetry_hedged_requests,
+        t->request_pipeline_limit,
+        t->pm->strict_order_lookahead, t->hedge_effective_ms,
+        t->telemetry_hedged_requests,
         t->telemetry_cancelled_requests, t->telemetry_released_requests,
         head, head_done, head_total, head_requested,
         head_request_copies, head_hedged,
@@ -615,6 +628,37 @@ static peer_t *pick_hedge_peer(torrent_t *t, const peer_t *primary,
     return best;
 }
 
+/* PERF_PLAN 5.1: hedge threshold derived from the swarm's measured block
+   latency — median of per-peer latency EMAs times HEDGE_LATENCY_MULT, clamped
+   to [HEDGE_ADAPTIVE_MIN_MS, hedge_after_ms]. */
+static uint32_t adaptive_hedge_after_ms(const torrent_t *t) {
+    uint32_t latencies[MAX_ACTIVE_PEERS];
+    uint32_t count = 0;
+    for (int i = 0; i < MAX_ACTIVE_PEERS; ++i) {
+        const peer_t *peer = t->peers[i];
+        if (peer && peer->state == PS_ACTIVE && peer->block_lat_ema_ms)
+            latencies[count++] = peer->block_lat_ema_ms;
+    }
+    if (count < HEDGE_MIN_LATENCY_PEERS)
+        return t->hedge_after_ms;
+    /* Insertion sort — count <= MAX_ACTIVE_PEERS, runs at most 1/HEDGE_INTERVAL. */
+    for (uint32_t i = 1; i < count; ++i) {
+        uint32_t value = latencies[i];
+        uint32_t j = i;
+        while (j > 0 && latencies[j - 1] > value) {
+            latencies[j] = latencies[j - 1];
+            j--;
+        }
+        latencies[j] = value;
+    }
+    uint64_t threshold = (uint64_t)latencies[count / 2] * HEDGE_LATENCY_MULT;
+    if (threshold < HEDGE_ADAPTIVE_MIN_MS)
+        threshold = HEDGE_ADAPTIVE_MIN_MS;
+    if (threshold > t->hedge_after_ms)
+        threshold = t->hedge_after_ms;
+    return (uint32_t)threshold;
+}
+
 static void schedule_hedged_requests(torrent_t *t, uint64_t now) {
     if (!t->hedge_after_ms || !t->pm->strict_order)
         return;
@@ -625,6 +669,8 @@ static void schedule_hedged_requests(torrent_t *t, uint64_t now) {
     uint32_t head = current_head_piece(t);
     if (head == UINT32_MAX)
         return;
+    uint32_t hedge_after_ms = adaptive_hedge_after_ms(t);
+    t->hedge_effective_ms = hedge_after_ms;
 
     uint32_t outstanding = 0;
     piece_slot_t *headSlot = &t->pm->slots[head];
@@ -648,7 +694,7 @@ static void schedule_hedged_requests(torrent_t *t, uint64_t now) {
             block_req_t request = primary->pipeline[j];
             if (request.index != (int)head || request.offset < 0 ||
                 request.requested_ms > now ||
-                now - request.requested_ms < t->hedge_after_ms)
+                now - request.requested_ms < hedge_after_ms)
                 continue;
             uint32_t block = (uint32_t)request.offset / BLOCK_SIZE;
             if (piece_mgr_has_block(t->pm, head, block) ||
@@ -816,6 +862,7 @@ torrent_t *torrent_create_ex(const metainfo_t *mi,
     if (t->request_pipeline_limit < MIN_REQUEST_PIPELINE)
         t->request_pipeline_limit = MIN_REQUEST_PIPELINE;
     t->hedge_after_ms = options ? options->hedge_after_ms : 0;
+    t->hedge_effective_ms = t->hedge_after_ms;
     if (options && options->telemetry_tag)
         snprintf(t->telemetry_tag, sizeof(t->telemetry_tag), "%s",
                  options->telemetry_tag);
@@ -1197,6 +1244,15 @@ int torrent_tick(torrent_t *t) {
 
 const char *torrent_last_error(const torrent_t *t) {
     return t && t->error[0] ? t->error : "";
+}
+
+void torrent_set_strict_lookahead(torrent_t *t, uint32_t lookahead) {
+    if (!t || !t->pm || !t->pm->strict_order || !lookahead)
+        return;
+    if (t->pm->strict_order_lookahead == lookahead)
+        return;
+    piece_mgr_set_strict_policy(t->pm, lookahead,
+                                t->pm->strict_fill_pending_first);
 }
 
 void torrent_stat(const torrent_t *t, torrent_stat_t *s) {

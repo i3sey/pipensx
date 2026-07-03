@@ -90,6 +90,10 @@ typedef struct peer {
        rate_last_downloaded is the previous sample's snapshot. */
     uint64_t dl_rate_bps;
     uint64_t rate_last_downloaded;
+    /* EMA of block round-trip latency (request sent -> piece received), ms.
+       Feeds the adaptive hedge threshold (PERF_PLAN 5.1). 0 until the first
+       block arrives; never returns to 0 afterwards. */
+    uint32_t block_lat_ema_ms;
     uint64_t telemetry_piece_bytes;
     uint32_t timeout_strikes;
     uint32_t telemetry_expired_requests;

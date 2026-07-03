@@ -238,6 +238,34 @@ public:
         return static_cast<PackageCoordinator*>(user)->canRequestPiece(piece)
             ? 1 : 0;
     }
+
+    // Adaptive strict-order lookahead (PERF_PLAN 5.1). AIMD driven by the
+    // install sink: a buffer stall or a nearly full buffer halves the window
+    // (the sink is the bottleneck, a wide window only builds an avalanche),
+    // a comfortably empty buffer grows it additively so more of the swarm is
+    // usable. The band between the two thresholds holds the window steady,
+    // which keeps the loop from oscillating. Rate-limited internally; callers
+    // may invoke it every tick.
+    uint32_t adaptiveLookahead() {
+        std::lock_guard<std::mutex> lock(queueMutex_);
+        uint64_t now = now_ms();
+        if (!lookaheadLastAdaptMs_) {
+            lookaheadLastAdaptMs_ = now;
+            return lookaheadWindow_;
+        }
+        if (now - lookaheadLastAdaptMs_ < kLookaheadAdaptIntervalMs)
+            return lookaheadWindow_;
+        lookaheadLastAdaptMs_ = now;
+        bool stalled = lookaheadStallEvents_ > 0;
+        lookaheadStallEvents_ = 0;
+        size_t buffered = bufferedBytesLocked();
+        if (stalled || buffered > maxBufferedBytes_ / 4 * 3)
+            lookaheadWindow_ = std::max(kLookaheadMin, lookaheadWindow_ / 2);
+        else if (buffered < maxBufferedBytes_ / 2)
+            lookaheadWindow_ = std::min(kLookaheadMax,
+                                        lookaheadWindow_ + kLookaheadStep);
+        return lookaheadWindow_;
+    }
     std::string error() const {
         std::lock_guard<std::mutex> lock(queueMutex_);
         return error_;
@@ -349,16 +377,20 @@ private:
     void waitForBufferSpaceLocked(std::unique_lock<std::mutex>& lock,
                                   size_t incomingBytes) {
         bool trackedWait = false;
+        bool waited = false;
         uint64_t waitStartedUs = 0;
         while (accepting_ && error_.empty() &&
                bufferedBytesLocked() + incomingBytes > maxBufferedBytes_ &&
                (queuedBytes_ > 0 || processingBytes_ > 0)) {
+            waited = true;
             if (!trackedWait && telemetry_enabled()) {
                 trackedWait = true;
                 waitStartedUs = now_us();
             }
             queueSpace_.wait(lock);
         }
+        if (waited)
+            lookaheadStallEvents_++;
         if (trackedWait) {
             uint64_t waitUs = now_us() - waitStartedUs;
             telemetryWaitCount_++;
@@ -761,6 +793,18 @@ private:
     uint64_t requestAheadBytes_ = 64 * 1024 * 1024;
     uint32_t producerOrdinal_ = 0;
     uint64_t producerOffset_ = 0;
+    // Adaptive strict-order lookahead state (PERF_PLAN 5.1); guarded by
+    // queueMutex_. Window bounds in pieces: at 4 MiB pieces the max adds at
+    // most 128 MiB of concurrently pending piece buffers, and the
+    // requestAheadBytes_ gate still caps the total in-flight span.
+    static constexpr uint32_t kLookaheadMin = 8;
+    static constexpr uint32_t kLookaheadStart = 32;
+    static constexpr uint32_t kLookaheadMax = 64;
+    static constexpr uint32_t kLookaheadStep = 4;
+    static constexpr uint64_t kLookaheadAdaptIntervalMs = 1000;
+    uint32_t lookaheadWindow_ = kLookaheadStart;
+    uint32_t lookaheadStallEvents_ = 0;
+    uint64_t lookaheadLastAdaptMs_ = 0;
     bool accepting_ = true;
     bool stopping_ = false;
     bool processing_ = false;
@@ -1337,6 +1381,8 @@ void DownloadManager::workerMain() {
                     static_cast<uint32_t>(coordinator->pieceOrder().size());
                 options.request_allowed = &PackageCoordinator::requestAllowedThunk;
                 options.request_allowed_user = coordinator.get();
+                // Initial window only; the loop below resizes it from the
+                // install sink's backlog (PERF_PLAN 5.1).
                 options.strict_order_lookahead = 32;
                 options.strict_fill_pending_first = 1;
                 // Per-peer in-flight ceiling (4 MiB = 256 x 16 KiB blocks =
@@ -1381,6 +1427,9 @@ void DownloadManager::workerMain() {
             std::string installError = coordinator
                 ? coordinator->error() : std::string();
             int running = installError.empty() ? torrent_tick(torrent) : -1;
+            if (running > 0 && mode == TransferMode::StreamInstall)
+                torrent_set_strict_lookahead(torrent,
+                                             coordinator->adaptiveLookahead());
             torrent_stat_t stat;
             torrent_stat(torrent, &stat);
             {

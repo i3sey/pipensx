@@ -1,5 +1,6 @@
 #include "../src/core/peer.h"
 #include "../src/core/net.h"
+#include "../src/core/util.h"
 
 #include <assert.h>
 #include <errno.h>
@@ -267,6 +268,57 @@ static void test_recv_reassembles_message_split_across_reads(void) {
     close(sockets[1]);
 }
 
+/* A received block must fold its request->piece round trip into the peer's
+   latency EMA (PERF_PLAN 5.1); unsolicited blocks must not contribute. */
+static void test_piece_receipt_samples_block_latency(void) {
+    int sockets[2];
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
+    assert(net_set_nonblock(sockets[0]));
+
+    enum { MESSAGE_SIZE = 4 + 1 + 8 + 8192 };
+    uint8_t message[MESSAGE_SIZE];
+
+    peer_t peer;
+    memset(&peer, 0, sizeof(peer));
+    peer.fd = sockets[0];
+    peer.state = PS_ACTIVE;
+    peer_ctx_t context;
+    memset(&context, 0, sizeof(context));
+    context.num_pieces = 8;
+
+    /* Unsolicited block (empty pipeline): no latency sample. */
+    fill_piece(message, 0);
+    send_all(sockets[1], message, sizeof(message));
+    block_capture_t capture = {0};
+    assert(peer_recv(&peer, &context, capture_block, NULL, NULL, &capture) == 0);
+    assert(capture.count == 1);
+    assert(peer.block_lat_ema_ms == 0);
+
+    /* Requested ~400 ms ago: first sample seeds the EMA directly. */
+    peer.pipeline_len = 1;
+    peer.pipeline[0] = (block_req_t){1, 0, 8192, now_ms() - 400};
+    fill_piece(message, 1);
+    send_all(sockets[1], message, sizeof(message));
+    assert(peer_recv(&peer, &context, capture_block, NULL, NULL, &capture) == 0);
+    assert(capture.count == 2);
+    assert(peer.pipeline_len == 0);
+    assert(peer.block_lat_ema_ms >= 400 && peer.block_lat_ema_ms < 2000);
+
+    /* Second sample moves the EMA toward the new latency, not to it. */
+    uint32_t first_ema = peer.block_lat_ema_ms;
+    peer.pipeline_len = 1;
+    peer.pipeline[0] = (block_req_t){2, 0, 8192, now_ms() - 4000};
+    fill_piece(message, 2);
+    send_all(sockets[1], message, sizeof(message));
+    assert(peer_recv(&peer, &context, capture_block, NULL, NULL, &capture) == 0);
+    assert(capture.count == 3);
+    assert(peer.block_lat_ema_ms > first_ema);
+    assert(peer.block_lat_ema_ms < 4000);
+
+    close(sockets[0]);
+    close(sockets[1]);
+}
+
 int main(void) {
     test_expiry_compacts_pipeline();
     test_cancel_sends_message_and_removes_request();
@@ -275,6 +327,7 @@ int main(void) {
     test_recv_drains_socket_until_would_block();
     test_receive_buffer_holds_256_kib();
     test_recv_reassembles_message_split_across_reads();
+    test_piece_receipt_samples_block_latency();
     puts("peer tests passed");
     return 0;
 }

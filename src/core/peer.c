@@ -256,15 +256,18 @@ static int process_handshake(peer_t *p, const peer_ctx_t *ctx) {
     return 1; /* keep processing */
 }
 
-static void remove_pipeline(peer_t *p, int piece, int offset) {
+/* Returns the removed request's requested_ms, or 0 if it was not found. */
+static uint64_t remove_pipeline(peer_t *p, int piece, int offset) {
     for (int i = 0; i < p->pipeline_len; i++) {
         if (p->pipeline[i].index == piece && p->pipeline[i].offset == offset) {
+            uint64_t requested_ms = p->pipeline[i].requested_ms;
             memmove(&p->pipeline[i], &p->pipeline[i+1],
                     (p->pipeline_len - i - 1) * sizeof(block_req_t));
             p->pipeline_len--;
-            return;
+            return requested_ms;
         }
     }
+    return 0;
 }
 
 int peer_cancel_block(peer_t *p, uint32_t piece, uint32_t offset,
@@ -359,10 +362,23 @@ static int process_message(peer_t *p, const peer_ctx_t *ctx,
             uint32_t off = ((uint32_t)payload[4]<<24)|((uint32_t)payload[5]<<16)|
                            ((uint32_t)payload[6]<<8 )| (uint32_t)payload[7];
             uint32_t blen = plen - 8;
-            remove_pipeline(p, (int)idx, (int)off);
+            uint64_t requested_ms = remove_pipeline(p, (int)idx, (int)off);
             p->downloaded += blen;
             p->telemetry_piece_bytes += blen;
             p->last_piece_ms = now_ms();
+            /* Latency sample only for blocks we actually asked this peer for
+               (expired/cancelled requests return 0). Clamped to >= 1 ms so a
+               populated EMA is distinguishable from "no sample yet". */
+            if (requested_ms && requested_ms <= p->last_piece_ms) {
+                uint32_t latency = (uint32_t)(p->last_piece_ms - requested_ms);
+                if (latency == 0)
+                    latency = 1;
+                p->block_lat_ema_ms = p->block_lat_ema_ms
+                    ? (uint32_t)((int32_t)p->block_lat_ema_ms +
+                                 ((int32_t)latency -
+                                  (int32_t)p->block_lat_ema_ms) * 3 / 10)
+                    : latency;
+            }
             if (p->timeout_strikes > 0)
                 p->timeout_strikes--;
             if (on_block) on_block(ud, idx, off, payload+8, blen);

@@ -26,6 +26,50 @@ static void test_ema_update(void) {
     }
 }
 
+static void test_adaptive_hedge_follows_median_latency(void) {
+    torrent_t torrent = {0};
+    torrent.hedge_after_ms = 5000;
+    peer_t peers[5] = {0};
+
+    /* No sampled peers: static fallback. */
+    assert(adaptive_hedge_after_ms(&torrent) == 5000);
+
+    /* One sampled peer is below HEDGE_MIN_LATENCY_PEERS: still static. */
+    peers[0].state = PS_ACTIVE;
+    peers[0].block_lat_ema_ms = 200;
+    torrent.peers[0] = &peers[0];
+    assert(adaptive_hedge_after_ms(&torrent) == 5000);
+
+    /* Median of {200, 300, 400} = 300 -> 4 * 300 = 1200. */
+    peers[1].state = PS_ACTIVE;
+    peers[1].block_lat_ema_ms = 400;
+    peers[2].state = PS_ACTIVE;
+    peers[2].block_lat_ema_ms = 300;
+    torrent.peers[7] = &peers[1];
+    torrent.peers[3] = &peers[2];
+    assert(adaptive_hedge_after_ms(&torrent) == 1200);
+
+    /* Peers without a sample or not active are ignored. */
+    peers[3].state = PS_ACTIVE; /* no latency sample yet */
+    peers[4].state = PS_CONNECTING;
+    peers[4].block_lat_ema_ms = 9000;
+    torrent.peers[10] = &peers[3];
+    torrent.peers[11] = &peers[4];
+    assert(adaptive_hedge_after_ms(&torrent) == 1200);
+
+    /* Fast swarm clamps to the floor... */
+    peers[0].block_lat_ema_ms = 50;
+    peers[1].block_lat_ema_ms = 60;
+    peers[2].block_lat_ema_ms = 70;
+    assert(adaptive_hedge_after_ms(&torrent) == HEDGE_ADAPTIVE_MIN_MS);
+
+    /* ...and a slow swarm never exceeds the static threshold. */
+    peers[0].block_lat_ema_ms = 3000;
+    peers[1].block_lat_ema_ms = 4000;
+    peers[2].block_lat_ema_ms = 5000;
+    assert(adaptive_hedge_after_ms(&torrent) == 5000);
+}
+
 static void test_blocklist_cooldown_and_wrap(void) {
     torrent_t torrent = {0};
     uint32_t ip = htonl(0x5bd4c901u);
@@ -45,6 +89,7 @@ static void test_blocklist_cooldown_and_wrap(void) {
 
 int main(void) {
     test_ema_update();
+    test_adaptive_hedge_follows_median_latency();
     test_blocklist_cooldown_and_wrap();
     puts("torrent tests passed");
     return 0;
