@@ -26,17 +26,23 @@ int net_set_nonblock(socket_t fd) {
     return fcntl(fd, F_SETFL, flags | O_NONBLOCK) >= 0;
 }
 
+int net_set_tcp_receive_buffer(socket_t fd) {
+    int receive_buffer_size = NET_TCP_RECEIVE_BUFFER_SIZE;
+    if (setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &receive_buffer_size,
+                   sizeof(receive_buffer_size)) == 0) {
+        return 1;
+    }
+    log_msg("[net] set TCP receive buffer after handshake: %s\n",
+            strerror(errno));
+    return 0;
+}
+
 socket_t net_tcp_connect(const struct sockaddr_in *addr) {
     socket_t fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return INVALID_SOCK;
     net_set_nonblock(fd);
     int opt = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-    int receive_buffer_size = NET_TCP_RECEIVE_BUFFER_SIZE;
-    if (setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &receive_buffer_size,
-                   sizeof(receive_buffer_size)) < 0) {
-        log_msg("[net] set TCP receive buffer: %s\n", strerror(errno));
-    }
     int r = connect(fd, (struct sockaddr*)addr, sizeof(*addr));
     if (r < 0 && errno != EINPROGRESS) {
         close(fd);

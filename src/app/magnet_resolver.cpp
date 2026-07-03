@@ -223,6 +223,7 @@ bool connectPeer(const uint8_t* compact, const uint8_t infoHash[20],
         std::memcmp(response + 28, infoHash, 20) != 0 ||
         (response[25] & 0x10) == 0)
         return false;
+    net_set_tcp_receive_buffer(fd);
     return true;
 }
 

@@ -431,6 +431,7 @@ int peer_recv(peer_t *p, const peer_ctx_t *ctx,
             int r = process_handshake(p, ctx);
             if (r < 0) return -1;
             if (r > 0) {
+                net_set_tcp_receive_buffer(p->fd);
                 if (p->supports_ext)
                     peer_send_ext_handshake(p, ctx->listen_port);
                 peer_send_bitfield(p, ctx->our_bf, ctx->bf_bytes);

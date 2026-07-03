@@ -154,7 +154,7 @@ static void test_partial_send_queues_tail_and_flush_completes_frame(void) {
     close(sockets[1]);
 }
 
-static void test_tcp_connect_uses_large_receive_buffer(void) {
+static void test_tcp_connect_defers_large_receive_buffer(void) {
     int listener = socket(AF_INET, SOCK_STREAM, 0);
     assert(listener >= 0);
 
@@ -174,10 +174,54 @@ static void test_tcp_connect_uses_large_receive_buffer(void) {
     socklen_t optionSize = sizeof(receiveBufferSize);
     assert(getsockopt(client, SOL_SOCKET, SO_RCVBUF, &receiveBufferSize,
                       &optionSize) == 0);
+    assert(receiveBufferSize < NET_TCP_RECEIVE_BUFFER_SIZE);
+    assert(net_set_tcp_receive_buffer(client));
+    assert(getsockopt(client, SOL_SOCKET, SO_RCVBUF, &receiveBufferSize,
+                      &optionSize) == 0);
     assert(receiveBufferSize >= NET_TCP_RECEIVE_BUFFER_SIZE);
 
     net_close(client);
     close(listener);
+}
+
+static void test_handshake_applies_large_receive_buffer(void) {
+    int sockets[2];
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
+    assert(net_set_nonblock(sockets[0]));
+    int smallBuffer = 4096;
+    assert(setsockopt(sockets[0], SOL_SOCKET, SO_RCVBUF, &smallBuffer,
+                      sizeof(smallBuffer)) == 0);
+
+    uint8_t infoHash[20] = {0};
+    uint8_t peerId[20] = {0};
+    uint8_t bitfield = 0;
+    peer_ctx_t context = {
+        .info_hash = infoHash,
+        .peer_id = peerId,
+        .num_pieces = 1,
+        .bf_bytes = 1,
+        .our_bf = &bitfield,
+        .listen_port = 0,
+    };
+    peer_t peer;
+    memset(&peer, 0, sizeof(peer));
+    peer.fd = sockets[0];
+    peer.state = PS_HANDSHAKE;
+    peer.rbuf[0] = 19;
+    memcpy(peer.rbuf + 1, "BitTorrent protocol", 19);
+    memcpy(peer.rbuf + 28, infoHash, sizeof(infoHash));
+    peer.rbuf_len = BT_HANDSHAKE_LEN;
+
+    assert(peer_recv(&peer, &context, NULL, NULL, NULL, NULL) == 0);
+    assert(peer.state == PS_ACTIVE);
+    int receiveBufferSize = 0;
+    socklen_t optionSize = sizeof(receiveBufferSize);
+    assert(getsockopt(sockets[0], SOL_SOCKET, SO_RCVBUF, &receiveBufferSize,
+                      &optionSize) == 0);
+    assert(receiveBufferSize >= NET_TCP_RECEIVE_BUFFER_SIZE);
+
+    close(sockets[0]);
+    close(sockets[1]);
 }
 
 static void test_recv_drains_socket_until_would_block(void) {
@@ -323,7 +367,8 @@ int main(void) {
     test_expiry_compacts_pipeline();
     test_cancel_sends_message_and_removes_request();
     test_partial_send_queues_tail_and_flush_completes_frame();
-    test_tcp_connect_uses_large_receive_buffer();
+    test_tcp_connect_defers_large_receive_buffer();
+    test_handshake_applies_large_receive_buffer();
     test_recv_drains_socket_until_would_block();
     test_receive_buffer_holds_256_kib();
     test_recv_reassembles_message_split_across_reads();

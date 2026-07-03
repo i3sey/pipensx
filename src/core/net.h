@@ -33,6 +33,10 @@ int net_resolve(const char *host, uint16_t port, struct sockaddr_in *out);
 /* Create nonblocking TCP socket and start connecting */
 socket_t net_tcp_connect(const struct sockaddr_in *addr);
 
+/* Request the large TCP receive buffer after the remote handshake succeeds.
+   Best-effort: failure leaves the socket usable with its default buffer. */
+int net_set_tcp_receive_buffer(socket_t fd);
+
 /* Create nonblocking UDP socket bound to local_port (0 = any) */
 socket_t net_udp_socket(uint16_t local_port);
 
