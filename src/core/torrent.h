@@ -23,7 +23,8 @@ typedef struct {
 typedef struct {
     uint32_t num_pieces_done;
     uint32_t num_pieces;
-    uint32_t num_peers;
+    uint32_t num_peers;        /* occupied peer slots, incl. connecting */
+    uint32_t num_active_peers; /* peers past handshake (PS_ACTIVE) */
     uint32_t dht_good;
     uint32_t dht_dubious;
     uint64_t downloaded;  /* bytes received during this session */

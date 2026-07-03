@@ -107,6 +107,25 @@ static void test_rate_freeze_preserves_peer_dl_rate(void) {
     assert(peer.rate_last_downloaded == peer.downloaded);
 }
 
+static void test_stat_counts_active_peers(void) {
+    torrent_t torrent = {0};
+    piece_mgr_t pm = {0};
+    peer_t peers[3] = {0};
+    torrent.pm = &pm;
+    torrent.num_peers = 3;
+    peers[0].state = PS_ACTIVE;
+    peers[1].state = PS_CONNECTING;
+    peers[2].state = PS_ACTIVE;
+    torrent.peers[0] = &peers[0];
+    torrent.peers[5] = &peers[1];
+    torrent.peers[9] = &peers[2];
+
+    torrent_stat_t stat;
+    torrent_stat(&torrent, &stat);
+    assert(stat.num_peers == 3);
+    assert(stat.num_active_peers == 2);
+}
+
 static void test_blocklist_cooldown_and_wrap(void) {
     torrent_t torrent = {0};
     uint32_t ip = htonl(0x5bd4c901u);
@@ -129,6 +148,7 @@ int main(void) {
     test_last_piece_age_marks_missing_sample();
     test_adaptive_hedge_follows_median_latency();
     test_rate_freeze_preserves_peer_dl_rate();
+    test_stat_counts_active_peers();
     test_blocklist_cooldown_and_wrap();
     puts("torrent tests passed");
     return 0;

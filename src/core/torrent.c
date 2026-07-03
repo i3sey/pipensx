@@ -1291,6 +1291,10 @@ void torrent_stat(const torrent_t *t, torrent_stat_t *s) {
     s->num_pieces_done = t->pm->num_done;
     s->num_pieces      = t->pm->num_pieces;
     s->num_peers       = (uint32_t)t->num_peers;
+    for (int i = 0; i < MAX_ACTIVE_PEERS; i++) {
+        if (t->peers[i] && t->peers[i]->state == PS_ACTIVE)
+            s->num_active_peers++;
+    }
     if (t->dht) {
         int g=0, d=0;
         dht_engine_nodes((dht_engine_t*)t->dht, &g, &d);

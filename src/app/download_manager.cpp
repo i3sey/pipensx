@@ -244,6 +244,7 @@ public:
             lookaheadMin_ = budget.lookaheadMin;
             lookaheadMax_ = budget.lookaheadMax;
             lookaheadWindow_ = budget.lookaheadStart;
+            lookaheadHealthy_ = budget.lookaheadStart;
             requestGate_.configure(maxBufferedBytes_, requestAheadBytes_,
                                    pieceLengthBytes_, producerOrdinal_);
             log_msg("[install] RAM budget source=%s available=%llu reserve=%llu "
@@ -300,8 +301,12 @@ public:
     // only builds an avalanche), a comfortably empty buffer grows it
     // additively so more of the swarm is usable. The band between the two
     // thresholds holds the window steady, which keeps the loop from
-    // oscillating. Rate-limited internally; callers may invoke it every tick.
-    uint32_t adaptiveLookahead() {
+    // oscillating. The lower clamp scales with the live swarm (PERF_PLAN
+    // 7.3): each active peer needs a couple of pieces in the window to be
+    // schedulable at all, so sustained pressure narrows the window to
+    // 2*active instead of starving inflight to single blocks. Rate-limited
+    // internally; callers may invoke it every tick.
+    uint32_t adaptiveLookahead(uint32_t activePeers) {
         std::lock_guard<std::mutex> lock(queueMutex_);
         uint64_t now = now_ms();
         // Heartbeat for the rate-matched gate (PERF_PLAN 7.1): the manager
@@ -322,14 +327,24 @@ public:
         if (now - lookaheadLastAdaptMs_ < kLookaheadAdaptIntervalMs)
             return lookaheadWindow_;
         lookaheadLastAdaptMs_ = now;
+        uint32_t floorWindow = std::max(
+            lookaheadMin_, std::min(lookaheadMax_, activePeers * 2));
         bool stalled = lookaheadStallEvents_ > 0;
         lookaheadStallEvents_ = 0;
         size_t buffered = bufferedBytesLocked();
         if (stalled || buffered > maxBufferedBytes_ / 4 * 3)
-            lookaheadWindow_ = std::max(lookaheadMin_, lookaheadWindow_ / 2);
+            lookaheadWindow_ = std::max(floorWindow, lookaheadWindow_ / 2);
         else if (buffered < maxBufferedBytes_ / 2)
             lookaheadWindow_ = std::min(lookaheadMax_,
                                         lookaheadWindow_ + kLookaheadStep);
+        if (lookaheadWindow_ < floorWindow)
+            lookaheadWindow_ = floorWindow;
+        // Remember the window that worked under healthy conditions; the
+        // resume path restores it instead of regrowing from the minimum
+        // (PERF_PLAN 7.3).
+        if (!stalled &&
+            requestGate_.state() == pipensx::RequestGate::State::Free)
+            lookaheadHealthy_ = lookaheadWindow_;
         return lookaheadWindow_;
     }
     // While the request gate curtails new requests (throttle or pause) a
@@ -470,6 +485,14 @@ private:
         if (previous == GateState::Paused) {
             telemetryPausedMs_ += stateMs;
             telemetryPauseMaxMs_ = std::max(telemetryPauseMaxMs_, stateMs);
+            // Resume at the last healthy window instead of regrowing +4/s
+            // from the minimum (PERF_PLAN 7.3). The pause's pending stall
+            // event still halves it once, so the net resume window is
+            // about half the healthy value, floored by the swarm size.
+            if (lookaheadHealthy_)
+                lookaheadWindow_ = std::min(
+                    lookaheadMax_,
+                    std::max(lookaheadWindow_, lookaheadHealthy_));
             log_msg("[install] request gate resumed after %llu ms "
                     "buffered=%zu throttled=%d\n",
                     static_cast<unsigned long long>(stateMs), buffered,
@@ -903,6 +926,7 @@ private:
     uint32_t lookaheadMin_ = 8;
     uint32_t lookaheadMax_ = 32;
     uint32_t lookaheadWindow_ = 32;
+    uint32_t lookaheadHealthy_ = 0;
     uint32_t lookaheadStallEvents_ = 0;
     uint64_t lookaheadLastAdaptMs_ = 0;
     // Request gate state (PERF_PLAN 5.3 + 7.1); guarded by queueMutex_.
@@ -1532,14 +1556,15 @@ void DownloadManager::workerMain() {
             std::string installError = coordinator
                 ? coordinator->error() : std::string();
             int running = installError.empty() ? torrent_tick(torrent) : -1;
+            torrent_stat_t stat;
+            torrent_stat(torrent, &stat);
             if (running > 0 && mode == TransferMode::StreamInstall) {
-                torrent_set_strict_lookahead(torrent,
-                                             coordinator->adaptiveLookahead());
+                torrent_set_strict_lookahead(
+                    torrent,
+                    coordinator->adaptiveLookahead(stat.num_active_peers));
                 torrent_set_rate_freeze(
                     torrent, coordinator->requestsCurtailed() ? 1 : 0);
             }
-            torrent_stat_t stat;
-            torrent_stat(torrent, &stat);
             {
                 std::lock_guard<std::mutex> lock(mutex_);
                 DownloadTask* task = findLocked(activeId);
