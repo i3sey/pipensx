@@ -216,6 +216,7 @@ std::vector<uint8_t> makeBlockNcz(
 struct Capture {
     std::vector<std::string> names;
     std::vector<std::vector<uint8_t>> files;
+    std::vector<size_t> writeSizes;
     uint64_t expected = 0;
     bool open = false;
 
@@ -236,6 +237,7 @@ struct Capture {
         };
         cb.writeFile = [this](const uint8_t* data, size_t size) {
             assert(open);
+            writeSizes.push_back(size);
             files.back().insert(files.back().end(), data, data + size);
             return true;
         };
@@ -293,6 +295,19 @@ void testNsz() {
     assert(capture.names.size() == 1);
     assert(capture.names[0] == "00112233445566778899aabbccddeeff.nca");
     assert(capture.files[0] == nca);
+}
+
+void testNszUsesFourMiBOutputChunks() {
+    constexpr size_t outputChunk = 4 * 1024 * 1024;
+    std::vector<uint8_t> nca(0x4000 + outputChunk + 123, 0);
+    auto package = makePfs0({{"00112233445566778899aabbccddeeff.ncz",
+                              makeSolidNcz(nca)}});
+    Capture capture;
+    PackageStream stream(true, capture.callbacks());
+    feed(stream, package);
+    assert(capture.files[0] == nca);
+    assert(std::find(capture.writeSizes.begin(), capture.writeSizes.end(),
+                     outputChunk) != capture.writeSizes.end());
 }
 
 void testEncryptedNsz() {
@@ -439,6 +454,7 @@ void testNszSmallWorkerStack() {
 int main() {
     testNsp();
     testNsz();
+    testNszUsesFourMiBOutputChunks();
     testEncryptedNsz();
     testOfficialLayoutNsz();
     testLegacySectionListNsz();

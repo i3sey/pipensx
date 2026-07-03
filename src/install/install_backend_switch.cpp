@@ -25,6 +25,8 @@ namespace pipensx::install {
 namespace {
 
 constexpr const char* TempRoot = "sdmc:/switch/pipensx/install-temp";
+constexpr NcmStorageId InstallStorageId = NcmStorageId_SdCard;
+constexpr const char* InstallTarget = "sd";
 
 bool makeDirectories(const std::string& path) {
     char buffer[FS_MAX_PATH];
@@ -266,9 +268,9 @@ public:
             error_ = "Unable to create installation workspace.";
             return false;
         }
-        Result rc = ncmOpenContentStorage(&storage_, NcmStorageId_SdCard);
+        Result rc = ncmOpenContentStorage(&storage_, InstallStorageId);
         if (R_SUCCEEDED(rc))
-            rc = ncmOpenContentMetaDatabase(&database_, NcmStorageId_SdCard);
+            rc = ncmOpenContentMetaDatabase(&database_, InstallStorageId);
         if (R_FAILED(rc)) {
             errorResult("Unable to open SD content storage", rc);
             closeServices();
@@ -277,7 +279,8 @@ public:
         active_ = true;
         packageName_ = packageName;
         log_msg("[install] package begin '%s'\n", packageName_.c_str());
-        telemetry_log("ncm", taskId_.c_str(), "event=package_begin");
+        telemetry_log("ncm", taskId_.c_str(),
+                      "event=package_begin target=%s", InstallTarget);
         return true;
     }
 
@@ -377,8 +380,9 @@ public:
         if (setupStartedUs) {
             uint64_t setupUs = now_us() - setupStartedUs;
             telemetry_log("ncm", taskId_.c_str(),
-                "event=file_setup bytes=%llu existing=%d setup_us=%llu",
-                (unsigned long long)size, current_->existing ? 1 : 0,
+                "event=file_setup target=%s bytes=%llu existing=%d setup_us=%llu",
+                InstallTarget, (unsigned long long)size,
+                current_->existing ? 1 : 0,
                 (unsigned long long)setupUs);
         }
         return true;
@@ -443,8 +447,8 @@ public:
             uint64_t now = now_ms();
             if (ncmUs >= 100000 && now - telemetryLastStallLogMs_ >= 1000) {
                 telemetry_log("ncm_stall", taskId_.c_str(),
-                    "write_us=%llu bytes=%zu offset=%llu existing=%d",
-                    (unsigned long long)ncmUs, size,
+                    "target=%s write_us=%llu bytes=%zu offset=%llu existing=%d",
+                    InstallTarget, (unsigned long long)ncmUs, size,
                     (unsigned long long)(current_->written - size),
                     current_->existing ? 1 : 0);
                 telemetryLastStallLogMs_ = now;
@@ -572,8 +576,8 @@ public:
             discardPlaceholders();
             finishSuccess();
             telemetry_log("ncm", taskId_.c_str(),
-                "event=package_commit already_installed=1 commit_us=%llu",
-                (unsigned long long)(commitStartedUs
+                "event=package_commit target=%s already_installed=1 commit_us=%llu",
+                InstallTarget, (unsigned long long)(commitStartedUs
                     ? now_us() - commitStartedUs : 0));
             return true;
         }
@@ -678,7 +682,7 @@ public:
         }
         previousRecords_ = records;
         applicationId_ = appId;
-        records.push_back({ key, NcmStorageId_SdCard });
+        records.push_back({ key, InstallStorageId });
         nsextDeleteApplicationRecord(appId);
         rc = nsextPushApplicationRecord(
             appId, NsExtApplicationEvent_Present,
@@ -705,8 +709,8 @@ public:
         finishSuccess();
         log_msg("[install] package committed '%s'\n", packageName_.c_str());
         telemetry_log("ncm", taskId_.c_str(),
-            "event=package_commit already_installed=0 commit_us=%llu package_ms=%llu",
-            (unsigned long long)(commitStartedUs
+            "event=package_commit target=%s already_installed=0 commit_us=%llu package_ms=%llu",
+            InstallTarget, (unsigned long long)(commitStartedUs
                 ? now_us() - commitStartedUs : 0),
             (unsigned long long)(now_ms() - packageStartedMs_));
         return true;
@@ -717,7 +721,8 @@ public:
             uint64_t rollbackNow = now_ms();
             emitFileTelemetry(rollbackNow, true, true);
             telemetry_log("ncm", taskId_.c_str(),
-                          "event=rollback package_ms=%llu",
+                          "event=rollback target=%s package_ms=%llu",
+                          InstallTarget,
                           (unsigned long long)(rollbackNow - packageStartedMs_));
         }
         hashActive_ = false;
@@ -805,9 +810,10 @@ private:
         uint32_t calls = summary
             ? telemetryTotalWriteCalls_ : telemetryWriteCalls_;
         telemetry_log("ncm", taskId_.c_str(),
-            "event=%s interval_ms=%llu bytes=%llu bps=%llu calls=%u "
+            "event=%s target=%s interval_ms=%llu bytes=%llu bps=%llu calls=%u "
             "ncm_us=%llu sha_us=%llu ncm_max_us=%llu existing_bytes=%llu",
             summary ? "summary" : "interval",
+            InstallTarget,
             (unsigned long long)elapsedMs, (unsigned long long)bytes,
             (unsigned long long)(bytes * 1000 / elapsedMs), calls,
             (unsigned long long)ncmUs, (unsigned long long)shaUs,
