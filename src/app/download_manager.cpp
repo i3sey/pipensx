@@ -1339,7 +1339,11 @@ void DownloadManager::workerMain() {
                 options.request_allowed_user = coordinator.get();
                 options.strict_order_lookahead = 32;
                 options.strict_fill_pending_first = 1;
-                options.request_pipeline_limit = 64;
+                // Per-peer in-flight ceiling (4 MiB = 256 x 16 KiB blocks =
+                // MAX_PIPELINE). The engine scales the actual window per peer by
+                // measured speed (PERF_PLAN 5.2); this is only the fast-peer cap.
+                // Was 64 (1 MiB), which pinned even 2 MB/s peers at the ceiling.
+                options.request_pipeline_limit = 256;
                 options.hedge_after_ms = 5000;
             }
             options.telemetry_tag = activeId.c_str();

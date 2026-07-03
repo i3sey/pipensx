@@ -84,6 +84,12 @@ typedef struct peer {
 
     /* Request scheduler health (single-owner torrent thread). */
     uint64_t request_cooldown_until_ms;
+    /* Download-rate estimate driving the adaptive request pipeline
+       (PERF_PLAN 5.2). dl_rate_bps is an EMA of bytes/sec sampled once per
+       second by the torrent loop from the cumulative `downloaded` counter;
+       rate_last_downloaded is the previous sample's snapshot. */
+    uint64_t dl_rate_bps;
+    uint64_t rate_last_downloaded;
     uint64_t telemetry_piece_bytes;
     uint32_t timeout_strikes;
     uint32_t telemetry_expired_requests;

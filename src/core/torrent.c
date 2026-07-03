@@ -30,6 +30,11 @@
 #define MAX_ACTIVE_PEERS      MAX_PEERS
 #define TELEMETRY_INTERVAL_MS 5000
 #define MIN_REQUEST_PIPELINE  8
+/* Adaptive per-peer request pipeline (PERF_PLAN 5.2): size the in-flight window
+   to roughly PIPELINE_TARGET_MS of the peer's measured download rate. Until a
+   peer has a rate sample, assume PIPELINE_BOOTSTRAP_BPS so it can ramp. */
+#define PIPELINE_TARGET_MS     2000ULL
+#define PIPELINE_BOOTSTRAP_BPS (1024ULL * 1024ULL)  /* 1 MiB/s */
 #define TIMEOUT_COOLDOWN_BASE_MS 2000
 #define TIMEOUT_COOLDOWN_MAX_MS  10000
 #define TIMEOUT_DISCONNECT_STRIKES 3
@@ -477,6 +482,8 @@ static void try_connect(torrent_t *t) {
         return;
     }
 
+    p->dl_rate_bps = PIPELINE_BOOTSTRAP_BPS;
+
     /* Find free slot */
     for (int i = 0; i < MAX_ACTIVE_PEERS; i++) {
         if (!t->peers[i]) {
@@ -492,10 +499,19 @@ static void try_connect(torrent_t *t) {
 
 /* ---- schedule block requests ---- */
 static uint32_t peer_pipeline_limit(const torrent_t *t, const peer_t *p) {
-    uint32_t limit = t->request_pipeline_limit;
+    /* Bandwidth-delay heuristic (PERF_PLAN 5.2): size the in-flight window to
+       ~PIPELINE_TARGET_MS of the peer's measured download rate, so a fast peer
+       gets a deep queue up to the ceiling while a slow peer holds only what it
+       can service. Replaces the flat per-peer constant that pinned every peer
+       at request_pipeline_limit regardless of speed. */
+    uint64_t want = p->dl_rate_bps * PIPELINE_TARGET_MS / 1000 / BLOCK_SIZE;
+    uint32_t ceiling = t->request_pipeline_limit; /* per-peer max in flight */
+    if (want > ceiling)
+        want = ceiling;
+    /* Back off geometrically for peers that keep timing out. */
     uint32_t shifts = p->timeout_strikes > 2 ? 2 : p->timeout_strikes;
-    limit >>= shifts;
-    return limit < MIN_REQUEST_PIPELINE ? MIN_REQUEST_PIPELINE : limit;
+    want >>= shifts;
+    return want < MIN_REQUEST_PIPELINE ? MIN_REQUEST_PIPELINE : (uint32_t)want;
 }
 
 static int peer_has_piece(const peer_t *peer, uint32_t piece) {
@@ -957,6 +973,17 @@ int torrent_tick(torrent_t *t) {
         uint64_t sample_bps = t->speed_bytes * 1000 / (elapsed_ms + 1);
         t->speed_bps      = ema_update(t->speed_bps, sample_bps);
         t->speed_bytes    = 0;
+        /* Per-peer download-rate EMA feeds the adaptive request pipeline
+           (PERF_PLAN 5.2). Sampled from the monotonic `downloaded` counter,
+           so it needs no telemetry to be enabled. */
+        for (int i = 0; i < MAX_ACTIVE_PEERS; i++) {
+            peer_t *p = t->peers[i];
+            if (!p) continue;
+            uint64_t sample = (p->downloaded - p->rate_last_downloaded) * 1000 /
+                              (elapsed_ms + 1);
+            p->dl_rate_bps = ema_update(p->dl_rate_bps, sample);
+            p->rate_last_downloaded = p->downloaded;
+        }
         t->speed_time_ms  = now;
     }
     emit_telemetry(t, now);
