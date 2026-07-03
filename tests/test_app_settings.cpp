@@ -10,6 +10,7 @@ using pipensx::AppSettings;
 using pipensx::AppSettingsData;
 using pipensx::CatalogFilter;
 using pipensx::StreamSelection;
+using pipensx::InstallLocation;
 
 namespace {
 
@@ -31,6 +32,7 @@ void testMissingFileUsesSafeDefaults() {
     assert(values.catalogFilter == CatalogFilter::All);
     assert(!values.refreshCatalogOnLaunch);
     assert(values.streamSelection == StreamSelection::AllFiles);
+    assert(values.installLocation == InstallLocation::SdCard);
     assert(values.showCompletedDownloads);
     assert(!values.extendedTelemetry);
 }
@@ -44,6 +46,7 @@ void testUpdatePersistsEveryPublicSetting() {
     changed.catalogFilter = CatalogFilter::Games;
     changed.refreshCatalogOnLaunch = true;
     changed.streamSelection = StreamSelection::PackagesOnly;
+    changed.installLocation = InstallLocation::SystemMemory;
     changed.showCompletedDownloads = false;
     changed.extendedTelemetry = true;
     assert(settings.update(changed, error));

@@ -25,8 +25,20 @@ namespace pipensx::install {
 namespace {
 
 constexpr const char* TempRoot = "sdmc:/switch/pipensx/install-temp";
-constexpr NcmStorageId InstallStorageId = NcmStorageId_SdCard;
-constexpr const char* InstallTarget = "sd";
+
+// PERF_PLAN 7.4: install target is selectable so NAND (eMMC) can be measured
+// against the ~16 MB/s SD write ceiling. NcmContentStorage APIs act on the
+// opened handle, so free-space and placeholder writes follow the target with
+// no path changes; only the storage id, the record storage id, and the
+// telemetry `target=` string differ.
+NcmStorageId ncmStorageId(InstallStorageTarget target) {
+    return target == InstallStorageTarget::Nand ? NcmStorageId_BuiltInUser
+                                                : NcmStorageId_SdCard;
+}
+
+const char* targetName(InstallStorageTarget target) {
+    return target == InstallStorageTarget::Nand ? "nand" : "sd";
+}
 
 bool makeDirectories(const std::string& path) {
     char buffer[FS_MAX_PATH];
@@ -251,8 +263,10 @@ bool readPackagedMeta(const std::string& ncaPath, ParsedMeta& out,
 
 class SwitchInstallBackend final : public InstallBackend {
 public:
-    explicit SwitchInstallBackend(std::string root)
-        : root_(std::move(root)) {}
+    SwitchInstallBackend(std::string root, InstallStorageTarget target)
+        : root_(std::move(root)),
+          storageId_(ncmStorageId(target)),
+          targetName_(targetName(target)) {}
 
     ~SwitchInstallBackend() override { rollbackPackage(); }
 
@@ -268,11 +282,11 @@ public:
             error_ = "Unable to create installation workspace.";
             return false;
         }
-        Result rc = ncmOpenContentStorage(&storage_, InstallStorageId);
+        Result rc = ncmOpenContentStorage(&storage_, storageId_);
         if (R_SUCCEEDED(rc))
-            rc = ncmOpenContentMetaDatabase(&database_, InstallStorageId);
+            rc = ncmOpenContentMetaDatabase(&database_, storageId_);
         if (R_FAILED(rc)) {
-            errorResult("Unable to open SD content storage", rc);
+            errorResult("Unable to open content storage", rc);
             closeServices();
             return false;
         }
@@ -280,7 +294,7 @@ public:
         packageName_ = packageName;
         log_msg("[install] package begin '%s'\n", packageName_.c_str());
         telemetry_log("ncm", taskId_.c_str(),
-                      "event=package_begin target=%s", InstallTarget);
+                      "event=package_begin target=%s", targetName_);
         return true;
     }
 
@@ -348,7 +362,7 @@ public:
             s64 freeSpace = 0;
             rc = ncmContentStorageGetFreeSpaceSize(&storage_, &freeSpace);
             if (R_FAILED(rc)) {
-                errorResult("Unable to query free SD content space", rc);
+                errorResult("Unable to query free content space", rc);
                 return false;
             }
             if (freeSpace < 0 || static_cast<uint64_t>(freeSpace) < size) {
@@ -357,8 +371,11 @@ public:
                 fmt_bytes(required, sizeof(required), size);
                 fmt_bytes(available, sizeof(available),
                           freeSpace > 0 ? static_cast<uint64_t>(freeSpace) : 0);
-                error_ = "Not enough SD space for " + current_->name +
-                         ": need " + required + ", free " + available + ".";
+                const char* where = storageId_ == NcmStorageId_BuiltInUser
+                                        ? "system memory" : "SD card";
+                error_ = std::string("Not enough ") + where + " space for " +
+                         current_->name + ": need " + required + ", free " +
+                         available + ".";
                 log_msg("[install] insufficient space name='%s' need=%llu free=%lld\n",
                         current_->name.c_str(),
                         static_cast<unsigned long long>(size),
@@ -381,7 +398,7 @@ public:
             uint64_t setupUs = now_us() - setupStartedUs;
             telemetry_log("ncm", taskId_.c_str(),
                 "event=file_setup target=%s bytes=%llu existing=%d setup_us=%llu",
-                InstallTarget, (unsigned long long)size,
+                targetName_, (unsigned long long)size,
                 current_->existing ? 1 : 0,
                 (unsigned long long)setupUs);
         }
@@ -448,7 +465,7 @@ public:
             if (ncmUs >= 100000 && now - telemetryLastStallLogMs_ >= 1000) {
                 telemetry_log("ncm_stall", taskId_.c_str(),
                     "target=%s write_us=%llu bytes=%zu offset=%llu existing=%d",
-                    InstallTarget, (unsigned long long)ncmUs, size,
+                    targetName_, (unsigned long long)ncmUs, size,
                     (unsigned long long)(current_->written - size),
                     current_->existing ? 1 : 0);
                 telemetryLastStallLogMs_ = now;
@@ -600,7 +617,7 @@ public:
             finishSuccess();
             telemetry_log("ncm", taskId_.c_str(),
                 "event=package_commit target=%s already_installed=1 commit_us=%llu",
-                InstallTarget, (unsigned long long)(commitStartedUs
+                targetName_, (unsigned long long)(commitStartedUs
                     ? now_us() - commitStartedUs : 0));
             return true;
         }
@@ -705,7 +722,7 @@ public:
         }
         previousRecords_ = records;
         applicationId_ = appId;
-        records.push_back({ key, InstallStorageId });
+        records.push_back({ key, storageId_ });
         nsextDeleteApplicationRecord(appId);
         rc = nsextPushApplicationRecord(
             appId, NsExtApplicationEvent_Present,
@@ -733,7 +750,7 @@ public:
         log_msg("[install] package committed '%s'\n", packageName_.c_str());
         telemetry_log("ncm", taskId_.c_str(),
             "event=package_commit target=%s already_installed=0 commit_us=%llu package_ms=%llu",
-            InstallTarget, (unsigned long long)(commitStartedUs
+            targetName_, (unsigned long long)(commitStartedUs
                 ? now_us() - commitStartedUs : 0),
             (unsigned long long)(now_ms() - packageStartedMs_));
         return true;
@@ -745,7 +762,7 @@ public:
             emitFileTelemetry(rollbackNow, true, true);
             telemetry_log("ncm", taskId_.c_str(),
                           "event=rollback target=%s package_ms=%llu",
-                          InstallTarget,
+                          targetName_,
                           (unsigned long long)(rollbackNow - packageStartedMs_));
         }
         hashActive_ = false;
@@ -873,7 +890,7 @@ private:
             "event=%s target=%s interval_ms=%llu bytes=%llu bps=%llu calls=%u "
             "ncm_us=%llu sha_us=%llu ncm_max_us=%llu existing_bytes=%llu",
             summary ? "summary" : "interval",
-            InstallTarget,
+            targetName_,
             (unsigned long long)elapsedMs, (unsigned long long)bytes,
             (unsigned long long)(bytes * 1000 / elapsedMs), calls,
             (unsigned long long)ncmUs, (unsigned long long)shaUs,
@@ -939,6 +956,8 @@ private:
     }
 
     std::string root_;
+    NcmStorageId storageId_;
+    const char* targetName_;
     std::string taskId_;
     std::string packageName_;
     std::string tempDirectory_;
@@ -987,8 +1006,8 @@ private:
 } // namespace
 
 std::unique_ptr<InstallBackend> createInstallBackend(
-    const std::string& workingRoot) {
-    return std::make_unique<SwitchInstallBackend>(workingRoot);
+    const std::string& workingRoot, InstallStorageTarget target) {
+    return std::make_unique<SwitchInstallBackend>(workingRoot, target);
 }
 
 } // namespace pipensx::install

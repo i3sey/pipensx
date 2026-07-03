@@ -150,7 +150,10 @@ private:
 } // namespace
 
 std::unique_ptr<InstallBackend> createInstallBackend(
-    const std::string& workingRoot) {
+    const std::string& workingRoot, InstallStorageTarget target) {
+    // The PC backend writes NCAs to disk; the storage target is a Switch-only
+    // (ncm) concern, so it is accepted for signature parity and ignored.
+    (void)target;
     return std::make_unique<PcInstallBackend>(workingRoot);
 }
 

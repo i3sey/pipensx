@@ -173,10 +173,13 @@ public:
     PackageCoordinator(const metainfo_t& metainfo, std::string taskId,
                        const std::string& workingRoot, bool streamInstall,
                        const std::vector<uint8_t>& fileSelection,
-                       uint32_t completedPackages, Progress progress)
+                       uint32_t completedPackages,
+                       install::InstallStorageTarget installTarget,
+                       Progress progress)
         : metainfo_(metainfo), taskId_(std::move(taskId)),
-          backend_(streamInstall ? install::createInstallBackend(workingRoot)
-                                 : nullptr),
+          backend_(streamInstall
+                       ? install::createInstallBackend(workingRoot, installTarget)
+                       : nullptr),
           streamInstall_(streamInstall),
           completedPackages_(completedPackages),
           initialCompletedPackages_(completedPackages),
@@ -1469,6 +1472,7 @@ void DownloadManager::workerMain() {
                 metainfo, activeId, rootPath_,
                 mode == TransferMode::StreamInstall, fileSelection,
                 packagesInstalled,
+                installTarget_.load(std::memory_order_relaxed),
                 [this, activeId](uint32_t completed,
                                  const std::string& package,
                                  uint64_t installed, uint64_t expected,

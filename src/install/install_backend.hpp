@@ -7,6 +7,14 @@
 
 namespace pipensx::install {
 
+// Where committed content lands. SD is the historical default; NAND
+// (BuiltInUser / eMMC) is the write-ceiling experiment from PERF_PLAN 7.4 —
+// eMMC is typically faster than the SD/FS path that caps install at ~16 MB/s.
+enum class InstallStorageTarget {
+    SdCard,
+    Nand,
+};
+
 class InstallBackend {
 public:
     virtual ~InstallBackend() = default;
@@ -31,6 +39,7 @@ public:
 };
 
 std::unique_ptr<InstallBackend> createInstallBackend(
-    const std::string& workingRoot);
+    const std::string& workingRoot,
+    InstallStorageTarget target = InstallStorageTarget::SdCard);
 
 } // namespace pipensx::install

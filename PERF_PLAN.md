@@ -535,17 +535,35 @@ inflight падал до единиц блоков; после резюма ге
 device-замер (фаза 7, шаг 1: ожидание −50–70 с на прогоне вместе с
 7.1/7.2).
 
-### 7.4. Потолок ncm-записи: последняя попытка поднять
-Чанк 1→4 МиБ потолок не сдвинул ⇒ дело в SD/FS-пути. Что осталось проверить,
-по убыванию ожидания:
-- выбор цели установки NAND (`NcmStorageId_BuiltInUser`) — eMMC обычно
-  быстрее SD-записи; заодно закрывает задел из 3.5 (телеметрия уже разделяет
-  `target=`). Требует UI-выбор и проверку свободного места;
-- быстрый эксперимент 8–16 МиБ чанк (дёшево, но ожидание низкое);
-- замерить `file_setup`/placeholder-создание и commit: `setup_us` до 93 мс
-  на файл, `commit_us` 350–440 мс — мелочь, но бесплатная проверка.
-Если ничего не сдвигает — зафиксировать 16–17 МБ/с как hardware floor SD и
-закрыть 3.3 окончательно (параллелить нечего: крипто ≈4–8% интервала).
+### 7.4. Потолок ncm-записи: последняя попытка поднять ✅ (код; вердикт — замер на устройстве)
+Чанк 1→4 МиБ потолок не сдвинул ⇒ дело в SD/FS-пути. Главный рычаг — сменить
+цель записи с SD на NAND (eMMC обычно быстрее SD).
+
+Реализовано — выбор цели установки:
+- `InstallStorageTarget { SdCard, Nand }` (`src/install/install_backend.hpp`);
+  `createInstallBackend(root, target)` (default SD). Switch-backend маппит
+  target → `NcmStorageId_SdCard`/`NcmStorageId_BuiltInUser`, строку `target=`
+  (`sd`/`nand`) и storage id в application record (`ncmStorageId`/`targetName`,
+  `src/install/install_backend_switch.cpp`). `NcmContentStorage`-API работают
+  по открытому хендлу, поэтому проверка свободного места
+  (`ncmContentStorageGetFreeSpaceSize`) и запись плейсхолдеров идут по цели без
+  правок путей; TempRoot (tik/cert scratch) остаётся на SD. Сообщения об
+  ошибках стали target-aware («system memory»/«SD card»). Это заодно закрывает
+  задел из 3.5 — вся телеметрия `ncm`/`ncm_stall` теперь честно разделяет `sd`
+  vs `nand`.
+- Настройка `InstallLocation { SdCard, SystemMemory }` (`app_settings`,
+  сериализация `install_location`), UI-селектор «Install location»
+  (`src/main_switch.cpp`), проброс через `DownloadManager::setInstallTarget`
+  (atomic) → `PackageCoordinator` → `createInstallBackend`. Цель фиксируется
+  на старте координатора; трансфер в полёте держит цель, с которой начал.
+  Тест: round-trip `install_location` в `tests/test_app_settings.cpp`.
+
+Осталось (device-only, без замера решить нельзя):
+- прогнать install на NAND vs SD и сравнить `bps`/`write_us` — поднялся ли
+  потолок выше 17 МБ/с;
+- (низкое ожидание) быстрый эксперимент 8–16 МиБ чанк;
+- если NAND не сдвигает — зафиксировать 16–17 МБ/с как hardware floor SD и
+  закрыть 3.3 окончательно (параллелить нечего: крипто ≈4–8% интервала).
 
 ### 7.5. Проверить skip delta (3.4) на апдейте с реальными delta в потоке
 На замере `deltas=4`, `event=skip` 0. Добавить в телеметрию причину:

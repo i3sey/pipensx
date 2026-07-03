@@ -12,6 +12,8 @@ extern "C" {
 #include "../core/torrent.h"
 }
 
+#include "../install/install_backend.hpp"
+
 namespace pipensx {
 
 enum class DownloadStatus {
@@ -106,6 +108,13 @@ public:
     bool remove(const std::string& taskId, bool deleteData,
                 std::string& error);
 
+    // Where stream installs commit content (PERF_PLAN 7.4). Applied to
+    // coordinators started after the call; a transfer in flight keeps the
+    // target it began with. Default is SD.
+    void setInstallTarget(install::InstallStorageTarget target) {
+        installTarget_.store(target, std::memory_order_relaxed);
+    }
+
     bool hasActiveTransfer() const;
     std::vector<DownloadTask> snapshot() const;
     bool save(std::string& error) const;
@@ -134,6 +143,8 @@ private:
     std::vector<DownloadTask> tasks_;
     std::thread worker_;
     std::atomic<bool> stopping_{false};
+    std::atomic<install::InstallStorageTarget> installTarget_{
+        install::InstallStorageTarget::SdCard};
     bool workerStarted_ = false;
 };
 

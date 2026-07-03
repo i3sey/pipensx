@@ -22,6 +22,10 @@ const char* streamSelectionName(StreamSelection value) {
     return value == StreamSelection::PackagesOnly ? "packages_only" : "all_files";
 }
 
+const char* installLocationName(InstallLocation value) {
+    return value == InstallLocation::SystemMemory ? "system_memory" : "sd_card";
+}
+
 bool readString(const Json& root, const char* key, std::string& value,
                 std::string& error) {
     if (!root.contains(key))
@@ -61,10 +65,12 @@ bool parseSettings(const std::string& text, AppSettingsData& values,
 
     std::string catalog = catalogFilterName(values.catalogFilter);
     std::string selection = streamSelectionName(values.streamSelection);
+    std::string install = installLocationName(values.installLocation);
     if (!readString(root, "catalog_filter", catalog, error) ||
         !readBool(root, "refresh_catalog_on_launch",
                   values.refreshCatalogOnLaunch, error) ||
         !readString(root, "stream_selection", selection, error) ||
+        !readString(root, "install_location", install, error) ||
         !readBool(root, "show_completed_downloads",
                   values.showCompletedDownloads, error) ||
         !readBool(root, "extended_telemetry", values.extendedTelemetry,
@@ -88,6 +94,14 @@ bool parseSettings(const std::string& text, AppSettingsData& values,
         error = "Setting 'stream_selection' has an unknown value.";
         return false;
     }
+    if (install == "sd_card")
+        values.installLocation = InstallLocation::SdCard;
+    else if (install == "system_memory")
+        values.installLocation = InstallLocation::SystemMemory;
+    else {
+        error = "Setting 'install_location' has an unknown value.";
+        return false;
+    }
     return true;
 }
 
@@ -97,6 +111,7 @@ std::string serializeSettings(const AppSettingsData& values) {
     root["catalog_filter"] = catalogFilterName(values.catalogFilter);
     root["refresh_catalog_on_launch"] = values.refreshCatalogOnLaunch;
     root["stream_selection"] = streamSelectionName(values.streamSelection);
+    root["install_location"] = installLocationName(values.installLocation);
     root["show_completed_downloads"] = values.showCompletedDownloads;
     root["extended_telemetry"] = values.extendedTelemetry;
     return root.dump(2) + "\n";
@@ -108,6 +123,7 @@ bool AppSettingsData::operator==(const AppSettingsData& other) const {
     return catalogFilter == other.catalogFilter &&
            refreshCatalogOnLaunch == other.refreshCatalogOnLaunch &&
            streamSelection == other.streamSelection &&
+           installLocation == other.installLocation &&
            showCompletedDownloads == other.showCompletedDownloads &&
            extendedTelemetry == other.extendedTelemetry;
 }

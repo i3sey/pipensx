@@ -52,6 +52,7 @@ using pipensx::CatalogFilter;
 using pipensx::InstalledTitle;
 using pipensx::InstalledTitleService;
 using pipensx::StreamSelection;
+using pipensx::InstallLocation;
 using pipensx::GameMetadata;
 using pipensx::GameMetadataService;
 using pipensx::MagnetResolver;
@@ -64,6 +65,12 @@ using pipensx::SwitchPerformanceController;
 using pipensx::TransferMode;
 
 namespace {
+
+pipensx::install::InstallStorageTarget installTargetFor(InstallLocation value) {
+    return value == InstallLocation::SystemMemory
+               ? pipensx::install::InstallStorageTarget::Nand
+               : pipensx::install::InstallStorageTarget::SdCard;
+}
 
 FILE* gBorealisLog = nullptr;
 std::atomic<uint32_t> gCatalogTempSerial{0};
@@ -3700,6 +3707,28 @@ public:
             });
         content->addView(streamSelection_);
 
+        installLocation_ = new brls::SelectorCell();
+        installLocation_->init("Install location",
+            {"SD card", "System memory"},
+            settings_->get().installLocation == InstallLocation::SystemMemory
+                ? 1 : 0,
+            [this](int selected) {
+                AppSettingsData values = settings_->get();
+                InstallLocation previous = values.installLocation;
+                values.installLocation = selected == 1
+                    ? InstallLocation::SystemMemory
+                    : InstallLocation::SdCard;
+                if (!persist(values, "install_location")) {
+                    installLocation_->setSelection(
+                        previous == InstallLocation::SystemMemory ? 1 : 0,
+                        true);
+                    return;
+                }
+                manager_->setInstallTarget(
+                    installTargetFor(values.installLocation));
+            });
+        content->addView(installLocation_);
+
         showCompleted_ = new brls::BooleanCell();
         showCompleted_->init("Show completed downloads",
             settings_->get().showCompletedDownloads,
@@ -3803,6 +3832,10 @@ private:
         streamSelection_->setSelection(
             values.streamSelection == StreamSelection::PackagesOnly ? 1 : 0,
             true);
+        installLocation_->setSelection(
+            values.installLocation == InstallLocation::SystemMemory ? 1 : 0,
+            true);
+        manager_->setInstallTarget(installTargetFor(values.installLocation));
         showCompleted_->setOn(values.showCompletedDownloads, false);
         extendedTelemetry_->setOn(values.extendedTelemetry, false);
         telemetry_set_enabled(values.extendedTelemetry ? 1 : 0);
@@ -3890,6 +3923,7 @@ private:
     brls::SelectorCell* catalogFilter_ = nullptr;
     brls::BooleanCell* refreshCatalog_ = nullptr;
     brls::SelectorCell* streamSelection_ = nullptr;
+    brls::SelectorCell* installLocation_ = nullptr;
     brls::BooleanCell* showCompleted_ = nullptr;
     brls::BooleanCell* extendedTelemetry_ = nullptr;
 };
@@ -4103,6 +4137,8 @@ int main(int, char**) {
         startupStage("DownloadManager construction");
         SwitchPerformanceController performance;
         DownloadManager manager("sdmc:/switch/pipensx");
+        manager.setInstallTarget(
+            installTargetFor(settings.get().installLocation));
         metadata.setImageNetworkPaused(manager.hasActiveTransfer());
 
         startupStage("MainActivity construction");

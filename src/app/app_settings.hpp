@@ -15,10 +15,18 @@ enum class StreamSelection {
     PackagesOnly,
 };
 
+// Where stream installs commit content (PERF_PLAN 7.4). SystemMemory targets
+// eMMC/NAND, whose write path is typically faster than SD.
+enum class InstallLocation {
+    SdCard,
+    SystemMemory,
+};
+
 struct AppSettingsData {
     CatalogFilter catalogFilter = CatalogFilter::All;
     bool refreshCatalogOnLaunch = false;
     StreamSelection streamSelection = StreamSelection::AllFiles;
+    InstallLocation installLocation = InstallLocation::SdCard;
     bool showCompletedDownloads = true;
     bool extendedTelemetry = false;
 
