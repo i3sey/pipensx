@@ -26,6 +26,7 @@
 typedef int socket_t;
 #define INVALID_SOCK (-1)
 #define NET_TCP_RECEIVE_BUFFER_SIZE (256 * 1024)
+#define NET_TCP_RECEIVE_BUFFER_FALLBACK_SIZE (128 * 1024)
 
 /* Resolve hostname to IPv4 address; returns 1 on success */
 int net_resolve(const char *host, uint16_t port, struct sockaddr_in *out);
@@ -34,7 +35,8 @@ int net_resolve(const char *host, uint16_t port, struct sockaddr_in *out);
 socket_t net_tcp_connect(const struct sockaddr_in *addr);
 
 /* Request the large TCP receive buffer after the remote handshake succeeds.
-   Best-effort: failure leaves the socket usable with its default buffer. */
+   If the full request exhausts the socket-buffer pool, retry once with the
+   fallback size. Best-effort: failure leaves the socket usable as-is. */
 int net_set_tcp_receive_buffer(socket_t fd);
 
 /* Create nonblocking UDP socket bound to local_port (0 = any) */

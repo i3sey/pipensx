@@ -163,7 +163,7 @@ $(TELEMETRY_TEST_TARGET): tests/test_telemetry.c src/core/util.c
 
 $(PEER_TEST_TARGET): tests/test_peer.c src/core/peer.c src/core/net.c \
 		src/core/bencode.c src/core/util.c
-	$(CC) $(CFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
+	$(CC) $(CFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -Wl,--wrap=setsockopt
 
 $(TORRENT_TEST_TARGET): tests/test_torrent.c \
 		$(filter-out src/core/torrent.o src/main_pc.o,$(OBJS))

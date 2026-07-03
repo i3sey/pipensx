@@ -10,6 +10,31 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+static socket_t receive_buffer_failure_fd = INVALID_SOCK;
+static int receive_buffer_primary_attempts;
+static int receive_buffer_fallback_attempts;
+
+int __real_setsockopt(int fd, int level, int option_name,
+                      const void *option_value, socklen_t option_len);
+
+int __wrap_setsockopt(int fd, int level, int option_name,
+                      const void *option_value, socklen_t option_len) {
+    if (fd == receive_buffer_failure_fd &&
+        level == SOL_SOCKET && option_name == SO_RCVBUF &&
+        option_len == sizeof(int)) {
+        int requested = 0;
+        memcpy(&requested, option_value, sizeof(requested));
+        if (requested == NET_TCP_RECEIVE_BUFFER_SIZE) {
+            receive_buffer_primary_attempts++;
+            errno = ENOBUFS;
+            return -1;
+        }
+        if (requested == NET_TCP_RECEIVE_BUFFER_FALLBACK_SIZE)
+            receive_buffer_fallback_attempts++;
+    }
+    return __real_setsockopt(fd, level, option_name, option_value, option_len);
+}
+
 typedef struct {
     block_req_t requests[4];
     int count;
@@ -182,6 +207,31 @@ static void test_tcp_connect_defers_large_receive_buffer(void) {
 
     net_close(client);
     close(listener);
+}
+
+static void test_receive_buffer_falls_back_after_enobufs(void) {
+    int sockets[2];
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
+    int smallBuffer = 4096;
+    assert(setsockopt(sockets[0], SOL_SOCKET, SO_RCVBUF, &smallBuffer,
+                      sizeof(smallBuffer)) == 0);
+
+    receive_buffer_primary_attempts = 0;
+    receive_buffer_fallback_attempts = 0;
+    receive_buffer_failure_fd = sockets[0];
+    assert(net_set_tcp_receive_buffer(sockets[0]));
+    receive_buffer_failure_fd = INVALID_SOCK;
+
+    assert(receive_buffer_primary_attempts == 1);
+    assert(receive_buffer_fallback_attempts == 1);
+    int receiveBufferSize = 0;
+    socklen_t optionSize = sizeof(receiveBufferSize);
+    assert(getsockopt(sockets[0], SOL_SOCKET, SO_RCVBUF, &receiveBufferSize,
+                      &optionSize) == 0);
+    assert(receiveBufferSize >= NET_TCP_RECEIVE_BUFFER_FALLBACK_SIZE);
+
+    close(sockets[0]);
+    close(sockets[1]);
 }
 
 static void test_handshake_applies_large_receive_buffer(void) {
@@ -368,6 +418,7 @@ int main(void) {
     test_cancel_sends_message_and_removes_request();
     test_partial_send_queues_tail_and_flush_completes_frame();
     test_tcp_connect_defers_large_receive_buffer();
+    test_receive_buffer_falls_back_after_enobufs();
     test_handshake_applies_large_receive_buffer();
     test_recv_drains_socket_until_would_block();
     test_receive_buffer_holds_256_kib();

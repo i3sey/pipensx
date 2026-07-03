@@ -32,8 +32,25 @@ int net_set_tcp_receive_buffer(socket_t fd) {
                    sizeof(receive_buffer_size)) == 0) {
         return 1;
     }
+    int primary_error = errno;
+    if (primary_error == ENOBUFS) {
+        receive_buffer_size = NET_TCP_RECEIVE_BUFFER_FALLBACK_SIZE;
+        if (setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &receive_buffer_size,
+                       sizeof(receive_buffer_size)) == 0) {
+            log_msg("[net] set TCP receive buffer after handshake: %s; "
+                    "using %d-byte fallback\n",
+                    strerror(primary_error), receive_buffer_size);
+            return 1;
+        }
+        int fallback_error = errno;
+        log_msg("[net] set TCP receive buffer after handshake: %s; "
+                "%d-byte fallback failed: %s\n",
+                strerror(primary_error), receive_buffer_size,
+                strerror(fallback_error));
+        return 0;
+    }
     log_msg("[net] set TCP receive buffer after handshake: %s\n",
-            strerror(errno));
+            strerror(primary_error));
     return 0;
 }
 
