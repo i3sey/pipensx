@@ -7,6 +7,7 @@
 /* dht.h needs stdio.h for FILE* declaration */
 #include <stdio.h>
 #include "../../vendor/dht/dht.h"
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
@@ -76,6 +77,12 @@ struct dht_engine {
 
 static struct dht_engine *g_engine = NULL; /* jech dht is a global singleton */
 
+/* jech's dht.c keeps its state in globals, so only one engine may exist at a
+   time. The flag makes create/destroy safe when the torrent loop and the
+   magnet resolver race for the engine: the loser gets NULL and runs without
+   DHT. */
+static atomic_flag g_engine_busy = ATOMIC_FLAG_INIT;
+
 static void dht_callback(void *closure, int event,
                          const uint8_t *info_hash,
                          const void *data, size_t data_len) {
@@ -99,20 +106,27 @@ static void dht_callback(void *closure, int event,
 }
 
 dht_engine_t *dht_engine_create(uint16_t listen_port, const uint8_t node_id[20]) {
+    if (atomic_flag_test_and_set(&g_engine_busy))
+        return NULL;
     struct dht_engine *e = (struct dht_engine*)calloc(1, sizeof(*e));
-    if (!e) return NULL;
+    if (!e) {
+        atomic_flag_clear(&g_engine_busy);
+        return NULL;
+    }
     memcpy(e->node_id, node_id, 20);
     e->listen_port = listen_port;
 
     e->fd = net_udp_socket(listen_port);
     if (e->fd == INVALID_SOCK) {
         free(e);
+        atomic_flag_clear(&g_engine_busy);
         return NULL;
     }
 
     if (dht_init(e->fd, -1, node_id, (const uint8_t*)"PIPENSX1") < 0) {
         net_close(e->fd);
         free(e);
+        atomic_flag_clear(&g_engine_busy);
         return NULL;
     }
 
@@ -127,6 +141,7 @@ void dht_engine_destroy(dht_engine_t *e) {
     net_close(e->fd);
     g_engine = NULL;
     free(e);
+    atomic_flag_clear(&g_engine_busy);
 }
 
 void dht_engine_search(dht_engine_t *e, const uint8_t info_hash[20],

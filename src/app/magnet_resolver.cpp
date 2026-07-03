@@ -2,6 +2,7 @@
 
 extern "C" {
 #include "../core/bencode.h"
+#include "../core/dht.h"
 #include "../core/metainfo.h"
 #include "../core/net.h"
 #include "../core/sha1.h"
@@ -41,6 +42,10 @@ constexpr uint32_t kMaxPeersPerTracker = 64;
 constexpr uint32_t kMaxMergedPeers = 192;
 constexpr uint32_t kMaxConcurrentPeers = 12;
 constexpr uint32_t kRequestPipeline = 8;
+constexpr uint64_t kDhtSearchTimeoutMs = 25 * 1000;
+constexpr uint32_t kDhtTargetPeers = 32;
+constexpr int kDhtPollIntervalMs = 250;
+constexpr uint16_t kDhtPort = 6881;
 
 bool hexNibble(char c, uint8_t& value) {
     if (c >= '0' && c <= '9')
@@ -138,6 +143,53 @@ bool waitFd(socket_t fd, short events, int timeoutMs) {
         result = poll(&item, 1, timeoutMs);
     } while (result < 0 && errno == EINTR);
     return result > 0 && (item.revents & events) != 0;
+}
+
+/* Compact IPv4 peers discovered by the short-lived DHT search that runs in
+   parallel with the tracker announces (RF_ACCESS_PLAN П1.1). With RuTracker
+   blocked, DHT is the only peer source, so tracker failures alone no longer
+   abort the resolve. */
+struct DhtSearch {
+    std::mutex mutex;
+    std::vector<uint8_t> peers;
+};
+
+void dhtPeerFound(void* user, uint32_t ipBe, uint16_t portBe) {
+    DhtSearch* search = static_cast<DhtSearch*>(user);
+    uint8_t compact[6];
+    std::memcpy(compact, &ipBe, 4);
+    std::memcpy(compact + 4, &portBe, 2);
+    std::lock_guard<std::mutex> lock(search->mutex);
+    appendUniquePeers(search->peers, compact, 1);
+}
+
+uint32_t dhtPeerCount(DhtSearch& search) {
+    std::lock_guard<std::mutex> lock(search.mutex);
+    return static_cast<uint32_t>(search.peers.size() / 6);
+}
+
+void runDhtSearch(const uint8_t infoHash[20],
+                  std::atomic<bool>& cancelled,
+                  std::atomic<bool>& stop,
+                  DhtSearch& search) {
+    uint8_t nodeId[20];
+    rand_bytes(nodeId, 20);
+    /* Fails when a running download already owns the DHT singleton or the
+       UDP port; the resolve then proceeds on trackers alone. */
+    dht_engine_t* engine = dht_engine_create(kDhtPort, nodeId);
+    if (!engine) {
+        log_msg("[magnet] dht unavailable, resolving without it\n");
+        return;
+    }
+    dht_engine_bootstrap(engine);
+    dht_engine_search(engine, infoHash, dhtPeerFound, &search);
+    uint64_t deadline = now_ms() + kDhtSearchTimeoutMs;
+    while (!cancelled && !stop && now_ms() < deadline &&
+           dhtPeerCount(search) < kDhtTargetPeers) {
+        waitFd(dht_engine_fd(engine), POLLIN, kDhtPollIntervalMs);
+        dht_engine_tick(engine);
+    }
+    dht_engine_destroy(engine);
 }
 
 bool sendAll(socket_t fd, const uint8_t* data, size_t size) {
@@ -559,6 +611,11 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
 
     if (progress)
         progress({MagnetProgress::Stage::FindingPeers});
+    DhtSearch dhtSearch;
+    std::atomic<bool> dhtStop{false};
+    std::thread dhtThread([&spec, &cancelled, &dhtStop, &dhtSearch] {
+        runDhtSearch(spec.infoHash, cancelled, dhtStop, dhtSearch);
+    });
     std::vector<uint8_t> peers;
     std::string firstFailure;
     bool sawTrackerFailure = false;
@@ -595,6 +652,22 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
         if (peers.size() / 6 >= kMaxMergedPeers)
             break;
     }
+    /* When RuTracker answered — with peers or an authoritative "not
+       registered" — there is nothing to wait for. When the trackers were
+       unreachable (blocked in RF), the DHT search keeps running until its
+       own deadline as the fallback peer source. */
+    if (!peers.empty() || sawNotRegistered)
+        dhtStop.store(true);
+    dhtThread.join();
+    {
+        std::lock_guard<std::mutex> lock(dhtSearch.mutex);
+        uint32_t dhtCount = static_cast<uint32_t>(dhtSearch.peers.size() / 6);
+        if (dhtCount) {
+            appendUniquePeers(peers, dhtSearch.peers.data(), dhtCount);
+            log_msg("[magnet] dht added %u peers, total=%u\n",
+                    dhtCount, static_cast<unsigned>(peers.size() / 6));
+        }
+    }
     uint32_t peerCount = static_cast<uint32_t>(peers.size() / 6);
     if (!peerCount) {
         if (sawNotRegistered) {
@@ -603,7 +676,7 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
         } else if (sawTrackerFailure && !firstFailure.empty()) {
             error = "RuTracker rejected this torrent: " + firstFailure;
         } else {
-            error = "RuTracker trackers returned no usable peers.";
+            error = "RuTracker trackers and the DHT returned no usable peers.";
         }
         return false;
     }

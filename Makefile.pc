@@ -109,6 +109,7 @@ $(CATALOG_TEST_TARGET): tests/test_catalog.cpp \
 		src/app/game_metadata_service.o \
 		src/app/magnet_resolver.o \
 		src/core/tracker.o src/core/antizapret.o src/core/net.o \
+		src/core/dht.o vendor/dht/dht.o \
 		src/core/bencode.o src/core/metainfo.o src/core/sha1.o src/core/util.o
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
 
