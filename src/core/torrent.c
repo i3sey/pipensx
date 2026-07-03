@@ -111,6 +111,10 @@ struct torrent {
     uint32_t telemetry_released_requests;
 
     uint32_t request_pipeline_limit;
+    /* Requests are curtailed by the application's install gate (PERF_PLAN
+       7.2): peers idle through no fault of their own, so per-peer rate EMAs
+       hold instead of decaying to bootstrap. */
+    int      rate_freeze;
     uint32_t hedge_after_ms;
     uint32_t hedge_effective_ms; /* last adaptive threshold, for telemetry */
     uint32_t schedule_cursor;
@@ -1001,6 +1005,27 @@ void torrent_destroy(torrent_t *t) {
     log_msg("[torrent] destroy complete\n");
 }
 
+/* Per-peer download-rate EMA feeds the adaptive request pipeline
+   (PERF_PLAN 5.2). Sampled from the monotonic `downloaded` counter, so it
+   needs no telemetry to be enabled. While the install gate curtails
+   requests (rate_freeze, PERF_PLAN 7.2) a peer's low throughput says
+   nothing about the peer: keep the EMA and discard the interval, so
+   pipelines regain their pre-gate depth immediately on resume. */
+static void sample_peer_rates(torrent_t *t, uint64_t elapsed_ms) {
+    for (int i = 0; i < MAX_ACTIVE_PEERS; i++) {
+        peer_t *p = t->peers[i];
+        if (!p) continue;
+        if (t->rate_freeze) {
+            p->rate_last_downloaded = p->downloaded;
+            continue;
+        }
+        uint64_t sample = (p->downloaded - p->rate_last_downloaded) * 1000 /
+                          (elapsed_ms + 1);
+        p->dl_rate_bps = ema_update(p->dl_rate_bps, sample);
+        p->rate_last_downloaded = p->downloaded;
+    }
+}
+
 int torrent_tick(torrent_t *t) {
     if (t->fatal_error)
         return -1;
@@ -1026,17 +1051,7 @@ int torrent_tick(torrent_t *t) {
         uint64_t sample_bps = t->speed_bytes * 1000 / (elapsed_ms + 1);
         t->speed_bps      = ema_update(t->speed_bps, sample_bps);
         t->speed_bytes    = 0;
-        /* Per-peer download-rate EMA feeds the adaptive request pipeline
-           (PERF_PLAN 5.2). Sampled from the monotonic `downloaded` counter,
-           so it needs no telemetry to be enabled. */
-        for (int i = 0; i < MAX_ACTIVE_PEERS; i++) {
-            peer_t *p = t->peers[i];
-            if (!p) continue;
-            uint64_t sample = (p->downloaded - p->rate_last_downloaded) * 1000 /
-                              (elapsed_ms + 1);
-            p->dl_rate_bps = ema_update(p->dl_rate_bps, sample);
-            p->rate_last_downloaded = p->downloaded;
-        }
+        sample_peer_rates(t, elapsed_ms);
         t->speed_time_ms  = now;
     }
     emit_telemetry(t, now);
@@ -1259,6 +1274,16 @@ void torrent_set_strict_lookahead(torrent_t *t, uint32_t lookahead) {
         return;
     piece_mgr_set_strict_policy(t->pm, lookahead,
                                 t->pm->strict_fill_pending_first);
+}
+
+void torrent_set_rate_freeze(torrent_t *t, int freeze) {
+    if (!t)
+        return;
+    freeze = freeze ? 1 : 0;
+    if (t->rate_freeze != freeze)
+        log_msg("[torrent] peer rate sampling %s\n",
+                freeze ? "frozen (request gate)" : "resumed");
+    t->rate_freeze = freeze;
 }
 
 void torrent_stat(const torrent_t *t, torrent_stat_t *s) {

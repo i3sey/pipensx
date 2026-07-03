@@ -308,6 +308,13 @@ public:
         // loop calls this every tick, so the token bucket keeps refilling
         // even when no sink or install events fire (rx lull).
         updateRequestGateLocked(now);
+        // While the gate is hard-paused no requests flow at all, so buffer
+        // state carries no signal about the swarm — hold the window instead
+        // of grinding it to the minimum (PERF_PLAN 7.2). The pause
+        // transition already recorded one stall event, which still shrinks
+        // the window once after resume.
+        if (requestGate_.paused())
+            return lookaheadWindow_;
         if (!lookaheadLastAdaptMs_) {
             lookaheadLastAdaptMs_ = now;
             return lookaheadWindow_;
@@ -325,6 +332,14 @@ public:
                                         lookaheadWindow_ + kLookaheadStep);
         return lookaheadWindow_;
     }
+    // While the request gate curtails new requests (throttle or pause) a
+    // peer's measured throughput reflects the gate, not the peer — the
+    // engine freezes its rate EMAs for the duration (PERF_PLAN 7.2).
+    bool requestsCurtailed() const {
+        std::lock_guard<std::mutex> lock(queueMutex_);
+        return requestGate_.state() != pipensx::RequestGate::State::Free;
+    }
+
     std::string error() const {
         std::lock_guard<std::mutex> lock(queueMutex_);
         return error_;
@@ -1517,9 +1532,12 @@ void DownloadManager::workerMain() {
             std::string installError = coordinator
                 ? coordinator->error() : std::string();
             int running = installError.empty() ? torrent_tick(torrent) : -1;
-            if (running > 0 && mode == TransferMode::StreamInstall)
+            if (running > 0 && mode == TransferMode::StreamInstall) {
                 torrent_set_strict_lookahead(torrent,
                                              coordinator->adaptiveLookahead());
+                torrent_set_rate_freeze(
+                    torrent, coordinator->requestsCurtailed() ? 1 : 0);
+            }
             torrent_stat_t stat;
             torrent_stat(torrent, &stat);
             {

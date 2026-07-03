@@ -65,3 +65,11 @@ const char *torrent_last_error(const torrent_t *t);
  * No-op unless the torrent runs in strict piece order; lookahead 0 is ignored.
  */
 void torrent_set_strict_lookahead(torrent_t *t, uint32_t lookahead);
+
+/*
+ * Freeze or resume per-peer download-rate sampling (PERF_PLAN 7.2). While
+ * frozen, dl_rate EMAs hold their last value and intervals are discarded:
+ * used when the application's request gate curtails new requests, so peers
+ * idling through no fault of their own keep their pipeline depth.
+ */
+void torrent_set_rate_freeze(torrent_t *t, int freeze);

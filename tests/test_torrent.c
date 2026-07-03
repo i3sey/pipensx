@@ -76,6 +76,37 @@ static void test_adaptive_hedge_follows_median_latency(void) {
     assert(adaptive_hedge_after_ms(&torrent) == 5000);
 }
 
+static void test_rate_freeze_preserves_peer_dl_rate(void) {
+    torrent_t torrent = {0};
+    peer_t peer = {0};
+    peer.state = PS_ACTIVE;
+    peer.dl_rate_bps = 4 * 1024 * 1024;
+    torrent.peers[0] = &peer;
+
+    /* Unfrozen idle interval decays the EMA (pre-7.2 behaviour). */
+    sample_peer_rates(&torrent, 1000);
+    assert(peer.dl_rate_bps < 4 * 1024 * 1024);
+
+    /* Frozen: the EMA holds exactly and the interval's bytes are
+       discarded from measurement, however small the trickle. */
+    uint64_t held = peer.dl_rate_bps;
+    torrent.rate_freeze = 1;
+    for (int i = 0; i < 30; ++i) {
+        peer.downloaded += 100 * 1024;
+        sample_peer_rates(&torrent, 1000);
+        assert(peer.dl_rate_bps == held);
+        assert(peer.rate_last_downloaded == peer.downloaded);
+    }
+
+    /* Resume: only post-resume bytes enter the next sample, so a healthy
+       interval moves the EMA up instead of averaging in the gated lull. */
+    torrent.rate_freeze = 0;
+    peer.downloaded += 8 * 1024 * 1024;
+    sample_peer_rates(&torrent, 1000);
+    assert(peer.dl_rate_bps > held);
+    assert(peer.rate_last_downloaded == peer.downloaded);
+}
+
 static void test_blocklist_cooldown_and_wrap(void) {
     torrent_t torrent = {0};
     uint32_t ip = htonl(0x5bd4c901u);
@@ -97,6 +128,7 @@ int main(void) {
     test_ema_update();
     test_last_piece_age_marks_missing_sample();
     test_adaptive_hedge_follows_median_latency();
+    test_rate_freeze_preserves_peer_dl_rate();
     test_blocklist_cooldown_and_wrap();
     puts("torrent tests passed");
     return 0;
