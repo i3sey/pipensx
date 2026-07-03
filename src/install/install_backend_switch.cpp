@@ -549,6 +549,7 @@ public:
             return false;
         if (!containsContentId(earlyMeta_.deltaIds, id))
             return false;
+        skippedDeltaIds_.push_back(id);
         log_msg("[install] delta fragment '%s' excluded from install\n",
                 name.c_str());
         return true;
@@ -645,6 +646,13 @@ public:
                 continue;
             if (containsContentId(meta.deltaIds, content.id)) {
                 // Delta fragment: streamed but not installed; drop placeholder.
+                // Reaching here (rather than shouldSkipFile) means the entry
+                // preceded the CNMT NCA in the PFS0 — skip was structurally
+                // impossible for it (PERF_PLAN 7.5).
+                telemetry_log("package", taskId_.c_str(),
+                    "event=skip_missed name=%s bytes=%llu reason=before_cnmt",
+                    content.name.c_str(),
+                    (unsigned long long)content.size);
                 ncmContentStorageDeletePlaceHolder(&storage_,
                                                    &content.placeholder);
                 continue;
@@ -656,6 +664,23 @@ public:
                 return false;
             }
             content.registered = true;
+        }
+
+        // Delta ids from the CNMT that never showed up as a streamed content
+        // at all — not shipped in this package, so skip had nothing to act on
+        // (PERF_PLAN 7.5: distinguish from the before_cnmt case above).
+        for (const auto& deltaId : meta.deltaIds) {
+            if (containsContentId(skippedDeltaIds_, deltaId))
+                continue;
+            bool streamed = std::any_of(contents_.begin(), contents_.end(),
+                [&deltaId](const Content& content) {
+                    return std::memcmp(content.id.c, deltaId.c,
+                                       sizeof(deltaId.c)) == 0;
+                });
+            if (!streamed)
+                telemetry_log("package", taskId_.c_str(),
+                    "event=skip_missed id=%s reason=not_in_package",
+                    hexBytes(deltaId.c, sizeof(deltaId.c)).c_str());
         }
 
         NcmContentInfo self {};
@@ -933,6 +958,7 @@ private:
         current_ = nullptr;
         earlyMeta_ = ParsedMeta {};
         earlyMetaValid_ = false;
+        skippedDeltaIds_.clear();
     }
 
     void resetState() {
@@ -949,6 +975,7 @@ private:
         ignoredRemaining_ = 0;
         earlyMeta_ = ParsedMeta {};
         earlyMetaValid_ = false;
+        skippedDeltaIds_.clear();
         metaCommitted_ = false;
         applicationRecordTouched_ = false;
         applicationId_ = 0;
@@ -976,6 +1003,9 @@ private:
     Sha256Context sha_ {};
     ParsedMeta earlyMeta_;
     bool earlyMetaValid_ = false;
+    // Delta ids shouldSkipFile actually dropped (PERF_PLAN 7.5) — recorded so
+    // commitPackage can tell "skipped" apart from "streamed late" / "absent".
+    mutable std::vector<NcmContentId> skippedDeltaIds_;
     uint64_t auxiliaryExpected_ = 0;
     uint64_t ignoredRemaining_ = 0;
     uint64_t expected_ = 0;
