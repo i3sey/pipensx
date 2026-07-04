@@ -18,6 +18,13 @@ Source: <https://github.com/XorTroll/libnx-ext>
 Pinned in `vendor/libnx-ext`. Copyright XorTroll.
 Licensed under the MIT license. See `vendor/libnx-ext/LICENSE`.
 
+## qrcodegen
+
+Source: <https://github.com/nayuki/QR-Code-generator>
+
+Pinned in `vendor/qrcodegen`. Copyright Project Nayuki.
+Licensed under the MIT license. See `vendor/qrcodegen/LICENSE`.
+
 ## NSZ/NCZ format reference
 
 The streaming decoder implements the public NCZ container format documented by

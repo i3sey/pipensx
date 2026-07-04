@@ -79,6 +79,8 @@ set(APP_SOURCES
     src/ui/detail/torrent_selection.cpp
     src/ui/downloads/downloads_view.cpp
     src/ui/downloads/file_picker.cpp
+    src/ui/settings/about_view.cpp
+    vendor/qrcodegen/qrcodegen.cpp
     vendor/libnx-ext/libnx-ipcext/source/es.c
     vendor/libnx-ext/libnx-ipcext/source/ns-ext.c
     ${BOREALIS_LIBRARY}/lib/platforms/switch/switch_wrapper.c
@@ -135,6 +137,10 @@ file(COPY
 file(COPY
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/borealis/resources/i18n/en-US
     DESTINATION ${ROMFS_DIR}/i18n
+)
+file(COPY
+    ${CMAKE_CURRENT_SOURCE_DIR}/resources/icon.png
+    DESTINATION ${ROMFS_DIR}
 )
 file(GLOB_RECURSE CATALOG_ROMFS_FILES CONFIGURE_DEPENDS
     ${CMAKE_CURRENT_SOURCE_DIR}/resources/catalog/*
