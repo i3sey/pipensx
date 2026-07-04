@@ -1,6 +1,8 @@
 #pragma once
 
 #include <functional>
+#include <memory>
+#include <numeric>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -14,7 +16,7 @@
 #include "app/game_metadata_service.hpp"
 #include "app/installed_title_service.hpp"
 #include "ui/catalog/batch_install.hpp"
-#include "ui/catalog/catalog_cells.hpp"
+#include "ui/catalog/catalog_grid.hpp"
 #include "ui/catalog/catalog_helpers.hpp"
 #include "ui/common/message_cells.hpp"
 #include "ui/common/ui_helpers.hpp"
@@ -46,6 +48,12 @@ public:
         metadata_ = metadata;
         selectionMode_ = selectionMode;
     }
+    // Shelf contents (UI_PLAN F2): indices into entries(). Empty vector =
+    // shelf hidden.
+    void setShelves(std::vector<int> latest, std::vector<int> popular) {
+        shelfNew_ = std::move(latest);
+        shelfPopular_ = std::move(popular);
+    }
     void setMessage(const std::string& message) { message_ = message; }
     const CatalogEntry* entryAt(int row) const {
         if (row < 0 || static_cast<size_t>(row) >= entries_.size())
@@ -58,35 +66,56 @@ public:
                selectable_[static_cast<size_t>(row)] != 0;
     }
 
+    // Recycler row layout: [shelves][grid rows of kColumns cards each].
+    int shelfRowCount() const {
+        return (shelfNew_.empty() ? 0 : 1) + (shelfPopular_.empty() ? 0 : 1);
+    }
+    int rowForEntry(int index) const {
+        return shelfRowCount() + index / grid::kColumns;
+    }
+    int columnForEntry(int index) const { return index % grid::kColumns; }
+
     int numberOfRows(brls::RecyclerFrame*, int) override {
-        return entries_.empty() ? 1 : static_cast<int>(entries_.size());
+        if (entries_.empty())
+            return 1;
+        const int gridRows =
+            (static_cast<int>(entries_.size()) + grid::kColumns - 1) /
+            grid::kColumns;
+        return shelfRowCount() + gridRows;
+    }
+    float heightForRow(brls::RecyclerFrame*, brls::IndexPath index) override {
+        if (entries_.empty())
+            return 100;
+        return index.row < shelfRowCount() ? grid::kShelfHeight
+                                           : grid::kRowHeight;
     }
     brls::RecyclerCell* cellForRow(brls::RecyclerFrame* recycler,
-                                    brls::IndexPath index) override {
-        if (entries_.empty()) {
-            auto* cell = static_cast<TextMessageCell*>(
-                recycler->dequeueReusableCell("Message"));
-            cell->setMessage(message_);
-            return cell;
-        }
-        auto* cell = static_cast<CatalogCell*>(
-            recycler->dequeueReusableCell("Catalog"));
-        size_t row = static_cast<size_t>(index.row);
-        CatalogEntry display = entries_[row];
-        if (row < gameNames_.size() && !gameNames_[row].empty())
-            display.title = gameNames_[row];
-        cell->setEntry(display,
-                       row < stateBadges_.size() ? stateBadges_[row]
-                                                 : std::string(),
-                       row < iconUrls_.size() ? iconUrls_[row] : std::string(),
-                       metadata_, selectionMode_,
-                       row < selected_.size() && selected_[row] != 0,
-                       row < selectable_.size() && selectable_[row] != 0);
-        return cell;
-    }
+                                    brls::IndexPath index) override;
     void didSelectRowAt(brls::RecyclerFrame*, brls::IndexPath index) override;
 
 private:
+    GridCardInfo makeInfo(int index) const {
+        const size_t row = static_cast<size_t>(index);
+        GridCardInfo info;
+        info.entryIndex = index;
+        info.infoHash = entries_[row].infoHash;
+        info.title = row < gameNames_.size() && !gameNames_[row].empty()
+            ? gameNames_[row]
+            : entries_[row].title;
+        const std::string badge =
+            row < stateBadges_.size() ? stateBadges_[row] : std::string();
+        info.subIsBadge = !badge.empty();
+        info.sub = info.subIsBadge
+            ? badge
+            : entries_[row].size ? formatBytes(entries_[row].size)
+                                 : "Unknown size";
+        info.iconUrl = row < iconUrls_.size() ? iconUrls_[row] : std::string();
+        info.selectionMode = selectionMode_;
+        info.selected = row < selected_.size() && selected_[row] != 0;
+        info.selectable = row < selectable_.size() && selectable_[row] != 0;
+        return info;
+    }
+
     CatalogView* owner_;
     std::vector<CatalogEntry> entries_;
     std::vector<std::string> stateBadges_;
@@ -94,6 +123,8 @@ private:
     std::vector<std::string> iconUrls_;
     std::vector<uint8_t> selected_;
     std::vector<uint8_t> selectable_;
+    std::vector<int> shelfNew_;
+    std::vector<int> shelfPopular_;
     GameMetadataService* metadata_ = nullptr;
     std::string message_;
     bool selectionMode_ = false;
@@ -112,8 +143,11 @@ public:
         recycler_ = new brls::RecyclerFrame();
         recycler_->setGrow(1);
         recycler_->setPadding(6, 32, 6, 32);
-        recycler_->estimatedRowHeight = 82;
-        recycler_->registerCell("Catalog", [] { return new CatalogCell(); });
+        recycler_->estimatedRowHeight = grid::kRowHeight;
+        recycler_->registerCell("GridRow", [column = focusColumn_] {
+            return new GridRowCell(column);
+        });
+        recycler_->registerCell("Shelf", [] { return new ShelfCell(); });
         recycler_->registerCell("Message",
             [] { return new TextMessageCell(); });
         dataSource_ = new CatalogDataSource(this);
@@ -375,6 +409,25 @@ private:
     }
 
     void rebuildEntries() {
+        // reloadData() recycles every cell, so remember where the focus was
+        // (F2 "done when": focus survives reloadData) and restore it after.
+        brls::View* focus = brls::Application::getCurrentFocus();
+        bool focusInCatalog = false;
+        for (brls::View* view = focus; view; view = view->getParent()) {
+            if (view == recycler_) {
+                focusInCatalog = true;
+                break;
+            }
+        }
+        std::string focusHash;
+        int focusShelf = -1;
+        if (focusInCatalog) {
+            if (auto* card = dynamic_cast<GameCard*>(focus)) {
+                focusHash = card->infoHash();
+                focusShelf = card->shelfRow();
+            }
+        }
+
         // Info-hash (lower-case hex) -> status for anything already managed,
         // so rows can be badged. Task ids are lower-case hex; catalog info
         // hashes are upper-case, hence the case fold on both sides.
@@ -446,15 +499,52 @@ private:
             selectable.push_back(canSelect ? 1 : 0);
         }
 
+        // Shelves (UI_PLAN F2): "New" by published_at, "Popular" by
+        // peer_count. Only in the default browse state — a search, an active
+        // sort context or batch mode wants the plain grid.
+        std::vector<int> shelfNew;
+        std::vector<int> shelfPopular;
+        if (query_.empty() && !batchMode_ && !visible.empty()) {
+            const size_t take =
+                std::min<size_t>(grid::kShelfItems, visible.size());
+            std::vector<int> order(visible.size());
+            std::iota(order.begin(), order.end(), 0);
+            std::partial_sort(order.begin(),
+                order.begin() + static_cast<long>(take), order.end(),
+                [&visible](int left, int right) {
+                    return visible[static_cast<size_t>(left)].publishedAt >
+                           visible[static_cast<size_t>(right)].publishedAt;
+                });
+            shelfNew.assign(order.begin(),
+                            order.begin() + static_cast<long>(take));
+            std::iota(order.begin(), order.end(), 0);
+            std::partial_sort(order.begin(),
+                order.begin() + static_cast<long>(take), order.end(),
+                [&visible](int left, int right) {
+                    const auto& l = visible[static_cast<size_t>(left)];
+                    const auto& r = visible[static_cast<size_t>(right)];
+                    if (l.peerCount != r.peerCount)
+                        return l.peerCount > r.peerCount;
+                    return l.publishedAt > r.publishedAt;
+                });
+            for (size_t i = 0; i < take; ++i) {
+                if (visible[static_cast<size_t>(order[i])].peerCount > 0)
+                    shelfPopular.push_back(order[i]);
+            }
+        }
+
         size_t count = visible.size();
         dataSource_->setEntries(std::move(visible), std::move(stateBadges),
                                 std::move(gameNames), std::move(iconUrls),
                                 std::move(selected), std::move(selectable),
                                 metadata_, batchMode_);
+        dataSource_->setShelves(std::move(shelfNew), std::move(shelfPopular));
         dataSource_->setMessage(query_.empty()
             ? "Catalog is empty. Press R to refresh."
             : "Nothing found. Press X to change the search.");
         recycler_->reloadData();
+        if (focusInCatalog)
+            restoreFocus(focusHash, focusShelf);
 
         countText_ = query_.empty()
             ? withThousands(count) + (count == 1 ? " release" : " releases")
@@ -468,6 +558,36 @@ private:
             status_->setText(countText_ + "   Filter: " + filter);
             setActionAvailable(brls::BUTTON_RB, true);
         }
+    }
+
+    // Re-focus the card that was focused before reloadData recycled all
+    // cells: same shelf if the focus lived on a shelf, otherwise the grid
+    // card with the same info-hash (or the closest fallback). selectRowAt()
+    // scrolls the row in and marks it as the content box's last-focused
+    // child, so giving focus to the recycler lands on the row's
+    // getDefaultFocus(), which honors focusColumn_.
+    void restoreFocus(const std::string& hash, int shelfRow) {
+        if (dataSource_->entries().empty()) {
+            brls::Application::giveFocus(recycler_);
+            return;
+        }
+        if (shelfRow >= 0 && shelfRow < dataSource_->shelfRowCount()) {
+            recycler_->selectRowAt(brls::IndexPath(0, shelfRow), false);
+            brls::Application::giveFocus(recycler_);
+            return;
+        }
+        int index = 0;
+        const std::vector<CatalogEntry>& list = dataSource_->entries();
+        for (size_t i = 0; i < list.size(); ++i) {
+            if (list[i].infoHash == hash) {
+                index = static_cast<int>(i);
+                break;
+            }
+        }
+        *focusColumn_ = dataSource_->columnForEntry(index);
+        recycler_->selectRowAt(
+            brls::IndexPath(0, dataSource_->rowForEntry(index)), false);
+        brls::Application::giveFocus(recycler_);
     }
 
     // While busy (catalog refresh) Y cancels instead of sorting; reflect that
@@ -624,6 +744,9 @@ private:
     brls::Button* prepareBatch_ = nullptr;
     std::shared_ptr<std::atomic<bool>> alive_;
     std::shared_ptr<std::atomic<bool>> cancelled_;
+    // Column the user last focused in the grid; grid rows read it in
+    // getDefaultFocus() so vertical navigation keeps the column.
+    std::shared_ptr<int> focusColumn_ = std::make_shared<int>(0);
     std::unordered_map<std::string, std::string> catalogFailures_;
     std::unordered_set<std::string> selectedHashes_;
     std::string query_;
