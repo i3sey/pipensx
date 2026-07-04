@@ -19,6 +19,7 @@
 #include "ui/catalog/catalog_helpers.hpp"
 #include "ui/common/async_image.hpp"
 #include "ui/common/ui_helpers.hpp"
+#include "ui/detail/screenshot_viewer.hpp"
 #include "ui/detail/torrent_selection.hpp"
 #include "ui/downloads/details_activity.hpp"
 #include "ui/theme.hpp"
@@ -208,9 +209,10 @@ private:
             shots->setText("Screenshots");
             right->addView(shots);
 
+            std::string viewerTitle = found ? found->name : entry_.title;
             auto* rail = new brls::Box(brls::Axis::ROW);
             rail->setHeight(180);
-            for (const std::string& url : screenshots) {
+            for (size_t i = 0; i < screenshots.size(); ++i) {
                 auto* image = new AsyncRgbaImage();
                 image->setWidth(300);
                 image->setHeight(170);
@@ -218,7 +220,15 @@ private:
                 image->setCornerRadius(theme::kRadiusSmall);
                 image->setFocusable(true);
                 image->setScalingType(brls::ImageScalingType::FIT);
-                loadImageInto(image, metadata_, url);
+                // O6: A opens the fullscreen pager at this shot.
+                image->registerClickAction(
+                    [this, screenshots, i, viewerTitle](brls::View*) {
+                        brls::Application::pushActivity(
+                            new ScreenshotViewerActivity(metadata_, screenshots,
+                                                         i, viewerTitle));
+                        return true;
+                    });
+                loadImageInto(image, metadata_, screenshots[i]);
                 rail->addView(image);
             }
             auto* gallery = new brls::HScrollingFrame();
