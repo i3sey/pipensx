@@ -178,6 +178,8 @@ public:
         searchField_->setStyle(&brls::BUTTONSTYLE_DEFAULT);
         searchField_->setHeight(40);
         searchField_->setGrow(1);
+        searchField_->setShrink(1.0f);
+        searchField_->setMinWidth(120);
         searchField_->setFontSize(theme::kFontSmall);
         searchField_->setText("Search");
         searchField_->registerClickAction([this](brls::View*) {
@@ -217,6 +219,7 @@ public:
         count_->setTextColor(theme::textTertiary());
         count_->setMarginLeft(16);
         count_->setMarginTop(12);
+        count_->setShrink(0.0f);
         header_->addView(count_);
 
         // Batch-mode summary line; hidden in normal browsing (the header
@@ -861,6 +864,13 @@ private:
         chip->setHeight(40);
         chip->setFontSize(theme::kFontCaption);
         chip->setMarginLeft(8);
+        // Chips must never be squeezed below their text width: the default
+        // button side padding (25px) plus yoga shrinking clipped everything
+        // after "Popular". Keep intrinsic width, compact the padding, and
+        // let the search field absorb the shortage instead (it shrinks).
+        chip->setShrink(0.0f);
+        chip->setPaddingLeft(14);
+        chip->setPaddingRight(14);
         chip->setText(text);
         chip->registerClickAction(
             [onClick = std::move(onClick)](brls::View*) {
