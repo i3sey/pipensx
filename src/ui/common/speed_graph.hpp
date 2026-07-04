@@ -7,6 +7,7 @@
 #include <borealis.hpp>
 
 #include "ui/common/ui_helpers.hpp"
+#include "ui/theme.hpp"
 
 namespace pipensx::ui {
 
@@ -30,7 +31,7 @@ public:
 
         nvgBeginPath(vg);
         nvgRoundedRect(vg, x, y, width, height, 6);
-        nvgFillColor(vg, nvgRGBA(30, 31, 36, 120));
+        nvgFillColor(vg, theme::graphBg());
         nvgFill(vg);
 
         const float pad = 8.0f;
@@ -42,7 +43,7 @@ public:
         const float plotHeight = std::max(1.0f, bottom - top);
 
         nvgStrokeWidth(vg, 1.0f);
-        nvgStrokeColor(vg, nvgRGBA(180, 180, 190, 35));
+        nvgStrokeColor(vg, theme::graphGrid());
         for (int i = 1; i <= 3; i++) {
             float gy = top + plotHeight * static_cast<float>(i) / 4.0f;
             nvgBeginPath(vg);
@@ -58,9 +59,9 @@ public:
             maxSpeed = std::max(maxSpeed, speed);
 
         drawSeries(vg, download_, maxSpeed, left, top, plotWidth, plotHeight,
-                   nvgRGB(0, 195, 227), 2.5f);
+                   theme::accent(), 2.5f);
         drawSeries(vg, install_, maxSpeed, left, top, plotWidth, plotHeight,
-                   nvgRGB(96, 220, 130), 2.0f);
+                   theme::success(), 2.0f);
     }
 
 private:

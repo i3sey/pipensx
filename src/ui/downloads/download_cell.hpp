@@ -9,6 +9,7 @@
 #include "ui/common/async_image.hpp"
 #include "ui/common/progress_bar.hpp"
 #include "ui/common/ui_helpers.hpp"
+#include "ui/theme.hpp"
 
 namespace pipensx::ui {
 
@@ -25,13 +26,13 @@ public:
         thumb_->setWidth(72);
         thumb_->setHeight(72);
         thumb_->setCornerRadius(6);
-        thumb_->setBackgroundColor(nvgRGB(58, 58, 66));
+        thumb_->setBackgroundColor(theme::surface());
         thumb_->setMarginRight(16);
         thumb_->setAlignItems(brls::AlignItems::CENTER);
         thumb_->setJustifyContent(brls::JustifyContent::CENTER);
         placeholder_ = new brls::Label();
         placeholder_->setFontSize(30);
-        placeholder_->setTextColor(nvgRGB(185, 185, 195));
+        placeholder_->setTextColor(theme::textSecondary());
         thumb_->addView(placeholder_);
         image_ = new AsyncRgbaImage();
         image_->setWidth(72);
@@ -57,7 +58,7 @@ public:
         status_ = new brls::Label();
         status_->setSingleLine(true);
         status_->setFontSize(17);
-        status_->setTextColor(nvgRGB(0, 195, 227));
+        status_->setTextColor(theme::accent());
         top->addView(title_);
         top->addView(status_);
 

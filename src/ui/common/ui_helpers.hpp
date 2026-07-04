@@ -16,6 +16,7 @@ extern "C" {
 #include "app/download_manager.hpp"
 #include "install/install_backend.hpp"
 #include "platform/switch_crashlog.h"
+#include "ui/theme.hpp"
 
 namespace pipensx::ui {
 
@@ -151,22 +152,22 @@ inline std::string formatEta(uint64_t remainingBytes, uint64_t speedBytesPerSeco
 inline NVGcolor statusColor(DownloadStatus status) {
     switch (status) {
         case DownloadStatus::Error:
-            return nvgRGB(255, 69, 84);
+            return theme::error();
         case DownloadStatus::Completed:
         case DownloadStatus::Installed:
-            return nvgRGB(96, 220, 130);
+            return theme::success();
         case DownloadStatus::Paused:
         case DownloadStatus::Removing:
-            return nvgRGB(170, 170, 180);
+            return theme::textSecondary();
         case DownloadStatus::Queued:
         case DownloadStatus::Checking:
         case DownloadStatus::Downloading:
         case DownloadStatus::Verifying:
         case DownloadStatus::Installing:
         case DownloadStatus::Committing:
-            return nvgRGB(0, 195, 227);
+            return theme::accent();
     }
-    return nvgRGB(0, 195, 227);
+    return theme::accent();
 }
 
 inline std::string taskStatusText(const DownloadTask& task) {

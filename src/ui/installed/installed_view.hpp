@@ -11,6 +11,7 @@
 #include "app/installed_title_service.hpp"
 #include "ui/common/async_image.hpp"
 #include "ui/common/ui_helpers.hpp"
+#include "ui/theme.hpp"
 
 namespace pipensx::ui {
 
@@ -40,7 +41,7 @@ public:
         subtitle_->setSingleLine(true);
         subtitle_->setFontSize(15);
         subtitle_->setMarginTop(6);
-        subtitle_->setTextColor(nvgRGB(160, 160, 170));
+        subtitle_->setTextColor(theme::textTertiary());
         labels->addView(title_);
         labels->addView(subtitle_);
         addView(labels);
@@ -109,7 +110,7 @@ public:
         status_->setFontSize(15);
         status_->setMarginTop(10);
         status_->setMarginLeft(34);
-        status_->setTextColor(nvgRGB(140, 140, 150));
+        status_->setTextColor(theme::textTertiary());
         addView(status_);
 
         recycler_ = new brls::RecyclerFrame();

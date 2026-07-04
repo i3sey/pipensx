@@ -16,6 +16,7 @@
 #include "app/installed_title_service.hpp"
 #include "ui/catalog/catalog_helpers.hpp"
 #include "ui/common/ui_helpers.hpp"
+#include "ui/theme.hpp"
 
 namespace pipensx::ui {
 
@@ -33,7 +34,7 @@ public:
         mark_ = new brls::Label();
         mark_->setWidth(38);
         mark_->setFontSize(21);
-        mark_->setTextColor(nvgRGB(0, 195, 227));
+        mark_->setTextColor(theme::accent());
         mark_->setMarginRight(10);
         addView(mark_);
 
@@ -47,7 +48,7 @@ public:
         meta_->setSingleLine(true);
         meta_->setFontSize(14);
         meta_->setMarginTop(4);
-        meta_->setTextColor(nvgRGB(160, 160, 170));
+        meta_->setTextColor(theme::textTertiary());
         body->addView(title_);
         body->addView(meta_);
         addView(body);
@@ -55,7 +56,7 @@ public:
 
     void setReady(const PreparedCatalogInstall& item) {
         mark_->setText(item.selected ? "[x]" : "[ ]");
-        mark_->setTextColor(nvgRGB(0, 195, 227));
+        mark_->setTextColor(theme::accent());
         title_->setText(item.entry.title);
         std::string meta = formatBytes(item.space.requiredBytes) + " selected";
         if (item.space.packageFiles)
@@ -70,7 +71,7 @@ public:
 
     void setFailure(const pipensx::BatchItemFailure& failure) {
         mark_->setText("!");
-        mark_->setTextColor(nvgRGB(235, 105, 105));
+        mark_->setTextColor(theme::error());
         title_->setText(failure.entry.title);
         meta_->setText(failure.error);
     }
@@ -152,13 +153,13 @@ public:
         auto* content = new brls::Box(brls::Axis::COLUMN);
         content->setGrow(1);
         content->setPadding(24, 38, 24, 34);
-        content->setBackgroundColor(nvgRGBA(35, 35, 40, 235));
+        content->setBackgroundColor(theme::overlay());
         content->setCornerRadius(12);
 
         status_ = new brls::Label();
         status_->setFontSize(17);
         status_->setMarginBottom(12);
-        status_->setTextColor(nvgRGB(180, 180, 190));
+        status_->setTextColor(theme::textSecondary());
         status_->setText("Preparing selected games...");
         content->addView(status_);
 

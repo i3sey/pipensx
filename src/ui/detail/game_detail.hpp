@@ -20,6 +20,7 @@
 #include "ui/common/ui_helpers.hpp"
 #include "ui/detail/torrent_selection.hpp"
 #include "ui/downloads/details_activity.hpp"
+#include "ui/theme.hpp"
 
 namespace pipensx::ui {
 
@@ -111,7 +112,7 @@ private:
                 auto* factLabel = new brls::Label();
                 factLabel->setFontSize(16);
                 factLabel->setMarginTop(10);
-                factLabel->setTextColor(nvgRGB(190, 190, 200));
+                factLabel->setTextColor(theme::textSecondary());
                 factLabel->setText(facts);
                 content->addView(factLabel);
             }
@@ -154,7 +155,7 @@ private:
         statusLabel_ = new brls::Label();
         statusLabel_->setFontSize(16);
         statusLabel_->setMarginTop(12);
-        statusLabel_->setTextColor(nvgRGB(0, 195, 227));
+        statusLabel_->setTextColor(theme::accent());
         statusLabel_->setText("Install adds this game to your console.");
         actions->addView(statusLabel_);
 
@@ -165,7 +166,7 @@ private:
         auto* release = new brls::Label();
         release->setFontSize(15);
         release->setMarginTop(4);
-        release->setTextColor(nvgRGB(150, 150, 160));
+        release->setTextColor(theme::textTertiary());
         release->setText("Release: " + entry_.title);
         content->addView(release);
 
@@ -195,7 +196,7 @@ private:
             shots->setFontSize(16);
             shots->setMarginTop(18);
             shots->setMarginBottom(8);
-            shots->setTextColor(nvgRGB(190, 190, 200));
+            shots->setTextColor(theme::textSecondary());
             shots->setText("Screenshots");
             content->addView(shots);
 
@@ -221,7 +222,7 @@ private:
         auto* size = new brls::Label();
         size->setFontSize(15);
         size->setMarginTop(16);
-        size->setTextColor(nvgRGB(150, 150, 160));
+        size->setTextColor(theme::textTertiary());
         size->setText("Download size: " +
                       (entry_.size ? formatBytes(entry_.size)
                                    : std::string("Unknown")));
@@ -242,7 +243,7 @@ private:
             auto* warning = new brls::Label();
             warning->setFontSize(15);
             warning->setMarginTop(10);
-            warning->setTextColor(nvgRGB(230, 150, 80));
+            warning->setTextColor(theme::warning());
             warning->setText(warn);
             content->addView(warning);
         }

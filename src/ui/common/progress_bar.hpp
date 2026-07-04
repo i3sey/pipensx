@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #include <borealis.hpp>
+#include "ui/theme.hpp"
 
 namespace pipensx::ui {
 
@@ -21,12 +22,12 @@ public:
               brls::Style, brls::FrameContext*) override {
         nvgBeginPath(vg);
         nvgRoundedRect(vg, x, y, width, height, height / 2);
-        nvgFillColor(vg, nvgRGBA(128, 128, 128, 70));
+        nvgFillColor(vg, theme::track());
         nvgFill(vg);
         if (progress_ > 0) {
             nvgBeginPath(vg);
             nvgRoundedRect(vg, x, y, width * progress_, height, height / 2);
-            nvgFillColor(vg, nvgRGB(0, 195, 227));
+            nvgFillColor(vg, theme::accent());
             nvgFill(vg);
         }
     }

@@ -19,6 +19,7 @@
 #include "ui/common/message_cells.hpp"
 #include "ui/common/ui_helpers.hpp"
 #include "ui/detail/game_detail.hpp"
+#include "ui/theme.hpp"
 
 namespace pipensx::ui {
 
@@ -123,7 +124,7 @@ public:
         status_->setMarginTop(10);
         status_->setMarginLeft(34);
         status_->setMarginBottom(2);
-        status_->setTextColor(nvgRGB(140, 140, 150));
+        status_->setTextColor(theme::textTertiary());
 
         batchControls_ = new brls::Box(brls::Axis::ROW);
         batchControls_->setMarginTop(8);

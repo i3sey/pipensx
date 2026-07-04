@@ -8,6 +8,7 @@
 #include "ui/common/progress_bar.hpp"
 #include "ui/common/speed_graph.hpp"
 #include "ui/common/ui_helpers.hpp"
+#include "ui/theme.hpp"
 
 namespace pipensx::ui {
 
@@ -21,7 +22,7 @@ public:
         content->setPadding(30, 55, 30, 55);
         content->setJustifyContent(brls::JustifyContent::CENTER);
         content->setAlignItems(brls::AlignItems::STRETCH);
-        content->setBackgroundColor(nvgRGBA(45, 45, 50, 180));
+        content->setBackgroundColor(theme::panel());
         content->setCornerRadius(12);
 
         status_ = addLine(content, 27);
@@ -34,7 +35,7 @@ public:
         pieces_ = addLine(content, 22);
         path_ = addLine(content, 18);
         error_ = addLine(content, 18);
-        error_->setTextColor(nvgRGB(255, 80, 80));
+        error_->setTextColor(theme::error());
 
         auto* frame = new brls::AppletFrame(content);
         frame_ = frame;

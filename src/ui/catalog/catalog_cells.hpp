@@ -9,6 +9,7 @@
 #include "app/catalog_service.hpp"
 #include "ui/common/async_image.hpp"
 #include "ui/common/ui_helpers.hpp"
+#include "ui/theme.hpp"
 
 namespace pipensx::ui {
 
@@ -39,7 +40,7 @@ public:
         mark_ = new brls::Label();
         mark_->setWidth(0);
         mark_->setFontSize(21);
-        mark_->setTextColor(nvgRGB(0, 195, 227));
+        mark_->setTextColor(theme::accent());
         addView(mark_);
 
         // Left: rounded box-art thumbnail. The box's background color is the
@@ -48,13 +49,13 @@ public:
         thumb_->setWidth(64);
         thumb_->setHeight(64);
         thumb_->setCornerRadius(6);
-        thumb_->setBackgroundColor(nvgRGB(58, 58, 66));
+        thumb_->setBackgroundColor(theme::surface());
         thumb_->setMarginRight(16);
         thumb_->setAlignItems(brls::AlignItems::CENTER);
         thumb_->setJustifyContent(brls::JustifyContent::CENTER);
         placeholder_ = new brls::Label();
         placeholder_->setFontSize(28);
-        placeholder_->setTextColor(nvgRGB(185, 185, 195));
+        placeholder_->setTextColor(theme::textSecondary());
         thumb_->addView(placeholder_);
         image_ = new AsyncRgbaImage();
         image_->setWidth(64);
@@ -82,7 +83,7 @@ public:
         badge_->setSingleLine(true);
         badge_->setFontSize(16);
         badge_->setMarginLeft(12);
-        badge_->setTextColor(nvgRGB(0, 195, 227));
+        badge_->setTextColor(theme::accent());
         top->addView(title_);
         top->addView(badge_);
 
@@ -90,7 +91,7 @@ public:
         sub_->setSingleLine(true);
         sub_->setFontSize(16);
         sub_->setMarginTop(6);
-        sub_->setTextColor(nvgRGB(160, 160, 170));
+        sub_->setTextColor(theme::textTertiary());
 
         right->addView(top);
         right->addView(sub_);
@@ -104,8 +105,8 @@ public:
         mark_->setMarginRight(selectionMode ? 8 : 0);
         mark_->setText(!selectionMode ? "" : !selectable ? "[-]"
                                              : selected ? "[x]" : "[ ]");
-        mark_->setTextColor(selectable ? nvgRGB(0, 195, 227)
-                                       : nvgRGB(115, 115, 125));
+        mark_->setTextColor(selectable ? theme::accent()
+                                       : theme::textDisabled());
         title_->setText(entry.title);
         placeholder_->setText(placeholderLetter(entry.title));
         badge_->setText(stateBadge);

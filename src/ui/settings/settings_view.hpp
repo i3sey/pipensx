@@ -13,6 +13,7 @@
 #include "app/installed_title_service.hpp"
 #include "core/antizapret.h"
 #include "ui/common/ui_helpers.hpp"
+#include "ui/theme.hpp"
 
 namespace pipensx::ui {
 
@@ -112,7 +113,7 @@ public:
             "Errors are always recorded. Extended mode adds rate-limited "
             "torrent, buffer, decoder, image and NCM metrics every 5 seconds.");
         description->setFontSize(16);
-        description->setTextColor(nvgRGB(170, 170, 180));
+        description->setTextColor(theme::textSecondary());
         description->setMarginBottom(10);
         content->addView(description);
 
@@ -146,7 +147,7 @@ public:
         auto* path = new brls::Label();
         path->setText(std::string("Log: ") + LogPath);
         path->setFontSize(15);
-        path->setTextColor(nvgRGB(145, 145, 155));
+        path->setTextColor(theme::textTertiary());
         path->setMarginTop(18);
         content->addView(path);
 

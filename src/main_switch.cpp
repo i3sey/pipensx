@@ -29,6 +29,7 @@ extern "C" {
 #include "ui/installed/installed_view.hpp"
 #include "ui/settings/about_view.hpp"
 #include "ui/settings/settings_view.hpp"
+#include "ui/theme.hpp"
 
 using pipensx::AppSettings;
 using pipensx::CatalogService;
@@ -170,6 +171,7 @@ int main(int, char**) {
         brls::Platform::APP_LOCALE_DEFAULT = brls::LOCALE_EN_US;
         if (!brls::Application::init())
             throw std::runtime_error("Borealis Application::init failed");
+        pipensx::ui::theme::registerColors();
 
         startupStage("Borealis createWindow");
         brls::Application::createWindow("pipensx");

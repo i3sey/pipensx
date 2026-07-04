@@ -10,6 +10,7 @@
 #include "app/download_manager.hpp"
 #include "app/install_space.hpp"
 #include "ui/common/ui_helpers.hpp"
+#include "ui/theme.hpp"
 
 namespace pipensx::ui {
 
@@ -32,7 +33,7 @@ public:
         mark_ = new brls::Label();
         mark_->setWidth(34);
         mark_->setFontSize(21);
-        mark_->setTextColor(nvgRGB(0, 195, 227));
+        mark_->setTextColor(theme::accent());
         mark_->setMarginRight(10);
         addView(mark_);
 
@@ -48,7 +49,7 @@ public:
         meta_ = new brls::Label();
         meta_->setFontSize(14);
         meta_->setMarginTop(4);
-        meta_->setTextColor(nvgRGB(160, 160, 170));
+        meta_->setTextColor(theme::textTertiary());
         body->addView(meta_);
 
         addView(body);
@@ -154,7 +155,7 @@ public:
         auto* content = new brls::Box(brls::Axis::COLUMN);
         content->setGrow(1);
         content->setPadding(24, 38, 24, 34);
-        content->setBackgroundColor(nvgRGBA(35, 35, 40, 235));
+        content->setBackgroundColor(theme::overlay());
         content->setCornerRadius(12);
 
         title_ = new brls::Label();
@@ -166,7 +167,7 @@ public:
         summary_->setFontSize(15);
         summary_->setMarginTop(8);
         summary_->setMarginBottom(14);
-        summary_->setTextColor(nvgRGB(170, 170, 180));
+        summary_->setTextColor(theme::textSecondary());
         summary_->setText("A toggles a file. Selection follows Settings.");
         content->addView(summary_);
 
