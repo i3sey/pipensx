@@ -1,0 +1,49 @@
+name: golden
+
+# F4: golden-screenshot CI. Renders every screen in light/dark with the
+# PC (GLFW) build against the deterministic fixtures in
+# tests/fixtures/golden/, then compares with the references in
+# tests/golden/ (pixel budget, see scripts/golden.sh).
+#
+# Re-baseline: run `scripts/golden.sh update` locally (or grab the
+# golden-current artifact from a failed run) and commit tests/golden/.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  golden:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build xorg-dev libgl1-mesa-dev libglu1-mesa-dev \
+            libcurl4-openssl-dev zlib1g-dev imagemagick xvfb
+
+      - name: Build golden_runner
+        run: |
+          cmake -S . -B build-golden -G Ninja \
+            -DPIPENSX_GOLDEN=ON -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-golden --target golden_runner
+
+      - name: Compare against golden screenshots
+        run: xvfb-run -a scripts/golden.sh check
+
+      - name: Upload diffs and current renders
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-current
+          path: |
+            build-golden/golden-out/*.png
+            build-golden/golden-out/*.log
+            build-golden/golden-out/diff/*.png
+          if-no-files-found: ignore

@@ -15,6 +15,7 @@
 # Build directories
 build_switch/
 build-switch/
+build-golden/
 
 # Log files
 *.log

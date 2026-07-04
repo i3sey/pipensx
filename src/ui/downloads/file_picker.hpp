@@ -1,7 +1,9 @@
 #pragma once
 
 #include <dirent.h>
+#include <sys/stat.h>
 
+#include <cstring>
 #include <string>
 #include <vector>
 

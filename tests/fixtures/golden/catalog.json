@@ -1,0 +1,52 @@
+[
+  {
+    "title": "Pipen Odyssey [v1.0.2]",
+    "magnetURI": "magnet:?xt=urn:btih:E21269D03D34B557F63CE915DEA14F765C9C9798&tr=http://bt3.t-ru.org/ann?magnet",
+    "size": 6442450944,
+    "published_date": 1700000000,
+    "topic_id": 123,
+    "forum_id": 1605,
+    "tracker_id": 2,
+    "source_updated_at": 1700000000,
+    "catalog_generated_at": 1700100000,
+    "last_checked_at": 1700200000,
+    "peer_count": 42,
+    "metadata_ok": true,
+    "health": "ok",
+    "screenshots": [
+      "https://example.invalid/pipen-odyssey/s1.jpg",
+      "https://example.invalid/pipen-odyssey/s2.jpg"
+    ]
+  },
+  {
+    "title": "Kart Nova Deluxe [v2.1.0]",
+    "magnetURI": "magnet:?xt=urn:btih:EF47FD2FAD86A00074507991E1907AA097FC40F5&tr=http://bt4.t-ru.org/ann?magnet",
+    "size": 2147483648,
+    "published_date": 1690000000,
+    "topic_id": 456,
+    "forum_id": 1605,
+    "tracker_id": 2,
+    "source_updated_at": 1690000000,
+    "catalog_generated_at": 1700100000,
+    "last_checked_at": 1700200000,
+    "peer_count": 7,
+    "metadata_ok": true,
+    "health": "ok"
+  },
+  {
+    "title": "Forgotten Dungeon (RUS) [v1.1.1]",
+    "magnetURI": "magnet:?xt=urn:btih:2222222222222222222222222222222222222222&tr=http://bt2.t-ru.org/ann?magnet",
+    "size": 536870912,
+    "published_date": 1680000000,
+    "topic_id": 789,
+    "forum_id": 1605,
+    "tracker_id": 2,
+    "source_updated_at": 1680000000,
+    "catalog_generated_at": 1700100000,
+    "last_checked_at": 1700200000,
+    "peer_count": 0,
+    "metadata_ok": false,
+    "health": "tracker_not_registered",
+    "failure_reason": "Torrent not registered"
+  }
+]

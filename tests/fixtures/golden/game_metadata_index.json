@@ -1,0 +1,28 @@
+[
+  {
+    "infoHash": "E21269D03D34B557F63CE915DEA14F765C9C9798",
+    "titleId": "0100000000010000",
+    "match": "Pipen Odyssey",
+    "name": "Pipen Odyssey",
+    "intro": "A deterministic fixture adventure across eight golden screens.",
+    "description": "Pipen Odyssey is the reference fixture title used by the golden screenshot CI. Its description is intentionally long enough to exercise the Show more collapse on the detail screen, wrapping over several lines of body text without ever touching the network.",
+    "publisher": "Pipensx Fixtures",
+    "releaseDate": "2023-11-14",
+    "screenshots": [
+      "https://example.invalid/pipen-odyssey/s1.jpg",
+      "https://example.invalid/pipen-odyssey/s2.jpg"
+    ],
+    "categories": ["Adventure", "Platformer"]
+  },
+  {
+    "infoHash": "EF47FD2FAD86A00074507991E1907AA097FC40F5",
+    "titleId": "0100000000020000",
+    "match": "Kart Nova Deluxe",
+    "name": "Kart Nova Deluxe",
+    "intro": "Fixture racing title with a short blurb.",
+    "description": "Second fixture entry keeps the catalog grid populated and deterministic.",
+    "publisher": "Pipensx Fixtures",
+    "releaseDate": "2023-07-22",
+    "categories": ["Racing"]
+  }
+]
