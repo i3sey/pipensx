@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <functional>
 #include <memory>
 #include <string>
@@ -23,6 +24,40 @@
 #include "ui/theme.hpp"
 
 namespace pipensx::ui {
+
+// ---------------------------------------------------------------------------
+// Install/status button (O5)
+// ---------------------------------------------------------------------------
+// The primary action button doubles as a live status surface: while a download
+// or install is running it keeps its vivid enabled look and dims the
+// not-yet-finished remainder (eShop-style progress fill) instead of greying
+// out. setProgress(<0) restores the plain button; >=1 leaves it fully filled.
+class InstallButton : public brls::Button {
+  public:
+    void setProgress(float progress) {
+        progress_ = progress < 0.0f ? -1.0f : std::min(1.0f, progress);
+    }
+
+    void draw(NVGcontext* vg, float x, float y, float width, float height,
+              brls::Style style, brls::FrameContext* ctx) override {
+        // Scrim the pending remainder before the label so the text stays crisp.
+        if (progress_ >= 0.0f && progress_ < 1.0f) {
+            float radius   = getCornerRadius();
+            float doneWidth = width * progress_;
+            nvgSave(vg);
+            nvgIntersectScissor(vg, x + doneWidth, y, width - doneWidth, height);
+            nvgBeginPath(vg);
+            nvgRoundedRect(vg, x, y, width, height, radius);
+            nvgFillColor(vg, theme::panel());
+            nvgFill(vg);
+            nvgRestore(vg);
+        }
+        brls::Button::draw(vg, x, y, width, height, style, ctx);
+    }
+
+  private:
+    float progress_ = -1.0f;
+};
 
 // ---------------------------------------------------------------------------
 // Full-screen game page (eShop-style detail + one-tap install)
@@ -107,7 +142,7 @@ private:
             }
         }
 
-        primary_ = new brls::Button();
+        primary_ = new InstallButton();
         primary_->setStyle(&brls::BUTTONSTYLE_PRIMARY);
         primary_->setFontSize(theme::kFontBody);
         primary_->setHeight(64);
@@ -351,6 +386,23 @@ private:
         return "Install";
     }
 
+    // Fill fraction the status button paints while a task is live: install
+    // phases track installed bytes, everything else tracks downloaded bytes.
+    static float progressForButton(const DownloadTask& task) {
+        switch (task.status) {
+            case DownloadStatus::Installing:
+            case DownloadStatus::Committing:
+                return installProgressOf(task);
+            case DownloadStatus::Completed:
+            case DownloadStatus::Installed:
+                return 1.0f;
+            case DownloadStatus::Queued:
+                return 0.0f;
+            default:
+                return progressOf(task);
+        }
+    }
+
     // Reflect live task state on the buttons. Skipped while resolving so the
     // inline progress text isn't clobbered.
     void refreshButtons() {
@@ -359,21 +411,26 @@ private:
         const DownloadTask* task = currentTask();
         if (task) {
             operationMessage_.clear();
-            primary_->setText(installButtonLabel(*task));
-            primary_->setState(
-                task->status == DownloadStatus::Paused ||
-                task->status == DownloadStatus::Error
-                ? brls::ButtonState::ENABLED
-                : brls::ButtonState::DISABLED);
-            if (task->status == DownloadStatus::Paused ||
-                task->status == DownloadStatus::Error)
+            // O5: the button is the status surface — it stays vivid (enabled)
+            // and shows a progress fill instead of greying out. Paused/Error
+            // become an actionable "Resume".
+            bool actionable = task->status == DownloadStatus::Paused ||
+                              task->status == DownloadStatus::Error;
+            if (actionable) {
                 primary_->setText("Resume");
+                primary_->setProgress(-1.0f);
+            } else {
+                primary_->setText(installButtonLabel(*task));
+                primary_->setProgress(progressForButton(*task));
+            }
+            primary_->setState(brls::ButtonState::ENABLED);
             secondary_->setText("View download");
             secondary_->setState(brls::ButtonState::ENABLED);
             if (task->status == DownloadStatus::Error && !task->error.empty())
                 statusLabel_->setText(task->error);
         } else {
             primary_->setText("Install");
+            primary_->setProgress(-1.0f);
             primary_->setState(brls::ButtonState::ENABLED);
             secondary_->setText("Options");
             secondary_->setState(brls::ButtonState::ENABLED);
@@ -396,6 +453,10 @@ private:
             if (task->status == DownloadStatus::Paused ||
                 task->status == DownloadStatus::Error)
                 manager_->resume(task->id);
+            else
+                // O5: tapping the live status button opens the download details.
+                brls::Application::pushActivity(
+                    new DetailsActivity(task->id, manager_));
             return;
         }
         // One-tap install: resolve, then queue silently (picker only on Options).
@@ -669,7 +730,7 @@ private:
     std::shared_ptr<std::atomic<bool>> alive_;
     std::shared_ptr<std::atomic<bool>> cancelled_;
     brls::AppletFrame* frame_ = nullptr;
-    brls::Button* primary_ = nullptr;
+    InstallButton* primary_ = nullptr;
     brls::Button* secondary_ = nullptr;
     brls::Label* statusLabel_ = nullptr;
     brls::RepeatingTimer timer_;
