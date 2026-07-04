@@ -150,10 +150,23 @@ detail-эталоны зелёные. Всё на токенах O1. Switch-сб
 на токенах O1. Switch-сборка `pipensx.nro`, PC-тесты и golden зелёные (idle-вид
 detail не изменился); тач/свайп-прогон на консоли — при первом запуске на железе.
 
-### O7. Downloads: контекстное меню по A
+### O7. Downloads: контекстное меню по A ✅ (выполнено)
 Меню на строке: Details / Pause / Resume / Verify / Remove. Сейчас Y — три действия
 одной кнопкой вслепую, X — Remove.
 Зависит от F1, O1.
+**Выполнено 2026-07-04:** A по строке загрузки открывает `brls::Dropdown`
+(заголовок — имя задачи) с контекстным меню вместо прямого перехода в Details.
+`MainView::openRowMenu` снимает снапшот задачи и собирает пункты по статусу:
+Details всегда; Pause — если активна (Queued/Checking/Downloading/Installing/
+Committing/Verifying); Resume — если Paused/Error; Verify — если Completed
+(совпадает с `DownloadManager::verify`); Remove всегда (диалог Keep/Delete/
+Cancel через `openRemoveDialog`). Слепые пункты стали подписанными и
+контекстными. Dropdown снимает себя сразу после колбэка, поэтому действие
+отложено на кадр через `brls::sync` (иначе `pushActivity` для Details/Remove
+попал бы под pop меню). Мутации (pause/resume/verify/remove) дёргают
+`startRefreshing(true)` для мгновенного обновления списка. Всё на токенах O1.
+Switch-сборка `pipensx.nro`, PC-тесты и golden зелёные (статичный вид Downloads
+не изменился); прогон меню на консоли — при первом запуске на железе.
 
 ### O8. DetailsActivity секциями ✅ (выполнено)
 Карточки: «Прогресс» (крупный бар + ETA), «Скорость» (график оставить), «Сеть»

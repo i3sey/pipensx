@@ -1,5 +1,7 @@
 #pragma once
 
+#include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -82,6 +84,89 @@ public:
 
     void openFilePicker() {
         brls::Application::pushActivity(new FilePickerActivity(manager_));
+    }
+
+    // O7: per-row context menu on A. Replaces the old blind Y/X hotkeys — the
+    // items are labelled and only the ones valid for the current status appear.
+    void openRowMenu(const std::string& taskId) {
+        DownloadTask task;
+        bool found = false;
+        for (const auto& candidate : manager_->snapshot())
+            if (candidate.id == taskId) {
+                task = candidate;
+                found = true;
+                break;
+            }
+        if (!found)
+            return;
+
+        std::vector<std::string> labels;
+        auto runners =
+            std::make_shared<std::vector<std::function<void()>>>();
+        auto add = [&](const std::string& label, std::function<void()> run) {
+            labels.push_back(label);
+            runners->push_back(std::move(run));
+        };
+
+        add("Details", [this, taskId] { openDetails(taskId); });
+
+        bool active = task.status == DownloadStatus::Queued ||
+                      task.status == DownloadStatus::Checking ||
+                      task.status == DownloadStatus::Downloading ||
+                      task.status == DownloadStatus::Installing ||
+                      task.status == DownloadStatus::Committing ||
+                      task.status == DownloadStatus::Verifying;
+        if (active)
+            add("Pause", [this, taskId] {
+                manager_->pause(taskId);
+                startRefreshing(true);
+            });
+        if (task.status == DownloadStatus::Paused ||
+            task.status == DownloadStatus::Error)
+            add("Resume", [this, taskId] {
+                manager_->resume(taskId);
+                startRefreshing(true);
+            });
+        if (task.status == DownloadStatus::Completed)
+            add("Verify", [this, taskId] {
+                manager_->verify(taskId);
+                startRefreshing(true);
+            });
+        add("Remove", [this, taskId] { openRemoveDialog(taskId); });
+
+        // The Dropdown pops itself right after firing the callback, so defer
+        // the action a frame — otherwise a pushActivity here would land under
+        // that pop.
+        auto* dropdown = new brls::Dropdown(
+            task.name, labels, [runners](int selected) {
+                if (selected < 0 ||
+                    selected >= static_cast<int>(runners->size()))
+                    return;
+                auto run = (*runners)[selected];
+                brls::sync([run] { run(); });
+            });
+        brls::Application::pushActivity(new brls::Activity(dropdown));
+    }
+
+    void openRemoveDialog(const std::string& taskId) {
+        auto* dialog =
+            new brls::Dialog("Remove this download from pipensx?");
+        dialog->addButton("Keep downloaded data", [this, taskId] {
+            std::string error;
+            if (!manager_->remove(taskId, false, error))
+                brls::Application::notify(error);
+            else
+                startRefreshing(true);
+        });
+        dialog->addButton("Delete downloaded data", [this, taskId] {
+            std::string error;
+            if (!manager_->remove(taskId, true, error))
+                brls::Application::notify(error);
+            else
+                startRefreshing(true);
+        });
+        dialog->addButton("Cancel", [] {});
+        dialog->open();
     }
 
     void startRefreshing(bool fast = false) {

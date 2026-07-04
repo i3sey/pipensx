@@ -95,7 +95,7 @@ void DownloadDataSource::didSelectRowAt(brls::RecyclerFrame*,
                                          brls::IndexPath index) {
     Section& section = sections_[index.section];
     if (!section.tasks.empty())
-        owner_->openDetails(section.tasks[index.row].id);
+        owner_->openRowMenu(section.tasks[index.row].id);
     else
         owner_->openFilePicker();
 }
