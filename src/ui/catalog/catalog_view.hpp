@@ -142,6 +142,36 @@ private:
     std::string message_;
     bool selectionMode_ = false;
 };
+// Compact magnifier button for the O2 header. The icon is vector-drawn
+// (circle + handle) so it stays crisp and theme-aware without relying on
+// icon-font glyphs that the bundled fonts may not cover.
+class SearchIconButton : public brls::Button {
+public:
+    void setIconColor(NVGcolor color) { iconColor_ = color; }
+
+    void draw(NVGcontext* vg, float x, float y, float width, float height,
+              brls::Style style, brls::FrameContext* ctx) override {
+        brls::Button::draw(vg, x, y, width, height, style, ctx);
+        // Glass centered slightly up-left so the handle stays inside.
+        const float r = 6.5f;
+        const float cx = x + width / 2.0f - 2.5f;
+        const float cy = y + height / 2.0f - 2.5f;
+        nvgStrokeColor(vg, iconColor_);
+        nvgStrokeWidth(vg, 2.0f);
+        nvgLineCap(vg, NVG_ROUND);
+        nvgBeginPath(vg);
+        nvgCircle(vg, cx, cy, r);
+        nvgStroke(vg);
+        const float k = 0.7071f; // 45° handle
+        nvgBeginPath(vg);
+        nvgMoveTo(vg, cx + r * k, cy + r * k);
+        nvgLineTo(vg, cx + r * k + 5.5f, cy + r * k + 5.5f);
+        nvgStroke(vg);
+    }
+
+private:
+    NVGcolor iconColor_ = nvgRGB(255, 255, 255);
+};
 class CatalogView : public brls::Box {
 public:
     CatalogView(DownloadManager* manager, CatalogService* catalog,
@@ -167,67 +197,66 @@ public:
         dataSource_ = new CatalogDataSource(this);
         recycler_->setDataSource(dataSource_);
 
-        // Persistent catalog header (UI_PLAN O2): tappable search field,
-        // sort + filter chips and a result counter. X/Y hotkeys still work;
-        // the chips make the current state visible and touch-reachable.
-        // Two rows so chip labels never clip: [search|Clear|count] over
-        // [sort chips | filter chips].
-        header_ = new brls::Box(brls::Axis::COLUMN);
+        // Persistent catalog header (UI_PLAN O2): sort + filter chips, a
+        // result counter and a compact magnifier button in the right corner.
+        // X/Y hotkeys still work; the chips make the current state visible
+        // and touch-reachable. Single row: with the search field collapsed
+        // to a 40px icon everything fits at 1280 without clipping.
+        header_ = new brls::Box(brls::Axis::ROW);
         header_->setMarginTop(10);
         header_->setMarginLeft(34);
         header_->setMarginRight(34);
-        auto* searchRow = new brls::Box(brls::Axis::ROW);
-        auto* chipRow = new brls::Box(brls::Axis::ROW);
-        chipRow->setMarginTop(8);
-        header_->addView(searchRow);
-        header_->addView(chipRow);
-        searchField_ = new brls::Button();
-        searchField_->setStyle(&brls::BUTTONSTYLE_DEFAULT);
-        searchField_->setHeight(40);
-        searchField_->setGrow(1);
-        searchField_->setShrink(1.0f);
-        searchField_->setMinWidth(120);
-        searchField_->setFontSize(theme::kFontSmall);
-        searchField_->setText("Search");
-        searchField_->registerClickAction([this](brls::View*) {
-            openSearchKeyboard();
-            return true;
-        });
-        searchRow->addView(searchField_);
-        clearSearch_ = makeChip("Clear", [this] {
-            if (query_.empty())
-                return;
-            query_.clear();
-            rebuildEntries();
-        });
-        searchRow->addView(clearSearch_);
         sortLatest_ = makeChip("Latest", [this] { setSort(SortMode::Latest); });
         sortPopular_ = makeChip("Popular",
                                 [this] { setSort(SortMode::Popular); });
         sortAlpha_ = makeChip("A-Z", [this] { setSort(SortMode::Alphabetical); });
         sortSize_ = makeChip("Size", [this] { setSort(SortMode::Largest); });
         sortLatest_->setMarginLeft(0);
-        chipRow->addView(sortLatest_);
-        chipRow->addView(sortPopular_);
-        chipRow->addView(sortAlpha_);
-        chipRow->addView(sortSize_);
+        header_->addView(sortLatest_);
+        header_->addView(sortPopular_);
+        header_->addView(sortAlpha_);
+        header_->addView(sortSize_);
         filterAll_ = makeChip("All", [this] { setFilter(CatalogFilter::All); });
         filterGames_ = makeChip("Games",
                                 [this] { setFilter(CatalogFilter::Games); });
         filterAll_->setMarginLeft(16);
-        chipRow->addView(filterAll_);
-        chipRow->addView(filterGames_);
+        header_->addView(filterAll_);
+        header_->addView(filterGames_);
         if (!settings_) {
             filterAll_->setVisibility(brls::Visibility::GONE);
             filterGames_->setVisibility(brls::Visibility::GONE);
         }
+        auto* headerSpacer = new brls::Box();
+        headerSpacer->setGrow(1.0f);
+        headerSpacer->setShrink(1.0f);
+        header_->addView(headerSpacer);
         count_ = new brls::Label();
         count_->setFontSize(theme::kFontCaption);
         count_->setTextColor(theme::textTertiary());
         count_->setMarginLeft(16);
         count_->setMarginTop(12);
         count_->setShrink(0.0f);
-        searchRow->addView(count_);
+        header_->addView(count_);
+        clearSearch_ = makeChip("Clear", [this] {
+            if (query_.empty())
+                return;
+            query_.clear();
+            rebuildEntries();
+        });
+        clearSearch_->setMarginLeft(16);
+        header_->addView(clearSearch_);
+        searchField_ = new SearchIconButton();
+        searchField_->setStyle(&brls::BUTTONSTYLE_DEFAULT);
+        searchField_->setWidth(40);
+        searchField_->setHeight(40);
+        searchField_->setShrink(0.0f);
+        searchField_->setMarginLeft(8);
+        searchField_->setText("");
+        searchField_->registerClickAction([this](brls::View*) {
+            openSearchKeyboard();
+            return true;
+        });
+        header_->addView(searchField_);
 
         // Batch-mode summary line; hidden in normal browsing (the header
         // counter replaces the old always-on status text).
@@ -796,7 +825,7 @@ private:
                                 std::move(heroImage));
         dataSource_->setMessage(query_.empty()
             ? "Catalog is empty. Press R to refresh."
-            : "Nothing found. Tap Search or press X to change the query.");
+            : "Nothing found. Tap the magnifier or press X to change the query.");
         recycler_->reloadData();
         const bool empty = count == 0;
         if (empty) {
@@ -845,7 +874,11 @@ private:
     // query, the active sort/filter chip is highlighted, counter shows the
     // visible entry count.
     void updateHeader() {
-        searchField_->setText(query_.empty() ? "Search" : query_);
+        // The magnifier lights up (primary style, white icon) while a query
+        // is active; the Clear chip is the visible reminder + escape hatch.
+        searchField_->setIconColor(query_.empty() ? theme::textPrimary()
+                                                  : nvgRGB(255, 255, 255));
+        styleChip(searchField_, !query_.empty());
         clearSearch_->setVisibility(query_.empty() ? brls::Visibility::GONE
                                                    : brls::Visibility::VISIBLE);
         styleChip(sortLatest_, sort_ == SortMode::Latest);
@@ -1143,7 +1176,7 @@ private:
     brls::RecyclerFrame* recycler_;
     CatalogDataSource* dataSource_;
     brls::Box* header_ = nullptr;
-    brls::Button* searchField_ = nullptr;
+    SearchIconButton* searchField_ = nullptr;
     brls::Button* clearSearch_ = nullptr;
     brls::Button* sortLatest_ = nullptr;
     brls::Button* sortPopular_ = nullptr;
