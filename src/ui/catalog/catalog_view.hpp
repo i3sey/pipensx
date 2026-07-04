@@ -153,12 +153,64 @@ public:
         dataSource_ = new CatalogDataSource(this);
         recycler_->setDataSource(dataSource_);
 
+        // Persistent catalog header (UI_PLAN O2): tappable search field,
+        // sort + filter chips and a result counter. X/Y hotkeys still work;
+        // the chips make the current state visible and touch-reachable.
+        header_ = new brls::Box(brls::Axis::ROW);
+        header_->setMarginTop(10);
+        header_->setMarginLeft(34);
+        header_->setMarginRight(34);
+        searchField_ = new brls::Button();
+        searchField_->setStyle(&brls::BUTTONSTYLE_DEFAULT);
+        searchField_->setHeight(40);
+        searchField_->setGrow(1);
+        searchField_->setFontSize(theme::kFontSmall);
+        searchField_->setText("Search");
+        searchField_->registerClickAction([this](brls::View*) {
+            openSearchKeyboard();
+            return true;
+        });
+        header_->addView(searchField_);
+        clearSearch_ = makeChip("Clear", [this] {
+            if (query_.empty())
+                return;
+            query_.clear();
+            rebuildEntries();
+        });
+        header_->addView(clearSearch_);
+        sortLatest_ = makeChip("Latest", [this] { setSort(SortMode::Latest); });
+        sortAlpha_ = makeChip("A-Z", [this] { setSort(SortMode::Alphabetical); });
+        sortSize_ = makeChip("Size", [this] { setSort(SortMode::Largest); });
+        sortLatest_->setMarginLeft(16);
+        header_->addView(sortLatest_);
+        header_->addView(sortAlpha_);
+        header_->addView(sortSize_);
+        filterAll_ = makeChip("All", [this] { setFilter(CatalogFilter::All); });
+        filterGames_ = makeChip("Games",
+                                [this] { setFilter(CatalogFilter::Games); });
+        filterAll_->setMarginLeft(16);
+        header_->addView(filterAll_);
+        header_->addView(filterGames_);
+        if (!settings_) {
+            filterAll_->setVisibility(brls::Visibility::GONE);
+            filterGames_->setVisibility(brls::Visibility::GONE);
+        }
+        count_ = new brls::Label();
+        count_->setFontSize(theme::kFontCaption);
+        count_->setTextColor(theme::textTertiary());
+        count_->setMarginLeft(16);
+        count_->setMarginTop(12);
+        header_->addView(count_);
+
+        // Batch-mode summary line; hidden in normal browsing (the header
+        // counter replaces the old always-on status text).
         status_ = new brls::Label();
         status_->setFontSize(15);
         status_->setMarginTop(10);
         status_->setMarginLeft(34);
         status_->setMarginBottom(2);
         status_->setTextColor(theme::textTertiary());
+        status_->setVisibility(brls::Visibility::GONE);
 
         batchControls_ = new brls::Box(brls::Axis::ROW);
         batchControls_->setMarginTop(8);
@@ -199,6 +251,7 @@ public:
         });
         batchControls_->addView(prepareBatch_);
 
+        addView(header_);
         addView(status_);
         addView(batchControls_);
         addView(recycler_);
@@ -541,7 +594,7 @@ private:
         dataSource_->setShelves(std::move(shelfNew), std::move(shelfPopular));
         dataSource_->setMessage(query_.empty()
             ? "Catalog is empty. Press R to refresh."
-            : "Nothing found. Press X to change the search.");
+            : "Nothing found. Tap Search or press X to change the query.");
         recycler_->reloadData();
         if (focusInCatalog)
             restoreFocus(focusHash, focusShelf);
@@ -552,12 +605,71 @@ private:
         if (!busy_ && batchMode_) {
             refreshBatchStatus();
         } else if (!busy_) {
-            std::string filter = settings_ &&
-                settings_->get().catalogFilter == CatalogFilter::Games
-                ? "Games" : "All";
-            status_->setText(countText_ + "   Filter: " + filter);
             setActionAvailable(brls::BUTTON_RB, true);
         }
+        status_->setVisibility(batchMode_ ? brls::Visibility::VISIBLE
+                                          : brls::Visibility::GONE);
+        updateHeader();
+    }
+
+    // Sync the O2 header with the current state: search field mirrors the
+    // query, the active sort/filter chip is highlighted, counter shows the
+    // visible entry count.
+    void updateHeader() {
+        searchField_->setText(query_.empty() ? "Search" : query_);
+        clearSearch_->setVisibility(query_.empty() ? brls::Visibility::GONE
+                                                   : brls::Visibility::VISIBLE);
+        styleChip(sortLatest_, sort_ == SortMode::Latest);
+        styleChip(sortAlpha_, sort_ == SortMode::Alphabetical);
+        styleChip(sortSize_, sort_ == SortMode::Largest);
+        const bool gamesOnly = settings_ &&
+            settings_->get().catalogFilter == CatalogFilter::Games;
+        styleChip(filterAll_, !gamesOnly);
+        styleChip(filterGames_, gamesOnly);
+        count_->setText(countText_);
+    }
+
+    static void styleChip(brls::Button* chip, bool active) {
+        chip->setStyle(active ? &brls::BUTTONSTYLE_PRIMARY
+                              : &brls::BUTTONSTYLE_DEFAULT);
+    }
+
+    brls::Button* makeChip(const std::string& text,
+                           std::function<void()> onClick) {
+        auto* chip = new brls::Button();
+        chip->setStyle(&brls::BUTTONSTYLE_DEFAULT);
+        chip->setHeight(40);
+        chip->setFontSize(theme::kFontCaption);
+        chip->setMarginLeft(8);
+        chip->setText(text);
+        chip->registerClickAction(
+            [onClick = std::move(onClick)](brls::View*) {
+                onClick();
+                return true;
+            });
+        return chip;
+    }
+
+    void setSort(SortMode mode) {
+        if (busy_ || sort_ == mode)
+            return;
+        sort_ = mode;
+        rebuildEntries();
+    }
+
+    void setFilter(CatalogFilter filter) {
+        if (busy_ || !settings_ ||
+            settings_->get().catalogFilter == filter)
+            return;
+        AppSettingsData values = settings_->get();
+        values.catalogFilter = filter;
+        std::string error;
+        if (!settings_->update(values, error)) {
+            brls::Application::notify(error);
+            return;
+        }
+        observedSettingsGeneration_ = settings_->generation();
+        rebuildEntries();
     }
 
     // Re-focus the card that was focused before reloadData recycled all
@@ -683,18 +795,12 @@ private:
         return "";
     }
 
+    // Y hotkey: cycle through the sort modes; the header chips (O2) reflect
+    // the result, so no toast is needed.
     void cycleSort() {
-        if (sort_ == SortMode::Latest)
-            sort_ = SortMode::Alphabetical;
-        else if (sort_ == SortMode::Alphabetical)
-            sort_ = SortMode::Largest;
-        else
-            sort_ = SortMode::Latest;
-        rebuildEntries();
-        brls::Application::notify(
-            sort_ == SortMode::Latest ? "Sorted by latest."
-          : sort_ == SortMode::Alphabetical ? "Sorted alphabetically."
-                                             : "Sorted by size.");
+        setSort(sort_ == SortMode::Latest        ? SortMode::Alphabetical
+              : sort_ == SortMode::Alphabetical ? SortMode::Largest
+                                                 : SortMode::Latest);
     }
 
     void refreshCatalog() {
@@ -739,6 +845,15 @@ private:
     std::function<void()> openDownloads_;
     brls::RecyclerFrame* recycler_;
     CatalogDataSource* dataSource_;
+    brls::Box* header_ = nullptr;
+    brls::Button* searchField_ = nullptr;
+    brls::Button* clearSearch_ = nullptr;
+    brls::Button* sortLatest_ = nullptr;
+    brls::Button* sortAlpha_ = nullptr;
+    brls::Button* sortSize_ = nullptr;
+    brls::Button* filterAll_ = nullptr;
+    brls::Button* filterGames_ = nullptr;
+    brls::Label* count_ = nullptr;
     brls::Label* status_;
     brls::Box* batchControls_ = nullptr;
     brls::Button* prepareBatch_ = nullptr;
