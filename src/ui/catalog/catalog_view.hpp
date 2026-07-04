@@ -170,10 +170,17 @@ public:
         // Persistent catalog header (UI_PLAN O2): tappable search field,
         // sort + filter chips and a result counter. X/Y hotkeys still work;
         // the chips make the current state visible and touch-reachable.
-        header_ = new brls::Box(brls::Axis::ROW);
+        // Two rows so chip labels never clip: [search|Clear|count] over
+        // [sort chips | filter chips].
+        header_ = new brls::Box(brls::Axis::COLUMN);
         header_->setMarginTop(10);
         header_->setMarginLeft(34);
         header_->setMarginRight(34);
+        auto* searchRow = new brls::Box(brls::Axis::ROW);
+        auto* chipRow = new brls::Box(brls::Axis::ROW);
+        chipRow->setMarginTop(8);
+        header_->addView(searchRow);
+        header_->addView(chipRow);
         searchField_ = new brls::Button();
         searchField_->setStyle(&brls::BUTTONSTYLE_DEFAULT);
         searchField_->setHeight(40);
@@ -186,30 +193,30 @@ public:
             openSearchKeyboard();
             return true;
         });
-        header_->addView(searchField_);
+        searchRow->addView(searchField_);
         clearSearch_ = makeChip("Clear", [this] {
             if (query_.empty())
                 return;
             query_.clear();
             rebuildEntries();
         });
-        header_->addView(clearSearch_);
+        searchRow->addView(clearSearch_);
         sortLatest_ = makeChip("Latest", [this] { setSort(SortMode::Latest); });
         sortPopular_ = makeChip("Popular",
                                 [this] { setSort(SortMode::Popular); });
         sortAlpha_ = makeChip("A-Z", [this] { setSort(SortMode::Alphabetical); });
         sortSize_ = makeChip("Size", [this] { setSort(SortMode::Largest); });
-        sortLatest_->setMarginLeft(16);
-        header_->addView(sortLatest_);
-        header_->addView(sortPopular_);
-        header_->addView(sortAlpha_);
-        header_->addView(sortSize_);
+        sortLatest_->setMarginLeft(0);
+        chipRow->addView(sortLatest_);
+        chipRow->addView(sortPopular_);
+        chipRow->addView(sortAlpha_);
+        chipRow->addView(sortSize_);
         filterAll_ = makeChip("All", [this] { setFilter(CatalogFilter::All); });
         filterGames_ = makeChip("Games",
                                 [this] { setFilter(CatalogFilter::Games); });
         filterAll_->setMarginLeft(16);
-        header_->addView(filterAll_);
-        header_->addView(filterGames_);
+        chipRow->addView(filterAll_);
+        chipRow->addView(filterGames_);
         if (!settings_) {
             filterAll_->setVisibility(brls::Visibility::GONE);
             filterGames_->setVisibility(brls::Visibility::GONE);
@@ -220,7 +227,7 @@ public:
         count_->setMarginLeft(16);
         count_->setMarginTop(12);
         count_->setShrink(0.0f);
-        header_->addView(count_);
+        searchRow->addView(count_);
 
         // Batch-mode summary line; hidden in normal browsing (the header
         // counter replaces the old always-on status text).
