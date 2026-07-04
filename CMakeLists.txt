@@ -74,6 +74,11 @@ set(APP_SOURCES
     src/install/package_stream.cpp
     src/install/install_backend_switch.cpp
     src/main_switch.cpp
+    src/ui/catalog/batch_install.cpp
+    src/ui/catalog/catalog_view.cpp
+    src/ui/detail/torrent_selection.cpp
+    src/ui/downloads/downloads_view.cpp
+    src/ui/downloads/file_picker.cpp
     vendor/libnx-ext/libnx-ipcext/source/es.c
     vendor/libnx-ext/libnx-ipcext/source/ns-ext.c
     ${BOREALIS_LIBRARY}/lib/platforms/switch/switch_wrapper.c
