@@ -113,14 +113,6 @@ public:
         status_->setTextColor(theme::textTertiary());
         addView(status_);
 
-        emptyState_ = new EmptyStateView();
-        emptyState_->setContent(
-            "No installed applications",
-            "Refresh this list after your first install or when you return "
-            "from Home.",
-            "Refresh installed", [this] { refresh(); });
-        addView(emptyState_);
-
         recycler_ = new brls::RecyclerFrame();
         recycler_->setGrow(1);
         recycler_->setPadding(6, 32, 6, 32);
@@ -141,6 +133,19 @@ public:
     ~InstalledView() override { alive_->store(false); }
 
 private:
+    EmptyStateView* ensureEmptyState() {
+        if (emptyState_)
+            return emptyState_;
+        emptyState_ = new EmptyStateView();
+        emptyState_->setContent(
+            "No installed applications",
+            "Refresh this list after your first install or when you return "
+            "from Home.",
+            "Refresh installed", [this] { refresh(); });
+        addView(emptyState_);
+        return emptyState_;
+    }
+
     bool hasActiveStreamInstall() const {
         for (const DownloadTask& task : manager_->snapshot()) {
             if (task.mode != TransferMode::StreamInstall)
@@ -162,8 +167,10 @@ private:
         dataSource_->setTitles(std::move(titles));
         recycler_->reloadData();
         const bool empty = count == 0;
-        emptyState_->setVisibility(empty ? brls::Visibility::VISIBLE
-                                         : brls::Visibility::GONE);
+        if (empty)
+            ensureEmptyState()->setVisibility(brls::Visibility::VISIBLE);
+        else if (emptyState_)
+            emptyState_->setVisibility(brls::Visibility::GONE);
         recycler_->setVisibility(empty ? brls::Visibility::GONE
                                        : brls::Visibility::VISIBLE);
         status_->setText(std::to_string(count) +

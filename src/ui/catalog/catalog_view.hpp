@@ -254,9 +254,6 @@ public:
         addView(header_);
         addView(status_);
         addView(batchControls_);
-        emptyState_ = new EmptyStateView();
-        emptyState_->setVisibility(brls::Visibility::GONE);
-        addView(emptyState_);
         addView(recycler_);
         rebuildEntries();
 
@@ -351,6 +348,14 @@ private:
                            return static_cast<char>(std::tolower(c));
                        });
         return value;
+    }
+
+    EmptyStateView* ensureEmptyState() {
+        if (emptyState_)
+            return emptyState_;
+        emptyState_ = new EmptyStateView();
+        addView(emptyState_);
+        return emptyState_;
     }
 
     void toggleBatchMode() {
@@ -600,26 +605,30 @@ private:
             : "Nothing found. Tap Search or press X to change the query.");
         recycler_->reloadData();
         const bool empty = count == 0;
-        if (query_.empty()) {
-            emptyState_->setContent(
-                "Catalog is empty",
-                "Refresh the catalog to load the latest releases on this "
-                "console.",
-                "Refresh catalog", [this] { refreshCatalog(); });
-        } else {
-            emptyState_->setContent(
-                "Nothing found",
-                "Try another query or clear the current search to see all "
-                "releases again.",
-                "Clear search", [this] {
-                    if (query_.empty())
-                        return;
-                    query_.clear();
-                    rebuildEntries();
-                });
+        if (empty) {
+            if (query_.empty()) {
+                ensureEmptyState()->setContent(
+                    "Catalog is empty",
+                    "Refresh the catalog to load the latest releases on this "
+                    "console.",
+                    "Refresh catalog", [this] { refreshCatalog(); });
+            } else {
+                ensureEmptyState()->setContent(
+                    "Nothing found",
+                    "Try another query or clear the current search to see all "
+                    "releases again.",
+                    "Clear search", [this] {
+                        if (query_.empty())
+                            return;
+                        query_.clear();
+                        rebuildEntries();
+                    });
+            }
         }
-        emptyState_->setVisibility(empty ? brls::Visibility::VISIBLE
-                                         : brls::Visibility::GONE);
+        if (empty)
+            ensureEmptyState()->setVisibility(brls::Visibility::VISIBLE);
+        else if (emptyState_)
+            emptyState_->setVisibility(brls::Visibility::GONE);
         recycler_->setVisibility(empty ? brls::Visibility::GONE
                                        : brls::Visibility::VISIBLE);
         if (focusInCatalog)
@@ -706,7 +715,7 @@ private:
     // getDefaultFocus(), which honors focusColumn_.
     void restoreFocus(const std::string& hash, int shelfRow) {
         if (dataSource_->entries().empty()) {
-            brls::Application::giveFocus(emptyState_);
+            brls::Application::giveFocus(ensureEmptyState());
             return;
         }
         if (shelfRow >= 0 && shelfRow < dataSource_->shelfRowCount()) {

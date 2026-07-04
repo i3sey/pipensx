@@ -55,12 +55,6 @@ public:
         recycler_->registerCell("Message", [] { return new MessageCell(); });
         dataSource_ = new DownloadDataSource(this);
         recycler_->setDataSource(dataSource_);
-        emptyState_ = new EmptyStateView();
-        emptyState_->setContent(
-            "Downloads are empty",
-            "Import a .torrent file to start a download or stream install.",
-            "Import .torrent", [this] { openFilePicker(); });
-        addView(emptyState_);
         addView(recycler_);
         refresh();
         timer_.setCallback([this] {
@@ -103,6 +97,18 @@ public:
     GameMetadataService* metadataService() const { return metadata_; }
 
 private:
+    EmptyStateView* ensureEmptyState() {
+        if (emptyState_)
+            return emptyState_;
+        emptyState_ = new EmptyStateView();
+        emptyState_->setContent(
+            "Downloads are empty",
+            "Import a .torrent file to start a download or stream install.",
+            "Import .torrent", [this] { openFilePicker(); });
+        addView(emptyState_);
+        return emptyState_;
+    }
+
     void refresh() {
         auto next = manager_->snapshot();
         if (settings_ && !settings_->get().showCompletedDownloads) {
@@ -163,13 +169,15 @@ private:
             dataSource_->indexForTask(focusedTaskId));
         recycler_->reloadData();
         const bool empty = tasks_.empty();
-        emptyState_->setVisibility(empty ? brls::Visibility::VISIBLE
-                                         : brls::Visibility::GONE);
+        if (empty)
+            ensureEmptyState()->setVisibility(brls::Visibility::VISIBLE);
+        else if (emptyState_)
+            emptyState_->setVisibility(brls::Visibility::GONE);
         recycler_->setVisibility(empty ? brls::Visibility::GONE
                                        : brls::Visibility::VISIBLE);
         if (ownsFocus) {
             if (empty) {
-                brls::Application::giveFocus(emptyState_);
+                brls::Application::giveFocus(ensureEmptyState());
             } else {
                 recycler_->setFocusable(true);
                 brls::Application::giveFocus(recycler_);
