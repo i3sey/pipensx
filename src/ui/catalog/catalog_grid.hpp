@@ -36,6 +36,14 @@ inline constexpr int kShelfItems = 12;
 inline constexpr float kShelfSpacing = 2 * theme::kSpacingUnit;
 // Shelf title (21px) + margin + card strip + bottom breathing room.
 inline constexpr float kShelfHeight = 284.0f;
+// UI_PLAN F5: minimum cards for an optional shelf (New / Updated / genre)
+// to appear at all; "Popular" is exempt — it never hides silently.
+inline constexpr int kMinShelfItems = 4;
+// Featured hero banner: full-width card + bottom breathing room.
+inline constexpr float kHeroCardHeight = 280.0f;
+inline constexpr float kHeroHeight = 300.0f;
+// Subtle cover zoom while a card is focused (F5 focus-scale).
+inline constexpr float kFocusZoom = 1.06f;
 
 }  // namespace grid
 
@@ -73,6 +81,8 @@ public:
         cover_->setBackgroundColor(theme::surface());
         cover_->setAlignItems(brls::AlignItems::CENTER);
         cover_->setJustifyContent(brls::JustifyContent::CENTER);
+        // Focus zoom scales the cover art past the cover box bounds.
+        cover_->setClipsToBounds(true);
         placeholder_ = new brls::Label();
         placeholder_->setFontSize(theme::kFontTitle);
         placeholder_->setTextColor(theme::textSecondary());
@@ -150,6 +160,7 @@ public:
         cover_->setBorderThickness(highlight ? 4 : 0);
         cover_->setBorderColor(highlight ? theme::accent()
                                          : brls::TRANSPARENT);
+        applyZoom(false);
         setArtworkUrl(image_, service, info.iconUrl, currentIconUrl_,
                       imageState_);
     }
@@ -165,8 +176,14 @@ public:
 
     void onFocusGained() override {
         brls::Box::onFocusGained();
+        applyZoom(true);
         if (onFocus_)
             onFocus_();
+    }
+
+    void onFocusLost() override {
+        brls::Box::onFocusLost();
+        applyZoom(false);
     }
 
     int entryIndex() const { return entryIndex_; }
@@ -175,6 +192,16 @@ public:
     int shelfRow() const { return shelfRow_; }
 
 private:
+    // UI_PLAN F5: subtle cover zoom while the card is focused. The cover box
+    // clips, so the art scales in place without shifting the layout.
+    void applyZoom(bool focused) {
+        const float zoom = focused ? grid::kFocusZoom : 1.0f;
+        image_->setDimensions(grid::kCardWidth * zoom,
+                              grid::kCoverHeight * zoom);
+        image_->setPositionTop(-(zoom - 1.0f) * grid::kCoverHeight / 2.0f);
+        image_->setPositionLeft(-(zoom - 1.0f) * grid::kCardWidth / 2.0f);
+    }
+
     brls::Box* cover_;
     brls::Label* placeholder_;
     AsyncRgbaImage* image_;
@@ -335,25 +362,156 @@ public:
         setHeight(grid::kShelfHeight);
         setLineBottom(0);
         setLineColor(brls::TRANSPARENT);
+        // Section header (UI_PLAN F5): shelf title + optional "See all"
+        // action jumping into the grid with the matching sort/filter.
+        header_ = new brls::Box(brls::Axis::ROW);
+        header_->setMarginBottom(theme::kSpacingUnit);
         title_ = new brls::Label();
         title_->setFontSize(theme::kFontBody);
-        title_->setMarginBottom(theme::kSpacingUnit);
+        title_->setGrow(1);
+        seeAll_ = new brls::Label();
+        seeAll_->setFontSize(theme::kFontCaption);
+        seeAll_->setTextColor(theme::textTertiary());
+        seeAll_->setText("See all >");
+        seeAll_->setMarginTop(4);
+        seeAll_->registerClickAction([this](brls::View*) {
+            if (seeAllAction_)
+                seeAllAction_();
+            return true;
+        });
+        seeAll_->addGestureRecognizer(
+            new brls::TapGestureRecognizer(seeAll_));
+        header_->addView(title_);
+        header_->addView(seeAll_);
         shelf_ = new HorizontalShelf();
-        addView(title_);
+        addView(header_);
         addView(shelf_);
     }
 
     void setShelf(const std::string& title,
                   const std::vector<GridCardInfo>& infos,
                   GameMetadataService* service, GameCard::Activate onActivate,
-                  int shelfRow) {
+                  int shelfRow, std::function<void()> seeAll) {
         title_->setText(title);
+        seeAllAction_ = std::move(seeAll);
+        const bool hasSeeAll = static_cast<bool>(seeAllAction_);
+        seeAll_->setVisibility(hasSeeAll ? brls::Visibility::VISIBLE
+                                         : brls::Visibility::GONE);
+        seeAll_->setFocusable(hasSeeAll);
         shelf_->setItems(infos, service, std::move(onActivate), shelfRow);
     }
 
 private:
+    brls::Box* header_;
     brls::Label* title_;
+    brls::Label* seeAll_;
     HorizontalShelf* shelf_;
+    std::function<void()> seeAllAction_;
+};
+
+// Full-width featured banner above the shelves (UI_PLAN F5). One focusable
+// card: banner art fills the box, a bottom overlay carries the caption,
+// title and sub line. Activation routes through the same entry-index path
+// as the grid cards.
+class HeroCard : public brls::Box {
+public:
+    using Activate = std::function<void(int)>;
+
+    HeroCard() : brls::Box(brls::Axis::COLUMN) {
+        setFocusable(true);
+        setHeight(grid::kHeroCardHeight);
+        setCornerRadius(theme::kRadiusLarge);
+        setClipsToBounds(true);
+        setBackgroundColor(theme::surface());
+        setJustifyContent(brls::JustifyContent::FLEX_END);
+
+        image_ = new AsyncRgbaImage();
+        image_->setPositionType(brls::PositionType::ABSOLUTE);
+        image_->setPositionTop(0);
+        image_->setPositionLeft(0);
+        image_->setWidthPercentage(100);
+        image_->setHeightPercentage(100);
+        image_->setScalingType(brls::ImageScalingType::FILL);
+        addView(image_);
+
+        auto* overlay = new brls::Box(brls::Axis::COLUMN);
+        overlay->setWidthPercentage(100);
+        overlay->setBackgroundColor(theme::overlay());
+        overlay->setPadding(2 * theme::kSpacingUnit, 3 * theme::kSpacingUnit,
+                            2 * theme::kSpacingUnit, 3 * theme::kSpacingUnit);
+        kicker_ = new brls::Label();
+        kicker_->setFontSize(theme::kFontCaption);
+        kicker_->setTextColor(theme::accent());
+        kicker_->setText("Featured");
+        title_ = new brls::Label();
+        title_->setSingleLine(true);
+        title_->setFontSize(theme::kFontHeading);
+        title_->setMarginTop(2);
+        sub_ = new brls::Label();
+        sub_->setSingleLine(true);
+        sub_->setFontSize(theme::kFontCaption);
+        sub_->setTextColor(theme::textTertiary());
+        sub_->setMarginTop(2);
+        overlay->addView(kicker_);
+        overlay->addView(title_);
+        overlay->addView(sub_);
+        addView(overlay);
+
+        registerClickAction([this](brls::View*) {
+            if (onActivate_)
+                onActivate_(entryIndex_);
+            return true;
+        });
+        addGestureRecognizer(new brls::TapGestureRecognizer(this));
+    }
+
+    void setHero(const GridCardInfo& info, const std::string& imageUrl,
+                 GameMetadataService* service, Activate onActivate) {
+        entryIndex_ = info.entryIndex;
+        infoHash_ = info.infoHash;
+        onActivate_ = std::move(onActivate);
+        title_->setText(info.title);
+        sub_->setText(info.sub);
+        sub_->setTextColor(info.subIsBadge ? theme::accent()
+                                           : theme::textTertiary());
+        setArtworkUrl(image_, service, imageUrl, currentUrl_, imageState_);
+    }
+
+    int entryIndex() const { return entryIndex_; }
+    const std::string& infoHash() const { return infoHash_; }
+
+private:
+    AsyncRgbaImage* image_;
+    brls::Label* kicker_;
+    brls::Label* title_;
+    brls::Label* sub_;
+    std::string currentUrl_;
+    std::shared_ptr<ImageRequestState> imageState_ =
+        std::make_shared<ImageRequestState>();
+    int entryIndex_ = -1;
+    std::string infoHash_;
+    Activate onActivate_;
+};
+
+class HeroCell : public brls::RecyclerCell {
+public:
+    HeroCell() {
+        setFocusable(false);
+        setAxis(brls::Axis::COLUMN);
+        setHeight(grid::kHeroHeight);
+        setLineBottom(0);
+        setLineColor(brls::TRANSPARENT);
+        hero_ = new HeroCard();
+        addView(hero_);
+    }
+
+    void setHero(const GridCardInfo& info, const std::string& imageUrl,
+                 GameMetadataService* service, HeroCard::Activate onActivate) {
+        hero_->setHero(info, imageUrl, service, std::move(onActivate));
+    }
+
+private:
+    HeroCard* hero_;
 };
 
 }  // namespace pipensx::ui

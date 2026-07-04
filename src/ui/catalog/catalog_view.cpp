@@ -18,21 +18,29 @@ brls::RecyclerCell* CatalogDataSource::cellForRow(
         owner->onEntrySelected(entryIndex);
     };
 
-    if (index.row < shelfRowCount()) {
-        const bool isNew = !shelfNew_.empty() && index.row == 0;
-        const std::vector<int>& picks = isNew ? shelfNew_ : shelfPopular_;
+    if (index.row < headerRowCount()) {
+        const bool hasHero = heroIndex_ >= 0;
+        if (hasHero && index.row == 0) {
+            auto* cell =
+                static_cast<HeroCell*>(recycler->dequeueReusableCell("Hero"));
+            cell->setHero(makeInfo(heroIndex_), heroImage_, metadata_,
+                          std::move(activate));
+            return cell;
+        }
+        const CatalogShelf& shelf =
+            shelves_[static_cast<size_t>(index.row - (hasHero ? 1 : 0))];
         std::vector<GridCardInfo> infos;
-        infos.reserve(picks.size());
-        for (int pick : picks)
+        infos.reserve(shelf.items.size());
+        for (int pick : shelf.items)
             infos.push_back(makeInfo(pick));
         auto* cell =
             static_cast<ShelfCell*>(recycler->dequeueReusableCell("Shelf"));
-        cell->setShelf(isNew ? "New" : "Popular", infos, metadata_,
-                       std::move(activate), index.row);
+        cell->setShelf(shelf.title, infos, metadata_, std::move(activate),
+                       index.row, shelf.seeAll);
         return cell;
     }
 
-    const int start = (index.row - shelfRowCount()) * grid::kColumns;
+    const int start = (index.row - headerRowCount()) * grid::kColumns;
     const int end = std::min(start + grid::kColumns,
                              static_cast<int>(entries_.size()));
     std::vector<GridCardInfo> infos;
