@@ -49,17 +49,14 @@ public:
         const GameMetadata* found = metadata_->findByInfoHash(entry_.infoHash);
         titleId_ = found ? found->titleId : std::string();
 
-        auto* content = new brls::Box(brls::Axis::COLUMN);
+        // F3: eShop-style two-column page. Left column is fixed (cover +
+        // install button + size/status); the right column scrolls on its own.
+        auto* content = new brls::Box(brls::Axis::ROW);
         content->setPadding(24, 40, 24, 40);
-        buildHeader(content, found);
-        buildActions(content);
-        buildBody(content, found);
+        buildLeftColumn(content, found);
+        buildRightColumn(content, found);
 
-        auto* scroll = new brls::ScrollingFrame();
-        scroll->setGrow(1);
-        scroll->setContentView(content);
-
-        frame_ = new brls::AppletFrame(scroll);
+        frame_ = new brls::AppletFrame(content);
         frame_->setTitle(found ? found->name : entry_.title);
     }
 
@@ -88,117 +85,93 @@ public:
     }
 
 private:
-    void buildHeader(brls::Box* content, const GameMetadata* found) {
-        if (found)
-            appendAsyncImage(content, metadata_,
-                             !found->bannerUrl.empty() ? found->bannerUrl
-                                                       : found->iconUrl,
-                             220);
-        auto* title = new brls::Label();
-        title->setFontSize(28);
-        title->setText(found ? found->name : entry_.title);
-        content->addView(title);
+    static constexpr float kLeftColumnWidth = 320.0f;
+
+    // Left column: cover, full-width Install/Options, size, status (F3).
+    void buildLeftColumn(brls::Box* content, const GameMetadata* found) {
+        auto* left = new brls::Box(brls::Axis::COLUMN);
+        left->setWidth(kLeftColumnWidth);
+        left->setMarginRight(32);
 
         if (found) {
-            std::string facts;
-            if (!found->publisher.empty())
-                facts += found->publisher;
-            if (!found->releaseDate.empty())
-                facts += (facts.empty() ? "" : "   ") + found->releaseDate;
-            std::string categories = joinStrings(found->categories, ", ");
-            if (!categories.empty())
-                facts += (facts.empty() ? "" : "   ") + categories;
-            if (!facts.empty()) {
-                auto* factLabel = new brls::Label();
-                factLabel->setFontSize(16);
-                factLabel->setMarginTop(10);
-                factLabel->setTextColor(theme::textSecondary());
-                factLabel->setText(facts);
-                content->addView(factLabel);
+            const std::string& coverUrl = !found->iconUrl.empty()
+                ? found->iconUrl : found->bannerUrl;
+            if (!coverUrl.empty()) {
+                auto* cover = new AsyncRgbaImage();
+                cover->setWidth(kLeftColumnWidth);
+                cover->setHeight(260);
+                cover->setCornerRadius(theme::kRadiusLarge);
+                cover->setScalingType(brls::ImageScalingType::FIT);
+                loadImageInto(cover, metadata_, coverUrl);
+                left->addView(cover);
             }
         }
-    }
-
-    void buildActions(brls::Box* content) {
-        auto* actions = new brls::Box(brls::Axis::COLUMN);
-        actions->setMarginTop(20);
-        actions->setMarginBottom(8);
-
-        auto* row = new brls::Box(brls::Axis::ROW);
-
-        secondary_ = new brls::Button();
-        secondary_->setStyle(&brls::BUTTONSTYLE_DEFAULT);
-        secondary_->setFontSize(21);
-        secondary_->setHeight(64);
-        secondary_->setGrow(1);
-        secondary_->setMarginRight(12);
-        secondary_->setText("Options");
-        secondary_->registerClickAction([this](brls::View*) {
-            onSecondary();
-            return true;
-        });
-        row->addView(secondary_);
 
         primary_ = new brls::Button();
         primary_->setStyle(&brls::BUTTONSTYLE_PRIMARY);
-        primary_->setFontSize(21);
+        primary_->setFontSize(theme::kFontBody);
         primary_->setHeight(64);
-        primary_->setGrow(1);
+        primary_->setMarginTop(16);
         primary_->setText("Install");
         primary_->registerClickAction([this](brls::View*) {
             onPrimary();
             return true;
         });
-        row->addView(primary_);
-        actions->addView(row);
+        left->addView(primary_);
+
+        secondary_ = new brls::Button();
+        secondary_->setStyle(&brls::BUTTONSTYLE_DEFAULT);
+        secondary_->setFontSize(theme::kFontSmall);
+        secondary_->setHeight(56);
+        secondary_->setMarginTop(12);
+        secondary_->setText("Options");
+        secondary_->registerClickAction([this](brls::View*) {
+            onSecondary();
+            return true;
+        });
+        left->addView(secondary_);
+
+        auto* size = new brls::Label();
+        size->setFontSize(theme::kFontCaption);
+        size->setMarginTop(16);
+        size->setTextColor(theme::textTertiary());
+        size->setText("Download size: " +
+                      (entry_.size ? formatBytes(entry_.size)
+                                   : std::string("Unknown")));
+        left->addView(size);
 
         statusLabel_ = new brls::Label();
-        statusLabel_->setFontSize(16);
-        statusLabel_->setMarginTop(12);
+        statusLabel_->setFontSize(theme::kFontCaption);
+        statusLabel_->setMarginTop(8);
         statusLabel_->setTextColor(theme::accent());
         statusLabel_->setText("Install adds this game to your console.");
-        actions->addView(statusLabel_);
+        left->addView(statusLabel_);
 
-        content->addView(actions);
+        content->addView(left);
     }
 
-    void buildBody(brls::Box* content, const GameMetadata* found) {
-        auto* release = new brls::Label();
-        release->setFontSize(15);
-        release->setMarginTop(4);
-        release->setTextColor(theme::textTertiary());
-        release->setText("Release: " + entry_.title);
-        content->addView(release);
+    // Right column (scrolls): title, fact table, screenshots, description.
+    void buildRightColumn(brls::Box* content, const GameMetadata* found) {
+        auto* right = new brls::Box(brls::Axis::COLUMN);
+        right->setPadding(0, 12, 24, 0);
 
-        if (found) {
-            std::string text = !found->description.empty() ? found->description
-                                                           : found->intro;
-            if (!text.empty()) {
-                auto* desc = new brls::Label();
-                desc->setFontSize(17);
-                desc->setMarginTop(16);
-                desc->setText(shortDescription(text));
-                content->addView(desc);
-            }
-        } else {
-            auto* missing = new brls::Label();
-            missing->setFontSize(17);
-            missing->setMarginTop(16);
-            missing->setText("No game artwork match yet. Install still works "
-                             "from the catalog release.");
-            content->addView(missing);
-        }
+        auto* title = new brls::Label();
+        title->setFontSize(theme::kFontTitle);
+        title->setText(found ? found->name : entry_.title);
+        right->addView(title);
+
+        buildFactsTable(right, found);
 
         std::vector<std::string> screenshots =
             pipensx::mergeScreenshotUrls(found, entry_, 6);
         if (!screenshots.empty()) {
             auto* shots = new brls::Label();
-            shots->setFontSize(16);
-            shots->setMarginTop(18);
+            shots->setFontSize(theme::kFontSmall);
+            shots->setMarginTop(24);
             shots->setMarginBottom(8);
             shots->setTextColor(theme::textSecondary());
             shots->setText("Screenshots");
-            content->addView(shots);
+            right->addView(shots);
 
             auto* rail = new brls::Box(brls::Axis::ROW);
             rail->setHeight(180);
@@ -207,7 +180,7 @@ private:
                 image->setWidth(300);
                 image->setHeight(170);
                 image->setMarginRight(12);
-                image->setCornerRadius(6);
+                image->setCornerRadius(theme::kRadiusSmall);
                 image->setFocusable(true);
                 image->setScalingType(brls::ImageScalingType::FIT);
                 loadImageInto(image, metadata_, url);
@@ -216,17 +189,10 @@ private:
             auto* gallery = new brls::HScrollingFrame();
             gallery->setHeight(190);
             gallery->setContentView(rail);
-            content->addView(gallery);
+            right->addView(gallery);
         }
 
-        auto* size = new brls::Label();
-        size->setFontSize(15);
-        size->setMarginTop(16);
-        size->setTextColor(theme::textTertiary());
-        size->setText("Download size: " +
-                      (entry_.size ? formatBytes(entry_.size)
-                                   : std::string("Unknown")));
-        content->addView(size);
+        buildDescription(right, found);
 
         std::string warn;
         if (!lastFailure_.empty()) {
@@ -241,11 +207,101 @@ private:
         }
         if (!warn.empty()) {
             auto* warning = new brls::Label();
-            warning->setFontSize(15);
-            warning->setMarginTop(10);
+            warning->setFontSize(theme::kFontCaption);
+            warning->setMarginTop(16);
             warning->setTextColor(theme::warning());
             warning->setText(warn);
-            content->addView(warning);
+            right->addView(warning);
+        }
+
+        // Raw catalog release title (moved off the list per F2).
+        auto* release = new brls::Label();
+        release->setFontSize(theme::kFontCaption);
+        release->setMarginTop(16);
+        release->setTextColor(theme::textTertiary());
+        release->setText("Release: " + entry_.title);
+        right->addView(release);
+
+        auto* scroll = new brls::ScrollingFrame();
+        scroll->setGrow(1);
+        scroll->setContentView(right);
+        content->addView(scroll);
+    }
+
+    // S4: facts as label/value rows instead of one glued string.
+    void buildFactsTable(brls::Box* right, const GameMetadata* found) {
+        auto* table = new brls::Box(brls::Axis::COLUMN);
+        table->setMarginTop(8);
+        if (found) {
+            addFactRow(table, "Publisher", found->publisher);
+            addFactRow(table, "Release", found->releaseDate);
+            addFactRow(table, "Genre", joinStrings(found->categories, ", "));
+        }
+        addFactRow(table, "Size",
+                   entry_.size ? formatBytes(entry_.size)
+                               : std::string("Unknown"));
+        addFactRow(table, "Title ID", titleId_);
+        right->addView(table);
+    }
+
+    void addFactRow(brls::Box* table, const std::string& name,
+                    const std::string& value) {
+        if (value.empty())
+            return;
+        auto* row = new brls::Box(brls::Axis::ROW);
+        row->setMarginTop(8);
+        auto* key = new brls::Label();
+        key->setFontSize(theme::kFontCaption);
+        key->setTextColor(theme::textTertiary());
+        key->setWidth(160);
+        key->setText(name);
+        row->addView(key);
+        auto* val = new brls::Label();
+        val->setFontSize(theme::kFontCaption);
+        val->setTextColor(theme::textSecondary());
+        val->setGrow(1);
+        val->setText(value);
+        row->addView(val);
+        table->addView(row);
+    }
+
+    // S5: reversible "Show more" instead of a hard cut.
+    void buildDescription(brls::Box* right, const GameMetadata* found) {
+        if (!found) {
+            auto* missing = new brls::Label();
+            missing->setFontSize(theme::kFontSmall);
+            missing->setMarginTop(24);
+            missing->setText("No game artwork match yet. Install still works "
+                             "from the catalog release.");
+            right->addView(missing);
+            return;
+        }
+        std::string text = !found->description.empty() ? found->description
+                                                       : found->intro;
+        if (text.empty())
+            return;
+        auto* desc = new brls::Label();
+        desc->setFontSize(theme::kFontSmall);
+        desc->setMarginTop(24);
+        bool truncated = text.size() > 900;
+        desc->setText(truncated ? shortDescription(text) : text);
+        right->addView(desc);
+        if (truncated) {
+            auto* more = new brls::Button();
+            more->setStyle(&brls::BUTTONSTYLE_BORDERLESS);
+            more->setFontSize(theme::kFontSmall);
+            more->setTextColor(theme::accent());
+            more->setMarginTop(4);
+            more->setText("Show more");
+            more->registerClickAction([this, desc, more,
+                                       text = std::move(text)](brls::View*) {
+                desc->setText(text);
+                more->setVisibility(brls::Visibility::GONE);
+                if (primary_)
+                    brls::Application::giveFocus(primary_);
+                return true;
+            });
+            right->addView(more);
         }
     }
 
