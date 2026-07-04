@@ -55,6 +55,12 @@ public:
         recycler_->registerCell("Message", [] { return new MessageCell(); });
         dataSource_ = new DownloadDataSource(this);
         recycler_->setDataSource(dataSource_);
+        emptyState_ = new EmptyStateView();
+        emptyState_->setContent(
+            "Downloads are empty",
+            "Import a .torrent file to start a download or stream install.",
+            "Import .torrent", [this] { openFilePicker(); });
+        addView(emptyState_);
         addView(recycler_);
         refresh();
         timer_.setCallback([this] {
@@ -155,22 +161,30 @@ private:
         dataSource_->setTasks(tasks_);
         recycler_->setDefaultCellFocus(
             dataSource_->indexForTask(focusedTaskId));
-        if (ownsFocus) {
-            recycler_->setFocusable(true);
-            brls::Application::giveFocus(recycler_);
-        }
         recycler_->reloadData();
+        const bool empty = tasks_.empty();
+        emptyState_->setVisibility(empty ? brls::Visibility::VISIBLE
+                                         : brls::Visibility::GONE);
+        recycler_->setVisibility(empty ? brls::Visibility::GONE
+                                       : brls::Visibility::VISIBLE);
         if (ownsFocus) {
-            recycler_->setFocusable(false);
-            brls::Application::giveFocus(recycler_);
+            if (empty) {
+                brls::Application::giveFocus(emptyState_);
+            } else {
+                recycler_->setFocusable(true);
+                brls::Application::giveFocus(recycler_);
+                recycler_->setFocusable(false);
+                brls::Application::giveFocus(recycler_);
+            }
         }
-        if (!structureChanged)
+        if (!empty && !structureChanged)
             recycler_->setContentOffsetY(offset, false);
     }
 
     DownloadManager* manager_;
     GameMetadataService* metadata_;
     AppSettings* settings_;
+    EmptyStateView* emptyState_ = nullptr;
     brls::RecyclerFrame* recycler_;
     DownloadDataSource* dataSource_;
     brls::RepeatingTimer timer_;

@@ -156,9 +156,14 @@ L/R — постранично; при сортировке A–Z — алфав
 Стартовать в `sdmc:/switch/pipensx/torrents` (сейчас корень SD), breadcrumb в заголовке,
 иконки папок/файлов, папки первыми.
 
-### S3. Пустые состояния с CTA
+### S3. ✅ Пустые состояния с CTA
 Иконка + текст + кнопка («Обновить каталог» и т.п.) вместо «Press R» / «Press X»
 в Catalog, Downloads, Installed.
+**Выполнено 2026-07-04:** добавлен общий `EmptyStateView` на токенах O1
+(`icon.png`, заголовок, пояснение, CTA-кнопка) и подключён в `CatalogView`,
+`MainView`/Downloads и `InstalledView`. Catalog показывает `Refresh catalog`
+или `Clear search` в зависимости от состояния поиска; Downloads — `Import
+.torrent`; Installed — `Refresh installed`.
 
 ### S4. ✅ Факты таблицей на карточке игры
 `DetailCell`-строки: Publisher / Release / Genre / Size / Title ID — вместо склеенной

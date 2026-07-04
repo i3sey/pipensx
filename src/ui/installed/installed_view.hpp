@@ -113,6 +113,14 @@ public:
         status_->setTextColor(theme::textTertiary());
         addView(status_);
 
+        emptyState_ = new EmptyStateView();
+        emptyState_->setContent(
+            "No installed applications",
+            "Refresh this list after your first install or when you return "
+            "from Home.",
+            "Refresh installed", [this] { refresh(); });
+        addView(emptyState_);
+
         recycler_ = new brls::RecyclerFrame();
         recycler_->setGrow(1);
         recycler_->setPadding(6, 32, 6, 32);
@@ -153,6 +161,11 @@ private:
         size_t count = titles.size();
         dataSource_->setTitles(std::move(titles));
         recycler_->reloadData();
+        const bool empty = count == 0;
+        emptyState_->setVisibility(empty ? brls::Visibility::VISIBLE
+                                         : brls::Visibility::GONE);
+        recycler_->setVisibility(empty ? brls::Visibility::GONE
+                                       : brls::Visibility::VISIBLE);
         status_->setText(std::to_string(count) +
             (count == 1 ? " installed application" : " installed applications"));
     }
@@ -189,6 +202,7 @@ private:
     InstalledTitleService* installed_;
     DownloadManager* manager_;
     brls::Label* status_ = nullptr;
+    EmptyStateView* emptyState_ = nullptr;
     brls::RecyclerFrame* recycler_ = nullptr;
     InstalledDataSource* dataSource_ = nullptr;
     std::shared_ptr<std::atomic<bool>> alive_;

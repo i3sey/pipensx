@@ -254,6 +254,9 @@ public:
         addView(header_);
         addView(status_);
         addView(batchControls_);
+        emptyState_ = new EmptyStateView();
+        emptyState_->setVisibility(brls::Visibility::GONE);
+        addView(emptyState_);
         addView(recycler_);
         rebuildEntries();
 
@@ -596,6 +599,29 @@ private:
             ? "Catalog is empty. Press R to refresh."
             : "Nothing found. Tap Search or press X to change the query.");
         recycler_->reloadData();
+        const bool empty = count == 0;
+        if (query_.empty()) {
+            emptyState_->setContent(
+                "Catalog is empty",
+                "Refresh the catalog to load the latest releases on this "
+                "console.",
+                "Refresh catalog", [this] { refreshCatalog(); });
+        } else {
+            emptyState_->setContent(
+                "Nothing found",
+                "Try another query or clear the current search to see all "
+                "releases again.",
+                "Clear search", [this] {
+                    if (query_.empty())
+                        return;
+                    query_.clear();
+                    rebuildEntries();
+                });
+        }
+        emptyState_->setVisibility(empty ? brls::Visibility::VISIBLE
+                                         : brls::Visibility::GONE);
+        recycler_->setVisibility(empty ? brls::Visibility::GONE
+                                       : brls::Visibility::VISIBLE);
         if (focusInCatalog)
             restoreFocus(focusHash, focusShelf);
 
@@ -680,7 +706,7 @@ private:
     // getDefaultFocus(), which honors focusColumn_.
     void restoreFocus(const std::string& hash, int shelfRow) {
         if (dataSource_->entries().empty()) {
-            brls::Application::giveFocus(recycler_);
+            brls::Application::giveFocus(emptyState_);
             return;
         }
         if (shelfRow >= 0 && shelfRow < dataSource_->shelfRowCount()) {
@@ -857,6 +883,7 @@ private:
     brls::Label* status_;
     brls::Box* batchControls_ = nullptr;
     brls::Button* prepareBatch_ = nullptr;
+    EmptyStateView* emptyState_ = nullptr;
     std::shared_ptr<std::atomic<bool>> alive_;
     std::shared_ptr<std::atomic<bool>> cancelled_;
     // Column the user last focused in the grid; grid rows read it in
