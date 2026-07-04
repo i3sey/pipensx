@@ -133,10 +133,21 @@ Install → прогресс на кнопке («Downloading 42%») → «Insta
 одной кнопкой вслепую, X — Remove.
 Зависит от F1, O1.
 
-### O8. DetailsActivity секциями
+### O8. DetailsActivity секциями ✅ (выполнено)
 Карточки: «Прогресс» (крупный бар + ETA), «Скорость» (график оставить), «Сеть»
 (peers/DHT/pieces); экранные кнопки Pause/Verify/Remove вместо хоткеев.
 Зависит от F1, O1, S1 (ETA).
+**Выполнено 2026-07-04:** `DetailsActivity` перестроена в скролл-колонку карточек
+на токенах O1: заголовок Status (цвет — статусный токен) + ряд экранных кнопок
+Pause/Resume · Verify · Remove (стили `BUTTONSTYLE_PRIMARY`/`DEFAULT`,
+состояние ENABLED/DISABLED по статусу задачи, обновляется поллингом 500 мс),
+карточка «Progress» (крупный `ProgressBar` 14px + процент/байты + ETA из
+`formatEta` S1), «Speed» (текст скоростей + `SpeedGraphView`), «Network»
+(peers/DHT/pieces). Слепые хоткеи X/Y убраны — все действия на видимых кнопках,
+B (назад) остаётся от `AppletFrame`; логика pause/resume/verify/remove и
+stream-install (пакеты, EMA-скорость установки) сохранена. Switch-сборка
+`pipensx.nro` и PC/golden зелёные; тач/фокус-прогон на консоли — при первом
+запуске на железе.
 
 ### O9. Options → выбор режима установки
 Внятный диалог: «Download to SD» / «Stream install» с пояснениями, выбор файлов,

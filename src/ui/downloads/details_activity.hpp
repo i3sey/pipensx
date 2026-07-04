@@ -12,33 +12,75 @@
 
 namespace pipensx::ui {
 
+// UI_PLAN O8 — download details as eShop-style cards (Progress / Speed /
+// Network) with on-screen Pause/Verify/Remove buttons instead of blind X/Y
+// hotkeys. Big progress bar + ETA (S1), speed graph kept, network stats
+// grouped. All colors/fonts on O1 tokens.
 class DetailsActivity : public brls::Activity {
 public:
     DetailsActivity(std::string taskId, DownloadManager* manager)
         : taskId_(std::move(taskId)), manager_(manager) {
         auto* content = new brls::Box(brls::Axis::COLUMN);
-        content->setFocusable(true);
-        content->setGrow(1);
-        content->setPadding(30, 55, 30, 55);
-        content->setJustifyContent(brls::JustifyContent::CENTER);
+        content->setPadding(24, 40, 24, 40);
         content->setAlignItems(brls::AlignItems::STRETCH);
-        content->setBackgroundColor(theme::panel());
-        content->setCornerRadius(12);
 
-        status_ = addLine(content, 27);
-        progress_ = addLine(content, 22);
-        install_ = addLine(content, 20);
-        transfer_ = addLine(content, 22);
+        status_ = new brls::Label();
+        status_->setFontSize(theme::kFontHeading);
+        status_->setMarginBottom(16);
+        content->addView(status_);
+
+        // Action buttons replace the old X/Y hotkeys.
+        auto* actions = new brls::Box(brls::Axis::ROW);
+        actions->setMarginBottom(20);
+        pauseButton_ = addActionButton(actions, "Pause",
+                                       &brls::BUTTONSTYLE_PRIMARY);
+        verifyButton_ = addActionButton(actions, "Verify",
+                                        &brls::BUTTONSTYLE_DEFAULT);
+        removeButton_ = addActionButton(actions, "Remove",
+                                        &brls::BUTTONSTYLE_DEFAULT);
+        content->addView(actions);
+        pauseButton_->registerClickAction([this](brls::View*) {
+            onPauseResume();
+            return true;
+        });
+        verifyButton_->registerClickAction([this](brls::View*) {
+            manager_->verify(taskId_);
+            refresh();
+            return true;
+        });
+        removeButton_->registerClickAction([this](brls::View*) {
+            openRemoveDialog();
+            return true;
+        });
+
+        auto* progressCard = addCard(content, "Progress");
+        progressBar_ = new ProgressBar();
+        progressBar_->setHeight(14);
+        progressBar_->setMarginBottom(12);
+        progressCard->addView(progressBar_);
+        progress_ = addLine(progressCard, theme::kFontBody);
+        eta_ = addLine(progressCard, theme::kFontSmall);
+        eta_->setTextColor(theme::textSecondary());
+        install_ = addLine(progressCard, theme::kFontSmall);
+
+        auto* speedCard = addCard(content, "Speed");
+        transfer_ = addLine(speedCard, theme::kFontBody);
         speedGraph_ = new SpeedGraphView();
-        content->addView(speedGraph_);
-        peers_ = addLine(content, 22);
-        pieces_ = addLine(content, 22);
-        path_ = addLine(content, 18);
-        error_ = addLine(content, 18);
+        speedCard->addView(speedGraph_);
+
+        auto* networkCard = addCard(content, "Network");
+        peers_ = addLine(networkCard, theme::kFontBody);
+        pieces_ = addLine(networkCard, theme::kFontBody);
+
+        path_ = addLine(content, theme::kFontCaption);
+        path_->setTextColor(theme::textTertiary());
+        error_ = addLine(content, theme::kFontSmall);
         error_->setTextColor(theme::error());
 
-        auto* frame = new brls::AppletFrame(content);
-        frame_ = frame;
+        auto* scroll = new brls::ScrollingFrame();
+        scroll->setGrow(1);
+        scroll->setContentView(content);
+        frame_ = new brls::AppletFrame(scroll);
     }
 
     brls::View* createContentView() override {
@@ -47,34 +89,9 @@ public:
 
     void onContentAvailable() override {
         refresh();
-        registerAction("Pause / Resume / Verify", brls::BUTTON_Y,
-            [this](brls::View*) {
-                auto task = currentTask();
-                if (!task)
-                    return false;
-                if (task->status == DownloadStatus::Paused ||
-                    task->status == DownloadStatus::Error)
-                    manager_->resume(taskId_);
-                else if (task->status == DownloadStatus::Completed)
-                    manager_->verify(taskId_);
-                else if (task->status == DownloadStatus::Queued ||
-                         task->status == DownloadStatus::Checking ||
-                         task->status == DownloadStatus::Downloading ||
-                         task->status == DownloadStatus::Installing ||
-                         task->status == DownloadStatus::Committing ||
-                         task->status == DownloadStatus::Verifying)
-                    manager_->pause(taskId_);
-                refresh();
-                return true;
-            });
-        registerAction("Remove", brls::BUTTON_X,
-            [this](brls::View*) {
-                openRemoveDialog();
-                return true;
-            });
-
         timer_.setCallback([this] { refresh(); });
         timer_.start(500);
+        brls::Application::giveFocus(pauseButton_);
     }
 
     ~DetailsActivity() override {
@@ -86,9 +103,38 @@ private:
         auto* label = new brls::Label();
         label->setWidth(brls::View::AUTO);
         label->setFontSize(size);
-        label->setMarginBottom(13);
+        label->setMarginBottom(6);
         box->addView(label);
         return label;
+    }
+
+    static brls::Box* addCard(brls::Box* parent, const std::string& title) {
+        auto* card = new brls::Box(brls::Axis::COLUMN);
+        card->setBackgroundColor(theme::surface());
+        card->setCornerRadius(theme::kRadiusMedium);
+        card->setPadding(16, 20, 16, 20);
+        card->setMarginBottom(16);
+        auto* heading = new brls::Label();
+        heading->setFontSize(theme::kFontCaption);
+        heading->setTextColor(theme::textSecondary());
+        heading->setMarginBottom(10);
+        heading->setText(title);
+        card->addView(heading);
+        parent->addView(card);
+        return card;
+    }
+
+    static brls::Button* addActionButton(brls::Box* row, const std::string& text,
+                                         const brls::ButtonStyle* style) {
+        auto* button = new brls::Button();
+        button->setStyle(style);
+        button->setFontSize(theme::kFontSmall);
+        button->setHeight(52);
+        button->setGrow(1);
+        button->setMarginRight(12);
+        button->setText(text);
+        row->addView(button);
+        return button;
     }
 
     const DownloadTask* currentTask() {
@@ -97,6 +143,18 @@ private:
             if (task.id == taskId_)
                 return &task;
         return nullptr;
+    }
+
+    void onPauseResume() {
+        const DownloadTask* task = currentTask();
+        if (!task)
+            return;
+        if (task->status == DownloadStatus::Paused ||
+            task->status == DownloadStatus::Error)
+            manager_->resume(taskId_);
+        else
+            manager_->pause(taskId_);
+        refresh();
     }
 
     void refresh() {
@@ -108,12 +166,24 @@ private:
         frame_->setTitle(task->name);
         status_->setText(std::string("Status: ") +
                          pipensx::statusName(task->status));
-        int percent = task->totalBytes
-            ? static_cast<int>(task->completedBytes * 100 / task->totalBytes)
-            : 0;
-        progress_->setText("Progress: " + std::to_string(percent) + "%  (" +
+        status_->setTextColor(statusColor(task->status));
+
+        bool installing = task->status == DownloadStatus::Installing ||
+                          task->status == DownloadStatus::Committing;
+        float progress = installing ? installProgressOf(*task)
+                                    : progressOf(*task);
+        progressBar_->setProgress(progress);
+        progress_->setText(std::to_string(percentOf(progress)) + "%   " +
                            formatBytes(task->completedBytes) + " / " +
-                           formatBytes(task->totalBytes) + ")");
+                           formatBytes(task->totalBytes));
+
+        std::string eta;
+        if (task->status == DownloadStatus::Downloading &&
+            task->totalBytes > task->completedBytes)
+            eta = formatEta(task->totalBytes - task->completedBytes,
+                            task->speedBytesPerSecond);
+        eta_->setText(eta.empty() ? "" : "ETA " + eta);
+
         if (task->mode == TransferMode::StreamInstall) {
             int installPercent = task->installTotalBytes
                 ? static_cast<int>(task->installedBytes * 100 /
@@ -129,6 +199,7 @@ private:
         } else {
             install_->setText("");
         }
+
         recordSpeedSample(*task);
         if (task->mode == TransferMode::StreamInstall) {
             transfer_->setText(
@@ -147,6 +218,32 @@ private:
                          std::to_string(task->piecesVerified));
         path_->setText("Output: " + task->dataPath);
         error_->setText(task->error.empty() ? "" : "Error: " + task->error);
+
+        updateButtons(*task);
+    }
+
+    void updateButtons(const DownloadTask& task) {
+        bool paused = task.status == DownloadStatus::Paused ||
+                      task.status == DownloadStatus::Error;
+        bool active = task.status == DownloadStatus::Queued ||
+                      task.status == DownloadStatus::Checking ||
+                      task.status == DownloadStatus::Downloading ||
+                      task.status == DownloadStatus::Installing ||
+                      task.status == DownloadStatus::Committing ||
+                      task.status == DownloadStatus::Verifying;
+        pauseButton_->setText(paused ? "Resume" : "Pause");
+        pauseButton_->setState((paused || active) ? brls::ButtonState::ENABLED
+                                                  : brls::ButtonState::DISABLED);
+
+        bool canVerify = task.status == DownloadStatus::Paused ||
+                         task.status == DownloadStatus::Error ||
+                         task.status == DownloadStatus::Completed ||
+                         task.status == DownloadStatus::Installed;
+        verifyButton_->setState(canVerify ? brls::ButtonState::ENABLED
+                                          : brls::ButtonState::DISABLED);
+        removeButton_->setState(task.status == DownloadStatus::Removing
+                                    ? brls::ButtonState::DISABLED
+                                    : brls::ButtonState::ENABLED);
     }
 
     static void appendSpeedSample(std::vector<uint64_t>& samples,
@@ -211,7 +308,12 @@ private:
     DownloadManager* manager_;
     brls::AppletFrame* frame_;
     brls::Label* status_;
+    brls::Button* pauseButton_;
+    brls::Button* verifyButton_;
+    brls::Button* removeButton_;
+    ProgressBar* progressBar_;
     brls::Label* progress_;
+    brls::Label* eta_;
     brls::Label* install_;
     brls::Label* transfer_;
     SpeedGraphView* speedGraph_;
