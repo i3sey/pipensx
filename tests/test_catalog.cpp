@@ -346,6 +346,92 @@ void testAsyncImageDiskCache() {
     rmdir(root.c_str());
 }
 
+// UI_PLAN F6: memory cache — synchronous hit after a load, prefetch warms
+// it without a callback, dropMemoryImageCache() invalidates it.
+void testImageMemoryCache() {
+    std::string root = "/tmp/pipensx-image-mem-test-" +
+                       std::to_string(static_cast<long long>(getpid()));
+    std::string catalog = root + "/catalog";
+    std::string images = catalog + "/images";
+    mkdir(root.c_str(), 0755);
+    mkdir(catalog.c_str(), 0755);
+    mkdir(images.c_str(), 0755);
+
+    const std::string url = "https://example.invalid/memory-cover.jpg";
+    uint8_t digest[20];
+    sha1(url.data(), url.size(), digest);
+    static const char digits[] = "0123456789abcdef";
+    std::string cacheName(40, '0');
+    for (size_t i = 0; i < 20; ++i) {
+        cacheName[i * 2] = digits[digest[i] >> 4];
+        cacheName[i * 2 + 1] = digits[digest[i] & 15];
+    }
+    const std::vector<uint8_t> png {
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+        0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+        0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+        0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+        0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41,
+        0x54, 0x08, 0xd7, 0x63, 0xf8, 0xcf, 0xc0, 0xf0,
+        0x1f, 0x00, 0x05, 0x00, 0x01, 0xff, 0x89, 0x99,
+        0x3d, 0x1d, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45,
+        0x4e, 0x44, 0xae, 0x42, 0x60, 0x82
+    };
+    {
+        std::ofstream output(images + "/" + cacheName + ".img",
+                             std::ios::binary | std::ios::trunc);
+        output.write(reinterpret_cast<const char*>(png.data()),
+                     static_cast<std::streamsize>(png.size()));
+        assert(output.good());
+    }
+
+    {
+        GameMetadataService service(root, root + "/missing-index.json");
+        service.setImageNetworkPaused(true);
+
+        // Cold: nothing decoded yet.
+        assert(!service.cachedImage(url));
+
+        // Prefetch decodes without a callback; poll until the cache warms.
+        service.prefetchImage(url);
+        GameMetadataService::ImageData cached;
+        for (int i = 0; i < 500 && !cached; ++i) {
+            cached = service.cachedImage(url);
+            if (!cached)
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        assert(cached);
+        assert(cached->width == 1 && cached->height == 1);
+        assert(cached->pixels.size() == 4);
+
+        // A regular request coalesces onto the cached copy.
+        std::mutex mutex;
+        std::condition_variable ready;
+        GameMetadataService::ImageData result;
+        bool done = false;
+        service.requestImage(url, [&](GameMetadataService::ImageData data) {
+            std::lock_guard<std::mutex> lock(mutex);
+            result = std::move(data);
+            done = true;
+            ready.notify_all();
+        });
+        {
+            std::unique_lock<std::mutex> lock(mutex);
+            assert(ready.wait_for(lock, std::chrono::seconds(5),
+                                  [&] { return done; }));
+        }
+        assert(result.get() == cached.get());
+
+        // Invalidation empties the memory cache; disk copy survives.
+        service.dropMemoryImageCache();
+        assert(!service.cachedImage(url));
+    }
+    std::remove((images + "/" + cacheName + ".img").c_str());
+    rmdir(images.c_str());
+    rmdir(catalog.c_str());
+    rmdir(root.c_str());
+}
+
 void testImageNetworkWaitsForActiveTransfer() {
     std::string root = "/tmp/pipensx-image-defer-test-" +
                        std::to_string(static_cast<long long>(getpid()));
@@ -472,6 +558,7 @@ int main() {
     testMetadataIndexParsing();
     testCatalogPresentationUsesGameMetadata();
     testAsyncImageDiskCache();
+    testImageMemoryCache();
     testImageNetworkWaitsForActiveTransfer();
     testTrackerCancellation();
     runLiveResolutionIfRequested();

@@ -33,7 +33,10 @@ namespace {
 constexpr size_t kMaxIndexBytes = 24 * 1024 * 1024;
 constexpr size_t kMaxDetailsBytes = 256 * 1024;
 constexpr size_t kMaxImageBytes = 3 * 1024 * 1024;
-constexpr size_t kMaxImageCacheBytes = 24 * 1024 * 1024;
+// UI_PLAN F6: decoded-RGBA budget for instant catalog re-entry. 96 MB sits
+// mid-range of the 64-128 MB plan window; the LRU sweep in cacheImageLocked
+// keeps the worst case bounded while scrolling the full catalog.
+constexpr size_t kMaxImageCacheBytes = 96 * 1024 * 1024;
 constexpr uint64_t kImageRetryDelayMs = 30 * 1000;
 constexpr size_t kImageWorkerCount = 2;
 
@@ -662,6 +665,45 @@ void GameMetadataService::requestImage(const std::string& url,
         return;
     }
     imageReady_.notify_one();
+}
+
+GameMetadataService::ImageData
+GameMetadataService::cachedImage(const std::string& url) const {
+    if (url.empty())
+        return nullptr;
+    std::lock_guard<std::mutex> lock(imageMutex_);
+    auto cached = imageCache_.find(url);
+    if (cached == imageCache_.end())
+        return nullptr;
+    cached->second.access = ++imageAccess_;
+    return cached->second.image;
+}
+
+void GameMetadataService::prefetchImage(const std::string& url) const {
+    if (url.empty())
+        return;
+    {
+        std::lock_guard<std::mutex> lock(imageMutex_);
+        const uint64_t now = monotonicMilliseconds();
+        auto retry = imageRetryAfter_.find(url);
+        if (stoppingImages_ ||
+            (retry != imageRetryAfter_.end() && retry->second > now))
+            return;
+        if (imageCache_.count(url) != 0 || imageRequests_.count(url) != 0)
+            return;
+        // Empty callback slot: later requestImage() calls for the same URL
+        // coalesce onto this in-flight decode instead of re-queueing it.
+        imageRequests_[url];
+        imageQueue_.push_back(url);
+    }
+    imageReady_.notify_one();
+}
+
+void GameMetadataService::dropMemoryImageCache() const {
+    std::lock_guard<std::mutex> lock(imageMutex_);
+    imageCache_.clear();
+    imageCacheBytes_ = 0;
+    imageRetryAfter_.clear();
 }
 
 void GameMetadataService::setImageNetworkPaused(bool paused) const {

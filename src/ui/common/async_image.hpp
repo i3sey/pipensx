@@ -34,6 +34,16 @@ public:
         lifetime_->image = nullptr;
     }
 
+    // UI_PLAN F6: synchronous upload for memory-cache hits. UI thread only
+    // (needs the live NVG context) — the cover paints in the same frame,
+    // so catalog re-entry shows no placeholder flash.
+    void setRgbaNow(const uint8_t* pixels, int width, int height) {
+        if (!pixels || width <= 0 || height <= 0)
+            return;
+        NVGcontext* vg = brls::Application::getNVGContext();
+        innerSetImage(nvgCreateImageRGBA(vg, width, height, 0, pixels));
+    }
+
     void setRgbaAsync(std::function<void(std::function<void(
         std::shared_ptr<const std::vector<uint8_t>>, int, int)>)> provider) {
         std::weak_ptr<AsyncImageLifetime> weakLifetime = lifetime_;
@@ -66,11 +76,20 @@ inline void loadImageInto(AsyncRgbaImage* image, GameMetadataService* service,
                    uint64_t generation) {
     if (!image)
         return;
-    image->clear();
     if (!service || url.empty()) {
+        image->clear();
         state->pending = false;
         return;
     }
+    // UI_PLAN F6: memory-cache hit → texture in the first frame, skipping
+    // the worker queue (disk read + decode) and the placeholder flash.
+    if (GameMetadataService::ImageData cached = service->cachedImage(url)) {
+        state->pending = false;
+        image->setRgbaNow(cached->pixels.data(), cached->width,
+                          cached->height);
+        return;
+    }
+    image->clear();
     state->pending = true;
     image->setRgbaAsync([service, url, state, generation](
         std::function<void(std::shared_ptr<const std::vector<uint8_t>>,

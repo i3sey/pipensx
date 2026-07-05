@@ -50,6 +50,10 @@ brls::RecyclerCell* CatalogDataSource::cellForRow(
     auto* cell =
         static_cast<GridRowCell*>(recycler->dequeueReusableCell("GridRow"));
     cell->setRow(infos, metadata_, std::move(activate));
+    // UI_PLAN F6: pre-decode the neighbouring rows into the memory cache so
+    // scrolling hits it instead of the disk-read + decode path.
+    prefetchGridRow(index.row - 1);
+    prefetchGridRow(index.row + 1);
     return cell;
 }
 

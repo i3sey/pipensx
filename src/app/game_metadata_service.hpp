@@ -55,6 +55,15 @@ public:
     bool loadImage(const std::string& url, std::vector<uint8_t>& bytes,
                    std::string& error) const;
     void requestImage(const std::string& url, ImageCallback callback) const;
+    // UI_PLAN F6: synchronous memory-cache probe (bumps LRU recency).
+    // Non-null result = decoded RGBA ready for a same-frame texture upload.
+    ImageData cachedImage(const std::string& url) const;
+    // UI_PLAN F6: warm the memory cache without a callback; no-op when the
+    // URL is cached, queued, in retry backoff, or empty.
+    void prefetchImage(const std::string& url) const;
+    // UI_PLAN F6: invalidate decoded covers (catalog refresh); the disk
+    // cache stays — clearImageCache() removes both.
+    void dropMemoryImageCache() const;
     void setImageNetworkPaused(bool paused) const;
     bool clearImageCache(std::string& error) const;
 

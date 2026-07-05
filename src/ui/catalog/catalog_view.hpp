@@ -128,6 +128,18 @@ private:
         return info;
     }
 
+    // UI_PLAN F6: warm the memory cache for a grid row about to scroll in,
+    // so its covers paint in their first frame instead of re-decoding.
+    void prefetchGridRow(int row) const {
+        if (!metadata_ || row < headerRowCount())
+            return;
+        const int start = (row - headerRowCount()) * grid::kColumns;
+        const int end = std::min(start + grid::kColumns,
+                                 static_cast<int>(iconUrls_.size()));
+        for (int i = start; i < end; ++i)
+            metadata_->prefetchImage(iconUrls_[static_cast<size_t>(i)]);
+    }
+
     CatalogView* owner_;
     std::vector<CatalogEntry> entries_;
     std::vector<std::string> stateBadges_;
@@ -1159,6 +1171,10 @@ private:
                     brls::Application::notify(err);
                     return;
                 }
+                // UI_PLAN F6: catalog changed — drop decoded covers so
+                // replaced artwork cannot be served stale from memory.
+                if (metadata_)
+                    metadata_->dropMemoryImageCache();
                 rebuildEntries();
                 brls::Application::notify(
                     "Catalog updated: " +
