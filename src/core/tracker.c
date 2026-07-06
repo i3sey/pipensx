@@ -1,5 +1,4 @@
 #include "tracker.h"
-#include "antizapret.h"
 #include "bencode.h"
 #include "util.h"
 #include "net.h"
@@ -84,7 +83,6 @@ static uint32_t http_announce_once(const char *url,
                                    uint16_t listen_port,
                                    int64_t downloaded, int64_t left,
                                    uint8_t *compact_out, uint32_t max_peers,
-                                   const antizapret_route_t *route,
                                    int *request_ok,
                                    tracker_announce_result_t *result,
                                    const tracker_cancel_t *cancel) {
@@ -125,12 +123,6 @@ static uint32_t http_announce_once(const char *url,
         curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, curl_progress_cb);
         curl_easy_setopt(curl, CURLOPT_XFERINFODATA, (void *)cancel);
     }
-    if (route && route->type != ANTIZAPRET_ROUTE_DIRECT) {
-        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 35L);
-    }
-    antizapret_apply_route(curl, route);
-
     CURLcode rc = curl_easy_perform(curl);
     long status = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
@@ -148,10 +140,6 @@ static uint32_t http_announce_once(const char *url,
     }
 
     if (!buf.data) return 0;
-    if (antizapret_response_looks_blocked((const char *)buf.data, buf.len)) {
-        free(buf.data);
-        return 0;
-    }
 
     /* Parse bencode response */
     const char *p = (const char*)buf.data;
@@ -202,53 +190,10 @@ static uint32_t http_announce(const char *url,
                               uint8_t *compact_out, uint32_t max_peers,
                               tracker_announce_result_t *result,
                               const tracker_cancel_t *cancel) {
-    int target = antizapret_is_enabled() && antizapret_is_target_url(url);
-    int prefer_proxy = target && antizapret_proxy_preferred();
     int request_ok = 0;
-    uint32_t count = 0;
-
-    if (!prefer_proxy) {
-        count = http_announce_once(url, info_hash, peer_id, listen_port,
-                                   downloaded, left, compact_out, max_peers,
-                                   NULL, &request_ok, result, cancel);
-        if (request_ok)
-            return count;
-    }
-
-    if (target && !tracker_cancelled(cancel)) {
-        antizapret_route_t routes[ANTIZAPRET_MAX_ROUTES];
-        size_t route_count =
-            antizapret_get_routes(routes, ANTIZAPRET_MAX_ROUTES);
-        for (size_t i = 0; i < route_count; ++i) {
-            if (routes[i].type == ANTIZAPRET_ROUTE_DIRECT)
-                continue;
-            if (!antizapret_route_supported(&routes[i]))
-                continue;
-            for (int attempt = 1; attempt <= 3; ++attempt) {
-                if (tracker_cancelled(cancel))
-                    return 0;
-                count = http_announce_once(url, info_hash, peer_id,
-                                           listen_port, downloaded, left,
-                                           compact_out, max_peers, &routes[i],
-                                           &request_ok, result, cancel);
-                if (request_ok) {
-                    antizapret_note_proxy_success();
-                    log_msg("[tracker] RuTracker announce used %s\n",
-                            antizapret_route_name(&routes[i]));
-                    return count;
-                }
-                if (!tracker_cancelled(cancel))
-                    log_msg("[tracker] %s announce attempt %d/3 failed\n",
-                            antizapret_route_name(&routes[i]), attempt);
-            }
-        }
-    }
-
-    if (prefer_proxy)
-        return http_announce_once(url, info_hash, peer_id, listen_port,
-                                  downloaded, left, compact_out, max_peers,
-                                  NULL, &request_ok, result, cancel);
-    return 0;
+    return http_announce_once(url, info_hash, peer_id, listen_port,
+                              downloaded, left, compact_out, max_peers,
+                              &request_ok, result, cancel);
 }
 
 /* ---- UDP tracker (BEP15) ---- */
@@ -421,104 +366,3 @@ uint32_t tracker_announce(const metainfo_t *mi,
     return total;
 }
 
-/* ---- reachability probe (W1) ---- */
-tracker_probe_result_t tracker_probe_classify(int transport_ok, long status,
-                                              const char *body,
-                                              size_t body_len) {
-    if (!transport_ok)
-        return TRACKER_PROBE_TIMEOUT;
-    if (antizapret_response_looks_blocked(body, body_len))
-        return TRACKER_PROBE_BLOCKED;
-    if (status >= 200 && status < 300 && body && body_len) {
-        const char *p = body;
-        be_node_t root;
-        if (be_decode(&p, body + body_len, &root) && root.type == BE_DICT)
-            return TRACKER_PROBE_REACHABLE;
-    }
-    /* Completed HTTP request but the peer is not a live RuTracker tracker:
-       a proxy/captive page, an error status, or garbage — a wall, not us. */
-    return TRACKER_PROBE_BLOCKED;
-}
-
-static const char *tracker_probe_name(tracker_probe_result_t verdict) {
-    switch (verdict) {
-        case TRACKER_PROBE_REACHABLE: return "reachable";
-        case TRACKER_PROBE_BLOCKED:   return "blocked";
-        default:                      return "timeout";
-    }
-}
-
-tracker_probe_result_t tracker_probe(const char *announce_url,
-                                     const antizapret_route_t *route,
-                                     int timeout_seconds,
-                                     tracker_cancel_cb cancel_callback,
-                                     void *cancel_user) {
-    if (!announce_url)
-        return TRACKER_PROBE_TIMEOUT;
-    tracker_cancel_t cancel = { cancel_callback, cancel_user };
-    if (tracker_cancelled(&cancel))
-        return TRACKER_PROBE_TIMEOUT;
-
-    /* A zero info hash makes any live RuTracker tracker answer with a short
-       bencode reply ("torrent not registered"), so the probe is framed
-       exactly like a real announce (same path DPI inspects) while asking for
-       no peers (numwant=0). */
-    static const uint8_t stub_hash[20] = {0};
-    static const uint8_t stub_peer_id[20] = {
-        '-','P','N','P','R','O','B','-',
-        0,0,0,0,0,0,0,0,0,0,0,0
-    };
-    char ih_enc[64], pid_enc[64];
-    url_encode_hash(ih_enc, sizeof(ih_enc), stub_hash, 20);
-    url_encode_hash(pid_enc, sizeof(pid_enc), stub_peer_id, 20);
-
-    char full_url[1024];
-    snprintf(full_url, sizeof(full_url),
-             "%s%cinfo_hash=%s&peer_id=%s&port=6881"
-             "&uploaded=0&downloaded=0&left=0&compact=1&event=started"
-             "&numwant=0",
-             announce_url, strchr(announce_url, '?') ? '&' : '?',
-             ih_enc, pid_enc);
-
-    CURL *curl = curl_easy_init();
-    if (!curl)
-        return TRACKER_PROBE_TIMEOUT;
-
-    curl_buf_t buf = {0};
-    long timeout = timeout_seconds > 0 ? (long)timeout_seconds : 8L;
-    curl_easy_setopt(curl, CURLOPT_URL, full_url);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "pipensx/0.4");
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, timeout);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
-    long tls12_only = (long)CURL_SSLVERSION_TLSv1_2 |
-                      (long)CURL_SSLVERSION_MAX_TLSv1_2;
-    curl_easy_setopt(curl, CURLOPT_SSLVERSION, tls12_only);
-    curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
-    if (cancel.callback) {
-        curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
-        curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, curl_progress_cb);
-        curl_easy_setopt(curl, CURLOPT_XFERINFODATA, (void *)&cancel);
-    }
-    antizapret_apply_route(curl, route);
-
-    CURLcode rc = curl_easy_perform(curl);
-    long status = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
-    curl_easy_cleanup(curl);
-
-    tracker_probe_result_t verdict;
-    if (rc == CURLE_ABORTED_BY_CALLBACK && tracker_cancelled(&cancel))
-        verdict = TRACKER_PROBE_TIMEOUT;
-    else
-        verdict = tracker_probe_classify(rc == CURLE_OK, status,
-                                         (const char *)buf.data, buf.len);
-    log_msg("[probe] %s via %s -> %s\n", announce_url,
-            antizapret_route_name(route), tracker_probe_name(verdict));
-    free(buf.data);
-    return verdict;
-}

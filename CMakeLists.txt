@@ -71,9 +71,6 @@ set(CORE_SOURCES
     src/core/bencode.c
     src/core/metainfo.c
     src/core/util.c
-    src/core/antizapret.c
-    src/core/catalog_sig.c
-    vendor/tweetnacl/tweetnacl.c
     src/core/net.c
     src/core/peer.c
     src/core/piece.c
@@ -96,7 +93,6 @@ set(APP_SERVICE_SOURCES
     src/app/installed_title_service.cpp
     src/app/install_space.cpp
     src/app/magnet_resolver.cpp
-    src/app/connectivity_orchestrator.cpp
     src/install/install_journal.cpp
     src/install/package_stream.cpp
 )

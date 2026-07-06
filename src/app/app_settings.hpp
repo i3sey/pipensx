@@ -22,40 +22,16 @@ enum class InstallLocation {
     SystemMemory,
 };
 
-// User-supplied proxy for the connectivity ladder (Phase W). Off = no manual
-// proxy configured.
-enum class ProxyType {
-    Off,
-    Http,
-    Socks5,
-};
-
-// Winning route recorded by the first-run connectivity wizard (Phase W2), so
-// later launches take it silently.
-enum class ConnectivityMethod {
-    Direct,
-    Proxy,
-    Antizapret,
-    Mirror,
-};
-
 struct AppSettingsData {
-    CatalogFilter catalogFilter = CatalogFilter::All;
+    CatalogFilter catalogFilter = CatalogFilter::Games;
     bool refreshCatalogOnLaunch = false;
     StreamSelection streamSelection = StreamSelection::AllFiles;
     InstallLocation installLocation = InstallLocation::SdCard;
     bool showCompletedDownloads = true;
     bool extendedTelemetry = false;
-    // Route RuTracker traffic through antizapret proxies when direct access is
-    // blocked (DPI). Default on preserves current unconditional behavior.
-    bool useAntizapret = true;
-    // Phase W connectivity ladder. Defaults preserve current behavior: no
-    // manual proxy, default host, wizard not yet run, direct route.
-    std::string manualProxyUrl;
-    ProxyType manualProxyType = ProxyType::Off;
-    std::string rutrackerHost;  // empty = rutracker.org
-    bool connectivitySetupDone = false;
-    ConnectivityMethod connectivityMethod = ConnectivityMethod::Direct;
+    // First-run disclaimer: the catalog is a third-party RuTracker dump. Shown
+    // once, then this is set so later launches skip it.
+    bool catalogDisclaimerAcknowledged = false;
 
     bool operator==(const AppSettingsData& other) const;
     bool operator!=(const AppSettingsData& other) const {

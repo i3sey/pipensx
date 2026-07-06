@@ -1,7 +1,6 @@
 #include "game_metadata_service.hpp"
 
 extern "C" {
-#include "../core/antizapret.h"
 #include "../core/sha1.h"
 #include "../core/util.h"
 }
@@ -40,7 +39,6 @@ constexpr size_t kMaxImageCacheBytes = 96 * 1024 * 1024;
 constexpr uint64_t kImageRetryDelayMs = 30 * 1000;
 constexpr size_t kImageWorkerCount = 2;
 
-std::atomic<bool> imageProxyLogged{false};
 #ifdef __SWITCH__
 std::atomic<bool> imageRelayLogged{false};
 #endif
@@ -137,7 +135,6 @@ bool writeAtomic(const std::string& path, const std::vector<uint8_t>& data,
 }
 
 bool httpGetOnce(const std::string& url, size_t limit,
-                 const antizapret_route_t* route,
                  std::vector<uint8_t>& data, std::string& error) {
     data.clear();
     CURL* curl = curl_easy_init();
@@ -162,8 +159,6 @@ bool httpGetOnce(const std::string& url, size_t limit,
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
     curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
-    if (route)
-        antizapret_apply_route(curl, route);
     CURLcode result = curl_easy_perform(curl);
     long status = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
@@ -180,11 +175,6 @@ bool httpGetOnce(const std::string& url, size_t limit,
     }
     data = std::move(buffer.data);
     return true;
-}
-
-bool blockedResponse(const std::vector<uint8_t>& data) {
-    return !data.empty() && antizapret_response_looks_blocked(
-        reinterpret_cast<const char*>(data.data()), data.size());
 }
 
 #ifdef __SWITCH__
@@ -235,51 +225,24 @@ std::string ddgRelayUrl(const std::string& sourceUrl) {
            percentEncode(sourceUrl);
 }
 
-bool isRelayHost(const std::string& url) {
-    return url.find("weserv.nl/") != std::string::npos ||
-           url.find("i0.wp.com/") != std::string::npos ||
-           url.find("duckduckgo.com/") != std::string::npos;
-}
 #endif
 
 bool httpGet(const std::string& url, size_t limit, std::vector<uint8_t>& data,
              std::string& error) {
-    const bool target = antizapret_is_enabled() &&
-                        antizapret_is_target_url(url.c_str());
-#ifdef __SWITCH__
-    const bool preferProxy = target;
-#else
-    const bool preferProxy = target && antizapret_proxy_preferred();
-#endif
-
-    auto attempt = [&](const std::string& requestUrl,
-                       const antizapret_route_t* route) {
+    auto attempt = [&](const std::string& requestUrl) {
         std::string attemptError;
-        if (!httpGetOnce(requestUrl, limit, route, data, attemptError)) {
+        if (!httpGetOnce(requestUrl, limit, data, attemptError)) {
             error = std::move(attemptError);
             return false;
-        }
-        if (target && blockedResponse(data)) {
-            data.clear();
-            error = "HTTP response appears to be blocked.";
-            return false;
-        }
-        if (route && route->type != ANTIZAPRET_ROUTE_DIRECT) {
-            antizapret_note_proxy_success();
-            bool expected = false;
-            if (imageProxyLogged.compare_exchange_strong(expected, true))
-                log_msg("[metadata] image proxy active: %s\n",
-                        antizapret_route_name(route));
         }
         return true;
     };
 
 #ifdef __SWITCH__
     if (isNintendoImageUrl(url)) {
-        // img-eshop is geo-blocked for RU and the antizapret proxy only
-        // un-blocks RKN-listed hosts, so every direct/proxy path to it dead-
-        // ends. Skip them entirely and fan out across relays on diverse infra
-        // (so one ASN slips past the censor); whichever answers first wins.
+        // img-eshop is geo-blocked for RU, so a direct fetch dead-ends there.
+        // Fan out across image relays on diverse infra (so one ASN slips past
+        // the censor); whichever answers first wins.
         const std::string relays[] = {
             photonRelayUrl(url),          // Automattic
             ddgRelayUrl(url),             // DuckDuckGo / Bing
@@ -287,7 +250,7 @@ bool httpGet(const std::string& url, size_t limit, std::vector<uint8_t>& data,
             weservRelayUrl(url, true),    // Cloudflare, https
         };
         for (const std::string& relayUrl : relays) {
-            if (attempt(relayUrl, nullptr)) {
+            if (attempt(relayUrl)) {
                 bool expected = false;
                 if (imageRelayLogged.compare_exchange_strong(expected, true))
                     log_msg("[metadata] image relay active: %s\n",
@@ -299,25 +262,7 @@ bool httpGet(const std::string& url, size_t limit, std::vector<uint8_t>& data,
     }
 #endif
 
-    if (!preferProxy && attempt(url, nullptr))
-        return true;
-
-    if (target) {
-        antizapret_route_t routes[ANTIZAPRET_MAX_ROUTES];
-        size_t routeCount = antizapret_get_routes(routes,
-                                                  ANTIZAPRET_MAX_ROUTES);
-        for (size_t i = 0; i < routeCount; ++i) {
-            if (routes[i].type == ANTIZAPRET_ROUTE_DIRECT ||
-                !antizapret_route_supported(&routes[i]))
-                continue;
-            if (attempt(url, &routes[i]))
-                return true;
-        }
-    }
-
-    if (preferProxy && attempt(url, nullptr))
-        return true;
-    return false;
+    return attempt(url);
 }
 
 std::string hex20String(const uint8_t digest[20]) {

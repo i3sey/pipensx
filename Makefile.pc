@@ -20,7 +20,6 @@ SRCS = \
     src/core/bencode.c    \
     src/core/metainfo.c   \
     src/core/util.c       \
-    src/core/antizapret.c \
     src/core/net.c        \
     src/core/peer.c       \
     src/core/piece.c      \
@@ -35,7 +34,6 @@ OBJS = $(SRCS:.c=.o)
 TEST_TARGET = tests/test_piece
 MANAGER_TEST_TARGET = tests/test_manager
 PACKAGE_TEST_TARGET = tests/test_package_stream
-ANTIZAPRET_TEST_TARGET = tests/test_antizapret
 CATALOG_TEST_TARGET = tests/test_catalog
 TELEMETRY_TEST_TARGET = tests/test_telemetry
 PEER_TEST_TARGET = tests/test_peer
@@ -46,8 +44,6 @@ BATCH_INSTALL_TEST_TARGET = tests/test_batch_install
 RAM_BUDGET_TEST_TARGET = tests/test_stream_ram_budget
 REQUEST_GATE_TEST_TARGET = tests/test_request_gate
 JOURNAL_TEST_TARGET = tests/test_install_journal
-TRACKER_PROBE_TEST_TARGET = tests/test_tracker_probe
-CONNECTIVITY_TEST_TARGET = tests/test_connectivity_orchestrator
 TEST_SRCS = \
     tests/test_piece.c       \
     src/core/sha1.c          \
@@ -102,9 +98,6 @@ src/app/catalog_service.o: src/app/catalog_service.cpp
 src/app/magnet_resolver.o: src/app/magnet_resolver.cpp
 	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
 
-src/app/connectivity_orchestrator.o: src/app/connectivity_orchestrator.cpp
-	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
-
 src/app/game_metadata_service.o: src/app/game_metadata_service.cpp
 	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
 
@@ -115,25 +108,22 @@ $(CATALOG_TEST_TARGET): tests/test_catalog.cpp \
 		src/app/catalog_service.o src/app/catalog_presentation.o \
 		src/app/game_metadata_service.o \
 		src/app/magnet_resolver.o \
-		src/core/tracker.o src/core/antizapret.o src/core/net.o \
+		src/core/tracker.o src/core/net.o \
 		src/core/dht.o vendor/dht/dht.o \
-		src/core/catalog_sig.o vendor/tweetnacl/tweetnacl.o \
 		src/core/bencode.o src/core/metainfo.o src/core/sha1.o src/core/util.o
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
 
 test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
-		$(CATALOG_TEST_TARGET) $(ANTIZAPRET_TEST_TARGET) \
+		$(CATALOG_TEST_TARGET) \
 		$(TELEMETRY_TEST_TARGET) $(PEER_TEST_TARGET) \
 		$(TORRENT_TEST_TARGET) $(SETTINGS_TEST_TARGET) \
 		$(INSTALL_SPACE_TEST_TARGET) $(BATCH_INSTALL_TEST_TARGET) \
 		$(RAM_BUDGET_TEST_TARGET) $(REQUEST_GATE_TEST_TARGET) \
-		$(JOURNAL_TEST_TARGET) $(TRACKER_PROBE_TEST_TARGET) \
-		$(CONNECTIVITY_TEST_TARGET)
+		$(JOURNAL_TEST_TARGET)
 	./$(TEST_TARGET)
 	./$(MANAGER_TEST_TARGET)
 	./$(PACKAGE_TEST_TARGET)
 	./$(CATALOG_TEST_TARGET)
-	./$(ANTIZAPRET_TEST_TARGET)
 	./$(TELEMETRY_TEST_TARGET)
 	./$(PEER_TEST_TARGET)
 	./$(TORRENT_TEST_TARGET)
@@ -143,8 +133,6 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 	./$(RAM_BUDGET_TEST_TARGET)
 	./$(REQUEST_GATE_TEST_TARGET)
 	./$(JOURNAL_TEST_TARGET)
-	./$(TRACKER_PROBE_TEST_TARGET)
-	./$(CONNECTIVITY_TEST_TARGET)
 	python3 tests/test_telemetry_analyzer.py
 
 $(SETTINGS_TEST_TARGET): tests/test_app_settings.cpp src/app/app_settings.cpp
@@ -187,36 +175,20 @@ $(TORRENT_TEST_TARGET): tests/test_torrent.c \
 		$(filter-out src/core/torrent.o src/main_pc.o,$(OBJS))
 	$(CC) $(CFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
 
-$(ANTIZAPRET_TEST_TARGET): tests/test_antizapret.c \
-		src/core/antizapret.o src/core/util.o
-	$(CC) $(CFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
-
-$(TRACKER_PROBE_TEST_TARGET): tests/test_tracker_probe.c \
-		src/core/tracker.o src/core/antizapret.o src/core/net.o \
-		src/core/bencode.o src/core/util.o
-	$(CC) $(CFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
-
-$(CONNECTIVITY_TEST_TARGET): tests/test_connectivity_orchestrator.cpp \
-		src/app/connectivity_orchestrator.o src/app/app_settings.cpp \
-		src/core/tracker.o src/core/antizapret.o src/core/net.o \
-		src/core/bencode.o src/core/util.o
-	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -pthread
-
 clean:
 	rm -f $(OBJS) src/app/download_manager.o src/app/stream_ram_budget.o \
 		src/app/request_gate.o \
 		src/app/catalog_service.o \
 		src/app/catalog_presentation.o src/app/game_metadata_service.o \
-		src/app/magnet_resolver.o src/app/connectivity_orchestrator.o \
+		src/app/magnet_resolver.o \
 		src/install/*.o \
 		tests/test_manager.o $(TARGET) $(TEST_TARGET) \
 		$(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
-		$(CATALOG_TEST_TARGET) $(ANTIZAPRET_TEST_TARGET) \
+		$(CATALOG_TEST_TARGET) \
 		$(TELEMETRY_TEST_TARGET) $(PEER_TEST_TARGET) \
 		$(TORRENT_TEST_TARGET) $(SETTINGS_TEST_TARGET) \
 		$(INSTALL_SPACE_TEST_TARGET) $(BATCH_INSTALL_TEST_TARGET) \
 		$(RAM_BUDGET_TEST_TARGET) $(REQUEST_GATE_TEST_TARGET) \
-		$(JOURNAL_TEST_TARGET) $(TRACKER_PROBE_TEST_TARGET) \
-		$(CONNECTIVITY_TEST_TARGET)
+		$(JOURNAL_TEST_TARGET)
 
 .PHONY: all test clean

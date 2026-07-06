@@ -3,7 +3,6 @@
 #include "app/download_manager.hpp"
 #include "app/game_metadata_service.hpp"
 #include "app/installed_title_service.hpp"
-#include "core/antizapret.h"
 #include "platform/switch_crashlog.h"
 #include "platform/switch_performance.hpp"
 
@@ -28,7 +27,6 @@ extern "C" {
 #include "ui/downloads/downloads_view.hpp"
 #include "ui/installed/installed_view.hpp"
 #include "ui/settings/about_view.hpp"
-#include "ui/settings/connectivity_wizard.hpp"
 #include "ui/settings/settings_view.hpp"
 #include "ui/theme.hpp"
 
@@ -179,8 +177,6 @@ int main(int, char**) {
         brls::Application::setGlobalQuit(false);
 
         startupStage("CatalogService construction");
-        antizapret_init("sdmc:/switch/pipensx");
-        antizapret_set_enabled(settings.get().useAntizapret ? 1 : 0);
         log_msg("[startup] image relay: relays-first + disk cache (rev4)\n");
         unlink("sdmc:/switch/pipensx/rutracker.cfg");
         unlink("sdmc:/switch/pipensx/rutracker_cookies.txt");
@@ -217,12 +213,27 @@ int main(int, char**) {
         startupStage("push MainActivity");
         brls::Application::pushActivity(activity);
 
-        // First-run connectivity wizard (RF_ACCESS_PLAN W3): gate on the saved
-        // flag so it runs once, on top of the app, until a route is chosen.
-        if (!settings.get().connectivitySetupDone) {
-            startupStage("connectivity wizard");
-            brls::Application::pushActivity(
-                new pipensx::ui::ConnectivityWizardActivity(&settings));
+        // First-run disclaimer: the catalog is a third-party RuTracker dump.
+        // Shown once on top of the app; acknowledging persists the flag so
+        // later launches skip it.
+        if (!settings.get().catalogDisclaimerAcknowledged) {
+            startupStage("catalog disclaimer");
+            auto* dialog = new brls::Dialog(
+                "Catalog is a RuTracker dump by @Langegen. Not affiliated.");
+            // Narrow the stock 720px dialog frame for this short one-liner.
+            if (auto* frame = dialog->getView("brls/dialog/applet"))
+                frame->setWidth(520);
+            dialog->addButton("OK", [&settings] {
+                pipensx::AppSettingsData values = settings.get();
+                if (values.catalogDisclaimerAcknowledged)
+                    return;
+                values.catalogDisclaimerAcknowledged = true;
+                std::string error;
+                if (!settings.update(values, error))
+                    log_msg("[settings] disclaimer ack persist failed: %s\n",
+                            error.c_str());
+            });
+            dialog->open();
         }
 
         startupStage("first main loop");
