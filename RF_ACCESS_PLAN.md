@@ -16,7 +16,7 @@
 | П1.1 | DHT-фолбэк в резолв магнита ✅ | Fable | L | — |
 | П0.1 | Анонс трекера через antizapret-прокси ✅ | Fable | M | — |
 | П3.2 | Подпись каталога (ed25519) ✅ | Opus | M | — |
-| П3.1 | Зеркала каталога (jsDelivr / R2 / IPFS) | Opus | M | — |
+| П3.1 | Зеркала каталога (jsDelivr / R2 / IPFS) ✅ | Opus | M | — |
 | П1.2 | PEX-усиление тонкого списка пиров ✅ | Opus | M | П0.1 или П1.1 |
 | П0.3 | Тумблер / автодетект antizapret | Sonnet | S | П0.1, П0.2 |
 | П0.2 | Фетч каталога через antizapret-прокси ✅ | Sonnet | S | — |
@@ -140,8 +140,29 @@ verify-only на клиенте.
 
 **Почему Opus:** криптопроверка + управление ключами + встраивание в путь загрузки, но по устоявшемуся паттерну.
 
-### П3.1 — Зеркала каталога
+### П3.1 — Зеркала каталога ✅
 **Оценка: M.**
+
+**Сделано (2026-07-06):** `refresh()` в `src/app/catalog_service.cpp`
+переписан как оркестратор источников:
+1. `refreshFromGitHubRelease` — прежний путь (Releases API → asset + `.sig`).
+2. `refreshFromMirror` для каждого из `kCatalogMirrors` (пока jsDelivr
+   `cdn.jsdelivr.net/gh/bqio/switch-dumps@latest/catalog.json`; R2/IPFS
+   добавляются одной строкой). Прямой GET, подпись из `url + ".sig"`.
+3. Bundled-снапшот — конечный фолбэк, но он в `load()`, не в `refresh()`;
+   refresh лишь возвращает объединённую ошибку, оставляя кэш/bundled в памяти.
+- Общий `commitCatalog(body, signature?, label)` — единая точка verify (П3.2,
+  fail-closed) + `parseJson` + `writeAtomic` + adopt для всех источников.
+- Доверенный хост обобщён: `CatalogService::isTrustedSource(url)` (аллоулист
+  префиксов github-releases + jsDelivr) заменил инлайновую github-проверку;
+  каждый источник гейтится до фетча. Публичный статик → тестируемо.
+- Тест: `testTrustedSourceAllowlist` (github/jsdelivr ok; http://, чужой репо,
+  `github.com.evil.*`, пустая строка — reject). golden + `tests/test_catalog`
+  зелёные.
+
+**Как добавить зеркало:** строку URL в `kCatalogMirrors` + префикс хоста в
+`isTrustedSource`. Зеркало должно отдавать тот же `catalog.json` и (при
+включённой подписи) сайдкар `catalog.json.sig`.
 
 Не полагаться на один GitHub Releases. Порядок попыток в `refresh()` (`src/app/catalog_service.cpp:308`):
 1. GitHub Releases (как сейчас),

@@ -31,6 +31,17 @@ constexpr const char* kLatestReleaseApi =
 constexpr const char* kTrustedReleasePrefix =
     "https://github.com/bqio/switch-dumps/releases/download/";
 
+/* Catalog mirrors tried in order after the GitHub Releases API, before the
+   bundled snapshot (RF_ACCESS_PLAN П3.1). Each is a direct catalog.json URL on
+   a trusted host; its detached signature (when signing is on) is fetched from
+   the same URL + ".sig". jsDelivr mirrors the GitHub repo and is usually
+   reachable in RF; add a Cloudflare R2/Pages or IPFS-gateway URL here once
+   provisioned. Every entry must satisfy trustedCatalogUrl(). */
+constexpr const char* kCatalogMirrors[] = {
+    "https://cdn.jsdelivr.net/gh/bqio/switch-dumps@latest/catalog.json",
+};
+
+
 /* ed25519 public key that signs the network catalog (RF_ACCESS_PLAN П3.2).
    All-zero = signing not provisioned yet: the network refresh runs unverified,
    preserving the pre-signing behaviour. Replace with the real 32-byte key
@@ -472,7 +483,40 @@ bool CatalogService::load(std::string& error) {
     return false;
 }
 
-bool CatalogService::refresh(std::string& error) {
+// Verify (when signing is on), parse, cache, and adopt a freshly fetched
+// catalog body. `signature` is the detached base64 signature, or nullptr when
+// the source carried none. Shared by every refresh source so the trust and
+// caching rules stay identical across GitHub and mirrors.
+bool CatalogService::commitCatalog(const std::string& body,
+                                   const std::string* signature,
+                                   const std::string& label,
+                                   std::string& error) {
+    // Signature enforcement (RF_ACCESS_PLAN П3.2): only once a real public key
+    // is baked in. Fail closed — a stripped or forged signature aborts before
+    // the catalog is parsed or cached, so an untrusted mirror cannot slip a
+    // tampered catalog past the allowlist.
+    if (catalogSigningEnabled()) {
+        if (!signature) {
+            error = "The signed catalog source is missing its signature.";
+            return false;
+        }
+        if (!verifyCatalogSignature(body, *signature, error))
+            return false;
+        log_msg("[catalog] signature verified\n");
+    }
+    std::vector<CatalogEntry> parsed;
+    if (!parseJson(body, parsed, error))
+        return false;
+    if (!writeAtomic(cachePath_, body, error))
+        return false;
+    entries_ = std::move(parsed);
+    sourceLabel_ = label;
+    log_msg("[catalog] refreshed %zu entries from %s\n", entries_.size(),
+            label.c_str());
+    return true;
+}
+
+bool CatalogService::refreshFromGitHubRelease(std::string& error) {
     std::string releaseBody;
     if (!httpGet(kLatestReleaseApi, releaseBody, error))
         return false;
@@ -514,31 +558,83 @@ bool CatalogService::refresh(std::string& error) {
     if (!httpGet(assetUrl, catalogBody, error))
         return false;
 
-    // Signature enforcement (RF_ACCESS_PLAN П3.2): only once a real public key
-    // is baked in. Fail closed — a stripped or forged signature aborts the
-    // refresh before the catalog is parsed or cached.
+    std::string signatureBody;
+    const std::string* signature = nullptr;
     if (catalogSigningEnabled()) {
         if (signatureUrl.rfind(kTrustedReleasePrefix, 0) != 0) {
             error = "The signed catalog release is missing its signature.";
             return false;
         }
-        std::string signatureBody;
         if (!httpGet(signatureUrl, signatureBody, error))
             return false;
-        if (!verifyCatalogSignature(catalogBody, signatureBody, error))
+        signature = &signatureBody;
+    }
+    return commitCatalog(catalogBody, signature, "latest GitHub catalog",
+                         error);
+}
+
+bool CatalogService::isTrustedSource(const std::string& url) {
+    // Hosts (with path prefix) allowed to serve catalog bytes. Generalises the
+    // former single GitHub check so every mirror is validated the same way.
+    static const char* const kPrefixes[] = {
+        "https://github.com/bqio/switch-dumps/releases/download/",
+        "https://cdn.jsdelivr.net/gh/bqio/switch-dumps@",
+    };
+    for (const char* prefix : kPrefixes)
+        if (url.rfind(prefix, 0) == 0)
+            return true;
+    return false;
+}
+
+bool CatalogService::refreshFromMirror(const std::string& url,
+                                       const std::string& label,
+                                       std::string& error) {
+    if (!isTrustedSource(url)) {
+        error = "Mirror URL is not on the trusted host list.";
+        return false;
+    }
+    std::string catalogBody;
+    if (!httpGet(url, catalogBody, error))
+        return false;
+
+    std::string signatureBody;
+    const std::string* signature = nullptr;
+    if (catalogSigningEnabled()) {
+        // Mirror signatures sit next to the catalog as a ".sig" sidecar.
+        if (!httpGet(url + ".sig", signatureBody, error))
             return false;
-        log_msg("[catalog] signature verified\n");
+        signature = &signatureBody;
+    }
+    return commitCatalog(catalogBody, signature, label, error);
+}
+
+bool CatalogService::refresh(std::string& error) {
+    std::string errors;
+    auto record = [&](const std::string& source, const std::string& detail) {
+        if (!errors.empty())
+            errors += " | ";
+        errors += source + ": " + detail;
+    };
+
+    // 1. GitHub Releases (authoritative). 2. Mirrors, in order. The bundled
+    // snapshot is the final fallback, but that lives in load(), not here —
+    // refresh() only reports failure so the caller keeps the cached/bundled
+    // catalog already in memory.
+    std::string githubError;
+    if (refreshFromGitHubRelease(githubError))
+        return true;
+    record("GitHub", githubError);
+
+    for (const char* mirror : kCatalogMirrors) {
+        std::string mirrorError;
+        if (refreshFromMirror(mirror, std::string("mirror ") + mirror,
+                              mirrorError))
+            return true;
+        record("mirror", mirrorError);
     }
 
-    std::vector<CatalogEntry> parsed;
-    if (!parseJson(catalogBody, parsed, error))
-        return false;
-    if (!writeAtomic(cachePath_, catalogBody, error))
-        return false;
-    entries_ = std::move(parsed);
-    sourceLabel_ = "latest GitHub catalog";
-    log_msg("[catalog] refreshed %zu entries\n", entries_.size());
-    return true;
+    error = "All catalog sources failed: " + errors;
+    return false;
 }
 
 } // namespace pipensx

@@ -586,9 +586,31 @@ void testCatalogSignatureVerify() {
     assert(catalog_sig_verify(wrongKey, message, 1, sig) == 0);
 }
 
+// Trusted-source allowlist gating every network catalog fetch
+// (RF_ACCESS_PLAN П3.1): GitHub release downloads and the jsDelivr mirror are
+// accepted, everything else — look-alike hosts, wrong repos, plain HTTP,
+// path-prefix tricks — is rejected.
+void testTrustedSourceAllowlist() {
+    assert(CatalogService::isTrustedSource(
+        "https://github.com/bqio/switch-dumps/releases/download/v1/catalog.json"));
+    assert(CatalogService::isTrustedSource(
+        "https://cdn.jsdelivr.net/gh/bqio/switch-dumps@latest/catalog.json"));
+
+    assert(!CatalogService::isTrustedSource(
+        "http://github.com/bqio/switch-dumps/releases/download/v1/catalog.json"));
+    assert(!CatalogService::isTrustedSource(
+        "https://github.com/evil/switch-dumps/releases/download/v1/catalog.json"));
+    assert(!CatalogService::isTrustedSource(
+        "https://cdn.jsdelivr.net/gh/evil/switch-dumps@latest/catalog.json"));
+    assert(!CatalogService::isTrustedSource(
+        "https://github.com.evil.example/bqio/switch-dumps/releases/download/x"));
+    assert(!CatalogService::isTrustedSource(""));
+}
+
 int main() {
     testMagnetParsing();
     testCatalogSignatureVerify();
+    testTrustedSourceAllowlist();
     testCatalogParsing();
     testCatalogV2HealthParsing();
     testInfoDictParsing();

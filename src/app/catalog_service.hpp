@@ -64,9 +64,22 @@ public:
                           std::vector<CatalogEntry>& entries,
                           std::string& error);
 
+    // True when `url` is on the trusted-host allowlist for catalog bytes
+    // (GitHub release download or a configured mirror, RF_ACCESS_PLAN П3.1).
+    // Every network source is gated on this before a byte is fetched.
+    static bool isTrustedSource(const std::string& url);
+
 private:
     bool loadFile(const std::string& path, const std::string& label,
                   std::string& error);
+    // RF_ACCESS_PLAN П3.1: refresh sources, tried in order by refresh().
+    bool refreshFromGitHubRelease(std::string& error);
+    bool refreshFromMirror(const std::string& url, const std::string& label,
+                           std::string& error);
+    // Shared verify/parse/cache/adopt step; signature is nullptr when the
+    // source carried none (RF_ACCESS_PLAN П3.2).
+    bool commitCatalog(const std::string& body, const std::string* signature,
+                       const std::string& label, std::string& error);
 
     std::string rootPath_;
     std::string catalogRoot_;
