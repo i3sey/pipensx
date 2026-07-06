@@ -28,6 +28,7 @@ extern "C" {
 #include "ui/downloads/downloads_view.hpp"
 #include "ui/installed/installed_view.hpp"
 #include "ui/settings/about_view.hpp"
+#include "ui/settings/connectivity_wizard.hpp"
 #include "ui/settings/settings_view.hpp"
 #include "ui/theme.hpp"
 
@@ -215,6 +216,14 @@ int main(int, char**) {
 
         startupStage("push MainActivity");
         brls::Application::pushActivity(activity);
+
+        // First-run connectivity wizard (RF_ACCESS_PLAN W3): gate on the saved
+        // flag so it runs once, on top of the app, until a route is chosen.
+        if (!settings.get().connectivitySetupDone) {
+            startupStage("connectivity wizard");
+            brls::Application::pushActivity(
+                new pipensx::ui::ConnectivityWizardActivity(&settings));
+        }
 
         startupStage("first main loop");
         bool firstFrame = true;
