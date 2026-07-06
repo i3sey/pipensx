@@ -170,22 +170,32 @@ std::vector<uint8_t> makeSolidNczWithSections(
 
 std::vector<uint8_t> makeBlockNcz(
     const std::vector<uint8_t>& nca,
-    NczTestLayout layout = NczTestLayout::LegacyCountAfterMagic) {
+    NczTestLayout layout = NczTestLayout::LegacyCountAfterMagic,
+    bool encrypted = false) {
     constexpr uint8_t exponent = 16;
     constexpr size_t blockSize = size_t{1} << exponent;
     const size_t bodySize = nca.size() - 0x4000;
+    std::array<uint8_t, 16> key {};
+    std::array<uint8_t, 16> counter {};
+    for (size_t i = 0; i < key.size(); ++i) {
+        key[i] = static_cast<uint8_t>(i * 13 + 7);
+        counter[i] = static_cast<uint8_t>(i * 5 + 3);
+    }
+    std::vector<uint8_t> body(nca.begin() + 0x4000, nca.end());
+    if (encrypted)
+        cryptCtr(body, 0x4000, key, counter);
     std::vector<std::vector<uint8_t>> blocks;
     std::vector<uint32_t> sizes;
     for (size_t offset = 0; offset < bodySize; offset += blockSize) {
         size_t expected = std::min(blockSize, bodySize - offset);
         std::vector<uint8_t> compressed(ZSTD_compressBound(expected));
         size_t result = ZSTD_compress(compressed.data(), compressed.size(),
-                                      nca.data() + 0x4000 + offset,
+                                      body.data() + offset,
                                       expected, 3);
         assert(!ZSTD_isError(result));
         if (result >= expected) {
-            compressed.assign(nca.begin() + 0x4000 + offset,
-                              nca.begin() + 0x4000 + offset + expected);
+            compressed.assign(body.begin() + offset,
+                              body.begin() + offset + expected);
         } else {
             compressed.resize(result);
         }
@@ -201,7 +211,8 @@ std::vector<uint8_t> makeBlockNcz(
         append64(out, 1);
     }
     std::array<uint8_t, 16> empty {};
-    appendNczSection(out, layout, 0x4000, bodySize, 1, empty, empty);
+    appendNczSection(out, layout, 0x4000, bodySize, encrypted ? 3 : 1,
+                     encrypted ? key : empty, encrypted ? counter : empty);
     out.insert(out.end(), {'N', 'C', 'Z', 'B', 'L', 'O', 'C', 'K'});
     out.insert(out.end(), {0, 0, 0, exponent});
     append32(out, static_cast<uint32_t>(blocks.size()));
@@ -485,6 +496,163 @@ void testSkippedNczEntryBypassesDecoder() {
     assert(capture.files[0] == nca);
 }
 
+// Emulates an interrupted install (IMPROVEMENT_PLAN F-B): feed `package`
+// up to `cut`, keeping the latest checkpoint plus a snapshot of the capture
+// taken at checkpoint time (the journal analogue — installer writes past
+// the checkpoint are overwritten on resume). Then restore a second stream
+// from the checkpoint and feed the rest starting at state.consumed.
+Capture runResume(bool compressed, const std::vector<uint8_t>& package,
+                  size_t cut) {
+    assert(cut < package.size());
+    Capture capture;
+    Capture snapshot;
+    pipensx::install::PackageStreamState state;
+    bool haveState = false;
+    {
+        PackageStream stream(compressed, capture.callbacks());
+        static const size_t chunks[] = {4093, 65537, 31, 7, 129, 65536};
+        size_t offset = 0;
+        size_t index = 0;
+        while (offset < cut) {
+            size_t count = std::min(chunks[index++ % 6], cut - offset);
+            if (!stream.write(package.data() + offset, count)) {
+                std::cerr << stream.error() << '\n';
+                assert(false);
+            }
+            offset += count;
+            pipensx::install::PackageStreamState candidate;
+            if (stream.checkpoint(candidate)) {
+                state = std::move(candidate);
+                snapshot = capture;
+                haveState = true;
+            }
+        }
+        // Stream is dropped here mid-package: the "crash".
+    }
+    assert(haveState);
+    assert(state.consumed <= cut);
+
+    Capture resumed = snapshot;
+    PackageStream stream(compressed, resumed.callbacks());
+    assert(stream.restore(state));
+    assert(stream.consumed() == state.consumed);
+    std::vector<uint8_t> rest(package.begin() + state.consumed, package.end());
+    feed(stream, rest);
+    assert(stream.consumed() == package.size());
+    return resumed;
+}
+
+void testResumeNsp() {
+    std::vector<uint8_t> first {1, 2, 3, 4, 5};
+    std::vector<uint8_t> second(100000);
+    for (size_t i = 0; i < second.size(); ++i)
+        second[i] = static_cast<uint8_t>(i * 17);
+    auto package = makePfs0({{"first.nca", first}, {"second.nca", second}});
+    for (size_t cut : {size_t{200}, size_t{5000}, size_t{50017},
+                       package.size() - 3}) {
+        Capture resumed = runResume(false, package, cut);
+        assert((resumed.names == std::vector<std::string>{
+            "first.nca", "second.nca"}));
+        assert(resumed.files[0] == first);
+        assert(resumed.files[1] == second);
+    }
+}
+
+void testResumeBlockNsz(bool encrypted) {
+    std::vector<uint8_t> nca(0x4000 + 190321);
+    for (size_t i = 0; i < nca.size(); ++i)
+        nca[i] = static_cast<uint8_t>((i * 17) + (i >> 7));
+    auto package = makePfs0(
+        {{"00112233445566778899aabbccddeeff.ncz",
+          makeBlockNcz(nca, NczTestLayout::LegacyCountAfterMagic,
+                       encrypted)}});
+    // Cuts inside the buffered NCA/NCZ header (decoder restarts fresh),
+    // mid-block-stream (block-boundary rollback, AES counter mid-section),
+    // and near the end. The compressed body is small, so derive cuts from
+    // the actual package size.
+    for (size_t cut : {size_t{0x1000},
+                       size_t{0x4000} + 64,
+                       0x4000 + (package.size() - 0x4000) / 2,
+                       package.size() - 5}) {
+        Capture resumed = runResume(true, package, cut);
+        assert(resumed.names.size() == 1);
+        assert(resumed.names[0] == "00112233445566778899aabbccddeeff.nca");
+        assert(resumed.files[0] == nca);
+    }
+}
+
+void testResumeSolidNsz() {
+    std::vector<uint8_t> first(30000);
+    for (size_t i = 0; i < first.size(); ++i)
+        first[i] = static_cast<uint8_t>(i * 7);
+    std::vector<uint8_t> nca(0x4000 + 200000);
+    for (size_t i = 0; i < nca.size(); ++i)
+        nca[i] = static_cast<uint8_t>((i * 29) ^ (i >> 8));
+    auto package = makePfs0({{"first.nca", first},
+                             {"00112233445566778899aabbccddeeff.ncz",
+                              makeSolidNcz(nca, true)}});
+    // Cuts mid-solid roll back to the last safe point before the Zstandard
+    // stream consumed input; the solid entry replays from re-fed bytes.
+    for (size_t cut : {size_t{10000}, size_t{35000},
+                       package.size() - 100}) {
+        Capture resumed = runResume(true, package, cut);
+        assert((resumed.names == std::vector<std::string>{
+            "first.nca", "00112233445566778899aabbccddeeff.nca"}));
+        assert(resumed.files[0] == first);
+        assert(resumed.files[1] == nca);
+    }
+}
+
+void testSolidMidEntryNotCheckpointable() {
+    std::vector<uint8_t> nca(0x4000 + 200000);
+    for (size_t i = 0; i < nca.size(); ++i)
+        nca[i] = static_cast<uint8_t>((i * 29) ^ (i >> 8));
+    auto package = makePfs0({{"00112233445566778899aabbccddeeff.ncz",
+                              makeSolidNcz(nca)}});
+    Capture capture;
+    PackageStream stream(true, capture.callbacks());
+    // Feed enough that the solid Zstandard stream has consumed input but the
+    // entry has not finished: no safe point exists there.
+    assert(stream.write(package.data(), package.size() / 2));
+    pipensx::install::PackageStreamState state;
+    assert(!stream.checkpoint(state));
+}
+
+void testRestoreRejectsInconsistentState() {
+    std::vector<uint8_t> first {1, 2, 3, 4, 5};
+    auto package = makePfs0({{"first.nca", first}});
+    Capture capture;
+    pipensx::install::PackageStreamState state;
+    {
+        PackageStream stream(false, capture.callbacks());
+        assert(stream.write(package.data(), package.size() - 2));
+        assert(stream.checkpoint(state));
+    }
+    {
+        // Entry index out of range.
+        auto bad = state;
+        bad.entryIndex = 7;
+        Capture sink;
+        PackageStream stream(false, sink.callbacks());
+        assert(!stream.restore(bad));
+    }
+    {
+        // Position does not match the open entry.
+        auto bad = state;
+        bad.dataPosition += 1;
+        Capture sink;
+        PackageStream stream(false, sink.callbacks());
+        assert(!stream.restore(bad));
+    }
+    {
+        // Restore on a used stream.
+        Capture sink;
+        PackageStream stream(false, sink.callbacks());
+        assert(stream.write(package.data(), 4));
+        assert(!stream.restore(state));
+    }
+}
+
 void* runNszOnSmallStack(void*) {
     testNsz();
     return nullptr;
@@ -517,6 +685,12 @@ int main() {
     testOfficialBlockNsz();
     testSkipFileDropsEntryWithoutCallbacks();
     testSkippedNczEntryBypassesDecoder();
+    testResumeNsp();
+    testResumeBlockNsz(false);
+    testResumeBlockNsz(true);
+    testResumeSolidNsz();
+    testSolidMidEntryNotCheckpointable();
+    testRestoreRejectsInconsistentState();
     testNszSmallWorkerStack();
     std::cout << "package stream tests passed\n";
     return 0;

@@ -94,6 +94,7 @@ set(APP_SERVICE_SOURCES
     src/app/installed_title_service.cpp
     src/app/install_space.cpp
     src/app/magnet_resolver.cpp
+    src/install/install_journal.cpp
     src/install/package_stream.cpp
 )
 

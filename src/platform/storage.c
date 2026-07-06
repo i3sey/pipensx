@@ -198,10 +198,28 @@ int storage_write(storage_t *s, int64_t offset, const uint8_t *data, size_t len)
             continue;
         }
         if (fh->config.mode == STORAGE_FILE_SINK) {
+            const uint8_t *src = data + written;
+            int64_t sink_off = local_off;
+            size_t deliver = can_write;
+            /*
+             * F-B resume: the prefix below ready_bytes was consumed by a
+             * previous session; drop re-downloaded bytes and hand the sink
+             * only the tail at/after the mark.
+             */
+            if ((uint64_t)local_off < fh->config.ready_bytes) {
+                uint64_t skip = fh->config.ready_bytes - (uint64_t)local_off;
+                if (skip >= (uint64_t)deliver) {
+                    written += can_write;
+                    continue;
+                }
+                src += skip;
+                sink_off += (int64_t)skip;
+                deliver -= (size_t)skip;
+            }
             if (!fh->config.sink ||
                 !fh->config.sink(fh->config.user,
-                                 (uint32_t)(fh - s->files), local_off,
-                                 data + written, can_write)) {
+                                 (uint32_t)(fh - s->files), sink_off,
+                                 src, deliver)) {
                 if (!s->error[0])
                     snprintf(s->error, sizeof(s->error),
                              "stream sink rejected file %u",
@@ -273,7 +291,29 @@ int storage_range_readable(storage_t *s, int64_t offset, size_t len) {
 }
 
 int storage_range_skipped(storage_t *s, int64_t offset, size_t len) {
-    return range_has_mode(s, offset, len, STORAGE_FILE_SKIP);
+    size_t done = 0;
+    while (done < len) {
+        struct file_handle *fh;
+        int64_t local_off;
+        if (!find_file(s, offset + (int64_t)done,
+                       (int64_t)(len - done), &fh, &local_off))
+            return 0;
+        size_t count = (size_t)(fh->length - local_off);
+        if (count > len - done)
+            count = len - done;
+        if (fh->config.mode == STORAGE_FILE_SKIP) {
+            done += count;
+            continue;
+        }
+        /* F-B: the consumed prefix of a resumed SINK file counts as done. */
+        if (fh->config.mode == STORAGE_FILE_SINK &&
+            (uint64_t)local_off + count <= fh->config.ready_bytes) {
+            done += count;
+            continue;
+        }
+        return 0;
+    }
+    return 1;
 }
 
 const char *storage_error(storage_t *s) {

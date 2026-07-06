@@ -2,6 +2,7 @@
 #include "request_gate.hpp"
 #include "stream_ram_budget.hpp"
 #include "../install/install_backend.hpp"
+#include "../install/install_journal.hpp"
 #include "../install/package_stream.hpp"
 
 extern "C" {
@@ -165,6 +166,12 @@ bool dictionaryInteger(const be_node_t& dict, const char* key,
     return true;
 }
 
+// IMPROVEMENT_PLAN F-B: one journal file per task next to the queue state.
+std::string installJournalPath(const std::string& root,
+                               const std::string& taskId) {
+    return root + "/install-journal-" + taskId + ".bencode";
+}
+
 class PackageCoordinator {
 public:
     using Progress = std::function<void(
@@ -215,6 +222,8 @@ public:
             : 4 * 1024 * 1024;
         buildPieceOrder();
         if (streamInstall_ && error_.empty() && packageCount_ > completedPackages_) {
+            journalPath_ = installJournalPath(workingRoot, taskId_);
+            tryResume();
             StreamRamBudget budget = detectStreamRamBudget(pieceLengthBytes_);
             if (!budget.valid) {
                 log_msg("[install] RAM budget rejected source=%s available=%llu "
@@ -283,9 +292,22 @@ public:
 
     ~PackageCoordinator() {
         cancel();
-        if (backend_)
-            backend_->rollbackPackage();
+        if (!backend_)
+            return;
+        // F-B: an interruption with a journaled safe point keeps the partial
+        // install on disk for a later resume; anything else rolls back and
+        // drops the journal.
+        if (journalValid_ && !abandonResume_ && error().empty()) {
+            backend_->suspendPackage();
+            return;
+        }
+        backend_->rollbackPackage();
+        if (!journalPath_.empty())
+            install::removeInstallJournal(journalPath_);
     }
+
+    // The task is going away: never keep partial data or the journal.
+    void abandonResume() { abandonResume_ = true; }
 
     const std::vector<storage_file_config_t>& configs() const {
         return configs_;
@@ -547,6 +569,152 @@ private:
         return requestGate_.allows(gate.offset);
     }
 
+    install::PackageCallbacks makeCallbacks() {
+        install::PackageCallbacks callbacks;
+        callbacks.skipFile = [this](const std::string& name) {
+            return backend_->shouldSkipFile(name);
+        };
+        callbacks.beginFile = [this](const std::string& name,
+                                     uint64_t fileSize) {
+            bool ok = backend_->beginFile(name, fileSize);
+            if (!ok)
+                setError(backend_->error());
+            return ok;
+        };
+        callbacks.setFileSize = [this](uint64_t fileSize) {
+            bool ok = backend_->setFileSize(fileSize);
+            if (!ok)
+                setError(backend_->error());
+            return ok;
+        };
+        callbacks.writeFile = [this](const uint8_t* bytes,
+                                     size_t byteCount) {
+            bool ok = backend_->writeFile(bytes, byteCount);
+            if (ok) {
+                if (progress_) {
+                    progress_(completedPackages_, currentPackage_,
+                              backend_->installedBytes(),
+                              backend_->expectedBytes(),
+                              DownloadStatus::Installing);
+                }
+            } else {
+                setError(backend_->error());
+            }
+            return ok;
+        };
+        callbacks.endFile = [this] {
+            bool ok = backend_->endFile();
+            if (!ok)
+                setError(backend_->error());
+            return ok;
+        };
+        return callbacks;
+    }
+
+    // IMPROVEMENT_PLAN F-B: re-attach to an interrupted install of the
+    // package at ordinal completedPackages_. On any mismatch the journal is
+    // discarded and the package restarts from scratch. Pieces that lie
+    // entirely below the journaled stream position are excluded from
+    // download (storage_range_skipped); the piece straddling it is
+    // re-downloaded and storage clips sink delivery at ready_bytes, so the
+    // restored stream sees its next byte exactly at state.consumed.
+    void tryResume() {
+        install::InstallJournal journal;
+        if (!install::loadInstallJournal(journalPath_, journal))
+            return;
+        uint32_t fileIndex = UINT32_MAX;
+        for (const auto& item : packageOrdinals_) {
+            if (item.second == completedPackages_) {
+                fileIndex = item.first;
+                break;
+            }
+        }
+        if (fileIndex == UINT32_MAX) {
+            install::removeInstallJournal(journalPath_);
+            return;
+        }
+        const mi_file_t& file = metainfo_.files[fileIndex];
+        if (journal.packageId != file.path ||
+            journal.packageSize != static_cast<uint64_t>(file.length) ||
+            journal.compressed != isCompressedPackage(file.path) ||
+            journal.state.consumed == 0 ||
+            journal.state.consumed >= static_cast<uint64_t>(file.length) ||
+            journal.backendState.empty()) {
+            log_msg("[install] stale journal discarded package='%s'\n",
+                    file.path);
+            install::removeInstallJournal(journalPath_);
+            return;
+        }
+        if (!backend_->resumePackage(taskId_, file.path,
+                                     journal.backendState)) {
+            log_msg("[install] backend resume rejected package='%s': %s\n",
+                    file.path, backend_->error().c_str());
+            install::removeInstallJournal(journalPath_);
+            return;
+        }
+        auto stream = std::make_unique<install::PackageStream>(
+            journal.compressed, makeCallbacks(), taskId_);
+        if (!stream->restore(journal.state)) {
+            log_msg("[install] stream restore failed package='%s': %s\n",
+                    file.path, stream->error().c_str());
+            backend_->rollbackPackage();
+            install::removeInstallJournal(journalPath_);
+            return;
+        }
+        stream_ = std::move(stream);
+        activeFileIndex_ = fileIndex;
+        currentPackage_ = file.path;
+        configs_[fileIndex].ready_bytes = journal.state.consumed;
+        producerOffset_ = journal.state.consumed;
+        journalConsumed_ = journal.state.consumed;
+        journalValid_ = true;
+        log_msg("[install] resuming package='%s' at %llu of %llu bytes\n",
+                file.path,
+                static_cast<unsigned long long>(journal.state.consumed),
+                static_cast<unsigned long long>(file.length));
+        telemetry_log("install_resume", taskId_.c_str(),
+            "package=%s consumed_bytes=%llu total_bytes=%llu",
+            file.path,
+            static_cast<unsigned long long>(journal.state.consumed),
+            static_cast<unsigned long long>(file.length));
+    }
+
+    // F-B: periodically persist a resume point from the install worker.
+    // Cheap when the stream is between safe points — checkpoint() just
+    // declines and we retry after the next chunk.
+    void maybeCheckpoint() {
+        if (!stream_ || activeFileIndex_ == UINT32_MAX)
+            return;
+        uint64_t consumed = stream_->consumed();
+        if (consumed < journalConsumed_ + kJournalIntervalBytes)
+            return;
+        install::InstallJournal journal;
+        if (!stream_->checkpoint(journal.state) ||
+            journal.state.consumed == 0)
+            return;
+        journal.backendState = backend_->checkpointPackage();
+        if (journal.backendState.empty())
+            return;
+        const mi_file_t& file = metainfo_.files[activeFileIndex_];
+        journal.packageId = file.path;
+        journal.packageSize = static_cast<uint64_t>(file.length);
+        journal.compressed = isCompressedPackage(file.path);
+        if (!saveInstallJournal(journalPath_, journal)) {
+            log_msg("[install] journal write failed '%s'\n",
+                    journalPath_.c_str());
+            return;
+        }
+        journalConsumed_ = consumed;
+        journalValid_ = true;
+    }
+
+    void clearJournal() {
+        if (!journalPath_.empty())
+            install::removeInstallJournal(journalPath_);
+        journalValid_ = false;
+        journalConsumed_ = 0;
+    }
+
     bool processChunk(const InstallChunk& chunk) {
         const mi_file_t& file = metainfo_.files[chunk.fileIndex];
         if (!stream_) {
@@ -557,46 +725,8 @@ private:
             }
             activeFileIndex_ = chunk.fileIndex;
             currentPackage_ = file.path;
-            install::PackageCallbacks callbacks;
-            callbacks.skipFile = [this](const std::string& name) {
-                return backend_->shouldSkipFile(name);
-            };
-            callbacks.beginFile = [this](const std::string& name,
-                                         uint64_t fileSize) {
-                bool ok = backend_->beginFile(name, fileSize);
-                if (!ok)
-                    setError(backend_->error());
-                return ok;
-            };
-            callbacks.setFileSize = [this](uint64_t fileSize) {
-                bool ok = backend_->setFileSize(fileSize);
-                if (!ok)
-                    setError(backend_->error());
-                return ok;
-            };
-            callbacks.writeFile = [this](const uint8_t* bytes,
-                                         size_t byteCount) {
-                bool ok = backend_->writeFile(bytes, byteCount);
-                if (ok) {
-                    if (progress_) {
-                        progress_(completedPackages_, currentPackage_,
-                                  backend_->installedBytes(),
-                                  backend_->expectedBytes(),
-                                  DownloadStatus::Installing);
-                    }
-                } else {
-                    setError(backend_->error());
-                }
-                return ok;
-            };
-            callbacks.endFile = [this] {
-                bool ok = backend_->endFile();
-                if (!ok)
-                    setError(backend_->error());
-                return ok;
-            };
             stream_ = std::make_unique<install::PackageStream>(
-                isCompressedPackage(file.path), std::move(callbacks), taskId_);
+                isCompressedPackage(file.path), makeCallbacks(), taskId_);
             if (progress_)
                 progress_(completedPackages_, currentPackage_, 0, 0,
                           DownloadStatus::Installing);
@@ -611,6 +741,7 @@ private:
                     currentPackage_.c_str(),
                     static_cast<long long>(chunk.fileOffset), error().c_str());
             backend_->rollbackPackage();
+            clearJournal();
             return false;
         }
         if (chunk.final) {
@@ -628,6 +759,7 @@ private:
                 log_msg("[install] finalize error package='%s': %s\n",
                         currentPackage_.c_str(), error().c_str());
                 backend_->rollbackPackage();
+                clearJournal();
                 return false;
             }
             bool alreadyInstalled = false;
@@ -636,15 +768,20 @@ private:
                 log_msg("[install] commit error package='%s': %s\n",
                         currentPackage_.c_str(), error().c_str());
                 backend_->rollbackPackage();
+                clearJournal();
                 return false;
             }
             ++completedPackages_;
             stream_.reset();
             activeFileIndex_ = UINT32_MAX;
+            // The finished package's resume point is obsolete.
+            clearJournal();
             if (progress_)
                 progress_(completedPackages_, currentPackage_, 0, 0,
                           DownloadStatus::Downloading);
             currentPackage_.clear();
+        } else {
+            maybeCheckpoint();
         }
         return true;
     }
@@ -894,6 +1031,14 @@ private:
     const metainfo_t& metainfo_;
     std::string taskId_;
     std::unique_ptr<install::InstallBackend> backend_;
+    // F-B resume journal (IMPROVEMENT_PLAN F-B). Touched only by the
+    // constructor (before the worker starts), the install worker and the
+    // destructor (after the worker joined) — no lock needed.
+    static constexpr uint64_t kJournalIntervalBytes = 32ull * 1024 * 1024;
+    std::string journalPath_;
+    uint64_t journalConsumed_ = 0;
+    bool journalValid_ = false;
+    bool abandonResume_ = false;
     bool streamInstall_ = false;
     std::vector<storage_file_config_t> configs_;
     std::vector<uint32_t> pieceOrder_;
@@ -1418,6 +1563,7 @@ bool DownloadManager::removeLocked(const std::string& id, bool deleteData,
             return false;
         }
         unlink(it->metainfoPath.c_str());
+        install::removeInstallJournal(installJournalPath(rootPath_, it->id));
         tasks_.erase(it);
         return saveLocked(error);
     }
@@ -1646,6 +1792,12 @@ void DownloadManager::workerMain() {
 
         torrent_destroy(torrent);
         log_msg("[manager] torrent destroyed %s\n", activeId.c_str());
+        if (coordinator) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            const DownloadTask* task = findLocked(activeId);
+            if (!task || task->status == DownloadStatus::Removing)
+                coordinator->abandonResume();
+        }
         coordinator.reset();
         metainfo_free(&metainfo);
 

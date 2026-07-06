@@ -17,6 +17,7 @@ extern "C" {
 #include <cstring>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <type_traits>
 #include <unistd.h>
 #include <utility>
 #include <vector>
@@ -117,6 +118,68 @@ std::string hexBytes(const uint8_t* data, size_t size) {
     }
     return result;
 }
+
+// F-B journal blob helpers: little-endian, length-prefixed.
+void putU64(std::string& out, uint64_t value) {
+    for (int i = 0; i < 8; ++i)
+        out.push_back(static_cast<char>((value >> (i * 8)) & 0xff));
+}
+
+void putRaw(std::string& out, const void* data, size_t size) {
+    out.append(static_cast<const char*>(data), size);
+}
+
+void putStr(std::string& out, const std::string& value) {
+    putU64(out, value.size());
+    out.append(value);
+}
+
+void putBytes(std::string& out, const std::vector<uint8_t>& value) {
+    putU64(out, value.size());
+    out.append(reinterpret_cast<const char*>(value.data()), value.size());
+}
+
+struct BlobReader {
+    const char* data = nullptr;
+    size_t size = 0;
+    size_t pos = 0;
+
+    bool raw(void* out, size_t count) {
+        if (size - pos < count)
+            return false;
+        std::memcpy(out, data + pos, count);
+        pos += count;
+        return true;
+    }
+    bool u8(uint8_t& value) { return raw(&value, 1); }
+    bool u64(uint64_t& value) {
+        uint8_t bytes8[8];
+        if (!raw(bytes8, sizeof(bytes8)))
+            return false;
+        value = 0;
+        for (int i = 0; i < 8; ++i)
+            value |= static_cast<uint64_t>(bytes8[i]) << (i * 8);
+        return true;
+    }
+    bool str(std::string& value) {
+        uint64_t count = 0;
+        if (!u64(count) || size - pos < count)
+            return false;
+        value.assign(data + pos, static_cast<size_t>(count));
+        pos += static_cast<size_t>(count);
+        return true;
+    }
+    bool bytes(std::vector<uint8_t>& value) {
+        uint64_t count = 0;
+        if (!u64(count) || size - pos < count)
+            return false;
+        const auto* begin = reinterpret_cast<const uint8_t*>(data + pos);
+        value.assign(begin, begin + static_cast<size_t>(count));
+        pos += static_cast<size_t>(count);
+        return true;
+    }
+    bool done() const { return pos == size; }
+};
 
 uint64_t baseApplicationId(uint64_t id, NcmContentMetaType type) {
     if (type == NcmContentMetaType_Patch)
@@ -816,6 +879,248 @@ public:
         if (!tempDirectory_.empty())
             removeTree(tempDirectory_);
         resetState();
+    }
+
+    // F-B: opaque snapshot of the ncm bookkeeping at a stream safe point.
+    // Placeholder writes are synchronous IPC, so no flush is needed: every
+    // acknowledged writeFile() byte is already inside the placeholder.
+    std::string checkpointPackage() override {
+        static_assert(std::is_trivially_copyable<Sha256Context>::value,
+                      "Sha256Context must be raw-serializable");
+        if (!active_)
+            return {};
+        std::string blob("NXB1");
+        putU64(blob, static_cast<uint64_t>(storageId_));
+        putStr(blob, taskId_);
+        putStr(blob, packageName_);
+        putU64(blob, expected_);
+        putU64(blob, installed_);
+        putU64(blob, ignoredRemaining_);
+        putStr(blob, auxiliaryKind_);
+        putU64(blob, auxiliaryExpected_);
+        putBytes(blob, auxiliary_);
+        putBytes(blob, ticket_);
+        putBytes(blob, certificate_);
+        putStr(blob, currentName_);
+        putU64(blob, contents_.size());
+        uint64_t currentIndexPlusOne = 0;
+        for (size_t i = 0; i < contents_.size(); ++i) {
+            const Content& content = contents_[i];
+            if (&content == current_)
+                currentIndexPlusOne = i + 1;
+            putStr(blob, content.name);
+            putRaw(blob, content.id.c, sizeof(content.id.c));
+            putRaw(blob, &content.placeholder, sizeof(content.placeholder));
+            putU64(blob, content.size);
+            putU64(blob, content.written);
+            uint8_t flags = (content.existing ? 1 : 0) |
+                            (content.registered ? 2 : 0) |
+                            (content.meta ? 4 : 0);
+            blob.push_back(static_cast<char>(flags));
+        }
+        putU64(blob, currentIndexPlusOne);
+        blob.push_back(hashActive_ ? 1 : 0);
+        if (hashActive_) {
+            putU64(blob, sizeof(sha_));
+            putRaw(blob, &sha_, sizeof(sha_));
+        }
+        putU64(blob, skippedDeltaIds_.size());
+        for (const auto& id : skippedDeltaIds_)
+            putRaw(blob, id.c, sizeof(id.c));
+        return blob;
+    }
+
+    // F-B: detach without deleting placeholders or a registered CNMT NCA;
+    // resumePackage() re-attaches to them from the journal blob.
+    void suspendPackage() override {
+        if (!active_) {
+            rollbackPackage();
+            return;
+        }
+        emitFileTelemetry(now_ms(), true, true);
+        telemetry_log("ncm", taskId_.c_str(),
+                      "event=package_suspend target=%s installed=%llu "
+                      "contents=%zu",
+                      targetName_, (unsigned long long)installed_,
+                      contents_.size());
+        log_msg("[install] package suspended '%s' installed=%llu\n",
+                packageName_.c_str(),
+                static_cast<unsigned long long>(installed_));
+        hashActive_ = false;
+        closeServices();
+        // The workspace is recreated on resume; placeholders live in ncm,
+        // not here.
+        if (!tempDirectory_.empty())
+            removeTree(tempDirectory_);
+        resetState();
+    }
+
+    bool resumePackage(const std::string& taskId,
+                       const std::string& packageName,
+                       const std::string& state) override {
+        rollbackPackage();
+        error_.clear();
+        BlobReader in { state.data(), state.size(), 0 };
+        char magic[4] = {};
+        uint64_t storageId = 0;
+        std::string blobTaskId;
+        std::string blobPackage;
+        uint64_t expected = 0;
+        uint64_t installed = 0;
+        uint64_t ignoredRemaining = 0;
+        std::string auxiliaryKind;
+        uint64_t auxiliaryExpected = 0;
+        std::vector<uint8_t> auxiliary;
+        std::vector<uint8_t> ticket;
+        std::vector<uint8_t> certificate;
+        std::string currentName;
+        uint64_t contentCount = 0;
+        bool parsed =
+            in.raw(magic, sizeof(magic)) &&
+            std::memcmp(magic, "NXB1", sizeof(magic)) == 0 &&
+            in.u64(storageId) && in.str(blobTaskId) &&
+            in.str(blobPackage) && in.u64(expected) && in.u64(installed) &&
+            in.u64(ignoredRemaining) && in.str(auxiliaryKind) &&
+            in.u64(auxiliaryExpected) && in.bytes(auxiliary) &&
+            in.bytes(ticket) && in.bytes(certificate) &&
+            in.str(currentName) && in.u64(contentCount) &&
+            contentCount <= 4096;
+        std::vector<Content> contents;
+        for (uint64_t i = 0; parsed && i < contentCount; ++i) {
+            Content content;
+            uint8_t flags = 0;
+            parsed = in.str(content.name) &&
+                     in.raw(content.id.c, sizeof(content.id.c)) &&
+                     in.raw(&content.placeholder,
+                            sizeof(content.placeholder)) &&
+                     in.u64(content.size) && in.u64(content.written) &&
+                     in.u8(flags) && content.written <= content.size;
+            if (parsed) {
+                content.existing = flags & 1;
+                content.registered = flags & 2;
+                content.meta = flags & 4;
+                contents.push_back(std::move(content));
+            }
+        }
+        uint64_t currentIndexPlusOne = 0;
+        uint8_t hashActive = 0;
+        Sha256Context sha {};
+        if (parsed)
+            parsed = in.u64(currentIndexPlusOne) &&
+                     currentIndexPlusOne <= contents.size() &&
+                     in.u8(hashActive) && hashActive <= 1;
+        if (parsed && hashActive) {
+            uint64_t shaSize = 0;
+            parsed = in.u64(shaSize) && shaSize == sizeof(sha) &&
+                     in.raw(&sha, sizeof(sha)) && currentIndexPlusOne != 0;
+        }
+        uint64_t skippedCount = 0;
+        std::vector<NcmContentId> skipped;
+        if (parsed)
+            parsed = in.u64(skippedCount) && skippedCount <= 4096;
+        for (uint64_t i = 0; parsed && i < skippedCount; ++i) {
+            NcmContentId id {};
+            parsed = in.raw(id.c, sizeof(id.c));
+            if (parsed)
+                skipped.push_back(id);
+        }
+        if (!parsed || !in.done()) {
+            error_ = "Install journal backend state is malformed.";
+            return false;
+        }
+        if (storageId != static_cast<uint64_t>(storageId_)) {
+            error_ = "Install journal targets a different storage.";
+            return false;
+        }
+        if (blobPackage != packageName) {
+            error_ = "Install journal does not match this package.";
+            return false;
+        }
+
+        Result rc = ncmOpenContentStorage(&storage_, storageId_);
+        if (R_SUCCEEDED(rc))
+            rc = ncmOpenContentMetaDatabase(&database_, storageId_);
+        if (R_FAILED(rc)) {
+            errorResult("Unable to open content storage", rc);
+            closeServices();
+            return false;
+        }
+        // Every checkpointed content must still be present on this console;
+        // otherwise discard the leftovers and let the caller start fresh.
+        bool valid = true;
+        for (const auto& content : contents) {
+            bool has = false;
+            if (content.existing || content.registered)
+                valid = R_SUCCEEDED(ncmContentStorageHas(
+                            &storage_, &has, &content.id)) && has;
+            else if (content.size)
+                valid = R_SUCCEEDED(ncmContentStorageHasPlaceHolder(
+                            &storage_, &has, &content.placeholder)) && has;
+            else
+                valid = content.written == 0;
+            if (!valid) {
+                log_msg("[install] resume rejected: '%s' is missing\n",
+                        content.name.c_str());
+                break;
+            }
+        }
+        if (!valid) {
+            for (const auto& content : contents) {
+                if (content.registered && !content.existing)
+                    ncmContentStorageDelete(&storage_, &content.id);
+                else if (!content.existing && content.size)
+                    ncmContentStorageDeletePlaceHolder(&storage_,
+                                                       &content.placeholder);
+            }
+            closeServices();
+            error_ = "Checkpointed install no longer matches this console.";
+            return false;
+        }
+
+        taskId_ = taskId;
+        packageName_ = packageName;
+        tempDirectory_ = std::string(TempRoot) + "/" + taskId;
+        if (!makeDirectories(tempDirectory_)) {
+            closeServices();
+            resetState();
+            error_ = "Unable to create installation workspace.";
+            return false;
+        }
+        contents_ = std::move(contents);
+        ticket_ = std::move(ticket);
+        certificate_ = std::move(certificate);
+        auxiliary_ = std::move(auxiliary);
+        auxiliaryKind_ = std::move(auxiliaryKind);
+        auxiliaryExpected_ = auxiliaryExpected;
+        currentName_ = std::move(currentName);
+        ignoredRemaining_ = ignoredRemaining;
+        expected_ = expected;
+        installed_ = installed;
+        skippedDeltaIds_ = std::move(skipped);
+        current_ = currentIndexPlusOne
+                       ? &contents_[currentIndexPlusOne - 1] : nullptr;
+        if (hashActive) {
+            std::memcpy(&sha_, &sha, sizeof(sha_));
+            hashActive_ = true;
+        }
+        active_ = true;
+        packageStartedMs_ = now_ms();
+        resetFileTelemetry(now_ms());
+        // Re-derive the early CNMT parse (PERF_PLAN 3.4) so delta skipping
+        // keeps working after the restart.
+        for (auto& content : contents_)
+            if (content.meta && content.size &&
+                content.written == content.size)
+                prepareEarlyMeta(content);
+        log_msg("[install] package resumed '%s' contents=%zu installed=%llu\n",
+                packageName_.c_str(), contents_.size(),
+                static_cast<unsigned long long>(installed_));
+        telemetry_log("ncm", taskId_.c_str(),
+                      "event=package_resume target=%s contents=%zu "
+                      "installed=%llu",
+                      targetName_, contents_.size(),
+                      (unsigned long long)installed_);
+        return true;
     }
 
     uint64_t installedBytes() const override { return installed_; }

@@ -198,6 +198,138 @@ public:
         return ok;
     }
 
+    // A decoder safe point needs no zstd internals: before the NCZ header is
+    // digested (everything sits in pending_, which the checkpoint rolls
+    // back), at block-mode block boundaries (blocks are compressed
+    // independently), or before a solid Zstandard stream consumed its first
+    // byte. Mid-frame solid state lives inside ZSTD_DStream and cannot be
+    // serialized, so a solid entry in flight is not checkpointable.
+    bool checkpointable() const {
+        if (!headerReady_)
+            return true;
+        if (blockMode_)
+            return true;
+        return solidConsumed_ == 0;
+    }
+
+    size_t pendingSize() const { return pending_.size(); }
+
+    void exportState(PackageStreamState& out) const {
+        out.decoderPresent = true;
+        out.decoderHeaderReady = headerReady_;
+        if (!headerReady_)
+            return;
+        out.blockMode = blockMode_;
+        out.outputSize = outputSize_;
+        out.outputPosition = outputPosition_;
+        out.blockSize = blockSize_;
+        out.nextBlock = static_cast<uint32_t>(nextBlock_);
+        out.sections.reserve(sections_.size());
+        for (const auto& section : sections_) {
+            PackageStreamState::Section stored;
+            stored.offset = section.offset;
+            stored.size = section.size;
+            stored.cryptoType = section.cryptoType;
+            stored.key = section.key;
+            stored.counter = section.counter;
+            out.sections.push_back(stored);
+        }
+        out.blockSizes = blockSizes_;
+    }
+
+    // Rebuilds a freshly constructed decoder at a checkpointed safe point.
+    // ready_ and the NCA-header write are NOT replayed — the installer
+    // restored its own side from the journal.
+    bool restore(const PackageStreamState& in, uint64_t inputRemaining,
+                 std::string& error) {
+        if (inputRemaining > inputSize_) {
+            error = "NCZ restore input position is invalid.";
+            return false;
+        }
+        inputRemaining_ = inputRemaining;
+        if (!in.decoderHeaderReady) {
+            // Header never digested: everything was rolled back, the decoder
+            // restarts fresh and re-parses the NCZ header from re-fed input.
+            if (inputRemaining_ != inputSize_) {
+                error = "NCZ restore expects a fresh decoder.";
+                return false;
+            }
+            return true;
+        }
+        constexpr uint64_t ncaHeaderSize = 0x4000;
+        if (in.sections.empty() ||
+            in.outputPosition < ncaHeaderSize ||
+            in.outputPosition > in.outputSize) {
+            error = "NCZ restore section state is invalid.";
+            return false;
+        }
+        uint64_t expect = ncaHeaderSize;
+        sections_.clear();
+        sections_.reserve(in.sections.size());
+        for (const auto& stored : in.sections) {
+            if (stored.offset != expect || stored.size == 0 ||
+                stored.size > std::numeric_limits<uint64_t>::max() -
+                                  stored.offset) {
+                error = "NCZ restore sections are not contiguous.";
+                return false;
+            }
+            NczSection section;
+            section.offset = stored.offset;
+            section.size = stored.size;
+            section.cryptoType = stored.cryptoType;
+            section.key = stored.key;
+            section.counter = stored.counter;
+            sections_.push_back(section);
+            expect = stored.offset + stored.size;
+        }
+        if (expect != in.outputSize) {
+            error = "NCZ restore output size mismatch.";
+            return false;
+        }
+        outputSize_ = in.outputSize;
+        outputPosition_ = in.outputPosition;
+        currentSection_ = 0; // emit() advances lazily from the front
+        blockMode_ = in.blockMode;
+        headerReady_ = true;
+        if (blockMode_) {
+            bool sizeValid = false;
+            for (unsigned exponent = 14; exponent <= 30; ++exponent)
+                if (in.blockSize == (uint64_t{1} << exponent))
+                    sizeValid = true;
+            if (!sizeValid || in.blockSizes.empty() ||
+                in.blockSizes.size() > (1u << 24) ||
+                in.nextBlock > in.blockSizes.size()) {
+                error = "NCZ restore block state is invalid.";
+                return false;
+            }
+            uint64_t expectedPosition = in.nextBlock == in.blockSizes.size()
+                ? outputSize_
+                : ncaHeaderSize +
+                      static_cast<uint64_t>(in.nextBlock) * in.blockSize;
+            if (outputPosition_ != expectedPosition) {
+                error = "NCZ restore is not at a block boundary.";
+                return false;
+            }
+            blockSize_ = in.blockSize;
+            blockSizes_ = in.blockSizes;
+            nextBlock_ = in.nextBlock;
+        } else {
+            // Solid streams are only checkpointed untouched: nothing beyond
+            // the raw NCA header has been emitted yet.
+            if (in.nextBlock != 0 || !in.blockSizes.empty() ||
+                outputPosition_ != ncaHeaderSize) {
+                error = "NCZ restore solid state is invalid.";
+                return false;
+            }
+            stream_ = ZSTD_createDStream();
+            if (!stream_ || ZSTD_isError(ZSTD_initDStream(stream_))) {
+                error = "Unable to initialize Zstandard decoder.";
+                return false;
+            }
+        }
+        return true;
+    }
+
     bool finish(std::string& error) {
         if (inputRemaining_ != 0) {
             error = "NCZ stream ended before its declared size.";
@@ -557,6 +689,7 @@ private:
             if (out.pos == 0 && input.pos == input.size)
                 break;
         }
+        solidConsumed_ += input.pos;
         pending_.consume(input.pos);
         return true;
     }
@@ -683,6 +816,7 @@ private:
     uint64_t blockSize_ = 0;
     size_t currentSection_ = 0;
     size_t nextBlock_ = 0;
+    uint64_t solidConsumed_ = 0;
     bool headerReady_ = false;
     bool blockMode_ = false;
     bool solidEnded_ = false;
@@ -758,7 +892,133 @@ public:
     uint64_t consumed() const { return consumed_; }
     const std::string& error() const { return error_; }
 
+    bool checkpoint(PackageStreamState& out) const {
+        if (failed_ || finished_ || !headerReady_)
+            return false;
+        uint64_t decoderPending = 0;
+        if (currentDecoder_) {
+            if (!currentDecoder_->checkpointable())
+                return false;
+            decoderPending = currentDecoder_->pendingSize();
+        }
+        // Undigested bytes roll back: pending_ was never handed to a parser,
+        // decoder pending was counted into the entry position but produced
+        // no output yet.
+        if (decoderPending > dataPosition_ ||
+            decoderPending > std::numeric_limits<uint64_t>::max() -
+                                 currentInputRemaining_)
+            return false;
+        out = PackageStreamState {};
+        out.consumed = consumed_ - pending_.size() - decoderPending;
+        out.headerSize = headerSize_;
+        out.dataPosition = dataPosition_ - decoderPending;
+        out.currentInputRemaining = currentInputRemaining_ + decoderPending;
+        out.entryIndex = static_cast<uint32_t>(entryIndex_);
+        out.fileOpen = fileOpen_;
+        out.skipped = currentSkipped_;
+        out.entries.reserve(entries_.size());
+        for (const auto& entry : entries_)
+            out.entries.push_back({entry.offset, entry.size, entry.name});
+        if (currentDecoder_)
+            currentDecoder_->exportState(out);
+        return true;
+    }
+
+    bool restore(const PackageStreamState& state) {
+        if (failed_ || finished_ || consumed_ != 0 || headerReady_) {
+            error_ = "Package stream restore requires a fresh stream.";
+            return fail();
+        }
+        if (!validateRestore(state)) {
+            if (error_.empty())
+                error_ = "Package stream checkpoint is inconsistent.";
+            return fail();
+        }
+        entries_.clear();
+        entries_.reserve(state.entries.size());
+        for (const auto& entry : state.entries) {
+            PfsEntry parsed;
+            parsed.offset = entry.offset;
+            parsed.size = entry.size;
+            parsed.name = entry.name;
+            entries_.push_back(std::move(parsed));
+        }
+        headerSize_ = state.headerSize;
+        dataPosition_ = state.dataPosition;
+        currentInputRemaining_ = state.currentInputRemaining;
+        entryIndex_ = state.entryIndex;
+        fileOpen_ = state.fileOpen;
+        currentSkipped_ = state.skipped;
+        consumed_ = state.consumed;
+        headerReady_ = true;
+        if (fileOpen_)
+            currentName_ = entries_[entryIndex_].name;
+        if (state.decoderPresent) {
+            currentDecoder_ = std::make_unique<NczDecoder>(
+                entries_[entryIndex_].size, telemetryTag_,
+                [this](uint64_t size) {
+                    return callbacks_.setFileSize &&
+                           callbacks_.setFileSize(size);
+                },
+                [this](const uint8_t* data, size_t size) {
+                    return callbacks_.writeFile &&
+                           callbacks_.writeFile(data, size);
+                });
+            if (!currentDecoder_->restore(state, currentInputRemaining_,
+                                          error_))
+                return fail();
+        }
+        telemetry_log("package", telemetryTag_.c_str(),
+            "event=restore consumed=%llu entry=%u open=%d decoder=%d",
+            (unsigned long long)consumed_, state.entryIndex,
+            fileOpen_ ? 1 : 0, state.decoderPresent ? 1 : 0);
+        return true;
+    }
+
 private:
+    bool validateRestore(const PackageStreamState& state) const {
+        if (state.entries.empty() || state.entries.size() > 4096 ||
+            state.entryIndex > state.entries.size() || state.headerSize < 16)
+            return false;
+        uint64_t previousEnd = 0;
+        for (const auto& entry : state.entries) {
+            if (entry.name.empty() || entry.offset < previousEnd ||
+                entry.size > std::numeric_limits<uint64_t>::max() -
+                                 entry.offset)
+                return false;
+            previousEnd = entry.offset + entry.size;
+        }
+        if (state.consumed != state.headerSize + state.dataPosition)
+            return false;
+        if (state.fileOpen) {
+            if (state.entryIndex >= state.entries.size())
+                return false;
+            const auto& entry = state.entries[state.entryIndex];
+            if (state.currentInputRemaining == 0 ||
+                state.currentInputRemaining > entry.size)
+                return false;
+            if (state.dataPosition !=
+                entry.offset + (entry.size - state.currentInputRemaining))
+                return false;
+            bool ncz = compressed_ && entry.name.size() >= 4 &&
+                       entry.name.substr(entry.name.size() - 4) == ".ncz";
+            bool wantsDecoder = ncz && !state.skipped;
+            if (state.decoderPresent != wantsDecoder)
+                return false;
+        } else {
+            if (state.currentInputRemaining != 0 || state.decoderPresent ||
+                state.skipped)
+                return false;
+            if (state.entryIndex < state.entries.size() &&
+                state.dataPosition > state.entries[state.entryIndex].offset)
+                return false;
+            if (state.entryIndex == state.entries.size() &&
+                state.dataPosition < previousEnd)
+                return false;
+        }
+        return true;
+    }
+
     bool fail() {
         failed_ = true;
         return false;
@@ -981,6 +1241,14 @@ uint64_t PackageStream::consumed() const {
 
 const std::string& PackageStream::error() const {
     return impl_->error();
+}
+
+bool PackageStream::checkpoint(PackageStreamState& out) const {
+    return impl_->checkpoint(out);
+}
+
+bool PackageStream::restore(const PackageStreamState& state) {
+    return impl_->restore(state);
 }
 
 } // namespace pipensx::install
