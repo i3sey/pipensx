@@ -239,6 +239,7 @@ private:
                 image->setCornerRadius(theme::kRadiusSmall);
                 image->setFocusable(true);
                 image->setScalingType(brls::ImageScalingType::FIT);
+                image->setClipsToBounds(false);  // no letterbox edge bands
                 // O6: A opens the fullscreen pager at this shot.
                 image->registerClickAction(
                     [this, screenshots, i, viewerTitle](brls::View*) {

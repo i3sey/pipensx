@@ -407,7 +407,19 @@ public:
             else
                 catalogFailures_[hashLower] = failure;
         };
-        auto onChange = [this] { rebuildEntries(); };
+        // O12: the detail page fires this from its destructor (re-badge the
+        // list). Running the rebuild synchronously there recycles the grid
+        // cells mid-pop, so borealis restores focus to a stale cell and
+        // smooth-scrolls to it for one frame before onDetailClosed re-seats —
+        // the visible "scroll a hair and snap back". Defer it so the original
+        // focused card survives the pop; the rebuild + focus re-seat then land
+        // together in the next frame's sync pass, before any draw.
+        auto onChange = [this, alive = alive_] {
+            brls::sync([this, alive] {
+                if (alive->load())
+                    rebuildEntries();
+            });
+        };
         // O12: remember which card opened the page. On the way back the
         // borealis focus stack may point at a recycled cell (live rebuilds
         // while the page is open reload the recycler with the focus away in

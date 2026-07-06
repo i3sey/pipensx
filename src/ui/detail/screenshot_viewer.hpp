@@ -37,6 +37,7 @@ class ScreenshotViewerActivity : public brls::Activity {
 
         image_ = new AsyncRgbaImage();
         image_->setScalingType(brls::ImageScalingType::FIT);
+        image_->setClipsToBounds(false);  // no letterbox edge bands
         image_->setGrow(1);
         image_->setWidthPercentage(100);
         image_->setFocusable(true);

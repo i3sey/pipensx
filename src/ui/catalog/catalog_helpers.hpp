@@ -88,6 +88,7 @@ inline void appendAsyncImage(brls::Box* parent, GameMetadataService* service,
     image->setMarginBottom(12);
     image->setAlignSelf(brls::AlignSelf::CENTER);
     image->setScalingType(brls::ImageScalingType::FIT);
+    image->setClipsToBounds(false);  // no letterbox edge bands
     loadImageInto(image, service, url);
     parent->addView(image);
 }
