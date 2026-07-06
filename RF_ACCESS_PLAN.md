@@ -17,7 +17,7 @@
 | П0.1 | Анонс трекера через antizapret-прокси ✅ | Fable | M | — |
 | П3.2 | Подпись каталога (ed25519) | Opus | M | — |
 | П3.1 | Зеркала каталога (jsDelivr / R2 / IPFS) | Opus | M | — |
-| П1.2 | PEX-усиление тонкого списка пиров | Opus | M | П0.1 или П1.1 |
+| П1.2 | PEX-усиление тонкого списка пиров ✅ | Opus | M | П0.1 или П1.1 |
 | П0.3 | Тумблер / автодетект antizapret | Sonnet | S | П0.1, П0.2 |
 | П0.2 | Фетч каталога через antizapret-прокси ✅ | Sonnet | S | — |
 | ПX.1 | Health-check через прокси в CI | Sonnet | S | — |
@@ -124,8 +124,24 @@ antizapret-прокси (`[tracker] RuTracker announce used HTTP proxy`).
 
 **Почему Opus:** мульти-источниковый фолбэк + обобщение проверки доверенного хоста. Логика нетривиальная, но локализована в одном модуле.
 
-### П1.2 — PEX-усиление тонкого списка пиров
+### П1.2 — PEX-усиление тонкого списка пиров ✅
 **Оценка: M.**
+
+**Сделано (2026-07-06):** после tracker+DHT-фазы, если пиров ≤
+`kPexThinThreshold` (3), резолвер коннектится к каждому и просит ut_pex
+(`src/app/magnet_resolver.cpp`):
+- `sendPexHandshake` — BEP10-хендшейк рекламит `ut_metadata`+`ut_pex` (id
+  `kLocalUtPexId`=2), чтобы пир пушил свой рой на наш id.
+- `harvestPexFromPeer` — читает extended-фреймы `kPexPeerTimeoutMs` (5 c),
+  на нашем ut_pex-id декодит `added` (compact6), мержит в скретч через
+  `appendUniquePeers`. Best-effort: PEX push по своему графику, пусто =
+  норма.
+- Врезка перед metadata-воркерами: харвест в отдельный вектор (аппенд в живой
+  `peers` при итерации `peers.data()` дал бы dangling на реаллокации), затем
+  один мерж и `[magnet] pex added N peers`. PEX-пиры дальше проходят обычную
+  metadata-фазу и попадают в `verifiedPeers`, если сделали хендшейк.
+
+Сборка golden + `tests/test_catalog` зелёные (регрессий нет).
 
 BEP11 ut_pex в core уже есть. Когда прокси/DHT дали 1–3 пира, запросить у них ut_pex и дорастить набор через `appendUniquePeers`. Не бутстрапит с нуля (нужен первый пир), но дёшево умножает результат Фазы 0/1.
 

@@ -47,6 +47,12 @@ constexpr uint32_t kDhtTargetPeers = 32;
 constexpr int kDhtPollIntervalMs = 250;
 constexpr uint16_t kDhtPort = 6881;
 
+// PEX amplification (RF_ACCESS_PLAN П1.2): when the tracker/DHT phase yields a
+// thin peer list, ask each of the few peers we have for their swarm view.
+constexpr uint32_t kPexThinThreshold = 3;
+constexpr uint8_t kLocalUtPexId = 2;
+constexpr int kPexPeerTimeoutMs = 5000;
+
 bool hexNibble(char c, uint8_t& value) {
     if (c >= '0' && c <= '9')
         value = static_cast<uint8_t>(c - '0');
@@ -505,6 +511,62 @@ bool fetchMetadataFromPeer(const uint8_t* compact,
     return true;
 }
 
+// Advertise both ut_metadata and ut_pex so the peer will push its swarm view
+// to us on our advertised ut_pex id (kLocalUtPexId). BEP10 handshake.
+bool sendPexHandshake(socket_t fd) {
+    static const char handshake[] =
+        "d1:md11:ut_metadatai1e6:ut_pexi2eee";
+    std::vector<uint8_t> request{20, 0};
+    request.insert(request.end(), handshake, handshake + sizeof(handshake) - 1);
+    return sendFrame(fd, request);
+}
+
+// Connect to one thin-list peer, advertise ut_pex, and harvest the compact
+// peers it pushes in any ut_pex "added" field (RF_ACCESS_PLAN П1.2). Best
+// effort: peers emit PEX on their own cadence, so an empty result is normal.
+// Merges into `out` (never the live `peers` vector — appending there while its
+// data() is being iterated would dangle).
+void harvestPexFromPeer(const uint8_t* compact, const MagnetSpec& spec,
+                        const uint8_t peerId[20],
+                        std::atomic<bool>& cancelled,
+                        std::vector<uint8_t>& out) {
+    socket_t fd = INVALID_SOCK;
+    if (!connectPeer(compact, spec.infoHash, peerId, fd)) {
+        net_close(fd);
+        return;
+    }
+    if (!sendPexHandshake(fd)) {
+        net_close(fd);
+        return;
+    }
+    uint64_t deadline = now_ms() + kPexPeerTimeoutMs;
+    while (!cancelled && now_ms() < deadline) {
+        std::vector<uint8_t> frame;
+        if (!recvFrame(fd, frame))
+            break;
+        // Extended messages the peer sends to us carry our advertised id, not
+        // the peer's (BEP 10). Skip the peer's extension handshake (id 0) and
+        // anything that is not our ut_pex channel.
+        if (frame.size() < 3 || frame[0] != 20 || frame[1] != kLocalUtPexId)
+            continue;
+        const char* begin = reinterpret_cast<const char*>(frame.data() + 2);
+        const char* end =
+            reinterpret_cast<const char*>(frame.data() + frame.size());
+        be_node_t root;
+        const char* cursor = begin;
+        if (!be_decode(&cursor, end, &root) || root.type != BE_DICT)
+            break;
+        be_node_t added;
+        if (be_dict_get(root.buf, root.buf + root.raw_len, "added", 5, &added) &&
+            added.type == BE_STR && added.slen >= 6) {
+            appendUniquePeers(out,
+                              reinterpret_cast<const uint8_t*>(added.sval),
+                              static_cast<uint32_t>(added.slen / 6));
+        }
+    }
+    net_close(fd);
+}
+
 std::string bencodeString(const std::string& value) {
     return std::to_string(value.size()) + ":" + value;
 }
@@ -729,6 +791,28 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
             error = "RuTracker trackers and the DHT returned no usable peers.";
         }
         return false;
+    }
+
+    /* PEX amplification (RF_ACCESS_PLAN П1.2): a blocked-tracker/DHT-only
+       resolve can surface just 1–3 peers. Before committing the metadata-fetch
+       workers, ask those few peers for their swarm view and grow the set. PEX
+       cannot bootstrap from nothing, but it cheaply multiplies a thin result.
+       Harvest into a scratch vector — appending to `peers` while iterating
+       peers.data() would dangle on reallocation. */
+    if (peerCount <= kPexThinThreshold && !cancelled) {
+        std::vector<uint8_t> pexPeers;
+        for (uint32_t i = 0; i < peerCount && !cancelled; ++i)
+            harvestPexFromPeer(peers.data() + i * 6, spec, peerId, cancelled,
+                               pexPeers);
+        uint32_t before = static_cast<uint32_t>(peers.size() / 6);
+        if (!pexPeers.empty())
+            appendUniquePeers(peers, pexPeers.data(),
+                              static_cast<uint32_t>(pexPeers.size() / 6));
+        uint32_t added = static_cast<uint32_t>(peers.size() / 6) - before;
+        if (added)
+            log_msg("[magnet] pex added %u peers, total=%u\n", added,
+                    static_cast<unsigned>(peers.size() / 6));
+        peerCount = static_cast<uint32_t>(peers.size() / 6);
     }
 
     uint64_t deadline = now_ms() + kOverallTimeoutMs;
