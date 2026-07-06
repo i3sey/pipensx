@@ -32,7 +32,7 @@
 
 ## Фаза W — Мастер первоначальной настройки и лестница подключения
 
-**Статус: спроектировано, не реализовано.** Собрать все механизмы обхода
+**Статус: движок готов (W0 ✅ W1 ✅ W2 ✅), UI-флоу впереди (W3–W6).** Собрать все механизмы обхода
 (П0.1/П0.2/антизапрет/DHT/зеркала/пре-резолв) в один управляемый пользователем
 поток. Сейчас обход зашит и срабатывает молча; цель — явная лестница эскалации
 с одноразовым мастером на первом запуске, где пользователь может подставить свой
@@ -70,7 +70,7 @@
 
 | ID | Задача | Тир | Оценка | Зависит от |
 |----|--------|-----|--------|-----------|
-| W2 | Оркестратор лестницы (state machine) | Fable | L | W0, W1 |
+| W2 | Оркестратор лестницы (state machine) ✅ | Fable | L | W0, W1 |
 | W3 | UI мастера (borealis first-run flow) | Fable | L | W0, W2 |
 | W1 | Проба доступности RuTracker по маршруту ✅ | Opus | M | — |
 | W4 | Override хоста трекера/каталога (зеркало) | Opus | M | W0 |
@@ -144,14 +144,55 @@ Timeout}`: лёгкий HTTP-запрос (announce-заглушка или HEAD
 **Почему Opus:** сетевая проба + классификация ответа (успех / блок / таймаут),
 аккуратные таймауты, но по паттерну существующих announce-вызовов.
 
-### W2 — Оркестратор лестницы
+### W2 — Оркестратор лестницы ✅
 **Оценка: L. Тир: Fable.**
 
-State machine, реализующая лестницу выше: перебирает маршруты
-(direct → manualProxy → antizapret-routes → mirror-swap → stale-dump),
+**Сделано (2026-07-06):** state machine лестницы в новом модуле
+`src/app/connectivity_orchestrator.{hpp,cpp}`. Ядро разбито на чистые функции
+(тестируемые офлайн — весь сетевой I/O инъектируется как `ProbeFn`) плюс
+асинхронный драйвер:
+- `buildLadder(config)` — упорядоченные ступени
+  direct → manualProxy → antizapret-маршруты (в порядке PAC) → mirror.
+- `runLadder(config, probe, onEvent, cancel, user)` — перебирает ступени, на
+  каждой зовёт W1-пробу (инъекция `tracker_probe`), при первом `REACHABLE`
+  фиксирует `LadderResult{Connected, method, label}` и останавливается; эмитит
+  события `RunStarted`/`AttemptStarted`/`AttemptFinished`/`RunFinished` для UI
+  (W3). Отмена проверяется до и после каждой пробы (отмена во время пробы
+  приходит как TIMEOUT, но явный запрос → `Cancelled`). Телеметрия
+  `[wizard] rung <label> -> <verdict>` (ПX.3).
+- Терминалы: все ступени провалились и зеркала не было → `NeedMirror` (мастер
+  предложит зеркало); зеркало было и тоже упало → `Exhausted` (устаревший
+  дамп). Победа → метод из ступени (Direct/Proxy/Antizapret/Mirror).
+- `applyLadderResult(result, settings&)` — только `Connected` пишет
+  `connectivityMethod` + `connectivitySetupDone`; любой другой исход оставляет
+  настройки нетронутыми, чтобы мастер прошёл заново, а не молча отдал устаревшие
+  данные.
+- `manualProxyRoute` (W0-настройки → `antizapret_route_t`) и
+  `deriveMirrorAnnounce` (подмена хоста в announce; принимает только bare
+  host[:port] — жёсткую валидацию против списка зеркал добавит W4) — чистые,
+  тестируемые. `ladderConfigFromSettings` — тонкий адаптер над глобалами
+  (`antizapret_get_routes`, фильтр `antizapret_route_supported`: HTTPS-прокси на
+  Switch отсекается), собирает `LadderConfig` из `AppSettingsData`.
+- `ConnectivityOrchestrator` — фоновый поток гоняет `runLadder` (проба через
+  `tracker_probe` с прокинутым в curl cancel для быстрой отмены), события
+  кладутся в потокобезопасную очередь, UI-поток дренирует их `poll(sink)`
+  каждый кадр; API `start`/`startWithProbe` (тест-шов)/`cancel`/`running`,
+  деструктор отменяет+джойнит. Event-loop не блокируется.
+- Тест `tests/test_connectivity_orchestrator.cpp` (13 кейсов: порядок ступеней,
+  ранняя остановка на direct, фолбэк на antizapret, приоритет manualProxy,
+  NeedMirror / Exhausted / mirror-success, отмена в чистом `runLadder` и в
+  асинхронном драйвере, `applyLadderResult`, конверсия прокси, подмена хоста),
+  прописан в `Makefile.pc`; `connectivity_orchestrator.cpp` добавлен в
+  `APP_SERVICE_SOURCES` (CMake, Switch-сборка). Полный PC-набор зелёный.
+
+Интеграция в first-run UI и гейт на `connectivitySetupDone` — за W3; здесь
+только движок, события и пробрасывание настроек.
+
+Исходное описание: state machine, реализующая лестницу выше: перебирает
+маршруты (direct → manualProxy → antizapret-routes → mirror-swap → stale-dump),
 на каждом шаге зовёт W1, при успехе фиксирует `connectivityMethod` +
-`connectivitySetupDone` и останавливается. Управляет переходами мастера,
-эмитит события для UI (W3). Отменяемость, отсутствие блокировки event-loop.
+`connectivitySetupDone` и останавливается. Управляет переходами мастера, эмитит
+события для UI (W3). Отменяемость, отсутствие блокировки event-loop.
 
 **Почему Fable:** новая подсистема, кросс-модульная (настройки + резолвер +
 каталог + антизапрет + UI), развилки состояний и крайние случаи (частичный
