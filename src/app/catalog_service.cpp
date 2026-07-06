@@ -2,8 +2,6 @@
 #include "magnet_resolver.hpp"
 
 extern "C" {
-#include "../core/antizapret.h"
-#include "../core/catalog_sig.h"
 #include "../core/sha1.h"
 #include "../core/util.h"
 }
@@ -26,38 +24,14 @@ namespace {
 constexpr size_t kMaxCatalogBytes = 16 * 1024 * 1024;
 constexpr size_t kMaxCatalogEntries = 20000;
 constexpr size_t kMaxInfoDictBytes = 8 * 1024 * 1024;
-constexpr const char* kLatestReleaseApi =
-    "https://api.github.com/repos/bqio/switch-dumps/releases/latest";
-constexpr const char* kTrustedReleasePrefix =
-    "https://github.com/bqio/switch-dumps/releases/download/";
 
-/* Catalog mirrors tried in order after the GitHub Releases API, before the
-   bundled snapshot (RF_ACCESS_PLAN П3.1). Each is a direct catalog.json URL on
-   a trusted host; its detached signature (when signing is on) is fetched from
-   the same URL + ".sig". jsDelivr mirrors the GitHub repo and is usually
-   reachable in RF; add a Cloudflare R2/Pages or IPFS-gateway URL here once
-   provisioned. Every entry must satisfy trustedCatalogUrl(). */
-constexpr const char* kCatalogMirrors[] = {
-    "https://cdn.jsdelivr.net/gh/bqio/switch-dumps@latest/catalog.json",
-};
-
-
-/* ed25519 public key that signs the network catalog (RF_ACCESS_PLAN П3.2).
-   All-zero = signing not provisioned yet: the network refresh runs unverified,
-   preserving the pre-signing behaviour. Replace with the real 32-byte key
-   (tools/sign_catalog.py --gen-key emits both halves) to enforce a valid
-   detached signature on every refresh; a missing or invalid signature then
-   aborts the refresh so a MITM cannot strip it. Cached and bundled catalogs
-   are local — trusted at build time or already verified when cached — and are
-   not re-checked here. */
-constexpr uint8_t kCatalogPublicKey[32] = {0};
-
-bool catalogSigningEnabled() {
-    for (uint8_t byte : kCatalogPublicKey)
-        if (byte)
-            return true;
-    return false;
-}
+/* The live catalogue source: the Langegen switch-games repo publishes a single
+   switch_games.json on GitHub's raw host. Fetched on demand by the refresh
+   button and (when the catalogue is empty or the launch toggle is on) in the
+   background at startup. Must satisfy isTrustedSource(). */
+constexpr const char* kCatalogSourceUrl =
+    "https://raw.githubusercontent.com/Langegen/switch-games/"
+    "refs/heads/main/switch_games.json";
 
 int base64Value(char c) {
     if (c >= 'A' && c <= 'Z') return c - 'A';
@@ -95,31 +69,6 @@ bool decodeBase64(const std::string& text, std::vector<uint8_t>& out) {
             out.push_back(static_cast<uint8_t>(block >> 8));
         if (padding < 1)
             out.push_back(static_cast<uint8_t>(block));
-    }
-    return true;
-}
-
-/* Verify a detached base64 ed25519 signature (the ".sig" release asset) over
-   the raw catalog bytes. Tolerates surrounding whitespace/newlines in the
-   signature file. */
-bool verifyCatalogSignature(const std::string& catalog,
-                            const std::string& signatureText,
-                            std::string& error) {
-    std::string trimmed;
-    trimmed.reserve(signatureText.size());
-    for (char c : signatureText)
-        if (!std::isspace(static_cast<unsigned char>(c)))
-            trimmed.push_back(c);
-    std::vector<uint8_t> signature;
-    if (!decodeBase64(trimmed, signature) || signature.size() != 64) {
-        error = "Catalog signature is malformed.";
-        return false;
-    }
-    const uint8_t* body = reinterpret_cast<const uint8_t*>(catalog.data());
-    if (!catalog_sig_verify(kCatalogPublicKey, body, catalog.size(),
-                            signature.data())) {
-        error = "Catalog signature does not match the trusted key.";
-        return false;
     }
     return true;
 }
@@ -179,8 +128,8 @@ bool readFile(const std::string& path, std::string& data,
     return true;
 }
 
-bool httpGetOnce(const std::string& url, const antizapret_route_t* route,
-                 std::string& body, std::string& error) {
+bool httpGet(const std::string& url, std::string& body, std::string& error) {
+    body.clear();
     CURL* curl = curl_easy_init();
     if (!curl) {
         error = "Unable to initialize HTTP.";
@@ -201,8 +150,6 @@ bool httpGetOnce(const std::string& url, const antizapret_route_t* route,
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
     curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
-    if (route)
-        antizapret_apply_route(curl, route);
     CURLcode result = curl_easy_perform(curl);
     long status = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
@@ -222,59 +169,6 @@ bool httpGetOnce(const std::string& url, const antizapret_route_t* route,
     }
     body = std::move(buffer.data);
     return true;
-}
-
-bool httpGet(const std::string& url, std::string& body, std::string& error) {
-    body.clear();
-    const bool target = antizapret_is_enabled() &&
-                        antizapret_is_target_url(url.c_str());
-#ifdef __SWITCH__
-    const bool preferProxy = target;
-#else
-    const bool preferProxy = target && antizapret_proxy_preferred();
-#endif
-
-    auto attempt = [&](const antizapret_route_t* route) {
-        std::string attemptBody;
-        std::string attemptError;
-        if (!httpGetOnce(url, route, attemptBody, attemptError)) {
-            error = std::move(attemptError);
-            return false;
-        }
-        if (target && antizapret_response_looks_blocked(
-                          attemptBody.data(), attemptBody.size())) {
-            error = "Catalog response appears to be blocked.";
-            return false;
-        }
-        body = std::move(attemptBody);
-        error.clear();
-        if (route && route->type != ANTIZAPRET_ROUTE_DIRECT) {
-            antizapret_note_proxy_success();
-            log_msg("[catalog] proxy active: %s\n",
-                    antizapret_route_name(route));
-        }
-        return true;
-    };
-
-    if (!preferProxy && attempt(nullptr))
-        return true;
-
-    if (target) {
-        antizapret_route_t routes[ANTIZAPRET_MAX_ROUTES];
-        size_t routeCount = antizapret_get_routes(routes,
-                                                  ANTIZAPRET_MAX_ROUTES);
-        for (size_t i = 0; i < routeCount; ++i) {
-            if (routes[i].type == ANTIZAPRET_ROUTE_DIRECT ||
-                !antizapret_route_supported(&routes[i]))
-                continue;
-            if (attempt(&routes[i]))
-                return true;
-        }
-    }
-
-    if (preferProxy && attempt(nullptr))
-        return true;
-    return false;
 }
 
 bool writeAtomic(const std::string& path, const std::string& data,
@@ -344,6 +238,93 @@ int64_t readSigned(const nlohmann::json& item, const char* key) {
     return item[key].get<int64_t>();
 }
 
+// A plain string value, trimmed to `limit` bytes; empty when absent or not a
+// string. Used for the Langegen inline metadata (year/genre/publisher/…).
+std::string readString(const nlohmann::json& item, const char* key,
+                       size_t limit) {
+    if (!item.contains(key) || !item[key].is_string())
+        return std::string();
+    std::string value = item[key].get<std::string>();
+    if (value.size() > limit)
+        value.resize(limit);
+    return value;
+}
+
+// Numeric id that the source may encode as a JSON number (bqio) or a decimal
+// string (Langegen "topic_id":"6878751").
+uint64_t readFlexibleUnsigned(const nlohmann::json& item, const char* key) {
+    if (!item.contains(key))
+        return 0;
+    if (item[key].is_string()) {
+        uint64_t value = 0;
+        for (char c : item[key].get_ref<const std::string&>()) {
+            if (c < '0' || c > '9')
+                return value;  // stop at the first non-digit
+            value = value * 10 + static_cast<uint64_t>(c - '0');
+        }
+        return value;
+    }
+    return readUnsigned(item, key);
+}
+
+// A human size string such as "5.19 GB" / "512 MB" / "700 KiB" → bytes. RuTracker
+// labels are binary (1 GB == 1024 MiB), so scale on 1024. Returns 0 when the
+// value is unparseable, which the detail card renders as "Unknown".
+uint64_t parseSizeToBytes(const std::string& text) {
+    size_t i = 0;
+    while (i < text.size() && (text[i] == ' ' || text[i] == '\t'))
+        ++i;
+    double value = 0.0;
+    bool sawDigit = false;
+    bool fraction = false;
+    double scale = 0.1;
+    for (; i < text.size(); ++i) {
+        char c = text[i];
+        if (c >= '0' && c <= '9') {
+            sawDigit = true;
+            if (fraction) {
+                value += (c - '0') * scale;
+                scale *= 0.1;
+            } else {
+                value = value * 10 + (c - '0');
+            }
+        } else if ((c == '.' || c == ',') && !fraction) {
+            fraction = true;
+        } else {
+            break;
+        }
+    }
+    if (!sawDigit)
+        return 0;
+    while (i < text.size() && (text[i] == ' ' || text[i] == '\t'))
+        ++i;
+    char unit = i < text.size() ? static_cast<char>(std::toupper(
+                                      static_cast<unsigned char>(text[i])))
+                                : 'B';
+    double multiplier = 1.0;
+    switch (unit) {
+        case 'T': multiplier = 1024.0 * 1024 * 1024 * 1024; break;
+        case 'G': multiplier = 1024.0 * 1024 * 1024; break;
+        case 'M': multiplier = 1024.0 * 1024; break;
+        case 'K': multiplier = 1024.0; break;
+        default: multiplier = 1.0; break;  // bytes or unknown
+    }
+    double bytes = value * multiplier;
+    if (bytes < 0.0)
+        return 0;
+    return static_cast<uint64_t>(bytes + 0.5);
+}
+
+// The catalogue size field: a JSON number of bytes (bqio) or a human string
+// (Langegen "size":"5.19 GB").
+uint64_t readFlexibleSize(const nlohmann::json& item, const char* key) {
+    if (!item.contains(key))
+        return 0;
+    if (item[key].is_string())
+        return parseSizeToBytes(item[key].get_ref<const std::string&>());
+    return readUnsigned(item, key);
+}
+
 } // namespace
 
 CatalogService::CatalogService(std::string rootPath, std::string bundledPath)
@@ -371,13 +352,17 @@ bool CatalogService::parseJson(const std::string& json,
     std::set<std::string> hashes;
     entries.reserve(root.size());
     for (const auto& item : root) {
+        // The Langegen source names the magnet "magnet" and the cover "cover";
+        // the older bqio dumps used "magnetURI" and "poster". Accept either so
+        // a cached bqio snapshot still parses.
+        const char* magnetKey = item.contains("magnet") ? "magnet" : "magnetURI";
         if (!item.is_object() ||
             !item.contains("title") || !item["title"].is_string() ||
-            !item.contains("magnetURI") || !item["magnetURI"].is_string())
+            !item.contains(magnetKey) || !item[magnetKey].is_string())
             continue;
         CatalogEntry entry;
         entry.title = item["title"].get<std::string>();
-        entry.magnetUri = item["magnetURI"].get<std::string>();
+        entry.magnetUri = item[magnetKey].get<std::string>();
         if (entry.title.empty() || entry.title.size() > 1024 ||
             entry.magnetUri.size() > 2048)
             continue;
@@ -387,10 +372,9 @@ bool CatalogService::parseJson(const std::string& json,
             continue;
         entry.infoHash = magnet.infoHashHex;
         entry.trackerUrl = magnet.trackerUrl;
-        if (item.contains("poster") && item["poster"].is_string())
-            entry.posterUrl = item["poster"].get<std::string>();
-        if (entry.posterUrl.size() > 2048)
-            entry.posterUrl.clear();
+        entry.posterUrl = item.contains("cover")
+                              ? readString(item, "cover", 2048)
+                              : readString(item, "poster", 2048);
         if (item.contains("screenshots") && item["screenshots"].is_array()) {
             for (const auto& value : item["screenshots"]) {
                 if (!value.is_string() || entry.screenshots.size() >= 6)
@@ -400,8 +384,15 @@ bool CatalogService::parseJson(const std::string& json,
                     entry.screenshots.push_back(std::move(url));
             }
         }
-        entry.size = readUnsigned(item, "size");
-        entry.topicId = readUnsigned(item, "topic_id");
+        entry.size = readFlexibleSize(item, "size");
+        entry.topicId = readFlexibleUnsigned(item, "topic_id");
+        // Langegen inline metadata: shown on the detail card, which never
+        // matches these entries in the bundled game_metadata_index.
+        entry.year = readString(item, "year", 32);
+        entry.genre = readString(item, "genre", 256);
+        entry.developer = readString(item, "developer", 256);
+        entry.publisher = readString(item, "publisher", 256);
+        entry.description = readString(item, "description", 4096);
         entry.forumId = static_cast<uint32_t>(readUnsigned(item, "forum_id"));
         entry.trackerId =
             static_cast<uint32_t>(readUnsigned(item, "tracker_id"));
@@ -483,27 +474,10 @@ bool CatalogService::load(std::string& error) {
     return false;
 }
 
-// Verify (when signing is on), parse, cache, and adopt a freshly fetched
-// catalog body. `signature` is the detached base64 signature, or nullptr when
-// the source carried none. Shared by every refresh source so the trust and
-// caching rules stay identical across GitHub and mirrors.
+// Parse, cache, and adopt a freshly fetched catalog body.
 bool CatalogService::commitCatalog(const std::string& body,
-                                   const std::string* signature,
                                    const std::string& label,
                                    std::string& error) {
-    // Signature enforcement (RF_ACCESS_PLAN П3.2): only once a real public key
-    // is baked in. Fail closed — a stripped or forged signature aborts before
-    // the catalog is parsed or cached, so an untrusted mirror cannot slip a
-    // tampered catalog past the allowlist.
-    if (catalogSigningEnabled()) {
-        if (!signature) {
-            error = "The signed catalog source is missing its signature.";
-            return false;
-        }
-        if (!verifyCatalogSignature(body, *signature, error))
-            return false;
-        log_msg("[catalog] signature verified\n");
-    }
     std::vector<CatalogEntry> parsed;
     if (!parseJson(body, parsed, error))
         return false;
@@ -516,69 +490,12 @@ bool CatalogService::commitCatalog(const std::string& body,
     return true;
 }
 
-bool CatalogService::refreshFromGitHubRelease(std::string& error) {
-    std::string releaseBody;
-    if (!httpGet(kLatestReleaseApi, releaseBody, error))
-        return false;
-    nlohmann::json release =
-        nlohmann::json::parse(releaseBody, nullptr, false);
-    if (release.is_discarded() || !release.is_object() ||
-        !release.contains("assets") || !release["assets"].is_array()) {
-        error = "GitHub returned an invalid release description.";
-        return false;
-    }
-    std::string assetUrl;
-    std::string signatureUrl;
-    for (const auto& asset : release["assets"]) {
-        if (!asset.is_object() ||
-            !asset.contains("name") || !asset["name"].is_string() ||
-            !asset.contains("browser_download_url") ||
-            !asset["browser_download_url"].is_string())
-            continue;
-        std::string name = asset["name"].get<std::string>();
-        std::string url = asset["browser_download_url"].get<std::string>();
-        auto endsWith = [&](const char* suffix) {
-            size_t n = std::strlen(suffix);
-            return name.size() >= n &&
-                   name.compare(name.size() - n, n, suffix) == 0;
-        };
-        // A signature asset ends in ".sig", never ".json", so the two never
-        // collide. Take the first of each kind.
-        if (assetUrl.empty() && endsWith(".json"))
-            assetUrl = url;
-        if (signatureUrl.empty() && endsWith(".sig"))
-            signatureUrl = url;
-    }
-    if (assetUrl.rfind(kTrustedReleasePrefix, 0) != 0) {
-        error = "Latest release does not contain a trusted catalog asset.";
-        return false;
-    }
-
-    std::string catalogBody;
-    if (!httpGet(assetUrl, catalogBody, error))
-        return false;
-
-    std::string signatureBody;
-    const std::string* signature = nullptr;
-    if (catalogSigningEnabled()) {
-        if (signatureUrl.rfind(kTrustedReleasePrefix, 0) != 0) {
-            error = "The signed catalog release is missing its signature.";
-            return false;
-        }
-        if (!httpGet(signatureUrl, signatureBody, error))
-            return false;
-        signature = &signatureBody;
-    }
-    return commitCatalog(catalogBody, signature, "latest GitHub catalog",
-                         error);
-}
-
 bool CatalogService::isTrustedSource(const std::string& url) {
-    // Hosts (with path prefix) allowed to serve catalog bytes. Generalises the
-    // former single GitHub check so every mirror is validated the same way.
+    // Host (with path prefix) allowed to serve catalog bytes. Only the Langegen
+    // switch-games repo on GitHub's raw host; every network fetch is gated on
+    // this so a redirect or MITM to another host is refused before any parse.
     static const char* const kPrefixes[] = {
-        "https://github.com/bqio/switch-dumps/releases/download/",
-        "https://cdn.jsdelivr.net/gh/bqio/switch-dumps@",
+        "https://raw.githubusercontent.com/Langegen/switch-games/",
     };
     for (const char* prefix : kPrefixes)
         if (url.rfind(prefix, 0) == 0)
@@ -586,55 +503,24 @@ bool CatalogService::isTrustedSource(const std::string& url) {
     return false;
 }
 
-bool CatalogService::refreshFromMirror(const std::string& url,
+bool CatalogService::refreshFromSource(const std::string& url,
                                        const std::string& label,
                                        std::string& error) {
     if (!isTrustedSource(url)) {
-        error = "Mirror URL is not on the trusted host list.";
+        error = "Catalog URL is not on the trusted host list.";
         return false;
     }
     std::string catalogBody;
     if (!httpGet(url, catalogBody, error))
         return false;
-
-    std::string signatureBody;
-    const std::string* signature = nullptr;
-    if (catalogSigningEnabled()) {
-        // Mirror signatures sit next to the catalog as a ".sig" sidecar.
-        if (!httpGet(url + ".sig", signatureBody, error))
-            return false;
-        signature = &signatureBody;
-    }
-    return commitCatalog(catalogBody, signature, label, error);
+    return commitCatalog(catalogBody, label, error);
 }
 
 bool CatalogService::refresh(std::string& error) {
-    std::string errors;
-    auto record = [&](const std::string& source, const std::string& detail) {
-        if (!errors.empty())
-            errors += " | ";
-        errors += source + ": " + detail;
-    };
-
-    // 1. GitHub Releases (authoritative). 2. Mirrors, in order. The bundled
-    // snapshot is the final fallback, but that lives in load(), not here —
-    // refresh() only reports failure so the caller keeps the cached/bundled
-    // catalog already in memory.
-    std::string githubError;
-    if (refreshFromGitHubRelease(githubError))
-        return true;
-    record("GitHub", githubError);
-
-    for (const char* mirror : kCatalogMirrors) {
-        std::string mirrorError;
-        if (refreshFromMirror(mirror, std::string("mirror ") + mirror,
-                              mirrorError))
-            return true;
-        record("mirror", mirrorError);
-    }
-
-    error = "All catalog sources failed: " + errors;
-    return false;
+    // Single source: the Langegen switch_games.json on GitHub's raw host. The
+    // cached/bundled catalogue in memory survives a failure — refresh() only
+    // reports the error so the caller keeps showing what it already has.
+    return refreshFromSource(kCatalogSourceUrl, "Langegen switch-games", error);
 }
 
 } // namespace pipensx

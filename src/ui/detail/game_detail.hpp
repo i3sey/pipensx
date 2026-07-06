@@ -139,18 +139,27 @@ private:
         left->setWidth(kLeftColumnWidth);
         left->setMarginRight(32);
 
-        if (found) {
-            const std::string& coverUrl = !found->iconUrl.empty()
-                ? found->iconUrl : found->bannerUrl;
-            if (!coverUrl.empty()) {
-                auto* cover = new AsyncRgbaImage();
-                cover->setWidth(kLeftColumnWidth);
-                cover->setHeight(260);
-                cover->setCornerRadius(theme::kRadiusLarge);
-                cover->setScalingType(brls::ImageScalingType::FIT);
-                loadImageInto(cover, metadata_, coverUrl);
-                left->addView(cover);
-            }
+        // Prefer the bundled metadata artwork; fall back to the cover the
+        // catalogue entry itself carries (the Langegen source ships one inline,
+        // and its hashes never match the bundled index).
+        std::string coverUrl;
+        if (found)
+            coverUrl = !found->iconUrl.empty() ? found->iconUrl
+                                               : found->bannerUrl;
+        if (coverUrl.empty())
+            coverUrl = entry_.posterUrl;
+        if (!coverUrl.empty()) {
+            auto* cover = new AsyncRgbaImage();
+            cover->setWidth(kLeftColumnWidth);
+            cover->setHeight(260);
+            cover->setCornerRadius(theme::kRadiusLarge);
+            cover->setScalingType(brls::ImageScalingType::FIT);
+            // FIT letterboxes; with clip on, borealis fills the whole view
+            // rect with the pattern and the margin samples clamped edge texels
+            // (stretched bands). Clip off draws only the fitted image rect.
+            cover->setClipsToBounds(false);
+            loadImageInto(cover, metadata_, coverUrl);
+            left->addView(cover);
         }
 
         primary_ = new InstallButton();
@@ -291,6 +300,13 @@ private:
             addFactRow(table, "Publisher", found->publisher);
             addFactRow(table, "Release", found->releaseDate);
             addFactRow(table, "Genre", joinStrings(found->categories, ", "));
+        } else {
+            // No bundled artwork match (the Langegen catalogue): show the
+            // metadata the entry carries inline instead.
+            addFactRow(table, "Developer", entry_.developer);
+            addFactRow(table, "Publisher", entry_.publisher);
+            addFactRow(table, "Release", entry_.year);
+            addFactRow(table, "Genre", entry_.genre);
         }
         addFactRow(table, "Size",
                    entry_.size ? formatBytes(entry_.size)
@@ -322,19 +338,23 @@ private:
 
     // S5: reversible "Show more" instead of a hard cut.
     void buildDescription(brls::Box* right, const GameMetadata* found) {
-        if (!found) {
-            auto* missing = new brls::Label();
-            missing->setFontSize(theme::kFontSmall);
-            missing->setMarginTop(24);
-            missing->setText("No game artwork match yet. Install still works "
-                             "from the catalog release.");
-            right->addView(missing);
+        std::string text;
+        if (found)
+            text = !found->description.empty() ? found->description
+                                               : found->intro;
+        else
+            text = entry_.description;  // Langegen inline description
+        if (text.empty()) {
+            if (!found) {
+                auto* missing = new brls::Label();
+                missing->setFontSize(theme::kFontSmall);
+                missing->setMarginTop(24);
+                missing->setText("No description available. Install still works "
+                                 "from the catalog release.");
+                right->addView(missing);
+            }
             return;
         }
-        std::string text = !found->description.empty() ? found->description
-                                                       : found->intro;
-        if (text.empty())
-            return;
         auto* desc = new brls::Label();
         desc->setFontSize(theme::kFontSmall);
         desc->setMarginTop(24);

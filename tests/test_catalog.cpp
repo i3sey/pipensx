@@ -4,7 +4,6 @@
 #include "app/magnet_resolver.hpp"
 
 extern "C" {
-#include "core/catalog_sig.h"
 #include "core/sha1.h"
 #include "core/tracker.h"
 }
@@ -549,69 +548,69 @@ void runLiveResolutionIfRequested() {
 
 } // namespace
 
-// RFC 8032 Ed25519 test vector 2: a known key/message/signature triple that
-// exercises catalog_sig_verify (RF_ACCESS_PLAN П3.2) end to end, plus the
-// three ways verification must fail: tampered message, tampered signature,
-// wrong key.
-void testCatalogSignatureVerify() {
-    const uint8_t pubkey[32] = {
-        0x3d, 0x40, 0x17, 0xc3, 0xe8, 0x43, 0x89, 0x5a,
-        0x92, 0xb7, 0x0a, 0xa7, 0x4d, 0x1b, 0x7e, 0xbc,
-        0x9c, 0x98, 0x2c, 0xcf, 0x2e, 0xc4, 0x96, 0x8c,
-        0xc0, 0xcd, 0x55, 0xf1, 0x2a, 0xf4, 0x66, 0x0c};
-    uint8_t message[1] = {0x72};
-    uint8_t sig[64] = {
-        0x92, 0xa0, 0x09, 0xa9, 0xf0, 0xd4, 0xca, 0xb8,
-        0x72, 0x0e, 0x82, 0x0b, 0x5f, 0x64, 0x25, 0x40,
-        0xa2, 0xb2, 0x7b, 0x54, 0x16, 0x50, 0x3f, 0x8f,
-        0xb3, 0x76, 0x22, 0x23, 0xeb, 0xdb, 0x69, 0xda,
-        0x08, 0x5a, 0xc1, 0xe4, 0x3e, 0x15, 0x99, 0x6e,
-        0x45, 0x8f, 0x36, 0x13, 0xd0, 0xf1, 0x1d, 0x8c,
-        0x38, 0x7b, 0x2e, 0xae, 0xb4, 0x30, 0x2a, 0xee,
-        0xb0, 0x0d, 0x29, 0x16, 0x12, 0xbb, 0x0c, 0x00};
-
-    assert(catalog_sig_verify(pubkey, message, sizeof(message), sig) == 1);
-
-    uint8_t tamperedMsg[1] = {0x73};
-    assert(catalog_sig_verify(pubkey, tamperedMsg, 1, sig) == 0);
-
-    uint8_t tamperedSig[64];
-    std::memcpy(tamperedSig, sig, 64);
-    tamperedSig[0] ^= 0x01;
-    assert(catalog_sig_verify(pubkey, message, 1, tamperedSig) == 0);
-
-    uint8_t wrongKey[32];
-    std::memcpy(wrongKey, pubkey, 32);
-    wrongKey[0] ^= 0x01;
-    assert(catalog_sig_verify(wrongKey, message, 1, sig) == 0);
-}
-
-// Trusted-source allowlist gating every network catalog fetch
-// (RF_ACCESS_PLAN П3.1): GitHub release downloads and the jsDelivr mirror are
-// accepted, everything else — look-alike hosts, wrong repos, plain HTTP,
-// path-prefix tricks — is rejected.
+// Trusted-source allowlist gating every network catalog fetch: only the
+// Langegen switch-games repo on GitHub's raw host is accepted; look-alike
+// hosts, wrong repos, plain HTTP and path-prefix tricks are rejected.
 void testTrustedSourceAllowlist() {
     assert(CatalogService::isTrustedSource(
-        "https://github.com/bqio/switch-dumps/releases/download/v1/catalog.json"));
-    assert(CatalogService::isTrustedSource(
-        "https://cdn.jsdelivr.net/gh/bqio/switch-dumps@latest/catalog.json"));
+        "https://raw.githubusercontent.com/Langegen/switch-games/"
+        "refs/heads/main/switch_games.json"));
 
     assert(!CatalogService::isTrustedSource(
-        "http://github.com/bqio/switch-dumps/releases/download/v1/catalog.json"));
+        "http://raw.githubusercontent.com/Langegen/switch-games/main/x.json"));
     assert(!CatalogService::isTrustedSource(
-        "https://github.com/evil/switch-dumps/releases/download/v1/catalog.json"));
+        "https://raw.githubusercontent.com/evil/switch-games/main/x.json"));
     assert(!CatalogService::isTrustedSource(
-        "https://cdn.jsdelivr.net/gh/evil/switch-dumps@latest/catalog.json"));
+        "https://github.com/bqio/switch-dumps/releases/download/v1/catalog.json"));
     assert(!CatalogService::isTrustedSource(
-        "https://github.com.evil.example/bqio/switch-dumps/releases/download/x"));
+        "https://raw.githubusercontent.com.evil.example/Langegen/switch-games/x"));
     assert(!CatalogService::isTrustedSource(""));
+}
+
+// The Langegen switch_games.json shape: magnet under "magnet", cover under
+// "cover", a human "size" string, string "topic_id", and inline metadata the
+// detail card renders. parseJson must read all of it.
+void testLangegenSchemaParsing() {
+    const char* json =
+        "[{"
+        "\"title\":\"Sonic 06\","
+        "\"size\":\"5.19 GB\","
+        "\"magnet\":\"magnet:?xt=urn:btih:"
+        "8B8016FD97F08E2CC46E3B104B72EC758173C3C9&tr="
+        "http%3A%2F%2Fbt.t-ru.org%2Fann%3Fmagnet\","
+        "\"topic_id\":\"6878751\","
+        "\"year\":\"2006\","
+        "\"genre\":\"3D Platformer\","
+        "\"developer\":\"Sonic Team\","
+        "\"publisher\":\"SEGA\","
+        "\"cover\":\"https://example.invalid/cover.png\","
+        "\"screenshots\":[\"https://example.invalid/s1.jpg\"],"
+        "\"description\":\"A port.\""
+        "}]";
+    std::vector<CatalogEntry> entries;
+    std::string error;
+    assert(CatalogService::parseJson(json, entries, error));
+    assert(entries.size() == 1);
+    const CatalogEntry& e = entries[0];
+    assert(e.title == "Sonic 06");
+    assert(e.infoHash == "8B8016FD97F08E2CC46E3B104B72EC758173C3C9");
+    // 5.19 * 1024^3, rounded.
+    assert(e.size == static_cast<uint64_t>(5.19 * 1024.0 * 1024 * 1024 + 0.5));
+    assert(e.topicId == 6878751);
+    assert(e.year == "2006");
+    assert(e.genre == "3D Platformer");
+    assert(e.developer == "Sonic Team");
+    assert(e.publisher == "SEGA");
+    assert(e.posterUrl == "https://example.invalid/cover.png");
+    assert(e.screenshots.size() == 1);
+    assert(e.description == "A port.");
 }
 
 int main() {
     testMagnetParsing();
-    testCatalogSignatureVerify();
     testTrustedSourceAllowlist();
     testCatalogParsing();
+    testLangegenSchemaParsing();
     testCatalogV2HealthParsing();
     testInfoDictParsing();
     testResolveFromPresetInfoDict();

@@ -354,7 +354,12 @@ public:
         taskSignature_ = taskSignature();
         timer_.setCallback([this] { refreshLiveState(); });
         timer_.start(1000);
-        if (settings_ && settings_->get().refreshCatalogOnLaunch)
+        // Pull the live catalogue in the background at launch when the user
+        // asked for it, and always when there is nothing to show yet (fresh
+        // install: no cache, no bundled snapshot) so the first screen is not
+        // permanently empty.
+        const bool empty = !catalog_ || catalog_->entries().empty();
+        if (empty || (settings_ && settings_->get().refreshCatalogOnLaunch))
             refreshCatalog();
     }
 
