@@ -46,6 +46,7 @@ BATCH_INSTALL_TEST_TARGET = tests/test_batch_install
 RAM_BUDGET_TEST_TARGET = tests/test_stream_ram_budget
 REQUEST_GATE_TEST_TARGET = tests/test_request_gate
 JOURNAL_TEST_TARGET = tests/test_install_journal
+TRACKER_PROBE_TEST_TARGET = tests/test_tracker_probe
 TEST_SRCS = \
     tests/test_piece.c       \
     src/core/sha1.c          \
@@ -122,7 +123,7 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 		$(TORRENT_TEST_TARGET) $(SETTINGS_TEST_TARGET) \
 		$(INSTALL_SPACE_TEST_TARGET) $(BATCH_INSTALL_TEST_TARGET) \
 		$(RAM_BUDGET_TEST_TARGET) $(REQUEST_GATE_TEST_TARGET) \
-		$(JOURNAL_TEST_TARGET)
+		$(JOURNAL_TEST_TARGET) $(TRACKER_PROBE_TEST_TARGET)
 	./$(TEST_TARGET)
 	./$(MANAGER_TEST_TARGET)
 	./$(PACKAGE_TEST_TARGET)
@@ -137,6 +138,7 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 	./$(RAM_BUDGET_TEST_TARGET)
 	./$(REQUEST_GATE_TEST_TARGET)
 	./$(JOURNAL_TEST_TARGET)
+	./$(TRACKER_PROBE_TEST_TARGET)
 	python3 tests/test_telemetry_analyzer.py
 
 $(SETTINGS_TEST_TARGET): tests/test_app_settings.cpp src/app/app_settings.cpp
@@ -183,6 +185,11 @@ $(ANTIZAPRET_TEST_TARGET): tests/test_antizapret.c \
 		src/core/antizapret.o src/core/util.o
 	$(CC) $(CFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
 
+$(TRACKER_PROBE_TEST_TARGET): tests/test_tracker_probe.c \
+		src/core/tracker.o src/core/antizapret.o src/core/net.o \
+		src/core/bencode.o src/core/util.o
+	$(CC) $(CFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
+
 clean:
 	rm -f $(OBJS) src/app/download_manager.o src/app/stream_ram_budget.o \
 		src/app/request_gate.o \
@@ -197,6 +204,6 @@ clean:
 		$(TORRENT_TEST_TARGET) $(SETTINGS_TEST_TARGET) \
 		$(INSTALL_SPACE_TEST_TARGET) $(BATCH_INSTALL_TEST_TARGET) \
 		$(RAM_BUDGET_TEST_TARGET) $(REQUEST_GATE_TEST_TARGET) \
-		$(JOURNAL_TEST_TARGET)
+		$(JOURNAL_TEST_TARGET) $(TRACKER_PROBE_TEST_TARGET)
 
 .PHONY: all test clean

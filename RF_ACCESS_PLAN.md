@@ -72,7 +72,7 @@
 |----|--------|-----|--------|-----------|
 | W2 | Оркестратор лестницы (state machine) | Fable | L | W0, W1 |
 | W3 | UI мастера (borealis first-run flow) | Fable | L | W0, W2 |
-| W1 | Проба доступности RuTracker по маршруту | Opus | M | — |
+| W1 | Проба доступности RuTracker по маршруту ✅ | Opus | M | — |
 | W4 | Override хоста трекера/каталога (зеркало) | Opus | M | W0 |
 | W0 | Схема настроек: proxy / antizapret / mirror / first-run ✅ | Sonnet | S | П0.3 |
 | W5 | Баннер «устаревший дамп» + возраст снапшота | Sonnet | S | W0 |
@@ -108,14 +108,38 @@
 
 **Почему Sonnet:** пламбинг полей по готовому паттерну сериализации.
 
-### W1 — Проба доступности
+### W1 — Проба доступности ✅
 **Оценка: M. Тир: Opus.**
 
-Функция `probeRuTracker(route, host) → {Reachable, Blocked, Timeout}`: лёгкий
-HTTP-запрос (announce-заглушка или HEAD каталога) через заданный маршрут,
-детект DPI-блока через `antizapret_response_looks_blocked`
-(`src/core/antizapret.c`). Короткий таймаут, отменяемость. Переиспользуется и
-мастером (W2), и обычным резолвом.
+**Сделано (2026-07-06):** `tracker_probe(announce_url, route, timeout_seconds,
+cancel_cb, cancel_user) → {REACHABLE, BLOCKED, TIMEOUT}` в `src/core/tracker.c`
+(объявление в `tracker.h`). Переиспользует всю curl-обвязку announce
+(`curl_buf_t`, `curl_write_cb`, cancel через `CURLOPT_XFERINFOFUNCTION`,
+`antizapret_apply_route`, TLS1.2-пиннинг):
+- Шлёт лёгкий announce-«заглушку»: нулевой info_hash + `numwant=0`. Живой
+  RuTracker-трекер отвечает коротким bencode `failure reason: torrent not
+  registered`, при этом запрос фреймится ровно как настоящий announce (тот же
+  путь, что инспектит DPI). Короткий таймаут (дефолт 8 c, параметризуем),
+  отменяемость.
+- Классификация вынесена в чистую `tracker_probe_classify(transport_ok,
+  status, body, body_len)` (в `tracker.h`, тестируется офлайн):
+  транспортная ошибка/отмена → **TIMEOUT**; тело матчит
+  `antizapret_response_looks_blocked` → **BLOCKED** (приоритет над статусом);
+  2xx + валидный bencode-dict → **REACHABLE**; иначе (завершилось, но это не
+  трекер: proxy/captive-страница, не-2xx, мусор) → **BLOCKED**.
+- Лог `[probe] <url> via <route> -> <verdict>` (телеметрия, ПX.3).
+- Тест `tests/test_tracker_probe.c` (`tracker_probe_classify`: timeout / DPI-стаб /
+  not-registered / peers-dict / non-tracker HTML / non-2xx / пустое 2xx-тело),
+  прописан в `Makefile.pc` (`test`-таргет). Live-проверено: `example.com`
+  (2xx HTML, не трекер) → BLOCKED, `bt.t-ru.org` напрямую → REACHABLE.
+
+Оркестратор (W2) и обычный резолв зовут `tracker_probe` на каждом маршруте;
+здесь только функция + классификатор, без перепроводки резолва.
+
+Исходное описание: функция `probeRuTracker(route, host) → {Reachable, Blocked,
+Timeout}`: лёгкий HTTP-запрос (announce-заглушка или HEAD каталога) через
+заданный маршрут, детект DPI-блока через `antizapret_response_looks_blocked`
+(`src/core/antizapret.c`). Короткий таймаут, отменяемость.
 
 **Почему Opus:** сетевая проба + классификация ответа (успех / блок / таймаут),
 аккуратные таймауты, но по паттерну существующих announce-вызовов.
