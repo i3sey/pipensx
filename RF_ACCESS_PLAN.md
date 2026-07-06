@@ -18,7 +18,7 @@
 | П3.2 | Подпись каталога (ed25519) ✅ | Opus | M | — |
 | П3.1 | Зеркала каталога (jsDelivr / R2 / IPFS) ✅ | Opus | M | — |
 | П1.2 | PEX-усиление тонкого списка пиров ✅ | Opus | M | П0.1 или П1.1 |
-| П0.3 | Тумблер / автодетект antizapret | Sonnet | S | П0.1, П0.2 |
+| П0.3 | Тумблер / автодетект antizapret ✅ | Sonnet | S | П0.1, П0.2 |
 | П0.2 | Фетч каталога через antizapret-прокси ✅ | Sonnet | S | — |
 | ПX.1 | Health-check через прокси в CI | Sonnet | S | — |
 | ПX.2 | Публичные open-трекеры в кандидаты | Sonnet | S | — |
@@ -342,10 +342,22 @@ BEP11 ut_pex в core уже есть. Когда прокси/DHT дали 1–3
 
 **Почему Sonnet:** копирование готового паттерна из соседнего файла.
 
-### П0.3 — Тумблер / автодетект antizapret
+### П0.3 — Тумблер / автодетект antizapret ✅
 **Оценка: S.**
 
-`antizapret_set_enabled` уже есть, `antizapret_note_proxy_success` (`src/core/antizapret.c:253`) реализует «залипание» на прокси после первого успеха. Прокинуть флаг `use_antizapret` в `app_settings` (`src/app/app_settings.cpp`), показать в настройках Switch.
+**Сделано (2026-07-06):** поле `useAntizapret` (default `true` = текущее
+поведение) прокинуто через `AppSettingsData` +
+`parseSettings`/`serializeSettings`/`operator==` (`use_antizapret` в JSON).
+Точка применения `antizapret_set_enabled` в `main_switch.cpp:182` теперь читает
+настройку вместо хардкода `1`. В настройках Switch — секция «Connectivity» с
+тумблером «Antizapret bypass» (`settings_view.hpp`), меняет флаг и зовёт
+`antizapret_set_enabled` вживую; `applyValues` синхронизирует движок с
+настройкой. Тест `test_app_settings` расширен на новый флаг (дефолт + round-trip),
+зелёный.
+
+Исходное: `antizapret_set_enabled` уже есть,
+`antizapret_note_proxy_success` (`src/core/antizapret.c:253`) реализует
+«залипание» на прокси после первого успеха.
 
 **Почему Sonnet:** пламбинг настроек по существующим паттернам `parseSettings`/`serializeSettings`.
 

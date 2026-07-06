@@ -107,6 +107,34 @@ public:
             });
         content->addView(showCompleted_);
 
+        addSection(content, "Connectivity");
+        auto* antizapretHint = new brls::Label();
+        antizapretHint->setText(
+            "Route RuTracker through antizapret proxies when direct access is "
+            "blocked. Turn off if you have unrestricted access.");
+        antizapretHint->setFontSize(16);
+        antizapretHint->setTextColor(theme::textSecondary());
+        antizapretHint->setMarginBottom(10);
+        content->addView(antizapretHint);
+
+        useAntizapret_ = new brls::BooleanCell();
+        useAntizapret_->init("Antizapret bypass",
+            settings_->get().useAntizapret,
+            [this](bool enabled) {
+                AppSettingsData values = settings_->get();
+                bool previous = values.useAntizapret;
+                values.useAntizapret = enabled;
+                if (!persist(values, "use_antizapret")) {
+                    useAntizapret_->setOn(previous, false);
+                    return;
+                }
+                antizapret_set_enabled(enabled ? 1 : 0);
+                brls::Application::notify(enabled
+                    ? "Antizapret bypass enabled."
+                    : "Antizapret bypass disabled.");
+            });
+        content->addView(useAntizapret_);
+
         addSection(content, "Diagnostics");
         auto* description = new brls::Label();
         description->setText(
@@ -205,6 +233,8 @@ private:
         showCompleted_->setOn(values.showCompletedDownloads, false);
         extendedTelemetry_->setOn(values.extendedTelemetry, false);
         telemetry_set_enabled(values.extendedTelemetry ? 1 : 0);
+        useAntizapret_->setOn(values.useAntizapret, false);
+        antizapret_set_enabled(values.useAntizapret ? 1 : 0);
     }
 
     void captureSnapshot() {
@@ -292,6 +322,7 @@ private:
     brls::SelectorCell* installLocation_ = nullptr;
     brls::BooleanCell* showCompleted_ = nullptr;
     brls::BooleanCell* extendedTelemetry_ = nullptr;
+    brls::BooleanCell* useAntizapret_ = nullptr;
 };
 
 }  // namespace pipensx::ui

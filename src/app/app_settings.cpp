@@ -74,7 +74,8 @@ bool parseSettings(const std::string& text, AppSettingsData& values,
         !readBool(root, "show_completed_downloads",
                   values.showCompletedDownloads, error) ||
         !readBool(root, "extended_telemetry", values.extendedTelemetry,
-                  error)) {
+                  error) ||
+        !readBool(root, "use_antizapret", values.useAntizapret, error)) {
         return false;
     }
 
@@ -114,6 +115,7 @@ std::string serializeSettings(const AppSettingsData& values) {
     root["install_location"] = installLocationName(values.installLocation);
     root["show_completed_downloads"] = values.showCompletedDownloads;
     root["extended_telemetry"] = values.extendedTelemetry;
+    root["use_antizapret"] = values.useAntizapret;
     return root.dump(2) + "\n";
 }
 
@@ -125,7 +127,8 @@ bool AppSettingsData::operator==(const AppSettingsData& other) const {
            streamSelection == other.streamSelection &&
            installLocation == other.installLocation &&
            showCompletedDownloads == other.showCompletedDownloads &&
-           extendedTelemetry == other.extendedTelemetry;
+           extendedTelemetry == other.extendedTelemetry &&
+           useAntizapret == other.useAntizapret;
 }
 
 AppSettings::AppSettings(std::string path, std::string legacyTelemetryPath)

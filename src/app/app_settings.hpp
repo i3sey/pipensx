@@ -29,6 +29,9 @@ struct AppSettingsData {
     InstallLocation installLocation = InstallLocation::SdCard;
     bool showCompletedDownloads = true;
     bool extendedTelemetry = false;
+    // Route RuTracker traffic through antizapret proxies when direct access is
+    // blocked (DPI). Default on preserves current unconditional behavior.
+    bool useAntizapret = true;
 
     bool operator==(const AppSettingsData& other) const;
     bool operator!=(const AppSettingsData& other) const {

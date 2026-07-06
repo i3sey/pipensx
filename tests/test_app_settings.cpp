@@ -35,6 +35,7 @@ void testMissingFileUsesSafeDefaults() {
     assert(values.installLocation == InstallLocation::SdCard);
     assert(values.showCompletedDownloads);
     assert(!values.extendedTelemetry);
+    assert(values.useAntizapret);
 }
 
 void testUpdatePersistsEveryPublicSetting() {
@@ -49,6 +50,7 @@ void testUpdatePersistsEveryPublicSetting() {
     changed.installLocation = InstallLocation::SystemMemory;
     changed.showCompletedDownloads = false;
     changed.extendedTelemetry = true;
+    changed.useAntizapret = false;
     assert(settings.update(changed, error));
 
     AppSettings restored(SettingsPath, LegacyPath);

@@ -179,7 +179,7 @@ int main(int, char**) {
 
         startupStage("CatalogService construction");
         antizapret_init("sdmc:/switch/pipensx");
-        antizapret_set_enabled(1);
+        antizapret_set_enabled(settings.get().useAntizapret ? 1 : 0);
         log_msg("[startup] image relay: relays-first + disk cache (rev4)\n");
         unlink("sdmc:/switch/pipensx/rutracker.cfg");
         unlink("sdmc:/switch/pipensx/rutracker_cookies.txt");
