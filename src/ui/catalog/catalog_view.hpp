@@ -202,7 +202,9 @@ public:
         recycler_->registerCell("GridRow", [column = focusColumn_] {
             return new GridRowCell(column);
         });
-        recycler_->registerCell("Shelf", [] { return new ShelfCell(); });
+        recycler_->registerCell("Shelf", [hash = shelfFocusHash_] {
+            return new ShelfCell(hash);
+        });
         recycler_->registerCell("Hero", [] { return new HeroCell(); });
         recycler_->registerCell("Message",
             [] { return new TextMessageCell(); });
@@ -401,10 +403,29 @@ public:
                 catalogFailures_[hashLower] = failure;
         };
         auto onChange = [this] { rebuildEntries(); };
+        // O12: remember which card opened the page. On the way back the
+        // borealis focus stack may point at a recycled cell (live rebuilds
+        // while the page is open reload the recycler with the focus away in
+        // the detail activity, resetting the scroll), so the catalog re-seats
+        // scroll + focus itself when the page closes.
+        returnFocusHash_ = picked->infoHash;
+        returnFocusShelf_ = -1;
+        brls::View* focus = brls::Application::getCurrentFocus();
+        if (auto* card = dynamic_cast<GameCard*>(focus)) {
+            if (card->entryIndex() == row)
+                returnFocusShelf_ = card->shelfRow();
+        } else if (auto* hero = dynamic_cast<HeroCard*>(focus)) {
+            if (hero->infoHash() == picked->infoHash)
+                returnFocusShelf_ = 0;  // hero is always the first row
+        }
+        auto onClose = [this, alive = alive_] {
+            if (alive->load())
+                onDetailClosed();
+        };
         brls::Application::pushActivity(new GameDetailActivity(
             std::move(entry), std::move(lastFailure), manager_, metadata_,
             installed_, settings_,
-            std::move(onFailure), std::move(onChange)));
+            std::move(onFailure), std::move(onChange), std::move(onClose)));
     }
 
 private:
@@ -1025,6 +1046,9 @@ private:
             return;
         }
         if (shelfRow >= 0 && shelfRow < dataSource_->headerRowCount()) {
+            // O12: the shelf's getDefaultFocus() reads this back, so the
+            // focus lands on the same card at its position inside the shelf.
+            *shelfFocusHash_ = hash;
             recycler_->selectRowAt(brls::IndexPath(0, shelfRow), false);
             brls::Application::giveFocus(recycler_);
             return;
@@ -1041,6 +1065,21 @@ private:
         recycler_->selectRowAt(
             brls::IndexPath(0, dataSource_->rowForEntry(index)), false);
         brls::Application::giveFocus(recycler_);
+    }
+
+    // O12: the game page closed (B). Re-seat scroll + focus on the card that
+    // opened it — even if live rebuilds recycled the cells or reset the
+    // scroll while the page was on top. Deferred to the frame after the pop
+    // (GameDetailActivity destructor -> brls::sync), so this runs after
+    // popActivity() handed the focus to whatever the focus stack still held.
+    void onDetailClosed() {
+        if (returnFocusHash_.empty())
+            return;
+        const std::string hash = returnFocusHash_;
+        const int shelfRow = returnFocusShelf_;
+        returnFocusHash_.clear();
+        returnFocusShelf_ = -1;
+        restoreFocus(hash, shelfRow);
     }
 
     // While busy (catalog refresh) Y cancels instead of sorting; reflect that
@@ -1210,6 +1249,13 @@ private:
     // Column the user last focused in the grid; grid rows read it in
     // getDefaultFocus() so vertical navigation keeps the column.
     std::shared_ptr<int> focusColumn_ = std::make_shared<int>(0);
+    // O12: info-hash of the last-focused shelf card, shared with every
+    // ShelfCell/HorizontalShelf so it survives cell recycling.
+    std::shared_ptr<std::string> shelfFocusHash_ =
+        std::make_shared<std::string>();
+    // O12: where to put the focus back when the game page closes.
+    std::string returnFocusHash_;
+    int returnFocusShelf_ = -1;
     std::unordered_map<std::string, std::string> catalogFailures_;
     std::unordered_set<std::string> selectedHashes_;
     std::string query_;

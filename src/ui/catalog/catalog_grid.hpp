@@ -271,7 +271,11 @@ private:
 // drags the strip directly (touch).
 class HorizontalShelf : public brls::Box {
 public:
-    HorizontalShelf() : brls::Box(brls::Axis::ROW) {
+    // focusHash is shared with CatalogView (UI_PLAN O12): the shelf writes
+    // the info-hash of whichever card holds the focus, and getDefaultFocus()
+    // reads it back, so focus restore survives the cell being recycled.
+    explicit HorizontalShelf(std::shared_ptr<std::string> focusHash)
+        : brls::Box(brls::Axis::ROW), focusHash_(std::move(focusHash)) {
         setHeight(grid::kCardHeight);
         setClipsToBounds(true);
         content_ = new brls::Box(brls::Axis::ROW);
@@ -297,11 +301,17 @@ public:
         active_ = static_cast<int>(
             std::min<size_t>(infos.size(), grid::kShelfItems));
         for (int i = 0; i < grid::kShelfItems; ++i) {
-            if (i < active_)
-                cards_[i]->setCard(infos[static_cast<size_t>(i)], service,
-                                   onActivate, nullptr, shelfRow);
-            else
+            if (i < active_) {
+                std::shared_ptr<std::string> hash = focusHash_;
+                cards_[i]->setCard(
+                    infos[static_cast<size_t>(i)], service, onActivate,
+                    [hash, h = infos[static_cast<size_t>(i)].infoHash] {
+                        *hash = h;
+                    },
+                    shelfRow);
+            } else {
                 cards_[i]->setEmpty();
+            }
         }
         offset_ = 0;
         applyOffset();
@@ -316,6 +326,18 @@ public:
             }
         }
         brls::Box::onChildFocusGained(directChild, focusedView);
+    }
+
+    // O12: focus entering the shelf lands on the remembered card (also
+    // scrolled into view via onChildFocusGained), not blindly on the first.
+    brls::View* getDefaultFocus() override {
+        for (int i = 0; i < active_; ++i) {
+            if (cards_[i]->infoHash() == *focusHash_)
+                return cards_[i];
+        }
+        if (active_ > 0)
+            return cards_[0];
+        return brls::Box::getDefaultFocus();
     }
 
 private:
@@ -352,11 +374,12 @@ private:
     GameCard* cards_[grid::kShelfItems] = {};
     int active_ = 0;
     float offset_ = 0;
+    std::shared_ptr<std::string> focusHash_;
 };
 
 class ShelfCell : public brls::RecyclerCell {
 public:
-    ShelfCell() {
+    explicit ShelfCell(std::shared_ptr<std::string> focusHash) {
         setFocusable(false);
         setAxis(brls::Axis::COLUMN);
         setHeight(grid::kShelfHeight);
@@ -383,9 +406,15 @@ public:
             new brls::TapGestureRecognizer(seeAll_));
         header_->addView(title_);
         header_->addView(seeAll_);
-        shelf_ = new HorizontalShelf();
+        shelf_ = new HorizontalShelf(std::move(focusHash));
         addView(header_);
         addView(shelf_);
+    }
+
+    // O12: default focus goes to the shelf's remembered card, not to the
+    // "See all" label (the first focusable child in tree order).
+    brls::View* getDefaultFocus() override {
+        return shelf_->getDefaultFocus();
     }
 
     void setShelf(const std::string& title,

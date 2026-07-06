@@ -71,15 +71,20 @@ public:
     using FailureCallback =
         std::function<void(const std::string&, const std::string&)>;
     using ChangeCallback = std::function<void()>;
+    // O12: fired (deferred one frame) when the page is torn down after the
+    // B-pop, so the catalog can re-seat scroll + focus on the opening card.
+    using CloseCallback = std::function<void()>;
 
     GameDetailActivity(CatalogEntry entry, std::string lastFailure,
                        DownloadManager* manager, GameMetadataService* metadata,
                        InstalledTitleService* installed, AppSettings* settings,
-                       FailureCallback onFailure, ChangeCallback onChange)
+                       FailureCallback onFailure, ChangeCallback onChange,
+                       CloseCallback onClose = nullptr)
         : entry_(std::move(entry)), lastFailure_(std::move(lastFailure)),
           manager_(manager), metadata_(metadata), installed_(installed),
           settings_(settings),
           onFailure_(std::move(onFailure)), onChange_(std::move(onChange)),
+          onClose_(std::move(onClose)),
           alive_(std::make_shared<std::atomic<bool>>(true)),
           cancelled_(std::make_shared<std::atomic<bool>>(false)) {
         const GameMetadata* found = metadata_->findByInfoHash(entry_.infoHash);
@@ -102,6 +107,11 @@ public:
         timer_.stop();
         if (onChange_)
             onChange_();  // refresh the row badge on the way back
+        // O12: deferred a frame — the activity is mid-teardown here and
+        // popActivity() has already unwound the focus stack, so the catalog
+        // can safely take the focus back now.
+        if (onClose_)
+            brls::sync([onClose = std::move(onClose_)] { onClose(); });
     }
 
     brls::View* createContentView() override { return frame_; }
@@ -737,6 +747,7 @@ private:
     std::string operationMessage_;
     FailureCallback onFailure_;
     ChangeCallback onChange_;
+    CloseCallback onClose_;
     std::shared_ptr<std::atomic<bool>> alive_;
     std::shared_ptr<std::atomic<bool>> cancelled_;
     brls::AppletFrame* frame_ = nullptr;
