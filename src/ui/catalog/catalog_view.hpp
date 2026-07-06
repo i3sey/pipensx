@@ -218,6 +218,7 @@ public:
         // to a 40px icon everything fits at 1280 without clipping.
         header_ = new brls::Box(brls::Axis::ROW);
         header_->setMarginTop(10);
+        header_->setMarginBottom(10);  // breathing room above the hero banner
         header_->setMarginLeft(34);
         header_->setMarginRight(34);
         sortLatest_ = makeChip("Latest", [this] { setSort(SortMode::Latest); });
