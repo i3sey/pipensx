@@ -74,23 +74,37 @@
 | W3 | UI мастера (borealis first-run flow) | Fable | L | W0, W2 |
 | W1 | Проба доступности RuTracker по маршруту | Opus | M | — |
 | W4 | Override хоста трекера/каталога (зеркало) | Opus | M | W0 |
-| W0 | Схема настроек: proxy / antizapret / mirror / first-run | Sonnet | S | П0.3 |
+| W0 | Схема настроек: proxy / antizapret / mirror / first-run ✅ | Sonnet | S | П0.3 |
 | W5 | Баннер «устаревший дамп» + возраст снапшота | Sonnet | S | W0 |
 | W6 | Перезапуск мастера из настроек | Sonnet | S | W2, W3 |
 
-### W0 — Схема настроек
+### W0 — Схема настроек ✅
 **Оценка: S. Тир: Sonnet.**
 
-Добавить в `AppSettingsData` (`src/app/app_settings.hpp`) поля:
+**Сделано (2026-07-06):** поля Фазы W добавлены в `AppSettingsData`
+(`src/app/app_settings.hpp`), все дефолты сохраняют текущее поведение:
+- `manualProxyUrl` (пусто) + `manualProxyType` (`ProxyType` off/http/socks5,
+  дефолт Off);
+- `useAntizapret` — уже был из [[П0.3]];
+- `rutrackerHost` (пусто = `rutracker.org`);
+- `connectivitySetupDone` (false);
+- `connectivityMethod` (`ConnectivityMethod` direct/proxy/antizapret/mirror,
+  дефолт Direct).
+
+Пробросано через `parseSettings`/`serializeSettings`/`operator==` по паттерну
+существующих enum-полей (name-хелперы `proxyTypeName`/`connectivityMethodName`,
+валидация неизвестных значений → fail-closed). JSON-ключи: `manual_proxy_url`,
+`manual_proxy_type`, `rutracker_host`, `connectivity_setup_done`,
+`connectivity_method`. Тест `test_app_settings` расширен (дефолты + round-trip),
+зелёный.
+
+Исходное описание полей:
 - `std::string manualProxyUrl` + `ProxyType manualProxyType` (off/http/socks5) —
   прокси пользователя;
 - `bool useAntizapret` (тумблер из П0.3);
 - `std::string rutrackerHost` (override, пусто = `rutracker.org` по умолчанию);
 - `bool connectivitySetupDone` (флаг пройденного мастера);
 - `int connectivityMethod` (запомненный победивший маршрут: direct/proxy/az/mirror).
-
-Пробросить через `parseSettings`/`serializeSettings` по существующему паттерну,
-дефолты сохраняют текущее поведение.
 
 **Почему Sonnet:** пламбинг полей по готовому паттерну сериализации.
 

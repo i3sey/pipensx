@@ -26,6 +26,32 @@ const char* installLocationName(InstallLocation value) {
     return value == InstallLocation::SystemMemory ? "system_memory" : "sd_card";
 }
 
+const char* proxyTypeName(ProxyType value) {
+    switch (value) {
+    case ProxyType::Http:
+        return "http";
+    case ProxyType::Socks5:
+        return "socks5";
+    case ProxyType::Off:
+    default:
+        return "off";
+    }
+}
+
+const char* connectivityMethodName(ConnectivityMethod value) {
+    switch (value) {
+    case ConnectivityMethod::Proxy:
+        return "proxy";
+    case ConnectivityMethod::Antizapret:
+        return "antizapret";
+    case ConnectivityMethod::Mirror:
+        return "mirror";
+    case ConnectivityMethod::Direct:
+    default:
+        return "direct";
+    }
+}
+
 bool readString(const Json& root, const char* key, std::string& value,
                 std::string& error) {
     if (!root.contains(key))
@@ -66,6 +92,8 @@ bool parseSettings(const std::string& text, AppSettingsData& values,
     std::string catalog = catalogFilterName(values.catalogFilter);
     std::string selection = streamSelectionName(values.streamSelection);
     std::string install = installLocationName(values.installLocation);
+    std::string proxyType = proxyTypeName(values.manualProxyType);
+    std::string method = connectivityMethodName(values.connectivityMethod);
     if (!readString(root, "catalog_filter", catalog, error) ||
         !readBool(root, "refresh_catalog_on_launch",
                   values.refreshCatalogOnLaunch, error) ||
@@ -75,7 +103,13 @@ bool parseSettings(const std::string& text, AppSettingsData& values,
                   values.showCompletedDownloads, error) ||
         !readBool(root, "extended_telemetry", values.extendedTelemetry,
                   error) ||
-        !readBool(root, "use_antizapret", values.useAntizapret, error)) {
+        !readBool(root, "use_antizapret", values.useAntizapret, error) ||
+        !readString(root, "manual_proxy_url", values.manualProxyUrl, error) ||
+        !readString(root, "manual_proxy_type", proxyType, error) ||
+        !readString(root, "rutracker_host", values.rutrackerHost, error) ||
+        !readBool(root, "connectivity_setup_done",
+                  values.connectivitySetupDone, error) ||
+        !readString(root, "connectivity_method", method, error)) {
         return false;
     }
 
@@ -103,6 +137,28 @@ bool parseSettings(const std::string& text, AppSettingsData& values,
         error = "Setting 'install_location' has an unknown value.";
         return false;
     }
+    if (proxyType == "off")
+        values.manualProxyType = ProxyType::Off;
+    else if (proxyType == "http")
+        values.manualProxyType = ProxyType::Http;
+    else if (proxyType == "socks5")
+        values.manualProxyType = ProxyType::Socks5;
+    else {
+        error = "Setting 'manual_proxy_type' has an unknown value.";
+        return false;
+    }
+    if (method == "direct")
+        values.connectivityMethod = ConnectivityMethod::Direct;
+    else if (method == "proxy")
+        values.connectivityMethod = ConnectivityMethod::Proxy;
+    else if (method == "antizapret")
+        values.connectivityMethod = ConnectivityMethod::Antizapret;
+    else if (method == "mirror")
+        values.connectivityMethod = ConnectivityMethod::Mirror;
+    else {
+        error = "Setting 'connectivity_method' has an unknown value.";
+        return false;
+    }
     return true;
 }
 
@@ -116,6 +172,11 @@ std::string serializeSettings(const AppSettingsData& values) {
     root["show_completed_downloads"] = values.showCompletedDownloads;
     root["extended_telemetry"] = values.extendedTelemetry;
     root["use_antizapret"] = values.useAntizapret;
+    root["manual_proxy_url"] = values.manualProxyUrl;
+    root["manual_proxy_type"] = proxyTypeName(values.manualProxyType);
+    root["rutracker_host"] = values.rutrackerHost;
+    root["connectivity_setup_done"] = values.connectivitySetupDone;
+    root["connectivity_method"] = connectivityMethodName(values.connectivityMethod);
     return root.dump(2) + "\n";
 }
 
@@ -128,7 +189,12 @@ bool AppSettingsData::operator==(const AppSettingsData& other) const {
            installLocation == other.installLocation &&
            showCompletedDownloads == other.showCompletedDownloads &&
            extendedTelemetry == other.extendedTelemetry &&
-           useAntizapret == other.useAntizapret;
+           useAntizapret == other.useAntizapret &&
+           manualProxyUrl == other.manualProxyUrl &&
+           manualProxyType == other.manualProxyType &&
+           rutrackerHost == other.rutrackerHost &&
+           connectivitySetupDone == other.connectivitySetupDone &&
+           connectivityMethod == other.connectivityMethod;
 }
 
 AppSettings::AppSettings(std::string path, std::string legacyTelemetryPath)
