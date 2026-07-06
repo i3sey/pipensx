@@ -72,6 +72,8 @@ set(CORE_SOURCES
     src/core/metainfo.c
     src/core/util.c
     src/core/antizapret.c
+    src/core/catalog_sig.c
+    vendor/tweetnacl/tweetnacl.c
     src/core/net.c
     src/core/peer.c
     src/core/piece.c

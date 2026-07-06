@@ -3,11 +3,13 @@
 
 extern "C" {
 #include "../core/antizapret.h"
+#include "../core/catalog_sig.h"
 #include "../core/sha1.h"
 #include "../core/util.h"
 }
 
 #include <algorithm>
+#include <cctype>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
@@ -26,6 +28,25 @@ constexpr size_t kMaxCatalogEntries = 20000;
 constexpr size_t kMaxInfoDictBytes = 8 * 1024 * 1024;
 constexpr const char* kLatestReleaseApi =
     "https://api.github.com/repos/bqio/switch-dumps/releases/latest";
+constexpr const char* kTrustedReleasePrefix =
+    "https://github.com/bqio/switch-dumps/releases/download/";
+
+/* ed25519 public key that signs the network catalog (RF_ACCESS_PLAN П3.2).
+   All-zero = signing not provisioned yet: the network refresh runs unverified,
+   preserving the pre-signing behaviour. Replace with the real 32-byte key
+   (tools/sign_catalog.py --gen-key emits both halves) to enforce a valid
+   detached signature on every refresh; a missing or invalid signature then
+   aborts the refresh so a MITM cannot strip it. Cached and bundled catalogs
+   are local — trusted at build time or already verified when cached — and are
+   not re-checked here. */
+constexpr uint8_t kCatalogPublicKey[32] = {0};
+
+bool catalogSigningEnabled() {
+    for (uint8_t byte : kCatalogPublicKey)
+        if (byte)
+            return true;
+    return false;
+}
 
 int base64Value(char c) {
     if (c >= 'A' && c <= 'Z') return c - 'A';
@@ -63,6 +84,31 @@ bool decodeBase64(const std::string& text, std::vector<uint8_t>& out) {
             out.push_back(static_cast<uint8_t>(block >> 8));
         if (padding < 1)
             out.push_back(static_cast<uint8_t>(block));
+    }
+    return true;
+}
+
+/* Verify a detached base64 ed25519 signature (the ".sig" release asset) over
+   the raw catalog bytes. Tolerates surrounding whitespace/newlines in the
+   signature file. */
+bool verifyCatalogSignature(const std::string& catalog,
+                            const std::string& signatureText,
+                            std::string& error) {
+    std::string trimmed;
+    trimmed.reserve(signatureText.size());
+    for (char c : signatureText)
+        if (!std::isspace(static_cast<unsigned char>(c)))
+            trimmed.push_back(c);
+    std::vector<uint8_t> signature;
+    if (!decodeBase64(trimmed, signature) || signature.size() != 64) {
+        error = "Catalog signature is malformed.";
+        return false;
+    }
+    const uint8_t* body = reinterpret_cast<const uint8_t*>(catalog.data());
+    if (!catalog_sig_verify(kCatalogPublicKey, body, catalog.size(),
+                            signature.data())) {
+        error = "Catalog signature does not match the trusted key.";
+        return false;
     }
     return true;
 }
@@ -438,6 +484,7 @@ bool CatalogService::refresh(std::string& error) {
         return false;
     }
     std::string assetUrl;
+    std::string signatureUrl;
     for (const auto& asset : release["assets"]) {
         if (!asset.is_object() ||
             !asset.contains("name") || !asset["name"].is_string() ||
@@ -445,13 +492,20 @@ bool CatalogService::refresh(std::string& error) {
             !asset["browser_download_url"].is_string())
             continue;
         std::string name = asset["name"].get<std::string>();
-        if (name.size() >= 5 && name.substr(name.size() - 5) == ".json") {
-            assetUrl = asset["browser_download_url"].get<std::string>();
-            break;
-        }
+        std::string url = asset["browser_download_url"].get<std::string>();
+        auto endsWith = [&](const char* suffix) {
+            size_t n = std::strlen(suffix);
+            return name.size() >= n &&
+                   name.compare(name.size() - n, n, suffix) == 0;
+        };
+        // A signature asset ends in ".sig", never ".json", so the two never
+        // collide. Take the first of each kind.
+        if (assetUrl.empty() && endsWith(".json"))
+            assetUrl = url;
+        if (signatureUrl.empty() && endsWith(".sig"))
+            signatureUrl = url;
     }
-    if (assetUrl.rfind(
-            "https://github.com/bqio/switch-dumps/releases/download/", 0) != 0) {
+    if (assetUrl.rfind(kTrustedReleasePrefix, 0) != 0) {
         error = "Latest release does not contain a trusted catalog asset.";
         return false;
     }
@@ -459,6 +513,23 @@ bool CatalogService::refresh(std::string& error) {
     std::string catalogBody;
     if (!httpGet(assetUrl, catalogBody, error))
         return false;
+
+    // Signature enforcement (RF_ACCESS_PLAN П3.2): only once a real public key
+    // is baked in. Fail closed — a stripped or forged signature aborts the
+    // refresh before the catalog is parsed or cached.
+    if (catalogSigningEnabled()) {
+        if (signatureUrl.rfind(kTrustedReleasePrefix, 0) != 0) {
+            error = "The signed catalog release is missing its signature.";
+            return false;
+        }
+        std::string signatureBody;
+        if (!httpGet(signatureUrl, signatureBody, error))
+            return false;
+        if (!verifyCatalogSignature(catalogBody, signatureBody, error))
+            return false;
+        log_msg("[catalog] signature verified\n");
+    }
+
     std::vector<CatalogEntry> parsed;
     if (!parseJson(catalogBody, parsed, error))
         return false;

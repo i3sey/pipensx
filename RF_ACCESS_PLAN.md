@@ -15,7 +15,7 @@
 | П2.1 | Серверный пре-резолв: info-dict в каталог ✅ | Fable | L | П3.2 (желательно) |
 | П1.1 | DHT-фолбэк в резолв магнита ✅ | Fable | L | — |
 | П0.1 | Анонс трекера через antizapret-прокси ✅ | Fable | M | — |
-| П3.2 | Подпись каталога (ed25519) | Opus | M | — |
+| П3.2 | Подпись каталога (ed25519) ✅ | Opus | M | — |
 | П3.1 | Зеркала каталога (jsDelivr / R2 / IPFS) | Opus | M | — |
 | П1.2 | PEX-усиление тонкого списка пиров ✅ | Opus | M | П0.1 или П1.1 |
 | П0.3 | Тумблер / автодетект antizapret | Sonnet | S | П0.1, П0.2 |
@@ -104,8 +104,37 @@ antizapret-прокси (`[tracker] RuTracker announce used HTTP proxy`).
 
 ## Тир Opus (средние)
 
-### П3.2 — Подпись каталога (ed25519)
+### П3.2 — Подпись каталога (ed25519) ✅
 **Оценка: M.**
+
+**Сделано (2026-07-06):** detached ed25519-подпись сетевого каталога,
+verify-only на клиенте.
+- Крипто: вендор TweetNaCl (`vendor/tweetnacl/`, канон 20140427, public
+  domain) — verify-only, свой SHA-512, без зависимости от mbedTLS/OpenSSL
+  (mbedcrypto на Switch ed25519 не умеет). Обёртка
+  `src/core/catalog_sig.c` (`catalog_sig_verify`): собирает sig(64)‖msg,
+  зовёт `crypto_sign_ed25519_tweet_open`. `randombytes` застаблен
+  (`abort()`) — keygen/sign в клиент не линкуются.
+- Ключ: `kCatalogPublicKey[32]` в `catalog_service.cpp`, по умолчанию нули =
+  подпись выключена (текущее поведение сохранено). Реальный ключ включает
+  enforcement.
+- Проверка в `refresh()` до `parseJson`/кэша: при включённом ключе тянет
+  asset `*.sig` из того же trusted-release (`kTrustedReleasePrefix`),
+  base64-декод → `verifyCatalogSignature` → `catalog_sig_verify`. Fail-closed:
+  нет подписи / не сошлась → refresh абортит (MITM не срежет). Кэш и bundled
+  локальны (доверенные при сборке / уже проверены при записи) — не
+  перечекиваются.
+- Продюсер: `tools/sign_catalog.py` (`--gen-key` печатает приватный hex +
+  C-массив pubkey; `--key --sign` пишет base64 `.sig`-сайдкар). Живёт рядом с
+  `embed_catalog_infodicts.py` в CI.
+- Тест: `testCatalogSignatureVerify` (RFC 8032 вектор 2 + порча
+  msg/sig/ключа). Полный конвейер проверен вживую: независимый подписант
+  OpenSSL ed25519 → base64 → `catalog_sig_verify` = 1, порча = 0. golden +
+  `tests/test_catalog` зелёные.
+
+**Как включить:** `tools/sign_catalog.py --gen-key` → вставить pubkey в
+`kCatalogPublicKey`, приватный ключ в CI-секрет, подписывать каждый релиз,
+заливать `catalog.json.sig` рядом с `catalog.json`.
 
 С добавлением зеркал/прокси растёт MITM-риск. Подписать `catalog.json`, зашить публичный ключ в бинарь, проверять в `parseJson` (`src/app/catalog_service.cpp:200`) до применения. Критично для П2.1 (встроенные info-dict).
 
