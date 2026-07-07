@@ -474,22 +474,6 @@ bool CatalogService::load(std::string& error) {
     return false;
 }
 
-// Parse, cache, and adopt a freshly fetched catalog body.
-bool CatalogService::commitCatalog(const std::string& body,
-                                   const std::string& label,
-                                   std::string& error) {
-    std::vector<CatalogEntry> parsed;
-    if (!parseJson(body, parsed, error))
-        return false;
-    if (!writeAtomic(cachePath_, body, error))
-        return false;
-    entries_ = std::move(parsed);
-    sourceLabel_ = label;
-    log_msg("[catalog] refreshed %zu entries from %s\n", entries_.size(),
-            label.c_str());
-    return true;
-}
-
 bool CatalogService::isTrustedSource(const std::string& url) {
     // Host (with path prefix) allowed to serve catalog bytes. Only the Langegen
     // switch-games repo on GitHub's raw host; every network fetch is gated on
@@ -503,24 +487,34 @@ bool CatalogService::isTrustedSource(const std::string& url) {
     return false;
 }
 
-bool CatalogService::refreshFromSource(const std::string& url,
-                                       const std::string& label,
-                                       std::string& error) {
-    if (!isTrustedSource(url)) {
+bool CatalogService::fetchLatest(std::vector<CatalogEntry>& parsed,
+                                 std::string& error) {
+    // Single source: the Langegen switch_games.json on GitHub's raw host. Runs
+    // on a worker thread: network fetch + parse + cache write only, so it never
+    // touches entries_. The cached/bundled catalogue in memory survives a
+    // failure — the caller keeps showing what it already has on error.
+    parsed.clear();
+    if (!isTrustedSource(kCatalogSourceUrl)) {
         error = "Catalog URL is not on the trusted host list.";
         return false;
     }
     std::string catalogBody;
-    if (!httpGet(url, catalogBody, error))
+    if (!httpGet(kCatalogSourceUrl, catalogBody, error))
         return false;
-    return commitCatalog(catalogBody, label, error);
+    if (!parseJson(catalogBody, parsed, error))
+        return false;
+    if (!writeAtomic(cachePath_, catalogBody, error))
+        return false;
+    return true;
 }
 
-bool CatalogService::refresh(std::string& error) {
-    // Single source: the Langegen switch_games.json on GitHub's raw host. The
-    // cached/bundled catalogue in memory survives a failure — refresh() only
-    // reports the error so the caller keeps showing what it already has.
-    return refreshFromSource(kCatalogSourceUrl, "Langegen switch-games", error);
+void CatalogService::adopt(std::vector<CatalogEntry> parsed) {
+    // UI thread only: entries() is read unsynchronised by the render thread, so
+    // this swap must never happen on the fetch worker (data race → UAF).
+    entries_ = std::move(parsed);
+    sourceLabel_ = "Langegen switch-games";
+    log_msg("[catalog] refreshed %zu entries from %s\n", entries_.size(),
+            sourceLabel_.c_str());
 }
 
 } // namespace pipensx

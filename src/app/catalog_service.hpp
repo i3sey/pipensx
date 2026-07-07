@@ -63,7 +63,16 @@ public:
                                 "romfs:/catalog/catalog.json");
 
     bool load(std::string& error);
-    bool refresh(std::string& error);
+
+    // Pool-thread safe: fetch the latest catalogue from the trusted source,
+    // parse it, and persist the on-disk cache. Fills `parsed` on success and
+    // never touches entries_, so it may run on a worker thread. The caller
+    // adopts the parsed batch on the UI thread via adopt().
+    bool fetchLatest(std::vector<CatalogEntry>& parsed, std::string& error);
+    // UI-thread only: adopt a freshly fetched batch as the live catalogue.
+    // entries() is read unsynchronised by the render thread every frame, so
+    // entries_ may only be reassigned here — never from a fetch worker.
+    void adopt(std::vector<CatalogEntry> parsed);
 
     const std::vector<CatalogEntry>& entries() const { return entries_; }
     const std::string& sourceLabel() const { return sourceLabel_; }
@@ -80,13 +89,6 @@ public:
 private:
     bool loadFile(const std::string& path, const std::string& label,
                   std::string& error);
-    // Fetch, verify (when signing is on), parse, cache and adopt the catalogue
-    // from `url`. The single network source; refresh() delegates to it.
-    bool refreshFromSource(const std::string& url, const std::string& label,
-                           std::string& error);
-    // Parse/cache/adopt a freshly fetched catalog body.
-    bool commitCatalog(const std::string& body, const std::string& label,
-                       std::string& error);
 
     std::string rootPath_;
     std::string catalogRoot_;

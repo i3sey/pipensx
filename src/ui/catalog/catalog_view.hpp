@@ -1211,14 +1211,16 @@ private:
         CatalogService* catalog = catalog_;
         uint64_t startedMs = now_ms();
         brls::async([this, alive, catalog, startedMs] {
+            std::vector<CatalogEntry> parsed;
             std::string err;
-            bool ok = catalog->refresh(err);
+            bool ok = catalog->fetchLatest(parsed, err);
             telemetry_log("catalog", "-",
                           "event=refresh ok=%d duration_ms=%llu entries=%zu",
                           ok ? 1 : 0,
                           (unsigned long long)(now_ms() - startedMs),
-                          catalog->entries().size());
-            brls::sync([this, alive, ok, err] {
+                          parsed.size());
+            brls::sync([this, alive, ok, err,
+                        parsed = std::move(parsed)]() mutable {
                 if (!alive->load())
                     return;
                 setBusy(false);
@@ -1228,6 +1230,10 @@ private:
                     brls::Application::notify(err);
                     return;
                 }
+                // entries() is read on the UI thread every frame, so the live
+                // swap happens here — never on the fetch worker (data race →
+                // use-after-free, the intermittent quit-time fatal).
+                catalog_->adopt(std::move(parsed));
                 // UI_PLAN F6: catalog changed — drop decoded covers so
                 // replaced artwork cannot be served stale from memory.
                 if (metadata_)
