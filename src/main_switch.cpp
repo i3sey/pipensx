@@ -24,6 +24,7 @@ extern "C" {
 
 #include "ui/catalog/catalog_view.hpp"
 #include "ui/common/ui_helpers.hpp"
+#include "ui/main_frame.hpp"
 #include "ui/downloads/downloads_view.hpp"
 #include "ui/installed/installed_view.hpp"
 #include "ui/settings/about_view.hpp"
@@ -48,24 +49,29 @@ public:
                  InstalledTitleService* installed, AppSettings* settings)
         : manager_(manager), catalog_(catalog), metadata_(metadata),
           installed_(installed), settings_(settings) {
-        auto* tabs = new brls::TabFrame();
-        tabs->addTab("Catalog", [manager, catalog, metadata, installed,
-                                  settings, tabs] {
+        auto* tabs = new pipensx::ui::MainFrame();
+        using pipensx::ui::NavIconType;
+        tabs->addNavTab("Catalog", NavIconType::Catalog,
+                        [manager, catalog, metadata, installed,
+                         settings, tabs] {
             return new CatalogView(manager, catalog, metadata, installed,
                                    settings, [tabs] { tabs->focusTab(1); });
         });
-        tabs->addTab("Downloads", [manager, metadata, settings] {
+        tabs->addNavTab("Downloads", NavIconType::Downloads,
+                        [manager, metadata, settings] {
             return new MainView(manager, metadata, settings);
         });
-        tabs->addTab("Installed", [installed, manager, metadata] {
+        tabs->addNavTab("Installed", NavIconType::Installed,
+                        [installed, manager, metadata] {
             return new InstalledView(installed, manager, metadata);
         });
-        tabs->addTab("Settings", [settings, manager, catalog, metadata,
-                                   installed] {
+        tabs->addNavTab("Settings", NavIconType::Settings,
+                        [settings, manager, catalog, metadata,
+                         installed] {
             return new SettingsView(settings, manager, catalog, metadata,
                                     installed);
         });
-        tabs->addTab("About", [] {
+        tabs->addNavTab("About", NavIconType::About, [] {
             return new AboutView();
         });
         frame_ = new brls::AppletFrame(tabs);
@@ -171,6 +177,7 @@ int main(int, char**) {
         if (!brls::Application::init())
             throw std::runtime_error("Borealis Application::init failed");
         pipensx::ui::theme::registerColors();
+        pipensx::ui::installSidebarStyle();
 
         startupStage("Borealis createWindow");
         brls::Application::createWindow("pipensx");
