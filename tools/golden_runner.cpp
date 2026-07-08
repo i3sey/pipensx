@@ -329,25 +329,21 @@ int main(int argc, char** argv) {
     if (width <= 0 || height <= 0)
         return fail("empty GL viewport");
 
-    // SDL/Xvfb may expose a compositor-owned, all-black front buffer after
-    // SDL_GL_SwapWindow. Prefer it where it is readable, then fall back to the
-    // previous completed frame in the back buffer. The UI has settled after
-    // 90 draws, so the one-frame difference is immaterial to the snapshot.
+    // SDL/Xvfb exposes an unreliable compositor-owned front buffer after
+    // SDL_GL_SwapWindow: depending on timing it can be black, stale, or only
+    // partially preserved. The back buffer consistently contains the previous
+    // completed frame. The UI has settled after 90 draws, so capturing that
+    // frame is deterministic and visually equivalent to the just-swapped one.
     std::vector<uint8_t> rgba;
-    const char* captureBuffer = "front";
-    if (!readFramebuffer(GL_FRONT, width, height, rgba) ||
-        !hasVisiblePixel(rgba)) {
-        captureBuffer = "back";
-        if (!readFramebuffer(GL_BACK, width, height, rgba) ||
-            !hasVisiblePixel(rgba))
-            return fail("both GL front and back buffers are empty");
-    }
+    if (!readFramebuffer(GL_BACK, width, height, rgba) ||
+        !hasVisiblePixel(rgba))
+        return fail("GL back buffer is empty");
 
     if (!writePng(outPng.string(), width, height, rgba))
         return fail("failed to write PNG");
 
-    std::printf("golden_runner: %s (%dx%d, %s buffer) -> %s\n",
-                screen.c_str(), width, height, captureBuffer,
+    std::printf("golden_runner: %s (%dx%d, back buffer) -> %s\n",
+                screen.c_str(), width, height,
                 outPng.string().c_str());
 
     manager.shutdown();
