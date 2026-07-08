@@ -1,0 +1,72 @@
+name: switch-release
+
+# Manual button: builds build-switch/pipensx.nro inside the official
+# devkitPro container, then publishes it as a draft GitHub release for
+# review before it goes public.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag (e.g. v0.3.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container:
+      image: devkitpro/devkita64:latest
+    env:
+      DEVKITPRO: /opt/devkitpro
+    steps:
+      - name: Install git (container has no VCS by default)
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git ca-certificates
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Install Switch portlibs
+        run: |
+          dkp-pacman -Sy --noconfirm --needed \
+            switch-dev switch-curl switch-mbedtls switch-zlib switch-miniupnpc
+
+      - name: Build pipensx.nro
+        run: make switch
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pipensx-nro
+          path: build-switch/pipensx.nro
+          if-no-files-found: error
+
+  draft-release:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: pipensx-nro
+          path: dist
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ inputs.version }}" \
+            dist/pipensx.nro \
+            --repo "${{ github.repository }}" \
+            --title "${{ inputs.version }}" \
+            --draft \
+            --generate-notes
