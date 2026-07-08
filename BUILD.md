@@ -84,7 +84,8 @@ development packages, and X11 development headers. On Debian or Ubuntu:
 ```bash
 sudo apt-get install -y \
   cmake ninja-build xorg-dev libgl1-mesa-dev libglu1-mesa-dev \
-  libsdl2-dev imagemagick xvfb
+  libsdl2-dev libcurl4-openssl-dev libssl-dev zlib1g-dev \
+  imagemagick xvfb
 make golden
 ```
 

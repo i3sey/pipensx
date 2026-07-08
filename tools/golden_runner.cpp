@@ -1,8 +1,8 @@
-// golden_runner — F4 golden-screenshot harness (PC/GLFW build only).
+// golden_runner — F4 golden-screenshot harness (PC/SDL2 build only).
 //
 // Renders ONE pipensx screen with deterministic fixture data and writes a
 // PNG. One screen per process keeps runs fully isolated (fresh focus state,
-// fresh animations, fresh services). Driven by scripts/run_goldens.sh.
+// fresh animations, fresh services). Driven by scripts/golden.sh.
 //
 // Usage:
 //   golden_runner --fixtures <dir> --out <file.png> --theme light|dark
@@ -11,7 +11,7 @@
 //
 // Determinism notes:
 //   - run with LIBGL_ALWAYS_SOFTWARE=1 so Mesa llvmpipe rasterizes the same
-//     locally and in CI (scripts/run_goldens.sh sets this);
+//     locally and in CI (scripts/golden.sh sets this);
 //   - the process chdirs into a scratch sandbox so all "sdmc:/..." paths of
 //     the real app land in an empty, throwaway directory tree;
 //   - GameMetadataService image networking is paused: remote artwork stays
@@ -128,6 +128,27 @@ bool writePng(const std::string& path, int width, int height,
         writeChunk(file, "IEND", nullptr, 0);
     ok = std::fclose(file) == 0 && ok;
     return ok;
+}
+
+bool readFramebuffer(GLenum buffer, int width, int height,
+                     std::vector<uint8_t>& rgba) {
+    while (glGetError() != GL_NO_ERROR) {
+    }
+    rgba.assign(static_cast<size_t>(width) * height * 4, 0);
+    glReadBuffer(buffer);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE,
+                 rgba.data());
+    glFinish();
+    return glGetError() == GL_NO_ERROR;
+}
+
+bool hasVisiblePixel(const std::vector<uint8_t>& rgba) {
+    for (size_t i = 0; i + 2 < rgba.size(); i += 4) {
+        if (rgba[i] != 0 || rgba[i + 1] != 0 || rgba[i + 2] != 0)
+            return true;
+    }
+    return false;
 }
 
 /* ---- screen wrapper ---- */
@@ -308,19 +329,26 @@ int main(int argc, char** argv) {
     if (width <= 0 || height <= 0)
         return fail("empty GL viewport");
 
-    // mainLoop() ends with a buffer swap, so the finished frame is in the
-    // front buffer. Reliable with llvmpipe/Xvfb (how goldens are produced).
-    std::vector<uint8_t> rgba(static_cast<size_t>(width) * height * 4);
-    glReadBuffer(GL_FRONT);
-    glFinish();
-    glPixelStorei(GL_PACK_ALIGNMENT, 1);
-    glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+    // SDL/Xvfb may expose a compositor-owned, all-black front buffer after
+    // SDL_GL_SwapWindow. Prefer it where it is readable, then fall back to the
+    // previous completed frame in the back buffer. The UI has settled after
+    // 90 draws, so the one-frame difference is immaterial to the snapshot.
+    std::vector<uint8_t> rgba;
+    const char* captureBuffer = "front";
+    if (!readFramebuffer(GL_FRONT, width, height, rgba) ||
+        !hasVisiblePixel(rgba)) {
+        captureBuffer = "back";
+        if (!readFramebuffer(GL_BACK, width, height, rgba) ||
+            !hasVisiblePixel(rgba))
+            return fail("both GL front and back buffers are empty");
+    }
 
     if (!writePng(outPng.string(), width, height, rgba))
         return fail("failed to write PNG");
 
-    std::printf("golden_runner: %s (%dx%d) -> %s\n", screen.c_str(), width,
-                height, outPng.string().c_str());
+    std::printf("golden_runner: %s (%dx%d, %s buffer) -> %s\n",
+                screen.c_str(), width, height, captureBuffer,
+                outPng.string().c_str());
 
     manager.shutdown();
     std::fflush(nullptr);
