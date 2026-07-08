@@ -279,10 +279,6 @@ public:
         setHeight(grid::kCardHeight);
         setClipsToBounds(true);
         content_ = new brls::Box(brls::Axis::ROW);
-        // The strip is translated manually. Keep its Yoga bounds at the full
-        // card extent so Borealis does not cull labels and images that started
-        // outside the shelf viewport and are later scrolled into view.
-        content_->setShrink(0.0f);
         for (int i = 0; i < grid::kShelfItems; ++i) {
             cards_[i] = new GameCard();
             if (i + 1 < grid::kShelfItems)
@@ -365,12 +361,11 @@ private:
     }
 
     void applyOffset() {
-        const float contentWidth = active_ > 0
+        const float content = active_ > 0
             ? active_ * grid::kCardWidth +
                   (active_ - 1) * grid::kShelfSpacing
             : 0.0f;
-        content_->setWidth(contentWidth);
-        const float maxOffset = std::max(0.0f, contentWidth - getWidth());
+        const float maxOffset = std::max(0.0f, content - getWidth());
         offset_ = std::clamp(offset_, 0.0f, maxOffset);
         content_->setTranslationX(-offset_);
     }

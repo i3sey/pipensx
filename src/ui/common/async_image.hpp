@@ -97,9 +97,6 @@ inline void loadImageInto(AsyncRgbaImage* image, GameMetadataService* service,
         service->requestImage(url, [done, state, generation](
             GameMetadataService::ImageData bytes) {
             if (state->generation.load() != generation) {
-                // A superseded request must not leave the recycled card marked
-                // pending, or its current same-URL binding can be skipped.
-                state->pending = false;
                 done(nullptr, 0, 0);
                 return;
             }

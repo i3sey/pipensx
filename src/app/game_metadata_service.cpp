@@ -287,49 +287,6 @@ uint64_t monotonicMilliseconds() {
                                       .time_since_epoch()).count());
 }
 
-// Covers render at 180px. Cache decoded source art near 2x display size so
-// the working set survives shelf scrolling instead of thrashing the 96 MB LRU.
-constexpr int kMaxCoverDim = 360;
-
-void downscaleRgba(std::vector<uint8_t>& pixels, int& width, int& height) {
-    const int longEdge = std::max(width, height);
-    if (longEdge <= kMaxCoverDim || width <= 0 || height <= 0)
-        return;
-    const int factor = (longEdge + kMaxCoverDim - 1) / kMaxCoverDim;
-    const int dw = width / factor;
-    const int dh = height / factor;
-    if (dw <= 0 || dh <= 0)
-        return;
-    std::vector<uint8_t> out(static_cast<size_t>(dw) * dh * 4);
-    const uint32_t area = static_cast<uint32_t>(factor) * factor;
-    for (int y = 0; y < dh; ++y) {
-        for (int x = 0; x < dw; ++x) {
-            uint32_t r = 0, g = 0, b = 0, a = 0;
-            for (int fy = 0; fy < factor; ++fy) {
-                const uint8_t* row =
-                    pixels.data() +
-                    (static_cast<size_t>(y * factor + fy) * width +
-                     static_cast<size_t>(x) * factor) * 4;
-                for (int fx = 0; fx < factor; ++fx) {
-                    r += row[0];
-                    g += row[1];
-                    b += row[2];
-                    a += row[3];
-                    row += 4;
-                }
-            }
-            uint8_t* dst = out.data() + (static_cast<size_t>(y) * dw + x) * 4;
-            dst[0] = static_cast<uint8_t>(r / area);
-            dst[1] = static_cast<uint8_t>(g / area);
-            dst[2] = static_cast<uint8_t>(b / area);
-            dst[3] = static_cast<uint8_t>(a / area);
-        }
-    }
-    pixels = std::move(out);
-    width = dw;
-    height = dh;
-}
-
 std::string stringValue(const nlohmann::json& item, const char* key) {
     if (!item.contains(key) || !item[key].is_string())
         return "";
@@ -783,12 +740,10 @@ void GameMetadataService::imageWorkerMain() const {
                     ? static_cast<uint64_t>(width) * height * 4 : 0;
                 if (pixels && width <= 4096 && height <= 4096 &&
                     decodedBytes <= 64 * 1024 * 1024) {
-                    std::vector<uint8_t> rgba(pixels, pixels + decodedBytes);
-                    downscaleRgba(rgba, width, height);
                     auto decoded = std::make_shared<DecodedImage>();
                     decoded->width = width;
                     decoded->height = height;
-                    decoded->pixels = std::move(rgba);
+                    decoded->pixels.assign(pixels, pixels + decodedBytes);
                     result = std::move(decoded);
                 } else {
                     error = "Unable to decode cached image.";
