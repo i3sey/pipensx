@@ -23,6 +23,7 @@ build-golden/
 # Local scratch / working directories
 .tmp/
 /rutracker-*.xml.xz
+/resources/catalog/
 
 # Python bytecode
 __pycache__/

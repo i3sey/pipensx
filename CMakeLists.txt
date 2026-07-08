@@ -1,11 +1,14 @@
 cmake_minimum_required(VERSION 3.13)
 
 # PIPENSX_GOLDEN=ON builds the PC golden-screenshot runner (SDL2 desktop,
-# UI_PLAN.md F4) instead of the Switch homebrew. Use a separate build dir.
+# docs/plans/UI_PLAN.md F4) instead of the Switch homebrew. Use a separate
+# build directory.
 # SDL2 (not GLFW): the vendored borealis GLFWInputManager misses the 5-arg
 # sendRumble override and does not compile; the SDL backend is complete.
 option(PIPENSX_GOLDEN
     "Build the PC golden-screenshot runner instead of the Switch app" OFF)
+set(PIPENSX_METADATA_INDEX "" CACHE FILEPATH
+    "Optional game metadata index to embed in the Switch RomFS")
 
 set(BOREALIS_LIBRARY ${CMAKE_CURRENT_SOURCE_DIR}/vendor/borealis/library)
 if (PIPENSX_GOLDEN)
@@ -178,20 +181,32 @@ file(COPY
     ${CMAKE_CURRENT_SOURCE_DIR}/resources/icon.png
     DESTINATION ${ROMFS_DIR}
 )
-file(GLOB_RECURSE CATALOG_ROMFS_FILES CONFIGURE_DEPENDS
-    ${CMAKE_CURRENT_SOURCE_DIR}/resources/catalog/*
-)
-add_custom_target(sync_catalog_romfs ALL
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        ${CMAKE_CURRENT_SOURCE_DIR}/resources/catalog
-        ${ROMFS_DIR}/catalog
-    DEPENDS ${CATALOG_ROMFS_FILES}
-    VERBATIM
-)
+# Never reuse catalog data left in an existing build directory. Public builds
+# contain no catalog snapshot; a metadata index is embedded only when the
+# builder supplies one explicitly.
+file(REMOVE_RECURSE ${ROMFS_DIR}/catalog)
+set(PIPENSX_NRO_DEPENDS pipensx)
+if (PIPENSX_METADATA_INDEX)
+    get_filename_component(PIPENSX_METADATA_INDEX_ABS
+        "${PIPENSX_METADATA_INDEX}" ABSOLUTE)
+    if (NOT EXISTS "${PIPENSX_METADATA_INDEX_ABS}")
+        message(FATAL_ERROR
+            "PIPENSX_METADATA_INDEX does not exist: ${PIPENSX_METADATA_INDEX_ABS}")
+    endif ()
+    add_custom_target(sync_metadata_index ALL
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${ROMFS_DIR}/catalog"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${PIPENSX_METADATA_INDEX_ABS}"
+            "${ROMFS_DIR}/catalog/game_metadata_index.json"
+        DEPENDS "${PIPENSX_METADATA_INDEX_ABS}"
+        VERBATIM
+    )
+    list(APPEND PIPENSX_NRO_DEPENDS sync_metadata_index)
+endif ()
 gen_dksh(${ROMFS_DIR}/shaders)
 
 add_custom_target(pipensx.nro ALL
-    DEPENDS pipensx sync_catalog_romfs
+    DEPENDS ${PIPENSX_NRO_DEPENDS}
     COMMAND ${NX_NACPTOOL_EXE}
         --create "${APP_TITLE}" "${APP_AUTHOR}" "${PROJECT_VERSION}"
         pipensx.nacp

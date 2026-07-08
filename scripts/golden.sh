@@ -15,6 +15,7 @@ set -u -o pipefail
 
 MODE="${1:-check}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+CMAKE_BIN="${CMAKE_BIN:-cmake}"
 RUNNER="${GOLDEN_RUNNER:-$ROOT/build-golden/golden_runner}"
 FIXTURES="$ROOT/tests/fixtures/golden"
 GOLDEN_DIR="$ROOT/tests/golden"
@@ -32,12 +33,22 @@ if [[ "$MODE" != "check" && "$MODE" != "update" ]]; then
 fi
 command -v compare >/dev/null || { echo "golden: ImageMagick 'compare' not found" >&2; exit 2; }
 
-if [[ ! -x "$RUNNER" ]]; then
-    echo "golden: building golden_runner ($RUNNER missing)"
-    cmake -S "$ROOT" -B "$ROOT/build-golden" -DPIPENSX_GOLDEN=ON \
-          -DCMAKE_BUILD_TYPE=Release >/dev/null || exit 2
-    cmake --build "$ROOT/build-golden" --target golden_runner || exit 2
+# Make the public `make golden` target work in a headless Linux shell. CI may
+# already wrap this script in xvfb-run, in which case DISPLAY is set and this
+# branch is skipped.
+if [[ -z "${DISPLAY:-}" && "$(uname -s)" == "Linux" ]]; then
+    command -v xvfb-run >/dev/null || {
+        echo "golden: DISPLAY is unset and xvfb-run is not installed" >&2
+        exit 2
+    }
+    exec xvfb-run -a "$0" "$@"
 fi
+
+echo "golden: configuring and building golden_runner"
+"$CMAKE_BIN" -S "$ROOT" -B "$ROOT/build-golden" \
+    -DPIPENSX_GOLDEN=ON -DCMAKE_BUILD_TYPE=Release >/dev/null || exit 2
+"$CMAKE_BIN" --build "$ROOT/build-golden" \
+    --target golden_runner || exit 2
 
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR/diff" "$GOLDEN_DIR"

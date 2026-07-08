@@ -257,6 +257,30 @@ void testMetadataIndexParsing() {
     assert(!GameMetadataService::parseIndex("{}", items, error));
 }
 
+void testOptionalCatalogDataMayBeAbsent() {
+    const std::string root = "/tmp/pipensx-optional-catalog-" +
+                             std::to_string(static_cast<long long>(getpid()));
+    mkdir(root.c_str(), 0755);
+
+    std::string error;
+    {
+        CatalogService catalog(root, "");
+        assert(catalog.load(error));
+        assert(catalog.entries().empty());
+        assert(error.empty());
+
+        GameMetadataService metadata(root, root + "/missing-index.json");
+        assert(metadata.load(error));
+        assert(metadata.size() == 0);
+        assert(error.empty());
+    }
+
+    rmdir((root + "/catalog/metadata").c_str());
+    rmdir((root + "/catalog/images").c_str());
+    rmdir((root + "/catalog").c_str());
+    rmdir(root.c_str());
+}
+
 void testCatalogPresentationUsesGameMetadata() {
     GameMetadata metadata;
     metadata.screenshots = {
@@ -616,6 +640,7 @@ int main() {
     testResolveFromPresetInfoDict();
     testTorrentConstruction();
     testMetadataIndexParsing();
+    testOptionalCatalogDataMayBeAbsent();
     testCatalogPresentationUsesGameMetadata();
     testAsyncImageDiskCache();
     testImageMemoryCache();

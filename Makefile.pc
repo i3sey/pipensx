@@ -1,5 +1,5 @@
 # pipensx PC build (Linux/macOS)
-# Usage: make -f Makefile.pc
+# Public shortcut: make pc (or directly: make -f Makefile.pc)
 # Requires: gcc, libcurl (apt: libcurl4-openssl-dev)
 
 CC      = gcc

@@ -467,11 +467,20 @@ bool CatalogService::load(std::string& error) {
     std::string cacheError;
     if (loadFile(cachePath_, "cached catalog", cacheError))
         return true;
-    if (loadFile(bundledPath_, "bundled catalog", error))
-        return true;
-    if (!cacheError.empty())
-        error = cacheError + " " + error;
-    return false;
+    if (!bundledPath_.empty()) {
+        if (loadFile(bundledPath_, "bundled catalog", error))
+            return true;
+        if (!cacheError.empty())
+            error = cacheError + " " + error;
+        return false;
+    }
+
+    // A fresh public install intentionally has no bundled catalog. The UI
+    // sees an empty list and starts the trusted live refresh in the background.
+    entries_.clear();
+    sourceLabel_.clear();
+    error.clear();
+    return true;
 }
 
 bool CatalogService::isTrustedSource(const std::string& url) {
@@ -491,8 +500,8 @@ bool CatalogService::fetchLatest(std::vector<CatalogEntry>& parsed,
                                  std::string& error) {
     // Single source: the Langegen switch_games.json on GitHub's raw host. Runs
     // on a worker thread: network fetch + parse + cache write only, so it never
-    // touches entries_. The cached/bundled catalogue in memory survives a
-    // failure — the caller keeps showing what it already has on error.
+    // touches entries_. The cached catalogue in memory survives a failure —
+    // the caller keeps showing it on error.
     parsed.clear();
     if (!isTrustedSource(kCatalogSourceUrl)) {
         error = "Catalog URL is not on the trusted host list.";

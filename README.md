@@ -1,191 +1,126 @@
 # pipensx
 
-Native BitTorrent download manager for Nintendo Switch homebrew.
+[![CI](https://github.com/i3sey/pipensx/actions/workflows/ci.yml/badge.svg)](https://github.com/i3sey/pipensx/actions/workflows/ci.yml)
+[![Golden screenshots](https://github.com/i3sey/pipensx/actions/workflows/golden.yml/badge.svg)](https://github.com/i3sey/pipensx/actions/workflows/golden.yml)
+[![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
+
+Native BitTorrent download manager and streaming package installer for
+Nintendo Switch homebrew.
+
+![pipensx catalog](tests/golden/catalog-dark.png)
+
+> [!IMPORTANT]
+> pipensx does not include Nintendo keys, firmware, games, or a torrent catalog.
+> Use it only with content you are legally allowed to download and install. The
+> project is not affiliated with Nintendo, RuTracker, or the catalog provider.
 
 > [!NOTE]
-> This project was written with substantial assistance from AI tools. AI was
-> used for code generation, refactoring, testing, review, and documentation;
-> generated changes are still built and validated before release.
-
-The Switch interface uses Borealis with its native NanoVG/deko3d renderer. It
-follows the system UI conventions for focus, controller hints, touch input,
-light/dark themes, and handheld/docked scaling.
+> This project was developed with substantial assistance from AI tools for code
+> generation, refactoring, testing, review, and documentation. Changes are
+> still built and validated before they are merged.
 
 ## Features
 
-- `.torrent` file picker for the SD card
-- persistent FIFO download queue
-- one active download at a time
-- pause, resume, retry, and explicit recheck
-- restart-safe piece verification and resume
-- download details with speed, peers, DHT, and piece progress
-- removal with either preserved or deleted download data
-- duplicate detection by info hash
+- native Borealis interface with controller, touch, light/dark, handheld, and
+  docked support
+- persistent FIFO queue with pause, resume, retry, recheck, and safe shutdown
+- restart-safe piece verification and download recovery
 - tracker, DHT, and PEX peer discovery
-- built-in Nintendo Switch catalog sourced from `bqio/switch-dumps`
-- game metadata enrichment from a compact TitleDB-derived index
-- magnet metadata resolution directly from RuTracker peers (BEP 9/10)
-- automatic AntiZapret fallback for RuTracker tracker announces
-- selectable download-only or streaming install mode
-- sequential `.nsp` and `.nsz` install to SD while torrent pieces arrive
-- application, update, and DLC packages; exact installed versions are skipped
+- live, cached catalog loaded from the allowlisted
+  [`Langegen/switch-games`](https://github.com/Langegen/switch-games) source
+- offline magnet resolution when the catalog provides a verified info dictionary
+- download-only mode and sequential NSP/NSZ installation while pieces arrive
+- Application, Patch, and AddOnContent packages with installed-version checks
+- download diagnostics, speed history, peer state, and extended telemetry
 
-Magnet links and per-file selection are not supported.
+The public build intentionally starts without a bundled catalog or game
+metadata index. On first use, the Catalog view refreshes from the trusted source
+and then uses its on-SD cache.
 
-## Building
+## Quick start
 
-### Nintendo Switch
-
-Requirements:
-
-- [devkitPro](https://devkitpro.org/wiki/Getting_Started) with devkitA64 and
-  libnx
-- CMake 3.13 or newer
-- `switch-curl`, `switch-mbedtls`, `switch-zlib`, and `switch-miniupnpc`
-
-Clone the repository together with its pinned submodules:
+Clone the pinned submodules:
 
 ```bash
 git clone --recurse-submodules https://github.com/i3sey/pipensx.git
 cd pipensx
 ```
 
-If the repository was cloned without `--recurse-submodules`, initialize the
-dependencies separately:
+Run the portable PC test suite:
 
 ```bash
-git submodule update --init --recursive
+make test
 ```
 
-Install the Switch dependencies on a devkitPro pacman installation:
-
-```bash
-sudo dkp-pacman -S switch-dev switch-curl switch-mbedtls \
-  switch-zlib switch-miniupnpc
-```
-
-Build the release NRO:
+Build the Nintendo Switch application after installing devkitPro dependencies:
 
 ```bash
 export DEVKITPRO=/opt/devkitpro
-make -f Makefile.switch
+make switch
 ```
 
-The resulting application is written to:
+The resulting application is `build-switch/pipensx.nro`. See
+[BUILD.md](BUILD.md) for dependency installation, golden tests, optional
+metadata input, and deployment helpers.
 
-```text
-build-switch/pipensx.nro
-```
+## Install on Nintendo Switch
 
-If CMake is not available through `PATH`, specify it explicitly:
-
-```bash
-CMAKE_BIN=/path/to/cmake make -f Makefile.switch
-```
-
-### PC core and tests
-
-The portable torrent core can be built and tested on Linux or macOS with a
-C/C++ toolchain, Make, pthreads, libcurl, zstd, and OpenSSL development files:
-
-```bash
-make -f Makefile.pc
-make -f Makefile.pc test
-```
-
-See [BUILD.md](BUILD.md) for additional build details.
-
-## Install
-
-Copy the built NRO to:
+Copy the NRO to:
 
 ```text
 SD:/switch/pipensx/pipensx.nro
 ```
 
-Launch it through hbmenu in **application mode**:
+Launch it through hbmenu in **application mode** by holding `R` while opening a
+game. Album applet mode is rejected because it does not provide enough memory
+and network resources for the application.
 
-1. Close Album/hbmenu.
-2. Hold `R` while launching a game.
-3. Keep holding `R` until hbmenu opens.
-4. Start pipensx.
-
-Album applet mode is rejected with an instruction screen because it does not
-provide enough memory and BSD network sessions for the GUI torrent client.
-
-Application data is stored in:
+Runtime data is stored below `SD:/switch/pipensx/`, including:
 
 ```text
-SD:/switch/pipensx/queue.bencode
-SD:/switch/pipensx/torrents/
-SD:/switch/pipensx/downloads/
-SD:/switch/pipensx/dht_nodes.bin
-SD:/switch/pipensx/catalog/catalog.json
-SD:/switch/pipensx/catalog/metadata/
-SD:/switch/pipensx/catalog/images/
-SD:/switch/pipensx/antizapret.pac
-SD:/switch/pipensx/pipensx.log
+queue.bencode
+torrents/
+downloads/
+dht_nodes.bin
+catalog/catalog.json
+catalog/metadata/
+catalog/images/
+pipensx.log
 ```
 
-## Controls
+The interface displays contextual controller hints. The main actions cover
+adding torrents, opening details, pausing/resuming, retrying/rechecking, and
+safely stopping the active task before exit.
 
-- `A`: open a download or select a file
-- `B`: go back
-- `X`: add a torrent; on details, remove the task
-- `Y`: pause, resume, retry, or recheck the selected task
-- `+`: safely stop the active task and exit
+## Catalog and network behavior
 
-The file picker also supports touch input.
+The application fetches `switch_games.json` over HTTPS from an exact
+repository-prefix allowlist. Redirects or look-alike hosts are rejected before
+catalog bytes are parsed. A failed refresh leaves the last valid SD-card cache
+active.
 
-For torrents containing NSP/NSZ files, the confirmation dialog offers:
+Catalog magnets are resolved from a pre-verified info dictionary when one is
+available, otherwise through BitTorrent extension-protocol peers. Received
+metadata is checked against the magnet info hash before entering the normal
+torrent preview and queue flow.
 
-- `Install to SD while downloading`: package files are reconstructed and
-  committed directly to Nintendo content storage without retaining a complete
-  package file.
-- `Download only`: all files are stored normally under `downloads/`.
+Only one torrent downloads at a time. Existing files are verified before a task
+starts or resumes. Interrupted packages restart from their beginning; packages
+committed before the interruption remain installed and are skipped. Runtime
+behavior such as sleep/wake and long installs must ultimately be validated on
+physical Switch hardware.
 
-## Catalog
+## Contributing and security
 
-The `Catalog` tab works without a RuTracker account or access to the RuTracker
-website. A catalog snapshot is bundled in the NRO. Press `R` to update it from
-the latest `bqio/switch-dumps` GitHub release, `X` to filter by title, and `Y`
-to change sorting.
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before sending a change. Report
+vulnerabilities privately as described in [SECURITY.md](SECURITY.md); do not
+place secrets or copyrighted datasets in issues or fixtures.
 
-Most catalog rows are matched to Nintendo Switch game metadata during the
-build from TitleDB. Selecting a row opens a details view with canonical game
-name, publisher/date/categories, description, and cached remote artwork when a
-safe match exists. Rows without a match still resolve and download by their
-RuTracker release data.
-
-Selecting an entry announces its magnet info hash to the included
-`bt*.t-ru.org` tracker and obtains the original torrent metadata from peers.
-The metadata SHA-1 is checked before the existing torrent preview and queue
-flow is opened.
-
-## Platform Notes
-
-- Only one torrent downloads at a time; queued tasks start automatically.
-- RuTracker tracker announces connect directly first and use the supported
-  AntiZapret HTTP proxy only as a fallback.
-- The catalog continues using its cached or bundled snapshot when GitHub is
-  unavailable.
-- Package files are processed in torrent file order. Ordinary files in the
-  same torrent are downloaded normally.
-- A package interrupted before its commit restarts from its beginning. Packages
-  already committed before the interruption remain installed and are skipped.
-- Stream install supports full Application, Patch, and AddOnContent metadata.
-  DeltaFragment and system-title packages are rejected.
-- Existing files are checked piece by piece before a task starts or resumes.
-- FAT32 cannot store an individual file larger than 4 GiB. Use exFAT for such
-  torrents.
-- Runtime behavior such as sleep/wake and long downloads must be validated on
-  a physical Switch.
-
-Third-party components and format references are listed in
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Historical implementation notes are archived under
+[`docs/plans/`](docs/plans/README.md). They are not the current roadmap.
 
 ## License
 
 pipensx is licensed under the GNU General Public License v3.0. See
-[LICENSE](LICENSE) for the full text. Third-party components retain their
-original licenses as described in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+[LICENSE](LICENSE). Third-party components retain their original licenses as
+listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

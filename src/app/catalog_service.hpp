@@ -25,9 +25,9 @@ struct CatalogEntry {
     std::vector<std::string> screenshots;
     std::string healthReason;
     /* Inline catalogue metadata carried by the Langegen switch_games.json
-       source. The bundled game_metadata_index.json is keyed by info-hash and
-       never matches these entries, so the detail card falls back to these
-       fields for its facts table, description and cover. Empty when absent. */
+       source. An optional metadata index is keyed by info-hash and may not
+       match these entries, so the detail card falls back to these fields for
+       its facts table, description and cover. Empty when absent. */
     std::string year;
     std::string genre;
     std::string developer;
@@ -59,8 +59,7 @@ struct CatalogEntry {
 class CatalogService {
 public:
     explicit CatalogService(std::string rootPath,
-                            std::string bundledPath =
-                                "romfs:/catalog/catalog.json");
+                            std::string bundledPath = {});
 
     bool load(std::string& error);
 

@@ -445,6 +445,15 @@ bool GameMetadataService::parseIndex(const std::string& json,
 }
 
 bool GameMetadataService::load(std::string& error) {
+    byHash_.clear();
+    if (bundledPath_.empty() || access(bundledPath_.c_str(), R_OK) != 0) {
+        // Public builds intentionally omit the generated metadata index. Live
+        // catalog entries carry the fields needed by the detail view.
+        error.clear();
+        log_msg("[metadata] optional index is not embedded\n");
+        return true;
+    }
+
     std::vector<uint8_t> bytes;
     if (!readFile(bundledPath_, bytes, kMaxIndexBytes, error))
         return false;
@@ -452,7 +461,6 @@ bool GameMetadataService::load(std::string& error) {
     std::vector<GameMetadata> items;
     if (!parseIndex(json, items, error))
         return false;
-    byHash_.clear();
     byHash_.reserve(items.size());
     for (GameMetadata& item : items)
         byHash_[item.infoHash] = std::move(item);

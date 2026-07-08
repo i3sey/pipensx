@@ -34,6 +34,7 @@ done
 "${CMAKE_BIN}" -S "${ROOT}" -B "${BUILD_DIR}" \
     -DPLATFORM_SWITCH=ON \
     -DUSE_DEKO3D=ON \
+    "-DPIPENSX_METADATA_INDEX=${PIPENSX_METADATA_INDEX:-}" \
     -DCMAKE_BUILD_TYPE=Release
 "${CMAKE_BIN}" --build "${BUILD_DIR}" --target pipensx.nro --parallel
 
