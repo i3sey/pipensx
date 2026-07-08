@@ -6,7 +6,7 @@
 //
 // Usage:
 //   golden_runner --fixtures <dir> --out <file.png> --theme light|dark
-//                 --screen catalog|detail|downloads|installed|settings|about
+//                 --screen catalog|shelf-scroll|detail|downloads|installed|settings|about
 //                 [--frames N] [--sandbox <dir>]
 //
 // Determinism notes:
@@ -259,9 +259,39 @@ int main(int argc, char** argv) {
     DownloadManager manager("sdmc:/switch/pipensx");
 
     brls::Activity* activity = nullptr;
+    brls::View* focusAfterLayout = nullptr;
     if (screen == "catalog") {
         activity = new GoldenActivity(new CatalogView(
             &manager, &catalog, &metadata, &installed, &settings, [] {}));
+    } else if (screen == "shelf-scroll") {
+        auto* content = new brls::Box(brls::Axis::COLUMN);
+        content->setPadding(32, 32, 32, 32);
+
+        auto* heading = new brls::Label();
+        heading->setText("Horizontal shelf scroll regression");
+        heading->setFontSize(theme::kFontTitle);
+        heading->setMarginBottom(16);
+        content->addView(heading);
+
+        auto* shelf = new HorizontalShelf(std::make_shared<std::string>());
+        shelf->setWidth(900);
+        std::vector<GridCardInfo> cards;
+        for (int i = 0; i < grid::kShelfItems; ++i) {
+            GridCardInfo card;
+            card.entryIndex = i;
+            card.infoHash = "fixture-" + std::to_string(i);
+            card.title = "Shelf card " + std::to_string(i + 1);
+            card.sub = "Fixture";
+            cards.push_back(std::move(card));
+        }
+        shelf->setItems(cards, nullptr, [](int) {}, 1);
+        content->addView(shelf);
+
+        auto* strip = dynamic_cast<brls::Box*>(shelf->getChildren().front());
+        if (!strip || strip->getChildren().size() <= 8)
+            return fail("shelf-scroll fixture did not create enough cards");
+        focusAfterLayout = strip->getChildren()[8];
+        activity = new GoldenActivity(content);
     } else if (screen == "detail") {
         const auto& entries = catalog.entries();
         if (entries.empty())
@@ -286,6 +316,8 @@ int main(int argc, char** argv) {
 
     brls::Application::pushActivity(activity);
     for (int i = 0; i < frames; ++i) {
+        if (i == 10 && focusAfterLayout)
+            brls::Application::giveFocus(focusAfterLayout);
         if (!brls::Application::mainLoop())
             return fail("main loop ended before capture");
     }
