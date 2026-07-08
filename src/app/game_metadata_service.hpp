@@ -29,6 +29,24 @@ struct GameMetadata {
     std::vector<std::string> categories;
 };
 
+struct MetadataManifest {
+    uint32_t schemaVersion = 0;
+    std::string generatedAt;
+    std::string langegenCommit;
+    std::string titledbCommit;
+    std::string indexUrl;
+    std::string indexSha256;
+    size_t indexBytes = 0;
+    size_t entryCount = 0;
+};
+
+struct MetadataSnapshot {
+    MetadataManifest manifest;
+    std::vector<GameMetadata> items;
+    std::string manifestJson;
+    std::vector<uint8_t> indexData;
+};
+
 class GameMetadataService {
 public:
     struct DecodedImage {
@@ -39,16 +57,25 @@ public:
 
     using ImageData = std::shared_ptr<const DecodedImage>;
     using ImageCallback = std::function<void(ImageData)>;
+    using MetadataFetcher = std::function<bool(
+        const std::string&, size_t, std::vector<uint8_t>&, std::string&)>;
 
     explicit GameMetadataService(std::string rootPath,
                                  std::string bundledPath =
-                                     "romfs:/catalog/game_metadata_index.json");
+                                     "romfs:/catalog/game_metadata_index.json",
+                                 std::string manifestUrl =
+                                     "https://github.com/i3sey/"
+                                     "pipensx-metadata/releases/latest/"
+                                     "download/manifest.json",
+                                 MetadataFetcher metadataFetcher = {});
     ~GameMetadataService();
 
     GameMetadataService(const GameMetadataService&) = delete;
     GameMetadataService& operator=(const GameMetadataService&) = delete;
 
     bool load(std::string& error);
+    bool fetchLatest(MetadataSnapshot& snapshot, std::string& error) const;
+    void adopt(MetadataSnapshot snapshot);
     const GameMetadata* findByInfoHash(const std::string& infoHash) const;
     bool refreshDetails(const std::string& titleId, GameMetadata& metadata,
                         std::string& error) const;
@@ -68,10 +95,17 @@ public:
     bool clearImageCache(std::string& error) const;
 
     size_t size() const { return byHash_.size(); }
+    const MetadataManifest& manifest() const { return manifest_; }
 
     static bool parseIndex(const std::string& json,
                            std::vector<GameMetadata>& items,
                            std::string& error);
+    static bool prepareSnapshot(const std::string& manifestJson,
+                                const std::string& indexJson,
+                                MetadataSnapshot& snapshot,
+                                std::string& error);
+    static bool isTrustedSource(const std::string& url);
+    static bool isTrustedRedirect(const std::string& url);
 
 private:
     enum class ImageLoadResult {
@@ -96,6 +130,8 @@ private:
     std::string cacheRoot_;
     std::string imageRoot_;
     std::string bundledPath_;
+    std::string manifestUrl_;
+    MetadataFetcher metadataFetcher_;
     mutable std::mutex imageMutex_;
     mutable std::condition_variable imageReady_;
     mutable std::deque<std::string> imageQueue_;
@@ -109,6 +145,7 @@ private:
     mutable std::atomic<bool> imageNetworkPaused_{false};
     mutable bool stoppingImages_ = false;
     std::unordered_map<std::string, GameMetadata> byHash_;
+    MetadataManifest manifest_;
 };
 
 } // namespace pipensx

@@ -2,6 +2,7 @@
 
 extern "C" {
 #include "../core/sha1.h"
+#include "../core/sha256.h"
 #include "../core/util.h"
 }
 
@@ -30,6 +31,7 @@ namespace pipensx {
 namespace {
 
 constexpr size_t kMaxIndexBytes = 24 * 1024 * 1024;
+constexpr size_t kMaxManifestBytes = 64 * 1024;
 constexpr size_t kMaxDetailsBytes = 256 * 1024;
 constexpr size_t kMaxImageBytes = 3 * 1024 * 1024;
 // UI_PLAN F6: decoded-RGBA budget for instant catalog re-entry. 96 MB sits
@@ -135,7 +137,10 @@ bool writeAtomic(const std::string& path, const std::vector<uint8_t>& data,
 }
 
 bool httpGetOnce(const std::string& url, size_t limit,
-                 std::vector<uint8_t>& data, std::string& error) {
+                 std::vector<uint8_t>& data, std::string& error,
+                 bool followRedirects = true,
+                 std::string* effectiveUrl = nullptr,
+                 bool verifyTls = false) {
     data.clear();
     CURL* curl = curl_easy_init();
     if (!curl) {
@@ -146,7 +151,7 @@ bool httpGetOnce(const std::string& url, size_t limit,
     buffer.limit = limit;
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "pipensx/0.4");
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, followRedirects ? 1L : 0L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 8L);
     const bool relayRequest =
         url.find("weserv.nl/") != std::string::npos ||
@@ -156,12 +161,16 @@ bool httpGetOnce(const std::string& url, size_t limit,
     curl_easy_setopt(curl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeBytes);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buffer);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, verifyTls ? 1L : 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, verifyTls ? 2L : 0L);
     curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
     CURLcode result = curl_easy_perform(curl);
     long status = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+    char* effective = nullptr;
+    curl_easy_getinfo(curl, CURLINFO_EFFECTIVE_URL, &effective);
+    if (effectiveUrl)
+        *effectiveUrl = effective ? std::string(effective) : std::string();
     curl_easy_cleanup(curl);
     if (result != CURLE_OK || status < 200 || status >= 300 ||
         buffer.overflow) {
@@ -275,6 +284,16 @@ std::string hex20String(const uint8_t digest[20]) {
     return out;
 }
 
+std::string hex32String(const uint8_t digest[32]) {
+    static const char digits[] = "0123456789abcdef";
+    std::string out(64, '0');
+    for (size_t i = 0; i < 32; ++i) {
+        out[i * 2] = digits[digest[i] >> 4];
+        out[i * 2 + 1] = digits[digest[i] & 15];
+    }
+    return out;
+}
+
 std::string cacheNameForUrl(const std::string& url) {
     uint8_t digest[20];
     sha1(url.data(), url.size(), digest);
@@ -378,14 +397,76 @@ void parseMetadataObject(const nlohmann::json& item, GameMetadata& metadata) {
     }
 }
 
+std::string manifestIndexSha(const std::string& json) {
+    nlohmann::json root = nlohmann::json::parse(json, nullptr, false);
+    if (root.is_discarded() || !root.is_object() ||
+        !root.contains("index") || !root["index"].is_object() ||
+        !root["index"].contains("sha256") ||
+        !root["index"]["sha256"].is_string())
+        return {};
+    std::string sha = root["index"]["sha256"].get<std::string>();
+    std::transform(sha.begin(), sha.end(), sha.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    if (sha.size() != 64 ||
+        !std::all_of(sha.begin(), sha.end(), [](unsigned char c) {
+            return std::isxdigit(c) != 0;
+        }))
+        return {};
+    return sha;
+}
+
+bool fetchTrustedMetadata(const std::string& url, size_t limit,
+                          std::vector<uint8_t>& data, std::string& error) {
+    std::string effectiveUrl;
+    if (!httpGetOnce(url, limit, data, error, true, &effectiveUrl, true))
+        return false;
+    if (!GameMetadataService::isTrustedRedirect(effectiveUrl)) {
+        data.clear();
+        error = "Metadata download redirected to an untrusted host.";
+        return false;
+    }
+    return true;
+}
+
+void pruneIndexCache(const std::string& root, const std::string& keepSha) {
+    DIR* directory = opendir(root.c_str());
+    if (!directory)
+        return;
+    while (dirent* entry = readdir(directory)) {
+        std::string name = entry->d_name;
+        if (name.size() != 69 || name.substr(64) != ".json" ||
+            name.compare(0, 64, keepSha) == 0)
+            continue;
+        const bool isHash = std::all_of(
+            name.begin(), name.begin() + 64, [](unsigned char c) {
+                return std::isxdigit(c) != 0;
+            });
+        if (isHash)
+            unlink((root + "/" + name).c_str());
+    }
+    closedir(directory);
+}
+
 } // namespace
 
 GameMetadataService::GameMetadataService(std::string rootPath,
-                                         std::string bundledPath)
+                                         std::string bundledPath,
+                                         std::string manifestUrl,
+                                         MetadataFetcher metadataFetcher)
     : rootPath_(std::move(rootPath)),
       cacheRoot_(rootPath_ + "/catalog/metadata"),
       imageRoot_(rootPath_ + "/catalog/images"),
-      bundledPath_(std::move(bundledPath)) {
+      bundledPath_(std::move(bundledPath)),
+      manifestUrl_(std::move(manifestUrl)),
+      metadataFetcher_(std::move(metadataFetcher)) {
+    if (!metadataFetcher_) {
+        metadataFetcher_ = [](const std::string& url, size_t limit,
+                              std::vector<uint8_t>& data,
+                              std::string& error) {
+            return fetchTrustedMetadata(url, limit, data, error);
+        };
+    }
     makeDirectories(cacheRoot_);
     makeDirectories(imageRoot_);
     imageWorkers_.reserve(kImageWorkerCount);
@@ -444,8 +525,141 @@ bool GameMetadataService::parseIndex(const std::string& json,
     return true;
 }
 
+bool GameMetadataService::isTrustedSource(const std::string& url) {
+    static const char* const prefixes[] = {
+        "https://raw.githubusercontent.com/i3sey/pipensx-metadata/",
+        "https://github.com/i3sey/pipensx-metadata/releases/",
+    };
+    for (const char* prefix : prefixes)
+        if (url.rfind(prefix, 0) == 0)
+            return true;
+    return false;
+}
+
+bool GameMetadataService::isTrustedRedirect(const std::string& url) {
+    static const char* const prefixes[] = {
+        "https://raw.githubusercontent.com/i3sey/pipensx-metadata/",
+        "https://github.com/i3sey/pipensx-metadata/releases/",
+        "https://release-assets.githubusercontent.com/",
+        "https://objects.githubusercontent.com/",
+    };
+    for (const char* prefix : prefixes)
+        if (url.rfind(prefix, 0) == 0)
+            return true;
+    return false;
+}
+
+bool GameMetadataService::prepareSnapshot(const std::string& manifestJson,
+                                          const std::string& indexJson,
+                                          MetadataSnapshot& snapshot,
+                                          std::string& error) {
+    snapshot = {};
+    if (manifestJson.empty() || manifestJson.size() > kMaxManifestBytes) {
+        error = "Metadata manifest is empty or too large.";
+        return false;
+    }
+    nlohmann::json root =
+        nlohmann::json::parse(manifestJson, nullptr, false);
+    if (root.is_discarded() || !root.is_object() ||
+        !root.contains("schemaVersion") ||
+        !root["schemaVersion"].is_number_unsigned() ||
+        root["schemaVersion"].get<uint32_t>() != 1 ||
+        !root.contains("index") || !root["index"].is_object()) {
+        error = "Metadata manifest has an unsupported schema.";
+        return false;
+    }
+    const nlohmann::json& index = root["index"];
+    if (!index.contains("url") || !index["url"].is_string() ||
+        !index.contains("sha256") || !index["sha256"].is_string() ||
+        !index.contains("bytes") || !index["bytes"].is_number_unsigned() ||
+        !index.contains("entries") ||
+        !index["entries"].is_number_unsigned()) {
+        error = "Metadata manifest index fields are invalid.";
+        return false;
+    }
+
+    MetadataManifest manifest;
+    manifest.schemaVersion = 1;
+    manifest.generatedAt = stringValue(root, "generatedAt");
+    manifest.langegenCommit = stringValue(root, "langegenCommit");
+    manifest.titledbCommit = stringValue(root, "titledbCommit");
+    manifest.indexUrl = index["url"].get<std::string>();
+    manifest.indexSha256 = index["sha256"].get<std::string>();
+    manifest.indexBytes = index["bytes"].get<size_t>();
+    manifest.entryCount = index["entries"].get<size_t>();
+    std::transform(manifest.indexSha256.begin(), manifest.indexSha256.end(),
+                   manifest.indexSha256.begin(), [](unsigned char c) {
+                       return static_cast<char>(std::tolower(c));
+                   });
+    if (manifest.generatedAt.empty() || manifest.langegenCommit.empty() ||
+        manifest.titledbCommit.empty() ||
+        !isTrustedSource(manifest.indexUrl) ||
+        manifest.indexBytes == 0 || manifest.indexBytes > kMaxIndexBytes ||
+        manifest.indexBytes != indexJson.size() ||
+        manifest.indexSha256.size() != 64 || manifest.entryCount == 0) {
+        error = "Metadata manifest does not match the index.";
+        return false;
+    }
+    if (!std::all_of(manifest.indexSha256.begin(),
+                     manifest.indexSha256.end(), [](unsigned char c) {
+                         return std::isxdigit(c) != 0;
+                     })) {
+        error = "Metadata index SHA-256 is invalid.";
+        return false;
+    }
+    uint8_t digest[32];
+    sha256(indexJson.data(), indexJson.size(), digest);
+    if (hex32String(digest) != manifest.indexSha256) {
+        error = "Metadata index SHA-256 does not match.";
+        return false;
+    }
+    std::vector<GameMetadata> items;
+    if (!parseIndex(indexJson, items, error))
+        return false;
+    if (items.size() != manifest.entryCount) {
+        error = "Metadata manifest entry count does not match.";
+        return false;
+    }
+    snapshot.manifest = std::move(manifest);
+    snapshot.items = std::move(items);
+    snapshot.manifestJson = manifestJson;
+    snapshot.indexData.assign(indexJson.begin(), indexJson.end());
+    error.clear();
+    return true;
+}
+
 bool GameMetadataService::load(std::string& error) {
     byHash_.clear();
+    manifest_ = {};
+
+    std::vector<uint8_t> manifestBytes;
+    std::string cacheError;
+    const std::string manifestPath = cacheRoot_ + "/manifest.json";
+    if (readFile(manifestPath, manifestBytes, kMaxManifestBytes, cacheError)) {
+        const std::string manifestJson(
+            reinterpret_cast<const char*>(manifestBytes.data()),
+            manifestBytes.size());
+        const std::string sha = manifestIndexSha(manifestJson);
+        std::vector<uint8_t> indexBytes;
+        if (!sha.empty() &&
+            readFile(cacheRoot_ + "/" + sha + ".json", indexBytes,
+                     kMaxIndexBytes, cacheError)) {
+            const std::string indexJson(
+                reinterpret_cast<const char*>(indexBytes.data()),
+                indexBytes.size());
+            MetadataSnapshot snapshot;
+            if (prepareSnapshot(manifestJson, indexJson, snapshot,
+                                cacheError)) {
+                adopt(std::move(snapshot));
+                error.clear();
+                log_msg("[metadata] loaded %zu cached game matches\n",
+                        byHash_.size());
+                return true;
+            }
+        }
+        log_msg("[metadata] cached index ignored: %s\n", cacheError.c_str());
+    }
+
     if (bundledPath_.empty() || access(bundledPath_.c_str(), R_OK) != 0) {
         // Public builds intentionally omit the generated metadata index. Live
         // catalog entries carry the fields needed by the detail view.
@@ -466,6 +680,68 @@ bool GameMetadataService::load(std::string& error) {
         byHash_[item.infoHash] = std::move(item);
     log_msg("[metadata] loaded %zu game matches from %s\n", byHash_.size(),
             bundledPath_.c_str());
+    return true;
+}
+
+void GameMetadataService::adopt(MetadataSnapshot snapshot) {
+    std::unordered_map<std::string, GameMetadata> next;
+    next.reserve(snapshot.items.size());
+    for (GameMetadata& item : snapshot.items)
+        next[item.infoHash] = std::move(item);
+    byHash_ = std::move(next);
+    manifest_ = std::move(snapshot.manifest);
+}
+
+bool GameMetadataService::fetchLatest(MetadataSnapshot& snapshot,
+                                      std::string& error) const {
+    snapshot = {};
+    if (!isTrustedSource(manifestUrl_)) {
+        error = "Metadata manifest URL is not trusted.";
+        return false;
+    }
+    std::vector<uint8_t> manifestBytes;
+    if (!metadataFetcher_(manifestUrl_, kMaxManifestBytes, manifestBytes,
+                          error))
+        return false;
+    const std::string manifestJson(
+        reinterpret_cast<const char*>(manifestBytes.data()),
+        manifestBytes.size());
+    nlohmann::json root =
+        nlohmann::json::parse(manifestJson, nullptr, false);
+    if (root.is_discarded() || !root.is_object() ||
+        !root.contains("index") || !root["index"].is_object() ||
+        !root["index"].contains("url") ||
+        !root["index"]["url"].is_string() ||
+        !root["index"].contains("bytes") ||
+        !root["index"]["bytes"].is_number_unsigned()) {
+        error = "Metadata manifest index fields are invalid.";
+        return false;
+    }
+    const std::string indexUrl = root["index"]["url"].get<std::string>();
+    const size_t expectedBytes = root["index"]["bytes"].get<size_t>();
+    if (!isTrustedSource(indexUrl) || expectedBytes == 0 ||
+        expectedBytes > kMaxIndexBytes) {
+        error = "Metadata index URL or size is not trusted.";
+        return false;
+    }
+    std::vector<uint8_t> indexBytes;
+    if (!metadataFetcher_(indexUrl, kMaxIndexBytes, indexBytes, error))
+        return false;
+    const std::string indexJson(
+        reinterpret_cast<const char*>(indexBytes.data()), indexBytes.size());
+    if (!prepareSnapshot(manifestJson, indexJson, snapshot, error))
+        return false;
+
+    const std::string indexPath =
+        cacheRoot_ + "/" + snapshot.manifest.indexSha256 + ".json";
+    if (!writeAtomic(indexPath, snapshot.indexData, error))
+        return false;
+    if (!writeAtomic(cacheRoot_ + "/manifest.json", manifestBytes, error))
+        return false;
+    pruneIndexCache(cacheRoot_, snapshot.manifest.indexSha256);
+    log_msg("[metadata] cached %zu game matches from %s\n",
+            snapshot.items.size(), snapshot.manifest.generatedAt.c_str());
+    error.clear();
     return true;
 }
 

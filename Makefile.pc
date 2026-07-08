@@ -17,6 +17,7 @@ INSTALL_LDFLAGS = -lzstd -lcrypto
 
 SRCS = \
     src/core/sha1.c       \
+    src/core/sha256.c     \
     src/core/bencode.c    \
     src/core/metainfo.c   \
     src/core/util.c       \
@@ -95,6 +96,9 @@ $(PACKAGE_TEST_TARGET): tests/test_package_stream.cpp \
 src/app/catalog_service.o: src/app/catalog_service.cpp
 	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
 
+src/app/catalog_refresh.o: src/app/catalog_refresh.cpp
+	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
+
 src/app/magnet_resolver.o: src/app/magnet_resolver.cpp
 	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
 
@@ -105,12 +109,14 @@ src/app/catalog_presentation.o: src/app/catalog_presentation.cpp
 	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
 
 $(CATALOG_TEST_TARGET): tests/test_catalog.cpp \
-		src/app/catalog_service.o src/app/catalog_presentation.o \
+		src/app/catalog_service.o src/app/catalog_refresh.o \
+		src/app/catalog_presentation.o \
 		src/app/game_metadata_service.o \
 		src/app/magnet_resolver.o \
 		src/core/tracker.o src/core/net.o \
 		src/core/dht.o vendor/dht/dht.o \
-		src/core/bencode.o src/core/metainfo.o src/core/sha1.o src/core/util.o
+		src/core/bencode.o src/core/metainfo.o src/core/sha1.o src/core/sha256.o \
+		src/core/util.o
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
 
 test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \

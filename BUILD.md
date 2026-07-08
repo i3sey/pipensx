@@ -66,8 +66,11 @@ The artifact is `build-switch/pipensx.nro`. Override CMake when it is not on
 make switch CMAKE_BIN=/path/to/cmake
 ```
 
-Public builds contain no catalog or game metadata dataset. A builder who has a
-lawfully obtained compatible metadata index may embed it explicitly:
+Public builds contain no bundled catalog or game metadata dataset. At runtime,
+catalog refresh also fetches the verified optional metadata index from the
+configured pipensx-metadata manifest; failures keep the previous cache and do
+not block Langegen catalog updates. A builder who needs a first-run offline
+fallback may still embed a lawfully obtained compatible index explicitly:
 
 ```bash
 make switch PIPENSX_METADATA_INDEX=/absolute/path/game_metadata_index.json

@@ -4,6 +4,7 @@
 #include <memory>
 #include <numeric>
 #include <string>
+#include <thread>
 #include <unordered_set>
 #include <vector>
 
@@ -11,6 +12,7 @@
 
 #include "app/app_settings.hpp"
 #include "app/catalog_presentation.hpp"
+#include "app/catalog_refresh.hpp"
 #include "app/catalog_service.hpp"
 #include "app/download_manager.hpp"
 #include "app/game_metadata_service.hpp"
@@ -355,13 +357,10 @@ public:
         taskSignature_ = taskSignature();
         timer_.setCallback([this] { refreshLiveState(); });
         timer_.start(1000);
-        // Pull the live catalogue in the background at launch when the user
-        // asked for it, and always when there is nothing to show yet (fresh
-        // install: no cache, no bundled snapshot) so the first screen is not
-        // permanently empty.
-        const bool empty = !catalog_ || catalog_->entries().empty();
-        if (empty || (settings_ && settings_->get().refreshCatalogOnLaunch))
-            refreshCatalog();
+        // Catalog releases and the optional artwork sidecar evolve
+        // independently, so every launch checks both in the background. Cached
+        // data remains visible until each verified refresh is adopted.
+        refreshCatalog();
     }
 
     ~CatalogView() override {
@@ -621,7 +620,7 @@ private:
             const GameMetadata* meta = metadata_->findByInfoHash(entry.infoHash);
             if (settings_ &&
                 settings_->get().catalogFilter == CatalogFilter::Games &&
-                !meta)
+                !catalogEntryIsGame(entry, meta))
                 continue;
             bool matches = needle.empty() ||
                 lowerAscii(entry.title).find(needle) != std::string::npos ||
@@ -693,8 +692,10 @@ private:
             if (it == added.end() && meta && installed_ &&
                 installed_->contains(meta->titleId))
                 stateBadges.back() = "Installed";
-            gameNames.push_back(meta ? meta->name : std::string());
-            iconUrls.push_back(meta ? meta->iconUrl : std::string());
+            CatalogPresentation presentation =
+                resolveCatalogPresentation(entry, meta);
+            gameNames.push_back(std::move(presentation.title));
+            iconUrls.push_back(std::move(presentation.iconUrl));
             selected.push_back(selectedHashes_.count(hash) ? 1 : 0);
             selectable.push_back(canSelect ? 1 : 0);
             metas.push_back(meta);
@@ -744,11 +745,8 @@ private:
             used.insert(keyOf(heroIndex));
             const GameMetadata* heroMeta =
                 metas[static_cast<size_t>(heroIndex)];
-            heroImage = heroMeta && !heroMeta->bannerUrl.empty()
-                ? heroMeta->bannerUrl
-                : heroMeta && !heroMeta->iconUrl.empty()
-                    ? heroMeta->iconUrl
-                    : visible[static_cast<size_t>(heroIndex)].posterUrl;
+            heroImage = resolveCatalogPresentation(
+                visible[static_cast<size_t>(heroIndex)], heroMeta).coverUrl;
 
             // Take up to kShelfItems unique, not-yet-used titles; commit the
             // keys only when the shelf is actually shown.
@@ -1209,39 +1207,67 @@ private:
         brls::Application::notify("Updating catalog from GitHub...");
         auto alive = alive_;
         CatalogService* catalog = catalog_;
+        GameMetadataService* metadata = metadata_;
         uint64_t startedMs = now_ms();
-        brls::async([this, alive, catalog, startedMs] {
-            std::vector<CatalogEntry> parsed;
-            std::string err;
-            bool ok = catalog->fetchLatest(parsed, err);
+        brls::async([this, alive, catalog, metadata, startedMs] {
+            CatalogRefreshBatch batch;
+            std::thread metadataFetch([&] {
+                batch.metadataOk = metadata && metadata->fetchLatest(
+                    batch.metadata, batch.metadataError);
+            });
+            batch.catalogOk = catalog->fetchLatest(
+                batch.catalogEntries, batch.catalogError);
+            metadataFetch.join();
             telemetry_log("catalog", "-",
                           "event=refresh ok=%d duration_ms=%llu entries=%zu",
-                          ok ? 1 : 0,
+                          batch.catalogOk ? 1 : 0,
                           (unsigned long long)(now_ms() - startedMs),
-                          parsed.size());
-            brls::sync([this, alive, ok, err,
-                        parsed = std::move(parsed)]() mutable {
+                          batch.catalogEntries.size());
+            telemetry_log("metadata", "-",
+                          "event=refresh ok=%d duration_ms=%llu entries=%zu",
+                          batch.metadataOk ? 1 : 0,
+                          (unsigned long long)(now_ms() - startedMs),
+                          batch.metadata.items.size());
+            brls::sync([this, alive, batch = std::move(batch)]() mutable {
                 if (!alive->load())
                     return;
                 setBusy(false);
-                if (!ok) {
+                const bool catalogOk = batch.catalogOk;
+                const bool metadataOk = batch.metadataOk;
+                const std::string catalogError = batch.catalogError;
+                const std::string metadataError = batch.metadataError;
+                if (!catalogOk) {
                     diagnostic_error("catalog", "refresh", "error=%s",
-                                     err.c_str());
-                    brls::Application::notify(err);
-                    return;
+                                     catalogError.c_str());
                 }
-                // entries() is read on the UI thread every frame, so the live
-                // swap happens here — never on the fetch worker (data race →
-                // use-after-free, the intermittent quit-time fatal).
-                catalog_->adopt(std::move(parsed));
-                // UI_PLAN F6: catalog changed — drop decoded covers so
-                // replaced artwork cannot be served stale from memory.
+                if (!metadataOk) {
+                    diagnostic_error("metadata", "refresh", "error=%s",
+                                     metadataError.c_str());
+                }
                 if (metadata_)
-                    metadata_->dropMemoryImageCache();
-                rebuildEntries();
-                brls::Application::notify(
-                    "Catalog updated: " +
-                    std::to_string(catalog_->entries().size()) + " entries.");
+                    adoptCatalogRefresh(*catalog_, *metadata_,
+                                        std::move(batch));
+                else if (catalogOk)
+                    catalog_->adopt(std::move(batch.catalogEntries));
+                if (catalogOk || metadataOk)
+                    rebuildEntries();
+                if (catalogOk && metadataOk) {
+                    brls::Application::notify(
+                        "Catalog and artwork updated: " +
+                        std::to_string(catalog_->entries().size()) +
+                        " entries.");
+                } else if (catalogOk) {
+                    brls::Application::notify(
+                        "Catalog updated; artwork refresh failed: " +
+                        metadataError);
+                } else if (metadataOk) {
+                    brls::Application::notify(
+                        "Artwork updated; catalog refresh failed: " +
+                        catalogError);
+                } else {
+                    brls::Application::notify(
+                        catalogError + " Artwork: " + metadataError);
+                }
             });
         });
     }

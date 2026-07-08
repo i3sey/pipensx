@@ -9,8 +9,27 @@
 
 namespace pipensx {
 
+struct CatalogPresentation {
+    std::string title;
+    std::string titleId;
+    std::string iconUrl;
+    std::string coverUrl;
+    std::string description;
+    std::string developer;
+    std::string publisher;
+    std::string releaseDate;
+    std::string genre;
+    std::vector<std::string> screenshots;
+};
+
 std::vector<std::string> mergeScreenshotUrls(
     const GameMetadata* metadata, const CatalogEntry& entry,
     size_t limit = 6);
+
+CatalogPresentation resolveCatalogPresentation(
+    const CatalogEntry& entry, const GameMetadata* metadata);
+
+bool catalogEntryIsGame(const CatalogEntry& entry,
+                        const GameMetadata* metadata);
 
 } // namespace pipensx

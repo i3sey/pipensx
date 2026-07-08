@@ -88,17 +88,18 @@ public:
           alive_(std::make_shared<std::atomic<bool>>(true)),
           cancelled_(std::make_shared<std::atomic<bool>>(false)) {
         const GameMetadata* found = metadata_->findByInfoHash(entry_.infoHash);
-        titleId_ = found ? found->titleId : std::string();
+        presentation_ = resolveCatalogPresentation(entry_, found);
+        titleId_ = presentation_.titleId;
 
         // F3: eShop-style two-column page. Left column is fixed (cover +
         // install button + size/status); the right column scrolls on its own.
         auto* content = new brls::Box(brls::Axis::ROW);
         content->setPadding(24, 40, 24, 40);
-        buildLeftColumn(content, found);
-        buildRightColumn(content, found);
+        buildLeftColumn(content);
+        buildRightColumn(content);
 
         frame_ = new brls::AppletFrame(content);
-        frame_->setTitle(found ? found->name : entry_.title);
+        frame_->setTitle(presentation_.title);
     }
 
     ~GameDetailActivity() override {
@@ -134,21 +135,12 @@ private:
     static constexpr float kLeftColumnWidth = 320.0f;
 
     // Left column: cover, full-width Install/Options, size, status (F3).
-    void buildLeftColumn(brls::Box* content, const GameMetadata* found) {
+    void buildLeftColumn(brls::Box* content) {
         auto* left = new brls::Box(brls::Axis::COLUMN);
         left->setWidth(kLeftColumnWidth);
         left->setMarginRight(32);
 
-        // Prefer the bundled metadata artwork; fall back to the cover the
-        // catalogue entry itself carries (the Langegen source ships one inline,
-        // and its hashes never match the bundled index).
-        std::string coverUrl;
-        if (found)
-            coverUrl = !found->iconUrl.empty() ? found->iconUrl
-                                               : found->bannerUrl;
-        if (coverUrl.empty())
-            coverUrl = entry_.posterUrl;
-        if (!coverUrl.empty()) {
+        if (!presentation_.coverUrl.empty()) {
             auto* cover = new AsyncRgbaImage();
             cover->setWidth(kLeftColumnWidth);
             cover->setHeight(260);
@@ -158,7 +150,7 @@ private:
             // rect with the pattern and the margin samples clamped edge texels
             // (stretched bands). Clip off draws only the fitted image rect.
             cover->setClipsToBounds(false);
-            loadImageInto(cover, metadata_, coverUrl);
+            loadImageInto(cover, metadata_, presentation_.coverUrl);
             left->addView(cover);
         }
 
@@ -206,19 +198,18 @@ private:
     }
 
     // Right column (scrolls): title, fact table, screenshots, description.
-    void buildRightColumn(brls::Box* content, const GameMetadata* found) {
+    void buildRightColumn(brls::Box* content) {
         auto* right = new brls::Box(brls::Axis::COLUMN);
         right->setPadding(0, 12, 24, 0);
 
         auto* title = new brls::Label();
         title->setFontSize(theme::kFontTitle);
-        title->setText(found ? found->name : entry_.title);
+        title->setText(presentation_.title);
         right->addView(title);
 
-        buildFactsTable(right, found);
+        buildFactsTable(right);
 
-        std::vector<std::string> screenshots =
-            pipensx::mergeScreenshotUrls(found, entry_, 6);
+        const std::vector<std::string>& screenshots = presentation_.screenshots;
         if (!screenshots.empty()) {
             auto* shots = new brls::Label();
             shots->setFontSize(theme::kFontSmall);
@@ -228,7 +219,7 @@ private:
             shots->setText("Screenshots");
             right->addView(shots);
 
-            std::string viewerTitle = found ? found->name : entry_.title;
+            std::string viewerTitle = presentation_.title;
             auto* rail = new brls::Box(brls::Axis::ROW);
             rail->setHeight(180);
             for (size_t i = 0; i < screenshots.size(); ++i) {
@@ -257,7 +248,7 @@ private:
             right->addView(gallery);
         }
 
-        buildDescription(right, found);
+        buildDescription(right);
 
         std::string warn;
         if (!lastFailure_.empty()) {
@@ -294,21 +285,13 @@ private:
     }
 
     // S4: facts as label/value rows instead of one glued string.
-    void buildFactsTable(brls::Box* right, const GameMetadata* found) {
+    void buildFactsTable(brls::Box* right) {
         auto* table = new brls::Box(brls::Axis::COLUMN);
         table->setMarginTop(8);
-        if (found) {
-            addFactRow(table, "Publisher", found->publisher);
-            addFactRow(table, "Release", found->releaseDate);
-            addFactRow(table, "Genre", joinStrings(found->categories, ", "));
-        } else {
-            // No bundled artwork match (the Langegen catalogue): show the
-            // metadata the entry carries inline instead.
-            addFactRow(table, "Developer", entry_.developer);
-            addFactRow(table, "Publisher", entry_.publisher);
-            addFactRow(table, "Release", entry_.year);
-            addFactRow(table, "Genre", entry_.genre);
-        }
+        addFactRow(table, "Developer", presentation_.developer);
+        addFactRow(table, "Publisher", presentation_.publisher);
+        addFactRow(table, "Release", presentation_.releaseDate);
+        addFactRow(table, "Genre", presentation_.genre);
         addFactRow(table, "Size",
                    entry_.size ? formatBytes(entry_.size)
                                : std::string("Unknown"));
@@ -338,22 +321,15 @@ private:
     }
 
     // S5: reversible "Show more" instead of a hard cut.
-    void buildDescription(brls::Box* right, const GameMetadata* found) {
-        std::string text;
-        if (found)
-            text = !found->description.empty() ? found->description
-                                               : found->intro;
-        else
-            text = entry_.description;  // Langegen inline description
+    void buildDescription(brls::Box* right) {
+        std::string text = presentation_.description;
         if (text.empty()) {
-            if (!found) {
-                auto* missing = new brls::Label();
-                missing->setFontSize(theme::kFontSmall);
-                missing->setMarginTop(24);
-                missing->setText("No description available. Install still works "
-                                 "from the catalog release.");
-                right->addView(missing);
-            }
+            auto* missing = new brls::Label();
+            missing->setFontSize(theme::kFontSmall);
+            missing->setMarginTop(24);
+            missing->setText("No description available. Install still works "
+                             "from the catalog release.");
+            right->addView(missing);
             return;
         }
         auto* desc = new brls::Label();
@@ -759,6 +735,7 @@ private:
     }
 
     CatalogEntry entry_;
+    CatalogPresentation presentation_;
     std::string lastFailure_;
     DownloadManager* manager_;
     GameMetadataService* metadata_;

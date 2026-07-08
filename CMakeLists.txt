@@ -71,6 +71,7 @@ target_compile_definitions(pipensx_zstd PRIVATE ZSTD_MULTITHREAD=0 ZSTD_DISABLE_
 # Platform-neutral sources (also compiled by Makefile.pc / golden runner).
 set(CORE_SOURCES
     src/core/sha1.c
+    src/core/sha256.c
     src/core/bencode.c
     src/core/metainfo.c
     src/core/util.c
@@ -87,6 +88,7 @@ set(CORE_SOURCES
 set(APP_SERVICE_SOURCES
     src/app/app_settings.cpp
     src/app/catalog_batch_installer.cpp
+    src/app/catalog_refresh.cpp
     src/app/catalog_service.cpp
     src/app/catalog_presentation.cpp
     src/app/download_manager.cpp
