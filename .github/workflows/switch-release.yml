@@ -23,6 +23,9 @@ jobs:
       image: devkitpro/devkita64:latest
     env:
       DEVKITPRO: /opt/devkitpro
+      # ubuntu-latest is 2-core/7GB; unbounded --parallel over-subscribes
+      # the box on this template-heavy C++ tree and gets SIGKILLed (137).
+      CMAKE_BUILD_PARALLEL_LEVEL: "2"
     steps:
       - name: Install git (container has no VCS by default)
         run: |
