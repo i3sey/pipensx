@@ -38,9 +38,18 @@ jobs:
           persist-credentials: false
 
       - name: Install Switch portlibs
+        # pkg.devkitpro.org sits behind Cloudflare and intermittently 403s
+        # shared CI runner IPs; retry with backoff instead of failing hard.
         run: |
-          dkp-pacman -Sy --noconfirm --needed \
-            switch-dev switch-curl switch-mbedtls switch-zlib switch-miniupnpc
+          for attempt in 1 2 3 4 5; do
+            if dkp-pacman -Sy --noconfirm --needed \
+                switch-dev switch-curl switch-mbedtls switch-zlib switch-miniupnpc; then
+              exit 0
+            fi
+            echo "dkp-pacman attempt ${attempt} failed, retrying..." >&2
+            sleep $((attempt * 10))
+          done
+          exit 1
 
       - name: Build pipensx.nro
         run: make switch
