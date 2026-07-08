@@ -18,14 +18,16 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     container:
       image: devkitpro/devkita64:latest
     env:
       DEVKITPRO: /opt/devkitpro
-      # ubuntu-latest is 2-core/7GB; unbounded --parallel over-subscribes
-      # the box on this template-heavy C++ tree and gets SIGKILLed (137).
-      CMAKE_BUILD_PARALLEL_LEVEL: "2"
+      # ubuntu-latest is 2-core/7GB; even 2 concurrent heavy TUs from this
+      # template-heavy C++ tree (borealis/nanovg) exceed available RAM and
+      # thrash forever instead of OOM-killing. Serial compile is slower but
+      # actually finishes.
+      CMAKE_BUILD_PARALLEL_LEVEL: "1"
     steps:
       - name: Install git (container has no VCS by default)
         run: |
