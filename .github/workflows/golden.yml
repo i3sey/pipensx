@@ -35,7 +35,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             cmake ninja-build xorg-dev libgl1-mesa-dev libglu1-mesa-dev \
-            libcurl4-openssl-dev zlib1g-dev imagemagick xvfb
+            libsdl2-dev libcurl4-openssl-dev zlib1g-dev imagemagick xvfb
 
       - name: Build golden_runner
         run: |

@@ -78,13 +78,13 @@ The path is build input only. Do not copy or commit the dataset under
 
 ## Golden screenshot tests
 
-Golden tests require CMake, Ninja, ImageMagick, Xvfb, Mesa/OpenGL development
-packages, and X11 development headers. On Debian or Ubuntu:
+Golden tests require CMake, Ninja, SDL2, ImageMagick, Xvfb, Mesa/OpenGL
+development packages, and X11 development headers. On Debian or Ubuntu:
 
 ```bash
 sudo apt-get install -y \
   cmake ninja-build xorg-dev libgl1-mesa-dev libglu1-mesa-dev \
-  imagemagick xvfb
+  libsdl2-dev imagemagick xvfb
 make golden
 ```
 
