@@ -224,6 +224,8 @@ public:
         // and touch-reachable. Single row: with the search field collapsed
         // to a 40px icon everything fits at 1280 without clipping.
         header_ = new brls::Box(brls::Axis::ROW);
+        header_->setHeight(40);
+        header_->setShrink(0.0f);
         header_->setMarginTop(10);
         header_->setMarginBottom(10);
         header_->setMarginLeft(34);
