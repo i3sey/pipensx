@@ -881,6 +881,8 @@ private:
             ? "Catalog is empty. Press R to refresh."
             : "Nothing found. Tap the magnifier or press X to change the query.");
         recycler_->reloadData();
+        if (!focusInCatalog)
+            recycler_->setContentOffsetY(0, false);
         const bool empty = count == 0;
         if (empty) {
             if (query_.empty()) {
