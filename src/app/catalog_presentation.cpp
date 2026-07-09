@@ -38,6 +38,17 @@ std::string join(const std::vector<std::string>& values) {
     return result.str();
 }
 
+bool isHex(char c) {
+    return (c >= '0' && c <= '9') ||
+           (c >= 'a' && c <= 'f') ||
+           (c >= 'A' && c <= 'F');
+}
+
+bool looksLikeTitleId(const std::string& titleId) {
+    return titleId.size() == 16 &&
+           std::all_of(titleId.begin(), titleId.end(), isHex);
+}
+
 } // namespace
 
 CatalogPresentation resolveCatalogPresentation(
@@ -79,6 +90,10 @@ bool catalogEntryIsGame(const CatalogEntry& entry,
                        return static_cast<char>(std::tolower(c));
                    });
     return title.find("[nro]") == std::string::npos;
+}
+
+bool catalogEntryHasMatchedTitle(const GameMetadata* metadata) {
+    return metadata && looksLikeTitleId(metadata->titleId);
 }
 
 } // namespace pipensx

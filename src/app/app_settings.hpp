@@ -25,6 +25,8 @@ enum class InstallLocation {
 struct AppSettingsData {
     CatalogFilter catalogFilter = CatalogFilter::Games;
     bool refreshCatalogOnLaunch = false;
+    uint64_t lastCatalogRefreshMs = 0;
+    uint64_t lastMetadataRefreshMs = 0;
     StreamSelection streamSelection = StreamSelection::AllFiles;
     InstallLocation installLocation = InstallLocation::SdCard;
     bool showCompletedDownloads = true;
@@ -38,6 +40,8 @@ struct AppSettingsData {
         return !(*this == other);
     }
 };
+
+bool dailyRefreshDue(uint64_t nowMs, uint64_t lastRefreshMs);
 
 class AppSettings {
 public:

@@ -229,11 +229,12 @@ public:
         setFocusable(false);
         setAxis(brls::Axis::ROW);
         setHeight(grid::kRowHeight);
-        setJustifyContent(brls::JustifyContent::SPACE_BETWEEN);
         setLineBottom(0);
         setLineColor(brls::TRANSPARENT);
         for (int i = 0; i < grid::kColumns; ++i) {
             cards_[i] = new GameCard();
+            if (i + 1 < grid::kColumns)
+                cards_[i]->setMarginRight(grid::kShelfSpacing);
             addView(cards_[i]);
         }
     }

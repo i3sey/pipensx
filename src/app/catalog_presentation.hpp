@@ -32,4 +32,6 @@ CatalogPresentation resolveCatalogPresentation(
 bool catalogEntryIsGame(const CatalogEntry& entry,
                         const GameMetadata* metadata);
 
+bool catalogEntryHasMatchedTitle(const GameMetadata* metadata);
+
 } // namespace pipensx

@@ -33,6 +33,7 @@ using pipensx::CatalogPresentation;
 using pipensx::CatalogRefreshBatch;
 using pipensx::CatalogService;
 using pipensx::catalogEntryIsGame;
+using pipensx::catalogEntryHasMatchedTitle;
 using pipensx::adoptCatalogRefresh;
 using pipensx::GameMetadata;
 using pipensx::GameMetadataService;
@@ -609,6 +610,21 @@ void testCatalogGameFilterKeepsUnmatchedSwitchReleases() {
     assert(catalogEntryIsGame(homebrew, &metadata));
 }
 
+void testCatalogBrowseMatchFilterRequiresTitleIdMetadata() {
+    assert(!catalogEntryHasMatchedTitle(nullptr));
+
+    GameMetadata emptyMetadata;
+    assert(!catalogEntryHasMatchedTitle(&emptyMetadata));
+
+    GameMetadata metadata;
+    metadata.titleId = "0100230005A52000";
+    assert(catalogEntryHasMatchedTitle(&metadata));
+
+    GameMetadata invalidMetadata;
+    invalidMetadata.titleId = "not-a-title-id";
+    assert(!catalogEntryHasMatchedTitle(&invalidMetadata));
+}
+
 void testAsyncImageDiskCache() {
     std::string root = "/tmp/pipensx-image-test-" +
                        std::to_string(static_cast<long long>(getpid()));
@@ -969,6 +985,7 @@ int main() {
     testCatalogPresentationUsesGameMetadata();
     testCatalogPresentationFallsBackFieldByField();
     testCatalogGameFilterKeepsUnmatchedSwitchReleases();
+    testCatalogBrowseMatchFilterRequiresTitleIdMetadata();
     testAsyncImageDiskCache();
     testImageMemoryCache();
     testImageNetworkWaitsForActiveTransfer();

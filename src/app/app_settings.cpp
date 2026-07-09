@@ -50,6 +50,19 @@ bool readBool(const Json& root, const char* key, bool& value,
     return true;
 }
 
+bool readUnsigned(const Json& root, const char* key, uint64_t& value,
+                  std::string& error) {
+    if (!root.contains(key))
+        return true;
+    if (!root[key].is_number_unsigned()) {
+        error = std::string("Setting '") + key +
+                "' must be an unsigned number.";
+        return false;
+    }
+    value = root[key].get<uint64_t>();
+    return true;
+}
+
 bool parseSettings(const std::string& text, AppSettingsData& values,
                    std::string& error) {
     Json root = Json::parse(text, nullptr, false);
@@ -69,6 +82,10 @@ bool parseSettings(const std::string& text, AppSettingsData& values,
     if (!readString(root, "catalog_filter", catalog, error) ||
         !readBool(root, "refresh_catalog_on_launch",
                   values.refreshCatalogOnLaunch, error) ||
+        !readUnsigned(root, "last_catalog_refresh_ms",
+                      values.lastCatalogRefreshMs, error) ||
+        !readUnsigned(root, "last_metadata_refresh_ms",
+                      values.lastMetadataRefreshMs, error) ||
         !readString(root, "stream_selection", selection, error) ||
         !readString(root, "install_location", install, error) ||
         !readBool(root, "show_completed_downloads",
@@ -112,6 +129,8 @@ std::string serializeSettings(const AppSettingsData& values) {
     root["version"] = 1;
     root["catalog_filter"] = catalogFilterName(values.catalogFilter);
     root["refresh_catalog_on_launch"] = values.refreshCatalogOnLaunch;
+    root["last_catalog_refresh_ms"] = values.lastCatalogRefreshMs;
+    root["last_metadata_refresh_ms"] = values.lastMetadataRefreshMs;
     root["stream_selection"] = streamSelectionName(values.streamSelection);
     root["install_location"] = installLocationName(values.installLocation);
     root["show_completed_downloads"] = values.showCompletedDownloads;
@@ -125,11 +144,19 @@ std::string serializeSettings(const AppSettingsData& values) {
 bool AppSettingsData::operator==(const AppSettingsData& other) const {
     return catalogFilter == other.catalogFilter &&
            refreshCatalogOnLaunch == other.refreshCatalogOnLaunch &&
+           lastCatalogRefreshMs == other.lastCatalogRefreshMs &&
+           lastMetadataRefreshMs == other.lastMetadataRefreshMs &&
            streamSelection == other.streamSelection &&
            installLocation == other.installLocation &&
            showCompletedDownloads == other.showCompletedDownloads &&
            extendedTelemetry == other.extendedTelemetry &&
            catalogDisclaimerAcknowledged == other.catalogDisclaimerAcknowledged;
+}
+
+bool dailyRefreshDue(uint64_t nowMs, uint64_t lastRefreshMs) {
+    constexpr uint64_t kDayMs = 24ULL * 60ULL * 60ULL * 1000ULL;
+    return lastRefreshMs == 0 || nowMs < lastRefreshMs ||
+           nowMs - lastRefreshMs >= kDayMs;
 }
 
 AppSettings::AppSettings(std::string path, std::string legacyTelemetryPath)

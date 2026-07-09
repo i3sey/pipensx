@@ -220,7 +220,7 @@ public:
         // to a 40px icon everything fits at 1280 without clipping.
         header_ = new brls::Box(brls::Axis::ROW);
         header_->setMarginTop(10);
-        header_->setMarginBottom(10);  // breathing room above the hero banner
+        header_->setMarginBottom(10);
         header_->setMarginLeft(34);
         header_->setMarginRight(34);
         sortLatest_ = makeChip("Latest", [this] { setSort(SortMode::Latest); });
@@ -357,10 +357,7 @@ public:
         taskSignature_ = taskSignature();
         timer_.setCallback([this] { refreshLiveState(); });
         timer_.start(1000);
-        // Catalog releases and the optional artwork sidecar evolve
-        // independently, so every launch checks both in the background. Cached
-        // data remains visible until each verified refresh is adopted.
-        refreshCatalog();
+        refreshCatalogIfDue();
     }
 
     ~CatalogView() override {
@@ -614,15 +611,17 @@ private:
 
         std::vector<CatalogEntry> visible;
         std::string needle = lowerAscii(query_);
+        const bool searching = !needle.empty();
+        const bool matchedGamesOnly = !searching && settings_ &&
+            settings_->get().catalogFilter == CatalogFilter::Games;
         for (const CatalogEntry& entry : catalog_->entries()) {
             if (entry.isHiddenByDefault())
                 continue;
-            const GameMetadata* meta = metadata_->findByInfoHash(entry.infoHash);
-            if (settings_ &&
-                settings_->get().catalogFilter == CatalogFilter::Games &&
-                !catalogEntryIsGame(entry, meta))
+            const GameMetadata* meta =
+                metadata_ ? metadata_->findByInfoHash(entry.infoHash) : nullptr;
+            if (matchedGamesOnly && !catalogEntryHasMatchedTitle(meta))
                 continue;
-            bool matches = needle.empty() ||
+            bool matches = !searching ||
                 lowerAscii(entry.title).find(needle) != std::string::npos ||
                 (meta && lowerAscii(meta->name).find(needle) !=
                              std::string::npos);
@@ -688,7 +687,8 @@ private:
                 selectedHashes_.erase(hash);
             } else
                 stateBadges.emplace_back();
-            const GameMetadata* meta = metadata_->findByInfoHash(entry.infoHash);
+            const GameMetadata* meta =
+                metadata_ ? metadata_->findByInfoHash(entry.infoHash) : nullptr;
             if (it == added.end() && meta && installed_ &&
                 installed_->contains(meta->titleId))
                 stateBadges.back() = "Installed";
@@ -701,12 +701,12 @@ private:
             metas.push_back(meta);
         }
 
-        // Shelves 2.0 (UI_PLAN F5, supersedes the F2 pair): hero banner +
-        // Popular / New / Recently updated / genre shelves. Only in the
-        // default browse state — a search or batch mode wants the plain grid.
+        // Shelves 2.0 (UI_PLAN F5, supersedes the F2 pair): Popular / New /
+        // Recently updated / genre shelves. Only in the default browse state —
+        // a search or batch mode wants the plain grid.
         // Dedup: a game appears on at most one shelf (Popular wins over New,
-        // hero wins over everything), re-releases of one title collapse by
-        // titleId inside a shelf. The grid below always shows everything.
+        // over later shelves), re-releases of one title collapse by titleId
+        // inside a shelf. The grid below always shows everything.
         std::vector<CatalogShelf> shelves;
         int heroIndex = -1;
         std::string heroImage;
@@ -739,14 +739,6 @@ private:
                           visible[static_cast<size_t>(index)].infoHash);
             };
             std::unordered_set<std::string> used;
-
-            // Hero = the most popular entry.
-            heroIndex = popular.front();
-            used.insert(keyOf(heroIndex));
-            const GameMetadata* heroMeta =
-                metas[static_cast<size_t>(heroIndex)];
-            heroImage = resolveCatalogPresentation(
-                visible[static_cast<size_t>(heroIndex)], heroMeta).coverUrl;
 
             // Take up to kShelfItems unique, not-yet-used titles; commit the
             // keys only when the shelf is actually shown.
@@ -1201,34 +1193,121 @@ private:
     }
 
     void refreshCatalog() {
+        refreshSources(true, metadata_ != nullptr, true);
+    }
+
+    void refreshCatalogIfDue() {
+        if (!settings_ || !settings_->get().refreshCatalogOnLaunch)
+            return;
+        const uint64_t now = now_ms();
+        const AppSettingsData& values = settings_->get();
+        refreshSources(
+            dailyRefreshDue(now, values.lastCatalogRefreshMs),
+            metadata_ && dailyRefreshDue(now, values.lastMetadataRefreshMs),
+            false);
+    }
+
+    void recordRefreshSuccess(bool catalog, bool metadata) {
+        if (!settings_ || (!catalog && !metadata))
+            return;
+        AppSettingsData values = settings_->get();
+        const uint64_t now = now_ms();
+        if (catalog)
+            values.lastCatalogRefreshMs = now;
+        if (metadata)
+            values.lastMetadataRefreshMs = now;
+        std::string error;
+        if (!settings_->update(values, error)) {
+            diagnostic_error("settings", "refresh_time", "error=%s",
+                             error.c_str());
+            return;
+        }
+        observedSettingsGeneration_ = settings_->generation();
+    }
+
+    void notifyRefreshResult(bool fetchCatalog, bool fetchMetadata,
+                             bool catalogOk, bool metadataOk,
+                             const std::string& catalogError,
+                             const std::string& metadataError) {
+        if (fetchCatalog && fetchMetadata) {
+            if (catalogOk && metadataOk) {
+                brls::Application::notify(
+                    "Catalog and artwork updated: " +
+                    std::to_string(catalog_->entries().size()) + " entries.");
+            } else if (catalogOk) {
+                brls::Application::notify(
+                    "Catalog updated; artwork refresh failed: " +
+                    metadataError);
+            } else if (metadataOk) {
+                brls::Application::notify(
+                    "Artwork updated; catalog refresh failed: " +
+                    catalogError);
+            } else {
+                brls::Application::notify(
+                    catalogError + " Artwork: " + metadataError);
+            }
+        } else if (fetchCatalog) {
+            brls::Application::notify(catalogOk
+                ? "Catalog updated: " +
+                      std::to_string(catalog_->entries().size()) + " entries."
+                : catalogError);
+        } else if (fetchMetadata) {
+            brls::Application::notify(metadataOk
+                ? "Artwork metadata updated: " +
+                      std::to_string(metadata_->size()) + " matches."
+                : metadataError);
+        }
+    }
+
+    void refreshSources(bool fetchCatalog, bool fetchMetadata, bool notify) {
+        fetchMetadata = fetchMetadata && metadata_;
+        if (!fetchCatalog && !fetchMetadata)
+            return;
         if (busy_)
             return;
         setBusy(true);
-        brls::Application::notify("Updating catalog from GitHub...");
+        if (notify) {
+            brls::Application::notify(fetchCatalog && fetchMetadata
+                ? "Updating catalog and artwork..."
+                : fetchCatalog ? "Updating catalog from Langegen..."
+                               : "Updating artwork metadata...");
+        }
         auto alive = alive_;
         CatalogService* catalog = catalog_;
         GameMetadataService* metadata = metadata_;
         uint64_t startedMs = now_ms();
-        brls::async([this, alive, catalog, metadata, startedMs] {
+        brls::async([this, alive, catalog, metadata, startedMs, fetchCatalog,
+                     fetchMetadata, notify] {
             CatalogRefreshBatch batch;
-            std::thread metadataFetch([&] {
-                batch.metadataOk = metadata && metadata->fetchLatest(
-                    batch.metadata, batch.metadataError);
-            });
-            batch.catalogOk = catalog->fetchLatest(
-                batch.catalogEntries, batch.catalogError);
-            metadataFetch.join();
-            telemetry_log("catalog", "-",
-                          "event=refresh ok=%d duration_ms=%llu entries=%zu",
-                          batch.catalogOk ? 1 : 0,
-                          (unsigned long long)(now_ms() - startedMs),
-                          batch.catalogEntries.size());
-            telemetry_log("metadata", "-",
-                          "event=refresh ok=%d duration_ms=%llu entries=%zu",
-                          batch.metadataOk ? 1 : 0,
-                          (unsigned long long)(now_ms() - startedMs),
-                          batch.metadata.items.size());
-            brls::sync([this, alive, batch = std::move(batch)]() mutable {
+            std::thread metadataFetch;
+            if (fetchMetadata) {
+                metadataFetch = std::thread([&] {
+                    batch.metadataOk = metadata->fetchLatest(
+                        batch.metadata, batch.metadataError);
+                });
+            }
+            if (fetchCatalog) {
+                batch.catalogOk = catalog->fetchLatest(
+                    batch.catalogEntries, batch.catalogError);
+            }
+            if (metadataFetch.joinable())
+                metadataFetch.join();
+            if (fetchCatalog) {
+                telemetry_log("catalog", "-",
+                              "event=refresh ok=%d duration_ms=%llu entries=%zu",
+                              batch.catalogOk ? 1 : 0,
+                              (unsigned long long)(now_ms() - startedMs),
+                              batch.catalogEntries.size());
+            }
+            if (fetchMetadata) {
+                telemetry_log("metadata", "-",
+                              "event=refresh ok=%d duration_ms=%llu entries=%zu",
+                              batch.metadataOk ? 1 : 0,
+                              (unsigned long long)(now_ms() - startedMs),
+                              batch.metadata.items.size());
+            }
+            brls::sync([this, alive, batch = std::move(batch), fetchCatalog,
+                        fetchMetadata, notify]() mutable {
                 if (!alive->load())
                     return;
                 setBusy(false);
@@ -1236,11 +1315,11 @@ private:
                 const bool metadataOk = batch.metadataOk;
                 const std::string catalogError = batch.catalogError;
                 const std::string metadataError = batch.metadataError;
-                if (!catalogOk) {
+                if (fetchCatalog && !catalogOk) {
                     diagnostic_error("catalog", "refresh", "error=%s",
                                      catalogError.c_str());
                 }
-                if (!metadataOk) {
+                if (fetchMetadata && !metadataOk) {
                     diagnostic_error("metadata", "refresh", "error=%s",
                                      metadataError.c_str());
                 }
@@ -1251,23 +1330,12 @@ private:
                     catalog_->adopt(std::move(batch.catalogEntries));
                 if (catalogOk || metadataOk)
                     rebuildEntries();
-                if (catalogOk && metadataOk) {
-                    brls::Application::notify(
-                        "Catalog and artwork updated: " +
-                        std::to_string(catalog_->entries().size()) +
-                        " entries.");
-                } else if (catalogOk) {
-                    brls::Application::notify(
-                        "Catalog updated; artwork refresh failed: " +
-                        metadataError);
-                } else if (metadataOk) {
-                    brls::Application::notify(
-                        "Artwork updated; catalog refresh failed: " +
-                        catalogError);
-                } else {
-                    brls::Application::notify(
-                        catalogError + " Artwork: " + metadataError);
-                }
+                recordRefreshSuccess(fetchCatalog && catalogOk,
+                                     fetchMetadata && metadataOk);
+                if (notify)
+                    notifyRefreshResult(fetchCatalog, fetchMetadata, catalogOk,
+                                        metadataOk, catalogError,
+                                        metadataError);
             });
         });
     }

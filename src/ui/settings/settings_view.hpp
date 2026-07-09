@@ -2,6 +2,8 @@
 
 #include <sys/statvfs.h>
 
+#include <atomic>
+#include <memory>
 #include <string>
 
 #include <borealis.hpp>
@@ -22,7 +24,8 @@ public:
                  CatalogService* catalog, GameMetadataService* metadata,
                  InstalledTitleService* installed)
         : brls::Box(brls::Axis::COLUMN), settings_(settings), manager_(manager),
-          catalog_(catalog), metadata_(metadata), installed_(installed) {
+          catalog_(catalog), metadata_(metadata), installed_(installed),
+          alive_(std::make_shared<std::atomic<bool>>(true)) {
         auto* content = new brls::Box(brls::Axis::COLUMN);
         content->setPadding(24, 34, 24, 34);
 
@@ -42,7 +45,7 @@ public:
         content->addView(catalogFilter_);
 
         refreshCatalog_ = new brls::BooleanCell();
-        refreshCatalog_->init("Refresh catalog on launch",
+        refreshCatalog_->init("Auto-refresh daily",
             settings_->get().refreshCatalogOnLaunch,
             [this](bool enabled) {
                 AppSettingsData values = settings_->get();
@@ -52,6 +55,11 @@ public:
                     refreshCatalog_->setOn(previous, false);
             });
         content->addView(refreshCatalog_);
+
+        content->addView(actionCell("Update catalog", "Langegen",
+            [this] { refreshCatalogNow(); }));
+        content->addView(actionCell("Update artwork", "pipensx-metadata",
+            [this] { refreshMetadataNow(); }));
 
         addSection(content, "Downloads");
         streamSelection_ = new brls::SelectorCell();
@@ -156,6 +164,10 @@ public:
         addView(scroll);
     }
 
+    ~SettingsView() override {
+        alive_->store(false);
+    }
+
 private:
     static void addSection(brls::Box* content, const std::string& text) {
         auto* title = new brls::Label();
@@ -187,6 +199,80 @@ private:
         diagnostic_error("settings", tag, "error=%s", error.c_str());
         brls::Application::notify(error);
         return false;
+    }
+
+    void recordRefreshTime(bool catalog, bool metadata) {
+        AppSettingsData values = settings_->get();
+        const uint64_t now = now_ms();
+        if (catalog)
+            values.lastCatalogRefreshMs = now;
+        if (metadata)
+            values.lastMetadataRefreshMs = now;
+        persist(values, catalog ? "catalog_refresh_time"
+                                : "metadata_refresh_time");
+    }
+
+    void refreshCatalogNow() {
+        if (refreshInFlight_)
+            return;
+        refreshInFlight_ = true;
+        brls::Application::notify("Updating catalog from Langegen...");
+        auto alive = alive_;
+        CatalogService* catalog = catalog_;
+        brls::async([this, alive, catalog] {
+            std::vector<CatalogEntry> entries;
+            std::string error;
+            bool ok = catalog->fetchLatest(entries, error);
+            brls::sync([this, alive, ok, entries = std::move(entries),
+                        error = std::move(error)]() mutable {
+                if (!alive->load())
+                    return;
+                refreshInFlight_ = false;
+                if (!ok) {
+                    diagnostic_error("catalog", "settings_refresh", "error=%s",
+                                     error.c_str());
+                    brls::Application::notify(error);
+                    return;
+                }
+                catalog_->adopt(std::move(entries));
+                recordRefreshTime(true, false);
+                brls::Application::notify(
+                    "Catalog updated: " +
+                    std::to_string(catalog_->entries().size()) + " entries.");
+            });
+        });
+    }
+
+    void refreshMetadataNow() {
+        if (refreshInFlight_ || !metadata_)
+            return;
+        refreshInFlight_ = true;
+        brls::Application::notify("Updating artwork metadata...");
+        auto alive = alive_;
+        GameMetadataService* metadata = metadata_;
+        brls::async([this, alive, metadata] {
+            MetadataSnapshot snapshot;
+            std::string error;
+            bool ok = metadata->fetchLatest(snapshot, error);
+            brls::sync([this, alive, ok, snapshot = std::move(snapshot),
+                        error = std::move(error)]() mutable {
+                if (!alive->load())
+                    return;
+                refreshInFlight_ = false;
+                if (!ok) {
+                    diagnostic_error("metadata", "settings_refresh",
+                                     "error=%s", error.c_str());
+                    brls::Application::notify(error);
+                    return;
+                }
+                metadata_->adopt(std::move(snapshot));
+                metadata_->dropMemoryImageCache();
+                recordRefreshTime(false, true);
+                brls::Application::notify(
+                    "Artwork metadata updated: " +
+                    std::to_string(metadata_->size()) + " matches.");
+            });
+        });
     }
 
     void applyValues() {
@@ -285,12 +371,14 @@ private:
     CatalogService* catalog_;
     GameMetadataService* metadata_;
     InstalledTitleService* installed_;
+    std::shared_ptr<std::atomic<bool>> alive_;
     brls::SelectorCell* catalogFilter_ = nullptr;
     brls::BooleanCell* refreshCatalog_ = nullptr;
     brls::SelectorCell* streamSelection_ = nullptr;
     brls::SelectorCell* installLocation_ = nullptr;
     brls::BooleanCell* showCompleted_ = nullptr;
     brls::BooleanCell* extendedTelemetry_ = nullptr;
+    bool refreshInFlight_ = false;
 };
 
 }  // namespace pipensx::ui
