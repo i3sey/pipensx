@@ -7,8 +7,6 @@
 Native BitTorrent download manager and streaming package installer for
 Nintendo Switch homebrew.
 
-![pipensx catalog](tests/golden/catalog-dark.png)
-
 > [!IMPORTANT]
 > pipensx does not include Nintendo keys, firmware, games, or a torrent catalog.
 > Use it only with content you are legally allowed to download and install. The
