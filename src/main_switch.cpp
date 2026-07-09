@@ -42,6 +42,9 @@ using namespace pipensx::ui;
 
 namespace {
 
+constexpr const char* BundledCatalogPath =
+    "romfs:/catalog/switch_games.json";
+
 class MainActivity : public brls::Activity {
 public:
     MainActivity(DownloadManager* manager, CatalogService* catalog,
@@ -187,7 +190,7 @@ int main(int, char**) {
         log_msg("[startup] image relay: relays-first + disk cache (rev4)\n");
         unlink("sdmc:/switch/pipensx/rutracker.cfg");
         unlink("sdmc:/switch/pipensx/rutracker_cookies.txt");
-        CatalogService catalog("sdmc:/switch/pipensx");
+        CatalogService catalog("sdmc:/switch/pipensx", BundledCatalogPath);
         std::string catalogError;
         if (!catalog.load(catalogError))
             log_msg("[catalog] initial load failed: %s\n",

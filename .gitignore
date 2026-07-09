@@ -24,6 +24,9 @@ build-golden/
 .tmp/
 /rutracker-*.xml.xz
 /resources/catalog/
+!/resources/catalog/
+!/resources/catalog/switch_games.json
+!/resources/catalog/game_metadata_index.json
 
 # Python bytecode
 __pycache__/

@@ -7,8 +7,12 @@ cmake_minimum_required(VERSION 3.13)
 # sendRumble override and does not compile; the SDL backend is complete.
 option(PIPENSX_GOLDEN
     "Build the PC golden-screenshot runner instead of the Switch app" OFF)
-set(PIPENSX_METADATA_INDEX "" CACHE FILEPATH
-    "Optional game metadata index to embed in the Switch RomFS")
+set(PIPENSX_CATALOG_SNAPSHOT
+    "${CMAKE_CURRENT_SOURCE_DIR}/resources/catalog/switch_games.json"
+    CACHE FILEPATH "Bundled Langegen catalog snapshot for offline first launch")
+set(PIPENSX_METADATA_INDEX
+    "${CMAKE_CURRENT_SOURCE_DIR}/resources/catalog/game_metadata_index.json"
+    CACHE FILEPATH "Bundled game metadata index snapshot for offline first launch")
 
 set(BOREALIS_LIBRARY ${CMAKE_CURRENT_SOURCE_DIR}/vendor/borealis/library)
 if (PIPENSX_GOLDEN)
@@ -184,10 +188,25 @@ file(COPY
     DESTINATION ${ROMFS_DIR}
 )
 # Never reuse catalog data left in an existing build directory. Public builds
-# contain no catalog snapshot; a metadata index is embedded only when the
-# builder supplies one explicitly.
+# ship both the Langegen torrent catalog and the metadata index snapshots for
+# offline first launch.
 file(REMOVE_RECURSE ${ROMFS_DIR}/catalog)
+get_filename_component(PIPENSX_CATALOG_SNAPSHOT_ABS
+    "${PIPENSX_CATALOG_SNAPSHOT}" ABSOLUTE)
+if (NOT EXISTS "${PIPENSX_CATALOG_SNAPSHOT_ABS}")
+    message(FATAL_ERROR
+        "PIPENSX_CATALOG_SNAPSHOT does not exist: ${PIPENSX_CATALOG_SNAPSHOT_ABS}")
+endif ()
 set(PIPENSX_NRO_DEPENDS pipensx)
+add_custom_target(sync_catalog_snapshot ALL
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${ROMFS_DIR}/catalog"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${PIPENSX_CATALOG_SNAPSHOT_ABS}"
+        "${ROMFS_DIR}/catalog/switch_games.json"
+    DEPENDS "${PIPENSX_CATALOG_SNAPSHOT_ABS}"
+    VERBATIM
+)
+list(APPEND PIPENSX_NRO_DEPENDS sync_catalog_snapshot)
 if (PIPENSX_METADATA_INDEX)
     get_filename_component(PIPENSX_METADATA_INDEX_ABS
         "${PIPENSX_METADATA_INDEX}" ABSOLUTE)

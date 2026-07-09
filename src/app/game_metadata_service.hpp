@@ -120,6 +120,8 @@ private:
     };
 
     void imageWorkerMain() const;
+    bool loadCachedSnapshot(MetadataSnapshot& snapshot,
+                            std::string& error) const;
     ImageLoadResult loadImageInternal(const std::string& url,
                                       std::vector<uint8_t>& bytes,
                                       std::string& error) const;

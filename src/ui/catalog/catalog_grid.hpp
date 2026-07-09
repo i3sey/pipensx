@@ -29,6 +29,10 @@ namespace grid {
 inline constexpr int kColumns = 4;
 inline constexpr float kCardWidth = 180.0f;
 inline constexpr float kCoverHeight = 180.0f;
+// Langegen/games covers are Nintendo box-art images (~393x640), not square
+// eShop icons. Render them at their natural portrait aspect inside the same
+// 180px card slot so they do not get stretched/cropped like square icons.
+inline constexpr float kGameCoverWidth = 112.0f;
 // Cover + name line (17px) + sub line (15px) + inner margins.
 inline constexpr float kCardHeight = 232.0f;
 inline constexpr float kRowHeight = 248.0f;
@@ -57,6 +61,7 @@ struct GridCardInfo {
     std::string sub;
     bool subIsBadge = false;
     std::string iconUrl;
+    bool iconPreserveAspect = false;
     bool selectionMode = false;
     bool selected = false;
     bool selectable = false;
@@ -160,7 +165,11 @@ public:
         cover_->setBorderThickness(highlight ? 4 : 0);
         cover_->setBorderColor(highlight ? theme::accent()
                                          : brls::TRANSPARENT);
+        iconPreserveAspect_ = info.iconPreserveAspect;
         applyZoom(false);
+        image_->setScalingType(info.iconPreserveAspect
+            ? brls::ImageScalingType::FIT
+            : brls::ImageScalingType::FILL);
         setArtworkUrl(image_, service, info.iconUrl, currentIconUrl_,
                       imageState_);
     }
@@ -196,10 +205,12 @@ private:
     // clips, so the art scales in place without shifting the layout.
     void applyZoom(bool focused) {
         const float zoom = focused ? grid::kFocusZoom : 1.0f;
-        image_->setDimensions(grid::kCardWidth * zoom,
-                              grid::kCoverHeight * zoom);
+        const float baseWidth = iconPreserveAspect_
+            ? grid::kGameCoverWidth
+            : grid::kCardWidth;
+        image_->setDimensions(baseWidth * zoom, grid::kCoverHeight * zoom);
         image_->setPositionTop(-(zoom - 1.0f) * grid::kCoverHeight / 2.0f);
-        image_->setPositionLeft(-(zoom - 1.0f) * grid::kCardWidth / 2.0f);
+        image_->setPositionLeft((grid::kCardWidth - baseWidth * zoom) / 2.0f);
     }
 
     brls::Box* cover_;
@@ -215,6 +226,7 @@ private:
     int entryIndex_ = -1;
     std::string infoHash_;
     int shelfRow_ = -1;
+    bool iconPreserveAspect_ = false;
     Activate onActivate_;
     Focused onFocus_;
 };

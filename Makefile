@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 
 CMAKE_BIN ?= cmake
-PIPENSX_METADATA_INDEX ?=
+PIPENSX_METADATA_INDEX ?= $(CURDIR)/resources/catalog/game_metadata_index.json
 MTP_DIR ?=
 NRO_SRC ?= $(CURDIR)/build-switch/pipensx.nro
 DEPLOY_CLEAN ?= 0

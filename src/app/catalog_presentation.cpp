@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <initializer_list>
 #include <sstream>
 #include <unordered_set>
 
@@ -28,6 +29,14 @@ std::vector<std::string> mergeScreenshotUrls(
 
 namespace {
 
+std::string lowerAscii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char c) {
+                       return static_cast<char>(std::tolower(c));
+                   });
+    return value;
+}
+
 std::string join(const std::vector<std::string>& values) {
     std::ostringstream result;
     for (size_t i = 0; i < values.size(); ++i) {
@@ -36,6 +45,24 @@ std::string join(const std::vector<std::string>& values) {
         result << values[i];
     }
     return result.str();
+}
+
+bool containsAny(const std::string& text,
+                 std::initializer_list<const char*> needles) {
+    for (const char* needle : needles) {
+        if (text.find(needle) != std::string::npos)
+            return true;
+    }
+    return false;
+}
+
+bool hasNroMarker(const std::string& title) {
+    return containsAny(title, {"[nro", ".nro"});
+}
+
+bool hasPackageMarker(const std::string& title) {
+    return containsAny(title, {"[nsp", "[nsz", "[xci", "[xcz",
+                               ".nsp", ".nsz", ".xci", ".xcz"});
 }
 
 bool isHex(char c) {
@@ -57,8 +84,13 @@ CatalogPresentation resolveCatalogPresentation(
     result.title = metadata && !metadata->name.empty()
         ? metadata->name : entry.title;
     result.titleId = metadata ? metadata->titleId : std::string();
-    result.iconUrl = metadata && !metadata->iconUrl.empty()
-        ? metadata->iconUrl : entry.posterUrl;
+    if (metadata && !metadata->iconUrl.empty()) {
+        result.iconUrl = metadata->iconUrl;
+        result.iconPreserveAspect = false;
+    } else {
+        result.iconUrl = entry.posterUrl;
+        result.iconPreserveAspect = !result.iconUrl.empty();
+    }
     if (metadata && !metadata->bannerUrl.empty())
         result.coverUrl = metadata->bannerUrl;
     else
@@ -82,14 +114,12 @@ CatalogPresentation resolveCatalogPresentation(
 
 bool catalogEntryIsGame(const CatalogEntry& entry,
                         const GameMetadata* metadata) {
-    if (metadata)
+    if (metadata && looksLikeTitleId(metadata->titleId))
         return true;
-    std::string title = entry.title;
-    std::transform(title.begin(), title.end(), title.begin(),
-                   [](unsigned char c) {
-                       return static_cast<char>(std::tolower(c));
-                   });
-    return title.find("[nro]") == std::string::npos;
+    const std::string title = lowerAscii(entry.title);
+    if (hasNroMarker(title))
+        return false;
+    return hasPackageMarker(title);
 }
 
 bool catalogEntryHasMatchedTitle(const GameMetadata* metadata) {

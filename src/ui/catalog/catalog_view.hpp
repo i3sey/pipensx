@@ -45,6 +45,7 @@ public:
                     std::vector<std::string> stateBadges,
                     std::vector<std::string> gameNames,
                     std::vector<std::string> iconUrls,
+                    std::vector<uint8_t> iconPreserveAspect,
                     std::vector<uint8_t> selected,
                     std::vector<uint8_t> selectable,
                     GameMetadataService* metadata,
@@ -53,6 +54,7 @@ public:
         stateBadges_ = std::move(stateBadges);
         gameNames_ = std::move(gameNames);
         iconUrls_ = std::move(iconUrls);
+        iconPreserveAspect_ = std::move(iconPreserveAspect);
         selected_ = std::move(selected);
         selectable_ = std::move(selectable);
         metadata_ = metadata;
@@ -124,6 +126,8 @@ private:
             : entries_[row].size ? formatBytes(entries_[row].size)
                                  : "Unknown size";
         info.iconUrl = row < iconUrls_.size() ? iconUrls_[row] : std::string();
+        info.iconPreserveAspect = row < iconPreserveAspect_.size() &&
+                                  iconPreserveAspect_[row] != 0;
         info.selectionMode = selectionMode_;
         info.selected = row < selected_.size() && selected_[row] != 0;
         info.selectable = row < selectable_.size() && selectable_[row] != 0;
@@ -147,6 +151,7 @@ private:
     std::vector<std::string> stateBadges_;
     std::vector<std::string> gameNames_;
     std::vector<std::string> iconUrls_;
+    std::vector<uint8_t> iconPreserveAspect_;
     std::vector<uint8_t> selected_;
     std::vector<uint8_t> selectable_;
     std::vector<CatalogShelf> shelves_;
@@ -669,12 +674,14 @@ private:
         std::vector<std::string> stateBadges;
         std::vector<std::string> gameNames;
         std::vector<std::string> iconUrls;
+        std::vector<uint8_t> iconPreserveAspect;
         std::vector<uint8_t> selected;
         std::vector<uint8_t> selectable;
         std::vector<const GameMetadata*> metas;
         stateBadges.reserve(visible.size());
         gameNames.reserve(visible.size());
         iconUrls.reserve(visible.size());
+        iconPreserveAspect.reserve(visible.size());
         selected.reserve(visible.size());
         selectable.reserve(visible.size());
         metas.reserve(visible.size());
@@ -696,6 +703,8 @@ private:
                 resolveCatalogPresentation(entry, meta);
             gameNames.push_back(std::move(presentation.title));
             iconUrls.push_back(std::move(presentation.iconUrl));
+            iconPreserveAspect.push_back(
+                presentation.iconPreserveAspect ? 1 : 0);
             selected.push_back(selectedHashes_.count(hash) ? 1 : 0);
             selectable.push_back(canSelect ? 1 : 0);
             metas.push_back(meta);
@@ -860,6 +869,7 @@ private:
         size_t count = visible.size();
         dataSource_->setEntries(std::move(visible), std::move(stateBadges),
                                 std::move(gameNames), std::move(iconUrls),
+                                std::move(iconPreserveAspect),
                                 std::move(selected), std::move(selectable),
                                 metadata_, batchMode_);
         dataSource_->setShelves(std::move(shelves), heroIndex,

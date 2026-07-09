@@ -13,6 +13,7 @@ struct CatalogPresentation {
     std::string title;
     std::string titleId;
     std::string iconUrl;
+    bool iconPreserveAspect = false;
     std::string coverUrl;
     std::string description;
     std::string developer;

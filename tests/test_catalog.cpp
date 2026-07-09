@@ -291,6 +291,16 @@ void testMetadataSnapshotAcceptsVerifiedIndex() {
     assert(snapshot.items.size() == 1);
     assert(snapshot.items[0].name == "Runtime");
     assert(snapshot.manifest.indexBytes == index.size());
+    const std::string manifestWithoutUrl =
+        "{\"schemaVersion\":1,\"generatedAt\":\"2026-07-09T00:00:00Z\","
+        "\"langegenCommit\":\"langegen-sha\",\"titledbCommit\":\"titledb-sha\","
+        "\"index\":{\"bytes\":103,\"sha256\":\"75b92238836d44279c24060d060e49f5"
+        "b76e8049ca7fade0b736078433c4de80\",\"entries\":1}}";
+    assert(GameMetadataService::prepareSnapshot(manifestWithoutUrl, index,
+                                                snapshot, error));
+    assert(snapshot.manifest.indexUrl.find(
+        "/releases/latest/download/game_metadata_index.json") !=
+           std::string::npos);
 }
 
 void testMetadataSnapshotRejectsTamperedIndex() {
@@ -358,7 +368,7 @@ void testMetadataLoadPrefersVerifiedRuntimeCache() {
     rmdir(root.c_str());
 }
 
-void testMetadataFetchVerifiesBeforeAdoptAndPreservesActiveDataOnFailure() {
+void testMetadataFetchVerifiesBeforeAdoptAndFallsBackToCache() {
     const std::string root = "/tmp/pipensx-metadata-fetch-" +
         std::to_string(static_cast<long long>(getpid()));
     mkdir(root.c_str(), 0755);
@@ -400,12 +410,14 @@ void testMetadataFetchVerifiesBeforeAdoptAndPreservesActiveDataOnFailure() {
         std::string error;
         assert(metadata.fetchLatest(snapshot, error));
         assert(metadata.size() == 0);
-        metadata.adopt(std::move(snapshot));
-        assert(metadata.size() == 1);
 
         failIndex = true;
-        MetadataSnapshot failed;
-        assert(!metadata.fetchLatest(failed, error));
+        MetadataSnapshot cached;
+        assert(metadata.fetchLatest(cached, error));
+        assert(metadata.size() == 0);
+        assert(cached.items.size() == 1);
+        assert(cached.items[0].name == "Runtime");
+        metadata.adopt(std::move(cached));
         assert(metadata.size() == 1);
         assert(metadata.findByInfoHash(
             "E21269D03D34B557F63CE915DEA14F765C9C9798"));
@@ -579,6 +591,7 @@ void testCatalogPresentationFallsBackFieldByField() {
     assert(resolved.title == "eShop name");
     assert(resolved.titleId == "0100230005A52000");
     assert(resolved.iconUrl == "https://example/icon.jpg");
+    assert(!resolved.iconPreserveAspect);
     assert(resolved.coverUrl == "https://example/icon.jpg");
     assert(resolved.description == "eShop description");
     assert(resolved.developer == "Langegen developer");
@@ -591,6 +604,7 @@ void testCatalogPresentationFallsBackFieldByField() {
         resolveCatalogPresentation(entry, nullptr);
     assert(fallback.title == "Langegen title");
     assert(fallback.iconUrl == "https://example/cover.jpg");
+    assert(fallback.iconPreserveAspect);
     assert(fallback.coverUrl == "https://example/cover.jpg");
     assert(fallback.description == "Langegen description");
     assert(fallback.genre == "Langegen genre");
@@ -602,12 +616,28 @@ void testCatalogGameFilterKeepsUnmatchedSwitchReleases() {
     release.title = "New game [NSZ][ENG]";
     assert(catalogEntryIsGame(release, nullptr));
 
+    CatalogEntry nspRelease;
+    nspRelease.title = "Base game [NSP][RUS]";
+    assert(catalogEntryIsGame(nspRelease, nullptr));
+
+    CatalogEntry cartridgeRelease;
+    cartridgeRelease.title = "Cart dump [XCI][ENG]";
+    assert(catalogEntryIsGame(cartridgeRelease, nullptr));
+
     CatalogEntry homebrew;
     homebrew.title = "Source port [NRO][ENG]";
     assert(!catalogEntryIsGame(homebrew, nullptr));
 
+    GameMetadata emptyMetadata;
+    assert(!catalogEntryIsGame(homebrew, &emptyMetadata));
+
     GameMetadata metadata;
+    metadata.titleId = "0100230005A52000";
     assert(catalogEntryIsGame(homebrew, &metadata));
+
+    GameMetadata invalidMetadata;
+    invalidMetadata.titleId = "not-a-title-id";
+    assert(!catalogEntryIsGame(homebrew, &invalidMetadata));
 }
 
 void testCatalogBrowseMatchFilterRequiresTitleIdMetadata() {
@@ -965,11 +995,61 @@ void testLangegenSchemaParsing() {
     assert(e.description == "A port.");
 }
 
+void testBundledLangegenSnapshotLoadsWithoutNetwork() {
+    const std::string root = "/tmp/pipensx-bundled-catalog-" +
+        std::to_string(static_cast<long long>(getpid()));
+    mkdir(root.c_str(), 0755);
+    {
+        CatalogService catalog(root, "resources/catalog/switch_games.json");
+        std::string error;
+        assert(catalog.load(error));
+        assert(catalog.entries().size() > 1000);
+
+        bool hasInlineArtwork = false;
+        bool hasInlineDescription = false;
+        for (const CatalogEntry& entry : catalog.entries()) {
+            if (!entry.posterUrl.empty() || !entry.screenshots.empty())
+                hasInlineArtwork = true;
+            if (!entry.description.empty())
+                hasInlineDescription = true;
+        }
+        assert(hasInlineArtwork);
+        assert(hasInlineDescription);
+    }
+    rmdir((root + "/catalog").c_str());
+    rmdir(root.c_str());
+}
+
+void testBundledMetadataSnapshotLoadsWithoutNetwork() {
+    const std::string root = "/tmp/pipensx-bundled-metadata-" +
+        std::to_string(static_cast<long long>(getpid()));
+    mkdir(root.c_str(), 0755);
+    {
+        GameMetadataService metadata(
+            root, "resources/catalog/game_metadata_index.json");
+        std::string error;
+        assert(metadata.load(error));
+        assert(metadata.size() > 1000);
+        const GameMetadata* known = metadata.findByInfoHash(
+            "000762AF952A9ECE472A5C713E3B5D87EAA9DF45");
+        assert(known);
+        assert(!known->name.empty());
+        assert(!known->iconUrl.empty());
+        assert(!known->bannerUrl.empty());
+    }
+    rmdir((root + "/catalog/metadata").c_str());
+    rmdir((root + "/catalog/images").c_str());
+    rmdir((root + "/catalog").c_str());
+    rmdir(root.c_str());
+}
+
 int main() {
     testMagnetParsing();
     testTrustedSourceAllowlist();
     testCatalogParsing();
     testLangegenSchemaParsing();
+    testBundledLangegenSnapshotLoadsWithoutNetwork();
+    testBundledMetadataSnapshotLoadsWithoutNetwork();
     testCatalogV2HealthParsing();
     testInfoDictParsing();
     testResolveFromPresetInfoDict();
@@ -978,7 +1058,7 @@ int main() {
     testMetadataSnapshotAcceptsVerifiedIndex();
     testMetadataSnapshotRejectsTamperedIndex();
     testMetadataLoadPrefersVerifiedRuntimeCache();
-    testMetadataFetchVerifiesBeforeAdoptAndPreservesActiveDataOnFailure();
+    testMetadataFetchVerifiesBeforeAdoptAndFallsBackToCache();
     testMetadataLoadFallsBackWhenRuntimeCacheIsCorrupt();
     testCatalogAndMetadataRefreshAdoptIndependently();
     testOptionalCatalogDataMayBeAbsent();
