@@ -409,18 +409,20 @@ public:
         title_ = new brls::Label();
         title_->setFontSize(theme::kFontBody);
         title_->setGrow(1);
-        seeAll_ = new brls::Label();
+        seeAll_ = new brls::Button();
+        seeAll_->setStyle(&brls::BUTTONSTYLE_BORDERLESS);
+        seeAll_->setHeight(32);
         seeAll_->setFontSize(theme::kFontCaption);
         seeAll_->setTextColor(theme::textTertiary());
-        seeAll_->setText("See all >");
-        seeAll_->setMarginTop(4);
+        seeAll_->setPaddingLeft(12);
+        seeAll_->setPaddingRight(12);
+        seeAll_->setShrink(0.0f);
+        seeAll_->setText("See all");
         seeAll_->registerClickAction([this](brls::View*) {
             if (seeAllAction_)
                 seeAllAction_();
             return true;
         });
-        seeAll_->addGestureRecognizer(
-            new brls::TapGestureRecognizer(seeAll_));
         header_->addView(title_);
         header_->addView(seeAll_);
         shelf_ = new HorizontalShelf(std::move(focusHash));
@@ -450,7 +452,7 @@ public:
 private:
     brls::Box* header_;
     brls::Label* title_;
-    brls::Label* seeAll_;
+    brls::Button* seeAll_;
     HorizontalShelf* shelf_;
     std::function<void()> seeAllAction_;
 };
