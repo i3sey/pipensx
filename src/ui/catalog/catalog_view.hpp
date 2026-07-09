@@ -260,9 +260,10 @@ public:
         count_->setShrink(0.0f);
         header_->addView(count_);
         clearSearch_ = makeChip("Clear", [this] {
-            if (query_.empty())
+            if (query_.empty() && !shelfDrilldown_)
                 return;
             query_.clear();
+            shelfDrilldown_ = false;
             rebuildEntries();
         });
         clearSearch_->setMarginLeft(16);
@@ -377,6 +378,7 @@ public:
         brls::Application::getImeManager()->openForText(
             [this](std::string text) {
                 query_ = std::move(text);
+                shelfDrilldown_ = false;
                 rebuildEntries();
             },
             "Search catalog", "", 256, query_,
@@ -719,7 +721,8 @@ private:
         std::vector<CatalogShelf> shelves;
         int heroIndex = -1;
         std::string heroImage;
-        if (query_.empty() && !batchMode_ && !visible.empty()) {
+        if (query_.empty() && !shelfDrilldown_ && !batchMode_ &&
+            !visible.empty()) {
             bool popularFallback = false;
             const std::vector<int> popular =
                 popularityOrder(visible, popularFallback);
@@ -786,7 +789,7 @@ private:
                 items = buildShelf(popular, 1);
             if (!items.empty())
                 shelves.push_back({"Popular", std::move(items), [this] {
-                    setSort(SortMode::Popular);
+                    openShelfDrilldown(SortMode::Popular);
                     focusGrid();
                 }});
 
@@ -801,7 +804,7 @@ private:
             items = buildShelf(byDate, grid::kMinShelfItems);
             if (!items.empty())
                 shelves.push_back({"New", std::move(items), [this] {
-                    setSort(SortMode::Latest);
+                    openShelfDrilldown(SortMode::Latest);
                     focusGrid();
                 }});
 
@@ -892,9 +895,10 @@ private:
                     "Try another query or clear the current search to see all "
                     "releases again.",
                     "Clear search", [this] {
-                        if (query_.empty())
+                        if (query_.empty() && !shelfDrilldown_)
                             return;
                         query_.clear();
+                        shelfDrilldown_ = false;
                         rebuildEntries();
                     });
             }
@@ -930,8 +934,9 @@ private:
         searchField_->setIconColor(query_.empty() ? theme::textPrimary()
                                                   : nvgRGB(255, 255, 255));
         styleChip(searchField_, !query_.empty());
-        clearSearch_->setVisibility(query_.empty() ? brls::Visibility::GONE
-                                                   : brls::Visibility::VISIBLE);
+        clearSearch_->setVisibility(
+            query_.empty() && !shelfDrilldown_ ? brls::Visibility::GONE
+                                               : brls::Visibility::VISIBLE);
         styleChip(sortLatest_, sort_ == SortMode::Latest);
         styleChip(sortPopular_, sort_ == SortMode::Popular);
         styleChip(sortAlpha_, sort_ == SortMode::Alphabetical);
@@ -978,8 +983,17 @@ private:
         rebuildEntries();
     }
 
-    // "See all" target (F5): land the focus on the first grid row, right
-    // below the hero/shelf block.
+    void openShelfDrilldown(SortMode mode) {
+        if (busy_)
+            return;
+        query_.clear();
+        shelfDrilldown_ = true;
+        sort_ = mode;
+        rebuildEntries();
+    }
+
+    // "See all" target (F5): land the focus on the first grid row. In
+    // drill-down mode shelves are hidden, so this is the top of the result.
     void focusGrid() {
         if (dataSource_->entries().empty())
             return;
@@ -1391,6 +1405,7 @@ private:
     SortMode sort_ = SortMode::Latest;
     bool busy_ = false;
     bool batchMode_ = false;
+    bool shelfDrilldown_ = false;
     brls::RepeatingTimer timer_;
     uint64_t observedSettingsGeneration_ = 0;
     uint64_t taskSignature_ = 0;
