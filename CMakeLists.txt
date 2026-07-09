@@ -42,7 +42,7 @@ set(BRLS_UNITY_BUILD OFF CACHE BOOL "" FORCE)
 include(${BOREALIS_LIBRARY}/cmake/commonOption.cmake)
 include(${BOREALIS_LIBRARY}/cmake/toolchain.cmake)
 
-project(pipensx VERSION 0.4.0 LANGUAGES C CXX)
+project(pipensx VERSION 1.0.0 LANGUAGES C CXX)
 
 set(APP_TITLE "pipensx")
 set(APP_AUTHOR "pipensx")
