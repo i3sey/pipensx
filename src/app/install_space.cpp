@@ -38,22 +38,25 @@ std::vector<uint8_t> defaultInstallSelection(
     mask.reserve(preview.files.size());
     bool allSelected = true;
     for (const TorrentPreview::File& file : preview.files) {
-        const uint8_t selected = file.package ? 1 : 0;
-        mask.push_back(selected);
-        allSelected = allSelected && selected != 0;
+        const uint8_t action = file.package
+            ? static_cast<uint8_t>(FileAction::Install)
+            : static_cast<uint8_t>(FileAction::Skip);
+        mask.push_back(action);
+        allSelected = allSelected &&
+                      action != static_cast<uint8_t>(FileAction::Skip);
     }
     return allSelected ? std::vector<uint8_t>() : mask;
 }
 
 InstallSpaceEstimate estimateInstallSpace(
     const TorrentPreview& preview,
-    const std::vector<uint8_t>& selectedFiles,
+    const std::vector<uint8_t>& fileActions,
     TransferMode mode) {
     InstallSpaceEstimate result;
-    const bool useSelection = !selectedFiles.empty();
+    const bool useSelection = !fileActions.empty();
     const size_t count = preview.files.size();
 
-    if (useSelection && selectedFiles.size() != count) {
+    if (useSelection && fileActions.size() != count) {
         result.overflow = true;
         return result;
     }
@@ -61,12 +64,23 @@ InstallSpaceEstimate estimateInstallSpace(
     bool streamedPackage = false;
     bool compressedPackage = false;
     for (size_t i = 0; i < count; ++i) {
-        if (useSelection && selectedFiles[i] == 0)
-            continue;
         const TorrentPreview::File& file = preview.files[i];
+        uint8_t action = useSelection
+            ? fileActions[i]
+            : (mode == TransferMode::StreamInstall && file.package
+                   ? static_cast<uint8_t>(FileAction::Install)
+                   : static_cast<uint8_t>(FileAction::Download));
+        if (action == static_cast<uint8_t>(FileAction::Skip))
+            continue;
+        if (action != static_cast<uint8_t>(FileAction::Download) &&
+            action != static_cast<uint8_t>(FileAction::Install)) {
+            result.overflow = true;
+            return result;
+        }
         ++result.selectedFiles;
         addBytes(result.selectedBytes, file.length, result.overflow);
-        if (mode == TransferMode::StreamInstall && file.package) {
+        if (action == static_cast<uint8_t>(FileAction::Install) &&
+            mode == TransferMode::StreamInstall && file.package) {
             ++result.packageFiles;
             streamedPackage = true;
             compressedPackage = compressedPackage || file.compressed;

@@ -6,7 +6,7 @@
 //
 // Usage:
 //   golden_runner --fixtures <dir> --out <file.png> --theme light|dark
-//                 --screen catalog|shelf-scroll|detail|downloads|installed|settings|about
+//                 --screen catalog|shelf-scroll|detail|torrent-selection|downloads|installed|settings|about
 //                 [--frames N] [--sandbox <dir>]
 //
 // Determinism notes:
@@ -41,6 +41,7 @@
 #include "ui/catalog/catalog_view.hpp"
 #include "ui/common/ui_helpers.hpp"
 #include "ui/detail/game_detail.hpp"
+#include "ui/detail/torrent_selection.hpp"
 #include "ui/downloads/downloads_view.hpp"
 #include "ui/installed/installed_view.hpp"
 #include "ui/settings/about_view.hpp"
@@ -299,6 +300,21 @@ int main(int argc, char** argv) {
         activity = new GameDetailActivity(
             entries.front(), "", &manager, &metadata, &installed, &settings,
             [](const std::string&, const std::string&) {}, [] {});
+    } else if (screen == "torrent-selection") {
+        pipensx::TorrentPreview preview;
+        preview.name = "Mixed release";
+        preview.fileCount = 3;
+        preview.packageCount = 2;
+        preview.totalBytes = 1879048192ULL;
+        preview.files = {
+            {"game.nsp", 1073741824ULL, true, false, false},
+            {"bonus/readme.txt", 1048576ULL, false, false, false},
+            {"update.nsz", 805306368ULL, true, true, false},
+        };
+        activity = new TorrentSelectionActivity(
+            &manager, "sdmc:/switch/pipensx/_golden_selection.torrent",
+            std::move(preview), pipensx::TransferMode::StreamInstall,
+            settings.get().streamSelection);
     } else if (screen == "downloads") {
         activity = new GoldenActivity(
             new MainView(&manager, &metadata, &settings));

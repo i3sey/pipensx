@@ -35,6 +35,12 @@ enum class TransferMode {
     StreamInstall,
 };
 
+enum class FileAction : uint8_t {
+    Skip = 0,
+    Download = 1,
+    Install = 2,
+};
+
 struct DownloadTask {
     std::string id;
     std::string name;
@@ -96,6 +102,10 @@ public:
                        const std::vector<uint8_t>& selectedFiles,
                        std::string& taskId, std::string& error,
                        const std::vector<uint8_t>& initialPeers = {});
+    bool importTorrentActions(const std::string& path,
+                              const std::vector<uint8_t>& fileActions,
+                              std::string& taskId, std::string& error,
+                              const std::vector<uint8_t>& initialPeers = {});
     bool importTorrent(const std::string& path, TransferMode mode,
                        std::string& taskId, std::string& error) {
         std::vector<uint8_t> selectedFiles;

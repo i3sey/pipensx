@@ -46,7 +46,7 @@ struct InstallSpaceCheck {
 
 InstallSpaceEstimate estimateInstallSpace(
     const TorrentPreview& preview,
-    const std::vector<uint8_t>& selectedFiles,
+    const std::vector<uint8_t>& fileActions,
     TransferMode mode);
 
 std::vector<uint8_t> defaultInstallSelection(

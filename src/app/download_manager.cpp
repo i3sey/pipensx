@@ -58,6 +58,42 @@ bool isCartridgeDump(const std::string& path) {
             lower.substr(lower.size() - 4) == ".xcz");
 }
 
+uint8_t actionValue(FileAction action) {
+    return static_cast<uint8_t>(action);
+}
+
+bool isValidFileAction(uint8_t value) {
+    return value == actionValue(FileAction::Skip) ||
+           value == actionValue(FileAction::Download) ||
+           value == actionValue(FileAction::Install);
+}
+
+FileAction defaultActionFor(const TorrentPreview::File& file,
+                            TransferMode mode) {
+    return mode == TransferMode::StreamInstall && file.package
+        ? FileAction::Install
+        : FileAction::Download;
+}
+
+std::vector<uint8_t> actionsFromLegacySelection(
+    const TorrentPreview& preview,
+    TransferMode mode,
+    const std::vector<uint8_t>& selectedFiles) {
+    std::vector<uint8_t> actions;
+    actions.reserve(preview.files.size());
+    const bool useSelection = !selectedFiles.empty();
+    for (size_t i = 0; i < preview.files.size(); ++i) {
+        const bool selected = !useSelection || selectedFiles[i] != 0;
+        if (!selected) {
+            actions.push_back(actionValue(FileAction::Skip));
+        } else {
+            actions.push_back(actionValue(defaultActionFor(preview.files[i],
+                                                          mode)));
+        }
+    }
+    return actions;
+}
+
 bool makeDirectories(const std::string& path) {
     if (path.empty())
         return false;
@@ -172,6 +208,30 @@ std::string installJournalPath(const std::string& root,
     return root + "/install-journal-" + taskId + ".bencode";
 }
 
+void upgradeLegacySelection(DownloadTask& task) {
+    if (task.fileSelection.empty())
+        return;
+    metainfo_t metainfo;
+    if (!metainfo_load(task.metainfoPath.c_str(), &metainfo))
+        return;
+    if (task.fileSelection.size() == metainfo.num_files) {
+        std::vector<uint8_t> actions;
+        actions.reserve(task.fileSelection.size());
+        for (uint32_t i = 0; i < metainfo.num_files; ++i) {
+            if (task.fileSelection[i] == 0) {
+                actions.push_back(actionValue(FileAction::Skip));
+            } else if (task.mode == TransferMode::StreamInstall &&
+                       hasPackageExtension(metainfo.files[i].path)) {
+                actions.push_back(actionValue(FileAction::Install));
+            } else {
+                actions.push_back(actionValue(FileAction::Download));
+            }
+        }
+        task.fileSelection = std::move(actions);
+    }
+    metainfo_free(&metainfo);
+}
+
 class PackageCoordinator {
 public:
     using Progress = std::function<void(
@@ -194,20 +254,35 @@ public:
           progress_(std::move(progress)) {
         bool useSelection = !fileSelection.empty();
         if (useSelection && fileSelection.size() != metainfo_.num_files) {
-            error_ = "Selected file mask does not match the torrent.";
+            error_ = "Selected file actions do not match the torrent.";
             return;
         }
         configs_.resize(metainfo_.num_files);
         uint32_t ordinal = 0;
         for (uint32_t i = 0; i < metainfo_.num_files; ++i) {
-            bool selected = !useSelection || fileSelection[i] != 0;
-            if (!selected) {
+            FileAction action = streamInstall_ &&
+                                      hasPackageExtension(metainfo_.files[i].path)
+                                  ? FileAction::Install
+                                  : FileAction::Download;
+            if (useSelection) {
+                if (!isValidFileAction(fileSelection[i])) {
+                    error_ = "Selected file action is invalid.";
+                    return;
+                }
+                action = static_cast<FileAction>(fileSelection[i]);
+            }
+            if (action == FileAction::Skip) {
                 configs_[i].mode = STORAGE_FILE_SKIP;
                 continue;
             }
-            if (!hasPackageExtension(metainfo_.files[i].path) || !streamInstall_) {
+            if (action == FileAction::Download) {
                 configs_[i].mode = STORAGE_FILE_DISK;
                 continue;
+            }
+            if (!streamInstall_ ||
+                !hasPackageExtension(metainfo_.files[i].path)) {
+                error_ = "Only NSP/NSZ package files can be installed.";
+                return;
             }
             packageOrdinals_[i] = ordinal;
             configs_[i].mode = ordinal < completedPackages_
@@ -1220,24 +1295,59 @@ bool DownloadManager::importTorrent(const std::string& path,
         error = "Selected file list does not match torrent contents.";
         return false;
     }
+    return importTorrentActions(path,
+                                actionsFromLegacySelection(preview, mode,
+                                                           selectedFiles),
+                                taskId, error, initialPeers);
+}
+
+bool DownloadManager::importTorrentActions(
+                                    const std::string& path,
+                                    const std::vector<uint8_t>& fileActions,
+                                    std::string& taskId,
+                                    std::string& error,
+                                    const std::vector<uint8_t>& initialPeers) {
+    TorrentPreview preview;
+    if (!previewTorrent(path, preview, error))
+        return false;
+    if (!fileActions.empty() && fileActions.size() != preview.files.size()) {
+        error = "Selected file actions do not match torrent contents.";
+        return false;
+    }
     if (initialPeers.size() % 6 != 0) {
         error = "Initial peer endpoint list is malformed.";
         return false;
     }
 
-    std::vector<uint8_t> selection = selectedFiles;
+    std::vector<uint8_t> selection = fileActions;
     bool useSelection = !selection.empty();
-    uint32_t selectedPackageCount = 0;
-    bool hasSelectedPackages = false;
+    uint32_t installPackageCount = 0;
+    bool hasSelectedFiles = false;
     for (size_t i = 0; i < preview.files.size(); ++i) {
-        bool selected = !useSelection || selection[i] != 0;
-        if (selected && preview.files[i].package) {
-            hasSelectedPackages = true;
-            ++selectedPackageCount;
+        uint8_t action = useSelection
+            ? selection[i]
+            : actionValue(FileAction::Download);
+        if (!isValidFileAction(action)) {
+            error = "Selected file action is invalid.";
+            return false;
+        }
+        if (action != actionValue(FileAction::Skip))
+            hasSelectedFiles = true;
+        if (action == actionValue(FileAction::Install)) {
+            if (!preview.files[i].package) {
+                error = "Only NSP/NSZ package files can be installed.";
+                return false;
+            }
+            ++installPackageCount;
         }
     }
-    if (!hasSelectedPackages)
-        mode = TransferMode::DownloadOnly;
+    if (!hasSelectedFiles) {
+        error = "Select at least one file.";
+        return false;
+    }
+    TransferMode mode = installPackageCount > 0
+        ? TransferMode::StreamInstall
+        : TransferMode::DownloadOnly;
 
     std::lock_guard<std::mutex> lock(mutex_);
     if (findLocked(preview.infoHash)) {
@@ -1266,8 +1376,7 @@ bool DownloadManager::importTorrent(const std::string& path,
     task.totalBytes = preview.totalBytes;
     task.status = DownloadStatus::Queued;
     task.mode = mode;
-    task.packageCount = mode == TransferMode::StreamInstall
-                        ? selectedPackageCount : 0;
+    task.packageCount = installPackageCount;
     task.fileSelection = std::move(selection);
     task.initialPeers = initialPeers;
     tasks_.push_back(std::move(task));
@@ -1412,7 +1521,7 @@ bool DownloadManager::saveLocked(std::string& error) const {
         state << "e";
     }
     state << "e";
-    state << "7:versioni3e";
+    state << "7:versioni4e";
     state << "e";
 
     std::string temporary = statePath_ + ".tmp";
@@ -1468,7 +1577,8 @@ void DownloadManager::load() {
     if (!be_dict_get(root.buf, root.buf + root.raw_len, "version", 7,
                      &version) ||
         version.type != BE_INT ||
-        (version.ival != 1 && version.ival != 2 && version.ival != 3))
+        (version.ival != 1 && version.ival != 2 && version.ival != 3 &&
+         version.ival != 4))
         return;
 
     be_node_t list;
@@ -1522,6 +1632,8 @@ void DownloadManager::load() {
             task.status = DownloadStatus::Error;
             task.error = "The stored .torrent file is missing.";
         }
+        if (version.ival == 3 && task.status != DownloadStatus::Error)
+            upgradeLegacySelection(task);
         tasks_.push_back(std::move(task));
     }
 }

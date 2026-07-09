@@ -601,12 +601,10 @@ private:
             return;
         }
 
-        // Options path (O9): let the user pick the install mode before the
-        // per-file picker. Each branch hands the temp file to the picker, which
-        // owns it (unlinks on cancel).
+        // Options path: the per-file picker owns the temp file and unlinks it
+        // on cancel. Each row chooses Skip, Download, or Install directly.
         if (forcePicker) {
-            chooseInstallMode(path, std::move(preview),
-                              std::move(initialPeers));
+            openSelection(path, std::move(preview), std::move(initialPeers));
             return;
         }
 
@@ -664,74 +662,14 @@ private:
         refreshButtons();
     }
 
-    // O9: install-mode choice presented after resolve, before the per-file
-    // picker. Carries the resolved temp torrent between the dialog buttons.
-    struct PendingImport {
-        std::string path;
-        pipensx::TorrentPreview preview;
-        std::vector<uint8_t> initialPeers;
-    };
-
-    // Clear "Stream install" vs "Download to SD" dialog with per-mode notes and
-    // an up-front space estimate (InstallSpaceEstimate). The console picker
-    // still enforces the hard space check per selection.
-    void chooseInstallMode(const std::string& path,
-                           pipensx::TorrentPreview preview,
-                           std::vector<uint8_t> initialPeers) {
-        const StorageSpaceSnapshot storage =
-            pipensx::queryStorageSpace(manager_->rootPath());
-        const auto estimate = pipensx::estimateInstallSpace(
-            preview, {}, TransferMode::DownloadOnly);
-        const bool compressed =
-            pipensx::estimateInstallSpace(preview, {},
-                                          TransferMode::StreamInstall)
-                .certainty == SpaceEstimateCertainty::CompressedUnknown;
-
-        std::string message =
-            "This release is about " + formatBytes(estimate.requiredBytes) +
-            " across " + std::to_string(preview.files.size()) +
-            " file(s).\n\n"
-            "Stream install — installs the game to your console as it "
-            "downloads; the temporary download is cleared afterward.";
-        if (compressed)
-            message += " NSZ packages may expand further.";
-        message +=
-            "\n\nDownload to SD — keeps the game files on the SD card without "
-            "installing.";
-        if (storage.available) {
-            message += "\n\nSD free: " + formatBytes(storage.freeBytes);
-            const auto check = pipensx::assessInstallSpace(estimate, storage);
-            if (check.status == InstallSpaceCheckStatus::Insufficient)
-                message += "   Need " + formatBytes(check.shortfallBytes) +
-                           " more.";
-        } else {
-            message += "\n\nSD free: unavailable";
-        }
-
-        auto pending = std::make_shared<PendingImport>(PendingImport{
-            path, std::move(preview), std::move(initialPeers)});
-        auto* dialog = new brls::Dialog(message);
-        dialog->addButton("Stream install", [this, pending] {
-            openSelection(pending, TransferMode::StreamInstall);
-        });
-        dialog->addButton("Download to SD", [this, pending] {
-            openSelection(pending, TransferMode::DownloadOnly);
-        });
-        dialog->addButton("Cancel", [pending] {
-            ::unlink(pending->path.c_str());
-        });
-        // Force an explicit choice so B can't dismiss and leak the temp file.
-        dialog->setCancelable(false);
-        dialog->open();
-    }
-
-    void openSelection(const std::shared_ptr<PendingImport>& pending,
-                       TransferMode mode) {
+    void openSelection(const std::string& path,
+                       pipensx::TorrentPreview preview,
+                       std::vector<uint8_t> initialPeers) {
         StreamSelection selection = settings_
             ? settings_->get().streamSelection : StreamSelection::AllFiles;
         brls::Application::pushActivity(new TorrentSelectionActivity(
-            manager_, pending->path, std::move(pending->preview), mode,
-            selection, std::move(pending->initialPeers)));
+            manager_, path, std::move(preview), TransferMode::StreamInstall,
+            selection, std::move(initialPeers)));
     }
 
     CatalogEntry entry_;

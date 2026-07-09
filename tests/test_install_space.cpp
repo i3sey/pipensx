@@ -34,7 +34,10 @@ int main() {
         std::vector<uint8_t> selection = defaultInstallSelection(
             preview, TransferMode::StreamInstall,
             StreamSelection::PackagesOnly);
-        assert((selection == std::vector<uint8_t>{1, 0}));
+        assert((selection == std::vector<uint8_t>{
+            static_cast<uint8_t>(FileAction::Install),
+            static_cast<uint8_t>(FileAction::Skip),
+        }));
 
         InstallSpaceEstimate estimate = estimateInstallSpace(
             preview, selection, TransferMode::StreamInstall);
@@ -42,6 +45,27 @@ int main() {
         assert(estimate.packageFiles == 1);
         assert(estimate.requiredBytes == 1024);
         assert(estimate.certainty == SpaceEstimateCertainty::Conservative);
+    }
+
+    {
+        TorrentPreview preview;
+        preview.files = {
+            {"game.nsp", 1024, true, false, false},
+            {"readme.txt", 256, false, false, false},
+        };
+        std::vector<uint8_t> actions = {
+            static_cast<uint8_t>(FileAction::Download),
+            static_cast<uint8_t>(FileAction::Skip),
+        };
+
+        InstallSpaceEstimate estimate = estimateInstallSpace(
+            preview, actions, TransferMode::DownloadOnly);
+        assert(estimate.selectedFiles == 1);
+        assert(estimate.packageFiles == 0);
+        assert(estimate.downloadBytes == 1024);
+        assert(estimate.packageBytes == 0);
+        assert(estimate.requiredBytes == 1024);
+        assert(estimate.certainty == SpaceEstimateCertainty::Exact);
     }
 
     {

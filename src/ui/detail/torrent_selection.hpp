@@ -18,8 +18,17 @@ struct TorrentSelectionEntry {
     std::string path;
     uint64_t length = 0;
     bool package = false;
-    bool selected = true;
+    FileAction action = FileAction::Download;
 };
+
+inline const char* actionLabel(FileAction action) {
+    switch (action) {
+        case FileAction::Install: return "Install";
+        case FileAction::Download: return "Download";
+        case FileAction::Skip: return "Skip";
+    }
+    return "Skip";
+}
 
 class TorrentSelectionCell : public brls::RecyclerCell {
 public:
@@ -56,12 +65,14 @@ public:
     }
 
     void setEntry(const TorrentSelectionEntry& entry) {
-        mark_->setText(entry.selected ? "[x]" : "[ ]");
+        mark_->setText(entry.action == FileAction::Install ? "[I]" :
+                       entry.action == FileAction::Download ? "[D]" : "[ ]");
         title_->setText(entry.path);
         std::string meta = formatBytes(entry.length);
         meta += "   ";
-        meta += entry.package ? "Package file" : "Other file";
-        meta += entry.selected ? "   Install" : "   Skip";
+        meta += entry.package ? "NSP/NSZ package" : "Other file";
+        meta += "   ";
+        meta += actionLabel(entry.action);
         meta_->setText(meta);
     }
 
@@ -83,36 +94,44 @@ public:
     }
 
     void setAll(bool selected) {
-        for (auto& entry : entries_)
-            entry.selected = selected;
+        for (auto& entry : entries_) {
+            entry.action = selected
+                ? (entry.package ? FileAction::Install : FileAction::Download)
+                : FileAction::Skip;
+        }
     }
 
     size_t selectedCount() const {
         size_t count = 0;
         for (const auto& entry : entries_)
-            if (entry.selected)
+            if (entry.action != FileAction::Skip)
                 ++count;
         return count;
     }
 
-    size_t selectedPackageCount() const {
+    size_t installCount() const {
         size_t count = 0;
         for (const auto& entry : entries_)
-            if (entry.selected && entry.package)
+            if (entry.action == FileAction::Install)
                 ++count;
         return count;
     }
 
-    std::vector<uint8_t> selectionMask() const {
-        std::vector<uint8_t> mask;
-        bool allSelected = true;
-        mask.reserve(entries_.size());
+    size_t downloadCount() const {
+        size_t count = 0;
+        for (const auto& entry : entries_)
+            if (entry.action == FileAction::Download)
+                ++count;
+        return count;
+    }
+
+    std::vector<uint8_t> fileActions() const {
+        std::vector<uint8_t> actions;
+        actions.reserve(entries_.size());
         for (const auto& entry : entries_) {
-            mask.push_back(entry.selected ? 1 : 0);
-            if (!entry.selected)
-                allSelected = false;
+            actions.push_back(static_cast<uint8_t>(entry.action));
         }
-        return allSelected ? std::vector<uint8_t>() : mask;
+        return actions;
     }
 
     int numberOfSections(brls::RecyclerFrame*) override {
@@ -133,6 +152,8 @@ public:
             return nullptr;
         return &entries_[static_cast<size_t>(row)];
     }
+
+    void cycleRow(int row);
 
 private:
     TorrentSelectionActivity* owner_;
@@ -252,7 +273,7 @@ public:
             setAllSelected(false);
             return true;
         });
-        registerAction("Install", brls::BUTTON_RB,
+        registerAction("Continue", brls::BUTTON_RB,
                        [this](brls::View*) {
                            confirmSelection();
                            return true;
@@ -268,9 +289,14 @@ private:
             entry.path = file.path;
             entry.length = file.length;
             entry.package = file.package;
-            entry.selected = initialSelection_ == StreamSelection::AllFiles ||
-                             preferred_ != TransferMode::StreamInstall ||
-                             file.package;
+            if (preferred_ == TransferMode::StreamInstall && file.package) {
+                entry.action = FileAction::Install;
+            } else if (initialSelection_ == StreamSelection::AllFiles ||
+                       preferred_ != TransferMode::StreamInstall) {
+                entry.action = FileAction::Download;
+            } else {
+                entry.action = FileAction::Skip;
+            }
             entries.push_back(std::move(entry));
         }
         dataSource_->setEntries(std::move(entries));
@@ -285,13 +311,13 @@ private:
 
     void refreshSummary() {
         size_t selected = dataSource_->selectedCount();
-        size_t selectedPackages = dataSource_->selectedPackageCount();
-        std::vector<uint8_t> mask = dataSource_->selectionMask();
-        const TransferMode mode = selectedPackages > 0 &&
-                                  preferred_ == TransferMode::StreamInstall
+        size_t installs = dataSource_->installCount();
+        size_t downloads = dataSource_->downloadCount();
+        std::vector<uint8_t> actions = dataSource_->fileActions();
+        const TransferMode mode = installs > 0
             ? TransferMode::StreamInstall
             : TransferMode::DownloadOnly;
-        const auto estimate = pipensx::estimateInstallSpace(preview_, mask,
+        const auto estimate = pipensx::estimateInstallSpace(preview_, actions,
                                                             mode);
         const StorageSpaceSnapshot storage =
             pipensx::queryStorageSpace(manager_->rootPath());
@@ -302,9 +328,10 @@ private:
         text += storage.available
             ? "   SD free: " + formatBytes(storage.freeBytes)
             : "   SD free: unavailable";
-        if (selectedPackages > 0) {
-            text += "   " + std::to_string(selectedPackages) +
-                    " package(s)";
+        if (installs > 0) {
+            text += "   Install: " + std::to_string(installs);
+            if (downloads > 0)
+                text += "   Download: " + std::to_string(downloads);
         } else {
             text += "   Download-only selection";
         }
@@ -323,31 +350,21 @@ private:
     }
 
     void confirmSelection() {
-        std::vector<uint8_t> mask = dataSource_->selectionMask();
-        if (mask.empty() && preview_.files.empty()) {
+        std::vector<uint8_t> actions = dataSource_->fileActions();
+        if (actions.empty() && preview_.files.empty()) {
             brls::Application::notify("No files found in this torrent.");
             return;
         }
-        size_t selectedPackages = dataSource_->selectedPackageCount();
-        if (!mask.empty()) {
-            bool anySelected = false;
-            for (uint8_t value : mask) {
-                if (value) {
-                    anySelected = true;
-                    break;
-                }
-            }
-            if (!anySelected) {
-                brls::Application::notify("Select at least one file.");
-                return;
-            }
+        size_t selected = dataSource_->selectedCount();
+        if (selected == 0) {
+            brls::Application::notify("Select at least one file.");
+            return;
         }
 
-        TransferMode mode = (selectedPackages > 0 &&
-                             preferred_ == TransferMode::StreamInstall)
+        TransferMode mode = dataSource_->installCount() > 0
             ? TransferMode::StreamInstall
             : TransferMode::DownloadOnly;
-        const auto estimate = pipensx::estimateInstallSpace(preview_, mask,
+        const auto estimate = pipensx::estimateInstallSpace(preview_, actions,
                                                             mode);
         const StorageSpaceSnapshot storage =
             pipensx::queryStorageSpace(manager_->rootPath());
@@ -359,8 +376,8 @@ private:
         }
         std::string id;
         std::string error;
-        if (!manager_->importTorrent(path_, mode, mask, id, error,
-                                     initialPeers_)) {
+        if (!manager_->importTorrentActions(path_, actions, id, error,
+                                            initialPeers_)) {
             brls::Application::notify(error);
             return;
         }
