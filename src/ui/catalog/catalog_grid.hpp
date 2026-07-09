@@ -405,6 +405,8 @@ public:
         // Section header (UI_PLAN F5): shelf title + optional "See all"
         // action jumping into the grid with the matching sort/filter.
         header_ = new brls::Box(brls::Axis::ROW);
+        header_->setHeight(32);
+        header_->setShrink(0.0f);
         header_->setMarginBottom(theme::kSpacingUnit);
         title_ = new brls::Label();
         title_->setFontSize(theme::kFontBody);
