@@ -6,7 +6,7 @@
 //
 // Usage:
 //   golden_runner --fixtures <dir> --out <file.png> --theme light|dark
-//                 --screen catalog|shelf-scroll|detail|torrent-selection|downloads|installed|settings|about
+//                 --screen catalog|shelf-scroll|shelf-header|detail|torrent-selection|downloads|installed|settings|about
 //                 [--frames N] [--sandbox <dir>]
 //
 // Determinism notes:
@@ -292,6 +292,32 @@ int main(int argc, char** argv) {
         if (!strip || strip->getChildren().size() <= 8)
             return fail("shelf-scroll fixture did not create enough cards");
         focusAfterLayout = strip->getChildren()[8];
+        activity = new GoldenActivity(content);
+    } else if (screen == "shelf-header") {
+        auto* content = new brls::Box(brls::Axis::COLUMN);
+        content->setPadding(32, 32, 32, 32);
+
+        auto* focusHolder = new brls::Button();
+        focusHolder->setStyle(&brls::BUTTONSTYLE_BORDERLESS);
+        focusHolder->setWidth(220);
+        focusHolder->setHeight(36);
+        focusHolder->setMarginBottom(12);
+        focusHolder->setText("Focus holder");
+        content->addView(focusHolder);
+
+        auto* cell = new ShelfCell(std::make_shared<std::string>());
+        cell->setWidth(900);
+        std::vector<GridCardInfo> cards;
+        for (int i = 0; i < grid::kShelfItems; ++i) {
+            GridCardInfo card;
+            card.entryIndex = i;
+            card.infoHash = "fixture-" + std::to_string(i);
+            card.title = "Shelf card " + std::to_string(i + 1);
+            card.sub = "Fixture";
+            cards.push_back(std::move(card));
+        }
+        cell->setShelf("Popular", cards, nullptr, [](int) {}, 1, [] {});
+        content->addView(cell);
         activity = new GoldenActivity(content);
     } else if (screen == "detail") {
         const auto& entries = catalog.entries();

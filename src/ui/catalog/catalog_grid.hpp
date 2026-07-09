@@ -400,16 +400,19 @@ public:
         setFocusable(false);
         setAxis(brls::Axis::COLUMN);
         setHeight(grid::kShelfHeight);
+        setAlignItems(brls::AlignItems::STRETCH);
         setLineBottom(0);
         setLineColor(brls::TRANSPARENT);
         // Section header (UI_PLAN F5): shelf title + optional "See all"
         // action jumping into the grid with the matching sort/filter.
         header_ = new brls::Box(brls::Axis::ROW);
+        header_->setWidthPercentage(100);
         header_->setHeight(32);
         header_->setShrink(0.0f);
         header_->setMarginBottom(theme::kSpacingUnit);
         title_ = new brls::Label();
         title_->setFontSize(theme::kFontBody);
+        title_->setTextColor(theme::textPrimary());
         title_->setGrow(1);
         seeAll_ = new brls::Button();
         seeAll_->setStyle(&brls::BUTTONSTYLE_BORDERLESS);
@@ -428,6 +431,7 @@ public:
         header_->addView(title_);
         header_->addView(seeAll_);
         shelf_ = new HorizontalShelf(std::move(focusHash));
+        shelf_->setWidthPercentage(100);
         addView(header_);
         addView(shelf_);
     }
@@ -449,6 +453,7 @@ public:
                                          : brls::Visibility::GONE);
         seeAll_->setFocusable(hasSeeAll);
         shelf_->setItems(infos, service, std::move(onActivate), shelfRow);
+        invalidate();
     }
 
 private:
