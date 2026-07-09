@@ -26,7 +26,7 @@ namespace pipensx::ui {
 
 namespace grid {
 
-inline constexpr int kColumns = 4;
+inline constexpr int kColumns = 5;
 inline constexpr float kCardWidth = 180.0f;
 inline constexpr float kCoverHeight = 180.0f;
 // Langegen/games covers are Nintendo box-art images (~393x640), not square
@@ -241,12 +241,11 @@ public:
         setFocusable(false);
         setAxis(brls::Axis::ROW);
         setHeight(grid::kRowHeight);
+        setJustifyContent(brls::JustifyContent::SPACE_BETWEEN);
         setLineBottom(0);
         setLineColor(brls::TRANSPARENT);
         for (int i = 0; i < grid::kColumns; ++i) {
             cards_[i] = new GameCard();
-            if (i + 1 < grid::kColumns)
-                cards_[i]->setMarginRight(grid::kShelfSpacing);
             addView(cards_[i]);
         }
     }
