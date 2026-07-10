@@ -7,11 +7,9 @@
 Native BitTorrent download manager and streaming package installer for
 Nintendo Switch homebrew.
 
-<img src="resources/2026071001590800_anonymized.jpg" width="500">
-<img src="resources/2026071002002700_anonymized.jpg" width="500">
+<img src="resources/2026071001590800_anonymized.jpg" width="400"> <img src="resources/2026071002002700_anonymized.jpg" width="400">
 <br><br>
-<img src="resources/2026071002003500_anonymized.jpg" width="500">
-<img src="resources/2026071002004100.jpg" width="500">
+<img src="resources/2026071002003500_anonymized.jpg" width="400"> <img src="resources/2026071002004100.jpg" width="400">
 
 
 > [!IMPORTANT]
