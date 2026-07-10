@@ -17,6 +17,7 @@ extern "C" {
 #include <switch-ipcext.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <exception>
 #include <stdexcept>
 #include <string>
@@ -145,8 +146,14 @@ int main(int argc, char** argv) {
             const std::string target = launchUpdater.targetPath();
             const Result result = envSetNextLoad(target.c_str(),
                                                  target.c_str());
-            if (R_SUCCEEDED(result))
-                return 0;
+            if (R_SUCCEEDED(result)) {
+                log_msg("[update] staged update finalized; relaunching\n");
+                log_close();
+                // Static destructors of never-initialized subsystems fault
+                // on this early-exit path; hbloader honors nextload without
+                // them.
+                std::_Exit(0);
+            }
             diagnostic_error("update", "relaunch", "result=0x%08x", result);
             if (stagedLaunch)
                 return 1;
@@ -326,5 +333,9 @@ int main(int argc, char** argv) {
         gBorealisLog = nullptr;
     }
     log_close();
-    return 0;
+    // Every durable side effect is already flushed above. Static destructors
+    // race exit-time unwind teardown on device (intermittent Data Abort in
+    // __deregister_frame_info_bases after quit), so leave without them; the
+    // loader still honors a pending envSetNextLoad.
+    std::_Exit(0);
 }
