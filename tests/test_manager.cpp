@@ -44,6 +44,28 @@ static std::string makeTorrent(const std::string& directory,
     return path;
 }
 
+static std::string makeSelectiveTorrent(const std::string& directory) {
+    const std::string payload = "aaaabbbbcccc";
+    uint8_t digest[20];
+    sha1(reinterpret_cast<const uint8_t*>(payload.data()), payload.size(),
+         digest);
+
+    std::string torrent = "d8:announce18:http://127.0.0.1:14:infod5:filesl";
+    for (const char* name : {"unselected-a.bin", "selected.7z",
+                             "unselected-b.bin"}) {
+        torrent += "d6:lengthi4e4:pathl" + bstr(name) + "ee";
+    }
+    torrent += "e4:name9:selection12:piece lengthi12e6:pieces20:";
+    torrent.append(reinterpret_cast<const char*>(digest), 20);
+    torrent += "ee";
+
+    std::string path = directory + "/selective.torrent";
+    std::ofstream output(path, std::ios::binary);
+    output.write(torrent.data(), static_cast<std::streamsize>(torrent.size()));
+    output.close();
+    return path;
+}
+
 static void copyFile(const std::string& source, const std::string& destination) {
     std::ifstream input(source, std::ios::binary);
     std::ofstream output(destination, std::ios::binary);
@@ -63,6 +85,8 @@ int main() {
     std::string actionsRoot = std::string(root) + "/actions-app";
     std::string invalidRoot = std::string(root) + "/invalid-app";
     std::string legacyRoot = std::string(root) + "/legacy-app";
+    std::string activeRoot = std::string(root) + "/active-app";
+    std::string selectiveSource = makeSelectiveTorrent(root);
 
     std::string taskId;
     std::string error;
@@ -119,6 +143,27 @@ int main() {
             readmeSource, actions, ignoredTaskId, error));
         assert(error == "Only NSP/NSZ package files can be installed.");
         assert(manager.snapshot().empty());
+    }
+
+    {
+        DownloadManager manager(activeRoot, true);
+        std::vector<uint8_t> actions{
+            static_cast<uint8_t>(FileAction::Skip),
+            static_cast<uint8_t>(FileAction::Download),
+            static_cast<uint8_t>(FileAction::Skip),
+        };
+        std::string selectiveTaskId;
+        assert(manager.importTorrentActions(
+            selectiveSource, actions, selectiveTaskId, error));
+        const std::string dataPath = manager.snapshot()[0].dataPath + "/selection";
+        const std::string selected = dataPath + "/selected.7z";
+        for (int i = 0; i < 500 && access(selected.c_str(), F_OK) != 0; ++i)
+            usleep(10000);
+        assert(access(selected.c_str(), F_OK) == 0);
+        assert(access((dataPath + "/unselected-a.bin").c_str(), F_OK) != 0);
+        assert(access((dataPath + "/unselected-b.bin").c_str(), F_OK) != 0);
+        manager.shutdown();
+        assert(manager.remove(selectiveTaskId, true, error));
     }
 
     {
@@ -179,6 +224,11 @@ int main() {
     unlink(source.c_str());
     unlink(downloadOnlySource.c_str());
     unlink(readmeSource.c_str());
+    unlink(selectiveSource.c_str());
+    rmdir((activeRoot + "/torrents").c_str());
+    rmdir((activeRoot + "/downloads").c_str());
+    unlink((activeRoot + "/queue.bencode").c_str());
+    rmdir(activeRoot.c_str());
     rmdir((actionsRoot + "/torrents").c_str());
     rmdir((actionsRoot + "/downloads").c_str());
     unlink((actionsRoot + "/queue.bencode").c_str());

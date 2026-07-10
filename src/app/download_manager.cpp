@@ -1798,8 +1798,7 @@ void DownloadManager::workerMain() {
         }
 
         torrent_t* torrent = torrent_create_ex(
-            &metainfo, 51413, dataPath.c_str(),
-            mode == TransferMode::StreamInstall ? &options : nullptr);
+            &metainfo, 51413, dataPath.c_str(), &options);
         if (!torrent) {
             std::lock_guard<std::mutex> lock(mutex_);
             if (DownloadTask* task = findLocked(activeId)) {
