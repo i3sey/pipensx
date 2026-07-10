@@ -182,6 +182,13 @@ public:
     GameMetadataService* metadataService() const { return metadata_; }
 
 private:
+    bool containsFocus(brls::View* focused) const {
+        for (brls::View* view = focused; view; view = view->getParent())
+            if (view == this)
+                return true;
+        return false;
+    }
+
     EmptyStateView* ensureEmptyState() {
         if (emptyState_)
             return emptyState_;
@@ -236,9 +243,7 @@ private:
             return;
         float offset = recycler_->getContentOffsetY();
         brls::View* focused = brls::Application::getCurrentFocus();
-        bool ownsFocus = focused && recycler_->getParentActivity() &&
-                         focused->getParentActivity() ==
-                             recycler_->getParentActivity();
+        bool ownsFocus = containsFocus(focused);
         auto* focusedCell = ownsFocus
             ? dynamic_cast<brls::RecyclerCell*>(focused)
             : nullptr;

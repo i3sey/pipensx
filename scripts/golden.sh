@@ -23,6 +23,7 @@ OUT_DIR="${GOLDEN_OUT:-$ROOT/build-golden/golden-out}"
 FUZZ="${GOLDEN_FUZZ:-5%}"
 MAX_DIFF="${GOLDEN_MAX_DIFF:-25000}"
 SCREENS="${GOLDEN_SCREENS:-catalog detail downloads installed settings about}"
+BEHAVIOR_SCREENS="${GOLDEN_BEHAVIOR_SCREENS:-downloads-back}"
 THEMES="${GOLDEN_THEMES:-light dark}"
 
 export LIBGL_ALWAYS_SOFTWARE=1
@@ -54,6 +55,18 @@ rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR/diff" "$GOLDEN_DIR"
 
 fail=0
+for screen in $BEHAVIOR_SCREENS; do
+    name="$screen-behavior"
+    if ! "$RUNNER" --fixtures "$FIXTURES" --out "$OUT_DIR/$name.png" \
+                   --theme dark --screen "$screen" \
+                   --sandbox "$OUT_DIR/sandbox" >"$OUT_DIR/$name.log" 2>&1; then
+        echo "FAIL  $name: behavior regression (see $name.log)"
+        fail=1
+    else
+        echo "PASS  $name"
+    fi
+done
+
 for screen in $SCREENS; do
     for theme in $THEMES; do
         name="$screen-$theme"

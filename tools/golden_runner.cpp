@@ -6,7 +6,7 @@
 //
 // Usage:
 //   golden_runner --fixtures <dir> --out <file.png> --theme light|dark
-//                 --screen catalog|shelf-scroll|shelf-header|detail|torrent-selection|downloads|installed|settings|about
+//                 --screen catalog|shelf-scroll|shelf-header|detail|torrent-selection|downloads|downloads-back|installed|settings|about
 //                 [--frames N] [--sandbox <dir>]
 //
 // Determinism notes:
@@ -44,6 +44,7 @@
 #include "ui/detail/torrent_selection.hpp"
 #include "ui/downloads/downloads_view.hpp"
 #include "ui/installed/installed_view.hpp"
+#include "ui/main_frame.hpp"
 #include "ui/settings/about_view.hpp"
 #include "ui/settings/settings_view.hpp"
 #include "ui/theme.hpp"
@@ -261,6 +262,8 @@ int main(int argc, char** argv) {
 
     brls::Activity* activity = nullptr;
     brls::View* focusAfterLayout = nullptr;
+    MainFrame* downloadsBackFrame = nullptr;
+    brls::View* downloadsBackSidebarFocus = nullptr;
     if (screen == "catalog") {
         activity = new GoldenActivity(new CatalogView(
             &manager, &catalog, &metadata, &installed, &settings, [] {}));
@@ -344,6 +347,13 @@ int main(int argc, char** argv) {
     } else if (screen == "downloads") {
         activity = new GoldenActivity(
             new MainView(&manager, &metadata, &settings));
+    } else if (screen == "downloads-back") {
+        downloadsBackFrame = new MainFrame();
+        auto* downloadsView = new MainView(&manager, &metadata, &settings);
+        downloadsBackFrame->addNavTab(
+            "Downloads", NavIconType::Downloads,
+            [downloadsView] { return downloadsView; });
+        activity = new GoldenActivity(downloadsBackFrame);
     } else if (screen == "installed") {
         activity = new GoldenActivity(
             new InstalledView(&installed, &manager, &metadata));
@@ -360,8 +370,26 @@ int main(int argc, char** argv) {
     for (int i = 0; i < frames; ++i) {
         if (i == 10 && focusAfterLayout)
             brls::Application::giveFocus(focusAfterLayout);
+        if (i == 10 && downloadsBackFrame)
+            downloadsBackFrame->focusTab(0);
+        if (i == 20 && downloadsBackFrame) {
+            downloadsBackSidebarFocus = brls::Application::getCurrentFocus();
+            auto values = settings.get();
+            if (!settings.update(values, error))
+                return fail("downloads-back could not trigger refresh");
+            usleep(800000);
+        }
         if (!brls::Application::mainLoop())
             return fail("main loop ended before capture");
+    }
+    if (downloadsBackFrame &&
+        brls::Application::getCurrentFocus() != downloadsBackSidebarFocus)
+        return fail("downloads refresh stole focus from the sidebar");
+    if (downloadsBackFrame) {
+        std::printf("golden_runner: downloads-back focus preserved\n");
+        manager.shutdown();
+        std::fflush(nullptr);
+        _exit(0);
     }
 
     GLint viewport[4] = {0, 0, 0, 0};
