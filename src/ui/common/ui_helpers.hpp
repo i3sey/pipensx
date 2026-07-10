@@ -71,20 +71,15 @@ inline bool isApplicationMode() {
 inline void showApplicationModeRequired() {
     consoleInit(nullptr);
     std::printf("\npipensx requires application mode.\n\n");
-    std::printf("Close hbmenu, then hold R while launching a game.\n");
+    std::printf("Press HOME for exit.\n");
+    std::printf("After that, hold R while launching a game.\n");
     std::printf("Keep holding R until hbmenu opens, then start pipensx.\n\n");
     std::printf("Album applet mode does not provide enough memory and\n");
     std::printf("network sessions for the GUI torrent client.\n\n");
-    std::printf("Press + to exit.\n");
     consoleUpdate(nullptr);
 
-    padConfigureInput(1, HidNpadStyleSet_NpadStandard);
-    PadState pad;
-    padInitializeDefault(&pad);
     while (appletMainLoop()) {
-        padUpdate(&pad);
-        if (padGetButtonsDown(&pad) & HidNpadButton_Plus)
-            break;
+        svcSleepThread(100000000ULL);
     }
     consoleExit(nullptr);
 }

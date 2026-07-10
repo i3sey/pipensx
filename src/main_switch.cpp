@@ -106,6 +106,14 @@ private:
 }  // namespace
 
 int main(int, char**) {
+    // A library applet must only terminate after qlaunch asks it to close.
+    // Keep this path before logging, settings, and custom signal handlers so
+    // the unsupported mode uses only libnx's normal applet lifecycle.
+    if (!isApplicationMode()) {
+        showApplicationModeRequired();
+        return 0;
+    }
+
     switch_crashlog_install();
     switch_crashlog_stage("creating application directories");
     mkdir("sdmc:/switch", 0755);
@@ -138,19 +146,6 @@ int main(int, char**) {
     try {
         log_msg("[startup] applet_type=%d operation_mode=%d\n",
                 (int)appletGetAppletType(), (int)appletGetOperationMode());
-
-        if (!isApplicationMode()) {
-            startupStage("unsupported applet mode");
-            showApplicationModeRequired();
-            startupStage("applet mode exit");
-            if (gBorealisLog) {
-                std::fflush(gBorealisLog);
-                std::fclose(gBorealisLog);
-                gBorealisLog = nullptr;
-            }
-            log_close();
-            return 2;
-        }
 
         startupStage("curl_global_init");
         CURLcode curlResult = curl_global_init(CURL_GLOBAL_DEFAULT);

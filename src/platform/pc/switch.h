@@ -61,6 +61,10 @@ static inline bool appletMainLoop(void) {
     return true;
 }
 
+static inline void svcSleepThread(int64_t nanoseconds) {
+    (void)nanoseconds;
+}
+
 /* ---- hosversion ---- */
 
 #define HOSVER_MAJOR(v) (((v) >> 16) & 0xFF)
