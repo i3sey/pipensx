@@ -42,7 +42,8 @@ set(BRLS_UNITY_BUILD OFF CACHE BOOL "" FORCE)
 include(${BOREALIS_LIBRARY}/cmake/commonOption.cmake)
 include(${BOREALIS_LIBRARY}/cmake/toolchain.cmake)
 
-project(pipensx VERSION 1.0.0 LANGUAGES C CXX)
+set(PIPENSX_VERSION "1.0.0" CACHE STRING "pipensx release version")
+project(pipensx VERSION ${PIPENSX_VERSION} LANGUAGES C CXX)
 
 set(APP_TITLE "pipensx")
 set(APP_AUTHOR "pipensx")
@@ -91,6 +92,7 @@ set(CORE_SOURCES
 
 set(APP_SERVICE_SOURCES
     src/app/app_settings.cpp
+    src/app/update_service.cpp
     src/app/catalog_batch_installer.cpp
     src/app/catalog_refresh.cpp
     src/app/catalog_service.cpp

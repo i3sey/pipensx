@@ -3,6 +3,7 @@
 #include "app/download_manager.hpp"
 #include "app/game_metadata_service.hpp"
 #include "app/installed_title_service.hpp"
+#include "app/update_service.hpp"
 #include "platform/switch_crashlog.h"
 #include "platform/switch_performance.hpp"
 
@@ -37,6 +38,8 @@ using pipensx::DownloadManager;
 using pipensx::GameMetadataService;
 using pipensx::InstalledTitleService;
 using pipensx::SwitchPerformanceController;
+using pipensx::UpdateCheckResult;
+using pipensx::UpdateService;
 
 using namespace pipensx::ui;
 
@@ -49,9 +52,10 @@ class MainActivity : public brls::Activity {
 public:
     MainActivity(DownloadManager* manager, CatalogService* catalog,
                  GameMetadataService* metadata,
-                 InstalledTitleService* installed, AppSettings* settings)
+                 InstalledTitleService* installed, AppSettings* settings,
+                 UpdateService* updater)
         : manager_(manager), catalog_(catalog), metadata_(metadata),
-          installed_(installed), settings_(settings) {
+          installed_(installed), settings_(settings), updater_(updater) {
         auto* tabs = new pipensx::ui::MainFrame();
         using pipensx::ui::NavIconType;
         tabs->addNavTab("Catalog", NavIconType::Catalog,
@@ -70,9 +74,9 @@ public:
         });
         tabs->addNavTab("Settings", NavIconType::Settings,
                         [settings, manager, catalog, metadata,
-                         installed] {
+                         installed, updater] {
             return new SettingsView(settings, manager, catalog, metadata,
-                                    installed);
+                                    installed, updater);
         });
         tabs->addNavTab("About", NavIconType::About, [] {
             return new AboutView();
@@ -100,6 +104,7 @@ private:
     GameMetadataService* metadata_;
     InstalledTitleService* installed_;
     AppSettings* settings_;
+    UpdateService* updater_;
     brls::AppletFrame* frame_;
 };
 
@@ -211,12 +216,24 @@ int main(int, char**) {
             installTargetFor(settings.get().installLocation));
         metadata.setImageNetworkPaused(manager.hasActiveTransfer());
 
+        UpdateService updater;
+
         startupStage("MainActivity construction");
         auto* activity = new MainActivity(&manager, &catalog, &metadata,
-                                          &installed, &settings);
+                                          &installed, &settings, &updater);
 
         startupStage("push MainActivity");
         brls::Application::pushActivity(activity);
+        if (settings.get().checkForUpdatesOnLaunch) {
+            updater.checkAsync([](UpdateCheckResult result) {
+                if (!result.ok || !result.updateAvailable)
+                    return;
+                brls::sync([version = std::move(result.release.version)] {
+                    brls::Application::notify(
+                        "pipensx " + version + " is available in Settings.");
+                });
+            });
+        }
 
         // First-run disclaimer: the catalog is a third-party RuTracker dump.
         // Shown once on top of the app; acknowledging persists the flag so

@@ -38,6 +38,7 @@ void testMissingFileUsesSafeDefaults() {
     assert(values.installLocation == InstallLocation::SdCard);
     assert(values.showCompletedDownloads);
     assert(!values.extendedTelemetry);
+    assert(values.checkForUpdatesOnLaunch);
 }
 
 void testUpdatePersistsEveryPublicSetting() {
@@ -54,6 +55,7 @@ void testUpdatePersistsEveryPublicSetting() {
     changed.installLocation = InstallLocation::SystemMemory;
     changed.showCompletedDownloads = false;
     changed.extendedTelemetry = true;
+    changed.checkForUpdatesOnLaunch = false;
     assert(settings.update(changed, error));
 
     AppSettings restored(SettingsPath, LegacyPath);
@@ -83,6 +85,7 @@ void testOldSettingsJsonDefaultsRefreshTimes() {
     assert(settings.get().lastCatalogRefreshMs == 0);
     assert(settings.get().lastMetadataRefreshMs == 0);
     assert(settings.get().catalogDisclaimerAcknowledged);
+    assert(settings.get().checkForUpdatesOnLaunch);
 }
 
 void testInvalidFileFailsClosedToDefaults() {

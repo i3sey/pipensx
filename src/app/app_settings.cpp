@@ -92,6 +92,8 @@ bool parseSettings(const std::string& text, AppSettingsData& values,
                   values.showCompletedDownloads, error) ||
         !readBool(root, "extended_telemetry", values.extendedTelemetry,
                   error) ||
+        !readBool(root, "check_for_updates_on_launch",
+                  values.checkForUpdatesOnLaunch, error) ||
         !readBool(root, "catalog_disclaimer_ack",
                   values.catalogDisclaimerAcknowledged, error)) {
         return false;
@@ -135,6 +137,7 @@ std::string serializeSettings(const AppSettingsData& values) {
     root["install_location"] = installLocationName(values.installLocation);
     root["show_completed_downloads"] = values.showCompletedDownloads;
     root["extended_telemetry"] = values.extendedTelemetry;
+    root["check_for_updates_on_launch"] = values.checkForUpdatesOnLaunch;
     root["catalog_disclaimer_ack"] = values.catalogDisclaimerAcknowledged;
     return root.dump(2) + "\n";
 }
@@ -150,6 +153,7 @@ bool AppSettingsData::operator==(const AppSettingsData& other) const {
            installLocation == other.installLocation &&
            showCompletedDownloads == other.showCompletedDownloads &&
            extendedTelemetry == other.extendedTelemetry &&
+           checkForUpdatesOnLaunch == other.checkForUpdatesOnLaunch &&
            catalogDisclaimerAcknowledged == other.catalogDisclaimerAcknowledged;
 }
 

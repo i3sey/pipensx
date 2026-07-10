@@ -13,6 +13,7 @@
 #include "app/download_manager.hpp"
 #include "app/game_metadata_service.hpp"
 #include "app/installed_title_service.hpp"
+#include "app/update_service.hpp"
 #include "ui/common/ui_helpers.hpp"
 #include "ui/theme.hpp"
 
@@ -22,9 +23,9 @@ class SettingsView : public brls::Box {
 public:
     SettingsView(AppSettings* settings, DownloadManager* manager,
                  CatalogService* catalog, GameMetadataService* metadata,
-                 InstalledTitleService* installed)
+                 InstalledTitleService* installed, UpdateService* updater = nullptr)
         : brls::Box(brls::Axis::COLUMN), settings_(settings), manager_(manager),
-          catalog_(catalog), metadata_(metadata), installed_(installed),
+          catalog_(catalog), metadata_(metadata), installed_(installed), updater_(updater),
           alive_(std::make_shared<std::atomic<bool>>(true)) {
         auto* content = new brls::Box(brls::Axis::COLUMN);
         content->setPadding(24, 34, 24, 34);
@@ -113,6 +114,22 @@ public:
                     showCompleted_->setOn(previous, false);
             });
         content->addView(showCompleted_);
+
+        addSection(content, "Updates");
+        checkForUpdates_ = new brls::BooleanCell();
+        checkForUpdates_->init("Check for updates at launch",
+            settings_->get().checkForUpdatesOnLaunch,
+            [this](bool enabled) {
+                AppSettingsData values = settings_->get();
+                bool previous = values.checkForUpdatesOnLaunch;
+                values.checkForUpdatesOnLaunch = enabled;
+                if (!persist(values, "update_check"))
+                    checkForUpdates_->setOn(previous, false);
+            });
+        content->addView(checkForUpdates_);
+        updateAction_ = actionCell("Check for pipensx update", "GitHub releases",
+            [this] { checkForUpdateNow(); });
+        content->addView(updateAction_);
 
         addSection(content, "Diagnostics");
         auto* description = new brls::Label();
@@ -275,6 +292,74 @@ private:
         });
     }
 
+    void checkForUpdateNow() {
+        if (updateInFlight_ || !updater_)
+            return;
+        updateInFlight_ = true;
+        updateAction_->setDetailText("Checking...");
+        auto alive = alive_;
+        UpdateService* updater = updater_;
+        updater->checkAsync([this, alive](UpdateCheckResult result) {
+            brls::sync([this, alive, result = std::move(result)]() mutable {
+                if (!alive->load())
+                    return;
+                updateInFlight_ = false;
+                if (!result.ok) {
+                    updateAction_->setDetailText("Check failed");
+                    diagnostic_error("update", "check", "error=%s",
+                                     result.error.c_str());
+                    brls::Application::notify(result.error);
+                    return;
+                }
+                if (!result.updateAvailable) {
+                    updateAction_->setDetailText("Up to date");
+                    brls::Application::notify("pipensx is up to date.");
+                    return;
+                }
+                updateAction_->setDetailText("Version " + result.release.version);
+                confirmInstallUpdate(std::move(result.release));
+            });
+        });
+    }
+
+    void confirmInstallUpdate(ReleaseInfo release) {
+        auto* dialog = new brls::Dialog(
+            "pipensx " + release.version + " is available. Install it now?");
+        dialog->addButton("Install and restart", [this, release = std::move(release)] {
+            installUpdate(release);
+        });
+        dialog->addButton("Later", [] {});
+        dialog->open();
+    }
+
+    void installUpdate(const ReleaseInfo& release) {
+        if (updateInFlight_ || !updater_)
+            return;
+        updateInFlight_ = true;
+        updateAction_->setDetailText("Downloading...");
+        auto alive = alive_;
+        UpdateService* updater = updater_;
+        updater->installAsync(release, [this, alive](bool installed,
+                                                       std::string error) {
+            brls::sync([this, alive, installed, error = std::move(error)] {
+                if (!alive->load())
+                    return;
+                updateInFlight_ = false;
+                if (!installed) {
+                    updateAction_->setDetailText("Install failed");
+                    diagnostic_error("update", "install", "error=%s",
+                                     error.c_str());
+                    brls::Application::notify(error);
+                    return;
+                }
+                updateAction_->setDetailText("Restart required");
+                brls::Application::notify(
+                    "Update installed. pipensx will now close; launch it again.");
+                brls::Application::quit();
+            });
+        });
+    }
+
     void applyValues() {
         const AppSettingsData& values = settings_->get();
         catalogFilter_->setSelection(
@@ -289,6 +374,7 @@ private:
         manager_->setInstallTarget(installTargetFor(values.installLocation));
         showCompleted_->setOn(values.showCompletedDownloads, false);
         extendedTelemetry_->setOn(values.extendedTelemetry, false);
+        checkForUpdates_->setOn(values.checkForUpdatesOnLaunch, false);
         telemetry_set_enabled(values.extendedTelemetry ? 1 : 0);
     }
 
@@ -371,14 +457,18 @@ private:
     CatalogService* catalog_;
     GameMetadataService* metadata_;
     InstalledTitleService* installed_;
+    UpdateService* updater_;
     std::shared_ptr<std::atomic<bool>> alive_;
     brls::SelectorCell* catalogFilter_ = nullptr;
     brls::BooleanCell* refreshCatalog_ = nullptr;
+    brls::BooleanCell* checkForUpdates_ = nullptr;
+    brls::DetailCell* updateAction_ = nullptr;
     brls::SelectorCell* streamSelection_ = nullptr;
     brls::SelectorCell* installLocation_ = nullptr;
     brls::BooleanCell* showCompleted_ = nullptr;
     brls::BooleanCell* extendedTelemetry_ = nullptr;
     bool refreshInFlight_ = false;
+    bool updateInFlight_ = false;
 };
 
 }  // namespace pipensx::ui

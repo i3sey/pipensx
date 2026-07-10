@@ -54,12 +54,18 @@ jobs:
           exit 1
 
       - name: Build pipensx.nro
-        run: make switch
+        env:
+          PIPENSX_VERSION: ${{ inputs.version }}
+        run: |
+          PIPENSX_VERSION="${PIPENSX_VERSION#v}" make switch
+          sha256sum build-switch/pipensx.nro > build-switch/pipensx.nro.sha256
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: pipensx-nro
-          path: build-switch/pipensx.nro
+          path: |
+            build-switch/pipensx.nro
+            build-switch/pipensx.nro.sha256
           if-no-files-found: error
 
   draft-release:
@@ -80,6 +86,7 @@ jobs:
         run: |
           gh release create "${{ inputs.version }}" \
             dist/pipensx.nro \
+            dist/pipensx.nro.sha256 \
             --repo "${{ github.repository }}" \
             --title "${{ inputs.version }}" \
             --draft \

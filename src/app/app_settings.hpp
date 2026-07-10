@@ -31,6 +31,7 @@ struct AppSettingsData {
     InstallLocation installLocation = InstallLocation::SdCard;
     bool showCompletedDownloads = true;
     bool extendedTelemetry = false;
+    bool checkForUpdatesOnLaunch = true;
     // First-run disclaimer: the catalog is a third-party RuTracker dump. Shown
     // once, then this is set so later launches skip it.
     bool catalogDisclaimerAcknowledged = false;

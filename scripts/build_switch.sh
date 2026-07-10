@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="${BUILD_DIR:-${ROOT}/build-switch}"
 CMAKE_BIN="${CMAKE_BIN:-cmake}"
 PIPENSX_METADATA_INDEX="${PIPENSX_METADATA_INDEX:-${ROOT}/resources/catalog/game_metadata_index.json}"
+PIPENSX_VERSION="${PIPENSX_VERSION:-1.0.0}"
 
 if [[ -z "${DEVKITPRO:-}" ]]; then
     echo "DEVKITPRO is not set." >&2
@@ -35,6 +36,7 @@ done
 "${CMAKE_BIN}" -S "${ROOT}" -B "${BUILD_DIR}" \
     -DPLATFORM_SWITCH=ON \
     -DUSE_DEKO3D=ON \
+    "-DPIPENSX_VERSION=${PIPENSX_VERSION}" \
     "-DPIPENSX_METADATA_INDEX=${PIPENSX_METADATA_INDEX}" \
     -DCMAKE_BUILD_TYPE=Release
 "${CMAKE_BIN}" --build "${BUILD_DIR}" --target pipensx.nro --parallel
