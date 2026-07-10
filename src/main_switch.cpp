@@ -128,36 +128,34 @@ int main(int argc, char** argv) {
     mkdir("sdmc:/switch/pipensx", 0755);
     log_init(LogPath);
 
-    std::vector<std::string> launchArguments;
-    for (int i = 0; i < argc; ++i)
-        if (argv[i])
-            launchArguments.emplace_back(argv[i]);
+    (void)argc;
+    (void)argv;
     UpdateService launchUpdater;
-    const bool stagedLaunch = launchUpdater.isStagedLaunch(launchArguments);
+    const bool updatePendingConfirmation =
+        launchUpdater.hasPendingConfirmation();
     // A verified download left behind by a session that quit before its
-    // restart also finalizes here, instead of being discarded below.
-    if (stagedLaunch || launchUpdater.stagedReady()) {
-        std::string error;
-        if (!launchUpdater.finalizeStaged(error)) {
-            diagnostic_error("update", "finalize", "error=%s",
-                             error.c_str());
-            if (stagedLaunch)
-                return 1;
-        } else {
-            const std::string target = launchUpdater.targetPath();
-            const Result result = envSetNextLoad(target.c_str(),
-                                                 target.c_str());
+    // restart must chain through the minimal updater, never overwrite the NRO
+    // that is currently executing.
+    if (launchUpdater.stagedReady()) {
+        if (envHasNextLoad() &&
+            access(launchUpdater.helperPath().c_str(), F_OK) == 0) {
+            const std::string helper = launchUpdater.helperPath();
+            const std::string arguments =
+                "\"" + helper + "\" --finish-update";
+            const Result result = envSetNextLoad(helper.c_str(),
+                                                 arguments.c_str());
             if (R_SUCCEEDED(result)) {
-                log_msg("[update] staged update finalized; relaunching\n");
+                log_msg("[update] staged update ready; launching helper\n");
                 log_close();
-                // Static destructors of never-initialized subsystems fault
-                // on this early-exit path; hbloader honors nextload without
-                // them.
-                std::_Exit(0);
+                return 0;
             }
-            diagnostic_error("update", "relaunch", "result=0x%08x", result);
-            if (stagedLaunch)
-                return 1;
+            diagnostic_error("update", "helper_nextload", "result=0x%08x",
+                             result);
+        } else {
+            diagnostic_error("update", "helper_missing",
+                             "nextload=%d helper=%d",
+                             envHasNextLoad() ? 1 : 0,
+                             access(launchUpdater.helperPath().c_str(), F_OK) == 0);
         }
     }
     AppSettings settings(SettingsPath, TelemetryFlagPath);
@@ -253,7 +251,6 @@ int main(int argc, char** argv) {
         metadata.setImageNetworkPaused(manager.hasActiveTransfer());
 
         UpdateService updater;
-        updater.discardStaged();
 
         startupStage("MainActivity construction");
         auto* activity = new MainActivity(&manager, &catalog, &metadata,
@@ -305,11 +302,20 @@ int main(int argc, char** argv) {
                 break;
             if (firstFrame) {
                 startupStage("main loop running");
+                if (updatePendingConfirmation) {
+                    std::string error;
+                    if (!launchUpdater.confirmInstalled(error))
+                        diagnostic_error("update", "confirm", "error=%s",
+                                         error.c_str());
+                    else
+                        log_msg("[update] installed update confirmed\n");
+                }
                 firstFrame = false;
             }
         }
 
         startupStage("manager shutdown");
+        updater.shutdown();
         manager.shutdown();
         performance.setActive(false);
     } catch (const std::exception& error) {
@@ -319,6 +325,7 @@ int main(int argc, char** argv) {
         log_msg("[crash] unknown exception\n");
     }
 
+    startupStage("app-owned teardown complete");
     startupStage("cleanup");
     if (esReady)
         esExit();
@@ -334,9 +341,5 @@ int main(int argc, char** argv) {
         gBorealisLog = nullptr;
     }
     log_close();
-    // Every durable side effect is already flushed above. Static destructors
-    // race exit-time unwind teardown on device (intermittent Data Abort in
-    // __deregister_frame_info_bases after quit), so leave without them; the
-    // loader still honors a pending envSetNextLoad.
-    std::_Exit(0);
+    return 0;
 }

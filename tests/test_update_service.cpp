@@ -1,22 +1,33 @@
 #include "app/update_service.hpp"
 
 #include <cassert>
+#include <atomic>
+#include <chrono>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <unistd.h>
 
 namespace {
 
 constexpr const char* Target = "/tmp/pipensx-update-test.nro";
+constexpr const char* HelperSource = "/tmp/pipensx-updater-fixture.nro";
 
 bool emulateSwitchRename = false;
+bool failHelperPublish = false;
 
 extern "C" int __real_rename(const char* oldPath, const char* newPath);
 
 extern "C" int __wrap_rename(const char* oldPath, const char* newPath) {
+    if (failHelperPublish &&
+        std::strcmp(oldPath, "/tmp/pipensx-updater.nro.tmp") == 0 &&
+        std::strcmp(newPath, "/tmp/pipensx-updater.nro") == 0) {
+        errno = EIO;
+        return -1;
+    }
     if (emulateSwitchRename) {
         if (std::strcmp(oldPath, Target) == 0) {
             errno = EACCES;
@@ -59,22 +70,13 @@ void testVersionsAndReleaseValidation() {
                                                  release, error));
 }
 
-void testStagedLaunchDetectionUsesExecutablePath() {
-    pipensx::UpdateService service(Target);
-    assert(service.isStagedLaunch({service.helperPath()}));
-    assert(service.isStagedLaunch({
-        service.helperPath() + " --finish-update"}));
-    assert(service.isStagedLaunch({Target, "--finish-update"}));
-    assert(!service.isStagedLaunch({service.stagedPath()}));
-    assert(!service.isStagedLaunch({Target}));
-}
-
 void testStagedReadyRecoversInterruptedRestart() {
     unlink(Target);
     unlink("/tmp/pipensx-update-test.nro.update");
     unlink("/tmp/pipensx-update-test.nro.update.sha256");
-    unlink("/tmp/pipensx-update-test.nro.updater");
+    unlink("/tmp/pipensx-updater.nro");
     write(Target, "old");
+    write(HelperSource, "minimal updater helper");
     const std::string payload = "new verified pipensx nro";
     const std::string checksum =
         "9dc1034a694baa2d68b032ed446fbc9b170975306c571202e99ff741821365b4";
@@ -82,7 +84,8 @@ void testStagedReadyRecoversInterruptedRestart() {
         [checksum](const std::string&, size_t, std::string& body,
                    std::string&) { body = checksum + "  pipensx.nro\n"; return true; },
         [payload](const std::string&, const std::string& path, size_t,
-                  std::string&) { write(path, payload); return true; });
+                  std::string&) { write(path, payload); return true; },
+        HelperSource);
     assert(!service.stagedReady());
     pipensx::ReleaseInfo release{"v1.2.3",
         "https://github.com/i3sey/pipensx/releases/download/v1.2.3/pipensx.nro",
@@ -96,12 +99,6 @@ void testStagedReadyRecoversInterruptedRestart() {
     assert(!service.stagedReady());
     write("/tmp/pipensx-update-test.nro.update", payload);
     assert(service.stagedReady());
-    assert(service.finalizeStaged(error));
-    assert(!service.stagedReady());
-    std::ifstream finalized(Target, std::ios::binary);
-    std::string bytes((std::istreambuf_iterator<char>(finalized)), {});
-    assert(bytes == payload);
-    finalized.close();
     service.discardStaged();
     unlink(Target);
 }
@@ -110,8 +107,9 @@ void testInstallVerifiesBeforeStaging() {
     unlink(Target);
     unlink("/tmp/pipensx-update-test.nro.update");
     unlink("/tmp/pipensx-update-test.nro.update.sha256");
-    unlink("/tmp/pipensx-update-test.nro.updater");
+    unlink("/tmp/pipensx-updater.nro");
     write(Target, "old");
+    write(HelperSource, "minimal updater helper");
     const std::string payload = "new verified pipensx nro";
     const std::string checksum =
         "9dc1034a694baa2d68b032ed446fbc9b170975306c571202e99ff741821365b4";
@@ -119,7 +117,8 @@ void testInstallVerifiesBeforeStaging() {
         [checksum](const std::string&, size_t, std::string& body,
                    std::string&) { body = checksum + "  pipensx.nro\n"; return true; },
         [payload](const std::string&, const std::string& path, size_t,
-                  std::string&) { write(path, payload); return true; });
+                  std::string&) { write(path, payload); return true; },
+        HelperSource);
     pipensx::ReleaseInfo release{"v1.2.3",
         "https://github.com/i3sey/pipensx/releases/download/v1.2.3/pipensx.nro",
         "https://github.com/i3sey/pipensx/releases/download/v1.2.3/pipensx.nro.sha256"};
@@ -137,16 +136,12 @@ void testInstallVerifiesBeforeStaging() {
     assert(bytes == checksum + "\n");
     std::ifstream helper(service.helperPath(), std::ios::binary);
     bytes.assign((std::istreambuf_iterator<char>(helper)), {});
-    assert(bytes == "old");
+    assert(service.helperPath() == "/tmp/pipensx-updater.nro");
+    assert(bytes == "minimal updater helper");
     installed.close();
     current.close();
     marker.close();
     helper.close();
-    assert(service.finalizeStaged(error));
-    std::ifstream finalized(Target, std::ios::binary);
-    bytes.assign((std::istreambuf_iterator<char>(finalized)), {});
-    assert(bytes == payload);
-    finalized.close();
     service.discardStaged();
     assert(access("/tmp/pipensx-update-test.nro.update", F_OK) != 0);
     assert(access(service.helperPath().c_str(), F_OK) != 0);
@@ -156,7 +151,8 @@ void testInstallVerifiesBeforeStaging() {
         [](const std::string&, size_t, std::string& body,
            std::string&) { body = "0000000000000000000000000000000000000000000000000000000000000000\n"; return true; },
         [payload](const std::string&, const std::string& path, size_t,
-                  std::string&) { write(path, payload); return true; });
+                  std::string&) { write(path, payload); return true; },
+        HelperSource);
     assert(!wrongChecksum.install(release, error));
     std::ifstream preserved(Target, std::ios::binary);
     bytes.assign((std::istreambuf_iterator<char>(preserved)), {});
@@ -164,8 +160,9 @@ void testInstallVerifiesBeforeStaging() {
     unlink(Target);
     unlink("/tmp/pipensx-update-test.nro.update");
     unlink("/tmp/pipensx-update-test.nro.update.sha256");
-    unlink("/tmp/pipensx-update-test.nro.updater");
+    unlink("/tmp/pipensx-updater.nro");
     unlink("/tmp/pipensx-update-test.nro.update.sha256");
+    unlink(HelperSource);
 }
 
 void testTransientNetworkFailuresAreRetried() {
@@ -188,6 +185,7 @@ void testTransientNetworkFailuresAreRetried() {
     unlink(Target);
     unlink("/tmp/pipensx-update-test.nro.update");
     write(Target, "old");
+    write(HelperSource, "minimal updater helper");
     const std::string payload = "new verified pipensx nro";
     const std::string checksum =
         "9dc1034a694baa2d68b032ed446fbc9b170975306c571202e99ff741821365b4";
@@ -215,7 +213,7 @@ void testTransientNetworkFailuresAreRetried() {
             }
             write(path, payload);
             return true;
-        });
+        }, HelperSource);
     pipensx::ReleaseInfo release{"v9.9.9",
         "https://github.com/i3sey/pipensx/releases/download/v9.9.9/pipensx.nro",
         "https://github.com/i3sey/pipensx/releases/download/v9.9.9/pipensx.nro.sha256"};
@@ -231,9 +229,10 @@ void testInstallNeverTouchesRunningNro() {
     unlink(Target);
     unlink("/tmp/pipensx-update-test.nro.update");
     unlink("/tmp/pipensx-update-test.nro.update.sha256");
-    unlink("/tmp/pipensx-update-test.nro.updater");
+    unlink("/tmp/pipensx-updater.nro");
     unlink("/tmp/pipensx-update-test.nro.previous");
     write(Target, "old");
+    write(HelperSource, "minimal updater helper");
     const std::string payload = "new verified pipensx nro";
     const std::string checksum =
         "9dc1034a694baa2d68b032ed446fbc9b170975306c571202e99ff741821365b4";
@@ -241,7 +240,8 @@ void testInstallNeverTouchesRunningNro() {
         [checksum](const std::string&, size_t, std::string& body,
                    std::string&) { body = checksum + "  pipensx.nro\n"; return true; },
         [payload](const std::string&, const std::string& path, size_t,
-                  std::string&) { write(path, payload); return true; });
+                  std::string&) { write(path, payload); return true; },
+        HelperSource);
     pipensx::ReleaseInfo release{"v1.2.3",
         "https://github.com/i3sey/pipensx/releases/download/v1.2.3/pipensx.nro",
         "https://github.com/i3sey/pipensx/releases/download/v1.2.3/pipensx.nro.sha256"};
@@ -260,19 +260,77 @@ void testInstallNeverTouchesRunningNro() {
     unlink(Target);
     unlink("/tmp/pipensx-update-test.nro.update");
     unlink("/tmp/pipensx-update-test.nro.update.sha256");
-    unlink("/tmp/pipensx-update-test.nro.updater");
+    unlink("/tmp/pipensx-updater.nro");
     unlink("/tmp/pipensx-update-test.nro.previous");
+}
+
+void testShutdownInterruptsRetryWait() {
+    std::atomic<int> attempts{0};
+    pipensx::UpdateService service(Target,
+        [&attempts](const std::string&, size_t, std::string&,
+                    std::string& error) {
+            ++attempts;
+            error = "Update network error: Timeout was reached";
+            return false;
+        });
+    service.checkAsync([](pipensx::UpdateCheckResult) {});
+    while (attempts.load() == 0)
+        std::this_thread::yield();
+    const auto started = std::chrono::steady_clock::now();
+    service.shutdown();
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started);
+    assert(elapsed.count() < 250);
+    assert(attempts.load() == 1);
+}
+
+void testHelperPublishFailurePreservesPreviousHelper() {
+    unlink(Target);
+    unlink("/tmp/pipensx-update-test.nro.update");
+    unlink("/tmp/pipensx-update-test.nro.update.sha256");
+    unlink("/tmp/pipensx-updater.nro.tmp");
+    write(Target, "old");
+    write(HelperSource, "new minimal updater helper");
+    write("/tmp/pipensx-updater.nro", "previous helper");
+    const std::string payload = "new verified pipensx nro";
+    const std::string checksum =
+        "9dc1034a694baa2d68b032ed446fbc9b170975306c571202e99ff741821365b4";
+    pipensx::UpdateService service(Target,
+        [checksum](const std::string&, size_t, std::string& body,
+                   std::string&) { body = checksum + "  pipensx.nro\n"; return true; },
+        [payload](const std::string&, const std::string& path, size_t,
+                  std::string&) { write(path, payload); return true; },
+        HelperSource);
+    pipensx::ReleaseInfo release{"v1.2.3",
+        "https://github.com/i3sey/pipensx/releases/download/v1.2.3/pipensx.nro",
+        "https://github.com/i3sey/pipensx/releases/download/v1.2.3/pipensx.nro.sha256"};
+    std::string error;
+    failHelperPublish = true;
+    const bool installed = service.install(release, error);
+    failHelperPublish = false;
+    assert(!installed);
+    assert(error.find("Unable to publish update helper") != std::string::npos);
+    std::ifstream helper(service.helperPath(), std::ios::binary);
+    std::string bytes((std::istreambuf_iterator<char>(helper)), {});
+    assert(bytes == "previous helper");
+    assert(access("/tmp/pipensx-updater.nro.tmp", F_OK) != 0);
+    assert(access("/tmp/pipensx-update-test.nro.update", F_OK) != 0);
+    assert(access("/tmp/pipensx-update-test.nro.update.sha256", F_OK) != 0);
+    unlink(Target);
+    unlink(service.helperPath().c_str());
+    unlink(HelperSource);
 }
 
 } // namespace
 
 int main() {
     testVersionsAndReleaseValidation();
-    testStagedLaunchDetectionUsesExecutablePath();
     testStagedReadyRecoversInterruptedRestart();
     testInstallVerifiesBeforeStaging();
     testTransientNetworkFailuresAreRetried();
     testInstallNeverTouchesRunningNro();
+    testShutdownInterruptsRetryWait();
+    testHelperPublishFailurePreservesPreviousHelper();
     std::puts("update service tests passed");
     return 0;
 }

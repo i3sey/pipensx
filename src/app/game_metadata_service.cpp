@@ -147,7 +147,8 @@ bool httpGetOnce(const std::string& url, size_t limit,
                  std::vector<uint8_t>& data, std::string& error,
                  bool followRedirects = true,
                  std::string* effectiveUrl = nullptr,
-                 bool verifyTls = false) {
+                 bool verifyTls = false,
+                 const std::atomic<bool>* stopping = nullptr) {
     data.clear();
     CURL* curl = curl_easy_init();
     if (!curl) {
@@ -168,6 +169,14 @@ bool httpGetOnce(const std::string& url, size_t limit,
     curl_easy_setopt(curl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeBytes);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buffer);
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION,
+        +[](void* opaque, curl_off_t, curl_off_t, curl_off_t, curl_off_t) {
+            const auto* flag = static_cast<const std::atomic<bool>*>(opaque);
+            return flag && flag->load(std::memory_order_relaxed) ? 1 : 0;
+        });
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA,
+                     const_cast<std::atomic<bool>*>(stopping));
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, verifyTls ? 1L : 0L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, verifyTls ? 2L : 0L);
     curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
@@ -244,10 +253,12 @@ std::string ddgRelayUrl(const std::string& sourceUrl) {
 #endif
 
 bool httpGet(const std::string& url, size_t limit, std::vector<uint8_t>& data,
-             std::string& error) {
+             std::string& error,
+             const std::atomic<bool>* stopping = nullptr) {
     auto attempt = [&](const std::string& requestUrl) {
         std::string attemptError;
-        if (!httpGetOnce(requestUrl, limit, data, attemptError)) {
+        if (!httpGetOnce(requestUrl, limit, data, attemptError, true, nullptr,
+                         false, stopping)) {
             error = std::move(attemptError);
             return false;
         }
@@ -424,9 +435,11 @@ std::string manifestIndexSha(const std::string& json) {
 }
 
 bool fetchTrustedMetadata(const std::string& url, size_t limit,
-                          std::vector<uint8_t>& data, std::string& error) {
+                          std::vector<uint8_t>& data, std::string& error,
+                          const std::atomic<bool>* stopping = nullptr) {
     std::string effectiveUrl;
-    if (!httpGetOnce(url, limit, data, error, true, &effectiveUrl, true))
+    if (!httpGetOnce(url, limit, data, error, true, &effectiveUrl, true,
+                     stopping))
         return false;
     if (!GameMetadataService::isTrustedRedirect(effectiveUrl)) {
         data.clear();
@@ -468,10 +481,11 @@ GameMetadataService::GameMetadataService(std::string rootPath,
       manifestUrl_(std::move(manifestUrl)),
       metadataFetcher_(std::move(metadataFetcher)) {
     if (!metadataFetcher_) {
-        metadataFetcher_ = [](const std::string& url, size_t limit,
-                              std::vector<uint8_t>& data,
-                              std::string& error) {
-            return fetchTrustedMetadata(url, limit, data, error);
+        metadataFetcher_ = [this](const std::string& url, size_t limit,
+                                  std::vector<uint8_t>& data,
+                                  std::string& error) {
+            return fetchTrustedMetadata(url, limit, data, error,
+                                        &stoppingRequested_);
         };
     }
     makeDirectories(cacheRoot_);
@@ -482,6 +496,7 @@ GameMetadataService::GameMetadataService(std::string rootPath,
 }
 
 GameMetadataService::~GameMetadataService() {
+    stoppingRequested_.store(true, std::memory_order_relaxed);
     std::vector<ImageCallback> cancelled;
     {
         std::lock_guard<std::mutex> lock(imageMutex_);
@@ -872,7 +887,7 @@ GameMetadataService::ImageLoadResult GameMetadataService::loadImageInternal(
         error = "Image network deferred during active transfer.";
         return ImageLoadResult::Deferred;
     }
-    if (!httpGet(url, kMaxImageBytes, bytes, error))
+    if (!httpGet(url, kMaxImageBytes, bytes, error, &stoppingRequested_))
         return ImageLoadResult::Failed;
     if (bytes.size() < 8) {
         error = "Downloaded image is too small.";
