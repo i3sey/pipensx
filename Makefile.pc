@@ -147,7 +147,7 @@ $(SETTINGS_TEST_TARGET): tests/test_app_settings.cpp src/app/app_settings.cpp
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
 
 $(UPDATE_TEST_TARGET): tests/test_update_service.cpp src/app/update_service.cpp src/core/sha256.c
-	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -Wl,--wrap=rename
 
 $(INSTALL_SPACE_TEST_TARGET): tests/test_install_space.cpp \
 		src/app/install_space.cpp

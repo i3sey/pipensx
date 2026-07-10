@@ -7,6 +7,9 @@
 #include <string>
 
 #include <borealis.hpp>
+#ifdef __SWITCH__
+#include <switch.h>
+#endif
 
 #include "app/app_settings.hpp"
 #include "app/catalog_service.hpp"
@@ -339,6 +342,19 @@ private:
         updateAction_->setDetailText("Downloading...");
         auto alive = alive_;
         UpdateService* updater = updater_;
+        auto lastPercent = std::make_shared<std::atomic<int>>(-1);
+        updater->onInstallProgress(
+            [this, alive, lastPercent](uint64_t received, uint64_t total) {
+                const int percent = static_cast<int>((received * 100) / total);
+                if (lastPercent->exchange(percent) == percent)
+                    return;
+                brls::sync([this, alive, percent] {
+                    if (!alive->load())
+                        return;
+                    updateAction_->setDetailText(
+                        "Downloading... " + std::to_string(percent) + "%");
+                });
+            });
         updater->installAsync(release, [this, alive](bool installed,
                                                        std::string error) {
             brls::sync([this, alive, installed, error = std::move(error)] {
@@ -353,8 +369,26 @@ private:
                     return;
                 }
                 updateAction_->setDetailText("Restart required");
+#ifdef __SWITCH__
+                if (!envHasNextLoad()) {
+                    brls::Application::notify(
+                        "Update downloaded, but this loader cannot restart it.");
+                    return;
+                }
+                const std::string helper = updater_->helperPath();
+                const std::string arguments = helper + " --finish-update";
+                const Result result = envSetNextLoad(helper.c_str(),
+                                                     arguments.c_str());
+                if (R_FAILED(result)) {
+                    diagnostic_error("update", "restart", "result=0x%08x",
+                                     result);
+                    brls::Application::notify(
+                        "Update downloaded, but restart setup failed.");
+                    return;
+                }
+#endif
                 brls::Application::notify(
-                    "Update installed. pipensx will now close; launch it again.");
+                    "Update downloaded. pipensx will restart to install it.");
                 brls::Application::quit();
             });
         });

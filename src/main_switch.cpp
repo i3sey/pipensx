@@ -20,6 +20,7 @@ extern "C" {
 #include <exception>
 #include <stdexcept>
 #include <string>
+#include <vector>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -110,7 +111,7 @@ private:
 
 }  // namespace
 
-int main(int, char**) {
+int main(int argc, char** argv) {
     // A library applet must only terminate after qlaunch asks it to close.
     // Keep this path before logging, settings, and custom signal handlers so
     // the unsupported mode uses only libnx's normal applet lifecycle.
@@ -124,6 +125,33 @@ int main(int, char**) {
     mkdir("sdmc:/switch", 0755);
     mkdir("sdmc:/switch/pipensx", 0755);
     log_init(LogPath);
+
+    std::vector<std::string> launchArguments;
+    for (int i = 0; i < argc; ++i)
+        if (argv[i])
+            launchArguments.emplace_back(argv[i]);
+    UpdateService launchUpdater;
+    const bool stagedLaunch = launchUpdater.isStagedLaunch(launchArguments);
+    // A verified download left behind by a session that quit before its
+    // restart also finalizes here, instead of being discarded below.
+    if (stagedLaunch || launchUpdater.stagedReady()) {
+        std::string error;
+        if (!launchUpdater.finalizeStaged(error)) {
+            diagnostic_error("update", "finalize", "error=%s",
+                             error.c_str());
+            if (stagedLaunch)
+                return 1;
+        } else {
+            const std::string target = launchUpdater.targetPath();
+            const Result result = envSetNextLoad(target.c_str(),
+                                                 target.c_str());
+            if (R_SUCCEEDED(result))
+                return 0;
+            diagnostic_error("update", "relaunch", "result=0x%08x", result);
+            if (stagedLaunch)
+                return 1;
+        }
+    }
     AppSettings settings(SettingsPath, TelemetryFlagPath);
     std::string settingsError;
     if (!settings.load(settingsError))
@@ -217,6 +245,7 @@ int main(int, char**) {
         metadata.setImageNetworkPaused(manager.hasActiveTransfer());
 
         UpdateService updater;
+        updater.discardStaged();
 
         startupStage("MainActivity construction");
         auto* activity = new MainActivity(&manager, &catalog, &metadata,
