@@ -197,15 +197,11 @@ private:
         content->addView(left);
     }
 
-    // Right column (scrolls): title, fact table, screenshots, description.
+    // Right column (scrolls): fact table, screenshots, description. The game
+    // title already lives in the AppletFrame header, so do not repeat it here.
     void buildRightColumn(brls::Box* content) {
         auto* right = new brls::Box(brls::Axis::COLUMN);
         right->setPadding(0, 12, 24, 0);
-
-        auto* title = new brls::Label();
-        title->setFontSize(theme::kFontTitle);
-        title->setText(presentation_.title);
-        right->addView(title);
 
         buildFactsTable(right);
 

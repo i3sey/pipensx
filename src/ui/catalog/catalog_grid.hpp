@@ -123,12 +123,15 @@ public:
 
         name_ = new brls::Label();
         name_->setSingleLine(true);
+        // Keep ellipsis at rest and marquee only the focused card title.
+        name_->setAutoAnimate(false);
         name_->setFontSize(theme::kFontSmall);
         name_->setMarginTop(6);
         addView(name_);
 
         sub_ = new brls::Label();
         sub_->setSingleLine(true);
+        sub_->setAutoAnimate(false);
         sub_->setFontSize(theme::kFontCaption);
         sub_->setMarginTop(2);
         sub_->setTextColor(theme::textTertiary());
@@ -186,6 +189,7 @@ public:
     void onFocusGained() override {
         brls::Box::onFocusGained();
         applyZoom(true);
+        name_->setAnimated(true);
         if (onFocus_)
             onFocus_();
     }
@@ -193,6 +197,7 @@ public:
     void onFocusLost() override {
         brls::Box::onFocusLost();
         applyZoom(false);
+        name_->setAnimated(false);
     }
 
     int entryIndex() const { return entryIndex_; }

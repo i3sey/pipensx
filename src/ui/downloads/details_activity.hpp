@@ -59,12 +59,22 @@ public:
         progressBar_->setMarginBottom(12);
         progressCard->addView(progressBar_);
         progress_ = addLine(progressCard, theme::kFontBody);
+        package_ = addLine(progressCard, theme::kFontSmall);
+        package_->setTextColor(theme::textSecondary());
+        currentPackage_ = addLine(progressCard, theme::kFontSmall);
+        currentPackage_->setSingleLine(true);
+        currentPackage_->setAutoAnimate(false);
         eta_ = addLine(progressCard, theme::kFontSmall);
         eta_->setTextColor(theme::textSecondary());
-        install_ = addLine(progressCard, theme::kFontSmall);
 
         auto* speedCard = addCard(content, "Speed");
-        transfer_ = addLine(speedCard, theme::kFontBody);
+        auto* speedLegend = new brls::Box(brls::Axis::ROW);
+        speedLegend->setAlignItems(brls::AlignItems::CENTER);
+        speedLegend->setMarginBottom(8);
+        downloadSpeed_ = addSpeedLegend(speedLegend, theme::accent(), nullptr);
+        installSpeed_ = addSpeedLegend(speedLegend, theme::success(),
+                                       &installSpeedItem_);
+        speedCard->addView(speedLegend);
         speedGraph_ = new SpeedGraphView();
         speedCard->addView(speedGraph_);
 
@@ -124,6 +134,31 @@ private:
         return card;
     }
 
+    static brls::Label* addSpeedLegend(brls::Box* row, NVGcolor color,
+                                       brls::Box** itemOut) {
+        auto* item = new brls::Box(brls::Axis::ROW);
+        item->setAlignItems(brls::AlignItems::CENTER);
+        item->setMarginRight(28);
+
+        auto* dot = new brls::Box();
+        dot->setWidth(10);
+        dot->setHeight(10);
+        dot->setCornerRadius(5);
+        dot->setBackgroundColor(color);
+        dot->setMarginRight(8);
+        item->addView(dot);
+
+        auto* label = new brls::Label();
+        label->setFontSize(theme::kFontBody);
+        label->setSingleLine(true);
+        label->setAutoAnimate(false);
+        item->addView(label);
+        row->addView(item);
+        if (itemOut)
+            *itemOut = item;
+        return label;
+    }
+
     static brls::Button* addActionButton(brls::Box* row, const std::string& text,
                                          const brls::ButtonStyle* style) {
         auto* button = new brls::Button();
@@ -173,7 +208,7 @@ private:
         float progress = installing ? installProgressOf(*task)
                                     : progressOf(*task);
         progressBar_->setProgress(progress);
-        progress_->setText(std::to_string(percentOf(progress)) + "%   " +
+        progress_->setText(std::to_string(percentOf(progress)) + "%  ·  " +
                            formatBytes(task->completedBytes) + " / " +
                            formatBytes(task->totalBytes));
 
@@ -184,30 +219,34 @@ private:
                             task->speedBytesPerSecond);
         eta_->setText(eta.empty() ? "" : "ETA " + eta);
 
-        if (task->mode == TransferMode::StreamInstall) {
-            int installPercent = task->installTotalBytes
-                ? static_cast<int>(task->installedBytes * 100 /
-                                   task->installTotalBytes)
-                : 0;
-            install_->setText(
-                "Install: " + std::to_string(task->packagesInstalled) +
-                " / " + std::to_string(task->packageCount) + " packages" +
-                (task->currentPackage.empty()
-                    ? ""
-                    : "   " + task->currentPackage + "   " +
-                      std::to_string(installPercent) + "%"));
+        if (task->mode == TransferMode::StreamInstall && task->packageCount) {
+            const bool hasCurrent = !task->currentPackage.empty() &&
+                                    task->packagesInstalled < task->packageCount;
+            if (hasCurrent) {
+                package_->setText(
+                    "Package " + std::to_string(task->packagesInstalled + 1) +
+                    " of " + std::to_string(task->packageCount));
+            } else {
+                package_->setText(
+                    "Packages installed: " +
+                    std::to_string(task->packagesInstalled) + " of " +
+                    std::to_string(task->packageCount));
+            }
+            currentPackage_->setText(task->currentPackage);
         } else {
-            install_->setText("");
+            package_->setText("");
+            currentPackage_->setText("");
         }
 
         recordSpeedSample(*task);
+        downloadSpeed_->setText(
+            "Download: " + formatSpeed(task->speedBytesPerSecond));
         if (task->mode == TransferMode::StreamInstall) {
-            transfer_->setText(
-                "Download: " + formatSpeed(task->speedBytesPerSecond) +
-                "   Install: " + formatSpeed(installSpeedSmoothed_));
+            installSpeedItem_->setVisibility(brls::Visibility::VISIBLE);
+            installSpeed_->setText(
+                "Install: " + formatSpeed(installSpeedSmoothed_));
         } else {
-            transfer_->setText(
-                "Download: " + formatSpeed(task->speedBytesPerSecond));
+            installSpeedItem_->setVisibility(brls::Visibility::GONE);
         }
         peers_->setText("Peers: " + std::to_string(task->peers) +
                         "   DHT: " + std::to_string(task->dhtGood) + " good / " +
@@ -232,18 +271,21 @@ private:
                       task.status == DownloadStatus::Committing ||
                       task.status == DownloadStatus::Verifying;
         pauseButton_->setText(paused ? "Resume" : "Pause");
-        pauseButton_->setState((paused || active) ? brls::ButtonState::ENABLED
-                                                  : brls::ButtonState::DISABLED);
+        setButtonAvailable(pauseButton_, paused || active);
 
         bool canVerify = task.status == DownloadStatus::Paused ||
                          task.status == DownloadStatus::Error ||
                          task.status == DownloadStatus::Completed ||
                          task.status == DownloadStatus::Installed;
-        verifyButton_->setState(canVerify ? brls::ButtonState::ENABLED
-                                          : brls::ButtonState::DISABLED);
-        removeButton_->setState(task.status == DownloadStatus::Removing
-                                    ? brls::ButtonState::DISABLED
-                                    : brls::ButtonState::ENABLED);
+        setButtonAvailable(verifyButton_, canVerify);
+        setButtonAvailable(removeButton_,
+                           task.status != DownloadStatus::Removing);
+    }
+
+    static void setButtonAvailable(brls::Button* button, bool available) {
+        button->setState(available ? brls::ButtonState::ENABLED
+                                   : brls::ButtonState::DISABLED);
+        button->setAlpha(available ? 1.0f : 0.32f);
     }
 
     static void appendSpeedSample(std::vector<uint64_t>& samples,
@@ -313,9 +355,12 @@ private:
     brls::Button* removeButton_;
     ProgressBar* progressBar_;
     brls::Label* progress_;
+    brls::Label* package_;
+    brls::Label* currentPackage_;
     brls::Label* eta_;
-    brls::Label* install_;
-    brls::Label* transfer_;
+    brls::Label* downloadSpeed_;
+    brls::Label* installSpeed_;
+    brls::Box* installSpeedItem_;
     SpeedGraphView* speedGraph_;
     brls::Label* peers_;
     brls::Label* pieces_;
