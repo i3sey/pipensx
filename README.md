@@ -70,7 +70,7 @@ metadata input, and deployment helpers.
 
 ## Install on Nintendo Switch
 
-Copy the NRO to:
+Copy the [NRO](https://github.com/i3sey/pipensx/releases/latest/download/pipensx.nro) to:
 
 ```text
 SD:/switch/pipensx/pipensx.nro
