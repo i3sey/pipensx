@@ -188,12 +188,16 @@ bool writeAtomic(const std::string& path, const std::string& data,
             return false;
         }
     }
-    if (rename(temporary.c_str(), path.c_str()) != 0) {
-        unlink(temporary.c_str());
-        error = "Unable to replace catalog cache.";
-        return false;
-    }
-    return true;
+    if (rename(temporary.c_str(), path.c_str()) == 0)
+        return true;
+    // Switch fsdev/FatFs rename() fails when the target already exists (no
+    // POSIX overwrite), so drop the old file first and retry.
+    if ((unlink(path.c_str()) == 0 || errno == ENOENT) &&
+        rename(temporary.c_str(), path.c_str()) == 0)
+        return true;
+    unlink(temporary.c_str());
+    error = "Unable to replace catalog cache.";
+    return false;
 }
 
 CatalogHealth parseHealth(const nlohmann::json& item) {
