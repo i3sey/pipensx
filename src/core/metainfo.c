@@ -198,11 +198,37 @@ int metainfo_parse(const uint8_t *data, size_t len, metainfo_t *mi) {
         }
     }
 
+    /* ---- web seeds (BEP-19 url-list) ---- */
+    /* May be a single string or a list of strings. */
+    be_node_t ul;
+    if (be_dict_get(root.buf, root.buf + root.raw_len, "url-list", 8, &ul)) {
+        if (ul.type == BE_STR) {
+            if (ul.slen && ul.slen < 512) {
+                memcpy(mi->web_seeds[0], ul.sval, ul.slen);
+                mi->web_seeds[0][ul.slen] = 0;
+                mi->num_web_seeds = 1;
+            }
+        } else if (ul.type == BE_LIST) {
+            const char *up = ul.buf + 1;
+            const char *ue = ul.buf + ul.raw_len - 1;
+            be_node_t url;
+            while (mi->num_web_seeds < MAX_WEB_SEEDS &&
+                   be_list_next(&up, ue, &url)) {
+                if (url.type == BE_STR && url.slen && url.slen < 512) {
+                    memcpy(mi->web_seeds[mi->num_web_seeds], url.sval, url.slen);
+                    mi->web_seeds[mi->num_web_seeds][url.slen] = 0;
+                    mi->num_web_seeds++;
+                }
+            }
+        }
+    }
+
     char ih_hex[41];
     hex20(ih_hex, mi->info_hash);
-    log_msg("[meta] name='%s' hash=%s pieces=%u piece_len=%lld total=%lld files=%u trackers=%u\n",
+    log_msg("[meta] name='%s' hash=%s pieces=%u piece_len=%lld total=%lld files=%u trackers=%u webseeds=%u\n",
             mi->name, ih_hex, mi->num_pieces, (long long)mi->piece_length,
-            (long long)mi->total_length, mi->num_files, mi->num_trackers);
+            (long long)mi->total_length, mi->num_files, mi->num_trackers,
+            mi->num_web_seeds);
     return 1;
 }
 
