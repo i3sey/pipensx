@@ -17,7 +17,17 @@
 
 #define MAX_PEER_QUEUE 1024
 #define CONNECT_INTERVAL_MS 50
-#define CONNECT_TIMEOUT_MS  6000
+/* A μTP-only or firewalled peer's TCP SYN just hangs, squatting a slot until
+   this fires; a reachable plaintext-TCP peer answers well inside it. Keep it
+   short so the burst dialer can cycle through a big peer list quickly. */
+#define CONNECT_TIMEOUT_MS  3000
+/* Keep this many sockets mid-connect at once (PERF: dial in bursts instead of
+   one peer per CONNECT_INTERVAL_MS) so the reachable TCP peers in a large
+   announce are found in ~one pass rather than dribbled out over seconds. */
+#define CONNECT_IN_FLIGHT   16
+/* Evict an ACTIVE peer that keeps us choked with no piece for this long: it is
+   dead weight holding a slot a productive peer could use. */
+#define PEER_CHOKE_GIVEUP_MS 20000ULL
 #define TRACKER_REANNOUNCE_MS (30*60*1000ULL)  /* 30 min */
 /* When the swarm is peer-starved, don't wait the full interval — re-announce
    early to pull in a fresh peer set (PERF_PLAN 1.6). Rate-limited so we never
@@ -524,11 +534,26 @@ static void fill_ctx(torrent_t *t, peer_ctx_t *ctx) {
     ctx->listen_port = t->listen_port;
 }
 
-/* ---- connect next peer from queue ---- */
-static void try_connect(torrent_t *t) {
-    if (t->num_peers >= MAX_ACTIVE_PEERS) return;
+/* Count peers that have not reached PS_ACTIVE yet — the in-flight dials the
+   burst connector is allowed to top up. */
+static int count_connecting(const torrent_t *t) {
+    int n = 0;
+    for (int i = 0; i < MAX_ACTIVE_PEERS; i++) {
+        peer_t *p = t->peers[i];
+        if (p && p->state != PS_ACTIVE && p->state != PS_DEAD)
+            n++;
+    }
+    return n;
+}
+
+/* ---- connect next peer from queue ----
+   Returns 1 if a queue entry was consumed (whether or not the connect
+   succeeded), 0 when there is nothing to do (slots full or queue empty) so the
+   burst caller can stop. */
+static int try_connect(torrent_t *t) {
+    if (t->num_peers >= MAX_ACTIVE_PEERS) return 0;
     uint32_t ip; uint16_t port;
-    if (!queue_pop(t, &ip, &port)) return;
+    if (!queue_pop(t, &ip, &port)) return 0;
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
@@ -539,7 +564,7 @@ static void try_connect(torrent_t *t) {
     socket_t fd = net_tcp_connect(&addr);
     if (fd == INVALID_SOCK) {
         blocklist_add(t, ip, port, now_ms());
-        return;
+        return 1;
     }
 
     peer_ctx_t ctx; fill_ctx(t, &ctx);
@@ -547,7 +572,7 @@ static void try_connect(torrent_t *t) {
     if (!p) {
         net_close(fd);
         blocklist_add(t, ip, port, now_ms());
-        return;
+        return 1;
     }
 
     p->dl_rate_bps = PIPELINE_BOOTSTRAP_BPS;
@@ -558,11 +583,12 @@ static void try_connect(torrent_t *t) {
             t->peers[i] = p;
             t->num_peers++;
             log_msg("[torrent] connecting peer\n");
-            return;
+            return 1;
         }
     }
     blocklist_add(t, ip, port, now_ms());
     peer_destroy(p);
+    return 1;
 }
 
 /* ---- schedule block requests ---- */
@@ -1162,9 +1188,15 @@ int torrent_tick(torrent_t *t) {
         }
     }
 
-    /* Connect new peers */
+    /* Connect new peers — dial in a burst up to CONNECT_IN_FLIGHT sockets so a
+       large announce is worked through in ~one pass instead of one peer per
+       interval. Stops early when the queue drains or all slots are full. */
     if (now - t->last_connect_ms >= CONNECT_INTERVAL_MS) {
-        try_connect(t);
+        int budget = CONNECT_IN_FLIGHT - count_connecting(t);
+        for (int k = 0; k < budget; k++) {
+            if (!try_connect(t))
+                break;
+        }
         t->last_connect_ms = now;
     }
 
@@ -1254,6 +1286,23 @@ int torrent_tick(torrent_t *t) {
             continue;
         }
         if (p->state != PS_ACTIVE) continue;
+        /* Evict dead-weight peers that keep us choked and idle: they occupy a
+           slot a reachable, productive peer could use. */
+        if (p->am_choked) {
+            uint64_t idle_ref = p->last_piece_ms ? p->last_piece_ms
+                                                 : p->connect_time_ms;
+            if (idle_ref <= now2 && now2 - idle_ref >= PEER_CHOKE_GIVEUP_MS) {
+                log_msg("[torrent] peer evicted: choking us, idle %llums\n",
+                        (unsigned long long)(now2 - idle_ref));
+                blocklist_add(t, p->addr.sin_addr.s_addr,
+                              p->addr.sin_port, now2);
+                clear_peer_requests(t, p);
+                peer_destroy(p);
+                t->peers[i] = NULL;
+                t->num_peers--;
+                continue;
+            }
+        }
         int expired = peer_expire_requests(p, now2, REQUEST_TIMEOUT_MS,
                                            clear_request, t);
         if (expired > 0) {
