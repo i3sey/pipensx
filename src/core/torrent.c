@@ -574,6 +574,7 @@ static void fill_ctx(torrent_t *t, peer_ctx_t *ctx) {
     ctx->bf_bytes    = (t->mi.num_pieces + 7) / 8;
     ctx->our_bf      = t->pm->available_bf;
     ctx->listen_port = t->listen_port;
+    ctx->use_mse     = 1; /* try MSE/PE first to reach encryption-required peers */
 }
 
 /* Count peers that have not reached PS_ACTIVE yet — the in-flight dials the
@@ -1315,7 +1316,8 @@ int torrent_tick(torrent_t *t) {
         peer_t *p = t->peers[i];
         if (!p) continue;
         /* Replace unreachable peers quickly so they do not occupy every slot. */
-        if (p->state == PS_CONNECTING || p->state == PS_HANDSHAKE) {
+        if (p->state == PS_CONNECTING || p->state == PS_MSE ||
+            p->state == PS_HANDSHAKE) {
             if (p->connect_time_ms <= now2 &&
                 now2 - p->connect_time_ms > CONNECT_TIMEOUT_MS) {
                 log_msg("[torrent] peer connect/handshake timeout\n");

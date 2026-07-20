@@ -1,5 +1,6 @@
 #pragma once
 #include "net.h"
+#include "mse.h"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -28,6 +29,7 @@
 
 typedef enum {
     PS_CONNECTING = 0,
+    PS_MSE,        /* MSE/PE encryption handshake in progress */
     PS_HANDSHAKE,
     PS_EXTENSION,
     PS_ACTIVE,
@@ -104,6 +106,12 @@ typedef struct peer {
     /* PEX data received (raw bencode, owned) */
     uint8_t *pex_buf;
     uint32_t pex_len;
+
+    /* MSE/PE encryption. mse_enabled: attempt the encrypted handshake on
+       connect. mse_active: handshake done, wrap all traffic in RC4. */
+    int          mse_enabled;
+    int          mse_active;
+    mse_client_t mse;
 } peer_t;
 
 typedef struct {
@@ -113,6 +121,7 @@ typedef struct {
     uint32_t       bf_bytes;   /* (num_pieces+7)/8 */
     const uint8_t *our_bf;    /* our have-bitfield */
     uint16_t       listen_port;
+    int            use_mse;   /* attempt MSE/PE on outgoing connections */
 } peer_ctx_t;
 
 /* Allocate/free a peer slot */
