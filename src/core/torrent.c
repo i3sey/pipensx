@@ -315,6 +315,48 @@ static void cb_block(void *ud, uint32_t idx, uint32_t off,
     }
 }
 
+/* ---- web-seed (BEP-19) hand-off ----
+   Called on the torrent thread only (see torrent.h). Reuses the same piece
+   store/verify path as peer blocks, so a web-seed piece is verified against its
+   SHA-1 exactly like anything received from the swarm. */
+int torrent_piece_done(const torrent_t *t, uint32_t piece) {
+    if (!t || !t->pm || piece >= t->pm->num_pieces)
+        return 0;
+    return bf_has(t->pm->have_bf, piece) ? 1 : 0;
+}
+
+int torrent_submit_web_piece(torrent_t *t, uint32_t piece,
+                             const uint8_t *data, uint32_t len) {
+    if (!t || !t->pm || !data || piece >= t->pm->num_pieces)
+        return 0;
+    if (bf_has(t->pm->have_bf, piece))
+        return 0; /* a peer already finished it */
+    if (len != (uint32_t)piece_len(t->pm, piece))
+        return 0;
+
+    piece_mgr_mark_pending(t->pm, piece);
+    int result = 1;
+    for (uint32_t off = 0; off < len; off += BLOCK_SIZE) {
+        uint32_t block = off / BLOCK_SIZE;
+        if (piece_mgr_has_block(t->pm, piece, block))
+            continue;
+        uint32_t blen = (off + BLOCK_SIZE <= len) ? BLOCK_SIZE : (len - off);
+        int r = piece_mgr_got_block(t->pm, piece, off, data + off, blen);
+        if (r < 0) {
+            t->fatal_error = 1;
+            snprintf(t->error, sizeof(t->error), "%s",
+                     storage_error(t->store)[0]
+                        ? storage_error(t->store)
+                        : "web-seed piece processing failed");
+            return -1;
+        }
+        t->downloaded  += blen;
+        t->speed_bytes += blen;
+        result = r;
+    }
+    return result;
+}
+
 static void reset_telemetry_window(torrent_t *t, uint64_t now) {
     t->telemetry_generation = telemetry_generation();
     t->telemetry_last_ms = now;

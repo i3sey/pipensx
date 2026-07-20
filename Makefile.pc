@@ -46,6 +46,7 @@ BATCH_INSTALL_TEST_TARGET = tests/test_batch_install
 RAM_BUDGET_TEST_TARGET = tests/test_stream_ram_budget
 REQUEST_GATE_TEST_TARGET = tests/test_request_gate
 JOURNAL_TEST_TARGET = tests/test_install_journal
+WEB_SEED_TEST_TARGET = tests/test_web_seed
 TEST_SRCS = \
     tests/test_piece.c       \
     src/core/sha1.c          \
@@ -69,6 +70,9 @@ $(TEST_TARGET): $(TEST_SRCS)
 src/app/download_manager.o: src/app/download_manager.cpp
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
+src/app/web_seed_source.o: src/app/web_seed_source.cpp
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
 src/app/stream_ram_budget.o: src/app/stream_ram_budget.cpp
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
@@ -82,6 +86,7 @@ tests/test_manager.o: tests/test_manager.cpp
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
 $(MANAGER_TEST_TARGET): tests/test_manager.o src/app/download_manager.o \
+		src/app/web_seed_source.o \
 		src/app/stream_ram_budget.o src/app/request_gate.o \
 		src/install/package_stream.o src/install/install_journal.o \
 		src/install/install_backend_pc.o \
@@ -126,7 +131,7 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 		$(TORRENT_TEST_TARGET) $(SETTINGS_TEST_TARGET) $(UPDATE_TEST_TARGET) \
 		$(INSTALL_SPACE_TEST_TARGET) $(BATCH_INSTALL_TEST_TARGET) \
 		$(RAM_BUDGET_TEST_TARGET) $(REQUEST_GATE_TEST_TARGET) \
-		$(JOURNAL_TEST_TARGET)
+		$(JOURNAL_TEST_TARGET) $(WEB_SEED_TEST_TARGET)
 	./$(TEST_TARGET)
 	./$(MANAGER_TEST_TARGET)
 	./$(PACKAGE_TEST_TARGET)
@@ -141,6 +146,7 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 	./$(RAM_BUDGET_TEST_TARGET)
 	./$(REQUEST_GATE_TEST_TARGET)
 	./$(JOURNAL_TEST_TARGET)
+	./$(WEB_SEED_TEST_TARGET)
 	python3 tests/test_telemetry_analyzer.py
 
 $(SETTINGS_TEST_TARGET): tests/test_app_settings.cpp src/app/app_settings.cpp
@@ -155,7 +161,8 @@ $(INSTALL_SPACE_TEST_TARGET): tests/test_install_space.cpp \
 
 $(BATCH_INSTALL_TEST_TARGET): tests/test_batch_install.cpp \
 		src/app/catalog_batch_installer.cpp src/app/install_space.cpp \
-		src/app/download_manager.o src/app/stream_ram_budget.o \
+		src/app/download_manager.o src/app/web_seed_source.o \
+		src/app/stream_ram_budget.o \
 		src/app/request_gate.o \
 		src/install/package_stream.o src/install/install_journal.o \
 		src/install/install_backend_pc.o \
@@ -175,6 +182,10 @@ $(JOURNAL_TEST_TARGET): tests/test_install_journal.cpp \
 		src/install/install_journal.o src/core/bencode.o
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
 
+$(WEB_SEED_TEST_TARGET): tests/test_web_seed.cpp src/app/web_seed_source.o \
+		src/core/util.o
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -pthread
+
 $(TELEMETRY_TEST_TARGET): tests/test_telemetry.c src/core/util.c
 	$(CC) $(CFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
 
@@ -187,7 +198,8 @@ $(TORRENT_TEST_TARGET): tests/test_torrent.c \
 	$(CC) $(CFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
 
 clean:
-	rm -f $(OBJS) src/app/download_manager.o src/app/stream_ram_budget.o \
+	rm -f $(OBJS) src/app/download_manager.o src/app/web_seed_source.o \
+		src/app/stream_ram_budget.o \
 		src/app/request_gate.o \
 		src/app/catalog_service.o \
 		src/app/catalog_presentation.o src/app/game_metadata_service.o \
