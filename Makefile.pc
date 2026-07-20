@@ -47,6 +47,7 @@ RAM_BUDGET_TEST_TARGET = tests/test_stream_ram_budget
 REQUEST_GATE_TEST_TARGET = tests/test_request_gate
 JOURNAL_TEST_TARGET = tests/test_install_journal
 WEB_SEED_TEST_TARGET = tests/test_web_seed
+MSE_TEST_TARGET = tests/test_mse
 TEST_SRCS = \
     tests/test_piece.c       \
     src/core/sha1.c          \
@@ -131,7 +132,8 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 		$(TORRENT_TEST_TARGET) $(SETTINGS_TEST_TARGET) $(UPDATE_TEST_TARGET) \
 		$(INSTALL_SPACE_TEST_TARGET) $(BATCH_INSTALL_TEST_TARGET) \
 		$(RAM_BUDGET_TEST_TARGET) $(REQUEST_GATE_TEST_TARGET) \
-		$(JOURNAL_TEST_TARGET) $(WEB_SEED_TEST_TARGET)
+		$(JOURNAL_TEST_TARGET) $(WEB_SEED_TEST_TARGET) \
+		$(MSE_TEST_TARGET)
 	./$(TEST_TARGET)
 	./$(MANAGER_TEST_TARGET)
 	./$(PACKAGE_TEST_TARGET)
@@ -147,6 +149,7 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 	./$(REQUEST_GATE_TEST_TARGET)
 	./$(JOURNAL_TEST_TARGET)
 	./$(WEB_SEED_TEST_TARGET)
+	./$(MSE_TEST_TARGET)
 	python3 tests/test_telemetry_analyzer.py
 
 $(SETTINGS_TEST_TARGET): tests/test_app_settings.cpp src/app/app_settings.cpp
@@ -185,6 +188,9 @@ $(JOURNAL_TEST_TARGET): tests/test_install_journal.cpp \
 $(WEB_SEED_TEST_TARGET): tests/test_web_seed.cpp src/app/web_seed_source.o \
 		src/core/util.o
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -pthread
+
+$(MSE_TEST_TARGET): tests/test_mse.c src/core/mse.c src/core/sha1.c
+	$(CC) $(CFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -lcrypto
 
 $(TELEMETRY_TEST_TARGET): tests/test_telemetry.c src/core/util.c
 	$(CC) $(CFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
