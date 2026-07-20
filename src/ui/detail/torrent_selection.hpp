@@ -305,8 +305,33 @@ private:
 
     void setAllSelected(bool selected) {
         dataSource_->setAll(selected);
-        recycler_->reloadData();
+        reloadPreservingFocus();
         refreshSummary();
+    }
+
+    // reloadData() recycles every cell and re-homes focus on defaultCellFocus
+    // (row 0), so a plain reload after toggling a row throws the cursor back to
+    // the top. Pin defaultCellFocus to the currently focused cell, reload, then
+    // re-give focus and restore the scroll offset so the cursor stays put.
+    void reloadPreservingFocus() {
+        float offset = recycler_->getContentOffsetY();
+        brls::View* focused = brls::Application::getCurrentFocus();
+        bool ownsFocus = focused && recycler_->getParentActivity() &&
+                         focused->getParentActivity() ==
+                             recycler_->getParentActivity();
+        auto* cell = ownsFocus
+            ? dynamic_cast<brls::RecyclerCell*>(focused)
+            : nullptr;
+        if (cell)
+            recycler_->setDefaultCellFocus(cell->getIndexPath());
+        recycler_->reloadData();
+        if (ownsFocus) {
+            recycler_->setFocusable(true);
+            brls::Application::giveFocus(recycler_);
+            recycler_->setFocusable(false);
+            brls::Application::giveFocus(recycler_);
+        }
+        recycler_->setContentOffsetY(offset, false);
     }
 
     void refreshSummary() {

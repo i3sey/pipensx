@@ -19,9 +19,10 @@ void TorrentSelectionDataSource::didSelectRowAt(brls::RecyclerFrame* recycler,
         index.row < 0 || static_cast<size_t>(index.row) >= entries_.size())
         return;
     cycleRow(index.row);
-    recycler->reloadData();
-    if (owner_)
+    if (owner_) {
+        owner_->reloadPreservingFocus();
         owner_->refreshSummary();
+    }
 }
 
 void TorrentSelectionDataSource::cycleRow(int row) {
