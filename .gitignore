@@ -31,3 +31,4 @@ build-golden/
 # Python bytecode
 __pycache__/
 *.pyc
+bug-reports
