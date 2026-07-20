@@ -4,10 +4,12 @@
 #include "net.h"
 #include "peer.h"
 #include "util.h"
+#include "utp.h"
 #include "../platform/storage.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <time.h>
 #include <pthread.h>
 
 #ifdef __SWITCH__
@@ -35,6 +37,8 @@
 #define TRACKER_STARVED_REANNOUNCE_MS 15000ULL
 #define TRACKER_STARVED_ACTIVE_PEERS  5
 #define DHT_TICK_INTERVAL_MS  1000
+/* μTP LEDBAT/retransmit timers must be serviced regularly regardless of I/O. */
+#define UTP_TIMEOUT_INTERVAL_MS 500
 #define PEER_TIMEOUT_MS       60000
 #define REQUEST_TIMEOUT_MS    15000
 #define MAX_ACTIVE_PEERS      MAX_PEERS
@@ -68,7 +72,8 @@
 struct peer_addr {
     uint32_t ip;   /* network byte order */
     uint16_t port; /* network byte order */
-    uint8_t  no_mse; /* skip MSE on this attempt (a plaintext fallback retry) */
+    uint8_t  no_mse;  /* skip MSE on this attempt (a plaintext fallback retry) */
+    uint8_t  use_utp; /* dial this endpoint over μTP (TCP→μTP fallback) */
 };
 
 static uint64_t ema_update(uint64_t previous, uint64_t sample) {
@@ -82,6 +87,14 @@ struct torrent {
     piece_mgr_t *pm;
     storage_t   *store;
     dht_engine_t *dht;
+
+    /* Shared μTP transport (BEP-29). One libutp context multiplexes every μTP
+       peer over a single dedicated UDP socket (ephemeral port; distinct from
+       the DHT socket which owns listen_port). Outgoing-only: every datagram on
+       utp_fd is a μTP packet, fed straight to utp_process_udp with no demux. */
+    utp_context *utp;
+    socket_t     utp_fd;
+    uint64_t     last_utp_ms;
 
     uint8_t peer_id[20];
 
@@ -187,7 +200,7 @@ static int blocklist_blocked(const torrent_t *t, uint32_t ip, uint16_t port,
 
 /* ---- peer queue ---- */
 static int queue_insert(torrent_t *t, uint32_t ip, uint16_t port, int front,
-                        int no_mse) {
+                        int no_mse, uint8_t use_utp) {
     uint16_t host_port = ntohs(port);
     if (ip == 0 || ip == INADDR_NONE || host_port < 2)
         return 0;
@@ -220,38 +233,29 @@ static int queue_insert(torrent_t *t, uint32_t ip, uint16_t port, int front,
         index = t->qtail;
         t->qtail = (t->qtail + 1) % MAX_PEER_QUEUE;
     }
-    t->queue[index].ip     = ip;
-    t->queue[index].port   = port;
-    t->queue[index].no_mse = (uint8_t)no_mse;
+    t->queue[index].ip      = ip;
+    t->queue[index].port    = port;
+    t->queue[index].no_mse  = (uint8_t)no_mse;
+    t->queue[index].use_utp = use_utp;
     t->qsize++;
     return 1;
 }
 
 static int queue_push(torrent_t *t, uint32_t ip, uint16_t port) {
-    return queue_insert(t, ip, port, 0, 0);
+    return queue_insert(t, ip, port, 0, 0, 0);
 }
 
 static int queue_push_front(torrent_t *t, uint32_t ip, uint16_t port) {
-    return queue_insert(t, ip, port, 1, 0);
-}
-
-/* A peer that dropped or stalled *during* the MSE handshake (PS_MSE) may simply
-   not speak encryption. Retry it once in plaintext (front of queue, no_mse)
-   instead of blocklisting; otherwise blocklist as usual. Call after the peer
-   slot is cleared so the queue dedup accepts the re-insert. */
-static void retry_plaintext_or_block(torrent_t *t, uint32_t ip, uint16_t port,
-                                     int was_mse_handshake, uint64_t now) {
-    if (was_mse_handshake && queue_insert(t, ip, port, 1, 1))
-        return;
-    blocklist_add(t, ip, port, now);
+    return queue_insert(t, ip, port, 1, 0, 0);
 }
 
 static int queue_pop(torrent_t *t, uint32_t *ip, uint16_t *port,
-                     uint8_t *no_mse) {
+                     uint8_t *no_mse, uint8_t *use_utp) {
     if (t->qsize == 0) return 0;
-    *ip     = t->queue[t->qhead].ip;
-    *port   = t->queue[t->qhead].port;
-    *no_mse = t->queue[t->qhead].no_mse;
+    *ip      = t->queue[t->qhead].ip;
+    *port    = t->queue[t->qhead].port;
+    *no_mse  = t->queue[t->qhead].no_mse;
+    *use_utp = t->queue[t->qhead].use_utp;
     t->qhead = (t->qhead + 1) % MAX_PEER_QUEUE;
     t->qsize--;
     return 1;
@@ -605,14 +609,206 @@ static int count_connecting(const torrent_t *t) {
     return n;
 }
 
+/* ---- μTP transport (BEP-29) ----
+ * libutp is callback-driven: it never touches the socket itself, it calls back
+ * to send datagrams and to deliver bytes. Peers are reached via the socket's
+ * userdata (the peer_t*) and the torrent via the context userdata. A peer that
+ * dies inside a callback is only flagged PS_DEAD — destroying it inline is
+ * unsafe while libutp still holds the socket — and reclaimed by the per-tick
+ * eviction sweep in torrent_tick. */
+static void utp_mark_dead(peer_t *p) {
+    if (p) p->state = PS_DEAD;
+}
+
+static uint64 utp_cb_sendto(utp_callback_arguments *a) {
+    torrent_t *t = (torrent_t*)utp_context_get_userdata(a->context);
+    if (t && t->utp_fd != INVALID_SOCK)
+        sendto(t->utp_fd, a->buf, a->len, 0, a->address, a->address_len);
+    return 0;
+}
+
+static uint64 utp_cb_on_read(utp_callback_arguments *a) {
+    torrent_t *t = (torrent_t*)utp_context_get_userdata(a->context);
+    peer_t *p = (peer_t*)utp_get_userdata(a->socket);
+    if (t && p && p->state != PS_DEAD) {
+        if (peer_rbuf_append(p, a->buf, (uint32_t)a->len) < 0) {
+            utp_mark_dead(p);
+        } else {
+            peer_ctx_t ctx; fill_ctx(t, &ctx);
+            if (peer_process(p, &ctx, cb_block, cb_have, cb_peers, t) < 0)
+                utp_mark_dead(p);
+        }
+    }
+    /* Always ack the read to libutp so its receive window reopens. */
+    utp_read_drained(a->socket);
+    return 0;
+}
+
+static uint64 utp_cb_get_read_buffer_size(utp_callback_arguments *a) {
+    peer_t *p = (peer_t*)utp_get_userdata(a->socket);
+    return p ? peer_rbuf_space(p) : PEER_RECV_BUFFER_SIZE;
+}
+
+static uint64 utp_cb_on_state_change(utp_callback_arguments *a) {
+    torrent_t *t = (torrent_t*)utp_context_get_userdata(a->context);
+    peer_t *p = (peer_t*)utp_get_userdata(a->socket);
+    if (!p) return 0;
+    switch (a->state) {
+    case UTP_STATE_CONNECT: {
+        /* μTP three-way handshake done — mirror the TCP connect-complete path. */
+        peer_ctx_t ctx; fill_ctx(t, &ctx);
+        if (!peer_connected(p, &ctx))
+            utp_mark_dead(p);
+        break;
+    }
+    case UTP_STATE_WRITABLE:
+        if (!peer_flush(p))
+            utp_mark_dead(p);
+        break;
+    case UTP_STATE_EOF:
+        utp_mark_dead(p);
+        break;
+    case UTP_STATE_DESTROYING:
+        /* libutp is freeing the socket now: drop our back-reference so
+           peer_destroy neither re-closes nor dereferences it. */
+        p->us = NULL;
+        utp_mark_dead(p);
+        break;
+    }
+    return 0;
+}
+
+static uint64 utp_cb_on_error(utp_callback_arguments *a) {
+    peer_t *p = (peer_t*)utp_get_userdata(a->socket);
+    if (p) {
+        log_msg("[utp] peer error: %s\n", utp_error_code_names[a->error_code]);
+        utp_mark_dead(p);
+    }
+    return 0;
+}
+
+static uint64 utp_cb_on_firewall(utp_callback_arguments *a) {
+    (void)a;
+    return 1; /* outgoing-only: reject every inbound μTP connection */
+}
+
+static uint64 utp_cb_get_udp_mtu(utp_callback_arguments *a) {
+    (void)a;
+    return 1500; /* concrete MTU: libutp asserts mtu_floor(576) <= ceiling */
+}
+
+static uint64 utp_cb_get_milliseconds(utp_callback_arguments *a) {
+    (void)a;
+    return now_ms();
+}
+
+static uint64 utp_cb_get_microseconds(utp_callback_arguments *a) {
+    (void)a;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64)ts.tv_sec * 1000000ULL + (uint64)ts.tv_nsec / 1000ULL;
+}
+
+static uint64 utp_cb_get_random(utp_callback_arguments *a) {
+    (void)a;
+    return (uint64)rand();
+}
+
+/* Create the shared μTP context + its dedicated UDP socket. Best-effort: on
+   failure μTP stays disabled (utp==NULL) and the client runs TCP-only. */
+static void utp_setup(torrent_t *t) {
+    t->utp_fd = net_udp_socket(0);
+    if (t->utp_fd == INVALID_SOCK) {
+        log_msg("[utp] UDP socket create failed; μTP disabled\n");
+        return;
+    }
+    t->utp = utp_init(2);
+    if (!t->utp) {
+        log_msg("[utp] context init failed; μTP disabled\n");
+        net_close(t->utp_fd);
+        t->utp_fd = INVALID_SOCK;
+        return;
+    }
+    utp_context_set_userdata(t->utp, t);
+    utp_set_callback(t->utp, UTP_SENDTO,                utp_cb_sendto);
+    utp_set_callback(t->utp, UTP_ON_READ,               utp_cb_on_read);
+    utp_set_callback(t->utp, UTP_GET_READ_BUFFER_SIZE,  utp_cb_get_read_buffer_size);
+    utp_set_callback(t->utp, UTP_ON_STATE_CHANGE,       utp_cb_on_state_change);
+    utp_set_callback(t->utp, UTP_ON_ERROR,              utp_cb_on_error);
+    utp_set_callback(t->utp, UTP_ON_FIREWALL,           utp_cb_on_firewall);
+    utp_set_callback(t->utp, UTP_GET_UDP_MTU,           utp_cb_get_udp_mtu);
+    utp_set_callback(t->utp, UTP_GET_MILLISECONDS,      utp_cb_get_milliseconds);
+    utp_set_callback(t->utp, UTP_GET_MICROSECONDS,      utp_cb_get_microseconds);
+    utp_set_callback(t->utp, UTP_GET_RANDOM,            utp_cb_get_random);
+    log_msg("[utp] context ready (fd=%d)\n", t->utp_fd);
+}
+
+/* Drain all pending datagrams on the μTP socket into libutp. Every datagram is
+   a μTP packet (outgoing-only socket), so no BitTorrent/DHT demux is needed. */
+static void utp_drain_socket(torrent_t *t) {
+    if (!t->utp || t->utp_fd == INVALID_SOCK) return;
+    uint8_t buf[2048];
+    struct sockaddr_in from;
+    for (;;) {
+        socklen_t flen = sizeof(from);
+        ssize_t n = recvfrom(t->utp_fd, buf, sizeof(buf), 0,
+                             (struct sockaddr*)&from, &flen);
+        if (n < 0) break; /* EAGAIN/EWOULDBLOCK: socket drained */
+        utp_process_udp(t->utp, buf, (size_t)n,
+                        (struct sockaddr*)&from, flen);
+    }
+    utp_issue_deferred_acks(t->utp);
+}
+
+/* A failed early dial (TCP connect/handshake) is retried once over μTP: μTP
+   reaches the μTP-only / CGNAT / DPI-reset peers TCP cannot. One-shot — the
+   resulting μTP peer is blocklisted normally if it also fails, so the ladder is
+   bounded TCP → μTP → blocklist. want_utp is computed from the dying peer
+   before it leaves its slot; the endpoint is requeued at the front. Returns 1
+   if a μTP retry was queued, 0 if the caller should blocklist. */
+static int requeue_utp(torrent_t *t, uint32_t ip, uint16_t port) {
+    if (!t->utp) return 0;
+    /* Keep MSE on for the μTP retry — μTP+MSE is the DPI-evasion case. */
+    if (!queue_insert(t, ip, port, /*front*/1, /*no_mse*/0, /*use_utp*/1))
+        return 0;
+    log_msg("[torrent] TCP dial failed -> falling back to uTP\n");
+    return 1;
+}
+
+/* True when a failed peer is a TCP dial that never reached PS_ACTIVE — the only
+   case worth retrying over μTP. Must be read before the peer is destroyed. */
+static int should_retry_utp(const torrent_t *t, const peer_t *p) {
+    return t->utp && p->transport == TRANSPORT_TCP &&
+           (p->state == PS_CONNECTING || p->state == PS_HANDSHAKE);
+}
+
+/* Unified dial-failure fallback across both axes (crypto × transport). Inputs
+   are captured from the peer before it is destroyed. Precedence:
+     1. MSE refused mid-handshake (mse_hs) → retry plaintext on the SAME
+        transport — the peer likely just does not speak encryption.
+     2. Early TCP dial failure (can_utp) → retry over μTP+MSE — reaches the
+        μTP-only / CGNAT / DPI-reset peers TCP cannot.
+     3. Otherwise → blocklist.
+   Each branch flips a queue flag (no_mse or use_utp), so the ladder is bounded
+   TCP+MSE → TCP-plaintext / μTP+MSE → μTP-plaintext → blocklist. */
+static void handle_dial_failure(torrent_t *t, uint32_t ip, uint16_t port,
+                                int mse_hs, int can_utp, uint8_t use_utp,
+                                uint64_t now) {
+    if (mse_hs && queue_insert(t, ip, port, 1, /*no_mse*/1, use_utp))
+        return;
+    if (can_utp && requeue_utp(t, ip, port))
+        return;
+    blocklist_add(t, ip, port, now);
+}
+
 /* ---- connect next peer from queue ----
    Returns 1 if a queue entry was consumed (whether or not the connect
    succeeded), 0 when there is nothing to do (slots full or queue empty) so the
    burst caller can stop. */
 static int try_connect(torrent_t *t) {
     if (t->num_peers >= MAX_ACTIVE_PEERS) return 0;
-    uint32_t ip; uint16_t port; uint8_t no_mse = 0;
-    if (!queue_pop(t, &ip, &port, &no_mse)) return 0;
+    uint32_t ip; uint16_t port; uint8_t no_mse = 0, use_utp = 0;
+    if (!queue_pop(t, &ip, &port, &no_mse, &use_utp)) return 0;
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
@@ -620,18 +816,44 @@ static int try_connect(torrent_t *t) {
     addr.sin_addr.s_addr = ip;
     addr.sin_port = port;
 
-    socket_t fd = net_tcp_connect(&addr);
-    if (fd == INVALID_SOCK) {
-        blocklist_add(t, ip, port, now_ms());
-        return 1;
-    }
-
     peer_ctx_t ctx; fill_ctx(t, &ctx);
-    peer_t *p = peer_create(fd, addr, &ctx);
-    if (!p) {
-        net_close(fd);
-        blocklist_add(t, ip, port, now_ms());
-        return 1;
+    peer_t *p;
+
+    if (use_utp) {
+        /* μTP-fallback dial. If μTP is unavailable the endpoint has already
+           exhausted TCP, so blocklist rather than loop back to TCP. */
+        if (!t->utp) {
+            blocklist_add(t, ip, port, now_ms());
+            return 1;
+        }
+        struct UTPSocket *us = utp_create_socket(t->utp);
+        if (!us) {
+            blocklist_add(t, ip, port, now_ms());
+            return 1;
+        }
+        p = peer_create_utp(us, addr, &ctx);
+        if (!p) {
+            utp_close(us);
+            blocklist_add(t, ip, port, now_ms());
+            return 1;
+        }
+        /* Bind the peer before connecting so the first callback resolves it. */
+        utp_set_userdata(us, p);
+        utp_connect(us, (struct sockaddr*)&addr, sizeof(addr));
+    } else {
+        socket_t fd = net_tcp_connect(&addr);
+        if (fd == INVALID_SOCK) {
+            /* Local dial setup failed outright — try μTP before giving up. */
+            if (!requeue_utp(t, ip, port))
+                blocklist_add(t, ip, port, now_ms());
+            return 1;
+        }
+        p = peer_create(fd, addr, &ctx);
+        if (!p) {
+            net_close(fd);
+            blocklist_add(t, ip, port, now_ms());
+            return 1;
+        }
     }
 
     p->dl_rate_bps = PIPELINE_BOOTSTRAP_BPS;
@@ -643,7 +865,8 @@ static int try_connect(torrent_t *t) {
         if (!t->peers[i]) {
             t->peers[i] = p;
             t->num_peers++;
-            log_msg("[torrent] connecting peer\n");
+            log_msg("[torrent] connecting %s peer\n",
+                    use_utp ? "uTP" : "TCP");
             return 1;
         }
     }
@@ -1042,6 +1265,10 @@ torrent_t *torrent_create_ex(const metainfo_t *mi,
         dht_engine_search(t->dht, mi->info_hash, cb_dht_peer, t);
     }
 
+    /* Shared μTP transport for the TCP→μTP dial fallback. */
+    t->utp_fd = INVALID_SOCK;
+    utp_setup(t);
+
     t->async_ok = (pthread_mutex_init(&t->announce_mutex, NULL) == 0);
     if (!t->async_ok)
         log_msg("[torrent] announce mutex init failed, announces run inline\n");
@@ -1124,6 +1351,16 @@ void torrent_destroy(torrent_t *t) {
             t->peers[i] = NULL;
         }
     log_msg("[torrent] peers destroyed\n");
+    /* Tear down μTP after its peers: peer_destroy issued utp_close on each
+       socket; utp_destroy force-frees whatever remains, then the UDP fd. */
+    if (t->utp) {
+        utp_destroy(t->utp);
+        t->utp = NULL;
+    }
+    if (t->utp_fd != INVALID_SOCK) {
+        net_close(t->utp_fd);
+        t->utp_fd = INVALID_SOCK;
+    }
     piece_mgr_destroy(t->pm);
     t->pm = NULL;
     log_msg("[torrent] piece manager destroyed\n");
@@ -1191,18 +1428,21 @@ int torrent_tick(torrent_t *t) {
         int active = 0;
         int unchoked = 0;
         int inflight = 0;
+        int utp_active = 0;
         for (int i = 0; i < MAX_ACTIVE_PEERS; i++) {
             peer_t *p = t->peers[i];
             if (!p || p->state != PS_ACTIVE)
                 continue;
             active++;
+            if (p->transport == TRANSPORT_UTP)
+                utp_active++;
             if (!p->am_choked)
                 unchoked++;
             inflight += p->pipeline_len;
         }
-        log_msg("[torrent] health active=%d unchoked=%d inflight=%d "
+        log_msg("[torrent] health active=%d utp=%d unchoked=%d inflight=%d "
                 "expired=%u speed=%llu\n",
-                active, unchoked, inflight, t->expired_requests,
+                active, utp_active, unchoked, inflight, t->expired_requests,
                 (unsigned long long)t->speed_bps);
         t->expired_requests = 0;
         t->last_health_ms = now;
@@ -1212,6 +1452,13 @@ int torrent_tick(torrent_t *t) {
     if (t->dht && now - t->last_dht_ms >= DHT_TICK_INTERVAL_MS) {
         dht_engine_tick(t->dht);
         t->last_dht_ms = now;
+    }
+
+    /* μTP timers (LEDBAT congestion control, retransmit) run on their own
+       cadence — they must fire regardless of whether any datagram arrived. */
+    if (t->utp && now - t->last_utp_ms >= UTP_TIMEOUT_INTERVAL_MS) {
+        utp_check_timeouts(t->utp);
+        t->last_utp_ms = now;
     }
 
     /* Re-announce tracker off-thread. Drain a finished run, then start the
@@ -1275,10 +1522,22 @@ int torrent_tick(torrent_t *t) {
         dht_pfd_idx = npfd++;
     }
 
-    /* Peer fds */
+    /* μTP fd — one shared UDP socket for the whole libutp context. */
+    int utp_pfd_idx = -1;
+    if (t->utp && t->utp_fd != INVALID_SOCK) {
+        pfds[npfd].fd      = t->utp_fd;
+        pfds[npfd].events  = POLLIN;
+        pfds[npfd].revents = 0;
+        utp_pfd_idx = npfd++;
+    }
+
+    /* Peer fds — TCP only. μTP peers carry no pollable fd; libutp drives them
+       through the shared context, so they must be excluded here (peer_recv
+       would getsockopt/recv on an invalid fd). */
     for (int i = 0; i < MAX_ACTIVE_PEERS; i++) {
         peer_t *p = t->peers[i];
         if (!p || p->state == PS_DEAD) continue;
+        if (p->transport == TRANSPORT_UTP) continue;
         pfds[npfd].fd     = p->fd;
         pfds[npfd].events = POLLIN |
             ((p->state == PS_CONNECTING || p->sbuf_len > 0) ? POLLOUT : 0);
@@ -1294,10 +1553,15 @@ int torrent_tick(torrent_t *t) {
     if (dht_pfd_idx >= 0 && pfds[dht_pfd_idx].revents & POLLIN)
         dht_engine_tick(t->dht);
 
+    /* μTP readable: feed datagrams to libutp, which fires the peer callbacks. */
+    if (utp_pfd_idx >= 0 && (pfds[utp_pfd_idx].revents & POLLIN))
+        utp_drain_socket(t);
+
     peer_ctx_t ctx; fill_ctx(t, &ctx);
 
-    /* Peer events */
-    for (int pi = (dht_pfd_idx >= 0 ? 1 : 0); pi < npfd; pi++) {
+    /* Peer events (TCP peers only; the non-peer prefix fds are handled above) */
+    for (int pi = 0; pi < npfd; pi++) {
+        if (pi == dht_pfd_idx || pi == utp_pfd_idx) continue;
         if (!(pfds[pi].revents & (POLLIN|POLLOUT|POLLERR|POLLHUP))) continue;
         int slot = pfd_peer[pi];
         peer_t *p = t->peers[slot];
@@ -1311,14 +1575,16 @@ int torrent_tick(torrent_t *t) {
             err = peer_recv(p, &ctx, cb_block, cb_have, cb_peers, t);
         if (err < 0) {
             log_msg("[torrent] peer connection closed\n");
+            uint32_t ip = p->addr.sin_addr.s_addr;
+            uint16_t port = p->addr.sin_port;
             int mse_hs = (p->state == PS_MSE);
-            uint32_t rip = p->addr.sin_addr.s_addr;
-            uint16_t rport = p->addr.sin_port;
+            int can_utp = should_retry_utp(t, p);
+            uint8_t use_utp = (p->transport == TRANSPORT_UTP) ? 1 : 0;
             clear_peer_requests(t, p);
             peer_destroy(p);
             t->peers[slot] = NULL;
             t->num_peers--;
-            retry_plaintext_or_block(t, rip, rport, mse_hs, now);
+            handle_dial_failure(t, ip, port, mse_hs, can_utp, use_utp, now);
             continue;
         }
         if (p->am_choked && p->pipeline_len > 0) {
@@ -1336,19 +1602,32 @@ int torrent_tick(torrent_t *t) {
     for (int i = 0; i < MAX_ACTIVE_PEERS; i++) {
         peer_t *p = t->peers[i];
         if (!p) continue;
+        /* Reclaim peers a libutp callback flagged dead (μTP error/EOF/destroy).
+           Inline destruction from the callback is unsafe, so it deferred to
+           here. */
+        if (p->state == PS_DEAD) {
+            blocklist_add(t, p->addr.sin_addr.s_addr, p->addr.sin_port, now2);
+            clear_peer_requests(t, p);
+            peer_destroy(p);
+            t->peers[i] = NULL;
+            t->num_peers--;
+            continue;
+        }
         /* Replace unreachable peers quickly so they do not occupy every slot. */
         if (p->state == PS_CONNECTING || p->state == PS_MSE ||
             p->state == PS_HANDSHAKE) {
             if (p->connect_time_ms <= now2 &&
                 now2 - p->connect_time_ms > CONNECT_TIMEOUT_MS) {
                 log_msg("[torrent] peer connect/handshake timeout\n");
+                uint32_t ip = p->addr.sin_addr.s_addr;
+                uint16_t port = p->addr.sin_port;
                 int mse_hs = (p->state == PS_MSE);
-                uint32_t rip = p->addr.sin_addr.s_addr;
-                uint16_t rport = p->addr.sin_port;
+                int can_utp = should_retry_utp(t, p);
+                uint8_t use_utp = (p->transport == TRANSPORT_UTP) ? 1 : 0;
                 peer_destroy(p);
                 t->peers[i] = NULL;
                 t->num_peers--;
-                retry_plaintext_or_block(t, rip, rport, mse_hs, now2);
+                handle_dial_failure(t, ip, port, mse_hs, can_utp, use_utp, now2);
             }
             continue;
         }

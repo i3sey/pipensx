@@ -1,19 +1,33 @@
 #include "peer.h"
 #include "bencode.h"
 #include "util.h"
+#include "utp.h"
 /* bf_set/bf_has come from util.h */
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
 
+/* --- transport write ---
+ * The single primitive that differs between TCP and μTP. Both are nonblocking
+ * and may accept fewer bytes than offered (kernel socket buffer full / libutp
+ * send window full); the caller queues the unsent tail in p->sbuf. Returns
+ * bytes accepted (>= 0) or -1 on a hard error. */
+static ssize_t transport_write(peer_t *p, const uint8_t *data, uint32_t len) {
+    if (p->transport == TRANSPORT_UTP) {
+        if (!p->us) return -1;
+        return utp_write(p->us, (void*)(uintptr_t)data, len);
+    }
+    return net_send(p->fd, data, len);
+}
+
 /* --- buffered send ---
- * The socket is nonblocking: whatever the kernel does not accept immediately
- * is queued in p->sbuf and drained by peer_flush() when the torrent loop
- * gets POLLOUT for this peer. */
+ * Whatever the transport does not accept immediately is queued in p->sbuf and
+ * drained by peer_flush() — on POLLOUT for TCP, on UTP_STATE_WRITABLE for μTP.
+ * MSE encryption is layered above this by peer_send_raw. */
 static int peer_send_plain(peer_t *p, const uint8_t *data, uint32_t len) {
     if (p->sbuf_len == 0 && len > 0) {
-        ssize_t n = net_send(p->fd, data, len);
+        ssize_t n = transport_write(p, data, len);
         if (n < 0) return 0;
         data += (size_t)n;
         len  -= (uint32_t)n;
@@ -48,7 +62,7 @@ static int peer_send_raw(peer_t *p, const uint8_t *data, uint32_t len) {
 
 int peer_flush(peer_t *p) {
     if (p->sbuf_len == 0) return 1;
-    ssize_t n = net_send(p->fd, p->sbuf, p->sbuf_len);
+    ssize_t n = transport_write(p, p->sbuf, p->sbuf_len);
     if (n < 0) return 0;
     if (n > 0) {
         memmove(p->sbuf, p->sbuf + (size_t)n, p->sbuf_len - (uint32_t)n);
@@ -103,10 +117,10 @@ int peer_send_handshake(peer_t *p, const peer_ctx_t *ctx) {
 }
 
 /* --- allocate --- */
-peer_t *peer_create(socket_t fd, struct sockaddr_in addr, const peer_ctx_t *ctx) {
+static peer_t *peer_alloc(struct sockaddr_in addr, const peer_ctx_t *ctx) {
     peer_t *p = (peer_t*)calloc(1, sizeof(*p));
     if (!p) return NULL;
-    p->fd       = fd;
+    p->fd       = INVALID_SOCK;
     p->addr     = addr;
     p->state    = PS_CONNECTING;
     p->am_choked    = 1;
@@ -121,9 +135,37 @@ peer_t *peer_create(socket_t fd, struct sockaddr_in addr, const peer_ctx_t *ctx)
     return p;
 }
 
+peer_t *peer_create(socket_t fd, struct sockaddr_in addr, const peer_ctx_t *ctx) {
+    peer_t *p = peer_alloc(addr, ctx);
+    if (!p) return NULL;
+    p->transport = TRANSPORT_TCP;
+    p->fd        = fd;
+    return p;
+}
+
+peer_t *peer_create_utp(struct UTPSocket *us, struct sockaddr_in addr,
+                        const peer_ctx_t *ctx) {
+    peer_t *p = peer_alloc(addr, ctx);
+    if (!p) return NULL;
+    p->transport = TRANSPORT_UTP;
+    p->us        = us;
+    return p;
+}
+
 void peer_destroy(peer_t *p) {
     if (!p) return;
-    net_close(p->fd);
+    if (p->transport == TRANSPORT_UTP) {
+        /* libutp owns the socket: detach our back-reference so no late callback
+           touches this freed peer, then ask for a graceful close. The socket is
+           released by libutp on UTP_STATE_DESTROYING (never freed here). If it
+           already reached DESTROYING, torrent.c cleared p->us and we skip. */
+        if (p->us) {
+            utp_set_userdata(p->us, NULL);
+            utp_close(p->us);
+        }
+    } else {
+        net_close(p->fd);
+    }
     free(p->bitfield);
     free(p->pex_buf);
     free(p);
@@ -429,11 +471,127 @@ static int process_message(peer_t *p, const peer_ctx_t *ctx,
     return 1;
 }
 
+int peer_connected(peer_t *p, const peer_ctx_t *ctx) {
+    if (p->mse_enabled) {
+        /* Begin MSE: send pubA (padA=0) and piggyback the BT handshake as IA so
+           it rides inside the encrypted request. Transport-agnostic — the same
+           path runs for a TCP connect and a μTP UTP_ON_CONNECT (μTP+MSE is the
+           DPI-evasion case). */
+        uint8_t priv[MSE_DH_LEN];
+        rand_bytes(priv, sizeof(priv));
+        uint8_t ia[BT_HANDSHAKE_LEN];
+        build_handshake(ia, ctx);
+        uint8_t out[MSE_DH_LEN];
+        size_t produced = 0;
+        if (mse_client_start(&p->mse, ctx->info_hash, priv, NULL, 0,
+                             ia, BT_HANDSHAKE_LEN, out, sizeof(out),
+                             &produced) != MSE_CONTINUE)
+            return 0;
+        p->state = PS_MSE;
+        return peer_send_raw(p, out, (uint32_t)produced);
+    }
+    p->state = PS_HANDSHAKE;
+    return peer_send_handshake(p, ctx);
+}
+
+int peer_process(peer_t *p, const peer_ctx_t *ctx,
+                 peer_on_block_fn on_block, peer_on_have_fn on_have,
+                 peer_on_peers_fn on_peers, void *ud) {
+    if (p->state == PS_MSE) {
+        uint8_t out[256];
+        size_t consumed = 0, produced = 0;
+        mse_status_t s = mse_client_feed(
+            &p->mse, p->rbuf + p->rbuf_head,
+            p->rbuf_len - p->rbuf_head, &consumed, out, sizeof(out),
+            &produced);
+        p->rbuf_head += (uint32_t)consumed;
+        if (produced && !peer_send_raw(p, out, (uint32_t)produced))
+            return -1;
+        if (s == MSE_FAIL) {
+            log_msg("[peer] mse handshake failed\n");
+            return -1;
+        }
+        if (s == MSE_DONE) {
+            p->mse_active = 1;
+            /* Bytes buffered past the handshake are the peer's encrypted BT
+               handshake; decrypt them now so process_handshake sees plaintext,
+               then decrypt-on-arrival handles the rest. */
+            uint32_t rem = p->rbuf_len - p->rbuf_head;
+            if (rem)
+                rc4_crypt(&p->mse.recv_rc4, p->rbuf + p->rbuf_head,
+                          p->rbuf + p->rbuf_head, rem);
+            p->state = PS_HANDSHAKE;
+            log_msg("[peer] mse handshake ok\n");
+        }
+    }
+
+    if (p->state == PS_HANDSHAKE) {
+        int r = process_handshake(p, ctx);
+        if (r < 0) return -1;
+        if (r > 0) {
+            /* TCP-only: grow the kernel receive buffer. μTP manages its own
+               window, so there is no socket option to set. */
+            if (p->transport == TRANSPORT_TCP)
+                net_set_tcp_receive_buffer(p->fd);
+            if (p->supports_ext)
+                peer_send_ext_handshake(p, ctx->listen_port);
+            peer_send_bitfield(p, ctx->our_bf, ctx->bf_bytes);
+            peer_send_interested(p);
+        }
+    }
+
+    while (p->state == PS_ACTIVE) {
+        int r = process_message(p, ctx, on_block, on_have, on_peers, ud);
+        if (r < 0) return -1;
+        if (r == 0) break;
+    }
+
+    /* Fully drained: reset the cursor to the front for free (no copy). */
+    if (p->rbuf_head == p->rbuf_len) {
+        p->rbuf_head = 0;
+        p->rbuf_len  = 0;
+    }
+    return 0;
+}
+
+uint32_t peer_rbuf_space(const peer_t *p) {
+    /* Unconsumed bytes are rbuf[rbuf_head..rbuf_len); everything else can be
+       reclaimed by compaction, so report the full free capacity. */
+    return (uint32_t)(sizeof(p->rbuf) - (p->rbuf_len - p->rbuf_head));
+}
+
+int peer_rbuf_append(peer_t *p, const uint8_t *data, uint32_t len) {
+    if (len == 0) return 0;
+    if (p->rbuf_head == p->rbuf_len) {
+        p->rbuf_head = 0;
+        p->rbuf_len  = 0;
+    }
+    size_t tail = sizeof(p->rbuf) - p->rbuf_len;
+    if (tail < len && p->rbuf_head > 0) {
+        /* Reclaim the consumed prefix so the tail can hold the new bytes. */
+        memmove(p->rbuf, p->rbuf + p->rbuf_head, p->rbuf_len - p->rbuf_head);
+        p->rbuf_len -= p->rbuf_head;
+        p->rbuf_head = 0;
+        tail = sizeof(p->rbuf) - p->rbuf_len;
+    }
+    if (len > tail) {
+        log_msg("[peer] recv buffer full\n");
+        return -1;
+    }
+    memcpy(p->rbuf + p->rbuf_len, data, len);
+    /* Decrypt freshly-arrived bytes in place, mirroring the TCP path. Skipped
+       during PS_MSE (mse_active still 0): those bytes are the raw MSE handshake,
+       fed to mse_client_feed by peer_process. */
+    if (p->mse_active)
+        rc4_crypt(&p->mse.recv_rc4, p->rbuf + p->rbuf_len,
+                  p->rbuf + p->rbuf_len, len);
+    p->rbuf_len += len;
+    return 0;
+}
+
 int peer_recv(peer_t *p, const peer_ctx_t *ctx,
-              void (*on_block)(void*, uint32_t, uint32_t, const uint8_t*, uint32_t),
-              void (*on_have)(void*, uint32_t),
-              void (*on_peers)(void*, const uint8_t*, uint32_t),
-              void *ud) {
+              peer_on_block_fn on_block, peer_on_have_fn on_have,
+              peer_on_peers_fn on_peers, void *ud) {
     /* Check connect completion */
     if (p->state == PS_CONNECTING) {
         int err = 0;
@@ -443,81 +601,15 @@ int peer_recv(peer_t *p, const peer_ctx_t *ctx,
             log_msg("[peer] connect failed: %s\n", strerror(err));
             return -1;
         }
-        if (p->mse_enabled) {
-            /* Begin MSE: send pubA (padA=0) and piggyback the BT handshake as
-               IA so it rides inside the encrypted request. */
-            uint8_t priv[MSE_DH_LEN];
-            rand_bytes(priv, sizeof(priv));
-            uint8_t ia[BT_HANDSHAKE_LEN];
-            build_handshake(ia, ctx);
-            uint8_t out[MSE_DH_LEN];
-            size_t produced = 0;
-            if (mse_client_start(&p->mse, ctx->info_hash, priv, NULL, 0,
-                                 ia, BT_HANDSHAKE_LEN, out, sizeof(out),
-                                 &produced) != MSE_CONTINUE)
-                return -1;
-            p->state = PS_MSE;
-            if (!peer_send_raw(p, out, (uint32_t)produced)) return -1;
-            return 0;
-        }
-        p->state = PS_HANDSHAKE;
-        if (!peer_send_handshake(p, ctx)) return -1;
+        if (!peer_connected(p, ctx)) return -1;
         /* Don't try to read yet */
         return 0;
     }
 
     for (;;) {
-        if (p->state == PS_MSE) {
-            uint8_t out[256];
-            size_t consumed = 0, produced = 0;
-            mse_status_t s = mse_client_feed(
-                &p->mse, p->rbuf + p->rbuf_head,
-                p->rbuf_len - p->rbuf_head, &consumed, out, sizeof(out),
-                &produced);
-            p->rbuf_head += (uint32_t)consumed;
-            if (produced && !peer_send_raw(p, out, (uint32_t)produced))
-                return -1;
-            if (s == MSE_FAIL) {
-                log_msg("[peer] mse handshake failed\n");
-                return -1;
-            }
-            if (s == MSE_DONE) {
-                p->mse_active = 1;
-                /* Bytes buffered past the handshake are the peer's encrypted
-                   BT handshake; decrypt them now so process_handshake sees
-                   plaintext, then decrypt-on-arrival handles the rest. */
-                uint32_t rem = p->rbuf_len - p->rbuf_head;
-                if (rem)
-                    rc4_crypt(&p->mse.recv_rc4, p->rbuf + p->rbuf_head,
-                              p->rbuf + p->rbuf_head, rem);
-                p->state = PS_HANDSHAKE;
-                log_msg("[peer] mse handshake ok\n");
-            }
-        }
+        if (peer_process(p, ctx, on_block, on_have, on_peers, ud) < 0)
+            return -1;
 
-        if (p->state == PS_HANDSHAKE) {
-            int r = process_handshake(p, ctx);
-            if (r < 0) return -1;
-            if (r > 0) {
-                net_set_tcp_receive_buffer(p->fd);
-                if (p->supports_ext)
-                    peer_send_ext_handshake(p, ctx->listen_port);
-                peer_send_bitfield(p, ctx->our_bf, ctx->bf_bytes);
-                peer_send_interested(p);
-            }
-        }
-
-        while (p->state == PS_ACTIVE) {
-            int r = process_message(p, ctx, on_block, on_have, on_peers, ud);
-            if (r < 0) return -1;
-            if (r == 0) break;
-        }
-
-        /* Fully drained: reset the cursor to the front for free (no copy). */
-        if (p->rbuf_head == p->rbuf_len) {
-            p->rbuf_head = 0;
-            p->rbuf_len  = 0;
-        }
         size_t space = sizeof(p->rbuf) - p->rbuf_len;
         if (space == 0) {
             /* Tail is full but a partial message sits past rbuf_head; slide it

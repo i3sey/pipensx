@@ -160,22 +160,30 @@ static void test_initial_peers_keep_verified_order(void) {
     uint32_t ip = 0;
     uint16_t port = 0;
     uint8_t no_mse = 0;
-    assert(queue_pop(&torrent, &ip, &port, &no_mse));
+    uint8_t use_utp = 1;
+    assert(queue_pop(&torrent, &ip, &port, &no_mse, &use_utp));
     assert(memcmp(&ip, compact, 4) == 0);
     assert(memcmp(&port, compact + 4, 2) == 0);
-    assert(queue_pop(&torrent, &ip, &port, &no_mse));
+    assert(no_mse == 0);  /* tracker/DHT peers dial TCP+MSE first */
+    assert(use_utp == 0);
+    assert(queue_pop(&torrent, &ip, &port, &no_mse, &use_utp));
     assert(memcmp(&ip, compact + 6, 4) == 0);
     assert(memcmp(&port, compact + 10, 2) == 0);
-    assert(queue_pop(&torrent, &ip, &port, &no_mse));
+    assert(queue_pop(&torrent, &ip, &port, &no_mse, &use_utp));
     assert(ip == laterIp);
     assert(port == laterPort);
-    assert(!queue_pop(&torrent, &ip, &port, &no_mse));
+    assert(!queue_pop(&torrent, &ip, &port, &no_mse, &use_utp));
 
-    // A plaintext-fallback re-queue carries the no_mse flag back out.
-    assert(queue_insert(&torrent, laterIp, laterPort, 1, 1));
-    ip = 0; port = 0; no_mse = 0;
-    assert(queue_pop(&torrent, &ip, &port, &no_mse));
-    assert(ip == laterIp && port == laterPort && no_mse == 1);
+    /* A plaintext-fallback re-queue carries no_mse back out; a μTP-fallback
+       re-queue carries use_utp. Both flags survive the queue independently. */
+    assert(queue_insert(&torrent, laterIp, laterPort, 1, 1, 0));
+    ip = 0; port = 0; no_mse = 0; use_utp = 1;
+    assert(queue_pop(&torrent, &ip, &port, &no_mse, &use_utp));
+    assert(ip == laterIp && port == laterPort && no_mse == 1 && use_utp == 0);
+    assert(queue_insert(&torrent, laterIp, laterPort, 1, 0, 1));
+    ip = 0; port = 0; no_mse = 1; use_utp = 0;
+    assert(queue_pop(&torrent, &ip, &port, &no_mse, &use_utp));
+    assert(ip == laterIp && port == laterPort && no_mse == 0 && use_utp == 1);
 }
 
 int main(void) {

@@ -73,6 +73,30 @@ target_include_directories(pipensx_zstd PUBLIC
 # PC golden build fails to link. No effect on the aarch64 Switch build.
 target_compile_definitions(pipensx_zstd PRIVATE ZSTD_MULTITHREAD=0 ZSTD_DISABLE_ASM)
 
+# Vendored libutp (BitTorrent reference μTP/BEP-29). C++ with an extern "C"
+# API (utp.h), linked into the C core for the TCP→μTP dial fallback. Same
+# vendoring posture as pipensx_zstd and vendor/dht. POSIX selects the BSD
+# sockets + inet_ntop paths (correct for both Linux and libnx/aarch64);
+# -fno-exceptions/-fno-rtti/-fpermissive/-Wno-sign-compare mirror upstream.
+add_library(pipensx_utp STATIC
+    vendor/libutp/utp_internal.cpp
+    vendor/libutp/utp_utils.cpp
+    vendor/libutp/utp_hash.cpp
+    vendor/libutp/utp_callbacks.cpp
+    vendor/libutp/utp_api.cpp
+    vendor/libutp/utp_packedsockaddr.cpp
+)
+target_include_directories(pipensx_utp PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/vendor/libutp
+)
+# NDEBUG: libutp guards internal invariants with assert(); a homebrew torrent
+# client must never abort on one. Combined with the registered UTP_GET_UDP_MTU
+# callback (torrent.c) this also sidesteps the mtu_reset ceiling assert.
+target_compile_definitions(pipensx_utp PRIVATE POSIX NDEBUG)
+target_compile_options(pipensx_utp PRIVATE
+    -fpermissive -fno-exceptions -fno-rtti -Wno-sign-compare
+)
+
 # Platform-neutral sources (also compiled by Makefile.pc / golden runner).
 set(CORE_SOURCES
     src/core/sha1.c
@@ -148,6 +172,7 @@ target_include_directories(pipensx PRIVATE
     vendor
     vendor/borealis/library/include
     vendor/zstd/lib
+    vendor/libutp
     vendor/libnx-ext/libnx-ext/include
     vendor/libnx-ext/libnx-ipcext/include
 )
@@ -166,6 +191,7 @@ target_compile_options(pipensx PRIVATE
 target_link_libraries(pipensx PRIVATE
     borealis
     pipensx_zstd
+    pipensx_utp
     curl
     mbedtls
     mbedx509
@@ -272,6 +298,7 @@ target_include_directories(golden_runner PRIVATE
     vendor
     vendor/borealis/library/include
     vendor/zstd/lib
+    vendor/libutp
 )
 target_compile_definitions(golden_runner PRIVATE
     _GNU_SOURCE
@@ -285,6 +312,7 @@ target_compile_options(golden_runner PRIVATE
 target_link_libraries(golden_runner PRIVATE
     borealis
     pipensx_zstd
+    pipensx_utp
     CURL::libcurl
     ZLIB::ZLIB
     crypto

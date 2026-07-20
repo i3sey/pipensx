@@ -1,13 +1,16 @@
 #include "../src/core/peer.h"
 #include "../src/core/net.h"
 #include "../src/core/util.h"
+#include "utp.h"
 
 #include <assert.h>
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <time.h>
 #include <unistd.h>
 
 static socket_t receive_buffer_failure_fd = INVALID_SOCK;
@@ -413,6 +416,155 @@ static void test_piece_receipt_samples_block_latency(void) {
     close(sockets[1]);
 }
 
+/* ---- μTP loopback ----
+ * Two libutp contexts over two real UDP sockets, driven with the same callback
+ * shape torrent.c uses. Proves the vendored engine connects, transfers an
+ * ordered byte stream, and that our SENDTO/ON_READ/timeout wiring is correct on
+ * this platform — the abstraction μTP peers ride on. */
+typedef struct {
+    socket_t     fd;
+    utp_socket  *sock;          /* connecting (A) or accepted (B) socket */
+    int          connected;
+    uint8_t      rx[4096];
+    size_t       rx_len;
+} utp_end_t;
+
+static uint64 tu_sendto(utp_callback_arguments *a) {
+    utp_end_t *e = (utp_end_t*)utp_context_get_userdata(a->context);
+    sendto(e->fd, a->buf, a->len, 0, a->address, a->address_len);
+    return 0;
+}
+static uint64 tu_on_read(utp_callback_arguments *a) {
+    utp_end_t *e = (utp_end_t*)utp_context_get_userdata(a->context);
+    if (e->rx_len + a->len <= sizeof(e->rx)) {
+        memcpy(e->rx + e->rx_len, a->buf, a->len);
+        e->rx_len += a->len;
+    }
+    utp_read_drained(a->socket);
+    return 0;
+}
+static uint64 tu_get_read_buffer_size(utp_callback_arguments *a) {
+    utp_end_t *e = (utp_end_t*)utp_context_get_userdata(a->context);
+    return sizeof(e->rx) - e->rx_len;
+}
+static uint64 tu_on_state_change(utp_callback_arguments *a) {
+    utp_end_t *e = (utp_end_t*)utp_context_get_userdata(a->context);
+    if (a->state == UTP_STATE_CONNECT || a->state == UTP_STATE_WRITABLE)
+        e->connected = 1;
+    return 0;
+}
+static uint64 tu_on_firewall(utp_callback_arguments *a) { (void)a; return 0; }
+static uint64 tu_on_accept(utp_callback_arguments *a) {
+    utp_end_t *e = (utp_end_t*)utp_context_get_userdata(a->context);
+    e->sock = a->socket;            /* B's inbound socket */
+    return 0;
+}
+static uint64 tu_get_udp_mtu(utp_callback_arguments *a) { (void)a; return 1500; }
+static uint64 tu_get_ms(utp_callback_arguments *a) { (void)a; return now_ms(); }
+static uint64 tu_get_us(utp_callback_arguments *a) {
+    (void)a;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64)ts.tv_sec * 1000000ULL + (uint64)ts.tv_nsec / 1000ULL;
+}
+static uint64 tu_get_random(utp_callback_arguments *a) { (void)a; return (uint64)rand(); }
+
+static void utp_register(utp_context *c) {
+    utp_set_callback(c, UTP_SENDTO,               tu_sendto);
+    utp_set_callback(c, UTP_ON_READ,              tu_on_read);
+    utp_set_callback(c, UTP_GET_READ_BUFFER_SIZE, tu_get_read_buffer_size);
+    utp_set_callback(c, UTP_ON_STATE_CHANGE,      tu_on_state_change);
+    utp_set_callback(c, UTP_ON_FIREWALL,          tu_on_firewall);
+    utp_set_callback(c, UTP_ON_ACCEPT,            tu_on_accept);
+    utp_set_callback(c, UTP_GET_UDP_MTU,          tu_get_udp_mtu);
+    utp_set_callback(c, UTP_GET_MILLISECONDS,     tu_get_ms);
+    utp_set_callback(c, UTP_GET_MICROSECONDS,     tu_get_us);
+    utp_set_callback(c, UTP_GET_RANDOM,           tu_get_random);
+}
+
+static void utp_pump_fd(utp_context *ctx, socket_t fd) {
+    uint8_t buf[2048];
+    struct sockaddr_in from;
+    for (;;) {
+        socklen_t flen = sizeof(from);
+        ssize_t n = recvfrom(fd, buf, sizeof(buf), 0,
+                             (struct sockaddr*)&from, &flen);
+        if (n < 0) break;
+        utp_process_udp(ctx, buf, (size_t)n, (struct sockaddr*)&from, flen);
+    }
+    utp_issue_deferred_acks(ctx);
+}
+
+static void test_utp_loopback_transfers_ordered_stream(void) {
+    utp_end_t ea, eb;
+    memset(&ea, 0, sizeof(ea));
+    memset(&eb, 0, sizeof(eb));
+    ea.fd = net_udp_socket(0);
+    eb.fd = net_udp_socket(0);
+    assert(ea.fd != INVALID_SOCK && eb.fd != INVALID_SOCK);
+
+    /* net_udp_socket(0) leaves the socket unbound (production μTP is
+       outgoing-only, so the OS assigns a port on first send). For a loopback
+       both ends must be addressable, so bind explicitly to 127.0.0.1:0 and read
+       back the assigned ports. */
+    struct sockaddr_in la = {0}, lb = {0};
+    la.sin_family = lb.sin_family = AF_INET;
+    la.sin_addr.s_addr = lb.sin_addr.s_addr = htonl(0x7F000001); /* 127.0.0.1 */
+    assert(bind(ea.fd, (struct sockaddr*)&la, sizeof(la)) == 0);
+    assert(bind(eb.fd, (struct sockaddr*)&lb, sizeof(lb)) == 0);
+
+    struct sockaddr_in baddr;
+    socklen_t blen = sizeof(baddr);
+    assert(getsockname(eb.fd, (struct sockaddr*)&baddr, &blen) == 0);
+    baddr.sin_addr.s_addr = htonl(0x7F000001); /* 127.0.0.1 */
+
+    utp_context *ca = utp_init(2);
+    utp_context *cb = utp_init(2);
+    assert(ca && cb);
+    utp_context_set_userdata(ca, &ea);
+    utp_context_set_userdata(cb, &eb);
+    utp_register(ca);
+    utp_register(cb);
+
+    ea.sock = utp_create_socket(ca);
+    assert(ea.sock);
+    assert(utp_connect(ea.sock, (struct sockaddr*)&baddr, sizeof(baddr)) == 0);
+
+    /* Build a payload larger than one MTU so it must span several packets and
+       reassemble in order. */
+    uint8_t msg[3000];
+    for (size_t i = 0; i < sizeof(msg); i++)
+        msg[i] = (uint8_t)(i * 31 + 7);
+
+    size_t off = 0;
+    uint64_t last_timeout = now_ms();
+    for (int iter = 0; iter < 200000 && eb.rx_len < sizeof(msg); iter++) {
+        utp_pump_fd(ca, ea.fd);
+        utp_pump_fd(cb, eb.fd);
+        if (ea.connected && off < sizeof(msg)) {
+            ssize_t w = utp_write(ea.sock, msg + off, sizeof(msg) - off);
+            if (w > 0) off += (size_t)w; /* libutp accepted part of the payload */
+        }
+        uint64_t now = now_ms();
+        if (now - last_timeout >= 20) {
+            utp_check_timeouts(ca);
+            utp_check_timeouts(cb);
+            last_timeout = now;
+        }
+        usleep(200);
+    }
+
+    assert(off == sizeof(msg));       /* whole payload handed to libutp */
+    assert(eb.rx_len == sizeof(msg)); /* and fully reassembled at the peer */
+    assert(memcmp(eb.rx, msg, sizeof(msg)) == 0);
+
+    utp_destroy(ca);
+    utp_destroy(cb);
+    close(ea.fd);
+    close(eb.fd);
+    puts("utp loopback ok");
+}
+
 int main(void) {
     test_expiry_compacts_pipeline();
     test_cancel_sends_message_and_removes_request();
@@ -424,6 +576,7 @@ int main(void) {
     test_receive_buffer_holds_256_kib();
     test_recv_reassembles_message_split_across_reads();
     test_piece_receipt_samples_block_latency();
+    test_utp_loopback_transfers_ordered_stream();
     puts("peer tests passed");
     return 0;
 }

@@ -36,6 +36,17 @@ typedef enum {
     PS_DEAD
 } peer_state_t;
 
+/* Peer transport (BEP-29). TCP dials directly; UTP peers are the μTP-fallback
+   for TCP-unreachable (μTP-only / CGNAT / firewalled) peers, carried over the
+   torrent's shared libutp context. The MSE/BT wire logic above is identical
+   for both — μTP just delivers the same ordered byte stream. */
+#define TRANSPORT_TCP 0
+#define TRANSPORT_UTP 1
+
+/* libutp socket, opaque here (real definition in vendor/libutp/utp.h). Kept as
+   an incomplete type so peer.h need not pull the C++ library's headers. */
+struct UTPSocket;
+
 typedef struct {
     int          index;   /* piece */
     int          offset;  /* byte offset within piece */
@@ -44,8 +55,11 @@ typedef struct {
 } block_req_t;
 
 typedef struct peer {
-    socket_t     fd;
+    socket_t     fd;             /* valid when transport==TRANSPORT_TCP */
     peer_state_t state;
+
+    int              transport;  /* TRANSPORT_TCP | TRANSPORT_UTP */
+    struct UTPSocket *us;        /* libutp socket when transport==TRANSPORT_UTP */
 
     struct sockaddr_in addr;
     char               addr_str[32];
@@ -124,24 +138,55 @@ typedef struct {
     int            use_mse;   /* attempt MSE/PE on outgoing connections */
 } peer_ctx_t;
 
-/* Allocate/free a peer slot */
+/* Allocate/free a peer slot. peer_create opens a TCP peer around an already
+   connecting socket; peer_create_utp wraps a libutp socket (fd is unused). */
 peer_t *peer_create(socket_t fd, struct sockaddr_in addr,
                     const peer_ctx_t *ctx);
+peer_t *peer_create_utp(struct UTPSocket *us, struct sockaddr_in addr,
+                        const peer_ctx_t *ctx);
 void    peer_destroy(peer_t *p);
 
+/* Transport connect completed: advance PS_CONNECTING -> PS_HANDSHAKE and send
+   our handshake. Shared by the TCP connect-complete path (peer_recv) and the
+   μTP UTP_ON_CONNECT callback. Returns 0 on send failure (peer is dead). */
+int peer_connected(peer_t *p, const peer_ctx_t *ctx);
+
+/* callback signature bundle reused by peer_recv / peer_process */
+typedef void (*peer_on_block_fn)(void *ud, uint32_t idx, uint32_t off,
+                                 const uint8_t *data, uint32_t len);
+typedef void (*peer_on_have_fn)(void *ud, uint32_t idx);
+typedef void (*peer_on_peers_fn)(void *ud, const uint8_t *compact, uint32_t cnt);
+
 /*
- * Called when the socket is readable; dispatches messages.
+ * Called when a TCP socket is readable: drain the socket and dispatch messages.
  * Returns:
  *   0 = ok
  *  -1 = peer dead (close & destroy)
  */
 int peer_recv(peer_t *p, const peer_ctx_t *ctx,
-              /* callbacks */
-              void (*on_block)(void *ud, uint32_t idx, uint32_t off,
-                               const uint8_t *data, uint32_t len),
-              void (*on_have)(void *ud, uint32_t idx),
-              void (*on_peers)(void *ud, const uint8_t *compact, uint32_t cnt),
-              void *ud);
+              peer_on_block_fn on_block, peer_on_have_fn on_have,
+              peer_on_peers_fn on_peers, void *ud);
+
+/*
+ * Run the receive state machine over bytes already sitting in rbuf
+ * (transport-agnostic core of peer_recv). The μTP read callback appends bytes
+ * with peer_rbuf_append() and then calls this. Returns 0 ok, -1 dead.
+ */
+int peer_process(peer_t *p, const peer_ctx_t *ctx,
+                 peer_on_block_fn on_block, peer_on_have_fn on_have,
+                 peer_on_peers_fn on_peers, void *ud);
+
+/*
+ * Append transport-delivered bytes into rbuf (μTP ingest path). Compacts the
+ * buffer as needed. Returns 0 on success, -1 if the receive buffer is full
+ * (peer must be dropped). A short append (fewer than len bytes fit) also
+ * returns -1: libutp is told our free space via UTP_GET_READ_BUFFER_SIZE, so
+ * this should not happen, and dropping is the safe response if it does.
+ */
+int peer_rbuf_append(peer_t *p, const uint8_t *data, uint32_t len);
+
+/* Free space remaining in rbuf, for UTP_GET_READ_BUFFER_SIZE flow control. */
+uint32_t peer_rbuf_space(const peer_t *p);
 
 /*
  * Send handshake immediately after connect.

@@ -7,13 +7,26 @@ CXX     = g++
 TARGET  = pipensx
 CFLAGS  = -O2 -Wall -Wextra -std=c11 \
            -D_GNU_SOURCE -pthread \
+           -Ivendor/libutp \
            $(shell pkg-config --cflags libcurl)
 CXXFLAGS = -O2 -Wall -Wextra -std=c++17 \
             -D_GNU_SOURCE -pthread \
             -Ivendor/borealis/library/include \
+            -Ivendor/libutp \
             $(shell pkg-config --cflags libcurl)
 LDFLAGS = $(shell pkg-config --libs libcurl) -lm -lcrypto
 INSTALL_LDFLAGS = -lzstd -lcrypto
+
+# Vendored libutp (μTP/BEP-29): C++ with an extern "C" API. Built with its own
+# flags (upstream requires -fpermissive -fno-exceptions -fno-rtti; POSIX picks
+# the BSD-sockets paths). Linked into every target that pulls peer.o/torrent.o;
+# those link with gcc, so they add -lstdc++ explicitly.
+UTP_DIR      = vendor/libutp
+UTP_OBJS     = $(UTP_DIR)/utp_internal.o $(UTP_DIR)/utp_utils.o \
+               $(UTP_DIR)/utp_hash.o $(UTP_DIR)/utp_callbacks.o \
+               $(UTP_DIR)/utp_api.o $(UTP_DIR)/utp_packedsockaddr.o
+UTP_CXXFLAGS = -O2 -std=c++17 -DPOSIX -DNDEBUG -Ivendor/libutp \
+               -fpermissive -fno-exceptions -fno-rtti -Wno-sign-compare
 
 SRCS = \
     src/core/sha1.c       \
@@ -60,11 +73,14 @@ TEST_SRCS = \
 
 all: $(TARGET)
 
-$(TARGET): $(OBJS)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+$(TARGET): $(OBJS) $(UTP_OBJS)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lstdc++
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
+
+$(UTP_DIR)/%.o: $(UTP_DIR)/%.cpp
+	$(CXX) $(UTP_CXXFLAGS) -c -o $@ $<
 
 $(TEST_TARGET): $(TEST_SRCS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
@@ -92,7 +108,7 @@ $(MANAGER_TEST_TARGET): tests/test_manager.o src/app/download_manager.o \
 		src/app/stream_ram_budget.o src/app/request_gate.o \
 		src/install/package_stream.o src/install/install_journal.o \
 		src/install/install_backend_pc.o \
-		$(filter-out src/main_pc.o,$(OBJS))
+		$(filter-out src/main_pc.o,$(OBJS)) $(UTP_OBJS)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS) $(INSTALL_LDFLAGS) -pthread
 
 $(PACKAGE_TEST_TARGET): tests/test_package_stream.cpp \
@@ -170,7 +186,7 @@ $(BATCH_INSTALL_TEST_TARGET): tests/test_batch_install.cpp \
 		src/app/request_gate.o \
 		src/install/package_stream.o src/install/install_journal.o \
 		src/install/install_backend_pc.o \
-		$(filter-out src/main_pc.o,$(OBJS))
+		$(filter-out src/main_pc.o,$(OBJS)) $(UTP_OBJS)
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) \
 		$(INSTALL_LDFLAGS) -pthread
 
@@ -197,16 +213,17 @@ $(TELEMETRY_TEST_TARGET): tests/test_telemetry.c src/core/util.c
 	$(CC) $(CFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
 
 $(PEER_TEST_TARGET): tests/test_peer.c src/core/peer.c src/core/net.c \
-		src/core/bencode.c src/core/util.c src/core/mse.c src/core/sha1.c
-	$(CC) $(CFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -Wl,--wrap=setsockopt
+		src/core/bencode.c src/core/util.c src/core/mse.c src/core/sha1.c \
+		$(UTP_OBJS)
+	$(CC) $(CFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -lstdc++ -Wl,--wrap=setsockopt
 
 $(TORRENT_TEST_TARGET): tests/test_torrent.c \
-		$(filter-out src/core/torrent.o src/main_pc.o,$(OBJS))
-	$(CC) $(CFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
+		$(filter-out src/core/torrent.o src/main_pc.o,$(OBJS)) $(UTP_OBJS)
+	$(CC) $(CFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -lstdc++
 
 clean:
-	rm -f $(OBJS) src/app/download_manager.o src/app/web_seed_source.o \
-		src/app/stream_ram_budget.o \
+	rm -f $(OBJS) $(UTP_OBJS) src/app/download_manager.o \
+		src/app/web_seed_source.o src/app/stream_ram_budget.o \
 		src/app/request_gate.o \
 		src/app/catalog_service.o \
 		src/app/catalog_presentation.o src/app/game_metadata_service.o \
