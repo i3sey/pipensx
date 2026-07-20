@@ -13,6 +13,7 @@ extern "C" {
 #include <algorithm>
 #include <cerrno>
 #include <cctype>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -42,6 +43,12 @@ constexpr uint32_t kMaxPeersPerTracker = 64;
 constexpr uint32_t kMaxMergedPeers = 192;
 constexpr uint32_t kMaxConcurrentPeers = 12;
 constexpr uint32_t kRequestPipeline = 8;
+// When a sweep of the known peers yields no metadata but the overall deadline
+// still has room, re-announce for a rotated peer set and try again. A thin
+// swarm (e.g. a second device behind the same NAT as one that already grabbed
+// the seeders) usually just needs another pass rather than a hard failure.
+constexpr uint64_t kReannounceBackoffMs = 3000;
+constexpr int kMaxEmptyReannounces = 2;
 constexpr uint64_t kDhtSearchTimeoutMs = 25 * 1000;
 constexpr uint32_t kDhtTargetPeers = 32;
 constexpr int kDhtPollIntervalMs = 250;
@@ -822,55 +829,110 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
     std::atomic<bool> stopWorkers{false};
     std::vector<uint8_t> metadata;
     std::vector<uint8_t> verifiedEndpoints;
-    std::vector<std::thread> workers;
-    uint32_t workerCount = std::min(peerCount, kMaxConcurrentPeers);
-    for (uint32_t worker = 0; worker < workerCount; ++worker) {
-        workers.emplace_back([&] {
-            while (!cancelled && !stopWorkers && now_ms() < deadline) {
-                uint32_t peerIndex = 0;
-                {
-                    std::lock_guard<std::mutex> lock(mutex);
-                    if (resolved || nextPeer >= peerCount)
-                        return;
-                    peerIndex = nextPeer++;
-                }
 
-                std::vector<uint8_t> candidate;
-                bool handshakeVerified = false;
-                bool fetched = fetchMetadataFromPeer(
-                    peers.data() + peerIndex * 6, spec, peerId, peerIndex,
-                    peerCount, deadline, cancelled, stopWorkers, progress,
-                    candidate, handshakeVerified);
-                if (handshakeVerified) {
-                    std::lock_guard<std::mutex> lock(mutex);
-                    appendUniquePeers(verifiedEndpoints,
-                                      peers.data() + peerIndex * 6, 1);
-                }
-                if (!fetched)
-                    continue;
+    /* Re-announce the RuTracker trackers for a fresh (rotated) peer set and
+       merge any newcomers into `peers`; returns how many were added. Only ever
+       called between worker rounds — every worker is joined first — so growing
+       `peers` here cannot dangle a peers.data() pointer held by a live worker. */
+    auto reannounce = [&]() -> uint32_t {
+        uint32_t before = static_cast<uint32_t>(peers.size() / 6);
+        for (const std::string& tracker : trackers) {
+            if (cancelled || now_ms() >= deadline ||
+                peers.size() / 6 >= kMaxMergedPeers)
+                break;
+            uint8_t batch[kMaxPeersPerTracker * 6];
+            tracker_announce_result_t result;
+            uint32_t count = tracker_announce_url_ex_cancel(
+                tracker.c_str(), spec.infoHash, peerId, 6881, 0, 0,
+                batch, kMaxPeersPerTracker, &result,
+                trackerCancelled, &cancelled);
+            if (cancelled)
+                break;
+            appendUniquePeers(peers, batch, count);
+        }
+        uint32_t added = static_cast<uint32_t>(peers.size() / 6) - before;
+        if (added)
+            log_msg("[magnet] re-announce added %u peers, total=%u\n", added,
+                    static_cast<unsigned>(peers.size() / 6));
+        return added;
+    };
 
-                std::vector<uint8_t> torrentProbe;
-                std::string probeError;
-                if (!buildTorrent(spec, candidate, torrentProbe, probeError)) {
-                    log_msg("[magnet] peer %u/%u metadata rejected: %s\n",
-                            peerIndex + 1, peerCount, probeError.c_str());
-                    continue;
-                }
+    int emptyReannounces = 0;
+    while (!cancelled && !resolved && now_ms() < deadline) {
+        uint32_t roundEnd = peerCount;
+        if (nextPeer >= roundEnd) {
+            /* Every known peer was tried once without metadata. Rather than
+               failing on the first sweep — which is what a second device behind
+               the same NAT hits when the seeders already have a connection from
+               that IP — back off briefly, pull a rotated peer set, and keep
+               trying until the deadline. */
+            uint64_t backoffUntil = now_ms() + kReannounceBackoffMs;
+            while (!cancelled && now_ms() < backoffUntil &&
+                   now_ms() < deadline)
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            if (cancelled || now_ms() >= deadline)
+                break;
+            uint32_t added = reannounce();
+            peerCount = static_cast<uint32_t>(peers.size() / 6);
+            if (added)
+                emptyReannounces = 0;
+            else if (++emptyReannounces >= kMaxEmptyReannounces)
+                break;
+            continue;
+        }
 
-                {
-                    std::lock_guard<std::mutex> lock(mutex);
-                    if (!resolved) {
-                        metadata = std::move(candidate);
-                        resolved = true;
-                        stopWorkers.store(true);
+        std::vector<std::thread> workers;
+        uint32_t pending = roundEnd - nextPeer;
+        uint32_t workerCount = std::min(pending, kMaxConcurrentPeers);
+        for (uint32_t worker = 0; worker < workerCount; ++worker) {
+            workers.emplace_back([&, roundEnd] {
+                while (!cancelled && !stopWorkers && now_ms() < deadline) {
+                    uint32_t peerIndex = 0;
+                    {
+                        std::lock_guard<std::mutex> lock(mutex);
+                        if (resolved || nextPeer >= roundEnd)
+                            return;
+                        peerIndex = nextPeer++;
                     }
+
+                    std::vector<uint8_t> candidate;
+                    bool handshakeVerified = false;
+                    bool fetched = fetchMetadataFromPeer(
+                        peers.data() + peerIndex * 6, spec, peerId, peerIndex,
+                        peerCount, deadline, cancelled, stopWorkers, progress,
+                        candidate, handshakeVerified);
+                    if (handshakeVerified) {
+                        std::lock_guard<std::mutex> lock(mutex);
+                        appendUniquePeers(verifiedEndpoints,
+                                          peers.data() + peerIndex * 6, 1);
+                    }
+                    if (!fetched)
+                        continue;
+
+                    std::vector<uint8_t> torrentProbe;
+                    std::string probeError;
+                    if (!buildTorrent(spec, candidate, torrentProbe,
+                                      probeError)) {
+                        log_msg("[magnet] peer %u/%u metadata rejected: %s\n",
+                                peerIndex + 1, peerCount, probeError.c_str());
+                        continue;
+                    }
+
+                    {
+                        std::lock_guard<std::mutex> lock(mutex);
+                        if (!resolved) {
+                            metadata = std::move(candidate);
+                            resolved = true;
+                            stopWorkers.store(true);
+                        }
+                    }
+                    return;
                 }
-                return;
-            }
-        });
+            });
+        }
+        for (std::thread& worker : workers)
+            worker.join();
     }
-    for (std::thread& worker : workers)
-        worker.join();
 
     if (cancelled) {
         std::lock_guard<std::mutex> lock(mutex);
