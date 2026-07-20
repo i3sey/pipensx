@@ -159,16 +159,23 @@ static void test_initial_peers_keep_verified_order(void) {
 
     uint32_t ip = 0;
     uint16_t port = 0;
-    assert(queue_pop(&torrent, &ip, &port));
+    uint8_t no_mse = 0;
+    assert(queue_pop(&torrent, &ip, &port, &no_mse));
     assert(memcmp(&ip, compact, 4) == 0);
     assert(memcmp(&port, compact + 4, 2) == 0);
-    assert(queue_pop(&torrent, &ip, &port));
+    assert(queue_pop(&torrent, &ip, &port, &no_mse));
     assert(memcmp(&ip, compact + 6, 4) == 0);
     assert(memcmp(&port, compact + 10, 2) == 0);
-    assert(queue_pop(&torrent, &ip, &port));
+    assert(queue_pop(&torrent, &ip, &port, &no_mse));
     assert(ip == laterIp);
     assert(port == laterPort);
-    assert(!queue_pop(&torrent, &ip, &port));
+    assert(!queue_pop(&torrent, &ip, &port, &no_mse));
+
+    // A plaintext-fallback re-queue carries the no_mse flag back out.
+    assert(queue_insert(&torrent, laterIp, laterPort, 1, 1));
+    ip = 0; port = 0; no_mse = 0;
+    assert(queue_pop(&torrent, &ip, &port, &no_mse));
+    assert(ip == laterIp && port == laterPort && no_mse == 1);
 }
 
 int main(void) {

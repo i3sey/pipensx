@@ -68,6 +68,7 @@
 struct peer_addr {
     uint32_t ip;   /* network byte order */
     uint16_t port; /* network byte order */
+    uint8_t  no_mse; /* skip MSE on this attempt (a plaintext fallback retry) */
 };
 
 static uint64_t ema_update(uint64_t previous, uint64_t sample) {
@@ -185,7 +186,8 @@ static int blocklist_blocked(const torrent_t *t, uint32_t ip, uint16_t port,
 }
 
 /* ---- peer queue ---- */
-static int queue_insert(torrent_t *t, uint32_t ip, uint16_t port, int front) {
+static int queue_insert(torrent_t *t, uint32_t ip, uint16_t port, int front,
+                        int no_mse) {
     uint16_t host_port = ntohs(port);
     if (ip == 0 || ip == INADDR_NONE || host_port < 2)
         return 0;
@@ -218,24 +220,38 @@ static int queue_insert(torrent_t *t, uint32_t ip, uint16_t port, int front) {
         index = t->qtail;
         t->qtail = (t->qtail + 1) % MAX_PEER_QUEUE;
     }
-    t->queue[index].ip   = ip;
-    t->queue[index].port = port;
+    t->queue[index].ip     = ip;
+    t->queue[index].port   = port;
+    t->queue[index].no_mse = (uint8_t)no_mse;
     t->qsize++;
     return 1;
 }
 
 static int queue_push(torrent_t *t, uint32_t ip, uint16_t port) {
-    return queue_insert(t, ip, port, 0);
+    return queue_insert(t, ip, port, 0, 0);
 }
 
 static int queue_push_front(torrent_t *t, uint32_t ip, uint16_t port) {
-    return queue_insert(t, ip, port, 1);
+    return queue_insert(t, ip, port, 1, 0);
 }
 
-static int queue_pop(torrent_t *t, uint32_t *ip, uint16_t *port) {
+/* A peer that dropped or stalled *during* the MSE handshake (PS_MSE) may simply
+   not speak encryption. Retry it once in plaintext (front of queue, no_mse)
+   instead of blocklisting; otherwise blocklist as usual. Call after the peer
+   slot is cleared so the queue dedup accepts the re-insert. */
+static void retry_plaintext_or_block(torrent_t *t, uint32_t ip, uint16_t port,
+                                     int was_mse_handshake, uint64_t now) {
+    if (was_mse_handshake && queue_insert(t, ip, port, 1, 1))
+        return;
+    blocklist_add(t, ip, port, now);
+}
+
+static int queue_pop(torrent_t *t, uint32_t *ip, uint16_t *port,
+                     uint8_t *no_mse) {
     if (t->qsize == 0) return 0;
-    *ip   = t->queue[t->qhead].ip;
-    *port = t->queue[t->qhead].port;
+    *ip     = t->queue[t->qhead].ip;
+    *port   = t->queue[t->qhead].port;
+    *no_mse = t->queue[t->qhead].no_mse;
     t->qhead = (t->qhead + 1) % MAX_PEER_QUEUE;
     t->qsize--;
     return 1;
@@ -595,8 +611,8 @@ static int count_connecting(const torrent_t *t) {
    burst caller can stop. */
 static int try_connect(torrent_t *t) {
     if (t->num_peers >= MAX_ACTIVE_PEERS) return 0;
-    uint32_t ip; uint16_t port;
-    if (!queue_pop(t, &ip, &port)) return 0;
+    uint32_t ip; uint16_t port; uint8_t no_mse = 0;
+    if (!queue_pop(t, &ip, &port, &no_mse)) return 0;
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
@@ -619,6 +635,8 @@ static int try_connect(torrent_t *t) {
     }
 
     p->dl_rate_bps = PIPELINE_BOOTSTRAP_BPS;
+    if (no_mse)
+        p->mse_enabled = 0; /* plaintext fallback retry after MSE was refused */
 
     /* Find free slot */
     for (int i = 0; i < MAX_ACTIVE_PEERS; i++) {
@@ -1293,11 +1311,14 @@ int torrent_tick(torrent_t *t) {
             err = peer_recv(p, &ctx, cb_block, cb_have, cb_peers, t);
         if (err < 0) {
             log_msg("[torrent] peer connection closed\n");
-            blocklist_add(t, p->addr.sin_addr.s_addr, p->addr.sin_port, now);
+            int mse_hs = (p->state == PS_MSE);
+            uint32_t rip = p->addr.sin_addr.s_addr;
+            uint16_t rport = p->addr.sin_port;
             clear_peer_requests(t, p);
             peer_destroy(p);
             t->peers[slot] = NULL;
             t->num_peers--;
+            retry_plaintext_or_block(t, rip, rport, mse_hs, now);
             continue;
         }
         if (p->am_choked && p->pipeline_len > 0) {
@@ -1321,11 +1342,13 @@ int torrent_tick(torrent_t *t) {
             if (p->connect_time_ms <= now2 &&
                 now2 - p->connect_time_ms > CONNECT_TIMEOUT_MS) {
                 log_msg("[torrent] peer connect/handshake timeout\n");
-                blocklist_add(t, p->addr.sin_addr.s_addr,
-                              p->addr.sin_port, now2);
+                int mse_hs = (p->state == PS_MSE);
+                uint32_t rip = p->addr.sin_addr.s_addr;
+                uint16_t rport = p->addr.sin_port;
                 peer_destroy(p);
                 t->peers[i] = NULL;
                 t->num_peers--;
+                retry_plaintext_or_block(t, rip, rport, mse_hs, now2);
             }
             continue;
         }
