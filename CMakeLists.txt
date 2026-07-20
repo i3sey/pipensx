@@ -98,6 +98,7 @@ set(APP_SERVICE_SOURCES
     src/app/catalog_service.cpp
     src/app/catalog_presentation.cpp
     src/app/download_manager.cpp
+    src/app/web_seed_source.cpp
     src/app/request_gate.cpp
     src/app/stream_ram_budget.cpp
     src/app/game_metadata_service.cpp

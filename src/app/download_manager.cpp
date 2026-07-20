@@ -1,6 +1,7 @@
 #include "download_manager.hpp"
 #include "request_gate.hpp"
 #include "stream_ram_budget.hpp"
+#include "web_seed_source.hpp"
 #include "../install/install_backend.hpp"
 #include "../install/install_journal.hpp"
 #include "../install/package_stream.hpp"
@@ -1817,6 +1818,23 @@ void DownloadManager::workerMain() {
                 static_cast<uint32_t>(initialPeers.size() / 6));
         }
 
+        // BEP-19 web seed: pull whole pieces over HTTP in parallel with the
+        // swarm. Deterministic bandwidth independent of how few peers we can
+        // reach over plaintext TCP (Bug A). Single-file torrents only — the
+        // package torrents pipensx ships are one NSP payload. Verification is
+        // the engine's job (torrent_submit_web_piece re-checks the SHA-1).
+        constexpr size_t kWebSeedParallel = 8;
+        std::unique_ptr<WebSeedSource> webSeed;
+        uint32_t webSeedCursor = 0;
+        if (metainfo.num_web_seeds > 0 && metainfo.num_files == 1 &&
+            metainfo.num_pieces > 0) {
+            webSeed = std::make_unique<WebSeedSource>(
+                metainfo.web_seeds[0], metainfo.name,
+                static_cast<uint64_t>(metainfo.piece_length),
+                static_cast<uint64_t>(metainfo.total_length),
+                metainfo.num_pieces);
+        }
+
         bool finished = false;
         while (!stopping_) {
             {
@@ -1830,6 +1848,35 @@ void DownloadManager::workerMain() {
             std::string installError = coordinator
                 ? coordinator->error() : std::string();
             int running = installError.empty() ? torrent_tick(torrent) : -1;
+
+            // Web-seed pump — runs on this (the torrent) thread, so the
+            // submit/query seams never race the engine.
+            if (running > 0 && webSeed) {
+                WebSeedSource::Completed done;
+                while (webSeed->popCompleted(done)) {
+                    if (done.ok)
+                        torrent_submit_web_piece(
+                            torrent, done.piece, done.data.data(),
+                            static_cast<uint32_t>(done.data.size()));
+                }
+                uint32_t np = webSeed->numPieces();
+                while (webSeed->inFlight() < kWebSeedParallel) {
+                    bool assignedOne = false;
+                    for (uint32_t n = 0; n < np; ++n) {
+                        uint32_t piece = (webSeedCursor + n) % np;
+                        if (torrent_piece_done(torrent, piece))
+                            continue;
+                        if (webSeed->enqueue(piece)) {
+                            webSeedCursor = (piece + 1) % np;
+                            assignedOne = true;
+                            break;
+                        }
+                    }
+                    if (!assignedOne)
+                        break; // every remaining piece is done or in-flight
+                }
+            }
+
             torrent_stat_t stat;
             torrent_stat(torrent, &stat);
             if (running > 0 && mode == TransferMode::StreamInstall) {
@@ -1901,6 +1948,7 @@ void DownloadManager::workerMain() {
             }
         }
 
+        webSeed.reset(); // join HTTP fetch threads before tearing down engine
         torrent_destroy(torrent);
         log_msg("[manager] torrent destroyed %s\n", activeId.c_str());
         if (coordinator) {

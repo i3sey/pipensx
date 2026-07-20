@@ -63,6 +63,25 @@ uint32_t torrent_add_initial_peers(torrent_t *t, const uint8_t *compact,
  */
 int  torrent_tick(torrent_t *t);
 
+/*
+ * Web-seed (BEP-19) support. The application fetches whole pieces over HTTP and
+ * hands them to the engine, which verifies and stores them exactly like peer
+ * blocks. Both functions touch the piece manager and MUST be called on the same
+ * thread as torrent_tick (the single-owner torrent thread) — the HTTP fetching
+ * itself runs on other threads, only the hand-off happens here.
+ */
+
+/* Non-zero if the piece is already downloaded and verified. */
+int torrent_piece_done(const torrent_t *t, uint32_t piece);
+
+/*
+ * Submit a whole piece fetched from a web seed. `len` must equal the piece's
+ * length. Returns 2 if the piece is now complete and verified, 1 if stored but
+ * not yet complete, 0 if ignored (already done / bad args), <0 on storage error.
+ */
+int torrent_submit_web_piece(torrent_t *t, uint32_t piece,
+                             const uint8_t *data, uint32_t len);
+
 /* Fill stats for UI */
 void torrent_stat(const torrent_t *t, torrent_stat_t *s);
 const char *torrent_last_error(const torrent_t *t);
