@@ -126,3 +126,168 @@ void mse_stream_key(const char label[4], const uint8_t secret[MSE_DH_LEN],
     rc4_init(out, key, sizeof(key));
     rc4_discard(out, 1024); /* MSE: throw away the first 1024 keystream bytes */
 }
+
+/* ---- initiator handshake ---- */
+
+enum {
+    ST_READ_PUB = 0,
+    ST_SYNC_VC,
+    ST_READ_SELECT,
+    ST_READ_PADD,
+    ST_DONE,
+    ST_FAIL = -1
+};
+
+/* HASH('reqN' | data) helper. */
+static void req_hash(const char tag[4], const uint8_t *data, size_t len,
+                     uint8_t out[20]) {
+    sha1_ctx_t ctx;
+    sha1_init(&ctx);
+    sha1_update(&ctx, tag, 4);
+    sha1_update(&ctx, data, len);
+    sha1_final(&ctx, out);
+}
+
+mse_status_t mse_client_start(mse_client_t *c, const uint8_t info_hash[20],
+                              const uint8_t priv[MSE_DH_LEN],
+                              const uint8_t *pad, size_t pad_len,
+                              const uint8_t *ia, size_t ia_len,
+                              uint8_t *out, size_t out_cap, size_t *produced) {
+    *produced = 0;
+    if (ia_len > MSE_MAX_IA || pad_len > MSE_MAX_PAD)
+        return MSE_FAIL;
+    memset(c, 0, sizeof(*c));
+    memcpy(c->info_hash, info_hash, 20);
+    memcpy(c->priv, priv, MSE_DH_LEN);
+    memcpy(c->ia, ia, ia_len);
+    c->ia_len = ia_len;
+
+    if (out_cap < MSE_DH_LEN + pad_len)
+        return MSE_FAIL;
+    uint8_t pub[MSE_DH_LEN];
+    mse_dh_public(priv, pub);
+    memcpy(out, pub, MSE_DH_LEN);
+    if (pad_len)
+        memcpy(out + MSE_DH_LEN, pad, pad_len);
+    *produced = MSE_DH_LEN + pad_len;
+    c->state = ST_READ_PUB;
+    return MSE_CONTINUE;
+}
+
+static mse_status_t emit_request(mse_client_t *c, const uint8_t secret[MSE_DH_LEN],
+                                 uint8_t *out, size_t out_cap, size_t *produced) {
+    // req1 | (req2 xor req3) | RC4( VC | crypto_provide | 00 00 | ia_len | IA )
+    uint8_t req1[20], h2[20], h3[20];
+    req_hash("req1", secret, MSE_DH_LEN, req1);
+    req_hash("req2", c->info_hash, 20, h2);
+    req_hash("req3", secret, MSE_DH_LEN, h3);
+
+    uint8_t plain[MSE_VC_LEN + 4 + 2 + 2 + MSE_MAX_IA];
+    size_t n = 0;
+    memset(plain + n, 0, MSE_VC_LEN); n += MSE_VC_LEN;          // VC = 8 zeros
+    plain[n++] = 0; plain[n++] = 0; plain[n++] = 0;
+    plain[n++] = MSE_CRYPTO_RC4;                                // crypto_provide
+    plain[n++] = 0; plain[n++] = 0;                             // len(padC) = 0
+    plain[n++] = (uint8_t)(c->ia_len >> 8);
+    plain[n++] = (uint8_t)(c->ia_len & 0xFF);                   // len(IA)
+    memcpy(plain + n, c->ia, c->ia_len); n += c->ia_len;
+
+    size_t total = 20 + 20 + n;
+    if (out_cap < total)
+        return MSE_FAIL;
+    memcpy(out, req1, 20);
+    for (int i = 0; i < 20; ++i)
+        out[20 + i] = (uint8_t)(h2[i] ^ h3[i]);
+    rc4_crypt(&c->send_rc4, plain, out + 40, n);               // encrypt block
+    *produced = total;
+    return MSE_CONTINUE;
+}
+
+mse_status_t mse_client_feed(mse_client_t *c, const uint8_t *in, size_t in_len,
+                             size_t *consumed, uint8_t *out, size_t out_cap,
+                             size_t *produced) {
+    *consumed = 0;
+    *produced = 0;
+
+    if (c->state == ST_READ_PUB) {
+        if (in_len < MSE_DH_LEN)
+            return MSE_CONTINUE;
+        uint8_t secret[MSE_DH_LEN];
+        mse_dh_secret(c->priv, in, secret);
+        *consumed += MSE_DH_LEN;
+
+        mse_stream_key("keyA", secret, c->info_hash, &c->send_rc4);
+        mse_stream_key("keyB", secret, c->info_hash, &c->recv_rc4);
+        // The peer's encrypted VC == keyB keystream[0..7]; precompute to scan.
+        rc4_t probe = c->recv_rc4;
+        uint8_t zeros[MSE_VC_LEN] = {0};
+        rc4_crypt(&probe, zeros, c->vc_expect, MSE_VC_LEN);
+
+        mse_status_t r = emit_request(c, secret, out, out_cap, produced);
+        if (r == MSE_FAIL) { c->state = ST_FAIL; return MSE_FAIL; }
+        c->state = ST_SYNC_VC;
+        c->skipped = 0;
+    }
+
+    if (c->state == ST_SYNC_VC) {
+        const uint8_t *p = in + *consumed;
+        size_t avail = in_len - *consumed;
+        size_t k = 0;
+        int found = 0;
+        while (k + MSE_VC_LEN <= avail) {
+            if (memcmp(p + k, c->vc_expect, MSE_VC_LEN) == 0) { found = 1; break; }
+            ++k;
+        }
+        if (found) {
+            *consumed += k + MSE_VC_LEN;
+            rc4_discard(&c->recv_rc4, MSE_VC_LEN); // consume VC keystream
+            c->skipped += (uint32_t)k;
+            c->state = ST_READ_SELECT;
+            c->select_have = 0;
+        } else {
+            // Everything except the trailing 7 bytes cannot start a VC match.
+            size_t skip = avail > (MSE_VC_LEN - 1) ? avail - (MSE_VC_LEN - 1) : 0;
+            *consumed += skip;
+            c->skipped += (uint32_t)skip;
+            if (c->skipped > MSE_MAX_PAD + MSE_DH_LEN)
+                { c->state = ST_FAIL; return MSE_FAIL; }
+            return MSE_CONTINUE;
+        }
+    }
+
+    if (c->state == ST_READ_SELECT) {
+        while (c->select_have < sizeof(c->select_buf) && *consumed < in_len) {
+            rc4_crypt(&c->recv_rc4, in + *consumed,
+                      &c->select_buf[c->select_have], 1);
+            ++c->select_have;
+            ++*consumed;
+        }
+        if (c->select_have < sizeof(c->select_buf))
+            return MSE_CONTINUE;
+        uint32_t select = ((uint32_t)c->select_buf[0] << 24) |
+                          ((uint32_t)c->select_buf[1] << 16) |
+                          ((uint32_t)c->select_buf[2] << 8) |
+                          (uint32_t)c->select_buf[3];
+        uint32_t padd = ((uint32_t)c->select_buf[4] << 8) | c->select_buf[5];
+        if (!(select & MSE_CRYPTO_RC4) || padd > MSE_MAX_PAD)
+            { c->state = ST_FAIL; return MSE_FAIL; }
+        c->padd_remaining = padd;
+        c->state = ST_READ_PADD;
+    }
+
+    if (c->state == ST_READ_PADD) {
+        while (c->padd_remaining > 0 && *consumed < in_len) {
+            rc4_discard(&c->recv_rc4, 1); // decrypt-and-drop padD
+            ++*consumed;
+            --c->padd_remaining;
+        }
+        if (c->padd_remaining > 0)
+            return MSE_CONTINUE;
+        c->state = ST_DONE;
+        return MSE_DONE;
+    }
+
+    if (c->state == ST_DONE)
+        return MSE_DONE;
+    return c->state == ST_FAIL ? MSE_FAIL : MSE_CONTINUE;
+}

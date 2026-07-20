@@ -59,3 +59,63 @@ void mse_dh_secret(const uint8_t priv[MSE_DH_LEN],
  */
 void mse_stream_key(const char label[4], const uint8_t secret[MSE_DH_LEN],
                     const uint8_t info_hash[20], rc4_t *out);
+
+/* ---- Initiator handshake state machine ----
+ *
+ * Pure, buffer-driven: no sockets. The caller (the peer layer) feeds bytes
+ * received from the socket and drains bytes to send, so the same code runs in
+ * the nonblocking event loop and in the loopback unit test. We only ever make
+ * outgoing connections, so only the initiator side is implemented.
+ *
+ * Flow: start() emits pubA+padA; feed() consumes pubB, emits the encrypted
+ * request (with the BT handshake piggybacked as IA), resynchronises on the
+ * peer's encrypted verification constant, reads crypto_select, and reports
+ * MSE_DONE. After that, send_rc4/recv_rc4 encrypt/decrypt all further traffic.
+ */
+
+#define MSE_MAX_PAD  512   /* per spec: PadA..PadD are 0..512 bytes */
+#define MSE_MAX_IA   68    /* we piggyback exactly the 68-byte BT handshake */
+
+typedef enum {
+    MSE_CONTINUE = 0, /* progress made / need more input — call feed() again */
+    MSE_DONE     = 1, /* handshake complete; send_rc4/recv_rc4 are live */
+    MSE_FAIL     = -1 /* peer is not MSE/RC4 capable or framing was invalid */
+} mse_status_t;
+
+typedef struct {
+    int state;
+    uint8_t priv[MSE_DH_LEN];
+    uint8_t info_hash[20];
+    uint8_t ia[MSE_MAX_IA];
+    size_t  ia_len;
+
+    rc4_t send_rc4;   /* keyA — our send stream (live once keys derived) */
+    rc4_t recv_rc4;   /* keyB — our receive stream */
+    uint8_t vc_expect[MSE_VC_LEN]; /* keyB keystream[0..7]; the encrypted VC */
+
+    uint32_t skipped;              /* bytes skipped during VC resync */
+    uint8_t  select_buf[6];        /* crypto_select(4) + len(padD)(2) */
+    uint32_t select_have;
+    uint32_t padd_remaining;
+} mse_client_t;
+
+/*
+ * Begin the handshake. `priv` is MSE_DH_LEN random bytes, `pad` is 0..512
+ * random bytes (padA), `ia` is the initial payload to piggyback (the BT
+ * handshake). Writes pubA+padA to `out`. Returns MSE_CONTINUE or MSE_FAIL.
+ */
+mse_status_t mse_client_start(mse_client_t *c, const uint8_t info_hash[20],
+                              const uint8_t priv[MSE_DH_LEN],
+                              const uint8_t *pad, size_t pad_len,
+                              const uint8_t *ia, size_t ia_len,
+                              uint8_t *out, size_t out_cap, size_t *produced);
+
+/*
+ * Feed received bytes. Sets *consumed to how many input bytes were used and
+ * writes any bytes to send into `out` (*produced). Returns MSE_CONTINUE until
+ * the handshake finishes (MSE_DONE) or fails (MSE_FAIL). Bytes left unconsumed
+ * must be presented again on the next call.
+ */
+mse_status_t mse_client_feed(mse_client_t *c, const uint8_t *in, size_t in_len,
+                             size_t *consumed, uint8_t *out, size_t out_cap,
+                             size_t *produced);
