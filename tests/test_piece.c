@@ -458,6 +458,37 @@ static void test_strict_order_prefers_requestable_pending_piece(void) {
     free_test_metainfo(&mi);
 }
 
+/* BEP-19 url-list parsing: a single-file torrent carrying one web seed. */
+static void test_metainfo_web_seeds_parse(void) {
+    uint8_t pieces[20];
+    memset(pieces, 0xAB, sizeof(pieces));
+
+    /* Hand-built .torrent bencode. Keys are order-independent for the parser;
+       the 20-byte piece hash is spliced in raw (may contain non-printables). */
+    const char *head =
+        "d"
+          "8:url-list" "l30:https://mirror.example/pkg.nspe"
+          "4:info" "d"
+            "6:length" "i16384e"
+            "4:name" "3:pkg"
+            "12:piece length" "i16384e"
+            "6:pieces" "20:";
+    const char *tail = "ee";
+
+    uint8_t buf[512];
+    size_t n = 0;
+    memcpy(buf + n, head, strlen(head)); n += strlen(head);
+    memcpy(buf + n, pieces, sizeof(pieces)); n += sizeof(pieces);
+    memcpy(buf + n, tail, strlen(tail)); n += strlen(tail);
+
+    metainfo_t mi;
+    assert(metainfo_parse(buf, n, &mi) == 1);
+    assert(mi.num_pieces == 1);
+    assert(mi.num_web_seeds == 1);
+    assert(strcmp(mi.web_seeds[0], "https://mirror.example/pkg.nsp") == 0);
+    metainfo_free(&mi);
+}
+
 int main(void) {
     test_large_piece_and_short_last_piece();
     test_hash_mismatch_resets_all_blocks();
@@ -470,6 +501,7 @@ int main(void) {
     test_strict_order_stops_at_request_gate();
     test_request_reference_counts();
     test_strict_order_prefers_requestable_pending_piece();
+    test_metainfo_web_seeds_parse();
     puts("piece tests passed");
     return 0;
 }

@@ -5,6 +5,7 @@
 #define MAX_TRACKERS  32
 #define MAX_FILES     512
 #define MAX_NAME_LEN  256
+#define MAX_WEB_SEEDS 8
 
 typedef struct {
     char    path[MAX_NAME_LEN]; /* relative path, '/' separated */
@@ -31,6 +32,10 @@ typedef struct {
     /* Trackers (announce-list flattened) */
     uint32_t num_trackers;
     char     trackers[MAX_TRACKERS][512];
+
+    /* Web seeds (BEP-19 "url-list": GetRight-style HTTP/FTP payload mirrors) */
+    uint32_t num_web_seeds;
+    char     web_seeds[MAX_WEB_SEEDS][512];
 } metainfo_t;
 
 /*
