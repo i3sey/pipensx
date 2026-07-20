@@ -77,6 +77,7 @@ target_compile_definitions(pipensx_zstd PRIVATE ZSTD_MULTITHREAD=0 ZSTD_DISABLE_
 set(CORE_SOURCES
     src/core/sha1.c
     src/core/sha256.c
+    src/core/mse.c
     src/core/bencode.c
     src/core/metainfo.c
     src/core/util.c

@@ -12,12 +12,13 @@ CXXFLAGS = -O2 -Wall -Wextra -std=c++17 \
             -D_GNU_SOURCE -pthread \
             -Ivendor/borealis/library/include \
             $(shell pkg-config --cflags libcurl)
-LDFLAGS = $(shell pkg-config --libs libcurl) -lm
+LDFLAGS = $(shell pkg-config --libs libcurl) -lm -lcrypto
 INSTALL_LDFLAGS = -lzstd -lcrypto
 
 SRCS = \
     src/core/sha1.c       \
     src/core/sha256.c     \
+    src/core/mse.c        \
     src/core/bencode.c    \
     src/core/metainfo.c   \
     src/core/util.c       \
@@ -196,7 +197,7 @@ $(TELEMETRY_TEST_TARGET): tests/test_telemetry.c src/core/util.c
 	$(CC) $(CFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
 
 $(PEER_TEST_TARGET): tests/test_peer.c src/core/peer.c src/core/net.c \
-		src/core/bencode.c src/core/util.c
+		src/core/bencode.c src/core/util.c src/core/mse.c src/core/sha1.c
 	$(CC) $(CFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -Wl,--wrap=setsockopt
 
 $(TORRENT_TEST_TARGET): tests/test_torrent.c \

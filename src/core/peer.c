@@ -11,7 +11,7 @@
  * The socket is nonblocking: whatever the kernel does not accept immediately
  * is queued in p->sbuf and drained by peer_flush() when the torrent loop
  * gets POLLOUT for this peer. */
-static int peer_send_raw(peer_t *p, const uint8_t *data, uint32_t len) {
+static int peer_send_plain(peer_t *p, const uint8_t *data, uint32_t len) {
     if (p->sbuf_len == 0 && len > 0) {
         ssize_t n = net_send(p->fd, data, len);
         if (n < 0) return 0;
@@ -25,6 +25,24 @@ static int peer_send_raw(peer_t *p, const uint8_t *data, uint32_t len) {
     }
     memcpy(p->sbuf + p->sbuf_len, data, len);
     p->sbuf_len += len;
+    return 1;
+}
+
+/* Once the MSE handshake completes, every byte we send is RC4-encrypted. The
+   handshake bytes themselves go out before mse_active is set, so they are sent
+   in the clear (the request's encrypted region is already ciphertext). */
+static int peer_send_raw(peer_t *p, const uint8_t *data, uint32_t len) {
+    if (!p->mse_active || len == 0)
+        return peer_send_plain(p, data, len);
+    uint8_t enc[4096];
+    while (len > 0) {
+        uint32_t chunk = len > sizeof(enc) ? (uint32_t)sizeof(enc) : len;
+        rc4_crypt(&p->mse.send_rc4, data, enc, chunk);
+        if (!peer_send_plain(p, enc, chunk))
+            return 0;
+        data += chunk;
+        len  -= chunk;
+    }
     return 1;
 }
 
@@ -66,8 +84,7 @@ static int send_byte_msg(peer_t *p, uint8_t id) {
 }
 
 /* --- handshake --- */
-int peer_send_handshake(peer_t *p, const peer_ctx_t *ctx) {
-    uint8_t hs[BT_HANDSHAKE_LEN];
+static void build_handshake(uint8_t hs[BT_HANDSHAKE_LEN], const peer_ctx_t *ctx) {
     hs[0] = 19;
     memcpy(hs+1, "BitTorrent protocol", 19);
     memset(hs+20, 0, 8);
@@ -76,6 +93,11 @@ int peer_send_handshake(peer_t *p, const peer_ctx_t *ctx) {
     hs[27] = 0x01;  /* DHT */
     memcpy(hs+28, ctx->info_hash, 20);
     memcpy(hs+48, ctx->peer_id,   20);
+}
+
+int peer_send_handshake(peer_t *p, const peer_ctx_t *ctx) {
+    uint8_t hs[BT_HANDSHAKE_LEN];
+    build_handshake(hs, ctx);
     p->state = PS_HANDSHAKE;
     return peer_send_raw(p, hs, BT_HANDSHAKE_LEN);
 }
@@ -95,6 +117,7 @@ peer_t *peer_create(socket_t fd, struct sockaddr_in addr, const peer_ctx_t *ctx)
     p->bitfield = (uint8_t*)calloc(1, ctx->bf_bytes);
     p->connect_time_ms = now_ms();
     p->last_recv_ms    = p->connect_time_ms;
+    p->mse_enabled     = ctx->use_mse;
     return p;
 }
 
@@ -420,6 +443,23 @@ int peer_recv(peer_t *p, const peer_ctx_t *ctx,
             log_msg("[peer] connect failed: %s\n", strerror(err));
             return -1;
         }
+        if (p->mse_enabled) {
+            /* Begin MSE: send pubA (padA=0) and piggyback the BT handshake as
+               IA so it rides inside the encrypted request. */
+            uint8_t priv[MSE_DH_LEN];
+            rand_bytes(priv, sizeof(priv));
+            uint8_t ia[BT_HANDSHAKE_LEN];
+            build_handshake(ia, ctx);
+            uint8_t out[MSE_DH_LEN];
+            size_t produced = 0;
+            if (mse_client_start(&p->mse, ctx->info_hash, priv, NULL, 0,
+                                 ia, BT_HANDSHAKE_LEN, out, sizeof(out),
+                                 &produced) != MSE_CONTINUE)
+                return -1;
+            p->state = PS_MSE;
+            if (!peer_send_raw(p, out, (uint32_t)produced)) return -1;
+            return 0;
+        }
         p->state = PS_HANDSHAKE;
         if (!peer_send_handshake(p, ctx)) return -1;
         /* Don't try to read yet */
@@ -427,6 +467,34 @@ int peer_recv(peer_t *p, const peer_ctx_t *ctx,
     }
 
     for (;;) {
+        if (p->state == PS_MSE) {
+            uint8_t out[256];
+            size_t consumed = 0, produced = 0;
+            mse_status_t s = mse_client_feed(
+                &p->mse, p->rbuf + p->rbuf_head,
+                p->rbuf_len - p->rbuf_head, &consumed, out, sizeof(out),
+                &produced);
+            p->rbuf_head += (uint32_t)consumed;
+            if (produced && !peer_send_raw(p, out, (uint32_t)produced))
+                return -1;
+            if (s == MSE_FAIL) {
+                log_msg("[peer] mse handshake failed\n");
+                return -1;
+            }
+            if (s == MSE_DONE) {
+                p->mse_active = 1;
+                /* Bytes buffered past the handshake are the peer's encrypted
+                   BT handshake; decrypt them now so process_handshake sees
+                   plaintext, then decrypt-on-arrival handles the rest. */
+                uint32_t rem = p->rbuf_len - p->rbuf_head;
+                if (rem)
+                    rc4_crypt(&p->mse.recv_rc4, p->rbuf + p->rbuf_head,
+                              p->rbuf + p->rbuf_head, rem);
+                p->state = PS_HANDSHAKE;
+                log_msg("[peer] mse handshake ok\n");
+            }
+        }
+
         if (p->state == PS_HANDSHAKE) {
             int r = process_handshake(p, ctx);
             if (r < 0) return -1;
@@ -472,6 +540,11 @@ int peer_recv(peer_t *p, const peer_ctx_t *ctx,
             return -1;
         }
         if (n == 0) return -1; /* EOF */
+        /* Decrypt freshly-arrived bytes once, in place, before any parsing.
+           Skipped during PS_MSE, where the handshake does its own crypto. */
+        if (p->mse_active)
+            rc4_crypt(&p->mse.recv_rc4, p->rbuf + p->rbuf_len,
+                      p->rbuf + p->rbuf_len, (uint32_t)n);
         p->rbuf_len += (uint32_t)n;
     }
 }
