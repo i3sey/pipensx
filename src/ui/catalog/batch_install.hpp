@@ -15,6 +15,7 @@
 #include "app/install_space.hpp"
 #include "app/installed_title_service.hpp"
 #include "ui/catalog/catalog_helpers.hpp"
+#include "ui/common/storage_meter.hpp"
 #include "ui/common/ui_helpers.hpp"
 #include "ui/theme.hpp"
 
@@ -162,6 +163,10 @@ public:
         status_->setTextColor(theme::textSecondary());
         status_->setText("Preparing selected games...");
         content->addView(status_);
+
+        meter_ = new StorageMeter();
+        meter_->setMarginBottom(12);
+        content->addView(meter_);
 
         recycler_ = new brls::RecyclerFrame();
         recycler_->setGrow(1);
@@ -361,20 +366,21 @@ private:
             text += "   " + std::to_string(prepared_->failures().size()) +
                     " failed";
         text += "\nSelected: " + formatBytes(estimate.requiredBytes);
-        if (storage_.available)
-            text += "   SD free: " + formatBytes(storage_.freeBytes);
-        else
-            text += "   SD free: unavailable";
         if (estimate.certainty ==
             SpaceEstimateCertainty::CompressedUnknown) {
             text += "\nNSZ is compressed; exact installed size is checked per NCA.";
         }
-        if (check.status == InstallSpaceCheckStatus::Insufficient)
-            text += "\nNot enough space. Free " +
-                    formatBytes(check.shortfallBytes) + " more.";
-        else if (!storage_.available && !storage_.error.empty())
+        if (!storage_.available && !storage_.error.empty())
             text += "\n" + storage_.error;
         status_->setText(text);
+
+        if (storage_.available)
+            meter_->setEstimate(
+                storage_.totalBytes, storage_.freeBytes, estimate.requiredBytes,
+                check.status == InstallSpaceCheckStatus::Insufficient,
+                estimate.certainty == SpaceEstimateCertainty::CompressedUnknown);
+        else
+            meter_->setUnavailable();
 
         const bool enabled = selected > 0 && !estimate.overflow &&
             check.status != InstallSpaceCheckStatus::Insufficient;
@@ -454,6 +460,7 @@ private:
     StorageSpaceSnapshot storage_;
     brls::AppletFrame* frame_ = nullptr;
     brls::Label* status_ = nullptr;
+    StorageMeter* meter_ = nullptr;
     brls::RecyclerFrame* recycler_ = nullptr;
     BatchInstallDataSource* dataSource_ = nullptr;
     brls::Box* controls_ = nullptr;

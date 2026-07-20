@@ -9,6 +9,7 @@
 
 #include "app/download_manager.hpp"
 #include "app/install_space.hpp"
+#include "ui/common/storage_meter.hpp"
 #include "ui/common/ui_helpers.hpp"
 #include "ui/theme.hpp"
 
@@ -192,6 +193,10 @@ public:
         summary_->setText("A toggles a file. Selection follows Settings.");
         content->addView(summary_);
 
+        meter_ = new StorageMeter();
+        meter_->setMarginBottom(14);
+        content->addView(meter_);
+
         recycler_ = new brls::RecyclerFrame();
         recycler_->setGrow(1);
         recycler_->setPadding(6, 0, 6, 0);
@@ -350,9 +355,6 @@ private:
         std::string text = std::to_string(selected) + " / " +
                            std::to_string(preview_.files.size()) +
                            " files   " + formatBytes(estimate.requiredBytes);
-        text += storage.available
-            ? "   SD free: " + formatBytes(storage.freeBytes)
-            : "   SD free: unavailable";
         if (installs > 0) {
             text += "   Install: " + std::to_string(installs);
             if (downloads > 0)
@@ -360,13 +362,15 @@ private:
         } else {
             text += "   Download-only selection";
         }
-        if (estimate.certainty ==
-            SpaceEstimateCertainty::CompressedUnknown) {
-            text += "   NSZ may expand";
-        }
-        if (check.status == InstallSpaceCheckStatus::Insufficient)
-            text += "   Need " + formatBytes(check.shortfallBytes) + " more";
         summary_->setText(text);
+
+        if (storage.available)
+            meter_->setEstimate(
+                storage.totalBytes, storage.freeBytes, estimate.requiredBytes,
+                check.status == InstallSpaceCheckStatus::Insufficient,
+                estimate.certainty == SpaceEstimateCertainty::CompressedUnknown);
+        else
+            meter_->setUnavailable();
         installSelected_->setState(selected == 0 || estimate.overflow ||
                                     check.status ==
                                         InstallSpaceCheckStatus::Insufficient
@@ -423,6 +427,7 @@ private:
     brls::AppletFrame* frame_ = nullptr;
     brls::Label* title_ = nullptr;
     brls::Label* summary_ = nullptr;
+    StorageMeter* meter_ = nullptr;
     brls::RecyclerFrame* recycler_ = nullptr;
     TorrentSelectionDataSource* dataSource_ = nullptr;
     brls::Button* selectAll_ = nullptr;
