@@ -18,6 +18,7 @@
 #include "app/magnet_resolver.hpp"
 #include "ui/catalog/catalog_helpers.hpp"
 #include "ui/common/async_image.hpp"
+#include "ui/common/storage_meter.hpp"
 #include "ui/common/ui_helpers.hpp"
 #include "ui/detail/screenshot_viewer.hpp"
 #include "ui/detail/torrent_selection.hpp"
@@ -97,6 +98,8 @@ public:
         content->setPadding(24, 40, 24, 40);
         buildLeftColumn(content);
         buildRightColumn(content);
+        installBytes_ = entry_.size;
+        refreshSizeMeter();
 
         frame_ = new brls::AppletFrame(content);
         frame_->setTitle(presentation_.title);
@@ -124,7 +127,15 @@ public:
             return true;
         });
         refreshButtons();
-        timer_.setCallback([this] { refreshButtons(); });
+        timer_.setCallback([this] {
+            refreshButtons();
+            // nsGetStorageSize is a real syscall — re-read it every ~2s, not on
+            // every 500ms button tick. Same cadence as the sidebar footer.
+            if (++storageTick_ >= 4) {
+                storageTick_ = 0;
+                refreshSizeMeter();
+            }
+        });
         timer_.start(500);
         brls::Button* focus = primary_;
         if (focus)
@@ -178,14 +189,12 @@ private:
         });
         left->addView(secondary_);
 
-        auto* size = new brls::Label();
-        size->setFontSize(theme::kFontCaption);
-        size->setMarginTop(16);
-        size->setTextColor(theme::textTertiary());
-        size->setText("Download size: " +
-                      (entry_.size ? formatBytes(entry_.size)
-                                   : std::string("Unknown")));
-        left->addView(size);
+        // How much of the card this release eats. Seeded from the catalog size
+        // and refined to the exact figure once the torrent metadata resolves.
+        sizeMeter_ = new StorageMeter();
+        sizeMeter_->setHeader("Install size");
+        sizeMeter_->setMarginTop(20);
+        left->addView(sizeMeter_);
 
         statusLabel_ = new brls::Label();
         statusLabel_->setFontSize(theme::kFontCaption);
@@ -416,6 +425,24 @@ private:
         }
     }
 
+    // Repaint the install-size bar against the current free space. installBytes_
+    // starts as the catalog-declared size and becomes exact once the torrent
+    // metadata has been read (see finishImport).
+    void refreshSizeMeter() {
+        if (!sizeMeter_)
+            return;
+        const pipensx::StorageSpaceSnapshot storage =
+            pipensx::queryStorageSpace(manager_->rootPath());
+        if (!storage.available) {
+            sizeMeter_->setUnavailable();
+            return;
+        }
+        sizeMeter_->setGameEstimate(storage.totalBytes, storage.freeBytes,
+                                    installBytes_,
+                                    installBytes_ > storage.freeBytes,
+                                    sizeExact_);
+    }
+
     // Reflect live task state on the buttons. Skipped while resolving so the
     // inline progress text isn't clobbered.
     void refreshButtons() {
@@ -597,6 +624,25 @@ private:
             return;
         }
 
+        // Metadata is in: swap the catalog-declared size on the meter for the
+        // real one. Mirrors the one-tap selection (install the packages, skip
+        // the extras); a release with no packages is sized as a plain download.
+        std::vector<uint8_t> actions;
+        actions.reserve(preview.files.size());
+        for (const auto& file : preview.files) {
+            FileAction action = preview.packageCount == 0
+                ? FileAction::Download
+                : (file.package ? FileAction::Install : FileAction::Skip);
+            actions.push_back(static_cast<uint8_t>(action));
+        }
+        const auto sized = pipensx::estimateInstallSpace(
+            preview, actions, TransferMode::StreamInstall);
+        if (!preview.files.empty() && !sized.overflow) {
+            installBytes_ = sized.requiredBytes;
+            sizeExact_ = true;
+            refreshSizeMeter();
+        }
+
         // Options path: the per-file picker owns the temp file and unlinks it
         // on cancel. Each row chooses Skip, Download, or Install directly.
         if (forcePicker) {
@@ -685,7 +731,11 @@ private:
     brls::AppletFrame* frame_ = nullptr;
     InstallButton* primary_ = nullptr;
     brls::Button* secondary_ = nullptr;
+    StorageMeter* sizeMeter_ = nullptr;
     brls::Label* statusLabel_ = nullptr;
+    uint64_t installBytes_ = 0;
+    bool sizeExact_ = false;
+    int storageTick_ = 0;
     brls::RepeatingTimer timer_;
     std::vector<DownloadTask> cache_;
     bool busy_ = false;

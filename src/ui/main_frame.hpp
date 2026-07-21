@@ -198,9 +198,8 @@ public:
         for (brls::View* label : labels_)
             label->setVisibility(collapsed ? brls::Visibility::GONE
                                            : brls::Visibility::VISIBLE);
-        if (footer_) {
-            footer_->setWidth((collapsed ? kCollapsedWidth : expandedWidth_) -
-                              2.0f * kFooterPad);
+        if (dock_) {
+            dock_->setWidth(collapsed ? kCollapsedWidth : expandedWidth_);
             footer_->setCompact(collapsed);
         }
     }
@@ -208,16 +207,30 @@ public:
     // Free-space readout pinned to the bottom-left of the frame, over the
     // sidebar area. Absolute + non-focusable so it never disturbs the sidebar's
     // scroll or the focus-driven fold logic.
+    //
+    // The meter itself is *not* the absolute node: an absolute box with only
+    // left/bottom set forces Yoga to solve its top edge from a height that
+    // comes out of a Label measure func, which put the widget below the content
+    // area with nothing to clip it. The dock pins top+bottom instead, so its
+    // height is definite, justifyContent flex-end parks the meter on the floor
+    // whatever it measures, and clipsToBounds is the backstop.
     void attachStorageFooter(DownloadManager* manager) {
         manager_ = manager;
+        dock_ = new brls::Box(brls::Axis::COLUMN);
+        dock_->setFocusable(false);
+        dock_->setPositionType(brls::PositionType::ABSOLUTE);
+        dock_->setPositionTop(0);
+        dock_->setPositionBottom(0);
+        dock_->setPositionLeft(0);
+        dock_->setWidth(collapsed_ ? kCollapsedWidth : expandedWidth_);
+        dock_->setJustifyContent(brls::JustifyContent::FLEX_END);
+        dock_->setPadding(0, kFooterPad, kFooterPad, kFooterPad);
+        dock_->setClipsToBounds(true);
+
         footer_ = new StorageMeter();
-        footer_->setPositionType(brls::PositionType::ABSOLUTE);
-        footer_->setPositionLeft(kFooterPad);
-        footer_->setPositionBottom(kFooterPad);
-        footer_->setWidth((collapsed_ ? kCollapsedWidth : expandedWidth_) -
-                          2.0f * kFooterPad);
         footer_->setCompact(collapsed_);
-        addView(footer_);
+        dock_->addView(footer_);
+        addView(dock_);
         refreshStorage();
     }
 
@@ -262,6 +275,7 @@ private:
     bool collapsed_ = false;
     float expandedWidth_ = 248.0f;
     std::vector<brls::View*> labels_;
+    brls::Box* dock_ = nullptr;
     StorageMeter* footer_ = nullptr;
     DownloadManager* manager_ = nullptr;
     std::chrono::steady_clock::time_point lastQuery_ =

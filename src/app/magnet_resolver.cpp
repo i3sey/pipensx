@@ -4,6 +4,7 @@ extern "C" {
 #include "../core/bencode.h"
 #include "../core/dht.h"
 #include "../core/metainfo.h"
+#include "../core/mse.h"
 #include "../core/net.h"
 #include "../core/sha1.h"
 #include "../core/tracker.h"
@@ -260,7 +261,52 @@ bool recvAll(socket_t fd, uint8_t* data, size_t size, int timeoutMs) {
     return true;
 }
 
-bool sendFrame(socket_t fd, const std::vector<uint8_t>& payload) {
+// A peer socket with an optional MSE/PE (RC4) encryption layer. Many RuTracker
+// peers run with encryption *required* and silently drop our plaintext BEP-3
+// handshake, so all post-handshake traffic must be able to ride through RC4.
+// When `encrypted` is false this is a thin passthrough over the raw socket.
+struct PeerWire {
+    socket_t fd = INVALID_SOCK;
+    bool encrypted = false;
+    rc4_t send{};                 // our send keystream (keyA)
+    rc4_t recv{};                 // our receive keystream (keyB)
+    std::vector<uint8_t> backlog; // decrypted bytes read during the MSE
+    size_t backlogPos = 0;        // handshake that belong to the peer stream
+};
+
+bool wireSendAll(PeerWire& wire, const uint8_t* data, size_t size) {
+    if (!wire.encrypted)
+        return sendAll(wire.fd, data, size);
+    uint8_t chunk[4096];
+    size_t offset = 0;
+    while (offset < size) {
+        size_t count = std::min(sizeof(chunk), size - offset);
+        rc4_crypt(&wire.send, data + offset, chunk, count);
+        if (!sendAll(wire.fd, chunk, count))
+            return false;
+        offset += count;
+    }
+    return true;
+}
+
+bool wireRecvAll(PeerWire& wire, uint8_t* data, size_t size, int timeoutMs) {
+    size_t got = 0;
+    if (wire.encrypted && wire.backlogPos < wire.backlog.size()) {
+        size_t take = std::min(wire.backlog.size() - wire.backlogPos, size);
+        std::memcpy(data, wire.backlog.data() + wire.backlogPos, take);
+        wire.backlogPos += take;
+        got += take;
+    }
+    if (got == size)
+        return true;
+    if (!recvAll(wire.fd, data + got, size - got, timeoutMs))
+        return false;
+    if (wire.encrypted)
+        rc4_crypt(&wire.recv, data + got, data + got, size - got);
+    return true;
+}
+
+bool sendFrame(PeerWire& wire, const std::vector<uint8_t>& payload) {
     uint32_t size = static_cast<uint32_t>(payload.size());
     uint8_t header[4] = {
         static_cast<uint8_t>(size >> 24),
@@ -268,13 +314,13 @@ bool sendFrame(socket_t fd, const std::vector<uint8_t>& payload) {
         static_cast<uint8_t>(size >> 8),
         static_cast<uint8_t>(size),
     };
-    return sendAll(fd, header, sizeof(header)) &&
-           sendAll(fd, payload.data(), payload.size());
+    return wireSendAll(wire, header, sizeof(header)) &&
+           wireSendAll(wire, payload.data(), payload.size());
 }
 
-bool recvFrame(socket_t fd, std::vector<uint8_t>& payload) {
+bool recvFrame(PeerWire& wire, std::vector<uint8_t>& payload) {
     uint8_t header[4];
-    if (!recvAll(fd, header, sizeof(header), kIoTimeoutMs))
+    if (!wireRecvAll(wire, header, sizeof(header), kIoTimeoutMs))
         return false;
     uint32_t size = (static_cast<uint32_t>(header[0]) << 24) |
                     (static_cast<uint32_t>(header[1]) << 16) |
@@ -283,55 +329,156 @@ bool recvFrame(socket_t fd, std::vector<uint8_t>& payload) {
     if (size > kMetadataPieceSize + 4096)
         return false;
     payload.resize(size);
-    return size == 0 || recvAll(fd, payload.data(), size, kIoTimeoutMs);
+    return size == 0 || wireRecvAll(wire, payload.data(), size, kIoTimeoutMs);
 }
 
-bool connectPeer(const uint8_t* compact, const uint8_t infoHash[20],
-                 const uint8_t peerId[20], socket_t& fd) {
+socket_t tcpConnect(const uint8_t* compact) {
     sockaddr_in address{};
     address.sin_family = AF_INET;
     std::memcpy(&address.sin_addr.s_addr, compact, 4);
     std::memcpy(&address.sin_port, compact + 4, 2);
-    fd = net_tcp_connect(&address);
-    if (fd == INVALID_SOCK || !waitFd(fd, POLLOUT, kIoTimeoutMs))
-        return false;
+    socket_t fd = net_tcp_connect(&address);
+    if (fd == INVALID_SOCK)
+        return INVALID_SOCK;
+    if (!waitFd(fd, POLLOUT, kIoTimeoutMs)) {
+        net_close(fd);
+        return INVALID_SOCK;
+    }
     int socketError = 0;
     socklen_t errorSize = sizeof(socketError);
     if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &socketError, &errorSize) != 0 ||
-        socketError != 0)
-        return false;
+        socketError != 0) {
+        net_close(fd);
+        return INVALID_SOCK;
+    }
+    return fd;
+}
 
-    uint8_t handshake[68]{};
-    handshake[0] = 19;
-    std::memcpy(handshake + 1, "BitTorrent protocol", 19);
-    handshake[25] = 0x10;
-    std::memcpy(handshake + 28, infoHash, 20);
-    std::memcpy(handshake + 48, peerId, 20);
-    if (!sendAll(fd, handshake, sizeof(handshake)))
-        return false;
+void buildBtHandshake(uint8_t hs[68], const uint8_t infoHash[20],
+                      const uint8_t peerId[20]) {
+    std::memset(hs, 0, 68);
+    hs[0] = 19;
+    std::memcpy(hs + 1, "BitTorrent protocol", 19);
+    hs[25] = 0x10;  // extension protocol (BEP-10)
+    std::memcpy(hs + 28, infoHash, 20);
+    std::memcpy(hs + 48, peerId, 20);
+}
 
+// Read and verify the 68-byte BT handshake reply (through RC4 when encrypted).
+bool readBtHandshakeReply(PeerWire& wire, const uint8_t infoHash[20]) {
     uint8_t response[68];
-    if (!recvAll(fd, response, sizeof(response), kIoTimeoutMs) ||
-        response[0] != 19 ||
-        std::memcmp(response + 1, "BitTorrent protocol", 19) != 0 ||
-        std::memcmp(response + 28, infoHash, 20) != 0 ||
-        (response[25] & 0x10) == 0)
+    return wireRecvAll(wire, response, sizeof(response), kIoTimeoutMs) &&
+           response[0] == 19 &&
+           std::memcmp(response + 1, "BitTorrent protocol", 19) == 0 &&
+           std::memcmp(response + 28, infoHash, 20) == 0 &&
+           (response[25] & 0x10) != 0;
+}
+
+// Drive the MSE initiator handshake on a freshly connected socket. The BT
+// handshake rides inside the encrypted request as the IA payload, so on success
+// the peer's (encrypted) BT handshake reply is left for readBtHandshakeReply.
+bool mseHandshake(socket_t fd, const uint8_t infoHash[20],
+                  const uint8_t peerId[20], PeerWire& wire) {
+    mse_client_t client;
+    uint8_t priv[MSE_DH_LEN];
+    rand_bytes(priv, sizeof(priv));
+    uint8_t ia[68];
+    buildBtHandshake(ia, infoHash, peerId);
+    uint8_t out[512];
+    size_t produced = 0;
+    if (mse_client_start(&client, infoHash, priv, nullptr, 0, ia, sizeof(ia),
+                         out, sizeof(out), &produced) != MSE_CONTINUE)
         return false;
+    if (!sendAll(fd, out, produced))
+        return false;
+
+    std::vector<uint8_t> inbuf;
+    uint8_t tmp[1024];
+    const uint64_t deadline = now_ms() + 2 * kIoTimeoutMs;
+    while (now_ms() < deadline) {
+        if (!waitFd(fd, POLLIN, kIoTimeoutMs))
+            return false;
+        ssize_t count = recv(fd, tmp, sizeof(tmp), 0);
+        if (count <= 0)
+            return false;
+        inbuf.insert(inbuf.end(), tmp, tmp + count);
+
+        size_t consumed = 0;
+        produced = 0;
+        mse_status_t status = mse_client_feed(&client, inbuf.data(),
+                                              inbuf.size(), &consumed, out,
+                                              sizeof(out), &produced);
+        if (produced && !sendAll(fd, out, produced))
+            return false;
+        inbuf.erase(inbuf.begin(),
+                    inbuf.begin() + static_cast<ptrdiff_t>(consumed));
+        if (status == MSE_FAIL)
+            return false;
+        if (status == MSE_DONE) {
+            wire.fd = fd;
+            wire.encrypted = true;
+            wire.send = client.send_rc4;
+            wire.recv = client.recv_rc4;
+            // Bytes past the handshake are the peer's encrypted stream; decrypt
+            // them now so wireRecvAll can serve them as plaintext backlog.
+            if (!inbuf.empty()) {
+                wire.backlog.resize(inbuf.size());
+                rc4_crypt(&wire.recv, inbuf.data(), wire.backlog.data(),
+                          inbuf.size());
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+// Connect, then complete the BT handshake. Plaintext is tried first; if the
+// peer drops it (encryption-only), reconnect and retry over MSE/PE. On success
+// `wire` owns the socket and carries any encryption state.
+bool connectPeer(const uint8_t* compact, const uint8_t infoHash[20],
+                 const uint8_t peerId[20], PeerWire& wire) {
+    socket_t fd = tcpConnect(compact);
+    if (fd == INVALID_SOCK)
+        return false;
+
+    uint8_t handshake[68];
+    buildBtHandshake(handshake, infoHash, peerId);
+    if (sendAll(fd, handshake, sizeof(handshake))) {
+        wire.fd = fd;
+        wire.encrypted = false;
+        if (readBtHandshakeReply(wire, infoHash)) {
+            net_set_tcp_receive_buffer(fd);
+            return true;
+        }
+    }
+    // Plaintext refused or dropped — retry the peer with MSE/PE encryption.
+    net_close(fd);
+    wire = PeerWire{};
+
+    fd = tcpConnect(compact);
+    if (fd == INVALID_SOCK)
+        return false;
+    if (!mseHandshake(fd, infoHash, peerId, wire) ||
+        !readBtHandshakeReply(wire, infoHash)) {
+        net_close(fd);
+        wire = PeerWire{};
+        return false;
+    }
     net_set_tcp_receive_buffer(fd);
     return true;
 }
 
-bool negotiateMetadata(socket_t fd, uint8_t& peerExtension,
+bool negotiateMetadata(PeerWire& wire, uint8_t& peerExtension,
                        size_t& metadataSize) {
     static const char handshake[] = "d1:md11:ut_metadatai1eee";
     std::vector<uint8_t> request{20, 0};
     request.insert(request.end(), handshake, handshake + sizeof(handshake) - 1);
-    if (!sendFrame(fd, request))
+    if (!sendFrame(wire, request))
         return false;
 
     for (int message = 0; message < 32; ++message) {
         std::vector<uint8_t> frame;
-        if (!recvFrame(fd, frame))
+        if (!recvFrame(wire, frame))
             return false;
         if (frame.size() < 3 || frame[0] != 20 || frame[1] != 0)
             continue;
@@ -362,18 +509,18 @@ bool negotiateMetadata(socket_t fd, uint8_t& peerExtension,
     return false;
 }
 
-bool sendMetadataRequest(socket_t fd, uint8_t extension, uint32_t piece) {
+bool sendMetadataRequest(PeerWire& wire, uint8_t extension, uint32_t piece) {
     std::string body = "d8:msg_typei0e5:piecei" + std::to_string(piece) + "ee";
     std::vector<uint8_t> frame{20, extension};
     frame.insert(frame.end(), body.begin(), body.end());
-    return sendFrame(fd, frame);
+    return sendFrame(wire, frame);
 }
 
-bool receiveMetadataPiece(socket_t fd,
+bool receiveMetadataPiece(PeerWire& wire,
                           uint32_t& piece, const uint8_t*& data,
                           size_t& dataSize, std::vector<uint8_t>& frame) {
     for (int message = 0; message < 32; ++message) {
-        if (!recvFrame(fd, frame)) {
+        if (!recvFrame(wire, frame)) {
             log_msg("[magnet] peer frame receive timed out\n");
             return false;
         }
@@ -433,23 +580,23 @@ bool fetchMetadataFromPeer(const uint8_t* compact,
         progress({MagnetProgress::Stage::Connecting, 0, 0, peerIndex + 1,
                   peerCount});
 
-    socket_t fd = INVALID_SOCK;
-    if (!connectPeer(compact, spec.infoHash, peerId, fd)) {
+    PeerWire wire;
+    if (!connectPeer(compact, spec.infoHash, peerId, wire)) {
         log_msg("[magnet] peer %u/%u connect or handshake failed\n",
                 peerIndex + 1, peerCount);
-        net_close(fd);
+        net_close(wire.fd);
         return false;
     }
-    log_msg("[magnet] peer %u/%u BitTorrent handshake ok\n",
-            peerIndex + 1, peerCount);
+    log_msg("[magnet] peer %u/%u BitTorrent handshake ok%s\n",
+            peerIndex + 1, peerCount, wire.encrypted ? " (MSE)" : "");
     handshakeVerified = true;
 
     uint8_t extension = 0;
     size_t metadataSize = 0;
-    if (!negotiateMetadata(fd, extension, metadataSize)) {
+    if (!negotiateMetadata(wire, extension, metadataSize)) {
         log_msg("[magnet] peer %u/%u has no usable ut_metadata\n",
                 peerIndex + 1, peerCount);
-        net_close(fd);
+        net_close(wire.fd);
         return false;
     }
     log_msg("[magnet] peer %u/%u ut_metadata=%u size=%zu\n",
@@ -468,8 +615,8 @@ bool fetchMetadataFromPeer(const uint8_t* compact,
              piece < received.size() && inFlight < kRequestPipeline; ++piece) {
             if (received[piece] || requested[piece])
                 continue;
-            if (!sendMetadataRequest(fd, extension, piece)) {
-                net_close(fd);
+            if (!sendMetadataRequest(wire, extension, piece)) {
+                net_close(wire.fd);
                 return false;
             }
             requested[piece] = 1;
@@ -480,10 +627,10 @@ bool fetchMetadataFromPeer(const uint8_t* compact,
         const uint8_t* bytes = nullptr;
         size_t byteCount = 0;
         std::vector<uint8_t> frame;
-        if (!receiveMetadataPiece(fd, piece, bytes, byteCount, frame)) {
+        if (!receiveMetadataPiece(wire, piece, bytes, byteCount, frame)) {
             log_msg("[magnet] peer %u/%u metadata receive failed\n",
                     peerIndex + 1, peerCount);
-            net_close(fd);
+            net_close(wire.fd);
             return false;
         }
         if (piece >= received.size())
@@ -497,7 +644,7 @@ bool fetchMetadataFromPeer(const uint8_t* compact,
         if (byteCount != expected) {
             log_msg("[magnet] peer %u/%u wrong metadata piece size %zu/%zu\n",
                     peerIndex + 1, peerCount, byteCount, expected);
-            net_close(fd);
+            net_close(wire.fd);
             return false;
         }
         if (!received[piece]) {
@@ -511,7 +658,7 @@ bool fetchMetadataFromPeer(const uint8_t* compact,
         }
     }
 
-    net_close(fd);
+    net_close(wire.fd);
     if (completed != received.size())
         return false;
     metadata = std::move(local);
@@ -520,12 +667,12 @@ bool fetchMetadataFromPeer(const uint8_t* compact,
 
 // Advertise both ut_metadata and ut_pex so the peer will push its swarm view
 // to us on our advertised ut_pex id (kLocalUtPexId). BEP10 handshake.
-bool sendPexHandshake(socket_t fd) {
+bool sendPexHandshake(PeerWire& wire) {
     static const char handshake[] =
         "d1:md11:ut_metadatai1e6:ut_pexi2eee";
     std::vector<uint8_t> request{20, 0};
     request.insert(request.end(), handshake, handshake + sizeof(handshake) - 1);
-    return sendFrame(fd, request);
+    return sendFrame(wire, request);
 }
 
 // Connect to one thin-list peer, advertise ut_pex, and harvest the compact
@@ -537,19 +684,19 @@ void harvestPexFromPeer(const uint8_t* compact, const MagnetSpec& spec,
                         const uint8_t peerId[20],
                         std::atomic<bool>& cancelled,
                         std::vector<uint8_t>& out) {
-    socket_t fd = INVALID_SOCK;
-    if (!connectPeer(compact, spec.infoHash, peerId, fd)) {
-        net_close(fd);
+    PeerWire wire;
+    if (!connectPeer(compact, spec.infoHash, peerId, wire)) {
+        net_close(wire.fd);
         return;
     }
-    if (!sendPexHandshake(fd)) {
-        net_close(fd);
+    if (!sendPexHandshake(wire)) {
+        net_close(wire.fd);
         return;
     }
     uint64_t deadline = now_ms() + kPexPeerTimeoutMs;
     while (!cancelled && now_ms() < deadline) {
         std::vector<uint8_t> frame;
-        if (!recvFrame(fd, frame))
+        if (!recvFrame(wire, frame))
             break;
         // Extended messages the peer sends to us carry our advertised id, not
         // the peer's (BEP 10). Skip the peer's extension handshake (id 0) and
@@ -571,7 +718,7 @@ void harvestPexFromPeer(const uint8_t* compact, const MagnetSpec& spec,
                               static_cast<uint32_t>(added.slen / 6));
         }
     }
-    net_close(fd);
+    net_close(wire.fd);
 }
 
 std::string bencodeString(const std::string& value) {
