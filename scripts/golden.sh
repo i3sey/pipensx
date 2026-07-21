@@ -22,8 +22,8 @@ GOLDEN_DIR="$ROOT/tests/golden"
 OUT_DIR="${GOLDEN_OUT:-$ROOT/build-golden/golden-out}"
 FUZZ="${GOLDEN_FUZZ:-5%}"
 MAX_DIFF="${GOLDEN_MAX_DIFF:-25000}"
-SCREENS="${GOLDEN_SCREENS:-catalog detail downloads installed settings about}"
-BEHAVIOR_SCREENS="${GOLDEN_BEHAVIOR_SCREENS:-downloads-back}"
+SCREENS="${GOLDEN_SCREENS:-catalog detail frame downloads installed settings about torrent-selection}"
+BEHAVIOR_SCREENS="${GOLDEN_BEHAVIOR_SCREENS:-downloads-back torrent-selection-scroll}"
 THEMES="${GOLDEN_THEMES:-light dark}"
 
 export LIBGL_ALWAYS_SOFTWARE=1

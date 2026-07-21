@@ -15,6 +15,7 @@
 #include "app/install_space.hpp"
 #include "app/installed_title_service.hpp"
 #include "ui/catalog/catalog_helpers.hpp"
+#include "ui/common/action_icon.hpp"
 #include "ui/common/storage_meter.hpp"
 #include "ui/common/ui_helpers.hpp"
 #include "ui/theme.hpp"
@@ -32,12 +33,9 @@ public:
         setPadding(12, 20, 12, 20);
         setHeight(82);
 
-        mark_ = new brls::Label();
-        mark_->setWidth(38);
-        mark_->setFontSize(21);
-        mark_->setTextColor(theme::accent());
-        mark_->setMarginRight(10);
-        addView(mark_);
+        icon_ = new ActionIcon();
+        icon_->setMarginRight(14);
+        addView(icon_);
 
         auto* body = new brls::Box(brls::Axis::COLUMN);
         body->setGrow(1);
@@ -56,8 +54,10 @@ public:
     }
 
     void setReady(const PreparedCatalogInstall& item) {
-        mark_->setText(item.selected ? "[x]" : "[ ]");
-        mark_->setTextColor(theme::accent());
+        icon_->setKind(item.selected ? ActionIconKind::Checked
+                                     : ActionIconKind::Unchecked);
+        title_->setTextColor(item.selected ? theme::textPrimary()
+                                           : theme::textDisabled());
         title_->setText(item.entry.title);
         std::string meta = formatBytes(item.space.requiredBytes) + " selected";
         if (item.space.packageFiles)
@@ -71,14 +71,14 @@ public:
     }
 
     void setFailure(const pipensx::BatchItemFailure& failure) {
-        mark_->setText("!");
-        mark_->setTextColor(theme::error());
+        icon_->setKind(ActionIconKind::Error);
+        title_->setTextColor(theme::textPrimary());
         title_->setText(failure.entry.title);
         meta_->setText(failure.error);
     }
 
 private:
-    brls::Label* mark_ = nullptr;
+    ActionIcon* icon_ = nullptr;
     brls::Label* title_ = nullptr;
     brls::Label* meta_ = nullptr;
 };
@@ -165,6 +165,8 @@ public:
         content->addView(status_);
 
         meter_ = new StorageMeter();
+        meter_->setHeader("SD card");
+        meter_->setLegendVisible(true);
         meter_->setMarginBottom(12);
         content->addView(meter_);
 
@@ -176,8 +178,11 @@ public:
                                 [] { return new BatchInstallCell(); });
         dataSource_ = new BatchInstallDataSource(this);
         recycler_->setDataSource(dataSource_);
-        recycler_->setVisibility(brls::Visibility::GONE);
-        content->addView(recycler_);
+        // Visibility is toggled on the host, not the recycler: the host is the
+        // grow(1) box, so hiding only the recycler would leave its slot behind.
+        recyclerHost_ = recyclerHost(recycler_);
+        recyclerHost_->setVisibility(brls::Visibility::GONE);
+        content->addView(recyclerHost_);
 
         controls_ = new brls::Box(brls::Axis::COLUMN);
         controls_->setMarginTop(14);
@@ -275,7 +280,7 @@ public:
             return;
         prepared_->items()[index].selected =
             !prepared_->items()[index].selected;
-        recycler_->reloadData();
+        repaintRow(static_cast<int>(index));
         refreshSummary();
     }
 
@@ -324,7 +329,7 @@ private:
                     return;
                 }
                 dataSource_->setPreparation(prepared_);
-                recycler_->setVisibility(brls::Visibility::VISIBLE);
+                recyclerHost_->setVisibility(brls::Visibility::VISIBLE);
                 controls_->setVisibility(brls::Visibility::VISIBLE);
                 recycler_->reloadData();
                 if (cancelAction_ != ACTION_NONE) {
@@ -347,8 +352,27 @@ private:
             return;
         for (PreparedCatalogInstall& item : prepared_->items())
             item.selected = selected;
-        recycler_->reloadData();
+        for (auto* cell : visibleCells<BatchInstallCell>(recycler_))
+            repaint(cell);
         refreshSummary();
+    }
+
+    // Repaint in place so the cursor and scroll offset survive a toggle;
+    // reloadData() would recycle every cell and snap focus back to row 0.
+    void repaintRow(int row) {
+        for (auto* cell : visibleCells<BatchInstallCell>(recycler_)) {
+            if (cell->getIndexPath().row == row)
+                repaint(cell);
+        }
+    }
+
+    void repaint(BatchInstallCell* cell) {
+        if (!prepared_)
+            return;
+        const size_t row = static_cast<size_t>(cell->getIndexPath().row);
+        // Failure rows sit after the item rows and are not toggleable.
+        if (row < prepared_->items().size())
+            cell->setReady(prepared_->items()[row]);
     }
 
     void refreshSummary() {
@@ -436,7 +460,7 @@ private:
             message += "\n" + failure.entry.title + ": " + failure.error;
         }
         status_->setText(message);
-        recycler_->setVisibility(brls::Visibility::GONE);
+        recyclerHost_->setVisibility(brls::Visibility::GONE);
         controls_->setVisibility(brls::Visibility::GONE);
         resultControls_->setVisibility(brls::Visibility::VISIBLE);
         resultBack_->setText(remaining_.empty() ? "Back to catalog"
@@ -462,6 +486,7 @@ private:
     brls::Label* status_ = nullptr;
     StorageMeter* meter_ = nullptr;
     brls::RecyclerFrame* recycler_ = nullptr;
+    brls::Box* recyclerHost_ = nullptr;
     BatchInstallDataSource* dataSource_ = nullptr;
     brls::Box* controls_ = nullptr;
     brls::Button* enqueue_ = nullptr;

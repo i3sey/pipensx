@@ -121,7 +121,10 @@ public:
         recycler_->registerCell("Message", [] { return new TextMessageCell(); });
         dataSource_ = new InstalledDataSource(metadata);
         recycler_->setDataSource(dataSource_);
-        addView(recycler_);
+        // Visibility toggles on the host, not the recycler: the host is the
+        // grow(1) box, so hiding only the recycler would leave its slot behind.
+        recyclerHost_ = recyclerHost(recycler_);
+        addView(recyclerHost_);
         reload();
 
         registerAction("Refresh", brls::BUTTON_RB, [this](brls::View*) {
@@ -171,8 +174,8 @@ private:
             ensureEmptyState()->setVisibility(brls::Visibility::VISIBLE);
         else if (emptyState_)
             emptyState_->setVisibility(brls::Visibility::GONE);
-        recycler_->setVisibility(empty ? brls::Visibility::GONE
-                                       : brls::Visibility::VISIBLE);
+        recyclerHost_->setVisibility(empty ? brls::Visibility::GONE
+                                           : brls::Visibility::VISIBLE);
         status_->setText(std::to_string(count) +
             (count == 1 ? " installed application" : " installed applications"));
     }
@@ -211,6 +214,7 @@ private:
     brls::Label* status_ = nullptr;
     EmptyStateView* emptyState_ = nullptr;
     brls::RecyclerFrame* recycler_ = nullptr;
+    brls::Box* recyclerHost_ = nullptr;
     InstalledDataSource* dataSource_ = nullptr;
     std::shared_ptr<std::atomic<bool>> alive_;
     bool refreshing_ = false;

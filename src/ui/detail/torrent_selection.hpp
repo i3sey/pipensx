@@ -3,12 +3,14 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <borealis.hpp>
 
 #include "app/download_manager.hpp"
 #include "app/install_space.hpp"
+#include "ui/common/action_icon.hpp"
 #include "ui/common/storage_meter.hpp"
 #include "ui/common/ui_helpers.hpp"
 #include "ui/theme.hpp"
@@ -19,16 +21,26 @@ struct TorrentSelectionEntry {
     std::string path;
     uint64_t length = 0;
     bool package = false;
+    bool compressed = false;
+    bool cartridge = false;
     FileAction action = FileAction::Download;
 };
 
-inline const char* actionLabel(FileAction action) {
-    switch (action) {
-        case FileAction::Install: return "Install";
-        case FileAction::Download: return "Download";
-        case FileAction::Skip: return "Skip";
-    }
-    return "Skip";
+// "bonus/extras/readme.txt" -> {"bonus/extras/", "readme.txt"}. The directory
+// half is drawn dimmed so the filename still reads first on deep paths.
+inline std::pair<std::string, std::string> splitPath(const std::string& path) {
+    const size_t slash = path.find_last_of('/');
+    if (slash == std::string::npos)
+        return {std::string(), path};
+    return {path.substr(0, slash + 1), path.substr(slash + 1)};
+}
+
+inline std::string fileKindLabel(const TorrentSelectionEntry& entry) {
+    if (!entry.package)
+        return entry.cartridge ? "XCI cartridge dump" : "Other file";
+    if (entry.compressed)
+        return "NSZ package · expands on install";
+    return "NSP package";
 }
 
 class TorrentSelectionCell : public brls::RecyclerCell {
@@ -40,47 +52,116 @@ public:
         setPadding(12, 20, 12, 20);
         setHeight(82);
 
-        mark_ = new brls::Label();
-        mark_->setWidth(34);
-        mark_->setFontSize(21);
-        mark_->setTextColor(theme::accent());
-        mark_->setMarginRight(10);
-        addView(mark_);
+        // The base RecyclerCell registers BUTTON_A as "OK"; re-registering the
+        // same button replaces it (View::registerAction), so this only changes
+        // the hint text in the applet frame's button bar — the click still
+        // routes to the data source exactly as before.
+        registerAction("Toggle", brls::BUTTON_A, [this](brls::View*) {
+            auto* recycler =
+                dynamic_cast<brls::RecyclerFrame*>(getParent()->getParent());
+            if (recycler && recycler->getDataSource())
+                recycler->getDataSource()->didSelectRowAt(recycler,
+                                                          getIndexPath());
+            return true;
+        });
+
+        icon_ = new ActionIcon();
+        icon_->setMarginRight(14);
+        addView(icon_);
 
         auto* body = new brls::Box(brls::Axis::COLUMN);
         body->setGrow(1);
         body->setJustifyContent(brls::JustifyContent::CENTER);
 
-        title_ = new brls::Label();
-        title_->setSingleLine(true);
-        title_->setFontSize(18);
-        body->addView(title_);
+        auto* pathRow = new brls::Box(brls::Axis::ROW);
+        pathRow->setFocusable(false);
+        pathRow->setAlignItems(brls::AlignItems::BASELINE);
+
+        directory_ = new brls::Label();
+        directory_->setSingleLine(true);
+        directory_->setFontSize(18);
+        directory_->setTextColor(theme::textTertiary());
+        pathRow->addView(directory_);
+
+        name_ = new brls::Label();
+        name_->setSingleLine(true);
+        name_->setFontSize(18);
+        name_->setGrow(1);
+        pathRow->addView(name_);
+        body->addView(pathRow);
 
         meta_ = new brls::Label();
+        meta_->setSingleLine(true);
         meta_->setFontSize(14);
         meta_->setMarginTop(4);
         meta_->setTextColor(theme::textTertiary());
         body->addView(meta_);
-
         addView(body);
+
+        // Fixed width, not auto: the sizes have to right-align as a column, and
+        // an auto-width label would also spill under the scroll bar.
+        size_ = new brls::Label();
+        size_->setSingleLine(true);
+        size_->setFontSize(17);
+        size_->setWidth(110);
+        size_->setMarginLeft(16);
+        size_->setHorizontalAlign(brls::HorizontalAlign::RIGHT);
+        size_->setTextColor(theme::textSecondary());
+        addView(size_);
     }
 
     void setEntry(const TorrentSelectionEntry& entry) {
-        mark_->setText(entry.action == FileAction::Install ? "[I]" :
-                       entry.action == FileAction::Download ? "[D]" : "[ ]");
-        title_->setText(entry.path);
-        std::string meta = formatBytes(entry.length);
-        meta += "   ";
-        meta += entry.package ? "NSP/NSZ package" : "Other file";
-        meta += "   ";
-        meta += actionLabel(entry.action);
-        meta_->setText(meta);
+        const bool skipped = entry.action == FileAction::Skip;
+        icon_->setKind(entry.action == FileAction::Install
+                           ? ActionIconKind::Install
+                           : entry.action == FileAction::Download
+                                 ? ActionIconKind::Download
+                                 : ActionIconKind::Skip);
+
+        const auto [directory, name] = splitPath(entry.path);
+        directory_->setText(directory);
+        directory_->setVisibility(directory.empty() ? brls::Visibility::GONE
+                                                    : brls::Visibility::VISIBLE);
+        directory_->setTextColor(skipped ? theme::textDisabled()
+                                         : theme::textTertiary());
+        name_->setText(name);
+        name_->setTextColor(skipped ? theme::textDisabled()
+                                    : theme::textPrimary());
+        meta_->setText(fileKindLabel(entry));
+        meta_->setTextColor(skipped ? theme::textDisabled()
+                                    : theme::textTertiary());
+        size_->setText(formatBytes(entry.length));
+        size_->setTextColor(skipped ? theme::textDisabled()
+                                    : theme::textSecondary());
+    }
+
+    // What this cell is showing right now, as opposed to what the data source
+    // holds. The golden harness uses it to prove a toggle actually repainted
+    // the live cell instead of silently doing nothing.
+    std::string renderedState() const {
+        switch (icon_->kind()) {
+            case ActionIconKind::Install: return "install";
+            case ActionIconKind::Download: return "download";
+            default: return "skip";
+        }
+    }
+
+    // Torrents with no files at all: one row explaining why the list is empty.
+    void setEmpty() {
+        icon_->setKind(ActionIconKind::Skip);
+        directory_->setVisibility(brls::Visibility::GONE);
+        name_->setText("No files in this torrent");
+        name_->setTextColor(theme::textDisabled());
+        meta_->setText("");
+        size_->setText("");
     }
 
 private:
-    brls::Label* mark_;
-    brls::Label* title_;
+    ActionIcon* icon_;
+    brls::Label* directory_;
+    brls::Label* name_;
     brls::Label* meta_;
+    brls::Label* size_;
 };
 
 class TorrentSelectionActivity;
@@ -136,7 +217,7 @@ public:
     }
 
     int numberOfSections(brls::RecyclerFrame*) override {
-        return entries_.empty() ? 1 : 1;
+        return 1;
     }
 
     int numberOfRows(brls::RecyclerFrame*, int) override {
@@ -173,10 +254,11 @@ public:
         : manager_(manager), path_(std::move(path)),
           preview_(std::move(preview)), preferred_(preferred),
           initialSelection_(initialSelection),
-          initialPeers_(std::move(initialPeers)) {
+          initialPeers_(std::move(initialPeers)),
+          storage_(pipensx::queryStorageSpace(manager->rootPath())) {
         auto* content = new brls::Box(brls::Axis::COLUMN);
         content->setGrow(1);
-        content->setPadding(24, 38, 24, 34);
+        content->setPadding(18, 38, 18, 34);
         content->setBackgroundColor(theme::overlay());
         content->setCornerRadius(12);
 
@@ -185,16 +267,31 @@ public:
         title_->setText("Choose torrent files");
         content->addView(title_);
 
+        // Counts on the left, icon key on the right. Sharing one row with the
+        // summary keeps the key free: the list is the scarce space on this
+        // screen, and a legend of its own would cost it another row.
+        auto* summaryRow = new brls::Box(brls::Axis::ROW);
+        summaryRow->setFocusable(false);
+        summaryRow->setAlignItems(brls::AlignItems::CENTER);
+        summaryRow->setMarginTop(6);
+        summaryRow->setMarginBottom(10);
+
         summary_ = new brls::Label();
+        summary_->setSingleLine(true);
+        summary_->setGrow(1);
         summary_->setFontSize(15);
-        summary_->setMarginTop(8);
-        summary_->setMarginBottom(14);
         summary_->setTextColor(theme::textSecondary());
-        summary_->setText("A toggles a file. Selection follows Settings.");
-        content->addView(summary_);
+        summaryRow->addView(summary_);
+
+        addLegendEntry(summaryRow, ActionIconKind::Install, "Install");
+        addLegendEntry(summaryRow, ActionIconKind::Download, "Download");
+        addLegendEntry(summaryRow, ActionIconKind::Skip, "Skip");
+        content->addView(summaryRow);
 
         meter_ = new StorageMeter();
-        meter_->setMarginBottom(14);
+        meter_->setHeader("SD card");
+        meter_->setLegendVisible(true);
+        meter_->setMarginBottom(10);
         content->addView(meter_);
 
         recycler_ = new brls::RecyclerFrame();
@@ -205,18 +302,18 @@ public:
                                [] { return new TorrentSelectionCell(); });
         dataSource_ = new TorrentSelectionDataSource(this);
         recycler_->setDataSource(dataSource_);
-        content->addView(recycler_);
+        content->addView(recyclerHost(recycler_));
 
         auto* buttons = new brls::Box(brls::Axis::COLUMN);
-        buttons->setMarginTop(16);
+        buttons->setMarginTop(12);
 
         auto* row = new brls::Box(brls::Axis::ROW);
-        row->setMarginBottom(10);
+        row->setMarginBottom(8);
 
         selectAll_ = new brls::Button();
         selectAll_->setStyle(&brls::BUTTONSTYLE_DEFAULT);
         selectAll_->setFontSize(18);
-        selectAll_->setHeight(52);
+        selectAll_->setHeight(46);
         selectAll_->setMarginRight(10);
         selectAll_->setGrow(1);
         selectAll_->setText("Select all");
@@ -229,7 +326,7 @@ public:
         clearAll_ = new brls::Button();
         clearAll_->setStyle(&brls::BUTTONSTYLE_DEFAULT);
         clearAll_->setFontSize(18);
-        clearAll_->setHeight(52);
+        clearAll_->setHeight(46);
         clearAll_->setGrow(1);
         clearAll_->setText("Clear");
         clearAll_->registerClickAction([this](brls::View*) {
@@ -243,7 +340,7 @@ public:
         installSelected_ = new brls::Button();
         installSelected_->setStyle(&brls::BUTTONSTYLE_PRIMARY);
         installSelected_->setFontSize(21);
-        installSelected_->setHeight(60);
+        installSelected_->setHeight(54);
         installSelected_->setText("Continue");
         installSelected_->registerClickAction([this](brls::View*) {
             confirmSelection();
@@ -286,6 +383,23 @@ public:
     }
 
 private:
+    // One "<glyph> Label" pair of the icon key. Same glyphs the rows draw, so
+    // the key can never drift from what is actually on screen.
+    static void addLegendEntry(brls::Box* row, ActionIconKind kind,
+                               const std::string& text) {
+        auto* icon = new ActionIcon(kind, 18.0f);
+        icon->setMarginLeft(16);
+        icon->setMarginRight(6);
+        row->addView(icon);
+
+        auto* label = new brls::Label();
+        label->setSingleLine(true);
+        label->setFontSize(theme::kFontCaption);
+        label->setTextColor(theme::textTertiary());
+        label->setText(text);
+        row->addView(label);
+    }
+
     void populateEntries() {
         std::vector<TorrentSelectionEntry> entries;
         entries.reserve(preview_.files.size());
@@ -294,6 +408,8 @@ private:
             entry.path = file.path;
             entry.length = file.length;
             entry.package = file.package;
+            entry.compressed = file.compressed;
+            entry.cartridge = file.cartridge;
             if (preferred_ == TransferMode::StreamInstall && file.package) {
                 entry.action = FileAction::Install;
             } else if (initialSelection_ == StreamSelection::AllFiles ||
@@ -310,33 +426,26 @@ private:
 
     void setAllSelected(bool selected) {
         dataSource_->setAll(selected);
-        reloadPreservingFocus();
+        for (auto* cell : visibleCells<TorrentSelectionCell>(recycler_))
+            repaint(cell);
         refreshSummary();
     }
 
-    // reloadData() recycles every cell and re-homes focus on defaultCellFocus
-    // (row 0), so a plain reload after toggling a row throws the cursor back to
-    // the top. Pin defaultCellFocus to the currently focused cell, reload, then
-    // re-give focus and restore the scroll offset so the cursor stays put.
-    void reloadPreservingFocus() {
-        float offset = recycler_->getContentOffsetY();
-        brls::View* focused = brls::Application::getCurrentFocus();
-        bool ownsFocus = focused && recycler_->getParentActivity() &&
-                         focused->getParentActivity() ==
-                             recycler_->getParentActivity();
-        auto* cell = ownsFocus
-            ? dynamic_cast<brls::RecyclerCell*>(focused)
-            : nullptr;
-        if (cell)
-            recycler_->setDefaultCellFocus(cell->getIndexPath());
-        recycler_->reloadData();
-        if (ownsFocus) {
-            recycler_->setFocusable(true);
-            brls::Application::giveFocus(recycler_);
-            recycler_->setFocusable(false);
-            brls::Application::giveFocus(recycler_);
+    // Repainting the one row that changed keeps the cursor and the scroll
+    // offset exactly where they were. reloadData() would recycle every cell,
+    // snap the scroll to 0 and re-home focus on defaultCellFocus.
+    void repaintRow(int row) {
+        for (auto* cell : visibleCells<TorrentSelectionCell>(recycler_)) {
+            if (cell->getIndexPath().row == row)
+                repaint(cell);
         }
-        recycler_->setContentOffsetY(offset, false);
+    }
+
+    void repaint(TorrentSelectionCell* cell) {
+        if (const auto* entry = dataSource_->entryAt(cell->getIndexPath().row))
+            cell->setEntry(*entry);
+        else
+            cell->setEmpty();
     }
 
     void refreshSummary() {
@@ -349,24 +458,23 @@ private:
             : TransferMode::DownloadOnly;
         const auto estimate = pipensx::estimateInstallSpace(preview_, actions,
                                                             mode);
-        const StorageSpaceSnapshot storage =
-            pipensx::queryStorageSpace(manager_->rootPath());
-        const auto check = pipensx::assessInstallSpace(estimate, storage);
-        std::string text = std::to_string(selected) + " / " +
-                           std::to_string(preview_.files.size()) +
-                           " files   " + formatBytes(estimate.requiredBytes);
+        const auto check = pipensx::assessInstallSpace(estimate, storage_);
+        // The meter caption right below already prints the byte totals, so the
+        // summary stays on counts.
+        std::string text = std::to_string(selected) + " of " +
+                           std::to_string(preview_.files.size()) + " files";
         if (installs > 0) {
-            text += "   Install: " + std::to_string(installs);
+            text += "  ·  " + std::to_string(installs) + " install";
             if (downloads > 0)
-                text += "   Download: " + std::to_string(downloads);
-        } else {
-            text += "   Download-only selection";
+                text += ", " + std::to_string(downloads) + " download";
+        } else if (downloads > 0) {
+            text += "  ·  download only";
         }
         summary_->setText(text);
 
-        if (storage.available)
+        if (storage_.available)
             meter_->setEstimate(
-                storage.totalBytes, storage.freeBytes, estimate.requiredBytes,
+                storage_.totalBytes, storage_.freeBytes, estimate.requiredBytes,
                 check.status == InstallSpaceCheckStatus::Insufficient,
                 estimate.certainty == SpaceEstimateCertainty::CompressedUnknown);
         else
@@ -395,9 +503,11 @@ private:
             : TransferMode::DownloadOnly;
         const auto estimate = pipensx::estimateInstallSpace(preview_, actions,
                                                             mode);
-        const StorageSpaceSnapshot storage =
-            pipensx::queryStorageSpace(manager_->rootPath());
-        if (pipensx::assessInstallSpace(estimate, storage).status ==
+        // Authoritative gate: the cached snapshot may be stale if a background
+        // download ate into the card while this screen was open, so re-query
+        // and keep the fresh reading for the meter.
+        storage_ = pipensx::queryStorageSpace(manager_->rootPath());
+        if (pipensx::assessInstallSpace(estimate, storage_).status ==
             InstallSpaceCheckStatus::Insufficient) {
             refreshSummary();
             brls::Application::notify("Not enough free space on SD.");
@@ -424,6 +534,10 @@ private:
     TransferMode preferred_;
     StreamSelection initialSelection_;
     std::vector<uint8_t> initialPeers_;
+    // Queried once at construction instead of once per A press: on Switch this
+    // is an nsGetStorageSize IPC. confirmSelection() re-queries before it
+    // commits, so a stale reading can never let an oversized install through.
+    StorageSpaceSnapshot storage_;
     brls::AppletFrame* frame_ = nullptr;
     brls::Label* title_ = nullptr;
     brls::Label* summary_ = nullptr;

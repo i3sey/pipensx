@@ -48,6 +48,10 @@ inline void registerColors() {
     static const Token kTokens[] = {
         // Brand / status
         {"pipensx/accent", nvgRGB(0, 195, 227), nvgRGB(0, 195, 227)},   // Joy-Con Neon Blue #00C3E3
+        // Ink for glyphs knocked out of a solid accent plate. The neon blue is
+        // bright enough that dark ink beats white on it, and it is theme-
+        // independent because the accent itself is.
+        {"pipensx/on_accent", nvgRGB(12, 34, 40), nvgRGB(12, 34, 40)},
         {"pipensx/error", nvgRGB(255, 69, 84), nvgRGB(255, 69, 84)},    // Neon Red #FF4554
         {"pipensx/success", nvgRGB(40, 170, 90), nvgRGB(96, 220, 130)}, // #60DC82 (darkened on light)
         {"pipensx/warning", nvgRGB(196, 110, 22), nvgRGB(230, 150, 80)},
@@ -63,6 +67,15 @@ inline void registerColors() {
         {"pipensx/overlay", nvgRGBA(240, 240, 244, 235), nvgRGBA(35, 35, 40, 235)},
         {"pipensx/panel", nvgRGBA(228, 228, 234, 180), nvgRGBA(45, 45, 50, 180)},
         {"pipensx/track", nvgRGBA(128, 128, 128, 70), nvgRGBA(128, 128, 128, 70)},
+
+        // Storage meter. The segmented SD bar needs far more separation than
+        // the generic track/surface pair: the dark sidebar sits at rgb(50,50,50)
+        // and the app background at rgb(45,45,45), so the empty slot goes well
+        // below both and the used chunk well above.
+        {"pipensx/meter_track", nvgRGB(205, 207, 213), nvgRGB(24, 24, 27)},
+        {"pipensx/meter_used", nvgRGB(126, 129, 138), nvgRGB(132, 136, 146)},
+        {"pipensx/meter_border", nvgRGBA(0, 0, 0, 50), nvgRGBA(255, 255, 255, 55)},
+
         {"pipensx/graph_bg", nvgRGBA(208, 210, 216, 120), nvgRGBA(30, 31, 36, 120)},
         {"pipensx/graph_grid", nvgRGBA(60, 60, 70, 35), nvgRGBA(180, 180, 190, 35)},
     };
@@ -77,6 +90,7 @@ inline NVGcolor color(const std::string& name) {
 }
 
 inline NVGcolor accent() { return color("pipensx/accent"); }
+inline NVGcolor onAccent() { return color("pipensx/on_accent"); }
 inline NVGcolor error() { return color("pipensx/error"); }
 inline NVGcolor success() { return color("pipensx/success"); }
 inline NVGcolor warning() { return color("pipensx/warning"); }
@@ -88,6 +102,9 @@ inline NVGcolor surface() { return color("pipensx/surface"); }
 inline NVGcolor overlay() { return color("pipensx/overlay"); }
 inline NVGcolor panel() { return color("pipensx/panel"); }
 inline NVGcolor track() { return color("pipensx/track"); }
+inline NVGcolor meterTrack() { return color("pipensx/meter_track"); }
+inline NVGcolor meterUsed() { return color("pipensx/meter_used"); }
+inline NVGcolor meterBorder() { return color("pipensx/meter_border"); }
 inline NVGcolor graphBg() { return color("pipensx/graph_bg"); }
 inline NVGcolor graphGrid() { return color("pipensx/graph_grid"); }
 

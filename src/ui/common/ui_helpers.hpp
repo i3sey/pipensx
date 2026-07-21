@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 #include <borealis.hpp>
 
@@ -84,9 +85,70 @@ inline void showApplicationModeRequired() {
     consoleExit(nullptr);
 }
 
+// brls::RecyclerFrame culls cells against getVisibleFrame(), whose origin is
+// the frame's offset inside its PARENT (ScrollingFrame::getVisibleFrame ->
+// getLocalFrame), while cell positions are relative to the content top
+// (RecyclerFrame::addCellAt accumulates y from 0). A recycler that is not its
+// parent's first child therefore blanks the top N px of its own viewport, and
+// because getNextCellFocus() can only focus a *rendered* cell, those rows drop
+// out of gamepad navigation entirely. Being the sole child of a bare box pins
+// that offset to 0. Keep the host padding/margin/border-free. Drop this the day
+// borealis fixes getVisibleFrame().
+inline brls::Box* recyclerHost(brls::RecyclerFrame* recycler) {
+    auto* host = new brls::Box(brls::Axis::COLUMN);
+    host->setGrow(1);
+    host->addView(recycler);
+    return host;
+}
+
+// The cells currently on screen — enough to repaint a row in place instead of
+// paying a full reloadData(), which recycles every cell, snaps the scroll to 0
+// and re-homes focus.
+//
+// RecyclerFrame keeps its cells in the content box it hands to
+// setContentView(), but that is not the frame's only child: ScrollingFrame's
+// constructor adds the scrolling indicator first. Which of the two ends up at
+// index 0 falls out of Box::addView positioning by *yoga* child count while
+// both views are detached — too subtle to depend on, so scan every child
+// instead of assuming a slot.
+template <typename Cell>
+std::vector<Cell*> visibleCells(brls::RecyclerFrame* recycler) {
+    std::vector<Cell*> cells;
+    if (!recycler)
+        return cells;
+    for (brls::View* child : recycler->getChildren()) {
+        auto* box = dynamic_cast<brls::Box*>(child);
+        if (!box)
+            continue;
+        for (brls::View* view : box->getChildren()) {
+            if (auto* cell = dynamic_cast<Cell*>(view))
+                cells.push_back(cell);
+        }
+    }
+    return cells;
+}
+
 inline std::string formatBytes(uint64_t bytes) {
     char buffer[32];
     fmt_bytes(buffer, sizeof(buffer), bytes);
+    return buffer;
+}
+
+// fmt_bytes always prints two decimals ("118.24 GB"), which is too wide for the
+// narrow sidebar column. Same units, no fraction.
+inline std::string formatBytesShort(uint64_t bytes) {
+    char buffer[32];
+    if (bytes >= 1024ULL * 1024 * 1024)
+        std::snprintf(buffer, sizeof(buffer), "%.0f GB",
+                      bytes / (1024.0 * 1024 * 1024));
+    else if (bytes >= 1024ULL * 1024)
+        std::snprintf(buffer, sizeof(buffer), "%.0f MB",
+                      bytes / (1024.0 * 1024));
+    else if (bytes >= 1024ULL)
+        std::snprintf(buffer, sizeof(buffer), "%.0f KB", bytes / 1024.0);
+    else
+        std::snprintf(buffer, sizeof(buffer), "%llu B",
+                      static_cast<unsigned long long>(bytes));
     return buffer;
 }
 

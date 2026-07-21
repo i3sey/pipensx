@@ -335,7 +335,10 @@ public:
         addView(header_);
         addView(status_);
         addView(batchControls_);
-        addView(recycler_);
+        // Visibility toggles on the host, not the recycler: the host is the
+        // grow(1) box, so hiding only the recycler would leave its slot behind.
+        recyclerHost_ = recyclerHost(recycler_);
+        addView(recyclerHost_);
         rebuildEntries();
 
         registerAction("Search", brls::BUTTON_X, [this](brls::View*) {
@@ -911,8 +914,8 @@ private:
             ensureEmptyState()->setVisibility(brls::Visibility::VISIBLE);
         else if (emptyState_)
             emptyState_->setVisibility(brls::Visibility::GONE);
-        recycler_->setVisibility(empty ? brls::Visibility::GONE
-                                       : brls::Visibility::VISIBLE);
+        recyclerHost_->setVisibility(empty ? brls::Visibility::GONE
+                                           : brls::Visibility::VISIBLE);
         if (focusInCatalog)
             restoreFocus(focusHash, focusShelf);
 
@@ -1375,6 +1378,7 @@ private:
     AppSettings* settings_;
     std::function<void()> openDownloads_;
     brls::RecyclerFrame* recycler_;
+    brls::Box* recyclerHost_ = nullptr;
     CatalogDataSource* dataSource_;
     brls::Box* header_ = nullptr;
     SearchIconButton* searchField_ = nullptr;
