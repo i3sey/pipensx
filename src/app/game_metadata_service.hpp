@@ -145,6 +145,7 @@ private:
     mutable size_t imageCacheBytes_ = 0;
     mutable uint64_t imageAccess_ = 0;
     mutable std::atomic<bool> imageNetworkPaused_{false};
+    mutable std::atomic<bool> stoppingRequested_{false};
     mutable bool stoppingImages_ = false;
     std::unordered_map<std::string, GameMetadata> byHash_;
     MetadataManifest manifest_;

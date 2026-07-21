@@ -1,4 +1,5 @@
 #include "update_service.hpp"
+#include "update_transaction.h"
 
 #include <curl/curl.h>
 #include <borealis/extern/nlohmann/json.hpp>
@@ -15,6 +16,10 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+#ifdef __SWITCH__
+#include <switch.h>
+#endif
 
 extern "C" {
 #include "core/sha256.h"
@@ -91,13 +96,21 @@ int enlargeSocketBuffer(void*, curl_socket_t socket, curlsocktype purpose) {
     return CURL_SOCKOPT_OK;
 }
 
+struct TransferProgress {
+    const UpdateService::ProgressCallback* callback;
+    const std::atomic<bool>* stopping;
+};
+
 int reportTransferProgress(void* opaque, curl_off_t downloadTotal,
                            curl_off_t downloadNow, curl_off_t, curl_off_t) {
-    const auto* progress =
-        static_cast<const UpdateService::ProgressCallback*>(opaque);
-    if (progress && *progress && downloadTotal > 0)
-        (*progress)(static_cast<uint64_t>(downloadNow),
-                    static_cast<uint64_t>(downloadTotal));
+    const auto* progress = static_cast<const TransferProgress*>(opaque);
+    if (progress && progress->stopping &&
+        progress->stopping->load(std::memory_order_relaxed))
+        return 1;
+    if (progress && progress->callback && *progress->callback &&
+        downloadTotal > 0)
+        (*progress->callback)(static_cast<uint64_t>(downloadNow),
+                              static_cast<uint64_t>(downloadTotal));
     return 0;
 }
 
@@ -131,7 +144,8 @@ bool configureCurl(CURL* curl, const std::string& url, TransferKind kind,
 }
 
 bool fetchText(const std::string& url, size_t limit, std::string& body,
-               std::string& error) {
+               std::string& error,
+               const std::atomic<bool>* stopping = nullptr) {
     body.clear();
     CURL* curl = curl_easy_init();
     if (!configureCurl(curl, url, TransferKind::Metadata, error))
@@ -143,6 +157,10 @@ bool fetchText(const std::string& url, size_t limit, std::string& body,
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeString);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buffer);
+    TransferProgress progress{nullptr, stopping};
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, reportTransferProgress);
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &progress);
     CURLcode result = curl_easy_perform(curl);
     long status = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
@@ -163,7 +181,8 @@ bool fetchText(const std::string& url, size_t limit, std::string& body,
 
 bool fetchFile(const std::string& url, const std::string& path, size_t limit,
                std::string& error,
-               const UpdateService::ProgressCallback* progress = nullptr) {
+               const UpdateService::ProgressCallback* callback = nullptr,
+               const std::atomic<bool>* stopping = nullptr) {
     FileWriter writer;
     writer.output.open(path, std::ios::binary | std::ios::trunc);
     writer.limit = limit;
@@ -178,13 +197,10 @@ bool fetchFile(const std::string& url, const std::string& path, size_t limit,
     }
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeFile);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &writer);
-    if (progress) {
-        curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
-        curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION,
-                         reportTransferProgress);
-        curl_easy_setopt(curl, CURLOPT_XFERINFODATA,
-                         const_cast<UpdateService::ProgressCallback*>(progress));
-    }
+    TransferProgress progress{callback, stopping};
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, reportTransferProgress);
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &progress);
     CURLcode result = curl_easy_perform(curl);
     long status = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
@@ -225,8 +241,15 @@ bool retryableFetchError(const std::string& error) {
 }
 
 template <typename Fetch>
-bool fetchWithRetry(Fetch fetch, std::string& error) {
+bool fetchWithRetry(Fetch fetch, std::string& error,
+                    const std::atomic<bool>& stopping,
+                    std::mutex& stopMutex,
+                    std::condition_variable& stopReady) {
     for (int attempt = 1; attempt <= kFetchAttempts; ++attempt) {
+        if (stopping.load(std::memory_order_relaxed)) {
+            error = "Update cancelled.";
+            return false;
+        }
         error.clear();
         if (fetch())
             return true;
@@ -236,7 +259,14 @@ bool fetchWithRetry(Fetch fetch, std::string& error) {
                 error += " (after " + std::to_string(attempt) + " attempts).";
             return false;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(500 * attempt));
+        std::unique_lock<std::mutex> lock(stopMutex);
+        if (stopReady.wait_for(lock, std::chrono::milliseconds(500 * attempt),
+                               [&stopping] {
+                                   return stopping.load(std::memory_order_relaxed);
+                               })) {
+            error = "Update cancelled.";
+            return false;
+        }
     }
     return false;
 }
@@ -349,23 +379,44 @@ bool copyFileContents(const std::string& source, const std::string& destination,
 
 UpdateService::UpdateService(std::string targetPath,
                              MetadataFetcher metadataFetcher,
-                             AssetFetcher assetFetcher)
+                             AssetFetcher assetFetcher,
+                             std::string helperSourcePath)
     : targetPath_(std::move(targetPath)),
+      helperPath_([this] {
+          const size_t slash = targetPath_.find_last_of('/');
+          return targetPath_.substr(0, slash == std::string::npos ? 0 : slash + 1) +
+                 "pipensx-updater.nro";
+      }()),
+      helperSourcePath_(std::move(helperSourcePath)),
       metadataFetcher_(std::move(metadataFetcher)),
       assetFetcher_(std::move(assetFetcher)) {
     if (!metadataFetcher_)
-        metadataFetcher_ = fetchText;
+        metadataFetcher_ = [this](const std::string& url, size_t limit,
+                                  std::string& body, std::string& error) {
+            return fetchText(url, limit, body, error, &stopping_);
+        };
     if (!assetFetcher_)
         assetFetcher_ = [this](const std::string& url, const std::string& path,
                                size_t limit, std::string& error) {
-            return fetchFile(url, path, limit, error, &progress_);
+            return fetchFile(url, path, limit, error, &progress_, &stopping_);
         };
 }
 
 UpdateService::~UpdateService() {
+    shutdown();
+}
+
+void UpdateService::cancel() {
+    stopping_.store(true, std::memory_order_relaxed);
+    stopReady_.notify_all();
+}
+
+void UpdateService::shutdown() {
+    cancel();
     for (std::thread& worker : workers_)
         if (worker.joinable())
             worker.join();
+    workers_.clear();
 }
 
 bool UpdateService::isNewerVersion(const std::string& candidate,
@@ -422,7 +473,7 @@ UpdateCheckResult UpdateService::check() const {
     if (!fetchWithRetry([&] {
             return metadataFetcher_(kLatestReleaseUrl, kMetadataLimit, body,
                                     result.error);
-        }, result.error))
+        }, result.error, stopping_, stopMutex_, stopReady_))
         return result;
     if (!parseRelease(body, result.release, result.error))
         return result;
@@ -442,7 +493,7 @@ bool UpdateService::install(const ReleaseInfo& release, std::string& error) cons
     if (!fetchWithRetry([&] {
             return metadataFetcher_(release.checksumUrl, kChecksumLimit,
                                     checksumText, error);
-        }, error))
+        }, error, stopping_, stopMutex_, stopReady_))
         return false;
     std::string expectedChecksum;
     if (!parseChecksum(checksumText, expectedChecksum)) {
@@ -452,12 +503,13 @@ bool UpdateService::install(const ReleaseInfo& release, std::string& error) cons
     const std::string temporary = stagedPath();
     const std::string marker = temporary + ".sha256";
     const std::string helper = helperPath();
+    const std::string helperTemporary = helper + ".tmp";
     unlink(temporary.c_str());
     unlink(marker.c_str());
-    unlink(helper.c_str());
+    unlink(helperTemporary.c_str());
     if (!fetchWithRetry([&] {
             return assetFetcher_(release.nroUrl, temporary, kNroLimit, error);
-        }, error))
+        }, error, stopping_, stopMutex_, stopReady_))
         return false;
     std::string actualChecksum;
     if (!checksumFile(temporary, actualChecksum, error)) {
@@ -480,77 +532,42 @@ bool UpdateService::install(const ReleaseInfo& release, std::string& error) cons
     }
     markerFile.close();
     std::string helperError;
-    if (!copyFileContents(targetPath_, helper, helperError)) {
-        unlink(helper.c_str());
+    if (!copyFileContents(helperSourcePath_, helperTemporary, helperError)) {
+        unlink(helperTemporary.c_str());
         unlink(marker.c_str());
         unlink(temporary.c_str());
         error = "Unable to create update helper: " + helperError;
         return false;
     }
-    return true;
-}
-
-bool UpdateService::finalizeStaged(std::string& error) const {
-    const std::string temporary = stagedPath();
-    const std::string marker = temporary + ".sha256";
-    std::ifstream markerFile(marker, std::ios::binary);
-    std::ostringstream markerText;
-    markerText << markerFile.rdbuf();
-    std::string expectedChecksum;
-    if (!markerFile || !parseChecksum(markerText.str(), expectedChecksum)) {
-        error = "Staged update checksum is missing or invalid.";
+    std::string sourceHelperChecksum;
+    std::string copiedHelperChecksum;
+    if (!checksumFile(helperSourcePath_, sourceHelperChecksum, helperError) ||
+        !checksumFile(helperTemporary, copiedHelperChecksum, helperError) ||
+        sourceHelperChecksum != copiedHelperChecksum) {
+        if (helperError.empty())
+            helperError = "copied helper checksum does not match";
+        unlink(helperTemporary.c_str());
+        unlink(marker.c_str());
+        unlink(temporary.c_str());
+        error = "Unable to verify update helper: " + helperError;
         return false;
     }
-    std::string actualChecksum;
-    if (!checksumFile(temporary, actualChecksum, error))
-        return false;
-    if (actualChecksum != expectedChecksum) {
-        error = "Staged update checksum does not match.";
-        return false;
-    }
-
-    const std::string backup = targetPath_ + ".previous";
-    unlink(backup.c_str());
-    bool haveBackup = false;
-    if (access(targetPath_.c_str(), F_OK) == 0) {
-        if (rename(targetPath_.c_str(), backup.c_str()) == 0) {
-            haveBackup = true;
-        } else {
-            std::string backupError;
-            if (!copyFileContents(targetPath_, backup, backupError)) {
-                error = "Unable to back up current application: " +
-                        backupError;
-                return false;
-            }
-            haveBackup = true;
-        }
-    }
-
-    std::string copyError;
-    bool installed = copyFileContents(temporary, targetPath_, copyError);
-    if (installed) {
-        std::string installedChecksum;
-        installed = checksumFile(targetPath_, installedChecksum, copyError) &&
-                    installedChecksum == expectedChecksum;
-        if (!installed && copyError.empty())
-            copyError = "installed file checksum does not match";
-    }
-    if (!installed) {
-        unlink(targetPath_.c_str());
-        if (haveBackup) {
-            if (rename(backup.c_str(), targetPath_.c_str()) != 0) {
-                std::string ignored;
-                copyFileContents(backup, targetPath_, ignored);
-            }
-        }
-        error = "Unable to finalize staged update: " + copyError;
+    if (rename(helperTemporary.c_str(), helper.c_str()) != 0) {
+        helperError = std::strerror(errno);
+        unlink(helperTemporary.c_str());
+        unlink(marker.c_str());
+        unlink(temporary.c_str());
+        error = "Unable to publish update helper: " + helperError;
         return false;
     }
-
-    if (haveBackup)
-        unlink(backup.c_str());
-    unlink(marker.c_str());
-    unlink(temporary.c_str());
+#ifdef __SWITCH__
+    const Result commit = fsdevCommitDevice("sdmc");
+    if (R_FAILED(commit)) {
+        error = "Unable to commit staged update files.";
+        discardStaged();
+        return false;
+    }
+#endif
     return true;
 }
 
@@ -568,22 +585,40 @@ bool UpdateService::stagedReady() const {
            actualChecksum == expectedChecksum;
 }
 
+bool UpdateService::hasPendingConfirmation() const {
+    return access(backupPath().c_str(), F_OK) == 0 &&
+           access(stagedPath().c_str(), F_OK) != 0;
+}
+
+bool UpdateService::confirmInstalled(std::string& error) const {
+    const std::string staged = stagedPath();
+    const std::string marker = staged + ".sha256";
+    const std::string backup = backupPath();
+    update_paths_t paths{targetPath_.c_str(), staged.c_str(),
+                         marker.c_str(), backup.c_str()};
+    char transactionError[256] = {0};
+    if (!update_transaction_confirm(&paths, transactionError,
+                                    sizeof(transactionError))) {
+        error = transactionError;
+        return false;
+    }
+    unlink(helperPath_.c_str());
+#ifdef __SWITCH__
+    const Result commit = fsdevCommitDevice("sdmc");
+    if (R_FAILED(commit)) {
+        error = "Unable to commit update cleanup.";
+        return false;
+    }
+#endif
+    return true;
+}
+
 void UpdateService::discardStaged() const {
     const std::string temporary = stagedPath();
     unlink(temporary.c_str());
     unlink((temporary + ".sha256").c_str());
+    unlink((helperPath() + ".tmp").c_str());
     unlink(helperPath().c_str());
-}
-
-bool UpdateService::isStagedLaunch(
-        const std::vector<std::string>& arguments) const {
-    const std::string helper = helperPath();
-    for (const std::string& argument : arguments) {
-        if (argument == "--finish-update" ||
-            argument.find(helper) != std::string::npos)
-            return true;
-    }
-    return false;
 }
 
 void UpdateService::checkAsync(CheckCallback callback) {

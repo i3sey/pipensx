@@ -376,7 +376,8 @@ private:
                     return;
                 }
                 const std::string helper = updater_->helperPath();
-                const std::string arguments = helper + " --finish-update";
+                const std::string arguments =
+                    "\"" + helper + "\" --finish-update";
                 const Result result = envSetNextLoad(helper.c_str(),
                                                      arguments.c_str());
                 if (R_FAILED(result)) {

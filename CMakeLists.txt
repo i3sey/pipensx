@@ -109,6 +109,7 @@ set(CORE_SOURCES
     src/core/peer.c
     src/core/piece.c
     src/core/tracker.c
+    src/core/mse.c
     src/core/dht.c
     src/core/torrent.c
     src/platform/storage.c
@@ -116,6 +117,7 @@ set(CORE_SOURCES
 )
 
 set(APP_SERVICE_SOURCES
+    src/app/update_transaction.c
     src/app/app_settings.cpp
     src/app/update_service.cpp
     src/app/catalog_batch_installer.cpp
@@ -144,6 +146,20 @@ set(UI_SOURCES
 )
 
 if (NOT PIPENSX_GOLDEN)
+
+program_target(pipensx_updater
+    "src/update_helper.c;src/app/update_transaction.c;src/core/sha256.c")
+set_target_properties(pipensx_updater PROPERTIES
+    C_STANDARD 11
+)
+target_include_directories(pipensx_updater PRIVATE src)
+target_compile_definitions(pipensx_updater PRIVATE __SWITCH__)
+target_compile_options(pipensx_updater PRIVATE
+    -Wall
+    -Wextra
+    -ffunction-sections
+    -fdata-sections
+)
 
 set(APP_SOURCES
     ${CORE_SOURCES}
@@ -201,6 +217,14 @@ target_link_libraries(pipensx PRIVATE
 )
 
 file(MAKE_DIRECTORY ${ROMFS_DIR})
+add_custom_target(sync_update_helper ALL
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${ROMFS_DIR}"
+    COMMAND ${NX_ELF2NRO_EXE}
+        pipensx_updater.elf "${ROMFS_DIR}/pipensx-updater.nro"
+    DEPENDS pipensx_updater
+    BYPRODUCTS "${ROMFS_DIR}/pipensx-updater.nro"
+    VERBATIM
+)
 file(COPY
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/borealis/resources/img/sys
     DESTINATION ${ROMFS_DIR}/img
@@ -228,6 +252,7 @@ if (NOT EXISTS "${PIPENSX_CATALOG_SNAPSHOT_ABS}")
         "PIPENSX_CATALOG_SNAPSHOT does not exist: ${PIPENSX_CATALOG_SNAPSHOT_ABS}")
 endif ()
 set(PIPENSX_NRO_DEPENDS pipensx)
+list(APPEND PIPENSX_NRO_DEPENDS sync_update_helper)
 add_custom_target(sync_catalog_snapshot ALL
     COMMAND ${CMAKE_COMMAND} -E make_directory "${ROMFS_DIR}/catalog"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different

@@ -55,6 +55,7 @@ PEER_TEST_TARGET = tests/test_peer
 TORRENT_TEST_TARGET = tests/test_torrent
 SETTINGS_TEST_TARGET = tests/test_app_settings
 UPDATE_TEST_TARGET = tests/test_update_service
+UPDATE_TRANSACTION_TEST_TARGET = tests/test_update_transaction
 INSTALL_SPACE_TEST_TARGET = tests/test_install_space
 BATCH_INSTALL_TEST_TARGET = tests/test_batch_install
 RAM_BUDGET_TEST_TARGET = tests/test_stream_ram_budget
@@ -148,6 +149,7 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 		$(CATALOG_TEST_TARGET) \
 		$(TELEMETRY_TEST_TARGET) $(PEER_TEST_TARGET) \
 		$(TORRENT_TEST_TARGET) $(SETTINGS_TEST_TARGET) $(UPDATE_TEST_TARGET) \
+		$(UPDATE_TRANSACTION_TEST_TARGET) \
 		$(INSTALL_SPACE_TEST_TARGET) $(BATCH_INSTALL_TEST_TARGET) \
 		$(RAM_BUDGET_TEST_TARGET) $(REQUEST_GATE_TEST_TARGET) \
 		$(JOURNAL_TEST_TARGET) $(WEB_SEED_TEST_TARGET) \
@@ -161,6 +163,7 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 	./$(TORRENT_TEST_TARGET)
 	./$(SETTINGS_TEST_TARGET)
 	./$(UPDATE_TEST_TARGET)
+	./$(UPDATE_TRANSACTION_TEST_TARGET)
 	./$(INSTALL_SPACE_TEST_TARGET)
 	./$(BATCH_INSTALL_TEST_TARGET)
 	./$(RAM_BUDGET_TEST_TARGET)
@@ -173,8 +176,13 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 $(SETTINGS_TEST_TARGET): tests/test_app_settings.cpp src/app/app_settings.cpp
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
 
-$(UPDATE_TEST_TARGET): tests/test_update_service.cpp src/app/update_service.cpp src/core/sha256.c
+$(UPDATE_TEST_TARGET): tests/test_update_service.cpp src/app/update_service.cpp \
+		src/app/update_transaction.o src/core/sha256.c
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -Wl,--wrap=rename
+
+$(UPDATE_TRANSACTION_TEST_TARGET): tests/test_update_transaction.c \
+		src/app/update_transaction.c src/core/sha256.c
+	$(CC) $(CFLAGS) -Isrc -o $@ $^ -Wl,--wrap=rename
 
 $(INSTALL_SPACE_TEST_TARGET): tests/test_install_space.cpp \
 		src/app/install_space.cpp
@@ -235,8 +243,9 @@ clean:
 		$(CATALOG_TEST_TARGET) \
 		$(TELEMETRY_TEST_TARGET) $(PEER_TEST_TARGET) \
 		$(TORRENT_TEST_TARGET) $(SETTINGS_TEST_TARGET) $(UPDATE_TEST_TARGET) \
+		$(UPDATE_TRANSACTION_TEST_TARGET) \
 		$(INSTALL_SPACE_TEST_TARGET) $(BATCH_INSTALL_TEST_TARGET) \
 		$(RAM_BUDGET_TEST_TARGET) $(REQUEST_GATE_TEST_TARGET) \
-		$(JOURNAL_TEST_TARGET)
+		$(JOURNAL_TEST_TARGET) $(MSE_TEST_TARGET)
 
 .PHONY: all test clean
