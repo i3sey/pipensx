@@ -83,6 +83,7 @@ public:
         tabs->addNavTab("About", NavIconType::About, [] {
             return new AboutView();
         });
+        tabs->attachStorageFooter(manager);
         frame_ = new brls::AppletFrame(tabs);
         frame_->setTitle("pipensx");
     }

@@ -6,7 +6,9 @@
 //
 // Usage:
 //   golden_runner --fixtures <dir> --out <file.png> --theme light|dark
-//                 --screen catalog|shelf-scroll|shelf-header|detail|torrent-selection|downloads|downloads-back|installed|settings|about
+//                 --screen catalog|shelf-scroll|shelf-header|detail|torrent-selection|
+//                          torrent-selection-scroll|downloads|downloads-back|frame|
+//                          installed|settings|about
 //                 [--frames N] [--sandbox <dir>]
 //
 // Determinism notes:
@@ -17,7 +19,9 @@
 //   - GameMetadataService image networking is paused: remote artwork stays
 //     at placeholders;
 //   - the libnx shim (src/platform/pc/switch.h) reports an empty installed
-//     library and a fixed firmware version.
+//     library and a fixed firmware version;
+//   - SD capacity is pinned via setStorageSpaceOverride, so every storage
+//     meter renders the same numbers on any machine.
 
 #include <glad/glad.h>
 
@@ -37,6 +41,7 @@
 #include "app/catalog_service.hpp"
 #include "app/download_manager.hpp"
 #include "app/game_metadata_service.hpp"
+#include "app/install_space.hpp"
 #include "app/installed_title_service.hpp"
 #include "ui/catalog/catalog_view.hpp"
 #include "ui/common/ui_helpers.hpp"
@@ -233,6 +238,8 @@ int main(int argc, char** argv) {
     if (!brls::Application::init())
         return fail("borealis Application::init failed");
     pipensx::ui::theme::registerColors();
+    // Must run before the first Sidebar is inflated, exactly as in main_switch.
+    pipensx::ui::installSidebarStyle();
     brls::Application::createWindow("pipensx-golden");
     brls::Application::setGlobalQuit(false);
 
@@ -260,10 +267,20 @@ int main(int argc, char** argv) {
 
     DownloadManager manager("sdmc:/switch/pipensx");
 
+    // 512 GB card, 118.24 GB free — statvfs on the sandbox would otherwise
+    // report whatever the build machine happens to have.
+    pipensx::StorageSpaceSnapshot goldenStorage;
+    goldenStorage.totalBytes = 512000000000ULL;
+    goldenStorage.freeBytes = 126976000000ULL;
+    goldenStorage.available = true;
+    pipensx::setStorageSpaceOverride(&goldenStorage);
+
     brls::Activity* activity = nullptr;
     brls::View* focusAfterLayout = nullptr;
     MainFrame* downloadsBackFrame = nullptr;
     brls::View* downloadsBackSidebarFocus = nullptr;
+    int torrentSelectionRows = 0;
+    bool torrentSelectionScroll = false;
     if (screen == "catalog") {
         activity = new GoldenActivity(new CatalogView(
             &manager, &catalog, &metadata, &installed, &settings, [] {}));
@@ -329,21 +346,46 @@ int main(int argc, char** argv) {
         activity = new GameDetailActivity(
             entries.front(), "", &manager, &metadata, &installed, &settings,
             [](const std::string&, const std::string&) {}, [] {});
-    } else if (screen == "torrent-selection") {
+    } else if (screen == "torrent-selection" ||
+               screen == "torrent-selection-scroll") {
+        // More files than fit on screen: the recycler only recycles once the
+        // list is taller than its viewport, and a short list would hide the
+        // whole class of cull/navigation bugs this screen guards.
         pipensx::TorrentPreview preview;
         preview.name = "Mixed release";
-        preview.fileCount = 3;
-        preview.packageCount = 2;
-        preview.totalBytes = 1879048192ULL;
         preview.files = {
             {"game.nsp", 1073741824ULL, true, false, false},
             {"bonus/readme.txt", 1048576ULL, false, false, false},
             {"update.nsz", 805306368ULL, true, true, false},
+            {"dlc/dlc-01.nsp", 268435456ULL, true, false, false},
+            {"dlc/dlc-02.nsp", 201326592ULL, true, false, false},
+            {"dlc/dlc-03.nsz", 134217728ULL, true, true, false},
+            {"bonus/artbook.pdf", 52428800ULL, false, false, false},
+            {"bonus/soundtrack.zip", 314572800ULL, false, false, false},
+            {"bonus/wallpapers/1080p.zip", 20971520ULL, false, false, false},
+            {"bonus/wallpapers/4k.zip", 83886080ULL, false, false, false},
+            {"extras/cartridge.xci", 402653184ULL, false, false, true},
+            {"extras/notes.txt", 4096ULL, false, false, false},
+            {"patch/patch-01.nsp", 167772160ULL, true, false, false},
+            {"patch/patch-02.nsp", 100663296ULL, true, false, false},
         };
+        preview.fileCount = static_cast<uint32_t>(preview.files.size());
+        for (const auto& file : preview.files) {
+            preview.totalBytes += file.length;
+            if (file.package)
+                ++preview.packageCount;
+            if (file.cartridge)
+                ++preview.cartridgeCount;
+        }
+        torrentSelectionRows = static_cast<int>(preview.files.size());
+        torrentSelectionScroll = screen == "torrent-selection-scroll";
+        // PackagesOnly rather than the settings default, so the baseline shows
+        // all three row states: packages Install, everything else Skip, and
+        // a Download row appears as soon as anything is toggled.
         activity = new TorrentSelectionActivity(
             &manager, "sdmc:/switch/pipensx/_golden_selection.torrent",
             std::move(preview), pipensx::TransferMode::StreamInstall,
-            settings.get().streamSelection);
+            pipensx::StreamSelection::PackagesOnly);
     } else if (screen == "downloads") {
         activity = new GoldenActivity(
             new MainView(&manager, &metadata, &settings));
@@ -354,6 +396,28 @@ int main(int argc, char** argv) {
             "Downloads", NavIconType::Downloads,
             [downloadsView] { return downloadsView; });
         activity = new GoldenActivity(downloadsBackFrame);
+    } else if (screen == "frame") {
+        // Whole shell, same wiring as src/main_switch.cpp: covers the sidebar
+        // and the storage footer docked at its bottom.
+        auto* tabs = new MainFrame();
+        tabs->addNavTab("Catalog", NavIconType::Catalog, [&] {
+            return new CatalogView(&manager, &catalog, &metadata, &installed,
+                                   &settings, [] {});
+        });
+        tabs->addNavTab("Downloads", NavIconType::Downloads, [&] {
+            return new MainView(&manager, &metadata, &settings);
+        });
+        tabs->addNavTab("Installed", NavIconType::Installed, [&] {
+            return new InstalledView(&installed, &manager, &metadata);
+        });
+        tabs->addNavTab("Settings", NavIconType::Settings, [&] {
+            return new SettingsView(&settings, &manager, &catalog, &metadata,
+                                    &installed);
+        });
+        tabs->addNavTab("About", NavIconType::About,
+                        [] { return new AboutView(); });
+        tabs->attachStorageFooter(&manager);
+        activity = new GoldenActivity(tabs);
     } else if (screen == "installed") {
         activity = new GoldenActivity(
             new InstalledView(&installed, &manager, &metadata));
@@ -387,6 +451,123 @@ int main(int argc, char** argv) {
         return fail("downloads refresh stole focus from the sidebar");
     if (downloadsBackFrame) {
         std::printf("golden_runner: downloads-back focus preserved\n");
+        manager.shutdown();
+        std::fflush(nullptr);
+        _exit(0);
+    }
+
+    // RecyclerFrame culls off-screen cells and getNextCellFocus() can only
+    // focus a cell that is currently rendered, so a mis-aligned cull window
+    // silently drops rows out of gamepad navigation. Walk the whole list down
+    // and back up, one row per step, pumping frames in between so the
+    // recycling loop (which runs in draw) gets to react to each move.
+    if (torrentSelectionScroll) {
+        // Centered scrolling is animated, and the recycling loop only runs in
+        // draw(), so each move needs enough frames for the scroll to settle
+        // before the next one — otherwise the test measures the animation
+        // rather than the navigation.
+        auto pump = [&](int count) {
+            for (int i = 0; i < count; ++i)
+                brls::Application::mainLoop();
+        };
+        auto focusedRow = [](int& row) {
+            auto* cell = dynamic_cast<brls::RecyclerCell*>(
+                brls::Application::getCurrentFocus());
+            if (!cell)
+                return false;
+            row = cell->getIndexPath().row;
+            return true;
+        };
+        // Application::navigate() is private; this is its core, and the part
+        // that matters here — RecyclerContentBox::getNextFocus routes into
+        // RecyclerFrame::getNextCellFocus, which is what can only see rendered
+        // cells. Application::inputType defaults to GAMEPAD, so giving focus
+        // also drives ScrollingFrame's centered scrolling exactly as a real
+        // d-pad press would.
+        auto navigate = [](brls::FocusDirection direction) {
+            brls::View* current = brls::Application::getCurrentFocus();
+            if (!current || !current->hasParent())
+                return;
+            if (brls::View* next = current->getNextFocus(direction, current))
+                brls::Application::giveFocus(next);
+        };
+
+        int row = -1;
+        if (!focusedRow(row) || row != 0)
+            return fail("torrent-selection did not start focused on row 0");
+
+        for (int expected = 1; expected < torrentSelectionRows; ++expected) {
+            navigate(brls::FocusDirection::DOWN);
+            pump(30);
+            if (!focusedRow(row))
+                return fail("focus left the file list while scrolling down");
+            if (row != expected) {
+                std::fprintf(stderr,
+                             "golden_runner: DOWN skipped row %d (landed on "
+                             "%d)\n",
+                             expected, row);
+                return fail("file list skipped a row scrolling down");
+            }
+        }
+
+        for (int expected = torrentSelectionRows - 2; expected >= 0;
+             --expected) {
+            navigate(brls::FocusDirection::UP);
+            pump(30);
+            if (!focusedRow(row))
+                return fail("focus left the file list while scrolling up");
+            if (row != expected) {
+                std::fprintf(stderr,
+                             "golden_runner: UP skipped row %d (landed on "
+                             "%d)\n",
+                             expected, row);
+                return fail("file list skipped a row scrolling up");
+            }
+        }
+
+        // Toggling repaints the focused cell in place rather than reloading the
+        // recycler. Two things can silently break: the repaint finds no live
+        // cell and does nothing, or it reloads and throws the cursor back to
+        // row 0. Press A on a row in the middle of the list and check both the
+        // rendered text and the cursor.
+        for (int i = 0; i < 5; ++i) {
+            navigate(brls::FocusDirection::DOWN);
+            pump(30);
+        }
+        if (!focusedRow(row) || row != 5)
+            return fail("could not park the cursor on row 5 to toggle it");
+
+        auto* cell = static_cast<TorrentSelectionCell*>(
+            brls::Application::getCurrentFocus());
+        const std::string before = cell->renderedState();
+        bool pressed = false;
+        for (const auto& action : cell->getActions()) {
+            if (action->getType() != brls::ACTION_GAMEPAD ||
+                action->getButton() != brls::BUTTON_A)
+                continue;
+            action->getActionListener()(cell);
+            pressed = true;
+            break;
+        }
+        if (!pressed)
+            return fail("file row has no A action to press");
+        pump(5);
+
+        int afterRow = -1;
+        if (!focusedRow(afterRow) || afterRow != 5)
+            return fail("toggling a row moved the cursor");
+        if (brls::Application::getCurrentFocus() != cell)
+            return fail("toggling a row recycled the focused cell");
+        if (cell->renderedState() == before) {
+            std::fprintf(stderr, "golden_runner: row 5 still reads \"%s\"\n",
+                         before.c_str());
+            return fail("toggling a row did not repaint it");
+        }
+
+        std::printf("golden_runner: torrent-selection walked %d rows down and "
+                    "back up, and toggled row 5 in place (%s -> %s)\n",
+                    torrentSelectionRows, before.c_str(),
+                    cell->renderedState().c_str());
         manager.shutdown();
         std::fflush(nullptr);
         _exit(0);

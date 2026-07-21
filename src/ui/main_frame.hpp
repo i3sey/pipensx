@@ -12,12 +12,16 @@
 // untouched. We reach the private sidebar bits we need through the public
 // Sidebar::getItem() / Box::getChildren() surface.
 
+#include <chrono>
 #include <functional>
 #include <string>
 #include <vector>
 
 #include <borealis.hpp>
 
+#include "app/download_manager.hpp"
+#include "app/install_space.hpp"
+#include "ui/common/storage_meter.hpp"
 #include "ui/theme.hpp"
 
 namespace pipensx::ui {
@@ -194,9 +198,55 @@ public:
         for (brls::View* label : labels_)
             label->setVisibility(collapsed ? brls::Visibility::GONE
                                            : brls::Visibility::VISIBLE);
+        if (dock_) {
+            dock_->setWidth(collapsed ? kCollapsedWidth : expandedWidth_);
+            footer_->setCompact(collapsed);
+        }
+    }
+
+    // Free-space readout pinned to the bottom-left of the frame, over the
+    // sidebar area. Absolute + non-focusable so it never disturbs the sidebar's
+    // scroll or the focus-driven fold logic.
+    //
+    // The meter itself is *not* the absolute node: an absolute box with only
+    // left/bottom set forces Yoga to solve its top edge from a height that
+    // comes out of a Label measure func, which put the widget below the content
+    // area with nothing to clip it. The dock pins top+bottom instead, so its
+    // height is definite, justifyContent flex-end parks the meter on the floor
+    // whatever it measures, and clipsToBounds is the backstop.
+    void attachStorageFooter(DownloadManager* manager) {
+        manager_ = manager;
+        dock_ = new brls::Box(brls::Axis::COLUMN);
+        dock_->setFocusable(false);
+        dock_->setPositionType(brls::PositionType::ABSOLUTE);
+        dock_->setPositionTop(0);
+        dock_->setPositionBottom(0);
+        dock_->setPositionLeft(0);
+        dock_->setWidth(collapsed_ ? kCollapsedWidth : expandedWidth_);
+        dock_->setJustifyContent(brls::JustifyContent::FLEX_END);
+        dock_->setPadding(0, kFooterPad, kFooterPad, kFooterPad);
+        dock_->setClipsToBounds(true);
+
+        footer_ = new StorageMeter();
+        footer_->setCompact(collapsed_);
+        dock_->addView(footer_);
+        addView(dock_);
+        refreshStorage();
     }
 
 protected:
+    void draw(NVGcontext* vg, float x, float y, float width, float height,
+              brls::Style style, brls::FrameContext* ctx) override {
+        if (footer_) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now - lastQuery_ >= std::chrono::seconds(2)) {
+                lastQuery_ = now;
+                refreshStorage();
+            }
+        }
+        brls::Box::draw(vg, x, y, width, height, style, ctx);
+    }
+
     // Focus in the sidebar -> expanded menu; focus in a tab's content -> icon
     // rail. Both subtrees are direct children of this frame, so this fires on
     // every menu<->content crossing.
@@ -207,12 +257,29 @@ protected:
     }
 
 private:
+    void refreshStorage() {
+        if (!footer_ || !manager_)
+            return;
+        const pipensx::StorageSpaceSnapshot storage =
+            pipensx::queryStorageSpace(manager_->rootPath());
+        if (storage.available)
+            footer_->setStorage(storage.totalBytes, storage.freeBytes);
+        else
+            footer_->setUnavailable();
+    }
+
     // Wide enough for padding + the active-accent bar + the 28px icon.
     static constexpr float kCollapsedWidth = 88.0f;
+    static constexpr float kFooterPad = 16.0f;
 
     bool collapsed_ = false;
     float expandedWidth_ = 248.0f;
     std::vector<brls::View*> labels_;
+    brls::Box* dock_ = nullptr;
+    StorageMeter* footer_ = nullptr;
+    DownloadManager* manager_ = nullptr;
+    std::chrono::steady_clock::time_point lastQuery_ =
+        std::chrono::steady_clock::now() - std::chrono::seconds(10);
 };
 
 }  // namespace pipensx::ui

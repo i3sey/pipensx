@@ -60,4 +60,9 @@ InstallSpaceCheck assessInstallSpace(
 
 StorageSpaceSnapshot queryStorageSpace(const std::string& path);
 
+// Test seam: makes queryStorageSpace return a fixed snapshot instead of hitting
+// nsGetStorageSize/statvfs, so the golden screenshot runner renders the storage
+// meters deterministically. Pass nullptr to restore the real query.
+void setStorageSpaceOverride(const StorageSpaceSnapshot* snapshot);
+
 } // namespace pipensx

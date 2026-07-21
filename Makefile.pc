@@ -140,6 +140,7 @@ $(CATALOG_TEST_TARGET): tests/test_catalog.cpp \
 		src/core/tracker.o src/core/net.o \
 		src/core/dht.o vendor/dht/dht.o \
 		src/core/bencode.o src/core/metainfo.o src/core/sha1.o src/core/sha256.o \
+		src/core/mse.o \
 		src/core/util.o
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
 

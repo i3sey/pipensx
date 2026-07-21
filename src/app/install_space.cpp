@@ -116,7 +116,19 @@ InstallSpaceCheck assessInstallSpace(
     return result;
 }
 
+namespace {
+bool gStorageOverrideSet = false;
+StorageSpaceSnapshot gStorageOverride;
+} // namespace
+
+void setStorageSpaceOverride(const StorageSpaceSnapshot* snapshot) {
+    gStorageOverrideSet = snapshot != nullptr;
+    gStorageOverride = snapshot ? *snapshot : StorageSpaceSnapshot{};
+}
+
 StorageSpaceSnapshot queryStorageSpace(const std::string& path) {
+    if (gStorageOverrideSet)
+        return gStorageOverride;
     StorageSpaceSnapshot result;
 #ifdef __SWITCH__
     (void)path;

@@ -62,7 +62,10 @@ public:
         recycler_->estimatedRowHeight = 64;
         recycler_->registerCell("File", [] { return new FileCell(); });
         recycler_->setDataSource(new FileDataSource(this));
-        frame_ = new brls::AppletFrame(recycler_);
+        // AppletFrame::setContentView inserts the content at index 1, below the
+        // header, so handing it the recycler directly would give the recycler a
+        // non-zero localY — see recyclerHost().
+        frame_ = new brls::AppletFrame(recyclerHost(recycler_));
         loadDirectory(currentPath_);
     }
 

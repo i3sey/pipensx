@@ -4,23 +4,23 @@ namespace pipensx::ui {
 
 brls::RecyclerCell* TorrentSelectionDataSource::cellForRow(
     brls::RecyclerFrame* recycler, brls::IndexPath index) {
-    if (entries_.empty()) {
-        return recycler->dequeueReusableCell("FileSelect");
-    }
     auto* cell = static_cast<TorrentSelectionCell*>(
         recycler->dequeueReusableCell("FileSelect"));
-    cell->setEntry(entries_[static_cast<size_t>(index.row)]);
+    if (entries_.empty())
+        cell->setEmpty();
+    else
+        cell->setEntry(entries_[static_cast<size_t>(index.row)]);
     return cell;
 }
 
-void TorrentSelectionDataSource::didSelectRowAt(brls::RecyclerFrame* recycler,
+void TorrentSelectionDataSource::didSelectRowAt(brls::RecyclerFrame*,
                                                 brls::IndexPath index) {
     if (entries_.empty() ||
         index.row < 0 || static_cast<size_t>(index.row) >= entries_.size())
         return;
     cycleRow(index.row);
     if (owner_) {
-        owner_->reloadPreservingFocus();
+        owner_->repaintRow(index.row);
         owner_->refreshSummary();
     }
 }
