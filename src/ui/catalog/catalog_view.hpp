@@ -628,6 +628,7 @@ private:
                     return left.publishedAt > right.publishedAt;
                 });
         }
+        applySortDirection(entries);
         for (const std::string& hash : managed)
             selectedHashes_.erase(hash);
         if (entries.empty()) {
@@ -783,6 +784,7 @@ private:
                     return left.publishedAt > right.publishedAt;
                 });
         }
+        applySortDirection(visible);
 
         std::vector<std::string> stateBadges;
         std::vector<std::string> gameNames;
@@ -1063,10 +1065,14 @@ private:
         clearSearch_->setVisibility(
             query_.empty() && !shelfDrilldown_ ? brls::Visibility::GONE
                                                : brls::Visibility::VISIBLE);
-        styleChip(sortLatest_, sort_ == SortMode::Latest);
-        styleChip(sortPopular_, sort_ == SortMode::Popular);
-        styleChip(sortAlpha_, sort_ == SortMode::Alphabetical);
-        styleChip(sortSize_, sort_ == SortMode::Largest);
+        styleSortChip(sortLatest_, SortMode::Latest,
+                      tr("pipensx/catalog/sort_latest"));
+        styleSortChip(sortPopular_, SortMode::Popular,
+                      tr("pipensx/catalog/sort_popular"));
+        styleSortChip(sortAlpha_, SortMode::Alphabetical,
+                      tr("pipensx/catalog/sort_alpha"));
+        styleSortChip(sortSize_, SortMode::Largest,
+                      tr("pipensx/catalog/sort_size"));
         const bool gamesOnly = settings_ &&
             settings_->get().catalogFilter == CatalogFilter::Games;
         styleChip(filterAll_, !gamesOnly);
@@ -1074,6 +1080,22 @@ private:
         styleChip(filterFavorites_, favoritesOnly_);
         styleChip(filterFits_, fitsOnly_);
         count_->setText(countText_);
+    }
+
+    // Only the active chip carries an arrow: the direction belongs to the sort
+    // in force, and four arrows would read as four independent switches. The
+    // arrow is ascending/descending of that chip's own key, so A-Z is up while
+    // newest/most-seeded/largest are down.
+    void styleSortChip(brls::Button* chip, SortMode mode,
+                       const std::string& label) {
+        const bool active = sort_ == mode;
+        if (active) {
+            const bool descending = naturalDescending(mode) != sortReversed_;
+            chip->setText(label + (descending ? " ↓" : " ↑"));
+        } else {
+            chip->setText(label);
+        }
+        styleChip(chip, active);
     }
 
     static void styleChip(brls::Button* chip, bool active) {
@@ -1104,10 +1126,20 @@ private:
         return chip;
     }
 
+    // Picking the sort that is already active flips its direction — a second
+    // press on Size is how you ask for smallest-first. Moving to another sort
+    // always starts from that sort's natural order rather than carrying the
+    // flip across, which would silently re-order a list the user did not ask
+    // to reverse.
     void setSort(SortMode mode) {
-        if (busy_ || sort_ == mode)
+        if (busy_)
             return;
-        sort_ = mode;
+        if (sort_ == mode) {
+            sortReversed_ = !sortReversed_;
+        } else {
+            sort_ = mode;
+            sortReversed_ = false;
+        }
         rebuildEntries();
     }
 
@@ -1117,7 +1149,23 @@ private:
         query_.clear();
         shelfDrilldown_ = true;
         sort_ = mode;
+        sortReversed_ = false;
         rebuildEntries();
+    }
+
+    // Which way each sort runs when it has not been flipped: newest, most
+    // seeded and largest first, but A before Z.
+    static bool naturalDescending(SortMode mode) {
+        return mode != SortMode::Alphabetical;
+    }
+
+    // Reverse the sorted vector instead of flipping four comparators, so the
+    // sort branches stay the single description of what each sort means. Ties
+    // reverse along with everything else, which is what "reversed" should look
+    // like anyway.
+    void applySortDirection(std::vector<CatalogEntry>& entries) const {
+        if (sortReversed_)
+            std::reverse(entries.begin(), entries.end());
     }
 
     // "See all" target (F5): land the focus on the first grid row. In
@@ -1624,6 +1672,10 @@ private:
     std::string query_;
     std::string countText_;
     SortMode sort_ = SortMode::Latest;
+    // Flips the active sort's natural direction (see naturalDescending).
+    // Session-only, like the view filters: a relaunch comes back to the
+    // catalog's own idea of order.
+    bool sortReversed_ = false;
     bool busy_ = false;
     // Mods fetches run outside busy_, so they need their own re-entry guard.
     bool modsInFlight_ = false;
