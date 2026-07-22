@@ -116,6 +116,15 @@ InstallSpaceCheck assessInstallSpace(
     return result;
 }
 
+bool catalogEntryFitsFreeSpace(uint64_t entrySizeBytes,
+                               const StorageSpaceSnapshot& storage) {
+    // Never hide what we cannot measure, and never hide an entry whose size the
+    // catalog does not carry.
+    if (!storage.available || entrySizeBytes == 0)
+        return true;
+    return entrySizeBytes <= storage.freeBytes;
+}
+
 namespace {
 bool gStorageOverrideSet = false;
 StorageSpaceSnapshot gStorageOverride;

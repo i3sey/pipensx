@@ -44,6 +44,7 @@
     "sort_size": "Размер",
     "filter_all": "Все",
     "filter_games": "Игры",
+    "filter_fits": "Влезет",
     "action_favorite": "Избранное",
     "favorites_full": "Избранное заполнено ({} игр).",
     "favorites_failed": "Не удалось сохранить избранное: {}",

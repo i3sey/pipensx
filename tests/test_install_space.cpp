@@ -86,6 +86,24 @@ int main() {
         assert(check.shortfallBytes == 100);
     }
 
+    // catalogEntryFitsFreeSpace: the catalog "fits on SD" filter must never
+    // hide an entry it cannot judge.
+    {
+        StorageSpaceSnapshot storage;
+        storage.available = true;
+        storage.freeBytes = 1000;
+
+        assert(catalogEntryFitsFreeSpace(999, storage));
+        assert(catalogEntryFitsFreeSpace(1000, storage)); // exactly full fits
+        assert(!catalogEntryFitsFreeSpace(1001, storage));
+        assert(catalogEntryFitsFreeSpace(0, storage));    // size unknown
+
+        StorageSpaceSnapshot unavailable;
+        unavailable.available = false;
+        unavailable.freeBytes = 0;
+        assert(catalogEntryFitsFreeSpace(1ULL << 40, unavailable));
+    }
+
     std::puts("install space tests passed");
     return 0;
 }

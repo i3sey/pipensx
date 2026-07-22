@@ -44,6 +44,7 @@
     "sort_size": "Size",
     "filter_all": "All",
     "filter_games": "Games",
+    "filter_fits": "Fits",
     "action_favorite": "Favourites",
     "favorites_full": "The wishlist is full ({} games).",
     "favorites_failed": "Could not save the wishlist: {}",

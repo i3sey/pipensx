@@ -58,6 +58,13 @@ InstallSpaceCheck assessInstallSpace(
     const InstallSpaceEstimate& estimate,
     const StorageSpaceSnapshot& storage);
 
+// Coarse guard for the catalog's "fits on SD" filter. The catalog size is the
+// download size, not the install size (NSZ packages expand on commit), hence
+// "fits" rather than a promise. True when the storage figure is unavailable or
+// the entry size is unknown (0) — the filter never hides what it cannot judge.
+bool catalogEntryFitsFreeSpace(uint64_t entrySizeBytes,
+                               const StorageSpaceSnapshot& storage);
+
 StorageSpaceSnapshot queryStorageSpace(const std::string& path);
 
 // Test seam: makes queryStorageSpace return a fixed snapshot instead of hitting

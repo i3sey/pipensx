@@ -17,6 +17,7 @@
 #include "app/download_manager.hpp"
 #include "app/favorites_service.hpp"
 #include "app/game_metadata_service.hpp"
+#include "app/install_space.hpp"
 #include "app/installed_title_service.hpp"
 #include "app/mod_index_service.hpp"
 #include "ui/catalog/batch_install.hpp"
@@ -268,14 +269,19 @@ public:
             filterAll_->setVisibility(brls::Visibility::GONE);
             filterGames_->setVisibility(brls::Visibility::GONE);
         }
-        // Session-only view filter, unlike the All/Games pair above: an
-        // independent toggle, and a relaunch always shows the full catalog.
+        // Session-only view filters, unlike the All/Games pair above: these are
+        // independent toggles, and a relaunch always shows the full catalog.
         filterFavorites_ = makeChip("★", [this] {
             favoritesOnly_ = !favoritesOnly_;
             rebuildEntries();
         });
+        filterFits_ = makeChip(tr("pipensx/catalog/filter_fits"), [this] {
+            fitsOnly_ = !fitsOnly_;
+            rebuildEntries();
+        });
         filterFavorites_->setMarginLeft(16);
         header_->addView(filterFavorites_);
+        header_->addView(filterFits_);
         if (!favorites_)
             filterFavorites_->setVisibility(brls::Visibility::GONE);
         auto* headerSpacer = new brls::Box();
@@ -715,11 +721,19 @@ private:
         const bool searching = !needle.empty();
         const bool matchedGamesOnly = !searching && settings_ &&
             settings_->get().catalogFilter == CatalogFilter::Games;
+        // One syscall per rebuild, and only when the filter is on. Rebuilds are
+        // event-driven (refreshLiveState only rebuilds when something changed),
+        // so this does not run on a timer.
+        StorageSpaceSnapshot storage;
+        if (fitsOnly_)
+            storage = queryStorageSpace(manager_->rootPath());
         const bool favoritesOnly = favoritesOnly_ && favorites_;
         for (const CatalogEntry& entry : catalog_->entries()) {
             if (entry.isHiddenByDefault())
                 continue;
             if (favoritesOnly && !favorites_->contains(entry.infoHash))
+                continue;
+            if (fitsOnly_ && !catalogEntryFitsFreeSpace(entry.size, storage))
                 continue;
             const GameMetadata* meta =
                 metadata_ ? metadata_->findByInfoHash(entry.infoHash) : nullptr;
@@ -1058,6 +1072,7 @@ private:
         styleChip(filterAll_, !gamesOnly);
         styleChip(filterGames_, gamesOnly);
         styleChip(filterFavorites_, favoritesOnly_);
+        styleChip(filterFits_, fitsOnly_);
         count_->setText(countText_);
     }
 
@@ -1567,6 +1582,7 @@ private:
     brls::Button* filterAll_ = nullptr;
     brls::Button* filterGames_ = nullptr;
     brls::Button* filterFavorites_ = nullptr;
+    brls::Button* filterFits_ = nullptr;
     brls::Label* count_ = nullptr;
     brls::Label* status_;
     brls::Box* batchControls_ = nullptr;
@@ -1594,9 +1610,10 @@ private:
     bool modsInFlight_ = false;
     bool batchMode_ = false;
     bool shelfDrilldown_ = false;
-    // Session-only view filter: deliberately not persisted, so a relaunch
+    // Session-only view filters: deliberately not persisted, so a relaunch
     // always comes back to the full catalog.
     bool favoritesOnly_ = false;
+    bool fitsOnly_ = false;
     brls::RepeatingTimer timer_;
     uint64_t observedSettingsGeneration_ = 0;
     uint64_t taskSignature_ = 0;
