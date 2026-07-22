@@ -176,6 +176,7 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 	./$(WEB_SEED_TEST_TARGET)
 	./$(MSE_TEST_TARGET)
 	python3 tests/test_telemetry_analyzer.py
+	python3 scripts/check_i18n.py
 
 $(SETTINGS_TEST_TARGET): tests/test_app_settings.cpp src/app/app_settings.cpp
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
