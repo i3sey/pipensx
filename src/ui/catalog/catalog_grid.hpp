@@ -65,6 +65,8 @@ struct GridCardInfo {
     bool selectionMode = false;
     bool selected = false;
     bool selectable = false;
+    // Title id matched a ModCD row: mods exist for this game.
+    bool hasMods = false;
 };
 
 class GameCard : public brls::Box {
@@ -119,6 +121,28 @@ public:
         markBox_->setVisibility(brls::Visibility::GONE);
         cover_->addView(markBox_);
 
+        // ModCD chip (top-right of the cover, opposite the selection chip so
+        // the two never collide). Solid accent plate with knocked-out ink, the
+        // same badge language as the row action icons.
+        modBox_ = new brls::Box();
+        modBox_->setPositionType(brls::PositionType::ABSOLUTE);
+        modBox_->setPositionTop(theme::kSpacingUnit);
+        modBox_->setPositionRight(theme::kSpacingUnit);
+        modBox_->setHeight(24);
+        modBox_->setPaddingLeft(6);
+        modBox_->setPaddingRight(6);
+        modBox_->setCornerRadius(theme::kRadiusSmall);
+        modBox_->setBackgroundColor(theme::accent());
+        modBox_->setAlignItems(brls::AlignItems::CENTER);
+        modBox_->setJustifyContent(brls::JustifyContent::CENTER);
+        mod_ = new brls::Label();
+        mod_->setFontSize(theme::kFontCaption);
+        mod_->setTextColor(theme::onAccent());
+        mod_->setText("MOD");
+        modBox_->addView(mod_);
+        modBox_->setVisibility(brls::Visibility::GONE);
+        cover_->addView(modBox_);
+
         addView(cover_);
 
         name_ = new brls::Label();
@@ -161,6 +185,8 @@ public:
                                            : theme::textTertiary());
         markBox_->setVisibility(info.selectionMode ? brls::Visibility::VISIBLE
                                                    : brls::Visibility::GONE);
+        modBox_->setVisibility(info.hasMods ? brls::Visibility::VISIBLE
+                                            : brls::Visibility::GONE);
         mark_->setText(!info.selectable ? "-" : info.selected ? "x" : " ");
         mark_->setTextColor(info.selectable ? theme::accent()
                                             : theme::textDisabled());
@@ -223,6 +249,8 @@ private:
     AsyncRgbaImage* image_;
     brls::Box* markBox_;
     brls::Label* mark_;
+    brls::Box* modBox_;
+    brls::Label* mod_;
     brls::Label* name_;
     brls::Label* sub_;
     std::string currentIconUrl_;
@@ -531,6 +559,9 @@ public:
         infoHash_ = info.infoHash;
         onActivate_ = std::move(onActivate);
         title_->setText(info.title);
+        // The hero has no cover corner to hang the ModCD plate on, so the
+        // kicker carries the marker instead.
+        kicker_->setText(info.hasMods ? "Featured  -  MOD" : "Featured");
         sub_->setText(info.sub);
         sub_->setTextColor(info.subIsBadge ? theme::accent()
                                            : theme::textTertiary());

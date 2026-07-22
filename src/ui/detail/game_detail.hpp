@@ -16,6 +16,7 @@
 #include "app/install_space.hpp"
 #include "app/installed_title_service.hpp"
 #include "app/magnet_resolver.hpp"
+#include "app/mod_index_service.hpp"
 #include "ui/catalog/catalog_helpers.hpp"
 #include "ui/common/async_image.hpp"
 #include "ui/common/storage_meter.hpp"
@@ -79,11 +80,12 @@ public:
     GameDetailActivity(CatalogEntry entry, std::string lastFailure,
                        DownloadManager* manager, GameMetadataService* metadata,
                        InstalledTitleService* installed, AppSettings* settings,
+                       ModIndexService* mods,
                        FailureCallback onFailure, ChangeCallback onChange,
                        CloseCallback onClose = nullptr)
         : entry_(std::move(entry)), lastFailure_(std::move(lastFailure)),
           manager_(manager), metadata_(metadata), installed_(installed),
-          settings_(settings),
+          settings_(settings), mods_(mods),
           onFailure_(std::move(onFailure)), onChange_(std::move(onChange)),
           onClose_(std::move(onClose)),
           alive_(std::make_shared<std::atomic<bool>>(true)),
@@ -301,7 +303,20 @@ private:
                    entry_.size ? formatBytes(entry_.size)
                                : std::string("Unknown"));
         addFactRow(table, "Title ID", titleId_);
+        addFactRow(table, "Mods", modsFact());
         right->addView(table);
+    }
+
+    // ModCD carries mods for this title id (in-memory lookup — the table is
+    // fetched with the catalogue, never from this page). Empty = no row.
+    std::string modsFact() const {
+        if (!mods_ || titleId_.empty() || !mods_->has(titleId_))
+            return std::string();
+        const uint32_t count = mods_->modCount(titleId_);
+        if (count == 0)
+            return "ModCD - available";
+        return "ModCD - " + std::to_string(count) +
+               (count == 1 ? " mod" : " mods");
     }
 
     void addFactRow(brls::Box* table, const std::string& name,
@@ -721,6 +736,7 @@ private:
     GameMetadataService* metadata_;
     InstalledTitleService* installed_;
     AppSettings* settings_;
+    ModIndexService* mods_ = nullptr;
     std::string titleId_;
     std::string operationMessage_;
     FailureCallback onFailure_;

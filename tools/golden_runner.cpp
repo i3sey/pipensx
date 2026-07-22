@@ -65,6 +65,7 @@ using pipensx::CatalogService;
 using pipensx::DownloadManager;
 using pipensx::GameMetadataService;
 using pipensx::InstalledTitleService;
+using pipensx::ModIndexService;
 using namespace pipensx::ui;
 
 namespace {
@@ -262,6 +263,14 @@ int main(int argc, char** argv) {
                      error.c_str());
     metadata.setImageNetworkPaused(true); // placeholders only, no network
 
+    // Fixture mod index: no network, the table lists the fixture title so the
+    // ModCD chip and fact row are covered by the golden screens.
+    ModIndexService mods("sdmc:/switch/pipensx",
+                         (fixtures / "modcd_table.md").string());
+    if (!mods.load(error))
+        std::fprintf(stderr, "golden_runner: mod index fixture: %s\n",
+                     error.c_str());
+
     InstalledTitleService installed("sdmc:/switch/pipensx");
     installed.refresh(error); // shim: succeeds with an empty library
 
@@ -283,7 +292,8 @@ int main(int argc, char** argv) {
     bool torrentSelectionScroll = false;
     if (screen == "catalog") {
         activity = new GoldenActivity(new CatalogView(
-            &manager, &catalog, &metadata, &installed, &settings, [] {}));
+            &manager, &catalog, &metadata, &installed, &settings, [] {},
+            &mods));
     } else if (screen == "shelf-scroll") {
         auto* content = new brls::Box(brls::Axis::COLUMN);
         content->setPadding(32, 32, 32, 32);
@@ -345,7 +355,7 @@ int main(int argc, char** argv) {
             return fail("detail screen needs a non-empty catalog fixture");
         activity = new GameDetailActivity(
             entries.front(), "", &manager, &metadata, &installed, &settings,
-            [](const std::string&, const std::string&) {}, [] {});
+            &mods, [](const std::string&, const std::string&) {}, [] {});
     } else if (screen == "torrent-selection" ||
                screen == "torrent-selection-scroll") {
         // More files than fit on screen: the recycler only recycles once the
@@ -402,7 +412,7 @@ int main(int argc, char** argv) {
         auto* tabs = new MainFrame();
         tabs->addNavTab("Catalog", NavIconType::Catalog, [&] {
             return new CatalogView(&manager, &catalog, &metadata, &installed,
-                                   &settings, [] {});
+                                   &settings, [] {}, &mods);
         });
         tabs->addNavTab("Downloads", NavIconType::Downloads, [&] {
             return new MainView(&manager, &metadata, &settings);
@@ -412,7 +422,7 @@ int main(int argc, char** argv) {
         });
         tabs->addNavTab("Settings", NavIconType::Settings, [&] {
             return new SettingsView(&settings, &manager, &catalog, &metadata,
-                                    &installed);
+                                    &installed, nullptr, &mods);
         });
         tabs->addNavTab("About", NavIconType::About,
                         [] { return new AboutView(); });
@@ -423,7 +433,8 @@ int main(int argc, char** argv) {
             new InstalledView(&installed, &manager, &metadata));
     } else if (screen == "settings") {
         activity = new GoldenActivity(new SettingsView(
-            &settings, &manager, &catalog, &metadata, &installed));
+            &settings, &manager, &catalog, &metadata, &installed, nullptr,
+            &mods));
     } else if (screen == "about") {
         activity = new GoldenActivity(new AboutView());
     } else {

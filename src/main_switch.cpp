@@ -25,6 +25,7 @@ extern "C" {
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "app/mod_index_service.hpp"
 #include "ui/catalog/catalog_view.hpp"
 #include "ui/common/ui_helpers.hpp"
 #include "ui/main_frame.hpp"
@@ -39,6 +40,7 @@ using pipensx::CatalogService;
 using pipensx::DownloadManager;
 using pipensx::GameMetadataService;
 using pipensx::InstalledTitleService;
+using pipensx::ModIndexService;
 using pipensx::SwitchPerformanceController;
 using pipensx::UpdateCheckResult;
 using pipensx::UpdateService;
@@ -55,16 +57,18 @@ public:
     MainActivity(DownloadManager* manager, CatalogService* catalog,
                  GameMetadataService* metadata,
                  InstalledTitleService* installed, AppSettings* settings,
-                 UpdateService* updater)
+                 UpdateService* updater, ModIndexService* mods)
         : manager_(manager), catalog_(catalog), metadata_(metadata),
-          installed_(installed), settings_(settings), updater_(updater) {
+          installed_(installed), settings_(settings), updater_(updater),
+          mods_(mods) {
         auto* tabs = new pipensx::ui::MainFrame();
         using pipensx::ui::NavIconType;
         tabs->addNavTab("Catalog", NavIconType::Catalog,
                         [manager, catalog, metadata, installed,
-                         settings, tabs] {
+                         settings, mods, tabs] {
             return new CatalogView(manager, catalog, metadata, installed,
-                                   settings, [tabs] { tabs->focusTab(1); });
+                                   settings, [tabs] { tabs->focusTab(1); },
+                                   mods);
         });
         tabs->addNavTab("Downloads", NavIconType::Downloads,
                         [manager, metadata, settings] {
@@ -76,9 +80,9 @@ public:
         });
         tabs->addNavTab("Settings", NavIconType::Settings,
                         [settings, manager, catalog, metadata,
-                         installed, updater] {
+                         installed, updater, mods] {
             return new SettingsView(settings, manager, catalog, metadata,
-                                    installed, updater);
+                                    installed, updater, mods);
         });
         tabs->addNavTab("About", NavIconType::About, [] {
             return new AboutView();
@@ -108,6 +112,7 @@ private:
     InstalledTitleService* installed_;
     AppSettings* settings_;
     UpdateService* updater_;
+    ModIndexService* mods_;
     brls::AppletFrame* frame_;
 };
 
@@ -236,6 +241,12 @@ int main(int argc, char** argv) {
             log_msg("[metadata] initial load failed: %s\n",
                     metadataError.c_str());
 
+        startupStage("ModIndexService construction");
+        ModIndexService mods("sdmc:/switch/pipensx");
+        std::string modsError;
+        if (!mods.load(modsError))
+            log_msg("[mods] initial load skipped: %s\n", modsError.c_str());
+
         startupStage("InstalledTitleService refresh");
         InstalledTitleService installed("sdmc:/switch/pipensx");
         std::string installedError;
@@ -254,7 +265,8 @@ int main(int argc, char** argv) {
 
         startupStage("MainActivity construction");
         auto* activity = new MainActivity(&manager, &catalog, &metadata,
-                                          &installed, &settings, &updater);
+                                          &installed, &settings, &updater,
+                                          &mods);
 
         startupStage("push MainActivity");
         brls::Application::pushActivity(activity);
