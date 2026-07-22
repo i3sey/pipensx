@@ -1445,6 +1445,33 @@ bool DownloadManager::verify(const std::string& taskId) {
     return true;
 }
 
+bool DownloadManager::moveToFront(const std::string& taskId,
+                                  std::string& error) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto target = std::find_if(tasks_.begin(), tasks_.end(),
+                               [&taskId](const DownloadTask& task) {
+        return task.id == taskId;
+    });
+    if (target == tasks_.end()) {
+        error = "Download task not found.";
+        return false;
+    }
+    if (target->status != DownloadStatus::Queued) {
+        error = "Only a queued download can be moved.";
+        return false;
+    }
+    auto firstQueued = std::find_if(tasks_.begin(), tasks_.end(),
+                                    [](const DownloadTask& task) {
+        return task.status == DownloadStatus::Queued;
+    });
+    if (firstQueued == target)
+        return true; // already next up
+    // Rotate rather than swap: everything between the two keeps its relative
+    // order, so promoting one download does not shuffle the rest of the queue.
+    std::rotate(firstQueued, target, target + 1);
+    return saveLocked(error);
+}
+
 bool DownloadManager::remove(const std::string& taskId, bool deleteData,
                              std::string& error) {
     std::lock_guard<std::mutex> lock(mutex_);

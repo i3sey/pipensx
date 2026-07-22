@@ -177,6 +177,8 @@
     "section_paused": "Paused",
     "section_completed": "Completed",
     "section_errors": "Errors",
+    "move_to_top": "Start next",
+    "move_to_top_failed": "Could not reorder the queue: {}",
     "remove_question": "Remove this download from pipensx?",
     "remove_keep": "Keep downloaded data",
     "remove_delete": "Delete downloaded data",

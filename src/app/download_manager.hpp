@@ -122,6 +122,12 @@ public:
     bool remove(const std::string& taskId, bool deleteData,
                 std::string& error);
 
+    // Make a queued task the next one to start. The worker always claims the
+    // first Queued entry in list order, so "next up" is a position, not a
+    // priority field — this moves the task ahead of every other queued one and
+    // leaves the order behind it alone.
+    bool moveToFront(const std::string& taskId, std::string& error);
+
     // Where stream installs commit content (PERF_PLAN 7.4). Applied to
     // coordinators started after the call; a transfer in flight keeps the
     // target it began with. Default is SD.

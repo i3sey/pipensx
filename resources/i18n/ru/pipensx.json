@@ -177,6 +177,8 @@
     "section_paused": "Пауза",
     "section_completed": "Готово",
     "section_errors": "Ошибки",
+    "move_to_top": "Загрузить следующей",
+    "move_to_top_failed": "Не удалось изменить очередь: {}",
     "remove_question": "Удалить эту загрузку из pipensx?",
     "remove_keep": "Оставить файлы",
     "remove_delete": "Удалить файлы",

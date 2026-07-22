@@ -134,6 +134,27 @@ public:
                 manager_->verify(taskId);
                 startRefreshing(true);
             });
+        // Queue reordering: only offered when it would change something —
+        // the task must be queued and not already the next one up.
+        if (task.status == DownloadStatus::Queued) {
+            std::string firstQueued;
+            for (const auto& candidate : manager_->snapshot()) {
+                if (candidate.status == DownloadStatus::Queued) {
+                    firstQueued = candidate.id;
+                    break;
+                }
+            }
+            if (firstQueued != taskId)
+                add(tr("pipensx/downloads/move_to_top"), [this, taskId] {
+                    std::string error;
+                    if (!manager_->moveToFront(taskId, error) &&
+                        !error.empty()) {
+                        brls::Application::notify(
+                            tr("pipensx/downloads/move_to_top_failed", error));
+                    }
+                    startRefreshing(true);
+                });
+        }
         add(tr("pipensx/common/remove"),
                 [this, taskId] { openRemoveDialog(taskId); });
 

@@ -86,6 +86,7 @@ int main() {
     std::string invalidRoot = std::string(root) + "/invalid-app";
     std::string legacyRoot = std::string(root) + "/legacy-app";
     std::string activeRoot = std::string(root) + "/active-app";
+    std::string queueRoot = std::string(root) + "/queue-app";
     std::string selectiveSource = makeSelectiveTorrent(root);
 
     std::string taskId;
@@ -221,10 +222,67 @@ int main() {
         assert(manager.snapshot().empty());
     }
 
+    // moveToFront: the worker claims the first Queued entry in list order, so
+    // promoting a task is a reorder of tasks_, not a priority flag.
+    {
+        DownloadManager manager(queueRoot, false);
+        std::string first, second, third;
+        assert(manager.importTorrent(source, TransferMode::DownloadOnly, first,
+                                     error));
+        assert(manager.importTorrent(downloadOnlySource,
+                                     TransferMode::DownloadOnly, second,
+                                     error));
+        assert(manager.importTorrent(readmeSource, TransferMode::DownloadOnly,
+                                     third, error));
+        auto tasks = manager.snapshot();
+        assert(tasks.size() == 3);
+        assert(tasks[0].id == first && tasks[2].id == third);
+
+        // Last to front, and the two it jumped keep their relative order.
+        assert(manager.moveToFront(third, error));
+        tasks = manager.snapshot();
+        assert(tasks[0].id == third);
+        assert(tasks[1].id == first);
+        assert(tasks[2].id == second);
+
+        // Already next up: a no-op that still reports success.
+        assert(manager.moveToFront(third, error));
+        assert(manager.snapshot()[0].id == third);
+
+        // A paused task is not in the queue, so it cannot be promoted, and the
+        // order is left untouched.
+        assert(manager.pause(third));
+        error.clear();
+        assert(!manager.moveToFront(third, error));
+        assert(!error.empty());
+        tasks = manager.snapshot();
+        assert(tasks[0].id == third && tasks[1].id == first);
+
+        // Promotion lands ahead of the first *queued* task, not at index 0:
+        // the paused entry at the head keeps its place.
+        assert(manager.moveToFront(second, error));
+        tasks = manager.snapshot();
+        assert(tasks[0].id == third); // paused, untouched
+        assert(tasks[1].id == second);
+        assert(tasks[2].id == first);
+
+        error.clear();
+        assert(!manager.moveToFront("nope", error));
+        assert(!error.empty());
+
+        assert(manager.remove(first, true, error));
+        assert(manager.remove(second, true, error));
+        assert(manager.remove(third, true, error));
+    }
+
     unlink(source.c_str());
     unlink(downloadOnlySource.c_str());
     unlink(readmeSource.c_str());
     unlink(selectiveSource.c_str());
+    rmdir((queueRoot + "/torrents").c_str());
+    rmdir((queueRoot + "/downloads").c_str());
+    unlink((queueRoot + "/queue.bencode").c_str());
+    rmdir(queueRoot.c_str());
     rmdir((activeRoot + "/torrents").c_str());
     rmdir((activeRoot + "/downloads").c_str());
     unlink((activeRoot + "/queue.bencode").c_str());
