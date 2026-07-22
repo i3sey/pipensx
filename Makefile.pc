@@ -54,6 +54,7 @@ TELEMETRY_TEST_TARGET = tests/test_telemetry
 PEER_TEST_TARGET = tests/test_peer
 TORRENT_TEST_TARGET = tests/test_torrent
 SETTINGS_TEST_TARGET = tests/test_app_settings
+FAVORITES_TEST_TARGET = tests/test_favorites
 UPDATE_TEST_TARGET = tests/test_update_service
 UPDATE_TRANSACTION_TEST_TARGET = tests/test_update_transaction
 INSTALL_SPACE_TEST_TARGET = tests/test_install_space
@@ -157,6 +158,7 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 		$(INSTALL_SPACE_TEST_TARGET) $(BATCH_INSTALL_TEST_TARGET) \
 		$(RAM_BUDGET_TEST_TARGET) $(REQUEST_GATE_TEST_TARGET) \
 		$(JOURNAL_TEST_TARGET) $(WEB_SEED_TEST_TARGET) \
+		$(FAVORITES_TEST_TARGET) \
 		$(MSE_TEST_TARGET)
 	./$(TEST_TARGET)
 	./$(MANAGER_TEST_TARGET)
@@ -174,6 +176,7 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 	./$(REQUEST_GATE_TEST_TARGET)
 	./$(JOURNAL_TEST_TARGET)
 	./$(WEB_SEED_TEST_TARGET)
+	./$(FAVORITES_TEST_TARGET)
 	./$(MSE_TEST_TARGET)
 	python3 tests/test_telemetry_analyzer.py
 	python3 scripts/check_i18n.py
@@ -191,6 +194,10 @@ $(UPDATE_TRANSACTION_TEST_TARGET): tests/test_update_transaction.c \
 
 $(INSTALL_SPACE_TEST_TARGET): tests/test_install_space.cpp \
 		src/app/install_space.cpp
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
+
+$(FAVORITES_TEST_TARGET): tests/test_favorites.cpp \
+		src/app/favorites_service.cpp
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
 
 $(BATCH_INSTALL_TEST_TARGET): tests/test_batch_install.cpp \
@@ -251,6 +258,7 @@ clean:
 		$(UPDATE_TRANSACTION_TEST_TARGET) \
 		$(INSTALL_SPACE_TEST_TARGET) $(BATCH_INSTALL_TEST_TARGET) \
 		$(RAM_BUDGET_TEST_TARGET) $(REQUEST_GATE_TEST_TARGET) \
-		$(JOURNAL_TEST_TARGET) $(MSE_TEST_TARGET)
+		$(JOURNAL_TEST_TARGET) $(FAVORITES_TEST_TARGET) \
+		$(MSE_TEST_TARGET)
 
 .PHONY: all test clean

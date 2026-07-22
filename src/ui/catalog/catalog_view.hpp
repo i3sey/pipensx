@@ -15,6 +15,7 @@
 #include "app/catalog_refresh.hpp"
 #include "app/catalog_service.hpp"
 #include "app/download_manager.hpp"
+#include "app/favorites_service.hpp"
 #include "app/game_metadata_service.hpp"
 #include "app/installed_title_service.hpp"
 #include "app/mod_index_service.hpp"
@@ -51,6 +52,7 @@ public:
                     std::vector<uint8_t> selected,
                     std::vector<uint8_t> selectable,
                     std::vector<uint8_t> hasMods,
+                    std::vector<uint8_t> favorite,
                     GameMetadataService* metadata,
                     bool selectionMode) {
         entries_ = std::move(entries);
@@ -61,6 +63,7 @@ public:
         selected_ = std::move(selected);
         selectable_ = std::move(selectable);
         hasMods_ = std::move(hasMods);
+        favorite_ = std::move(favorite);
         metadata_ = metadata;
         selectionMode_ = selectionMode;
     }
@@ -136,6 +139,7 @@ private:
         info.selected = row < selected_.size() && selected_[row] != 0;
         info.selectable = row < selectable_.size() && selectable_[row] != 0;
         info.hasMods = row < hasMods_.size() && hasMods_[row] != 0;
+        info.favorite = row < favorite_.size() && favorite_[row] != 0;
         return info;
     }
 
@@ -160,6 +164,7 @@ private:
     std::vector<uint8_t> selected_;
     std::vector<uint8_t> selectable_;
     std::vector<uint8_t> hasMods_;
+    std::vector<uint8_t> favorite_;
     std::vector<CatalogShelf> shelves_;
     int heroIndex_ = -1;
     std::string heroImage_;
@@ -203,10 +208,12 @@ public:
                 GameMetadataService* metadata,
                 InstalledTitleService* installed, AppSettings* settings,
                 std::function<void()> openDownloads,
-                ModIndexService* mods = nullptr)
+                ModIndexService* mods = nullptr,
+                FavoritesService* favorites = nullptr)
         : brls::Box(brls::Axis::COLUMN), manager_(manager), catalog_(catalog),
           metadata_(metadata), installed_(installed), settings_(settings),
-          mods_(mods), openDownloads_(std::move(openDownloads)),
+          mods_(mods), favorites_(favorites),
+          openDownloads_(std::move(openDownloads)),
           alive_(std::make_shared<std::atomic<bool>>(true)),
           cancelled_(std::make_shared<std::atomic<bool>>(false)) {
         recycler_ = new brls::RecyclerFrame();
@@ -261,6 +268,16 @@ public:
             filterAll_->setVisibility(brls::Visibility::GONE);
             filterGames_->setVisibility(brls::Visibility::GONE);
         }
+        // Session-only view filter, unlike the All/Games pair above: an
+        // independent toggle, and a relaunch always shows the full catalog.
+        filterFavorites_ = makeChip("★", [this] {
+            favoritesOnly_ = !favoritesOnly_;
+            rebuildEntries();
+        });
+        filterFavorites_->setMarginLeft(16);
+        header_->addView(filterFavorites_);
+        if (!favorites_)
+            filterFavorites_->setVisibility(brls::Visibility::GONE);
         auto* headerSpacer = new brls::Box();
         headerSpacer->setGrow(1.0f);
         headerSpacer->setShrink(1.0f);
@@ -378,6 +395,13 @@ public:
             toggleBatchMode();
             return true;
         });
+        if (favorites_) {
+            registerAction(tr("pipensx/catalog/action_favorite"),
+                           brls::BUTTON_RT, [this](brls::View*) {
+                toggleFocusedFavorite();
+                return true;
+            });
+        }
         observedSettingsGeneration_ = settings_ ? settings_->generation() : 0;
         taskSignature_ = taskSignature();
         timer_.setCallback([this] { refreshLiveState(); });
@@ -465,7 +489,8 @@ public:
         brls::Application::pushActivity(new GameDetailActivity(
             std::move(entry), std::move(lastFailure), manager_, metadata_,
             installed_, settings_, mods_,
-            std::move(onFailure), std::move(onChange), std::move(onClose)));
+            std::move(onFailure), std::move(onChange), std::move(onClose),
+            favorites_));
     }
 
 private:
@@ -485,6 +510,53 @@ private:
         emptyState_ = new EmptyStateView();
         addView(emptyState_);
         return emptyState_;
+    }
+
+    // ZR on the grid: star/unstar whatever card the focus is on. Resolved the
+    // same way rebuildEntries() resolves focus — the hero banner is a card too.
+    void toggleFocusedFavorite() {
+        if (!favorites_ || busy_)
+            return;
+        brls::View* focus = brls::Application::getCurrentFocus();
+        std::string hash;
+        if (auto* card = dynamic_cast<GameCard*>(focus))
+            hash = card->infoHash();
+        else if (auto* hero = dynamic_cast<HeroCard*>(focus))
+            hash = hero->infoHash();
+        if (hash.empty())
+            return;
+
+        const CatalogEntry* entry = nullptr;
+        for (const CatalogEntry& candidate : dataSource_->entries()) {
+            if (candidate.infoHash == hash) {
+                entry = &candidate;
+                break;
+            }
+        }
+        if (!entry)
+            return;
+        const GameMetadata* meta =
+            metadata_ ? metadata_->findByInfoHash(entry->infoHash) : nullptr;
+        CatalogPresentation presentation =
+            resolveCatalogPresentation(*entry, meta, catalogTextPreference());
+
+        // The service reports the cap through `error` too, but the cap is the
+        // one case worth phrasing for the user rather than surfacing raw.
+        if (!favorites_->contains(hash) &&
+            favorites_->items().size() >= FavoritesService::kMaxFavorites) {
+            brls::Application::notify(
+                tr("pipensx/catalog/favorites_full",
+                   FavoritesService::kMaxFavorites));
+            return;
+        }
+        std::string error;
+        favorites_->toggle(hash, presentation.title, error);
+        if (!error.empty()) {
+            brls::Application::notify(
+                tr("pipensx/catalog/favorites_failed", error));
+            return;
+        }
+        rebuildEntries();
     }
 
     void toggleBatchMode() {
@@ -643,8 +715,11 @@ private:
         const bool searching = !needle.empty();
         const bool matchedGamesOnly = !searching && settings_ &&
             settings_->get().catalogFilter == CatalogFilter::Games;
+        const bool favoritesOnly = favoritesOnly_ && favorites_;
         for (const CatalogEntry& entry : catalog_->entries()) {
             if (entry.isHiddenByDefault())
+                continue;
+            if (favoritesOnly && !favorites_->contains(entry.infoHash))
                 continue;
             const GameMetadata* meta =
                 metadata_ ? metadata_->findByInfoHash(entry.infoHash) : nullptr;
@@ -702,6 +777,7 @@ private:
         std::vector<uint8_t> selected;
         std::vector<uint8_t> selectable;
         std::vector<uint8_t> hasMods;
+        std::vector<uint8_t> favorite;
         std::vector<const GameMetadata*> metas;
         stateBadges.reserve(visible.size());
         gameNames.reserve(visible.size());
@@ -710,6 +786,7 @@ private:
         selected.reserve(visible.size());
         selectable.reserve(visible.size());
         hasMods.reserve(visible.size());
+        favorite.reserve(visible.size());
         metas.reserve(visible.size());
         for (const CatalogEntry& entry : visible) {
             std::string hash = lowerAscii(entry.infoHash);
@@ -738,6 +815,8 @@ private:
             // catalogue, never from a card path.
             hasMods.push_back(mods_ && meta && mods_->has(meta->titleId) ? 1
                                                                         : 0);
+            favorite.push_back(favorites_ && favorites_->contains(hash) ? 1
+                                                                       : 0);
             metas.push_back(meta);
         }
 
@@ -905,7 +984,8 @@ private:
                                 std::move(gameNames), std::move(iconUrls),
                                 std::move(iconPreserveAspect),
                                 std::move(selected), std::move(selectable),
-                                std::move(hasMods), metadata_, batchMode_);
+                                std::move(hasMods), std::move(favorite),
+                                metadata_, batchMode_);
         dataSource_->setShelves(std::move(shelves), heroIndex,
                                 std::move(heroImage));
         dataSource_->setMessage(query_.empty()
@@ -977,6 +1057,7 @@ private:
             settings_->get().catalogFilter == CatalogFilter::Games;
         styleChip(filterAll_, !gamesOnly);
         styleChip(filterGames_, gamesOnly);
+        styleChip(filterFavorites_, favoritesOnly_);
         count_->setText(countText_);
     }
 
@@ -1471,6 +1552,7 @@ private:
     InstalledTitleService* installed_;
     AppSettings* settings_;
     ModIndexService* mods_;
+    FavoritesService* favorites_;
     std::function<void()> openDownloads_;
     brls::RecyclerFrame* recycler_;
     brls::Box* recyclerHost_ = nullptr;
@@ -1484,6 +1566,7 @@ private:
     brls::Button* sortSize_ = nullptr;
     brls::Button* filterAll_ = nullptr;
     brls::Button* filterGames_ = nullptr;
+    brls::Button* filterFavorites_ = nullptr;
     brls::Label* count_ = nullptr;
     brls::Label* status_;
     brls::Box* batchControls_ = nullptr;
@@ -1511,6 +1594,9 @@ private:
     bool modsInFlight_ = false;
     bool batchMode_ = false;
     bool shelfDrilldown_ = false;
+    // Session-only view filter: deliberately not persisted, so a relaunch
+    // always comes back to the full catalog.
+    bool favoritesOnly_ = false;
     brls::RepeatingTimer timer_;
     uint64_t observedSettingsGeneration_ = 0;
     uint64_t taskSignature_ = 0;

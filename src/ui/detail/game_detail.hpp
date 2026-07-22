@@ -13,6 +13,7 @@
 #include "ui/i18n.hpp"
 #include "app/catalog_service.hpp"
 #include "app/download_manager.hpp"
+#include "app/favorites_service.hpp"
 #include "app/game_metadata_service.hpp"
 #include "app/install_space.hpp"
 #include "app/installed_title_service.hpp"
@@ -83,10 +84,11 @@ public:
                        InstalledTitleService* installed, AppSettings* settings,
                        ModIndexService* mods,
                        FailureCallback onFailure, ChangeCallback onChange,
-                       CloseCallback onClose = nullptr)
+                       CloseCallback onClose = nullptr,
+                       FavoritesService* favorites = nullptr)
         : entry_(std::move(entry)), lastFailure_(std::move(lastFailure)),
           manager_(manager), metadata_(metadata), installed_(installed),
-          settings_(settings), mods_(mods),
+          settings_(settings), mods_(mods), favorites_(favorites),
           onFailure_(std::move(onFailure)), onChange_(std::move(onChange)),
           onClose_(std::move(onClose)),
           alive_(std::make_shared<std::atomic<bool>>(true)),
@@ -131,6 +133,16 @@ public:
                 cancelled_->store(true);
             return true;
         });
+        // Same hotkey as the catalog grid, and the hint is what names the
+        // square ★ button above — this page has room for it where the catalog
+        // does not.
+        if (favorites_) {
+            registerAction(tr("pipensx/catalog/action_favorite"),
+                           brls::BUTTON_RT, [this](brls::View*) {
+                onFavorite();
+                return true;
+            });
+        }
         refreshButtons();
         timer_.setCallback([this] {
             refreshButtons();
@@ -182,17 +194,41 @@ private:
         });
         left->addView(primary_);
 
+        // Options and the wishlist toggle share one row: a fourth full-width
+        // button does not fit the column budget, and a square star needs no
+        // translation (Russian "В избранном" would not fit it anyway).
+        auto* actions = new brls::Box(brls::Axis::ROW);
+        actions->setMarginTop(12);
+
         secondary_ = new brls::Button();
         secondary_->setStyle(&brls::BUTTONSTYLE_DEFAULT);
         secondary_->setFontSize(theme::kFontSmall);
+        secondary_->setGrow(1);
         secondary_->setHeight(56);
-        secondary_->setMarginTop(12);
         secondary_->setText(tr("pipensx/common/options"));
         secondary_->registerClickAction([this](brls::View*) {
             onSecondary();
             return true;
         });
-        left->addView(secondary_);
+        actions->addView(secondary_);
+
+        // Wishlist toggle: the same star the catalog grid puts on the card,
+        // reachable without hunting for the ZR hotkey.
+        if (favorites_) {
+            favorite_ = new brls::Button();
+            favorite_->setStyle(&brls::BUTTONSTYLE_DEFAULT);
+            favorite_->setFontSize(theme::kFontHeading);
+            favorite_->setWidth(56);
+            favorite_->setHeight(56);
+            favorite_->setMarginLeft(8);
+            favorite_->setText("★");
+            favorite_->registerClickAction([this](brls::View*) {
+                onFavorite();
+                return true;
+            });
+            actions->addView(favorite_);
+        }
+        left->addView(actions);
 
         // How much of the card this release eats. Seeded from the catalog size
         // and refined to the exact figure once the torrent metadata resolves.
@@ -468,7 +504,47 @@ private:
 
     // Reflect live task state on the buttons. Skipped while resolving so the
     // inline progress text isn't clobbered.
+    // Star/unstar this game. The cap is reported in the user's words; any
+    // other failure is a write error worth showing verbatim.
+    void onFavorite() {
+        if (!favorites_)
+            return;
+        const bool starred = favorites_->contains(entry_.infoHash);
+        if (!starred &&
+            favorites_->items().size() >= FavoritesService::kMaxFavorites) {
+            brls::Application::notify(
+                tr("pipensx/catalog/favorites_full",
+                   FavoritesService::kMaxFavorites));
+            return;
+        }
+        std::string error;
+        favorites_->toggle(entry_.infoHash, presentation_.title, error);
+        if (!error.empty()) {
+            brls::Application::notify(
+                tr("pipensx/catalog/favorites_failed", error));
+            return;
+        }
+        refreshFavoriteButton();
+        // The catalog rebuilds its grid (and the star badge) on this.
+        if (onChange_)
+            onChange_();
+    }
+
+    // The glyph never changes \u2014 an outline star (U+2606) is not exercised by
+    // any golden baseline, so there is no evidence the console shared font
+    // carries it. State rides on the fill instead, the same way the catalog
+    // header's \u2605 filter chip reads as on/off.
+    void refreshFavoriteButton() {
+        if (!favorite_)
+            return;
+        const bool starred = favorites_ &&
+                             favorites_->contains(entry_.infoHash);
+        favorite_->setStyle(starred ? &brls::BUTTONSTYLE_PRIMARY
+                                    : &brls::BUTTONSTYLE_DEFAULT);
+    }
+
     void refreshButtons() {
+        refreshFavoriteButton();
         if (busy_)
             return;
         const DownloadTask* task = currentTask();
@@ -744,6 +820,7 @@ private:
     InstalledTitleService* installed_;
     AppSettings* settings_;
     ModIndexService* mods_ = nullptr;
+    FavoritesService* favorites_ = nullptr;
     std::string titleId_;
     std::string operationMessage_;
     FailureCallback onFailure_;
@@ -754,6 +831,7 @@ private:
     brls::AppletFrame* frame_ = nullptr;
     InstallButton* primary_ = nullptr;
     brls::Button* secondary_ = nullptr;
+    brls::Button* favorite_ = nullptr;
     StorageMeter* sizeMeter_ = nullptr;
     brls::Label* statusLabel_ = nullptr;
     uint64_t installBytes_ = 0;

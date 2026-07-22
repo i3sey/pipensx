@@ -41,6 +41,7 @@ using pipensx::CatalogService;
 using pipensx::DownloadManager;
 using pipensx::GameMetadataService;
 using pipensx::InstalledTitleService;
+using pipensx::FavoritesService;
 using pipensx::ModIndexService;
 using pipensx::SwitchPerformanceController;
 using pipensx::UpdateCheckResult;
@@ -70,18 +71,19 @@ public:
     MainActivity(DownloadManager* manager, CatalogService* catalog,
                  GameMetadataService* metadata,
                  InstalledTitleService* installed, AppSettings* settings,
-                 UpdateService* updater, ModIndexService* mods)
+                 UpdateService* updater, ModIndexService* mods,
+                 FavoritesService* favorites)
         : manager_(manager), catalog_(catalog), metadata_(metadata),
           installed_(installed), settings_(settings), updater_(updater),
-          mods_(mods) {
+          mods_(mods), favorites_(favorites) {
         auto* tabs = new pipensx::ui::MainFrame();
         using pipensx::ui::NavIconType;
         tabs->addNavTab(tr("pipensx/nav/catalog"), NavIconType::Catalog,
                         [manager, catalog, metadata, installed,
-                         settings, mods, tabs] {
+                         settings, mods, favorites, tabs] {
             return new CatalogView(manager, catalog, metadata, installed,
                                    settings, [tabs] { tabs->focusTab(1); },
-                                   mods);
+                                   mods, favorites);
         });
         tabs->addNavTab(tr("pipensx/nav/downloads"), NavIconType::Downloads,
                         [manager, metadata, settings] {
@@ -126,6 +128,7 @@ private:
     AppSettings* settings_;
     UpdateService* updater_;
     ModIndexService* mods_;
+    FavoritesService* favorites_;
     brls::AppletFrame* frame_;
 };
 
@@ -264,6 +267,13 @@ int main(int argc, char** argv) {
         if (!mods.load(modsError))
             log_msg("[mods] initial load skipped: %s\n", modsError.c_str());
 
+        startupStage("FavoritesService construction");
+        FavoritesService favorites("sdmc:/switch/pipensx");
+        std::string favoritesError;
+        if (!favorites.load(favoritesError))
+            log_msg("[favorites] initial load skipped: %s\n",
+                    favoritesError.c_str());
+
         startupStage("InstalledTitleService refresh");
         InstalledTitleService installed("sdmc:/switch/pipensx");
         std::string installedError;
@@ -283,7 +293,7 @@ int main(int argc, char** argv) {
         startupStage("MainActivity construction");
         auto* activity = new MainActivity(&manager, &catalog, &metadata,
                                           &installed, &settings, &updater,
-                                          &mods);
+                                          &mods, &favorites);
 
         startupStage("push MainActivity");
         brls::Application::pushActivity(activity);

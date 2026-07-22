@@ -68,6 +68,8 @@ struct GridCardInfo {
     bool selectable = false;
     // Title id matched a ModCD row: mods exist for this game.
     bool hasMods = false;
+    // On the wishlist (ZR on the grid, or the game page button).
+    bool favorite = false;
 };
 
 class GameCard : public brls::Box {
@@ -144,6 +146,27 @@ public:
         modBox_->setVisibility(brls::Visibility::GONE);
         cover_->addView(modBox_);
 
+        // Wishlist star, bottom-left of the cover: the selection chip owns the
+        // top-left corner and the ModCD chip the top-right, so this is the one
+        // corner where it can never collide with either.
+        favoriteBox_ = new brls::Box();
+        favoriteBox_->setPositionType(brls::PositionType::ABSOLUTE);
+        favoriteBox_->setPositionBottom(theme::kSpacingUnit);
+        favoriteBox_->setPositionLeft(theme::kSpacingUnit);
+        favoriteBox_->setWidth(28);
+        favoriteBox_->setHeight(28);
+        favoriteBox_->setCornerRadius(theme::kRadiusSmall);
+        favoriteBox_->setBackgroundColor(theme::overlay());
+        favoriteBox_->setAlignItems(brls::AlignItems::CENTER);
+        favoriteBox_->setJustifyContent(brls::JustifyContent::CENTER);
+        favorite_ = new brls::Label();
+        favorite_->setFontSize(theme::kFontCaption);
+        favorite_->setTextColor(theme::accent());
+        favorite_->setText("★");
+        favoriteBox_->addView(favorite_);
+        favoriteBox_->setVisibility(brls::Visibility::GONE);
+        cover_->addView(favoriteBox_);
+
         addView(cover_);
 
         name_ = new brls::Label();
@@ -188,6 +211,8 @@ public:
                                                    : brls::Visibility::GONE);
         modBox_->setVisibility(info.hasMods ? brls::Visibility::VISIBLE
                                             : brls::Visibility::GONE);
+        favoriteBox_->setVisibility(info.favorite ? brls::Visibility::VISIBLE
+                                                  : brls::Visibility::GONE);
         mark_->setText(!info.selectable ? "-" : info.selected ? "x" : " ");
         mark_->setTextColor(info.selectable ? theme::accent()
                                             : theme::textDisabled());
@@ -252,6 +277,8 @@ private:
     brls::Label* mark_;
     brls::Box* modBox_;
     brls::Label* mod_;
+    brls::Box* favoriteBox_;
+    brls::Label* favorite_;
     brls::Label* name_;
     brls::Label* sub_;
     std::string currentIconUrl_;

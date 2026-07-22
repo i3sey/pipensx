@@ -119,6 +119,7 @@ set(CORE_SOURCES
 set(APP_SERVICE_SOURCES
     src/app/update_transaction.c
     src/app/app_settings.cpp
+    src/app/favorites_service.cpp
     src/app/update_service.cpp
     src/app/catalog_batch_installer.cpp
     src/app/catalog_refresh.cpp

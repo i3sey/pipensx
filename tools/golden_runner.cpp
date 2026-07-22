@@ -280,6 +280,17 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "golden_runner: mod index fixture: %s\n",
                      error.c_str());
 
+    // Seeded with one favourite so the baselines cover the starred card badge,
+    // the active ★ chip and the game page's "in wishlist" button, not just the
+    // empty state.
+    pipensx::FavoritesService favorites("sdmc:/switch/pipensx");
+    std::string favoritesError;
+    favorites.load(favoritesError);
+    if (!catalog.entries().empty()) {
+        favorites.toggle(catalog.entries().front().infoHash,
+                         catalog.entries().front().title, favoritesError);
+    }
+
     InstalledTitleService installed("sdmc:/switch/pipensx");
     installed.refresh(error); // shim: succeeds with an empty library
 
@@ -302,7 +313,7 @@ int main(int argc, char** argv) {
     if (screen == "catalog") {
         activity = new GoldenActivity(new CatalogView(
             &manager, &catalog, &metadata, &installed, &settings, [] {},
-            &mods));
+            &mods, &favorites));
     } else if (screen == "shelf-scroll") {
         auto* content = new brls::Box(brls::Axis::COLUMN);
         content->setPadding(32, 32, 32, 32);
@@ -364,7 +375,8 @@ int main(int argc, char** argv) {
             return fail("detail screen needs a non-empty catalog fixture");
         activity = new GameDetailActivity(
             entries.front(), "", &manager, &metadata, &installed, &settings,
-            &mods, [](const std::string&, const std::string&) {}, [] {});
+            &mods, [](const std::string&, const std::string&) {}, [] {},
+            nullptr, &favorites);
     } else if (screen == "torrent-selection" ||
                screen == "torrent-selection-scroll") {
         // More files than fit on screen: the recycler only recycles once the
@@ -421,7 +433,7 @@ int main(int argc, char** argv) {
         auto* tabs = new MainFrame();
         tabs->addNavTab(tr("pipensx/nav/catalog"), NavIconType::Catalog, [&] {
             return new CatalogView(&manager, &catalog, &metadata, &installed,
-                                   &settings, [] {}, &mods);
+                                   &settings, [] {}, &mods, &favorites);
         });
         tabs->addNavTab(tr("pipensx/nav/downloads"), NavIconType::Downloads,
                         [&] {
