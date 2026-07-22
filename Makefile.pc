@@ -133,9 +133,13 @@ src/app/game_metadata_service.o: src/app/game_metadata_service.cpp
 src/app/catalog_presentation.o: src/app/catalog_presentation.cpp
 	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
 
+src/app/mod_index_service.o: src/app/mod_index_service.cpp
+	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
+
 $(CATALOG_TEST_TARGET): tests/test_catalog.cpp \
 		src/app/catalog_service.o src/app/catalog_refresh.o \
 		src/app/catalog_presentation.o \
+		src/app/mod_index_service.o \
 		src/app/game_metadata_service.o \
 		src/app/magnet_resolver.o \
 		src/core/tracker.o src/core/net.o \

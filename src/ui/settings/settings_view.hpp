@@ -16,6 +16,7 @@
 #include "app/download_manager.hpp"
 #include "app/game_metadata_service.hpp"
 #include "app/installed_title_service.hpp"
+#include "app/mod_index_service.hpp"
 #include "app/update_service.hpp"
 #include "ui/common/ui_helpers.hpp"
 #include "ui/theme.hpp"
@@ -26,10 +27,11 @@ class SettingsView : public brls::Box {
 public:
     SettingsView(AppSettings* settings, DownloadManager* manager,
                  CatalogService* catalog, GameMetadataService* metadata,
-                 InstalledTitleService* installed, UpdateService* updater = nullptr)
+                 InstalledTitleService* installed, UpdateService* updater = nullptr,
+                 ModIndexService* mods = nullptr)
         : brls::Box(brls::Axis::COLUMN), settings_(settings), manager_(manager),
           catalog_(catalog), metadata_(metadata), installed_(installed), updater_(updater),
-          alive_(std::make_shared<std::atomic<bool>>(true)) {
+          mods_(mods), alive_(std::make_shared<std::atomic<bool>>(true)) {
         auto* content = new brls::Box(brls::Axis::COLUMN);
         content->setPadding(24, 34, 24, 34);
 
@@ -64,6 +66,10 @@ public:
             [this] { refreshCatalogNow(); }));
         content->addView(actionCell("Update artwork", "pipensx-metadata",
             [this] { refreshMetadataNow(); }));
+        if (mods_) {
+            content->addView(actionCell("Update mods", "ModCD",
+                [this] { refreshModsNow(); }));
+        }
 
         addSection(content, "Downloads");
         streamSelection_ = new brls::SelectorCell();
@@ -221,15 +227,18 @@ private:
         return false;
     }
 
-    void recordRefreshTime(bool catalog, bool metadata) {
+    void recordRefreshTime(bool catalog, bool metadata, bool mods = false) {
         AppSettingsData values = settings_->get();
         const uint64_t now = now_ms();
         if (catalog)
             values.lastCatalogRefreshMs = now;
         if (metadata)
             values.lastMetadataRefreshMs = now;
+        if (mods)
+            values.lastModsRefreshMs = now;
         persist(values, catalog ? "catalog_refresh_time"
-                                : "metadata_refresh_time");
+                                : mods ? "mods_refresh_time"
+                                       : "metadata_refresh_time");
     }
 
     void refreshCatalogNow() {
@@ -291,6 +300,37 @@ private:
                 brls::Application::notify(
                     "Artwork metadata updated: " +
                     std::to_string(metadata_->size()) + " matches.");
+            });
+        });
+    }
+
+    void refreshModsNow() {
+        if (refreshInFlight_ || !mods_)
+            return;
+        refreshInFlight_ = true;
+        brls::Application::notify("Updating mods index from ModCD...");
+        auto alive = alive_;
+        ModIndexService* mods = mods_;
+        brls::async([this, alive, mods] {
+            ModIndexSnapshot snapshot;
+            std::string error;
+            bool ok = mods->fetchLatest(snapshot, error);
+            brls::sync([this, alive, ok, snapshot = std::move(snapshot),
+                        error = std::move(error)]() mutable {
+                if (!alive->load())
+                    return;
+                refreshInFlight_ = false;
+                if (!ok) {
+                    diagnostic_error("mods", "settings_refresh", "error=%s",
+                                     error.c_str());
+                    brls::Application::notify(error);
+                    return;
+                }
+                mods_->adopt(std::move(snapshot));
+                recordRefreshTime(false, false, true);
+                brls::Application::notify(
+                    "Mods index updated: " +
+                    std::to_string(mods_->size()) + " titles.");
             });
         });
     }
@@ -493,6 +533,7 @@ private:
     GameMetadataService* metadata_;
     InstalledTitleService* installed_;
     UpdateService* updater_;
+    ModIndexService* mods_;
     std::shared_ptr<std::atomic<bool>> alive_;
     brls::SelectorCell* catalogFilter_ = nullptr;
     brls::BooleanCell* refreshCatalog_ = nullptr;
