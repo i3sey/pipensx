@@ -18,6 +18,7 @@
 #include "ui/common/action_icon.hpp"
 #include "ui/common/storage_meter.hpp"
 #include "ui/common/ui_helpers.hpp"
+#include "ui/i18n.hpp"
 #include "ui/theme.hpp"
 
 namespace pipensx::ui {
@@ -59,13 +60,13 @@ public:
         title_->setTextColor(item.selected ? theme::textPrimary()
                                            : theme::textDisabled());
         title_->setText(item.entry.title);
-        std::string meta = formatBytes(item.space.requiredBytes) + " selected";
+        std::string meta = tr("pipensx/batch/item_selected",
+                              formatBytes(item.space.requiredBytes));
         if (item.space.packageFiles)
-            meta += "   " + std::to_string(item.space.packageFiles) +
-                    " package(s)";
+            meta += tr("pipensx/batch/item_packages", item.space.packageFiles);
         if (item.space.certainty ==
             SpaceEstimateCertainty::CompressedUnknown) {
-            meta += "   NSZ: installed size may be larger";
+            meta += tr("pipensx/batch/item_nsz");
         }
         meta_->setText(meta);
     }
@@ -161,11 +162,11 @@ public:
         status_->setFontSize(17);
         status_->setMarginBottom(12);
         status_->setTextColor(theme::textSecondary());
-        status_->setText("Preparing selected games...");
+        status_->setText(tr("pipensx/batch/preparing"));
         content->addView(status_);
 
         meter_ = new StorageMeter();
-        meter_->setHeader("SD card");
+        meter_->setHeader(tr("pipensx/batch/sd_card"));
         meter_->setLegendVisible(true);
         meter_->setMarginBottom(12);
         content->addView(meter_);
@@ -194,7 +195,7 @@ public:
         selectAll->setGrow(1);
         selectAll->setHeight(48);
         selectAll->setMarginRight(10);
-        selectAll->setText("Select ready");
+        selectAll->setText(tr("pipensx/batch/select_ready"));
         selectAll->registerClickAction([this](brls::View*) {
             setAllPrepared(true);
             return true;
@@ -204,7 +205,7 @@ public:
         clear->setStyle(&brls::BUTTONSTYLE_DEFAULT);
         clear->setGrow(1);
         clear->setHeight(48);
-        clear->setText("Clear");
+        clear->setText(tr("pipensx/common/clear"));
         clear->registerClickAction([this](brls::View*) {
             setAllPrepared(false);
             return true;
@@ -215,7 +216,7 @@ public:
         enqueue_ = new brls::Button();
         enqueue_->setStyle(&brls::BUTTONSTYLE_PRIMARY);
         enqueue_->setHeight(58);
-        enqueue_->setText("Add to queue");
+        enqueue_->setText(tr("pipensx/batch/add_to_queue"));
         enqueue_->registerClickAction([this](brls::View*) {
             enqueuePrepared();
             return true;
@@ -231,7 +232,7 @@ public:
         downloads->setGrow(1);
         downloads->setHeight(54);
         downloads->setMarginRight(10);
-        downloads->setText("View downloads");
+        downloads->setText(tr("pipensx/batch/view_downloads"));
         downloads->registerClickAction([this](brls::View*) {
             auto callback = viewDownloads_;
             brls::delay(100, [callback] {
@@ -246,7 +247,7 @@ public:
         resultBack_->setStyle(&brls::BUTTONSTYLE_DEFAULT);
         resultBack_->setGrow(1);
         resultBack_->setHeight(54);
-        resultBack_->setText("Back to catalog");
+        resultBack_->setText(tr("pipensx/batch/back_to_catalog"));
         resultBack_->registerClickAction([](brls::View*) {
             brls::Application::popActivity();
             return true;
@@ -255,7 +256,7 @@ public:
         content->addView(resultControls_);
 
         frame_ = new brls::AppletFrame(content);
-        frame_->setTitle("Batch install");
+        frame_->setTitle(tr("pipensx/batch/frame_title"));
     }
 
     ~BatchInstallActivity() override {
@@ -266,10 +267,10 @@ public:
     brls::View* createContentView() override { return frame_; }
 
     void onContentAvailable() override {
-        cancelAction_ = registerAction("Cancel", brls::BUTTON_Y,
+        cancelAction_ = registerAction(tr("pipensx/common/cancel"), brls::BUTTON_Y,
                                        [this](brls::View*) {
             cancelled_->store(true);
-            status_->setText("Cancelling preparation...");
+            status_->setText(tr("pipensx/batch/cancelling"));
             return true;
         });
         startPreparation();
@@ -297,22 +298,20 @@ private:
                 std::string stage;
                 switch (value.magnet.stage) {
                     case pipensx::MagnetProgress::Stage::FindingPeers:
-                        stage = "Finding peers";
+                        stage = tr("pipensx/batch/stage_peers");
                         break;
                     case pipensx::MagnetProgress::Stage::Connecting:
-                        stage = "Connecting";
+                        stage = tr("pipensx/batch/stage_connecting");
                         break;
                     case pipensx::MagnetProgress::Stage::FetchingMetadata:
-                        stage = "Fetching metadata";
+                        stage = tr("pipensx/batch/stage_metadata");
                         break;
                     case pipensx::MagnetProgress::Stage::Validating:
-                        stage = "Validating";
+                        stage = tr("pipensx/batch/stage_validating");
                         break;
                 }
-                std::string text = "Preparing " +
-                    std::to_string(value.index) + "/" +
-                    std::to_string(value.total) + ": " + value.title +
-                    "\n" + stage + "...   (Y to cancel)";
+                std::string text = tr("pipensx/batch/progress", value.index,
+                                      value.total, value.title, stage);
                 brls::sync([this, alive, text] {
                     if (alive->load())
                         status_->setText(text);
@@ -325,7 +324,7 @@ private:
                     return;
                 prepared_ = prepared;
                 if (prepared_->cancelled()) {
-                    status_->setText("Preparation cancelled. Press B to return.");
+                    status_->setText(tr("pipensx/batch/cancelled"));
                     return;
                 }
                 dataSource_->setPreparation(prepared_);
@@ -337,7 +336,7 @@ private:
                     cancelAction_ = ACTION_NONE;
                 }
                 queueAction_ = registerAction(
-                    "Add to queue", brls::BUTTON_RB,
+                    tr("pipensx/batch/add_to_queue"), brls::BUTTON_RB,
                     [this](brls::View*) {
                         enqueuePrepared();
                         return true;
@@ -385,14 +384,15 @@ private:
         storage_ = pipensx::queryStorageSpace(manager_->rootPath());
         const auto check = pipensx::assessInstallSpace(estimate, storage_);
 
-        std::string text = std::to_string(selected) + " ready selected";
+        std::string text = tr("pipensx/batch/ready_selected", selected);
         if (!prepared_->failures().empty())
-            text += "   " + std::to_string(prepared_->failures().size()) +
-                    " failed";
-        text += "\nSelected: " + formatBytes(estimate.requiredBytes);
+            text += tr("pipensx/batch/failed_count",
+                       prepared_->failures().size());
+        text += tr("pipensx/batch/selected_bytes",
+                   formatBytes(estimate.requiredBytes));
         if (estimate.certainty ==
             SpaceEstimateCertainty::CompressedUnknown) {
-            text += "\nNSZ is compressed; exact installed size is checked per NCA.";
+            text += tr("pipensx/batch/nsz_note");
         }
         if (!storage_.available && !storage_.error.empty())
             text += "\n" + storage_.error;
@@ -410,7 +410,7 @@ private:
             check.status != InstallSpaceCheckStatus::Insufficient;
         enqueue_->setState(enabled ? brls::ButtonState::ENABLED
                                    : brls::ButtonState::DISABLED);
-        enqueue_->setText("Add " + std::to_string(selected) + " to queue");
+        enqueue_->setText(tr("pipensx/batch/add_n_to_queue", selected));
     }
 
     void enqueuePrepared() {
@@ -419,14 +419,14 @@ private:
         const auto estimate = prepared_->selectedSpace();
         if (estimate.selectedFiles == 0 || estimate.overflow) {
             refreshSummary();
-            brls::Application::notify("Select at least one ready game.");
+            brls::Application::notify(tr("pipensx/batch/select_one_ready"));
             return;
         }
         storage_ = pipensx::queryStorageSpace(manager_->rootPath());
         const auto check = pipensx::assessInstallSpace(estimate, storage_);
         if (check.status == InstallSpaceCheckStatus::Insufficient) {
             refreshSummary();
-            brls::Application::notify("Not enough free space on SD.");
+            brls::Application::notify(tr("pipensx/batch/no_space"));
             return;
         }
 
@@ -437,16 +437,16 @@ private:
         if (completion_)
             completion_(remaining_);
         enqueueFinished_ = true;
-        std::string message = "Added " +
-            std::to_string(result.taskIds.size()) + " to the queue.";
+        std::string message = tr("pipensx/batch/added",
+                                 result.taskIds.size());
         const size_t failures = prepared_->failures().size() +
                                 result.failures.size();
         if (failures)
-            message += " " + std::to_string(failures) + " failed.";
+            message += tr("pipensx/batch/added_failed", failures);
         if (result.skipped)
-            message += " " + std::to_string(result.skipped) + " skipped.";
+            message += tr("pipensx/batch/added_skipped", result.skipped);
         if (!remaining_.empty())
-            message += "\nUnfinished games stay selected for retry.";
+            message += tr("pipensx/batch/retry_note");
         size_t shown = 0;
         for (const pipensx::BatchItemFailure& failure :
              prepared_->failures()) {
@@ -463,8 +463,9 @@ private:
         recyclerHost_->setVisibility(brls::Visibility::GONE);
         controls_->setVisibility(brls::Visibility::GONE);
         resultControls_->setVisibility(brls::Visibility::VISIBLE);
-        resultBack_->setText(remaining_.empty() ? "Back to catalog"
-                                                : "Back to selected");
+        resultBack_->setText(remaining_.empty()
+                                 ? tr("pipensx/batch/back_to_catalog")
+                                 : tr("pipensx/batch/back_to_selected"));
         if (queueAction_ != ACTION_NONE) {
             unregisterAction(queueAction_);
             queueAction_ = ACTION_NONE;

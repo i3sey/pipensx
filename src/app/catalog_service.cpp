@@ -396,7 +396,12 @@ bool CatalogService::parseJson(const std::string& json,
         entry.genre = readString(item, "genre", 256);
         entry.developer = readString(item, "developer", 256);
         entry.publisher = readString(item, "publisher", 256);
+        // 3967 of 4141 Langegen descriptions start with a scraped ": "
+        // separator. Harmless while the English metadata prose won; it leads
+        // every detail card once a Russian UI prefers the catalogue text.
         entry.description = readString(item, "description", 4096);
+        if (entry.description.rfind(": ", 0) == 0)
+            entry.description.erase(0, 2);
         entry.forumId = static_cast<uint32_t>(readUnsigned(item, "forum_id"));
         entry.trackerId =
             static_cast<uint32_t>(readUnsigned(item, "tracker_id"));

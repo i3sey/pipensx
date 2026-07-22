@@ -238,6 +238,15 @@ file(COPY
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/borealis/resources/i18n/en-US
     DESTINATION ${ROMFS_DIR}/i18n
 )
+# pipensx's own strings, plus a ru/hints.json overriding the borealis button
+# hints (the vendored ru locale nests them under the wrong JSON pointer for
+# this fork). A target rather than file(COPY) so editing a translation is
+# picked up by a plain rebuild instead of needing a fresh configure.
+add_custom_target(sync_i18n ALL
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_CURRENT_SOURCE_DIR}/resources/i18n" "${ROMFS_DIR}/i18n"
+    VERBATIM
+)
 file(COPY
     ${CMAKE_CURRENT_SOURCE_DIR}/resources/icon.png
     DESTINATION ${ROMFS_DIR}
@@ -254,6 +263,7 @@ if (NOT EXISTS "${PIPENSX_CATALOG_SNAPSHOT_ABS}")
 endif ()
 set(PIPENSX_NRO_DEPENDS pipensx)
 list(APPEND PIPENSX_NRO_DEPENDS sync_update_helper)
+list(APPEND PIPENSX_NRO_DEPENDS sync_i18n)
 add_custom_target(sync_catalog_snapshot ALL
     COMMAND ${CMAKE_COMMAND} -E make_directory "${ROMFS_DIR}/catalog"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -351,5 +361,14 @@ file(COPY
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/borealis/resources
     DESTINATION ${CMAKE_BINARY_DIR}
 )
+# Layered on top: without en-US/pipensx.json the runner renders raw key names
+# and every golden baseline diffs.
+add_custom_target(sync_i18n ALL
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_CURRENT_SOURCE_DIR}/resources/i18n"
+        "${CMAKE_BINARY_DIR}/resources/i18n"
+    VERBATIM
+)
+add_dependencies(golden_runner sync_i18n)
 
 endif ()

@@ -3,6 +3,7 @@
 #include <sys/statvfs.h>
 
 #include <atomic>
+#include <iterator>
 #include <memory>
 #include <string>
 
@@ -19,6 +20,7 @@
 #include "app/mod_index_service.hpp"
 #include "app/update_service.hpp"
 #include "ui/common/ui_helpers.hpp"
+#include "ui/i18n.hpp"
 #include "ui/theme.hpp"
 
 namespace pipensx::ui {
@@ -35,9 +37,32 @@ public:
         auto* content = new brls::Box(brls::Axis::COLUMN);
         content->setPadding(24, 34, 24, 34);
 
-        addSection(content, "Catalog");
+        addSection(content, tr("pipensx/settings/section_language"));
+        language_ = new brls::SelectorCell();
+        language_->init(tr("pipensx/settings/language"),
+            {tr("pipensx/settings/language_auto"),
+             tr("pipensx/settings/language_en"),
+             tr("pipensx/settings/language_ru")},
+            languageIndex(settings_->get().language),
+            [this](int selected) {
+                AppSettingsData values = settings_->get();
+                const std::string previous = values.language;
+                values.language = kLanguageValues[selected];
+                if (!persist(values, "language")) {
+                    language_->setSelection(languageIndex(previous), true);
+                    return;
+                }
+                // Borealis loads translations once, inside Application::init().
+                brls::Application::notify(
+                    tr("pipensx/settings/language_restart"));
+            });
+        content->addView(language_);
+
+        addSection(content, tr("pipensx/settings/section_catalog"));
         catalogFilter_ = new brls::SelectorCell();
-        catalogFilter_->init("Visible releases", {"All", "Games"},
+        catalogFilter_->init(tr("pipensx/settings/visible_releases"),
+            {tr("pipensx/settings/filter_all"),
+             tr("pipensx/settings/filter_games")},
             settings_->get().catalogFilter == CatalogFilter::Games ? 1 : 0,
             [this](int selected) {
                 AppSettingsData values = settings_->get();
@@ -51,7 +76,7 @@ public:
         content->addView(catalogFilter_);
 
         refreshCatalog_ = new brls::BooleanCell();
-        refreshCatalog_->init("Auto-refresh daily",
+        refreshCatalog_->init(tr("pipensx/settings/auto_refresh"),
             settings_->get().refreshCatalogOnLaunch,
             [this](bool enabled) {
                 AppSettingsData values = settings_->get();
@@ -62,19 +87,23 @@ public:
             });
         content->addView(refreshCatalog_);
 
-        content->addView(actionCell("Update catalog", "Langegen",
+        content->addView(actionCell(tr("pipensx/settings/update_catalog"),
+            tr("pipensx/settings/update_catalog_detail"),
             [this] { refreshCatalogNow(); }));
-        content->addView(actionCell("Update artwork", "pipensx-metadata",
+        content->addView(actionCell(tr("pipensx/settings/update_artwork"),
+            tr("pipensx/settings/update_artwork_detail"),
             [this] { refreshMetadataNow(); }));
         if (mods_) {
-            content->addView(actionCell("Update mods", "ModCD",
+            content->addView(actionCell(tr("pipensx/settings/update_mods"),
+                tr("pipensx/settings/update_mods_detail"),
                 [this] { refreshModsNow(); }));
         }
 
-        addSection(content, "Downloads");
+        addSection(content, tr("pipensx/settings/section_downloads"));
         streamSelection_ = new brls::SelectorCell();
-        streamSelection_->init("Default streaming file selection",
-            {"All files", "NSP/NSZ only"},
+        streamSelection_->init(tr("pipensx/settings/stream_selection"),
+            {tr("pipensx/settings/stream_all"),
+             tr("pipensx/settings/stream_packages")},
             settings_->get().streamSelection == StreamSelection::PackagesOnly
                 ? 1 : 0,
             [this](int selected) {
@@ -91,8 +120,9 @@ public:
         content->addView(streamSelection_);
 
         installLocation_ = new brls::SelectorCell();
-        installLocation_->init("Install location",
-            {"SD card", "System memory"},
+        installLocation_->init(tr("pipensx/settings/install_location"),
+            {tr("pipensx/settings/install_sd"),
+             tr("pipensx/settings/install_nand")},
             settings_->get().installLocation == InstallLocation::SystemMemory
                 ? 1 : 0,
             [this](int selected) {
@@ -113,7 +143,7 @@ public:
         content->addView(installLocation_);
 
         showCompleted_ = new brls::BooleanCell();
-        showCompleted_->init("Show completed downloads",
+        showCompleted_->init(tr("pipensx/settings/show_completed"),
             settings_->get().showCompletedDownloads,
             [this](bool enabled) {
                 AppSettingsData values = settings_->get();
@@ -124,9 +154,9 @@ public:
             });
         content->addView(showCompleted_);
 
-        addSection(content, "Updates");
+        addSection(content, tr("pipensx/settings/section_updates"));
         checkForUpdates_ = new brls::BooleanCell();
-        checkForUpdates_->init("Check for updates at launch",
+        checkForUpdates_->init(tr("pipensx/settings/check_updates"),
             settings_->get().checkForUpdatesOnLaunch,
             [this](bool enabled) {
                 AppSettingsData values = settings_->get();
@@ -136,22 +166,21 @@ public:
                     checkForUpdates_->setOn(previous, false);
             });
         content->addView(checkForUpdates_);
-        updateAction_ = actionCell("Check for pipensx update", "GitHub releases",
+        updateAction_ = actionCell(tr("pipensx/settings/check_update_now"),
+            tr("pipensx/settings/check_update_detail"),
             [this] { checkForUpdateNow(); });
         content->addView(updateAction_);
 
-        addSection(content, "Diagnostics");
+        addSection(content, tr("pipensx/settings/section_diagnostics"));
         auto* description = new brls::Label();
-        description->setText(
-            "Errors are always recorded. Extended mode adds rate-limited "
-            "torrent, buffer, decoder, image and NCM metrics every 5 seconds.");
+        description->setText(tr("pipensx/settings/diagnostics_note"));
         description->setFontSize(16);
         description->setTextColor(theme::textSecondary());
         description->setMarginBottom(10);
         content->addView(description);
 
         extendedTelemetry_ = new brls::BooleanCell();
-        extendedTelemetry_->init("Extended telemetry",
+        extendedTelemetry_->init(tr("pipensx/settings/extended_telemetry"),
             settings_->get().extendedTelemetry,
             [this](bool enabled) {
                 AppSettingsData values = settings_->get();
@@ -163,22 +192,26 @@ public:
                 }
                 telemetry_set_enabled(enabled ? 1 : 0);
                 brls::Application::notify(enabled
-                    ? "Extended telemetry enabled."
-                    : "Extended telemetry disabled.");
+                    ? tr("pipensx/settings/telemetry_on")
+                    : tr("pipensx/settings/telemetry_off"));
             });
         content->addView(extendedTelemetry_);
 
-        content->addView(actionCell("Capture diagnostic snapshot", "Write now",
+        content->addView(actionCell(tr("pipensx/settings/capture_snapshot"),
+            tr("pipensx/settings/capture_snapshot_detail"),
             [this] { captureSnapshot(); }));
-        content->addView(actionCell("Clear log", "32 MB rotation",
+        content->addView(actionCell(tr("pipensx/settings/clear_log"),
+            tr("pipensx/settings/clear_log_detail"),
             [this] { confirmClearLog(); }));
-        content->addView(actionCell("Clear artwork cache", "Downloaded images",
+        content->addView(actionCell(tr("pipensx/settings/clear_artwork"),
+            tr("pipensx/settings/clear_artwork_detail"),
             [this] { confirmClearArtwork(); }));
-        content->addView(actionCell("Reset settings", "Restore defaults",
+        content->addView(actionCell(tr("pipensx/settings/reset"),
+            tr("pipensx/settings/reset_detail"),
             [this] { confirmReset(); }));
 
         auto* path = new brls::Label();
-        path->setText(std::string("Log: ") + LogPath);
+        path->setText(tr("pipensx/settings/log_path", LogPath));
         path->setFontSize(15);
         path->setTextColor(theme::textTertiary());
         path->setMarginTop(18);
@@ -202,6 +235,16 @@ private:
         title->setMarginTop(14);
         title->setMarginBottom(8);
         content->addView(title);
+    }
+
+    // Settings-selector row for a stored language value; falls back to the
+    // "auto" row so a value from a newer build cannot leave the cell blank.
+    static int languageIndex(const std::string& value) {
+        for (size_t i = 0; i < std::size(kLanguageValues); ++i) {
+            if (value == kLanguageValues[i])
+                return static_cast<int>(i);
+        }
+        return 0;
     }
 
     static brls::DetailCell* actionCell(const std::string& title,
@@ -245,7 +288,7 @@ private:
         if (refreshInFlight_)
             return;
         refreshInFlight_ = true;
-        brls::Application::notify("Updating catalog from Langegen...");
+        brls::Application::notify(tr("pipensx/catalog/updating_catalog"));
         auto alive = alive_;
         CatalogService* catalog = catalog_;
         brls::async([this, alive, catalog] {
@@ -266,8 +309,8 @@ private:
                 catalog_->adopt(std::move(entries));
                 recordRefreshTime(true, false);
                 brls::Application::notify(
-                    "Catalog updated: " +
-                    std::to_string(catalog_->entries().size()) + " entries.");
+                    tr("pipensx/catalog/updated_catalog",
+                       catalog_->entries().size()));
             });
         });
     }
@@ -276,7 +319,7 @@ private:
         if (refreshInFlight_ || !metadata_)
             return;
         refreshInFlight_ = true;
-        brls::Application::notify("Updating artwork metadata...");
+        brls::Application::notify(tr("pipensx/catalog/updating_artwork"));
         auto alive = alive_;
         GameMetadataService* metadata = metadata_;
         brls::async([this, alive, metadata] {
@@ -298,8 +341,7 @@ private:
                 metadata_->dropMemoryImageCache();
                 recordRefreshTime(false, true);
                 brls::Application::notify(
-                    "Artwork metadata updated: " +
-                    std::to_string(metadata_->size()) + " matches.");
+                    tr("pipensx/catalog/updated_artwork", metadata_->size()));
             });
         });
     }
@@ -308,7 +350,7 @@ private:
         if (refreshInFlight_ || !mods_)
             return;
         refreshInFlight_ = true;
-        brls::Application::notify("Updating mods index from ModCD...");
+        brls::Application::notify(tr("pipensx/settings/updating_mods"));
         auto alive = alive_;
         ModIndexService* mods = mods_;
         brls::async([this, alive, mods] {
@@ -329,8 +371,7 @@ private:
                 mods_->adopt(std::move(snapshot));
                 recordRefreshTime(false, false, true);
                 brls::Application::notify(
-                    "Mods index updated: " +
-                    std::to_string(mods_->size()) + " titles.");
+                    tr("pipensx/settings/updated_mods", mods_->size()));
             });
         });
     }
@@ -339,7 +380,7 @@ private:
         if (updateInFlight_ || !updater_)
             return;
         updateInFlight_ = true;
-        updateAction_->setDetailText("Checking...");
+        updateAction_->setDetailText(tr("pipensx/settings/checking"));
         auto alive = alive_;
         UpdateService* updater = updater_;
         updater->checkAsync([this, alive](UpdateCheckResult result) {
@@ -348,18 +389,22 @@ private:
                     return;
                 updateInFlight_ = false;
                 if (!result.ok) {
-                    updateAction_->setDetailText("Check failed");
+                    updateAction_->setDetailText(
+                        tr("pipensx/settings/check_failed"));
                     diagnostic_error("update", "check", "error=%s",
                                      result.error.c_str());
                     brls::Application::notify(result.error);
                     return;
                 }
                 if (!result.updateAvailable) {
-                    updateAction_->setDetailText("Up to date");
-                    brls::Application::notify("pipensx is up to date.");
+                    updateAction_->setDetailText(
+                        tr("pipensx/settings/up_to_date"));
+                    brls::Application::notify(
+                        tr("pipensx/settings/up_to_date_notify"));
                     return;
                 }
-                updateAction_->setDetailText("Version " + result.release.version);
+                updateAction_->setDetailText(
+                    tr("pipensx/settings/version_detail", result.release.version));
                 confirmInstallUpdate(std::move(result.release));
             });
         });
@@ -367,11 +412,12 @@ private:
 
     void confirmInstallUpdate(ReleaseInfo release) {
         auto* dialog = new brls::Dialog(
-            "pipensx " + release.version + " is available. Install it now?");
-        dialog->addButton("Install and restart", [this, release = std::move(release)] {
+            tr("pipensx/settings/update_available", release.version));
+        dialog->addButton(tr("pipensx/settings/install_and_restart"),
+                          [this, release = std::move(release)] {
             installUpdate(release);
         });
-        dialog->addButton("Later", [] {});
+        dialog->addButton(tr("pipensx/common/later"), [] {});
         dialog->open();
     }
 
@@ -379,7 +425,7 @@ private:
         if (updateInFlight_ || !updater_)
             return;
         updateInFlight_ = true;
-        updateAction_->setDetailText("Downloading...");
+        updateAction_->setDetailText(tr("pipensx/settings/downloading"));
         auto alive = alive_;
         UpdateService* updater = updater_;
         auto lastPercent = std::make_shared<std::atomic<int>>(-1);
@@ -392,7 +438,7 @@ private:
                     if (!alive->load())
                         return;
                     updateAction_->setDetailText(
-                        "Downloading... " + std::to_string(percent) + "%");
+                        tr("pipensx/settings/downloading_percent", percent));
                 });
             });
         updater->installAsync(release, [this, alive](bool installed,
@@ -402,17 +448,18 @@ private:
                     return;
                 updateInFlight_ = false;
                 if (!installed) {
-                    updateAction_->setDetailText("Install failed");
+                    updateAction_->setDetailText(
+                        tr("pipensx/settings/install_failed"));
                     diagnostic_error("update", "install", "error=%s",
                                      error.c_str());
                     brls::Application::notify(error);
                     return;
                 }
-                updateAction_->setDetailText("Restart required");
+                updateAction_->setDetailText(tr("pipensx/settings/restart_required"));
 #ifdef __SWITCH__
                 if (!envHasNextLoad()) {
                     brls::Application::notify(
-                        "Update downloaded, but this loader cannot restart it.");
+                        tr("pipensx/settings/update_no_restart"));
                     return;
                 }
                 const std::string helper = updater_->helperPath();
@@ -424,12 +471,12 @@ private:
                     diagnostic_error("update", "restart", "result=0x%08x",
                                      result);
                     brls::Application::notify(
-                        "Update downloaded, but restart setup failed.");
+                        tr("pipensx/settings/update_restart_failed"));
                     return;
                 }
 #endif
                 brls::Application::notify(
-                    "Update downloaded. pipensx will restart to install it.");
+                    tr("pipensx/settings/update_will_restart"));
                 brls::Application::quit();
             });
         });
@@ -437,6 +484,7 @@ private:
 
     void applyValues() {
         const AppSettingsData& values = settings_->get();
+        language_->setSelection(languageIndex(values.language), true);
         catalogFilter_->setSelection(
             values.catalogFilter == CatalogFilter::Games ? 1 : 0, true);
         refreshCatalog_->setOn(values.refreshCatalogOnLaunch, false);
@@ -479,40 +527,45 @@ private:
             telemetry_enabled(), catalog_->entries().size(), metadata_->size(),
             installed_->titles().size(), active, errors,
             static_cast<unsigned long long>(freeBytes));
-        brls::Application::notify("Diagnostic snapshot written to pipensx.log.");
+        brls::Application::notify(tr("pipensx/settings/snapshot_written"));
     }
 
     void confirmClearLog() {
-        auto* dialog = new brls::Dialog("Clear pipensx.log now?");
-        dialog->addButton("Clear log", [] {
+        auto* dialog = new brls::Dialog(
+            tr("pipensx/settings/clear_log_question"));
+        dialog->addButton(tr("pipensx/settings/clear_log"), [] {
             if (!clearApplicationLog())
-                brls::Application::notify("Unable to clear pipensx.log.");
+                brls::Application::notify(
+                    tr("pipensx/settings/clear_log_failed"));
             else
-                brls::Application::notify("Log cleared.");
+                brls::Application::notify(tr("pipensx/settings/clear_log_done"));
         });
-        dialog->addButton("Cancel", [] {});
+        dialog->addButton(tr("pipensx/common/cancel"), [] {});
         dialog->open();
     }
 
     void confirmClearArtwork() {
-        auto* dialog = new brls::Dialog("Clear downloaded artwork cache?");
-        dialog->addButton("Clear artwork", [this] {
+        auto* dialog = new brls::Dialog(
+            tr("pipensx/settings/clear_artwork_question"));
+        dialog->addButton(tr("pipensx/settings/clear_artwork_action"), [this] {
             std::string error;
             if (!metadata_->clearImageCache(error)) {
                 diagnostic_error("metadata", "clear_cache", "error=%s",
                                  error.c_str());
                 brls::Application::notify(error);
             } else {
-                brls::Application::notify("Artwork cache cleared.");
+                brls::Application::notify(
+                    tr("pipensx/settings/clear_artwork_done"));
             }
         });
-        dialog->addButton("Cancel", [] {});
+        dialog->addButton(tr("pipensx/common/cancel"), [] {});
         dialog->open();
     }
 
     void confirmReset() {
-        auto* dialog = new brls::Dialog("Reset all pipensx settings?");
-        dialog->addButton("Reset settings", [this] {
+        auto* dialog = new brls::Dialog(
+            tr("pipensx/settings/reset_question"));
+        dialog->addButton(tr("pipensx/settings/reset_action"), [this] {
             std::string error;
             if (!settings_->reset(error)) {
                 diagnostic_error("settings", "reset", "error=%s",
@@ -521,9 +574,9 @@ private:
                 return;
             }
             applyValues();
-            brls::Application::notify("Settings restored to defaults.");
+            brls::Application::notify(tr("pipensx/settings/reset_done"));
         });
-        dialog->addButton("Cancel", [] {});
+        dialog->addButton(tr("pipensx/common/cancel"), [] {});
         dialog->open();
     }
 
@@ -535,6 +588,7 @@ private:
     UpdateService* updater_;
     ModIndexService* mods_;
     std::shared_ptr<std::atomic<bool>> alive_;
+    brls::SelectorCell* language_ = nullptr;
     brls::SelectorCell* catalogFilter_ = nullptr;
     brls::BooleanCell* refreshCatalog_ = nullptr;
     brls::BooleanCell* checkForUpdates_ = nullptr;

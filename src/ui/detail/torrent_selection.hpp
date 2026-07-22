@@ -13,6 +13,7 @@
 #include "ui/common/action_icon.hpp"
 #include "ui/common/storage_meter.hpp"
 #include "ui/common/ui_helpers.hpp"
+#include "ui/i18n.hpp"
 #include "ui/theme.hpp"
 
 namespace pipensx::ui {
@@ -37,10 +38,11 @@ inline std::pair<std::string, std::string> splitPath(const std::string& path) {
 
 inline std::string fileKindLabel(const TorrentSelectionEntry& entry) {
     if (!entry.package)
-        return entry.cartridge ? "XCI cartridge dump" : "Other file";
+        return entry.cartridge ? tr("pipensx/torrent/kind_cartridge")
+                               : tr("pipensx/torrent/kind_other");
     if (entry.compressed)
-        return "NSZ package · expands on install";
-    return "NSP package";
+        return tr("pipensx/torrent/kind_nsz");
+    return tr("pipensx/torrent/kind_nsp");
 }
 
 class TorrentSelectionCell : public brls::RecyclerCell {
@@ -56,7 +58,8 @@ public:
         // same button replaces it (View::registerAction), so this only changes
         // the hint text in the applet frame's button bar — the click still
         // routes to the data source exactly as before.
-        registerAction("Toggle", brls::BUTTON_A, [this](brls::View*) {
+        registerAction(tr("pipensx/common/toggle"), brls::BUTTON_A,
+                       [this](brls::View*) {
             auto* recycler =
                 dynamic_cast<brls::RecyclerFrame*>(getParent()->getParent());
             if (recycler && recycler->getDataSource())
@@ -150,7 +153,7 @@ public:
     void setEmpty() {
         icon_->setKind(ActionIconKind::Skip);
         directory_->setVisibility(brls::Visibility::GONE);
-        name_->setText("No files in this torrent");
+        name_->setText(tr("pipensx/torrent/empty"));
         name_->setTextColor(theme::textDisabled());
         meta_->setText("");
         size_->setText("");
@@ -264,7 +267,7 @@ public:
 
         title_ = new brls::Label();
         title_->setFontSize(26);
-        title_->setText("Choose torrent files");
+        title_->setText(tr("pipensx/torrent/title"));
         content->addView(title_);
 
         // Counts on the left, icon key on the right. Sharing one row with the
@@ -283,13 +286,16 @@ public:
         summary_->setTextColor(theme::textSecondary());
         summaryRow->addView(summary_);
 
-        addLegendEntry(summaryRow, ActionIconKind::Install, "Install");
-        addLegendEntry(summaryRow, ActionIconKind::Download, "Download");
-        addLegendEntry(summaryRow, ActionIconKind::Skip, "Skip");
+        addLegendEntry(summaryRow, ActionIconKind::Install,
+                       tr("pipensx/torrent/legend_install"));
+        addLegendEntry(summaryRow, ActionIconKind::Download,
+                       tr("pipensx/torrent/legend_download"));
+        addLegendEntry(summaryRow, ActionIconKind::Skip,
+                       tr("pipensx/torrent/legend_skip"));
         content->addView(summaryRow);
 
         meter_ = new StorageMeter();
-        meter_->setHeader("SD card");
+        meter_->setHeader(tr("pipensx/torrent/sd_card"));
         meter_->setLegendVisible(true);
         meter_->setMarginBottom(10);
         content->addView(meter_);
@@ -316,7 +322,7 @@ public:
         selectAll_->setHeight(46);
         selectAll_->setMarginRight(10);
         selectAll_->setGrow(1);
-        selectAll_->setText("Select all");
+        selectAll_->setText(tr("pipensx/common/select_all"));
         selectAll_->registerClickAction([this](brls::View*) {
             setAllSelected(true);
             return true;
@@ -328,7 +334,7 @@ public:
         clearAll_->setFontSize(18);
         clearAll_->setHeight(46);
         clearAll_->setGrow(1);
-        clearAll_->setText("Clear");
+        clearAll_->setText(tr("pipensx/common/clear"));
         clearAll_->registerClickAction([this](brls::View*) {
             setAllSelected(false);
             return true;
@@ -341,7 +347,7 @@ public:
         installSelected_->setStyle(&brls::BUTTONSTYLE_PRIMARY);
         installSelected_->setFontSize(21);
         installSelected_->setHeight(54);
-        installSelected_->setText("Continue");
+        installSelected_->setText(tr("pipensx/common/continue"));
         installSelected_->registerClickAction([this](brls::View*) {
             confirmSelection();
             return true;
@@ -350,7 +356,8 @@ public:
 
         content->addView(buttons);
         frame_ = new brls::AppletFrame(content);
-        frame_->setTitle(preview_.name.empty() ? "Select files"
+        frame_->setTitle(preview_.name.empty()
+                             ? tr("pipensx/torrent/frame_title")
                                               : preview_.name);
 
         populateEntries();
@@ -367,15 +374,17 @@ public:
     }
 
     void onContentAvailable() override {
-        registerAction("Select all", brls::BUTTON_X, [this](brls::View*) {
+        registerAction(tr("pipensx/common/select_all"), brls::BUTTON_X,
+                       [this](brls::View*) {
             setAllSelected(true);
             return true;
         });
-        registerAction("Clear", brls::BUTTON_Y, [this](brls::View*) {
+        registerAction(tr("pipensx/common/clear"), brls::BUTTON_Y,
+                       [this](brls::View*) {
             setAllSelected(false);
             return true;
         });
-        registerAction("Continue", brls::BUTTON_RB,
+        registerAction(tr("pipensx/common/continue"), brls::BUTTON_RB,
                        [this](brls::View*) {
                            confirmSelection();
                            return true;
@@ -461,14 +470,14 @@ private:
         const auto check = pipensx::assessInstallSpace(estimate, storage_);
         // The meter caption right below already prints the byte totals, so the
         // summary stays on counts.
-        std::string text = std::to_string(selected) + " of " +
-                           std::to_string(preview_.files.size()) + " files";
+        std::string text = tr("pipensx/torrent/summary", selected,
+                              preview_.files.size());
         if (installs > 0) {
-            text += "  ·  " + std::to_string(installs) + " install";
+            text += tr("pipensx/torrent/summary_install", installs);
             if (downloads > 0)
-                text += ", " + std::to_string(downloads) + " download";
+                text += tr("pipensx/torrent/summary_download", downloads);
         } else if (downloads > 0) {
-            text += "  ·  download only";
+            text += tr("pipensx/torrent/summary_download_only");
         }
         summary_->setText(text);
 
@@ -489,12 +498,12 @@ private:
     void confirmSelection() {
         std::vector<uint8_t> actions = dataSource_->fileActions();
         if (actions.empty() && preview_.files.empty()) {
-            brls::Application::notify("No files found in this torrent.");
+            brls::Application::notify(tr("pipensx/torrent/no_files"));
             return;
         }
         size_t selected = dataSource_->selectedCount();
         if (selected == 0) {
-            brls::Application::notify("Select at least one file.");
+            brls::Application::notify(tr("pipensx/torrent/select_one_file"));
             return;
         }
 
@@ -510,7 +519,7 @@ private:
         if (pipensx::assessInstallSpace(estimate, storage_).status ==
             InstallSpaceCheckStatus::Insufficient) {
             refreshSummary();
-            brls::Application::notify("Not enough free space on SD.");
+            brls::Application::notify(tr("pipensx/torrent/no_space"));
             return;
         }
         std::string id;
@@ -523,8 +532,8 @@ private:
         ::unlink(path_.c_str());
         finished_ = true;
         brls::Application::notify(mode == TransferMode::StreamInstall
-            ? "Added. Installing to SD..."
-            : "Added to downloads.");
+            ? tr("pipensx/torrent/added_installing")
+            : tr("pipensx/torrent/added"));
         brls::Application::popActivity();
     }
 

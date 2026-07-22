@@ -21,6 +21,7 @@
 #include "ui/catalog/batch_install.hpp"
 #include "ui/catalog/catalog_grid.hpp"
 #include "ui/catalog/catalog_helpers.hpp"
+#include "ui/i18n.hpp"
 #include "ui/common/message_cells.hpp"
 #include "ui/common/ui_helpers.hpp"
 #include "ui/detail/game_detail.hpp"
@@ -127,7 +128,7 @@ private:
         info.sub = info.subIsBadge
             ? badge
             : entries_[row].size ? formatBytes(entries_[row].size)
-                                 : "Unknown size";
+                                 : tr("pipensx/catalog/unknown_size");
         info.iconUrl = row < iconUrls_.size() ? iconUrls_[row] : std::string();
         info.iconPreserveAspect = row < iconPreserveAspect_.size() &&
                                   iconPreserveAspect_[row] != 0;
@@ -236,18 +237,22 @@ public:
         header_->setMarginBottom(10);
         header_->setMarginLeft(34);
         header_->setMarginRight(34);
-        sortLatest_ = makeChip("Latest", [this] { setSort(SortMode::Latest); });
-        sortPopular_ = makeChip("Popular",
+        sortLatest_ = makeChip(tr("pipensx/catalog/sort_latest"),
+                               [this] { setSort(SortMode::Latest); });
+        sortPopular_ = makeChip(tr("pipensx/catalog/sort_popular"),
                                 [this] { setSort(SortMode::Popular); });
-        sortAlpha_ = makeChip("A-Z", [this] { setSort(SortMode::Alphabetical); });
-        sortSize_ = makeChip("Size", [this] { setSort(SortMode::Largest); });
+        sortAlpha_ = makeChip(tr("pipensx/catalog/sort_alpha"),
+                              [this] { setSort(SortMode::Alphabetical); });
+        sortSize_ = makeChip(tr("pipensx/catalog/sort_size"),
+                             [this] { setSort(SortMode::Largest); });
         sortLatest_->setMarginLeft(0);
         header_->addView(sortLatest_);
         header_->addView(sortPopular_);
         header_->addView(sortAlpha_);
         header_->addView(sortSize_);
-        filterAll_ = makeChip("All", [this] { setFilter(CatalogFilter::All); });
-        filterGames_ = makeChip("Games",
+        filterAll_ = makeChip(tr("pipensx/catalog/filter_all"),
+                              [this] { setFilter(CatalogFilter::All); });
+        filterGames_ = makeChip(tr("pipensx/catalog/filter_games"),
                                 [this] { setFilter(CatalogFilter::Games); });
         filterAll_->setMarginLeft(16);
         header_->addView(filterAll_);
@@ -267,7 +272,7 @@ public:
         count_->setMarginTop(12);
         count_->setShrink(0.0f);
         header_->addView(count_);
-        clearSearch_ = makeChip("Clear", [this] {
+        clearSearch_ = makeChip(tr("pipensx/common/clear"), [this] {
             if (query_.empty() && !shelfDrilldown_)
                 return;
             query_.clear();
@@ -309,7 +314,7 @@ public:
         selectVisible->setGrow(1);
         selectVisible->setHeight(44);
         selectVisible->setMarginRight(8);
-        selectVisible->setText("Select visible");
+        selectVisible->setText(tr("pipensx/catalog/select_visible"));
         selectVisible->registerClickAction([this](brls::View*) {
             selectVisibleEntries();
             return true;
@@ -320,7 +325,7 @@ public:
         clearSelection->setGrow(1);
         clearSelection->setHeight(44);
         clearSelection->setMarginRight(8);
-        clearSelection->setText("Clear");
+        clearSelection->setText(tr("pipensx/common/clear"));
         clearSelection->registerClickAction([this](brls::View*) {
             selectedHashes_.clear();
             rebuildEntries();
@@ -331,7 +336,7 @@ public:
         prepareBatch_->setStyle(&brls::BUTTONSTYLE_PRIMARY);
         prepareBatch_->setGrow(1);
         prepareBatch_->setHeight(44);
-        prepareBatch_->setText("Prepare");
+        prepareBatch_->setText(tr("pipensx/catalog/prepare"));
         prepareBatch_->registerClickAction([this](brls::View*) {
             prepareSelectedEntries();
             return true;
@@ -347,25 +352,28 @@ public:
         addView(recyclerHost_);
         rebuildEntries();
 
-        registerAction("Search", brls::BUTTON_X, [this](brls::View*) {
+        registerAction(tr("pipensx/common/search"), brls::BUTTON_X,
+                       [this](brls::View*) {
             openSearchKeyboard();
             return true;
         });
-        registerAction("Sort", brls::BUTTON_Y, [this](brls::View*) {
+        registerAction(tr("pipensx/common/sort"), brls::BUTTON_Y,
+                       [this](brls::View*) {
             if (busy_)
                 cancelled_->store(true);
             else
                 cycleSort();
             return true;
         });
-        registerAction("Refresh", brls::BUTTON_RB, [this](brls::View*) {
+        registerAction(tr("pipensx/common/refresh"), brls::BUTTON_RB,
+                       [this](brls::View*) {
             if (batchMode_)
                 prepareSelectedEntries();
             else
                 refreshCatalog();
             return true;
         });
-        registerAction("Batch install", brls::BUTTON_LB,
+        registerAction(tr("pipensx/catalog/action_batch"), brls::BUTTON_LB,
                        [this](brls::View*) {
             toggleBatchMode();
             return true;
@@ -392,7 +400,7 @@ public:
                 shelfDrilldown_ = false;
                 rebuildEntries();
             },
-            "Search catalog", "", 256, query_,
+            tr("pipensx/catalog/search_placeholder"), "", 256, query_,
             brls::KEYBOARD_DISABLE_NONE);
     }
 
@@ -402,7 +410,7 @@ public:
             return;
         if (batchMode_) {
             if (!dataSource_->selectableAt(row)) {
-                brls::Application::notify("This item is already in Downloads.");
+                brls::Application::notify(tr("pipensx/catalog/already_in_downloads"));
                 return;
             }
             const std::string hash = lowerAscii(picked->infoHash);
@@ -486,9 +494,11 @@ private:
         batchControls_->setVisibility(batchMode_ ? brls::Visibility::VISIBLE
                                                  : brls::Visibility::GONE);
         updateActionHint(brls::BUTTON_LB,
-                         batchMode_ ? "Close batch" : "Batch install");
+                         batchMode_ ? tr("pipensx/catalog/action_batch_close")
+                                    : tr("pipensx/catalog/action_batch"));
         updateActionHint(brls::BUTTON_RB,
-                         batchMode_ ? "Prepare" : "Refresh");
+                         batchMode_ ? tr("pipensx/catalog/prepare")
+                                    : tr("pipensx/common/refresh"));
         rebuildEntries();
     }
 
@@ -544,7 +554,7 @@ private:
             selectedHashes_.erase(hash);
         if (entries.empty()) {
             rebuildEntries();
-            brls::Application::notify("Select at least one available game.");
+            brls::Application::notify(tr("pipensx/catalog/select_one_game"));
             return;
         }
 
@@ -581,19 +591,20 @@ private:
         }
         const StorageSpaceSnapshot storage =
             pipensx::queryStorageSpace(manager_->rootPath());
-        std::string text = std::to_string(selectedHashes_.size()) +
-                           " selected   Catalog size: " + formatBytes(bytes);
+        std::string text = tr("pipensx/catalog/batch_selected",
+                              selectedHashes_.size(), formatBytes(bytes));
         if (unknown)
-            text += " + " + std::to_string(unknown) + " unknown";
+            text += tr("pipensx/catalog/batch_unknown", unknown);
         text += storage.available
-            ? "   SD free: " + formatBytes(storage.freeBytes)
-            : "   SD free: unavailable";
+            ? tr("pipensx/catalog/batch_sd_free",
+                 formatBytes(storage.freeBytes))
+            : tr("pipensx/catalog/batch_sd_unavailable");
         status_->setText(text);
         const bool available = !selectedHashes_.empty();
         prepareBatch_->setState(available ? brls::ButtonState::ENABLED
                                           : brls::ButtonState::DISABLED);
-        prepareBatch_->setText("Prepare " +
-                               std::to_string(selectedHashes_.size()));
+        prepareBatch_->setText(tr("pipensx/catalog/prepare_n",
+                                  selectedHashes_.size()));
         setActionAvailable(brls::BUTTON_RB, available);
     }
 
@@ -713,9 +724,10 @@ private:
                 metadata_ ? metadata_->findByInfoHash(entry.infoHash) : nullptr;
             if (it == added.end() && meta && installed_ &&
                 installed_->contains(meta->titleId))
-                stateBadges.back() = "Installed";
+                stateBadges.back() = tr("pipensx/catalog/badge_installed");
             CatalogPresentation presentation =
-                resolveCatalogPresentation(entry, meta);
+                resolveCatalogPresentation(entry, meta,
+                                           catalogTextPreference());
             gameNames.push_back(std::move(presentation.title));
             iconUrls.push_back(std::move(presentation.iconUrl));
             iconPreserveAspect.push_back(
@@ -805,7 +817,8 @@ private:
             if (items.empty() && visible.size() > 1)
                 items = buildShelf(popular, 1);
             if (!items.empty())
-                shelves.push_back({"Popular", std::move(items), [this] {
+                shelves.push_back({tr("pipensx/catalog/shelf_popular"), std::move(items),
+                           [this] {
                     openShelfDrilldown(SortMode::Popular);
                     focusGrid();
                 }});
@@ -820,7 +833,8 @@ private:
                 });
             items = buildShelf(byDate, grid::kMinShelfItems);
             if (!items.empty())
-                shelves.push_back({"New", std::move(items), [this] {
+                shelves.push_back({tr("pipensx/catalog/shelf_new"), std::move(items),
+                           [this] {
                     openShelfDrilldown(SortMode::Latest);
                     focusGrid();
                 }});
@@ -838,7 +852,7 @@ private:
                 });
             items = buildShelf(updated, grid::kMinShelfItems);
             if (!items.empty())
-                shelves.push_back({"Recently updated", std::move(items),
+                shelves.push_back({tr("pipensx/catalog/shelf_updated"), std::move(items),
                                    std::function<void()>()});
 
             // Genre picks from GameMetadataService categories: the two
@@ -895,8 +909,8 @@ private:
         dataSource_->setShelves(std::move(shelves), heroIndex,
                                 std::move(heroImage));
         dataSource_->setMessage(query_.empty()
-            ? "Catalog is empty. Press R to refresh."
-            : "Nothing found. Tap the magnifier or press X to change the query.");
+            ? tr("pipensx/catalog/empty_inline")
+            : tr("pipensx/catalog/nothing_found_inline"));
         recycler_->reloadData();
         if (!focusInCatalog)
             recycler_->setContentOffsetY(0, false);
@@ -904,16 +918,15 @@ private:
         if (empty) {
             if (query_.empty()) {
                 ensureEmptyState()->setContent(
-                    "Catalog is empty",
-                    "Refresh the catalog to load the latest releases on this "
-                    "console.",
-                    "Refresh catalog", [this] { refreshCatalog(); });
+                    tr("pipensx/catalog/empty_title"),
+                    tr("pipensx/catalog/empty_body"),
+                    tr("pipensx/catalog/empty_action"),
+                    [this] { refreshCatalog(); });
             } else {
                 ensureEmptyState()->setContent(
-                    "Nothing found",
-                    "Try another query or clear the current search to see all "
-                    "releases again.",
-                    "Clear search", [this] {
+                    tr("pipensx/catalog/no_match_title"),
+                    tr("pipensx/catalog/no_match_body"),
+                    tr("pipensx/catalog/no_match_action"), [this] {
                         if (query_.empty() && !shelfDrilldown_)
                             return;
                         query_.clear();
@@ -932,8 +945,8 @@ private:
             restoreFocus(focusHash, focusShelf);
 
         countText_ = query_.empty()
-            ? withThousands(count) + (count == 1 ? " release" : " releases")
-            : withThousands(count) + (count == 1 ? " match" : " matches");
+            ? tr("pipensx/catalog/count_releases", withThousands(count))
+            : tr("pipensx/catalog/count_matches", withThousands(count));
         if (!busy_ && batchMode_) {
             refreshBatchStatus();
         } else if (!busy_) {
@@ -1137,7 +1150,8 @@ private:
     // in the bottom-bar hint so the label always matches the action.
     void setBusy(bool busy) {
         busy_ = busy;
-        updateActionHint(brls::BUTTON_Y, busy ? "Stop" : "Sort");
+        updateActionHint(brls::BUTTON_Y, busy ? tr("pipensx/common/stop")
+                                              : tr("pipensx/common/sort"));
     }
 
     uint64_t taskSignature() const {
@@ -1211,17 +1225,25 @@ private:
 
     static std::string badgeForStatus(DownloadStatus status) {
         switch (status) {
-            case DownloadStatus::Queued:      return "In queue";
+            case DownloadStatus::Queued:
+                return tr("pipensx/detail/status_queued");
             case DownloadStatus::Checking:
             case DownloadStatus::Downloading:
-            case DownloadStatus::Verifying:   return "Downloading";
-            case DownloadStatus::Paused:      return "Paused";
+            case DownloadStatus::Verifying:
+                return tr("pipensx/downloads/status_downloading");
+            case DownloadStatus::Paused:
+                return tr("pipensx/downloads/status_paused");
             case DownloadStatus::Installing:
-            case DownloadStatus::Committing:  return "Installing";
-            case DownloadStatus::Completed:   return "Downloaded";
-            case DownloadStatus::Installed:   return "Installed";
-            case DownloadStatus::Error:       return "Error";
-            case DownloadStatus::Removing:    return "Removing";
+            case DownloadStatus::Committing:
+                return tr("pipensx/downloads/status_installing");
+            case DownloadStatus::Completed:
+                return tr("pipensx/downloads/status_completed");
+            case DownloadStatus::Installed:
+                return tr("pipensx/downloads/status_installed");
+            case DownloadStatus::Error:
+                return tr("pipensx/downloads/status_error");
+            case DownloadStatus::Removing:
+                return tr("pipensx/downloads/status_removing");
         }
         return "";
     }
@@ -1292,29 +1314,29 @@ private:
         if (fetchCatalog && fetchMetadata) {
             if (catalogOk && metadataOk) {
                 brls::Application::notify(
-                    "Catalog and artwork updated: " +
-                    std::to_string(catalog_->entries().size()) + " entries.");
+                    tr("pipensx/catalog/updated_both",
+                       catalog_->entries().size()));
             } else if (catalogOk) {
                 brls::Application::notify(
-                    "Catalog updated; artwork refresh failed: " +
-                    metadataError);
+                    tr("pipensx/catalog/updated_catalog_artwork_failed",
+                       metadataError));
             } else if (metadataOk) {
                 brls::Application::notify(
-                    "Artwork updated; catalog refresh failed: " +
-                    catalogError);
+                    tr("pipensx/catalog/updated_artwork_catalog_failed",
+                       catalogError));
             } else {
                 brls::Application::notify(
-                    catalogError + " Artwork: " + metadataError);
+                    tr("pipensx/catalog/updated_both_failed", catalogError,
+                       metadataError));
             }
         } else if (fetchCatalog) {
             brls::Application::notify(catalogOk
-                ? "Catalog updated: " +
-                      std::to_string(catalog_->entries().size()) + " entries."
+                ? tr("pipensx/catalog/updated_catalog",
+                     catalog_->entries().size())
                 : catalogError);
         } else if (fetchMetadata) {
             brls::Application::notify(metadataOk
-                ? "Artwork metadata updated: " +
-                      std::to_string(metadata_->size()) + " matches."
+                ? tr("pipensx/catalog/updated_artwork", metadata_->size())
                 : metadataError);
         }
     }
@@ -1339,9 +1361,9 @@ private:
             modsInFlight_ = true;
         if (notify) {
             brls::Application::notify(fetchCatalog && fetchMetadata
-                ? "Updating catalog and artwork..."
-                : fetchCatalog ? "Updating catalog from Langegen..."
-                               : "Updating artwork metadata...");
+                ? tr("pipensx/catalog/updating_both")
+                : fetchCatalog ? tr("pipensx/catalog/updating_catalog")
+                               : tr("pipensx/catalog/updating_artwork"));
         }
         auto alive = alive_;
         CatalogService* catalog = catalog_;

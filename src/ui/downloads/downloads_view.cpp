@@ -1,31 +1,34 @@
 #include "ui/downloads/downloads_view.hpp"
+#include "ui/i18n.hpp"
 
 namespace pipensx::ui {
 
 void DownloadDataSource::setTasks(std::vector<DownloadTask> tasks) {
     sections_.clear();
+    // std::string, not const char*: the titles are now resolved per-locale at
+    // call time rather than being string literals with static storage.
     const struct {
-        const char* title;
+        std::string title;
         bool (*matches)(DownloadStatus);
     } groups[] = {
-        {"Active", [](DownloadStatus s) {
+        {tr("pipensx/downloads/section_active"), [](DownloadStatus s) {
             return s == DownloadStatus::Checking ||
                    s == DownloadStatus::Downloading ||
                    s == DownloadStatus::Installing ||
                    s == DownloadStatus::Committing ||
                    s == DownloadStatus::Verifying;
         }},
-        {"Queue", [](DownloadStatus s) {
+        {tr("pipensx/downloads/section_queue"), [](DownloadStatus s) {
             return s == DownloadStatus::Queued;
         }},
-        {"Paused", [](DownloadStatus s) {
+        {tr("pipensx/downloads/section_paused"), [](DownloadStatus s) {
             return s == DownloadStatus::Paused;
         }},
-        {"Completed", [](DownloadStatus s) {
+        {tr("pipensx/downloads/section_completed"), [](DownloadStatus s) {
             return s == DownloadStatus::Completed ||
                    s == DownloadStatus::Installed;
         }},
-        {"Errors", [](DownloadStatus s) {
+        {tr("pipensx/downloads/section_errors"), [](DownloadStatus s) {
             return s == DownloadStatus::Error;
         }},
     };

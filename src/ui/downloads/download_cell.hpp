@@ -9,6 +9,7 @@
 #include "ui/common/async_image.hpp"
 #include "ui/common/progress_bar.hpp"
 #include "ui/common/ui_helpers.hpp"
+#include "ui/i18n.hpp"
 #include "ui/theme.hpp"
 
 namespace pipensx::ui {
@@ -90,24 +91,24 @@ public:
                            formatBytes(task.totalBytes);
         if (task.status == DownloadStatus::Installing ||
             task.status == DownloadStatus::Committing) {
-            meta = "Package " + std::to_string(task.packagesInstalled + 1) +
-                   " / " + std::to_string(task.packageCount);
+            meta = tr("pipensx/downloads/cell_package",
+                      task.packagesInstalled + 1, task.packageCount);
             if (!task.currentPackage.empty())
                 meta += "   " + task.currentPackage;
         } else if (task.status == DownloadStatus::Installed) {
-            meta = std::to_string(task.packagesInstalled) +
-                   " package(s) installed to SD";
+            meta = tr("pipensx/downloads/cell_installed_packages",
+                      task.packagesInstalled);
         } else if (task.status == DownloadStatus::Downloading) {
             meta += "   " + formatSpeed(task.speedBytesPerSecond) +
-                    "   " + std::to_string(task.peers) + " peers";
+                    tr("pipensx/downloads/cell_peers", task.peers);
             if (task.totalBytes > task.completedBytes) {
                 std::string eta = formatEta(task.totalBytes - task.completedBytes,
                                             task.speedBytesPerSecond);
                 if (!eta.empty())
-                    meta += "   ETA " + eta;
+                    meta += tr("pipensx/downloads/cell_eta", eta);
             }
         } else if (task.status == DownloadStatus::Queued)
-            meta += "   Waiting for the active download";
+            meta += tr("pipensx/downloads/cell_waiting");
         else if (task.status == DownloadStatus::Error && !task.error.empty())
             meta += "   " + task.error;
         meta_->setText(meta);

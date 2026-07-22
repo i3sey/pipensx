@@ -5,6 +5,7 @@
 
 #include <borealis.hpp>
 
+#include "ui/i18n.hpp"
 #include "ui/theme.hpp"
 
 namespace pipensx::ui {
@@ -17,7 +18,7 @@ public:
         setPadding(24);
         label_ = new brls::Label();
         label_->setFontSize(21);
-        label_->setText("No downloads yet. Press X to add a .torrent file.");
+        label_->setText(tr("pipensx/downloads/empty_cell"));
         addView(label_);
     }
 

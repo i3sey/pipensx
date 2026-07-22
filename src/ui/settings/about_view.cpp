@@ -9,6 +9,7 @@
 
 #include "qrcodegen/qrcodegen.hpp"
 #include "ui/common/ui_helpers.hpp"
+#include "ui/i18n.hpp"
 #include "ui/theme.hpp"
 
 namespace pipensx::ui {
@@ -160,20 +161,19 @@ AboutView::AboutView() : brls::Box(brls::Axis::COLUMN) {
     auto* title =
         addLabel(summary, "pipensx", theme::kFontTitle, theme::textPrimary());
     title->setMarginBottom(10);
-    auto* version = addLabel(summary, std::string("Version ") + PIPENSX_VERSION,
+    auto* version = addLabel(summary,
+                             tr("pipensx/about/version", PIPENSX_VERSION),
                              theme::kFontSmall, theme::accent());
     version->setMarginBottom(4);
     auto* build = addLabel(summary,
-                           std::string("Built ") + __DATE__ + " " + __TIME__,
+                           tr("pipensx/about/built", __DATE__, __TIME__),
                            theme::kFontCaption, theme::textTertiary());
     build->setMarginBottom(14);
     auto* description = addLabel(
-        summary,
-        "Nintendo Switch storefront and BitTorrent client for downloading "
-        "or streaming NSP/NSZ packages to SD.",
+        summary, tr("pipensx/about/description"),
         theme::kFontSmall, theme::textSecondary());
     description->setMarginBottom(12);
-    addLabel(summary, "Scan Telegram for support or GitHub for the source tree.",
+    addLabel(summary, tr("pipensx/about/scan_hint"),
              theme::kFontCaption, theme::textSecondary());
     hero->addView(summary);
     content->addView(hero);
@@ -182,10 +182,10 @@ AboutView::AboutView() : brls::Box(brls::Axis::COLUMN) {
     qrRow->setAlignItems(brls::AlignItems::STRETCH);
     qrRow->setMarginBottom(kCardGap);
     auto* telegram = makeQrCard("Telegram", "@i3sey",
-                                "Questions, feedback and release updates",
+                                tr("pipensx/about/telegram_summary"),
                                 "https://t.me/i3sey");
     auto* github = makeQrCard("GitHub", "i3sey/pipensx",
-                              "Repository, changelog and issue tracker",
+                              tr("pipensx/about/github_summary"),
                               "https://github.com/i3sey/pipensx");
     github->setMarginLeft(kCardGap);
     qrRow->addView(telegram);
@@ -194,23 +194,18 @@ AboutView::AboutView() : brls::Box(brls::Axis::COLUMN) {
 
     auto* details = makeCard();
     auto* detailsTitle =
-        addLabel(details, "Project info", theme::kFontBody, theme::textPrimary());
+        addLabel(details, tr("pipensx/about/project_info"), theme::kFontBody,
+                 theme::textPrimary());
     detailsTitle->setMarginBottom(12);
     auto* storage = addLabel(
-        details,
-        std::string("Catalog: cached on SD with a bundled offline fallback.\n"
-                    "Log: ") + LogPath + "\nSettings: " + SettingsPath,
+        details, tr("pipensx/about/storage_info", LogPath, SettingsPath),
         theme::kFontSmall, theme::textSecondary());
     storage->setMarginBottom(16);
     auto* libs = addLabel(
-        details,
-        "Built with libnx, Borealis, libcurl, zstd, mbedTLS and miniupnpc. "
-        "See THIRD_PARTY_NOTICES.md for licenses.",
+        details, tr("pipensx/about/libraries"),
         theme::kFontCaption, theme::textSecondary());
     libs->setMarginBottom(12);
-    addLabel(details,
-             "pipensx is an independent open-source project and is not "
-             "affiliated with Nintendo.",
+    addLabel(details, tr("pipensx/about/disclaimer"),
              theme::kFontCaption, theme::textTertiary());
     content->addView(details);
 

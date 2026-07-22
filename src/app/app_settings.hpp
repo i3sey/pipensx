@@ -23,6 +23,11 @@ enum class InstallLocation {
 };
 
 struct AppSettingsData {
+    // UI language: "auto" follows the console's system language, otherwise a
+    // borealis locale directory name. Read before Application::init() to set
+    // Platform::APP_LOCALE_DEFAULT; borealis loads translations once, so a
+    // change only takes effect on the next launch.
+    std::string language = "auto";
     CatalogFilter catalogFilter = CatalogFilter::Games;
     bool refreshCatalogOnLaunch = false;
     uint64_t lastCatalogRefreshMs = 0;
@@ -42,6 +47,13 @@ struct AppSettingsData {
         return !(*this == other);
     }
 };
+
+// Supported values for AppSettingsData::language, in the order the Settings
+// selector lists them. Anything else is rejected at parse time, so a hand-edited
+// settings.json cannot leave the app pointing at a locale we do not ship.
+inline constexpr const char* kLanguageValues[] = {"auto", "en-US", "ru"};
+
+bool isSupportedLanguage(const std::string& value);
 
 bool dailyRefreshDue(uint64_t nowMs, uint64_t lastRefreshMs);
 

@@ -11,6 +11,7 @@
 
 #include "app/download_manager.hpp"
 #include "ui/common/ui_helpers.hpp"
+#include "ui/i18n.hpp"
 
 namespace pipensx::ui {
 
@@ -46,7 +47,8 @@ public:
         addView(label_);
     }
     void setEntry(const FileEntry& entry) {
-        label_->setText(entry.directory ? "[Folder]  " + entry.name
+        label_->setText(entry.directory
+                            ? tr("pipensx/picker/folder", entry.name)
                                         : entry.name);
     }
 private:
@@ -92,34 +94,33 @@ public:
             brls::Application::notify(error);
             return;
         }
-        std::string text = preview.name + "\n" +
-                           formatBytes(preview.totalBytes) + "   " +
-                           std::to_string(preview.fileCount) + " files   " +
-                           std::to_string(preview.trackerCount) + " trackers";
+        std::string text = tr("pipensx/picker/preview", preview.name,
+                              formatBytes(preview.totalBytes),
+                              preview.fileCount, preview.trackerCount);
         if (preview.packageCount)
-            text += "\n" + std::to_string(preview.packageCount) +
-                    " installable NSP/NSZ package(s)";
+            text += tr("pipensx/picker/preview_packages",
+                       preview.packageCount);
         auto* dialog = new brls::Dialog(text);
         auto add = [this, path = entry.path](TransferMode mode) {
             std::string id;
             std::string error;
             if (manager_->importTorrent(path, mode, id, error)) {
-                brls::Application::notify("Torrent added to the queue.");
+                brls::Application::notify(tr("pipensx/picker/added"));
                 brls::Application::popActivity();
             } else {
                 brls::Application::notify(error);
             }
         };
         if (preview.packageCount) {
-            dialog->addButton("Install to SD while downloading",
+            dialog->addButton(tr("pipensx/picker/stream_install"),
                 [add] { add(TransferMode::StreamInstall); });
-            dialog->addButton("Download only",
+            dialog->addButton(tr("pipensx/picker/download_only"),
                 [add] { add(TransferMode::DownloadOnly); });
         } else {
-            dialog->addButton("Add to queue",
+            dialog->addButton(tr("pipensx/picker/add_to_queue"),
                 [add] { add(TransferMode::DownloadOnly); });
         }
-        dialog->addButton("Cancel", [] {});
+        dialog->addButton(tr("pipensx/common/cancel"), [] {});
         dialog->open();
     }
 
@@ -148,7 +149,7 @@ private:
     void loadDirectory(const std::string& path) {
         DIR* dir = opendir(path.c_str());
         if (!dir) {
-            brls::Application::notify("Unable to open this directory.");
+            brls::Application::notify(tr("pipensx/picker/unable_to_open"));
             return;
         }
         std::vector<FileEntry> directories;
@@ -181,7 +182,7 @@ private:
         entries_.insert(entries_.end(), directories.begin(), directories.end());
         entries_.insert(entries_.end(), files.begin(), files.end());
         currentPath_ = path;
-        frame_->setTitle("Select .torrent   " + currentPath_);
+        frame_->setTitle(tr("pipensx/picker/frame_title", currentPath_));
         reloadRecycler();
     }
 

@@ -8,6 +8,7 @@
 
 #include "app/game_metadata_service.hpp"
 #include "ui/common/async_image.hpp"
+#include "ui/i18n.hpp"
 #include "ui/theme.hpp"
 
 namespace pipensx::ui {
@@ -68,10 +69,10 @@ class ScreenshotViewerActivity : public brls::Activity {
     brls::View* createContentView() override { return frame_; }
 
     void onContentAvailable() override {
-        registerAction("Previous", brls::BUTTON_LB,
+        registerAction(tr("pipensx/common/previous"), brls::BUTTON_LB,
                        [this](brls::View*) { page(-1); return true; }, false,
                        true);
-        registerAction("Next", brls::BUTTON_RB,
+        registerAction(tr("pipensx/common/next"), brls::BUTTON_RB,
                        [this](brls::View*) { page(1); return true; }, false,
                        true);
         registerAction("", brls::BUTTON_LEFT,
@@ -98,7 +99,8 @@ class ScreenshotViewerActivity : public brls::Activity {
 
     void show() {
         loadImageInto(image_, metadata_, urls_[index_]);
-        frame_->setTitle(title_.empty() ? "Screenshots" : title_);
+        frame_->setTitle(title_.empty() ? tr("pipensx/detail/screenshots")
+                                        : title_);
         counter_->setText(std::to_string(index_ + 1) + " / " +
                           std::to_string(urls_.size()));
     }

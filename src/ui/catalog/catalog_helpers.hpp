@@ -8,6 +8,7 @@
 #include <borealis.hpp>
 
 #include "app/catalog_service.hpp"
+#include "ui/i18n.hpp"
 #include "app/game_metadata_service.hpp"
 #include "ui/common/async_image.hpp"
 
@@ -29,33 +30,34 @@ inline std::string classifyResolveFailure(const std::string& error) {
     std::string lower = catalogLower(error);
     if (lower.find("not registered") != std::string::npos ||
         lower.find("stale") != std::string::npos)
-        return "Stale";
+        return tr("pipensx/health/stale");
     if (lower.find("metadata") != std::string::npos)
-        return "No metadata";
+        return tr("pipensx/health/no_metadata");
     if (lower.find("no usable peers") != std::string::npos ||
         lower.find("no peers") != std::string::npos)
-        return "No peers";
-    return "Resolve failed";
+        return tr("pipensx/health/no_peers");
+    return tr("pipensx/health/resolve_failed");
 }
 
 inline std::string badgeForCatalogHealth(const CatalogEntry& entry) {
     switch (entry.health) {
         case pipensx::CatalogHealth::Ok:
-            return entry.metadataOk ? "Fresh" : "Checked";
+            return entry.metadataOk ? tr("pipensx/health/fresh")
+                                    : tr("pipensx/health/checked");
         case pipensx::CatalogHealth::NoPeers:
-            return "No peers";
+            return tr("pipensx/health/no_peers");
         case pipensx::CatalogHealth::MetadataTimeout:
-            return "No metadata";
+            return tr("pipensx/health/no_metadata");
         case pipensx::CatalogHealth::TrackerNotRegistered:
         case pipensx::CatalogHealth::Dead:
-            return "Dead";
+            return tr("pipensx/health/dead");
         case pipensx::CatalogHealth::Replaced:
-            return "Replaced";
+            return tr("pipensx/health/replaced");
         case pipensx::CatalogHealth::Unknown:
             break;
     }
     return entry.catalogGeneratedAt || entry.sourceUpdatedAt
-         ? "Unchecked" : std::string();
+         ? tr("pipensx/health/unchecked") : std::string();
 }
 
 inline std::string joinStrings(const std::vector<std::string>& values,

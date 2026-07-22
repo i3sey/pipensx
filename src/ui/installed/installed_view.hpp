@@ -11,6 +11,7 @@
 #include "app/installed_title_service.hpp"
 #include "ui/common/async_image.hpp"
 #include "ui/common/ui_helpers.hpp"
+#include "ui/i18n.hpp"
 #include "ui/theme.hpp"
 
 namespace pipensx::ui {
@@ -86,7 +87,7 @@ public:
         if (titles_.empty()) {
             auto* cell = static_cast<TextMessageCell*>(
                 recycler->dequeueReusableCell("Message"));
-            cell->setMessage("No installed applications found. Press R to refresh.");
+            cell->setMessage(tr("pipensx/installed/empty_cell"));
             return cell;
         }
         auto* cell = static_cast<InstalledCell*>(
@@ -127,7 +128,8 @@ public:
         addView(recyclerHost_);
         reload();
 
-        registerAction("Refresh", brls::BUTTON_RB, [this](brls::View*) {
+        registerAction(tr("pipensx/common/refresh"), brls::BUTTON_RB,
+                       [this](brls::View*) {
             refresh();
             return true;
         });
@@ -141,10 +143,9 @@ private:
             return emptyState_;
         emptyState_ = new EmptyStateView();
         emptyState_->setContent(
-            "No installed applications",
-            "Refresh this list after your first install or when you return "
-            "from Home.",
-            "Refresh installed", [this] { refresh(); });
+            tr("pipensx/installed/empty_title"),
+            tr("pipensx/installed/empty_body"),
+            tr("pipensx/installed/refresh_action"), [this] { refresh(); });
         addView(emptyState_);
         return emptyState_;
     }
@@ -176,8 +177,7 @@ private:
             emptyState_->setVisibility(brls::Visibility::GONE);
         recyclerHost_->setVisibility(empty ? brls::Visibility::GONE
                                            : brls::Visibility::VISIBLE);
-        status_->setText(std::to_string(count) +
-            (count == 1 ? " installed application" : " installed applications"));
+        status_->setText(tr("pipensx/installed/count", count));
     }
 
     void refresh() {
@@ -185,11 +185,11 @@ private:
             return;
         if (hasActiveStreamInstall()) {
             brls::Application::notify(
-                "Installed games will refresh after streaming installation finishes.");
+                tr("pipensx/installed/busy"));
             return;
         }
         refreshing_ = true;
-        status_->setText("Refreshing installed applications...");
+        status_->setText(tr("pipensx/installed/refreshing"));
         auto alive = alive_;
         InstalledTitleService* installed = installed_;
         brls::async([this, alive, installed] {

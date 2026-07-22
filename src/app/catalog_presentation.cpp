@@ -79,7 +79,8 @@ bool looksLikeTitleId(const std::string& titleId) {
 } // namespace
 
 CatalogPresentation resolveCatalogPresentation(
-    const CatalogEntry& entry, const GameMetadata* metadata) {
+    const CatalogEntry& entry, const GameMetadata* metadata,
+    TextPreference preference) {
     CatalogPresentation result;
     result.title = metadata && !metadata->name.empty()
         ? metadata->name : entry.title;
@@ -95,7 +96,12 @@ CatalogPresentation resolveCatalogPresentation(
         result.coverUrl = metadata->bannerUrl;
     else
         result.coverUrl = result.iconUrl;
-    if (metadata && !metadata->description.empty())
+    // CatalogNative still falls back to the metadata prose: 26 catalogue
+    // entries carry no description at all, and neither does any golden fixture.
+    if (preference == TextPreference::CatalogNative &&
+        !entry.description.empty())
+        result.description = entry.description;
+    else if (metadata && !metadata->description.empty())
         result.description = metadata->description;
     else if (metadata && !metadata->intro.empty())
         result.description = metadata->intro;
@@ -104,6 +110,8 @@ CatalogPresentation resolveCatalogPresentation(
     result.developer = entry.developer;
     result.publisher = metadata && !metadata->publisher.empty()
         ? metadata->publisher : entry.publisher;
+    // No metadata snapshot has ever carried releaseDate, so this is entry.year
+    // in every locale — the Release row is already catalogue-native.
     result.releaseDate = metadata && !metadata->releaseDate.empty()
         ? metadata->releaseDate : entry.year;
     result.genre = metadata && !metadata->categories.empty()

@@ -79,7 +79,8 @@ bool parseSettings(const std::string& text, AppSettingsData& values,
     std::string catalog = catalogFilterName(values.catalogFilter);
     std::string selection = streamSelectionName(values.streamSelection);
     std::string install = installLocationName(values.installLocation);
-    if (!readString(root, "catalog_filter", catalog, error) ||
+    if (!readString(root, "language", values.language, error) ||
+        !readString(root, "catalog_filter", catalog, error) ||
         !readBool(root, "refresh_catalog_on_launch",
                   values.refreshCatalogOnLaunch, error) ||
         !readUnsigned(root, "last_catalog_refresh_ms",
@@ -101,6 +102,10 @@ bool parseSettings(const std::string& text, AppSettingsData& values,
         return false;
     }
 
+    if (!isSupportedLanguage(values.language)) {
+        error = "Setting 'language' has an unknown value.";
+        return false;
+    }
     if (catalog == "all")
         values.catalogFilter = CatalogFilter::All;
     else if (catalog == "games")
@@ -131,6 +136,7 @@ bool parseSettings(const std::string& text, AppSettingsData& values,
 std::string serializeSettings(const AppSettingsData& values) {
     Json root;
     root["version"] = 1;
+    root["language"] = values.language;
     root["catalog_filter"] = catalogFilterName(values.catalogFilter);
     root["refresh_catalog_on_launch"] = values.refreshCatalogOnLaunch;
     root["last_catalog_refresh_ms"] = values.lastCatalogRefreshMs;
@@ -147,8 +153,17 @@ std::string serializeSettings(const AppSettingsData& values) {
 
 } // namespace
 
+bool isSupportedLanguage(const std::string& value) {
+    for (const char* supported : kLanguageValues) {
+        if (value == supported)
+            return true;
+    }
+    return false;
+}
+
 bool AppSettingsData::operator==(const AppSettingsData& other) const {
-    return catalogFilter == other.catalogFilter &&
+    return language == other.language &&
+           catalogFilter == other.catalogFilter &&
            refreshCatalogOnLaunch == other.refreshCatalogOnLaunch &&
            lastCatalogRefreshMs == other.lastCatalogRefreshMs &&
            lastMetadataRefreshMs == other.lastMetadataRefreshMs &&

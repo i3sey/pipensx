@@ -12,6 +12,7 @@
 #include "app/game_metadata_service.hpp"
 #include "ui/common/message_cells.hpp"
 #include "ui/common/ui_helpers.hpp"
+#include "ui/i18n.hpp"
 #include "ui/downloads/details_activity.hpp"
 #include "ui/downloads/download_cell.hpp"
 #include "ui/downloads/file_picker.hpp"
@@ -66,7 +67,8 @@ public:
                 timer_.setPeriod(750);
             }
         });
-        registerAction("Import torrent", brls::BUTTON_X, [this](brls::View*) {
+        registerAction(tr("pipensx/downloads/import"), brls::BUTTON_X,
+                       [this](brls::View*) {
             openFilePicker();
             return true;
         });
@@ -108,7 +110,7 @@ public:
             runners->push_back(std::move(run));
         };
 
-        add("Details", [this, taskId] { openDetails(taskId); });
+        add(tr("pipensx/common/details"), [this, taskId] { openDetails(taskId); });
 
         bool active = task.status == DownloadStatus::Queued ||
                       task.status == DownloadStatus::Checking ||
@@ -117,22 +119,23 @@ public:
                       task.status == DownloadStatus::Committing ||
                       task.status == DownloadStatus::Verifying;
         if (active)
-            add("Pause", [this, taskId] {
+            add(tr("pipensx/common/pause"), [this, taskId] {
                 manager_->pause(taskId);
                 startRefreshing(true);
             });
         if (task.status == DownloadStatus::Paused ||
             task.status == DownloadStatus::Error)
-            add("Resume", [this, taskId] {
+            add(tr("pipensx/common/resume"), [this, taskId] {
                 manager_->resume(taskId);
                 startRefreshing(true);
             });
         if (task.status == DownloadStatus::Completed)
-            add("Verify", [this, taskId] {
+            add(tr("pipensx/common/verify"), [this, taskId] {
                 manager_->verify(taskId);
                 startRefreshing(true);
             });
-        add("Remove", [this, taskId] { openRemoveDialog(taskId); });
+        add(tr("pipensx/common/remove"),
+                [this, taskId] { openRemoveDialog(taskId); });
 
         // The Dropdown pops itself right after firing the callback, so defer
         // the action a frame — otherwise a pushActivity here would land under
@@ -150,22 +153,22 @@ public:
 
     void openRemoveDialog(const std::string& taskId) {
         auto* dialog =
-            new brls::Dialog("Remove this download from pipensx?");
-        dialog->addButton("Keep downloaded data", [this, taskId] {
+            new brls::Dialog(tr("pipensx/downloads/remove_question"));
+        dialog->addButton(tr("pipensx/downloads/remove_keep"), [this, taskId] {
             std::string error;
             if (!manager_->remove(taskId, false, error))
                 brls::Application::notify(error);
             else
                 startRefreshing(true);
         });
-        dialog->addButton("Delete downloaded data", [this, taskId] {
+        dialog->addButton(tr("pipensx/downloads/remove_delete"), [this, taskId] {
             std::string error;
             if (!manager_->remove(taskId, true, error))
                 brls::Application::notify(error);
             else
                 startRefreshing(true);
         });
-        dialog->addButton("Cancel", [] {});
+        dialog->addButton(tr("pipensx/common/cancel"), [] {});
         dialog->open();
     }
 
@@ -194,9 +197,10 @@ private:
             return emptyState_;
         emptyState_ = new EmptyStateView();
         emptyState_->setContent(
-            "Downloads are empty",
-            "Import a .torrent file to start a download or stream install.",
-            "Import .torrent", [this] { openFilePicker(); });
+            tr("pipensx/downloads/empty_title"),
+            tr("pipensx/downloads/empty_body"),
+            tr("pipensx/downloads/import_action"),
+            [this] { openFilePicker(); });
         addView(emptyState_);
         return emptyState_;
     }

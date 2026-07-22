@@ -25,6 +25,11 @@ MAX_DIFF="${GOLDEN_MAX_DIFF:-25000}"
 SCREENS="${GOLDEN_SCREENS:-catalog detail frame downloads installed settings about torrent-selection}"
 BEHAVIOR_SCREENS="${GOLDEN_BEHAVIOR_SCREENS:-downloads-back torrent-selection-scroll}"
 THEMES="${GOLDEN_THEMES:-light dark}"
+# frame is in the list because it is the only screen that renders the nav
+# sidebar, whose 248px width (theme.hpp installSidebarStyle) is the
+# tightest label constraint in the app.
+RU_SCREENS="${GOLDEN_RU_SCREENS:-frame catalog detail settings torrent-selection downloads}"
+RU_THEME="${GOLDEN_RU_THEME:-dark}"
 
 export LIBGL_ALWAYS_SOFTWARE=1
 
@@ -67,45 +72,60 @@ for screen in $BEHAVIOR_SCREENS; do
     fi
 done
 
+# render_and_compare <name> <screen> <theme> <locale>
+render_and_compare() {
+    local name="$1" screen="$2" theme="$3" locale="$4"
+    local current="$OUT_DIR/$name.png"
+    local golden="$GOLDEN_DIR/$name.png"
+
+    if ! "$RUNNER" --fixtures "$FIXTURES" --out "$current" \
+                   --theme "$theme" --screen "$screen" --locale "$locale" \
+                   --sandbox "$OUT_DIR/sandbox" >"$OUT_DIR/$name.log" 2>&1; then
+        echo "FAIL  $name: golden_runner crashed (see $name.log)"
+        fail=1
+        return
+    fi
+
+    if [[ "$MODE" == "update" ]]; then
+        cp "$current" "$golden"
+        echo "BASE  $name"
+        return
+    fi
+
+    if [[ ! -f "$golden" ]]; then
+        echo "FAIL  $name: no reference tests/golden/$name.png (run scripts/golden.sh update)"
+        fail=1
+        return
+    fi
+
+    local ae
+    ae="$(compare -metric AE -fuzz "$FUZZ" "$golden" "$current" \
+                  "$OUT_DIR/diff/$name.png" 2>&1 | awk '{print $1}')"
+    if ! [[ "$ae" =~ ^[0-9]+([.][0-9]+([eE][+-][0-9]+)?)?$ ]]; then
+        echo "FAIL  $name: compare error: $ae"
+        fail=1
+    elif [[ "${ae%%.*}" -gt "$MAX_DIFF" ]]; then
+        echo "FAIL  $name: $ae px differ (budget $MAX_DIFF, fuzz $FUZZ)"
+        fail=1
+    else
+        echo "ok    $name: $ae px within budget $MAX_DIFF"
+        rm -f "$OUT_DIR/diff/$name.png"
+    fi
+}
+
 for screen in $SCREENS; do
     for theme in $THEMES; do
-        name="$screen-$theme"
-        current="$OUT_DIR/$name.png"
-        golden="$GOLDEN_DIR/$name.png"
-
-        if ! "$RUNNER" --fixtures "$FIXTURES" --out "$current" \
-                       --theme "$theme" --screen "$screen" \
-                       --sandbox "$OUT_DIR/sandbox" >"$OUT_DIR/$name.log" 2>&1; then
-            echo "FAIL  $name: golden_runner crashed (see $name.log)"
-            fail=1
-            continue
-        fi
-
-        if [[ "$MODE" == "update" ]]; then
-            cp "$current" "$golden"
-            echo "BASE  $name"
-            continue
-        fi
-
-        if [[ ! -f "$golden" ]]; then
-            echo "FAIL  $name: no reference tests/golden/$name.png (run scripts/golden.sh update)"
-            fail=1
-            continue
-        fi
-
-        ae="$(compare -metric AE -fuzz "$FUZZ" "$golden" "$current" \
-                      "$OUT_DIR/diff/$name.png" 2>&1 | awk '{print $1}')"
-        if ! [[ "$ae" =~ ^[0-9]+([.][0-9]+([eE][+-][0-9]+)?)?$ ]]; then
-            echo "FAIL  $name: compare error: $ae"
-            fail=1
-        elif [[ "${ae%%.*}" -gt "$MAX_DIFF" ]]; then
-            echo "FAIL  $name: $ae px differ (budget $MAX_DIFF, fuzz $FUZZ)"
-            fail=1
-        else
-            echo "ok    $name: $ae px within budget $MAX_DIFF"
-            rm -f "$OUT_DIR/diff/$name.png"
-        fi
+        render_and_compare "$screen-$theme" "$screen" "$theme" en-US
     done
+done
+
+# Russian pass. Guards against clipped labels only — Russian strings run
+# 15-30% longer than English and much of the UI is setSingleLine(true) or a
+# fixed width. Text-dense screens only, and one theme, because clipping is
+# theme-independent: a full mirror would double the re-baseline cost of every
+# future UI change for no extra signal.
+for screen in $RU_SCREENS; do
+    render_and_compare "ru-$screen-$RU_THEME" "$screen" "$RU_THEME" ru
 done
 
 if [[ "$MODE" == "check" && "$fail" -ne 0 ]]; then

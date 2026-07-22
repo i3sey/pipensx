@@ -17,6 +17,7 @@ extern "C" {
 #include "app/download_manager.hpp"
 #include "install/install_backend.hpp"
 #include "platform/switch_crashlog.h"
+#include "ui/i18n.hpp"
 #include "ui/theme.hpp"
 
 namespace pipensx::ui {
@@ -190,20 +191,17 @@ inline std::string formatEta(uint64_t remainingBytes, uint64_t speedBytesPerSeco
     if (remainingBytes % speedBytesPerSecond)
         ++seconds;
     if (seconds < 60)
-        return std::to_string(seconds) + "s";
+        return tr("pipensx/downloads/eta_seconds", seconds);
 
     uint64_t minutes = seconds / 60;
     if (minutes < 60)
-        return std::to_string(minutes) + "m " +
-               std::to_string(seconds % 60) + "s";
+        return tr("pipensx/downloads/eta_minutes", minutes, seconds % 60);
 
     uint64_t hours = minutes / 60;
     if (hours < 24)
-        return std::to_string(hours) + "h " +
-               std::to_string(minutes % 60) + "m";
+        return tr("pipensx/downloads/eta_hours", hours, minutes % 60);
 
-    return std::to_string(hours / 24) + "d " +
-           std::to_string(hours % 24) + "h";
+    return tr("pipensx/downloads/eta_days", hours / 24, hours % 24);
 }
 
 inline NVGcolor statusColor(DownloadStatus status) {
@@ -227,6 +225,36 @@ inline NVGcolor statusColor(DownloadStatus status) {
     return theme::accent();
 }
 
+// pipensx::statusName stays the English persistence/log name (it is written
+// into queue.bencode); the screen reads from the locale catalog instead.
+inline std::string downloadStatusLabel(DownloadStatus status) {
+    switch (status) {
+        case DownloadStatus::Queued:
+            return tr("pipensx/downloads/status_queued");
+        case DownloadStatus::Checking:
+            return tr("pipensx/downloads/status_checking");
+        case DownloadStatus::Downloading:
+            return tr("pipensx/downloads/status_downloading");
+        case DownloadStatus::Paused:
+            return tr("pipensx/downloads/status_paused");
+        case DownloadStatus::Verifying:
+            return tr("pipensx/downloads/status_verifying");
+        case DownloadStatus::Completed:
+            return tr("pipensx/downloads/status_completed");
+        case DownloadStatus::Installing:
+            return tr("pipensx/downloads/status_installing");
+        case DownloadStatus::Committing:
+            return tr("pipensx/downloads/status_committing");
+        case DownloadStatus::Installed:
+            return tr("pipensx/downloads/status_installed");
+        case DownloadStatus::Error:
+            return tr("pipensx/downloads/status_error");
+        case DownloadStatus::Removing:
+            return tr("pipensx/downloads/status_removing");
+    }
+    return tr("pipensx/common/unknown");
+}
+
 inline std::string taskStatusText(const DownloadTask& task) {
     auto withPercent = [](const std::string& label, int percent) {
         return label + " " + std::to_string(percent) + "%";
@@ -236,29 +264,25 @@ inline std::string taskStatusText(const DownloadTask& task) {
         case DownloadStatus::Checking:
         case DownloadStatus::Downloading:
         case DownloadStatus::Verifying:
-            return withPercent(pipensx::statusName(task.status),
+            return withPercent(downloadStatusLabel(task.status),
                                percentOf(progressOf(task)));
         case DownloadStatus::Installing:
         case DownloadStatus::Committing:
-            return withPercent(pipensx::statusName(task.status),
+            return withPercent(downloadStatusLabel(task.status),
                                percentOf(installProgressOf(task)));
-        case DownloadStatus::Paused: {
-            int pct = percentOf(progressOf(task));
-            return pct > 0 ? withPercent("Paused", pct) : "Paused";
-        }
+        case DownloadStatus::Paused:
         case DownloadStatus::Error: {
+            const std::string label = downloadStatusLabel(task.status);
             int pct = percentOf(progressOf(task));
-            return pct > 0 ? withPercent("Error", pct) : "Error";
+            return pct > 0 ? withPercent(label, pct) : label;
         }
         case DownloadStatus::Completed:
-            return "Downloaded";
         case DownloadStatus::Installed:
-            return "Installed";
         case DownloadStatus::Queued:
         case DownloadStatus::Removing:
-            return pipensx::statusName(task.status);
+            return downloadStatusLabel(task.status);
     }
-    return pipensx::statusName(task.status);
+    return downloadStatusLabel(task.status);
 }
 inline std::string placeholderLetter(const std::string& title) {
     size_t offset = 0;

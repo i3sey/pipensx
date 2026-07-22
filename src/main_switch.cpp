@@ -28,6 +28,7 @@ extern "C" {
 #include "app/mod_index_service.hpp"
 #include "ui/catalog/catalog_view.hpp"
 #include "ui/common/ui_helpers.hpp"
+#include "ui/i18n.hpp"
 #include "ui/main_frame.hpp"
 #include "ui/downloads/downloads_view.hpp"
 #include "ui/installed/installed_view.hpp"
@@ -52,6 +53,18 @@ namespace {
 constexpr const char* BundledCatalogPath =
     "romfs:/catalog/switch_games.json";
 
+// AppSettingsData::language -> the borealis locale to load. LOCALE_AUTO makes
+// SwitchPlatform read the console's system language, so a Russian console gets
+// a Russian UI with no user action; anything we do not ship a locale directory
+// for falls back to en-US per key.
+const std::string& borealisLocaleFor(const std::string& language) {
+    if (language == "ru")
+        return brls::LOCALE_RU;
+    if (language == "en-US")
+        return brls::LOCALE_EN_US;
+    return brls::LOCALE_AUTO;
+}
+
 class MainActivity : public brls::Activity {
 public:
     MainActivity(DownloadManager* manager, CatalogService* catalog,
@@ -63,33 +76,33 @@ public:
           mods_(mods) {
         auto* tabs = new pipensx::ui::MainFrame();
         using pipensx::ui::NavIconType;
-        tabs->addNavTab("Catalog", NavIconType::Catalog,
+        tabs->addNavTab(tr("pipensx/nav/catalog"), NavIconType::Catalog,
                         [manager, catalog, metadata, installed,
                          settings, mods, tabs] {
             return new CatalogView(manager, catalog, metadata, installed,
                                    settings, [tabs] { tabs->focusTab(1); },
                                    mods);
         });
-        tabs->addNavTab("Downloads", NavIconType::Downloads,
+        tabs->addNavTab(tr("pipensx/nav/downloads"), NavIconType::Downloads,
                         [manager, metadata, settings] {
             return new MainView(manager, metadata, settings);
         });
-        tabs->addNavTab("Installed", NavIconType::Installed,
+        tabs->addNavTab(tr("pipensx/nav/installed"), NavIconType::Installed,
                         [installed, manager, metadata] {
             return new InstalledView(installed, manager, metadata);
         });
-        tabs->addNavTab("Settings", NavIconType::Settings,
+        tabs->addNavTab(tr("pipensx/nav/settings"), NavIconType::Settings,
                         [settings, manager, catalog, metadata,
                          installed, updater, mods] {
             return new SettingsView(settings, manager, catalog, metadata,
                                     installed, updater, mods);
         });
-        tabs->addNavTab("About", NavIconType::About, [] {
+        tabs->addNavTab(tr("pipensx/nav/about"), NavIconType::About, [] {
             return new AboutView();
         });
         tabs->attachStorageFooter(manager);
         frame_ = new brls::AppletFrame(tabs);
-        frame_->setTitle("pipensx");
+        frame_->setTitle(tr("pipensx/app/title"));
     }
 
     brls::View* createContentView() override {
@@ -97,7 +110,7 @@ public:
     }
 
     void onContentAvailable() override {
-        registerAction("Exit", brls::BUTTON_START,
+        registerAction(tr("pipensx/app/exit"), brls::BUTTON_START,
             [this](brls::View*) {
                 startupStage("quit requested by Plus");
                 brls::Application::quit();
@@ -215,7 +228,11 @@ int main(int argc, char** argv) {
         esReady = true;
 
         startupStage("Borealis Application::init");
-        brls::Platform::APP_LOCALE_DEFAULT = brls::LOCALE_EN_US;
+        // Must precede init(): the platform captures the locale in its
+        // constructor and Application::init() loads translations exactly once,
+        // which is why a language change only lands on the next launch.
+        brls::Platform::APP_LOCALE_DEFAULT =
+            borealisLocaleFor(settings.get().language);
         if (!brls::Application::init())
             throw std::runtime_error("Borealis Application::init failed");
         pipensx::ui::theme::registerColors();
@@ -276,7 +293,7 @@ int main(int argc, char** argv) {
                     return;
                 brls::sync([version = std::move(result.release.version)] {
                     brls::Application::notify(
-                        "pipensx " + version + " is available in Settings.");
+                        tr("pipensx/settings/update_available_launch", version));
                 });
             });
         }
@@ -287,11 +304,11 @@ int main(int argc, char** argv) {
         if (!settings.get().catalogDisclaimerAcknowledged) {
             startupStage("catalog disclaimer");
             auto* dialog = new brls::Dialog(
-                "Catalog is a RuTracker dump by @Langegen. Not affiliated.");
+                tr("pipensx/disclaimer/catalog"));
             // Narrow the stock 720px dialog frame for this short one-liner.
             if (auto* frame = dialog->getView("brls/dialog/applet"))
                 frame->setWidth(520);
-            dialog->addButton("OK", [&settings] {
+            dialog->addButton(tr("pipensx/common/ok"), [&settings] {
                 pipensx::AppSettingsData values = settings.get();
                 if (values.catalogDisclaimerAcknowledged)
                     return;

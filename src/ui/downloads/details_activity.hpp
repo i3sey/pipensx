@@ -8,6 +8,7 @@
 #include "ui/common/progress_bar.hpp"
 #include "ui/common/speed_graph.hpp"
 #include "ui/common/ui_helpers.hpp"
+#include "ui/i18n.hpp"
 #include "ui/theme.hpp"
 
 namespace pipensx::ui {
@@ -32,11 +33,11 @@ public:
         // Action buttons replace the old X/Y hotkeys.
         auto* actions = new brls::Box(brls::Axis::ROW);
         actions->setMarginBottom(20);
-        pauseButton_ = addActionButton(actions, "Pause",
+        pauseButton_ = addActionButton(actions, tr("pipensx/common/pause"),
                                        &brls::BUTTONSTYLE_PRIMARY);
-        verifyButton_ = addActionButton(actions, "Verify",
+        verifyButton_ = addActionButton(actions, tr("pipensx/common/verify"),
                                         &brls::BUTTONSTYLE_DEFAULT);
-        removeButton_ = addActionButton(actions, "Remove",
+        removeButton_ = addActionButton(actions, tr("pipensx/common/remove"),
                                         &brls::BUTTONSTYLE_DEFAULT);
         content->addView(actions);
         pauseButton_->registerClickAction([this](brls::View*) {
@@ -53,7 +54,7 @@ public:
             return true;
         });
 
-        auto* progressCard = addCard(content, "Progress");
+        auto* progressCard = addCard(content, tr("pipensx/downloads/card_progress"));
         progressBar_ = new ProgressBar();
         progressBar_->setHeight(14);
         progressBar_->setMarginBottom(12);
@@ -67,7 +68,7 @@ public:
         eta_ = addLine(progressCard, theme::kFontSmall);
         eta_->setTextColor(theme::textSecondary());
 
-        auto* speedCard = addCard(content, "Speed");
+        auto* speedCard = addCard(content, tr("pipensx/downloads/card_speed"));
         auto* speedLegend = new brls::Box(brls::Axis::ROW);
         speedLegend->setAlignItems(brls::AlignItems::CENTER);
         speedLegend->setMarginBottom(8);
@@ -78,7 +79,7 @@ public:
         speedGraph_ = new SpeedGraphView();
         speedCard->addView(speedGraph_);
 
-        auto* networkCard = addCard(content, "Network");
+        auto* networkCard = addCard(content, tr("pipensx/downloads/card_network"));
         peers_ = addLine(networkCard, theme::kFontBody);
         pieces_ = addLine(networkCard, theme::kFontBody);
 
@@ -199,8 +200,8 @@ private:
             return;
         }
         frame_->setTitle(task->name);
-        status_->setText(std::string("Status: ") +
-                         pipensx::statusName(task->status));
+        status_->setText(tr("pipensx/downloads/status_line",
+                            downloadStatusLabel(task->status)));
         status_->setTextColor(statusColor(task->status));
 
         bool installing = task->status == DownloadStatus::Installing ||
@@ -208,29 +209,30 @@ private:
         float progress = installing ? installProgressOf(*task)
                                     : progressOf(*task);
         progressBar_->setProgress(progress);
-        progress_->setText(std::to_string(percentOf(progress)) + "%  ·  " +
-                           formatBytes(task->completedBytes) + " / " +
-                           formatBytes(task->totalBytes));
+        progress_->setText(tr("pipensx/downloads/progress_line",
+                              percentOf(progress),
+                              formatBytes(task->completedBytes),
+                              formatBytes(task->totalBytes)));
 
         std::string eta;
         if (task->status == DownloadStatus::Downloading &&
             task->totalBytes > task->completedBytes)
             eta = formatEta(task->totalBytes - task->completedBytes,
                             task->speedBytesPerSecond);
-        eta_->setText(eta.empty() ? "" : "ETA " + eta);
+        eta_->setText(eta.empty() ? std::string()
+                                  : tr("pipensx/downloads/eta_line", eta));
 
         if (task->mode == TransferMode::StreamInstall && task->packageCount) {
             const bool hasCurrent = !task->currentPackage.empty() &&
                                     task->packagesInstalled < task->packageCount;
             if (hasCurrent) {
                 package_->setText(
-                    "Package " + std::to_string(task->packagesInstalled + 1) +
-                    " of " + std::to_string(task->packageCount));
+                    tr("pipensx/downloads/package_of",
+                       task->packagesInstalled + 1, task->packageCount));
             } else {
                 package_->setText(
-                    "Packages installed: " +
-                    std::to_string(task->packagesInstalled) + " of " +
-                    std::to_string(task->packageCount));
+                    tr("pipensx/downloads/packages_installed",
+                       task->packagesInstalled, task->packageCount));
             }
             currentPackage_->setText(task->currentPackage);
         } else {
@@ -240,23 +242,24 @@ private:
 
         recordSpeedSample(*task);
         downloadSpeed_->setText(
-            "Download: " + formatSpeed(task->speedBytesPerSecond));
+            tr("pipensx/downloads/speed_download",
+               formatSpeed(task->speedBytesPerSecond)));
         if (task->mode == TransferMode::StreamInstall) {
             installSpeedItem_->setVisibility(brls::Visibility::VISIBLE);
             installSpeed_->setText(
-                "Install: " + formatSpeed(installSpeedSmoothed_));
+                tr("pipensx/downloads/speed_install",
+                   formatSpeed(installSpeedSmoothed_)));
         } else {
             installSpeedItem_->setVisibility(brls::Visibility::GONE);
         }
-        peers_->setText("Peers: " + std::to_string(task->peers) +
-                        "   DHT: " + std::to_string(task->dhtGood) + " good / " +
-                        std::to_string(task->dhtDubious) + " dubious");
-        pieces_->setText("Pieces: " + std::to_string(task->piecesDone) + " / " +
-                         std::to_string(task->piecesTotal) +
-                         "   Checked: " +
-                         std::to_string(task->piecesVerified));
-        path_->setText("Output: " + task->dataPath);
-        error_->setText(task->error.empty() ? "" : "Error: " + task->error);
+        peers_->setText(tr("pipensx/downloads/peers_line", task->peers,
+                           task->dhtGood, task->dhtDubious));
+        pieces_->setText(tr("pipensx/downloads/pieces_line", task->piecesDone,
+                            task->piecesTotal, task->piecesVerified));
+        path_->setText(tr("pipensx/downloads/output_line", task->dataPath));
+        error_->setText(task->error.empty()
+                            ? std::string()
+                            : tr("pipensx/downloads/error_line", task->error));
 
         updateButtons(*task);
     }
@@ -270,7 +273,8 @@ private:
                       task.status == DownloadStatus::Installing ||
                       task.status == DownloadStatus::Committing ||
                       task.status == DownloadStatus::Verifying;
-        pauseButton_->setText(paused ? "Resume" : "Pause");
+        pauseButton_->setText(paused ? tr("pipensx/common/resume")
+                                     : tr("pipensx/common/pause"));
         setButtonAvailable(pauseButton_, paused || active);
 
         bool canVerify = task.status == DownloadStatus::Paused ||
@@ -327,22 +331,22 @@ private:
 
     void openRemoveDialog() {
         auto* dialog = new brls::Dialog(
-            "Remove this download from pipensx?");
-        dialog->addButton("Keep downloaded data", [this] {
+            tr("pipensx/downloads/remove_question"));
+        dialog->addButton(tr("pipensx/downloads/remove_keep"), [this] {
             std::string error;
             if (!manager_->remove(taskId_, false, error))
                 brls::Application::notify(error);
             else
                 brls::Application::popActivity();
         });
-        dialog->addButton("Delete downloaded data", [this] {
+        dialog->addButton(tr("pipensx/downloads/remove_delete"), [this] {
             std::string error;
             if (!manager_->remove(taskId_, true, error))
                 brls::Application::notify(error);
             else
                 brls::Application::popActivity();
         });
-        dialog->addButton("Cancel", [] {});
+        dialog->addButton(tr("pipensx/common/cancel"), [] {});
         dialog->open();
     }
 

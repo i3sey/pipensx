@@ -6,6 +6,7 @@
 //
 // Usage:
 //   golden_runner --fixtures <dir> --out <file.png> --theme light|dark
+//                 [--locale en-US|ru]
 //                 --screen catalog|shelf-scroll|shelf-header|detail|torrent-selection|
 //                          torrent-selection-scroll|downloads|downloads-back|frame|
 //                          installed|settings|about
@@ -48,6 +49,7 @@
 #include "ui/detail/game_detail.hpp"
 #include "ui/detail/torrent_selection.hpp"
 #include "ui/downloads/downloads_view.hpp"
+#include "ui/i18n.hpp"
 #include "ui/installed/installed_view.hpp"
 #include "ui/main_frame.hpp"
 #include "ui/settings/about_view.hpp"
@@ -188,6 +190,7 @@ int main(int argc, char** argv) {
     std::string outArg;
     std::string sandboxArg;
     std::string theme = "light";
+    std::string locale = "en-US";
     std::string screen;
     int frames = 90;
 
@@ -202,6 +205,8 @@ int main(int argc, char** argv) {
             sandboxArg = value;
         else if (key == "--theme")
             theme = value;
+        else if (key == "--locale")
+            locale = value;
         else if (key == "--screen")
             screen = value;
         else if (key == "--frames")
@@ -213,6 +218,8 @@ int main(int argc, char** argv) {
         return fail("--fixtures, --out and --screen are required");
     if (theme != "light" && theme != "dark")
         return fail("--theme must be light or dark");
+    if (locale != "en-US" && locale != "ru")
+        return fail("--locale must be en-US or ru");
     if (frames < 1 || frames > 100000)
         return fail("--frames out of range");
 
@@ -235,7 +242,9 @@ int main(int argc, char** argv) {
     setenv("BOREALIS_THEME", theme == "dark" ? "DARK" : "LIGHT", 1);
 
     log_init(LogPath);
-    brls::Platform::APP_LOCALE_DEFAULT = brls::LOCALE_EN_US;
+    // Never LOCALE_AUTO: a baseline must not depend on the host's LANG.
+    brls::Platform::APP_LOCALE_DEFAULT =
+        locale == "ru" ? brls::LOCALE_RU : brls::LOCALE_EN_US;
     if (!brls::Application::init())
         return fail("borealis Application::init failed");
     pipensx::ui::theme::registerColors();
@@ -403,28 +412,31 @@ int main(int argc, char** argv) {
         downloadsBackFrame = new MainFrame();
         auto* downloadsView = new MainView(&manager, &metadata, &settings);
         downloadsBackFrame->addNavTab(
-            "Downloads", NavIconType::Downloads,
+            tr("pipensx/nav/downloads"), NavIconType::Downloads,
             [downloadsView] { return downloadsView; });
         activity = new GoldenActivity(downloadsBackFrame);
     } else if (screen == "frame") {
         // Whole shell, same wiring as src/main_switch.cpp: covers the sidebar
         // and the storage footer docked at its bottom.
         auto* tabs = new MainFrame();
-        tabs->addNavTab("Catalog", NavIconType::Catalog, [&] {
+        tabs->addNavTab(tr("pipensx/nav/catalog"), NavIconType::Catalog, [&] {
             return new CatalogView(&manager, &catalog, &metadata, &installed,
                                    &settings, [] {}, &mods);
         });
-        tabs->addNavTab("Downloads", NavIconType::Downloads, [&] {
+        tabs->addNavTab(tr("pipensx/nav/downloads"), NavIconType::Downloads,
+                        [&] {
             return new MainView(&manager, &metadata, &settings);
         });
-        tabs->addNavTab("Installed", NavIconType::Installed, [&] {
+        tabs->addNavTab(tr("pipensx/nav/installed"), NavIconType::Installed,
+                        [&] {
             return new InstalledView(&installed, &manager, &metadata);
         });
-        tabs->addNavTab("Settings", NavIconType::Settings, [&] {
+        tabs->addNavTab(tr("pipensx/nav/settings"), NavIconType::Settings,
+                        [&] {
             return new SettingsView(&settings, &manager, &catalog, &metadata,
                                     &installed, nullptr, &mods);
         });
-        tabs->addNavTab("About", NavIconType::About,
+        tabs->addNavTab(tr("pipensx/nav/about"), NavIconType::About,
                         [] { return new AboutView(); });
         tabs->attachStorageFooter(&manager);
         activity = new GoldenActivity(tabs);

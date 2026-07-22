@@ -10,6 +10,7 @@
 
 #include "app/app_settings.hpp"
 #include "app/catalog_presentation.hpp"
+#include "ui/i18n.hpp"
 #include "app/catalog_service.hpp"
 #include "app/download_manager.hpp"
 #include "app/game_metadata_service.hpp"
@@ -91,7 +92,8 @@ public:
           alive_(std::make_shared<std::atomic<bool>>(true)),
           cancelled_(std::make_shared<std::atomic<bool>>(false)) {
         const GameMetadata* found = metadata_->findByInfoHash(entry_.infoHash);
-        presentation_ = resolveCatalogPresentation(entry_, found);
+        presentation_ = resolveCatalogPresentation(entry_, found,
+                                                   catalogTextPreference());
         titleId_ = presentation_.titleId;
 
         // F3: eShop-style two-column page. Left column is fixed (cover +
@@ -123,7 +125,8 @@ public:
     brls::View* createContentView() override { return frame_; }
 
     void onContentAvailable() override {
-        registerAction("Cancel", brls::BUTTON_Y, [this](brls::View*) {
+        registerAction(tr("pipensx/common/cancel"), brls::BUTTON_Y,
+                       [this](brls::View*) {
             if (busy_)
                 cancelled_->store(true);
             return true;
@@ -172,7 +175,7 @@ private:
         primary_->setFontSize(theme::kFontBody);
         primary_->setHeight(64);
         primary_->setMarginTop(16);
-        primary_->setText("Install");
+        primary_->setText(tr("pipensx/common/install"));
         primary_->registerClickAction([this](brls::View*) {
             onPrimary();
             return true;
@@ -184,7 +187,7 @@ private:
         secondary_->setFontSize(theme::kFontSmall);
         secondary_->setHeight(56);
         secondary_->setMarginTop(12);
-        secondary_->setText("Options");
+        secondary_->setText(tr("pipensx/common/options"));
         secondary_->registerClickAction([this](brls::View*) {
             onSecondary();
             return true;
@@ -194,7 +197,7 @@ private:
         // How much of the card this release eats. Seeded from the catalog size
         // and refined to the exact figure once the torrent metadata resolves.
         sizeMeter_ = new StorageMeter();
-        sizeMeter_->setHeader("Install size");
+        sizeMeter_->setHeader(tr("pipensx/detail/install_size"));
         sizeMeter_->setMarginTop(20);
         left->addView(sizeMeter_);
 
@@ -202,7 +205,7 @@ private:
         statusLabel_->setFontSize(theme::kFontCaption);
         statusLabel_->setMarginTop(8);
         statusLabel_->setTextColor(theme::accent());
-        statusLabel_->setText("Install adds this game to your console.");
+        statusLabel_->setText(tr("pipensx/detail/install_hint"));
         left->addView(statusLabel_);
 
         content->addView(left);
@@ -223,7 +226,7 @@ private:
             shots->setMarginTop(24);
             shots->setMarginBottom(8);
             shots->setTextColor(theme::textSecondary());
-            shots->setText("Screenshots");
+            shots->setText(tr("pipensx/detail/screenshots"));
             right->addView(shots);
 
             std::string viewerTitle = presentation_.title;
@@ -259,13 +262,14 @@ private:
 
         std::string warn;
         if (!lastFailure_.empty()) {
-            warn = "Last attempt: " + lastFailure_;
+            warn = tr("pipensx/detail/last_attempt", lastFailure_);
         } else {
             std::string health = badgeForCatalogHealth(entry_);
-            if (!health.empty() && health != "Fresh") {
-                warn = "Catalog health: " + health;
+            if (!health.empty() && health != tr("pipensx/health/fresh")) {
+                warn = tr("pipensx/detail/catalog_health", health);
                 if (!entry_.healthReason.empty())
-                    warn += " (" + entry_.healthReason + ")";
+                    warn = tr("pipensx/detail/catalog_health_reason", health,
+                              entry_.healthReason);
             }
         }
         if (!warn.empty()) {
@@ -282,7 +286,7 @@ private:
         release->setFontSize(theme::kFontCaption);
         release->setMarginTop(16);
         release->setTextColor(theme::textTertiary());
-        release->setText("Release: " + entry_.title);
+        release->setText(tr("pipensx/detail/release_line", entry_.title));
         right->addView(release);
 
         auto* scroll = new brls::ScrollingFrame();
@@ -295,15 +299,18 @@ private:
     void buildFactsTable(brls::Box* right) {
         auto* table = new brls::Box(brls::Axis::COLUMN);
         table->setMarginTop(8);
-        addFactRow(table, "Developer", presentation_.developer);
-        addFactRow(table, "Publisher", presentation_.publisher);
-        addFactRow(table, "Release", presentation_.releaseDate);
-        addFactRow(table, "Genre", presentation_.genre);
-        addFactRow(table, "Size",
+        addFactRow(table, tr("pipensx/detail/fact_developer"),
+                   presentation_.developer);
+        addFactRow(table, tr("pipensx/detail/fact_publisher"),
+                   presentation_.publisher);
+        addFactRow(table, tr("pipensx/detail/fact_release"),
+                   presentation_.releaseDate);
+        addFactRow(table, tr("pipensx/detail/fact_genre"), presentation_.genre);
+        addFactRow(table, tr("pipensx/detail/fact_size"),
                    entry_.size ? formatBytes(entry_.size)
-                               : std::string("Unknown"));
-        addFactRow(table, "Title ID", titleId_);
-        addFactRow(table, "Mods", modsFact());
+                               : tr("pipensx/common/unknown"));
+        addFactRow(table, tr("pipensx/detail/fact_title_id"), titleId_);
+        addFactRow(table, tr("pipensx/detail/fact_mods"), modsFact());
         right->addView(table);
     }
 
@@ -314,9 +321,8 @@ private:
             return std::string();
         const uint32_t count = mods_->modCount(titleId_);
         if (count == 0)
-            return "ModCD - available";
-        return "ModCD - " + std::to_string(count) +
-               (count == 1 ? " mod" : " mods");
+            return tr("pipensx/detail/mods_available");
+        return tr("pipensx/detail/mods_count", count);
     }
 
     void addFactRow(brls::Box* table, const std::string& name,
@@ -347,8 +353,7 @@ private:
             auto* missing = new brls::Label();
             missing->setFontSize(theme::kFontSmall);
             missing->setMarginTop(24);
-            missing->setText("No description available. Install still works "
-                             "from the catalog release.");
+            missing->setText(tr("pipensx/detail/no_description"));
             right->addView(missing);
             return;
         }
@@ -364,7 +369,7 @@ private:
             more->setFontSize(theme::kFontSmall);
             more->setTextColor(theme::accent());
             more->setMarginTop(4);
-            more->setText("Show more");
+            more->setText(tr("pipensx/detail/show_more"));
             more->registerClickAction([this, desc, more,
                                        text = std::move(text)](brls::View*) {
                 desc->setText(text);
@@ -389,38 +394,41 @@ private:
 
     static std::string installButtonLabel(const DownloadTask& task) {
         switch (task.status) {
-            case DownloadStatus::Queued: return "In queue";
+            case DownloadStatus::Queued:
+                return tr("pipensx/detail/status_queued");
             case DownloadStatus::Checking:
             case DownloadStatus::Downloading: {
-                return "Downloading " +
-                       std::to_string(percentOf(progressOf(task))) + "%";
+                return tr("pipensx/detail/status_downloading",
+                          percentOf(progressOf(task)));
             }
             case DownloadStatus::Installing:
             case DownloadStatus::Committing: {
-                return "Installing " +
-                       std::to_string(percentOf(installProgressOf(task))) + "%";
+                return tr("pipensx/detail/status_installing",
+                          percentOf(installProgressOf(task)));
             }
             case DownloadStatus::Verifying:
-                return "Verifying " +
-                       std::to_string(percentOf(progressOf(task))) + "%";
+                return tr("pipensx/detail/status_verifying",
+                          percentOf(progressOf(task)));
             case DownloadStatus::Paused: {
                 int pct = percentOf(progressOf(task));
-                return pct > 0 ? "Paused " + std::to_string(pct) + "%"
-                               : "Paused";
+                return pct > 0
+                    ? tr("pipensx/detail/status_paused_percent", pct)
+                    : tr("pipensx/detail/status_paused");
             }
             case DownloadStatus::Completed:
-                return "Downloaded 100%";
+                return tr("pipensx/detail/status_downloaded");
             case DownloadStatus::Installed:
-                return "Installed 100%";
+                return tr("pipensx/detail/status_installed");
             case DownloadStatus::Error: {
                 int pct = percentOf(progressOf(task));
-                return pct > 0 ? "Error " + std::to_string(pct) + "%"
-                               : "Error";
+                return pct > 0
+                    ? tr("pipensx/detail/status_error_percent", pct)
+                    : tr("pipensx/detail/status_error");
             }
             case DownloadStatus::Removing:
-                return "Removing";
+                return tr("pipensx/detail/status_removing");
         }
-        return "Install";
+        return tr("pipensx/common/install");
     }
 
     // Fill fraction the status button paints while a task is live: install
@@ -472,31 +480,31 @@ private:
             bool actionable = task->status == DownloadStatus::Paused ||
                               task->status == DownloadStatus::Error;
             if (actionable) {
-                primary_->setText("Resume");
+                primary_->setText(tr("pipensx/common/resume"));
                 primary_->setProgress(-1.0f);
             } else {
                 primary_->setText(installButtonLabel(*task));
                 primary_->setProgress(progressForButton(*task));
             }
             primary_->setState(brls::ButtonState::ENABLED);
-            secondary_->setText("View download");
+            secondary_->setText(tr("pipensx/detail/view_download"));
             secondary_->setState(brls::ButtonState::ENABLED);
             if (task->status == DownloadStatus::Error && !task->error.empty())
                 statusLabel_->setText(task->error);
         } else {
-            primary_->setText("Install");
+            primary_->setText(tr("pipensx/common/install"));
             primary_->setProgress(-1.0f);
             primary_->setState(brls::ButtonState::ENABLED);
-            secondary_->setText("Options");
+            secondary_->setText(tr("pipensx/common/options"));
             secondary_->setState(brls::ButtonState::ENABLED);
             if (!operationMessage_.empty())
                 statusLabel_->setText(operationMessage_);
             else if (installed_ && installed_->contains(titleId_))
                 statusLabel_->setText(
-                    "Installed on this console. You can still install updates or DLC.");
+                    tr("pipensx/detail/installed_hint"));
             else
                 statusLabel_->setText(
-                    "Install adds this game to your console.");
+                    tr("pipensx/detail/install_hint"));
         }
     }
 
@@ -542,8 +550,9 @@ private:
         cancelled_->store(false);
         primary_->setState(brls::ButtonState::DISABLED);
         secondary_->setState(brls::ButtonState::DISABLED);
-        primary_->setText("Resolving...");
-        statusLabel_->setText("Finding peers...   (Y to cancel)");
+        primary_->setText(tr("pipensx/detail/resolving"));
+        statusLabel_->setText(tr("pipensx/detail/finding_peers") +
+                              tr("pipensx/detail/cancel_hint"));
 
         auto alive = alive_;
         auto cancelled = cancelled_;
@@ -564,20 +573,18 @@ private:
                 std::string text;
                 switch (p.stage) {
                     case pipensx::MagnetProgress::Stage::FindingPeers:
-                        text = "Finding peers...";
+                        text = tr("pipensx/detail/finding_peers");
                         break;
                     case pipensx::MagnetProgress::Stage::Connecting:
-                        text = "Contacting peer " +
-                               std::to_string(p.peerIndex) + "/" +
-                               std::to_string(p.peerCount) + "...";
+                        text = tr("pipensx/detail/contacting_peer",
+                                  p.peerIndex, p.peerCount);
                         break;
                     case pipensx::MagnetProgress::Stage::FetchingMetadata:
-                        text = "Fetching metadata " +
-                               std::to_string(p.completedPieces) + "/" +
-                               std::to_string(p.totalPieces) + "...";
+                        text = tr("pipensx/detail/fetching_metadata",
+                                  p.completedPieces, p.totalPieces);
                         break;
                     case pipensx::MagnetProgress::Stage::Validating:
-                        text = "Validating...";
+                        text = tr("pipensx/detail/validating");
                         break;
                 }
                 if (text == last)
@@ -585,7 +592,7 @@ private:
                 last = text;
                 brls::sync([this, alive, text] {
                     if (alive->load() && busy_)
-                        statusLabel_->setText(text + "   (Y to cancel)");
+                        statusLabel_->setText(text + tr("pipensx/detail/cancel_hint"));
                 });
             };
             std::vector<uint8_t> initialPeers;
@@ -668,8 +675,8 @@ private:
         // One-tap path. No installable packages -> nothing to silently install.
         if (preview.packageCount == 0) {
             operationMessage_ = preview.cartridgeCount > 0
-                ? "Cartridge dump (XCI) — open Options to download it."
-                : "No installable game files. Open Options to download.";
+                ? tr("pipensx/detail/cartridge_only")
+                : tr("pipensx/detail/no_installable");
             refreshButtons();
             brls::Application::notify(operationMessage_);
             ::unlink(path.c_str());
@@ -693,18 +700,18 @@ private:
                                     id, err, initialPeers)) {
             log_msg("[catalog] imported torrent %s\n", id.c_str());
             if (extras > 0) {
-                statusLabel_->setText("Installing game files. Extra files "
-                                      "skipped — use Options to include them.");
+                statusLabel_->setText(
+                    tr("pipensx/detail/installing_extras_skipped_hint"));
                 brls::Application::notify(
-                    "Installing game files. Extra files skipped.");
+                    tr("pipensx/detail/installing_extras_skipped"));
             } else {
-                statusLabel_->setText("Added. Installing to SD...");
+                statusLabel_->setText(tr("pipensx/detail/added_installing"));
             }
             if (onChange_)
                 onChange_();
         } else if (catalogLower(err).find("already in the download manager") !=
                    std::string::npos) {
-            statusLabel_->setText("Already in downloads.");
+            statusLabel_->setText(tr("pipensx/detail/already_in_downloads"));
             if (onChange_)
                 onChange_();
         } else {

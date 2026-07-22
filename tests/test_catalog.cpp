@@ -733,6 +733,80 @@ void testCatalogPresentationFallsBackFieldByField() {
     assert(fallback.screenshots.size() == 1);
 }
 
+// A Russian UI reads the Langegen prose instead of the English eShop text, but
+// only the description moves: the title, publisher and artwork stay on the
+// metadata index, which is the cleaner source for all three.
+void testCatalogPresentationPrefersCatalogNativeText() {
+    GameMetadata metadata;
+    metadata.titleId = "0100230005A52000";
+    metadata.name = "eShop name";
+    metadata.description = "eShop description";
+    metadata.publisher = "eShop publisher";
+    metadata.iconUrl = "https://example/icon.jpg";
+
+    CatalogEntry entry;
+    entry.title = "Langegen title";
+    entry.description = "Русское описание";
+    entry.publisher = "Langegen publisher";
+    entry.year = "2024, май";
+
+    CatalogPresentation native = resolveCatalogPresentation(
+        entry, &metadata, pipensx::TextPreference::CatalogNative);
+    assert(native.description == "Русское описание");
+    assert(native.title == "eShop name");
+    assert(native.publisher == "eShop publisher");
+    assert(native.iconUrl == "https://example/icon.jpg");
+    // releaseDate is absent from every metadata snapshot, so entry.year already
+    // wins in both modes — the Release row is catalogue-native regardless.
+    assert(native.releaseDate == "2024, май");
+    assert(resolveCatalogPresentation(entry, &metadata).releaseDate ==
+           "2024, май");
+
+    // Default stays on the metadata prose for an English UI.
+    assert(resolveCatalogPresentation(entry, &metadata).description ==
+           "eShop description");
+
+    // 26 real entries and every golden fixture carry no description, so the
+    // native mode must still fall back rather than render an empty card.
+    CatalogEntry noDescription = entry;
+    noDescription.description.clear();
+    assert(resolveCatalogPresentation(
+               noDescription, &metadata,
+               pipensx::TextPreference::CatalogNative).description ==
+           "eShop description");
+
+    GameMetadata introOnly;
+    introOnly.intro = "eShop intro";
+    assert(resolveCatalogPresentation(
+               noDescription, &introOnly,
+               pipensx::TextPreference::CatalogNative).description ==
+           "eShop intro");
+}
+
+// The Langegen scrape leaves a ": " separator in front of most descriptions.
+void testCatalogDescriptionPrefixIsTrimmed() {
+    const char* json =
+        "[{"
+        "\"title\":\"Trimmed [NSZ]\","
+        "\"magnet\":\"magnet:?xt=urn:btih:"
+        "8B8016FD97F08E2CC46E3B104B72EC758173C3C9&tr="
+        "http%3A%2F%2Fbt.t-ru.org%2Fann%3Fmagnet\","
+        "\"description\":\": Русское описание.\""
+        "},{"
+        "\"title\":\"Untouched [NSZ]\","
+        "\"magnet\":\"magnet:?xt=urn:btih:"
+        "9B8016FD97F08E2CC46E3B104B72EC758173C3C9&tr="
+        "http%3A%2F%2Fbt.t-ru.org%2Fann%3Fmagnet\","
+        "\"description\":\"Уже без префикса.\""
+        "}]";
+    std::vector<CatalogEntry> entries;
+    std::string error;
+    assert(CatalogService::parseJson(json, entries, error));
+    assert(entries.size() == 2);
+    assert(entries[0].description == "Русское описание.");
+    assert(entries[1].description == "Уже без префикса.");
+}
+
 void testCatalogGameFilterKeepsUnmatchedSwitchReleases() {
     CatalogEntry release;
     release.title = "New game [NSZ][ENG]";
@@ -1190,6 +1264,8 @@ int main() {
     testOptionalCatalogDataMayBeAbsent();
     testCatalogPresentationUsesGameMetadata();
     testCatalogPresentationFallsBackFieldByField();
+    testCatalogPresentationPrefersCatalogNativeText();
+    testCatalogDescriptionPrefixIsTrimmed();
     testCatalogGameFilterKeepsUnmatchedSwitchReleases();
     testCatalogBrowseMatchFilterRequiresTitleIdMetadata();
     testAsyncImageDiskCache();

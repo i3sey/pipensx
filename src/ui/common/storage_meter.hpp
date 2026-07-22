@@ -23,6 +23,7 @@
 #include <borealis.hpp>
 
 #include "ui/common/ui_helpers.hpp"
+#include "ui/i18n.hpp"
 #include "ui/theme.hpp"
 
 namespace pipensx::ui {
@@ -76,9 +77,10 @@ public:
         legend_->setAlignItems(brls::AlignItems::CENTER);
         legend_->setMarginLeft(16);
         legend_->setVisibility(brls::Visibility::GONE);
-        addLegendEntry(LegendDot::Kind::Used, "Used");
-        installDot_ = addLegendEntry(LegendDot::Kind::Install, "This install");
-        addLegendEntry(LegendDot::Kind::Free, "Free");
+        addLegendEntry(LegendDot::Kind::Used, tr("pipensx/storage/legend_used"));
+        installDot_ = addLegendEntry(LegendDot::Kind::Install,
+                                     tr("pipensx/storage/legend_install"));
+        addLegendEntry(LegendDot::Kind::Free, tr("pipensx/storage/legend_free"));
         foot_->addView(legend_);
         addView(foot_);
     }
@@ -110,7 +112,7 @@ public:
         installDot_->setInsufficient(false);
         title_->setText(headerTitle_);  // drop any "(est.)" qualifier
         value_->setText("");
-        caption_->setText("SD space unavailable");
+        caption_->setText(tr("pipensx/storage/unavailable"));
     }
 
     // Footer: just used vs free of the whole card.
@@ -122,7 +124,7 @@ public:
         bar_->setData(total, free, 0, false);
         installDot_->setInsufficient(false);
         value_->setText(formatBytesShort(free));
-        caption_->setText(formatBytesShort(free) + " free");
+        caption_->setText(tr("pipensx/storage/free", formatBytesShort(free)));
     }
 
     // Game page: what this one release will take out of the card. `exact` is
@@ -137,18 +139,23 @@ public:
         installDot_->setInsufficient(insufficient);
         // The console font draws '~' as a raised accent, so the "still a guess"
         // marker lives in the header title rather than in front of the number.
-        title_->setText(exact ? headerTitle_ : headerTitle_ + " (est.)");
-        value_->setText(installBytes == 0 ? std::string("Unknown")
+        title_->setText(exact ? headerTitle_
+                              : tr("pipensx/storage/estimate_suffix",
+                                   headerTitle_));
+        value_->setText(installBytes == 0 ? tr("pipensx/common/unknown")
                                           : formatBytes(installBytes));
         if (insufficient) {
             const uint64_t shortfall =
                 installBytes > free ? installBytes - free : 0;
-            caption_->setText("Need " + formatBytes(shortfall) + " more");
+            caption_->setText(tr("pipensx/storage/need_more",
+                                 formatBytes(shortfall)));
         } else if (installBytes == 0) {
-            caption_->setText(formatBytesShort(free) + " free");
+            caption_->setText(tr("pipensx/storage/free",
+                                 formatBytesShort(free)));
         } else {
             const uint64_t left = free >= installBytes ? free - installBytes : 0;
-            caption_->setText(formatBytesShort(left) + " left after install");
+            caption_->setText(tr("pipensx/storage/left_after",
+                                 formatBytesShort(left)));
         }
     }
 
@@ -161,17 +168,18 @@ public:
         }
         bar_->setData(total, free, installBytes, insufficient);
         installDot_->setInsufficient(insufficient);
-        value_->setText("Install " + formatBytes(installBytes));
+        value_->setText(tr("pipensx/storage/install_bytes",
+                           formatBytes(installBytes)));
         const uint64_t used = total >= free ? total - free : 0;
-        std::string text = "Used " + formatBytes(used) + "  ·  Install " +
-                           formatBytes(installBytes) + "  ·  Free " +
-                           formatBytes(free);
+        std::string text = tr("pipensx/storage/caption", formatBytes(used),
+                              formatBytes(installBytes), formatBytes(free));
         if (insufficient) {
             const uint64_t shortfall =
                 installBytes > free ? installBytes - free : 0;
-            text += "   Need " + formatBytes(shortfall) + " more";
+            text += tr("pipensx/storage/caption_need",
+                       formatBytes(shortfall));
         } else if (nszUnknown) {
-            text += "   NSZ may expand";
+            text += tr("pipensx/storage/caption_nsz");
         }
         caption_->setText(text);
     }

@@ -40,6 +40,9 @@ void testMissingFileUsesSafeDefaults() {
     assert(values.showCompletedDownloads);
     assert(!values.extendedTelemetry);
     assert(values.checkForUpdatesOnLaunch);
+    // "auto" keeps the console's system language, so a Russian Switch gets a
+    // Russian UI on first launch with no user action.
+    assert(values.language == "auto");
 }
 
 void testUpdatePersistsEveryPublicSetting() {
@@ -48,6 +51,7 @@ void testUpdatePersistsEveryPublicSetting() {
     std::string error;
     assert(settings.load(error));
     AppSettingsData changed = settings.get();
+    changed.language = "ru";
     changed.catalogFilter = CatalogFilter::All;
     changed.refreshCatalogOnLaunch = true;
     changed.lastCatalogRefreshMs = 123456;
@@ -104,6 +108,26 @@ void testInvalidFileFailsClosedToDefaults() {
     assert(settings.get() == AppSettingsData{});
 }
 
+// A hand-edited settings.json must not leave the app pointing at a locale we
+// do not ship: borealis would log a load failure and fall back per-key, which
+// reads as a half-translated UI rather than an error.
+void testUnknownLanguageIsRejected() {
+    cleanup();
+    {
+        std::ofstream output(SettingsPath);
+        output << R"({"version":1,"language":"klingon"})";
+    }
+    AppSettings settings(SettingsPath, LegacyPath);
+    std::string error;
+    assert(!settings.load(error));
+    assert(!error.empty());
+    assert(settings.get() == AppSettingsData{});
+
+    for (const char* supported : pipensx::kLanguageValues)
+        assert(pipensx::isSupportedLanguage(supported));
+    assert(!pipensx::isSupportedLanguage("klingon"));
+}
+
 void testLegacyTelemetryFlagMigratesOnce() {
     cleanup();
     {
@@ -133,6 +157,7 @@ int main() {
     testUpdatePersistsEveryPublicSetting();
     testOldSettingsJsonDefaultsRefreshTimes();
     testInvalidFileFailsClosedToDefaults();
+    testUnknownLanguageIsRejected();
     testLegacyTelemetryFlagMigratesOnce();
     testDailyRefreshDue();
     cleanup();
