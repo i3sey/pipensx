@@ -8,6 +8,8 @@
     "description": "Pipen Odyssey is the reference fixture title used by the golden screenshot CI. Its description is intentionally long enough to exercise the Show more collapse on the detail screen, wrapping over several lines of body text without ever touching the network.",
     "publisher": "Pipensx Fixtures",
     "releaseDate": "2023-11-14",
+    "iconUrl": "https://example.invalid/pipen-odyssey/icon.jpg",
+    "bannerUrl": "https://example.invalid/pipen-odyssey/banner.jpg",
     "screenshots": [
       "https://example.invalid/pipen-odyssey/s1.jpg",
       "https://example.invalid/pipen-odyssey/s2.jpg"

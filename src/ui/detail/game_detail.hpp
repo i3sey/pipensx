@@ -161,17 +161,42 @@ public:
 
 private:
     static constexpr float kLeftColumnWidth = 320.0f;
+    // coverUrl is the metadata banner for nearly every real entry, and an
+    // eShop banner is 16:9 — at 320 wide it already draws 180 tall under FIT,
+    // so anything past 200 was letterbox the column could not afford.
+    static constexpr float kCoverHeight = 200.0f;
 
     // Left column: cover, full-width Install/Options, size, status (F3).
+    //
+    // The column does not scroll, so its height is a hard budget: 720 minus the
+    // AppletFrame header (88) and footer (73) minus this page's 24px top/bottom
+    // padding leaves 511px. Everything below is sized to fit inside it with
+    // room to spare — overflow here lands on top of the storage meter and the
+    // bottom bar, because Yoga runs with web defaults and nothing clips it.
     void buildLeftColumn(brls::Box* content) {
         auto* left = new brls::Box(brls::Axis::COLUMN);
         left->setWidth(kLeftColumnWidth);
         left->setMarginRight(32);
+        // Backstop for the budget above: statusLabel_ carries torrent errors and
+        // resolve progress, both of which can wrap to an unpredictable number of
+        // lines. Same guarantee StorageMeter gives itself.
+        left->setClipsToBounds(true);
 
         if (!presentation_.coverUrl.empty()) {
+            // The plate doubles as the placeholder tile until the art arrives
+            // (and stays visible as the letterbox behind a 16:9 banner), the
+            // same way the catalog card's cover box works.
+            auto* plate = new brls::Box();
+            plate->setWidth(kLeftColumnWidth);
+            plate->setHeight(kCoverHeight);
+            plate->setCornerRadius(theme::kRadiusLarge);
+            plate->setBackgroundColor(theme::surface());
             auto* cover = new AsyncRgbaImage();
             cover->setWidth(kLeftColumnWidth);
-            cover->setHeight(260);
+            cover->setHeight(kCoverHeight);
+            cover->setPositionType(brls::PositionType::ABSOLUTE);
+            cover->setPositionTop(0);
+            cover->setPositionLeft(0);
             cover->setCornerRadius(theme::kRadiusLarge);
             cover->setScalingType(brls::ImageScalingType::FIT);
             // FIT letterboxes; with clip on, borealis fills the whole view
@@ -179,7 +204,8 @@ private:
             // (stretched bands). Clip off draws only the fitted image rect.
             cover->setClipsToBounds(false);
             loadImageInto(cover, metadata_, presentation_.coverUrl);
-            left->addView(cover);
+            plate->addView(cover);
+            left->addView(plate);
         }
 
         primary_ = new InstallButton();

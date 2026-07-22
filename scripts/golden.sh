@@ -23,7 +23,11 @@ OUT_DIR="${GOLDEN_OUT:-$ROOT/build-golden/golden-out}"
 FUZZ="${GOLDEN_FUZZ:-5%}"
 MAX_DIFF="${GOLDEN_MAX_DIFF:-25000}"
 SCREENS="${GOLDEN_SCREENS:-catalog detail frame downloads installed settings about torrent-selection}"
-BEHAVIOR_SCREENS="${GOLDEN_BEHAVIOR_SCREENS:-downloads-back torrent-selection-scroll}"
+# Behaviour checks: these assert and exit non-zero instead of writing a
+# baseline, so they are never compared against tests/golden/. Entries are
+# <screen> or <screen>:<locale>; hints-budget runs in both because Russian hint
+# labels are ~20% wider than English and are what actually overruns the bar.
+BEHAVIOR_SCREENS="${GOLDEN_BEHAVIOR_SCREENS:-downloads-back torrent-selection-scroll hints-budget hints-budget:ru}"
 THEMES="${GOLDEN_THEMES:-light dark}"
 # frame is in the list because it is the only screen that renders the nav
 # sidebar, whose 248px width (theme.hpp installSidebarStyle) is the
@@ -60,10 +64,13 @@ rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR/diff" "$GOLDEN_DIR"
 
 fail=0
-for screen in $BEHAVIOR_SCREENS; do
-    name="$screen-behavior"
+for entry in $BEHAVIOR_SCREENS; do
+    screen="${entry%%:*}"
+    locale="en-US"
+    [[ "$entry" == *:* ]] && locale="${entry##*:}"
+    name="${entry//:/-}-behavior"
     if ! "$RUNNER" --fixtures "$FIXTURES" --out "$OUT_DIR/$name.png" \
-                   --theme dark --screen "$screen" \
+                   --theme dark --screen "$screen" --locale "$locale" \
                    --sandbox "$OUT_DIR/sandbox" >"$OUT_DIR/$name.log" 2>&1; then
         echo "FAIL  $name: behavior regression (see $name.log)"
         fail=1

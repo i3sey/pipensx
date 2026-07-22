@@ -9,8 +9,11 @@
 //                 [--locale en-US|ru]
 //                 --screen catalog|shelf-scroll|shelf-header|detail|torrent-selection|
 //                          torrent-selection-scroll|downloads|downloads-back|frame|
-//                          installed|settings|about
+//                          hints-budget|installed|settings|about
 //                 [--frames N] [--sandbox <dir>]
+//
+// downloads-back, torrent-selection-scroll and hints-budget are behaviour
+// checks: they assert and exit non-zero instead of producing a baseline.
 //
 // Determinism notes:
 //   - run with LIBGL_ALWAYS_SOFTWARE=1 so Mesa llvmpipe rasterizes the same
@@ -27,6 +30,7 @@
 #include <glad/glad.h>
 
 #include <borealis.hpp>
+#include <borealis/views/hint.hpp> // not re-exported by borealis.hpp
 #include <zlib.h>
 
 #include <cstdint>
@@ -165,7 +169,12 @@ bool hasVisiblePixel(const std::vector<uint8_t>& rgba) {
 
 class GoldenActivity : public brls::Activity {
 public:
-    explicit GoldenActivity(brls::View* content) {
+    // withExitAction mirrors MainActivity::onContentAvailable — only the
+    // hints-budget screen needs it, and only because an action on the frame
+    // shows up in the bottom bar of every screen underneath it. Keep the flags
+    // in sync with src/main_switch.cpp or the budget is measured short.
+    explicit GoldenActivity(brls::View* content, bool withExitAction = false)
+        : withExitAction_(withExitAction) {
         frame_ = new brls::AppletFrame(content);
         frame_->setTitle("pipensx");
     }
@@ -174,9 +183,31 @@ public:
         return frame_;
     }
 
+    void onContentAvailable() override {
+        if (withExitAction_)
+            registerAction(tr("pipensx/app/exit"), brls::BUTTON_START,
+                           [](brls::View*) { return true; }, /*hidden=*/true);
+    }
+
 private:
     brls::AppletFrame* frame_;
+    bool withExitAction_;
 };
+
+// Depth-first search for the bottom bar's hint row. BottomBar inflates it from
+// XML, so there is no accessor to bind to.
+brls::Hints* findHints(brls::View* view) {
+    if (auto* hints = dynamic_cast<brls::Hints*>(view))
+        return hints;
+    auto* box = dynamic_cast<brls::Box*>(view);
+    if (!box)
+        return nullptr;
+    for (brls::View* child : box->getChildren()) {
+        if (brls::Hints* found = findHints(child))
+            return found;
+    }
+    return nullptr;
+}
 
 int fail(const char* message) {
     std::fprintf(stderr, "golden_runner: %s\n", message);
@@ -192,7 +223,11 @@ int main(int argc, char** argv) {
     std::string theme = "light";
     std::string locale = "en-US";
     std::string screen;
-    int frames = 90;
+    // 90 was not always enough for a RecyclerFrame to settle: the frame screen
+    // captured one of two scroll offsets, roughly one run in three, and the
+    // difference is ~57k px — far past the comparison budget. Measured stable
+    // over six isolated runs at 200.
+    int frames = 200;
 
     for (int i = 1; i + 1 < argc; i += 2) {
         std::string key = argv[i];
@@ -310,6 +345,8 @@ int main(int argc, char** argv) {
     brls::View* downloadsBackSidebarFocus = nullptr;
     int torrentSelectionRows = 0;
     bool torrentSelectionScroll = false;
+    bool hintsBudget = false;
+    CatalogView* hintsCatalog = nullptr;
     if (screen == "catalog") {
         activity = new GoldenActivity(new CatalogView(
             &manager, &catalog, &metadata, &installed, &settings, [] {},
@@ -452,6 +489,27 @@ int main(int argc, char** argv) {
                         [] { return new AboutView(); });
         tabs->attachStorageFooter(&manager);
         activity = new GoldenActivity(tabs);
+    } else if (screen == "hints-budget") {
+        // Behaviour check, not a baseline: the catalog registers more gamepad
+        // actions than the bottom bar can lay out, and the hints silently
+        // squash into each other when they overrun. Build the production shell
+        // with the catalog grid focused, then measure the row.
+        hintsBudget = true;
+        auto* tabs = new MainFrame();
+        // Tab views are built lazily, on the first draw — hintsCatalog is only
+        // readable from inside the frame loop below.
+        tabs->addNavTab(tr("pipensx/nav/catalog"), NavIconType::Catalog, [&] {
+            hintsCatalog = new CatalogView(&manager, &catalog, &metadata,
+                                           &installed, &settings, [] {}, &mods,
+                                           &favorites);
+            return hintsCatalog;
+        });
+        tabs->addNavTab(tr("pipensx/nav/downloads"), NavIconType::Downloads,
+                        [&] {
+            return new MainView(&manager, &metadata, &settings);
+        });
+        tabs->attachStorageFooter(&manager);
+        activity = new GoldenActivity(tabs, /*withExitAction=*/true);
     } else if (screen == "installed") {
         activity = new GoldenActivity(
             new InstalledView(&installed, &manager, &metadata));
@@ -471,6 +529,11 @@ int main(int argc, char** argv) {
             brls::Application::giveFocus(focusAfterLayout);
         if (i == 10 && downloadsBackFrame)
             downloadsBackFrame->focusTab(0);
+        // Focus has to sit in the grid, not the sidebar: hints are collected by
+        // walking up from the focused view, and the sidebar sees none of the
+        // catalog's actions.
+        if (i == 10 && hintsCatalog)
+            brls::Application::giveFocus(hintsCatalog);
         if (i == 20 && downloadsBackFrame) {
             downloadsBackSidebarFocus = brls::Application::getCurrentFocus();
             auto values = settings.get();
@@ -486,6 +549,65 @@ int main(int argc, char** argv) {
         return fail("downloads refresh stole focus from the sidebar");
     if (downloadsBackFrame) {
         std::printf("golden_runner: downloads-back focus preserved\n");
+        manager.shutdown();
+        std::fflush(nullptr);
+        _exit(0);
+    }
+
+    if (hintsBudget) {
+        // The two status widgets exist only on hardware
+        // (SwitchPlatform::canShowBatteryLevel returns true;
+        // DesktopPlatform's returns false on Linux), so this runner renders a
+        // bar that is this much wider than the console's. Charge it up front,
+        // or the baseline machine happily accepts a row that overruns on a
+        // Switch. 44px view + 21px margin each, see brls BottomBar's XML.
+        constexpr float kSwitchStatusWidgets = 2 * (44.0f + 21.0f);
+        if (!hintsCatalog)
+            return fail("hints-budget: catalog tab was never built");
+        brls::Hints* hints = findHints(activity->getContentView());
+        if (!hints)
+            return fail("hints-budget: no Hints view in the bottom bar");
+        brls::Box* row = hints->getParent();
+        if (!row)
+            return fail("hints-budget: hint row has no parent");
+
+        // Sum the children rather than hints->getWidth(): both are squashed
+        // once the row overflows (Yoga runs with web defaults, so everything
+        // here shrinks), but the children at least report per-hint numbers for
+        // the failure message.
+        float used = 0.0f;
+        std::string widths;
+        for (brls::View* hint : hints->getChildren()) {
+            used += hint->getWidth();
+            widths += (widths.empty() ? "" : " ") +
+                      std::to_string(static_cast<int>(hint->getWidth()));
+        }
+        if (hints->getChildren().empty())
+            return fail("hints-budget: bottom bar rendered no hints at all");
+
+        // Whatever else shares the row is the clock cluster.
+        float clock = 0.0f;
+        for (brls::View* sibling : row->getChildren()) {
+            if (sibling != hints)
+                clock += sibling->getWidth();
+        }
+        const float budget = row->getWidth() - clock - kSwitchStatusWidgets;
+        std::printf("golden_runner: hints-budget %s: %d hints, %.0fpx used of "
+                    "%.0fpx available on a Switch (widths: %s)\n",
+                    locale.c_str(),
+                    static_cast<int>(hints->getChildren().size()), used, budget,
+                    widths.c_str());
+        if (used > budget) {
+            std::fprintf(stderr,
+                         "golden_runner: hints-budget: bottom bar overruns by "
+                         "%.0fpx in %s — hide an action "
+                         "(registerAction(..., hidden=true)) or shorten a "
+                         "label\n",
+                         used - budget, locale.c_str());
+            manager.shutdown();
+            std::fflush(nullptr);
+            _exit(1);
+        }
         manager.shutdown();
         std::fflush(nullptr);
         _exit(0);

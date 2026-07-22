@@ -375,19 +375,19 @@ public:
         addView(recyclerHost_);
         rebuildEntries();
 
+        // X and Y carry no hint. This view stacks more gamepad actions than the
+        // bottom bar can render: on hardware the bar also holds the frame's
+        // Plus action plus the clock, battery and wireless widgets, and the
+        // Russian labels then overrun the row and collide with the clock. Both
+        // hotkeys keep working, and both are duplicated by focusable header
+        // controls — the magnifier button for search, the four sort chips for
+        // sort — so nothing here becomes unreachable.
         registerAction(tr("pipensx/common/search"), brls::BUTTON_X,
                        [this](brls::View*) {
             openSearchKeyboard();
             return true;
-        });
-        registerAction(tr("pipensx/common/sort"), brls::BUTTON_Y,
-                       [this](brls::View*) {
-            if (busy_)
-                cancelled_->store(true);
-            else
-                cycleSort();
-            return true;
-        });
+        }, /*hidden=*/true);
+        registerSortAction(false);
         registerAction(tr("pipensx/common/refresh"), brls::BUTTON_RB,
                        [this](brls::View*) {
             if (batchMode_)
@@ -1242,12 +1242,31 @@ private:
         restoreFocus(hash, shelfRow);
     }
 
-    // While busy (catalog refresh) Y cancels instead of sorting; reflect that
-    // in the bottom-bar hint so the label always matches the action.
+    // Y sorts while idle and cancels during a refresh. The sort half is hidden
+    // to keep the bottom bar within its width (see the registration block in
+    // the constructor), but the cancel half has to be visible or a refresh
+    // looks unstoppable — and Action::hidden is fixed at construction, so the
+    // swap re-registers. registerAction replaces the entry for a button it
+    // already holds, which is what makes this safe to call repeatedly.
+    void registerSortAction(bool busy) {
+        registerAction(busy ? tr("pipensx/common/stop")
+                            : tr("pipensx/common/sort"),
+                       brls::BUTTON_Y, [this](brls::View*) {
+            if (busy_)
+                cancelled_->store(true);
+            else
+                cycleSort();
+            return true;
+        }, /*hidden=*/!busy);
+    }
+
     void setBusy(bool busy) {
         busy_ = busy;
-        updateActionHint(brls::BUTTON_Y, busy ? tr("pipensx/common/stop")
-                                              : tr("pipensx/common/sort"));
+        registerSortAction(busy);
+        // Neither registerAction nor updateActionHint fires this, so without it
+        // the bar keeps the stale hint until some unrelated focus change
+        // refills it.
+        brls::Application::getGlobalHintsUpdateEvent()->fire();
     }
 
     uint64_t taskSignature() const {

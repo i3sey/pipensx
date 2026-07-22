@@ -112,12 +112,16 @@ public:
     }
 
     void onContentAvailable() override {
+        // Hidden hint: this action sits on the frame, so its label would ride
+        // the bottom bar on every screen under MainActivity — and the catalog
+        // already registers more hints than a 1280px bar holds in Russian.
+        // Plus-to-exit is a console convention, and HOME works regardless.
         registerAction(tr("pipensx/app/exit"), brls::BUTTON_START,
             [this](brls::View*) {
                 startupStage("quit requested by Plus");
                 brls::Application::quit();
                 return true;
-            });
+            }, /*hidden=*/true);
     }
 
 private:
