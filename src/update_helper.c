@@ -24,13 +24,6 @@ static void update_log(const char *format, ...) {
     fclose(file);
 }
 
-static void return_to_target(void) {
-    char arguments[512];
-    snprintf(arguments, sizeof(arguments), "\"%s\"", Target);
-    Result result = envSetNextLoad(Target, arguments);
-    update_log("[helper] nextload target result=0x%08x\n", result);
-}
-
 int main(int argc, char **argv) {
     update_paths_t paths = {Target, Staged, Marker, Backup};
     char error[256] = {0};
@@ -38,13 +31,15 @@ int main(int argc, char **argv) {
                            strcmp(argv[1], "--finish-update") == 0;
     update_log("[helper] started requested=%d nextload=%d\n",
                requested ? 1 : 0, envHasNextLoad() ? 1 : 0);
-    if (!requested || !envHasNextLoad()) {
-        return_to_target();
+    /* Never re-launch pipensx. Relaunching the full app inside the same
+     * hbloader session re-initializes the graphics/applet/service stack a
+     * second time and crashes (black screen then fatal). Every path below
+     * returns with no nextload set, so the loader drops to HOME and the user
+     * relaunches a fresh process manually. */
+    if (!requested)
         return 0;
-    }
     if (!update_transaction_apply(&paths, error, sizeof(error))) {
         update_log("[helper] apply failed: %s\n", error);
-        return_to_target();
         return 0;
     }
     Result commit = fsdevCommitDevice("sdmc");
@@ -54,21 +49,8 @@ int main(int argc, char **argv) {
         if (!update_transaction_rollback(&paths, error, sizeof(error)))
             update_log("[helper] rollback failed: %s\n", error);
         fsdevCommitDevice("sdmc");
-        return_to_target();
         return 0;
     }
-    char arguments[512];
-    snprintf(arguments, sizeof(arguments), "\"%s\"", Target);
-    Result next = envSetNextLoad(Target, arguments);
-    if (R_FAILED(next)) {
-        update_log("[helper] nextload failed result=0x%08x\n", next);
-        error[0] = '\0';
-        if (!update_transaction_rollback(&paths, error, sizeof(error)))
-            update_log("[helper] rollback failed: %s\n", error);
-        fsdevCommitDevice("sdmc");
-        return_to_target();
-        return 0;
-    }
-    update_log("[helper] swap committed; launching target\n");
+    update_log("[helper] swap committed; returning to HOME\n");
     return 0;
 }

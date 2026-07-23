@@ -475,9 +475,16 @@ private:
                     return;
                 }
 #endif
-                brls::Application::notify(
-                    tr("pipensx/settings/update_will_restart"));
-                brls::Application::quit();
+                // The helper swaps the NRO after we exit, then drops to HOME
+                // instead of relaunching (an in-session relaunch of the full
+                // app crashes). Gate the quit behind an acknowledged dialog so
+                // the close reads as intentional rather than a crash.
+                auto* dialog = new brls::Dialog(
+                    tr("pipensx/settings/update_close_body"));
+                dialog->setCancelable(false);
+                dialog->addButton(tr("pipensx/settings/update_close_button"),
+                                  [] { brls::Application::quit(); });
+                dialog->open();
             });
         });
     }
