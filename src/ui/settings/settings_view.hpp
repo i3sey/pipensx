@@ -1,8 +1,7 @@
 #pragma once
 
-#include <sys/statvfs.h>
-
 #include <atomic>
+#include <functional>
 #include <iterator>
 #include <memory>
 #include <string>
@@ -21,6 +20,8 @@
 #include "app/update_service.hpp"
 #include "ui/common/ui_helpers.hpp"
 #include "ui/i18n.hpp"
+#include "ui/settings/advanced_settings.hpp"
+#include "ui/settings/settings_cells.hpp"
 #include "ui/theme.hpp"
 
 namespace pipensx::ui {
@@ -37,7 +38,7 @@ public:
         auto* content = new brls::Box(brls::Axis::COLUMN);
         content->setPadding(24, 34, 24, 34);
 
-        addSection(content, tr("pipensx/settings/section_language"));
+        addSection(content, tr("pipensx/settings/section_general"));
         language_ = new brls::SelectorCell();
         language_->init(tr("pipensx/settings/language"),
             {tr("pipensx/settings/language_auto"),
@@ -57,6 +58,22 @@ public:
                     tr("pipensx/settings/language_restart"));
             });
         content->addView(language_);
+
+        checkForUpdates_ = new brls::BooleanCell();
+        checkForUpdates_->init(tr("pipensx/settings/check_updates"),
+            settings_->get().checkForUpdatesOnLaunch,
+            [this](bool enabled) {
+                AppSettingsData values = settings_->get();
+                bool previous = values.checkForUpdatesOnLaunch;
+                values.checkForUpdatesOnLaunch = enabled;
+                if (!persist(values, "update_check"))
+                    checkForUpdates_->setOn(previous, false);
+            });
+        content->addView(checkForUpdates_);
+        updateAction_ = actionCell(tr("pipensx/settings/check_update_now"),
+            tr("pipensx/settings/check_update_detail"),
+            [this] { checkForUpdateNow(); });
+        content->addView(updateAction_);
 
         addSection(content, tr("pipensx/settings/section_catalog"));
         catalogFilter_ = new brls::SelectorCell();
@@ -87,17 +104,9 @@ public:
             });
         content->addView(refreshCatalog_);
 
-        content->addView(actionCell(tr("pipensx/settings/update_catalog"),
-            tr("pipensx/settings/update_catalog_detail"),
-            [this] { refreshCatalogNow(); }));
-        content->addView(actionCell(tr("pipensx/settings/update_artwork"),
-            tr("pipensx/settings/update_artwork_detail"),
-            [this] { refreshMetadataNow(); }));
-        if (mods_) {
-            content->addView(actionCell(tr("pipensx/settings/update_mods"),
-                tr("pipensx/settings/update_mods_detail"),
-                [this] { refreshModsNow(); }));
-        }
+        content->addView(actionCell(tr("pipensx/settings/update_now"),
+            tr("pipensx/settings/update_now_detail"),
+            [this] { updateAllNow(); }));
 
         addSection(content, tr("pipensx/settings/section_downloads"));
         streamSelection_ = new brls::SelectorCell();
@@ -119,29 +128,6 @@ public:
             });
         content->addView(streamSelection_);
 
-        installLocation_ = new brls::SelectorCell();
-        installLocation_->init(tr("pipensx/settings/install_location"),
-            {tr("pipensx/settings/install_sd"),
-             tr("pipensx/settings/install_nand")},
-            settings_->get().installLocation == InstallLocation::SystemMemory
-                ? 1 : 0,
-            [this](int selected) {
-                AppSettingsData values = settings_->get();
-                InstallLocation previous = values.installLocation;
-                values.installLocation = selected == 1
-                    ? InstallLocation::SystemMemory
-                    : InstallLocation::SdCard;
-                if (!persist(values, "install_location")) {
-                    installLocation_->setSelection(
-                        previous == InstallLocation::SystemMemory ? 1 : 0,
-                        true);
-                    return;
-                }
-                manager_->setInstallTarget(
-                    installTargetFor(values.installLocation));
-            });
-        content->addView(installLocation_);
-
         showCompleted_ = new brls::BooleanCell();
         showCompleted_->init(tr("pipensx/settings/show_completed"),
             settings_->get().showCompletedDownloads,
@@ -154,68 +140,11 @@ public:
             });
         content->addView(showCompleted_);
 
-        addSection(content, tr("pipensx/settings/section_updates"));
-        checkForUpdates_ = new brls::BooleanCell();
-        checkForUpdates_->init(tr("pipensx/settings/check_updates"),
-            settings_->get().checkForUpdatesOnLaunch,
-            [this](bool enabled) {
-                AppSettingsData values = settings_->get();
-                bool previous = values.checkForUpdatesOnLaunch;
-                values.checkForUpdatesOnLaunch = enabled;
-                if (!persist(values, "update_check"))
-                    checkForUpdates_->setOn(previous, false);
-            });
-        content->addView(checkForUpdates_);
-        updateAction_ = actionCell(tr("pipensx/settings/check_update_now"),
-            tr("pipensx/settings/check_update_detail"),
-            [this] { checkForUpdateNow(); });
-        content->addView(updateAction_);
-
-        addSection(content, tr("pipensx/settings/section_diagnostics"));
-        auto* description = new brls::Label();
-        description->setText(tr("pipensx/settings/diagnostics_note"));
-        description->setFontSize(16);
-        description->setTextColor(theme::textSecondary());
-        description->setMarginBottom(10);
-        content->addView(description);
-
-        extendedTelemetry_ = new brls::BooleanCell();
-        extendedTelemetry_->init(tr("pipensx/settings/extended_telemetry"),
-            settings_->get().extendedTelemetry,
-            [this](bool enabled) {
-                AppSettingsData values = settings_->get();
-                bool previous = values.extendedTelemetry;
-                values.extendedTelemetry = enabled;
-                if (!persist(values, "extended_telemetry")) {
-                    extendedTelemetry_->setOn(previous, false);
-                    return;
-                }
-                telemetry_set_enabled(enabled ? 1 : 0);
-                brls::Application::notify(enabled
-                    ? tr("pipensx/settings/telemetry_on")
-                    : tr("pipensx/settings/telemetry_off"));
-            });
-        content->addView(extendedTelemetry_);
-
-        content->addView(actionCell(tr("pipensx/settings/capture_snapshot"),
-            tr("pipensx/settings/capture_snapshot_detail"),
-            [this] { captureSnapshot(); }));
-        content->addView(actionCell(tr("pipensx/settings/clear_log"),
-            tr("pipensx/settings/clear_log_detail"),
-            [this] { confirmClearLog(); }));
-        content->addView(actionCell(tr("pipensx/settings/clear_artwork"),
-            tr("pipensx/settings/clear_artwork_detail"),
-            [this] { confirmClearArtwork(); }));
-        content->addView(actionCell(tr("pipensx/settings/reset"),
-            tr("pipensx/settings/reset_detail"),
-            [this] { confirmReset(); }));
-
-        auto* path = new brls::Label();
-        path->setText(tr("pipensx/settings/log_path", LogPath));
-        path->setFontSize(15);
-        path->setTextColor(theme::textTertiary());
-        path->setMarginTop(18);
-        content->addView(path);
+        auto* advanced = actionCell(tr("pipensx/settings/advanced"),
+            tr("pipensx/settings/advanced_detail"),
+            [this] { openAdvanced(); });
+        advanced->setMarginTop(18);
+        content->addView(advanced);
 
         auto* scroll = new brls::ScrollingFrame();
         scroll->setGrow(1);
@@ -228,15 +157,6 @@ public:
     }
 
 private:
-    static void addSection(brls::Box* content, const std::string& text) {
-        auto* title = new brls::Label();
-        title->setText(text);
-        title->setFontSize(25);
-        title->setMarginTop(14);
-        title->setMarginBottom(8);
-        content->addView(title);
-    }
-
     // Settings-selector row for a stored language value; falls back to the
     // "auto" row so a value from a newer build cannot leave the cell blank.
     static int languageIndex(const std::string& value) {
@@ -247,18 +167,14 @@ private:
         return 0;
     }
 
-    static brls::DetailCell* actionCell(const std::string& title,
-                                        const std::string& detail,
-                                        std::function<void()> callback) {
-        auto* cell = new brls::DetailCell();
-        cell->setText(title);
-        cell->setDetailText(detail);
-        cell->registerClickAction(
-            [callback = std::move(callback)](brls::View*) {
-                callback();
-                return true;
-            });
-        return cell;
+    void openAdvanced() {
+        auto alive = alive_;
+        brls::Application::pushActivity(new AdvancedSettingsActivity(
+            settings_, manager_, catalog_, metadata_, installed_,
+            [this, alive] {
+                if (alive->load())
+                    applyValues();
+            }));
     }
 
     bool persist(const AppSettingsData& values, const char* tag) {
@@ -284,19 +200,32 @@ private:
                                        : "metadata_refresh_time");
     }
 
-    void refreshCatalogNow() {
+    // The manual "Update now" action chains all three sources; each refresh
+    // takes an onDone continuation the chain uses to start the next once the
+    // previous has cleared refreshInFlight_. A failure stops the chain.
+    void updateAllNow() {
+        if (refreshInFlight_)
+            return;
+        refreshCatalogNow([this] {
+            refreshMetadataNow([this] { refreshModsNow(); });
+        });
+    }
+
+    void refreshCatalogNow(std::function<void()> onDone = {}) {
         if (refreshInFlight_)
             return;
         refreshInFlight_ = true;
         brls::Application::notify(tr("pipensx/catalog/updating_catalog"));
         auto alive = alive_;
         CatalogService* catalog = catalog_;
-        brls::async([this, alive, catalog] {
+        brls::async([this, alive, catalog, onDone = std::move(onDone)]()
+                        mutable {
             std::vector<CatalogEntry> entries;
             std::string error;
             bool ok = catalog->fetchLatest(entries, error);
             brls::sync([this, alive, ok, entries = std::move(entries),
-                        error = std::move(error)]() mutable {
+                        error = std::move(error),
+                        onDone = std::move(onDone)]() mutable {
                 if (!alive->load())
                     return;
                 refreshInFlight_ = false;
@@ -311,23 +240,27 @@ private:
                 brls::Application::notify(
                     tr("pipensx/catalog/updated_catalog",
                        catalog_->entries().size()));
+                if (onDone)
+                    onDone();
             });
         });
     }
 
-    void refreshMetadataNow() {
+    void refreshMetadataNow(std::function<void()> onDone = {}) {
         if (refreshInFlight_ || !metadata_)
             return;
         refreshInFlight_ = true;
         brls::Application::notify(tr("pipensx/catalog/updating_artwork"));
         auto alive = alive_;
         GameMetadataService* metadata = metadata_;
-        brls::async([this, alive, metadata] {
+        brls::async([this, alive, metadata, onDone = std::move(onDone)]()
+                        mutable {
             MetadataSnapshot snapshot;
             std::string error;
             bool ok = metadata->fetchLatest(snapshot, error);
             brls::sync([this, alive, ok, snapshot = std::move(snapshot),
-                        error = std::move(error)]() mutable {
+                        error = std::move(error),
+                        onDone = std::move(onDone)]() mutable {
                 if (!alive->load())
                     return;
                 refreshInFlight_ = false;
@@ -342,23 +275,26 @@ private:
                 recordRefreshTime(false, true);
                 brls::Application::notify(
                     tr("pipensx/catalog/updated_artwork", metadata_->size()));
+                if (onDone)
+                    onDone();
             });
         });
     }
 
-    void refreshModsNow() {
+    void refreshModsNow(std::function<void()> onDone = {}) {
         if (refreshInFlight_ || !mods_)
             return;
         refreshInFlight_ = true;
         brls::Application::notify(tr("pipensx/settings/updating_mods"));
         auto alive = alive_;
         ModIndexService* mods = mods_;
-        brls::async([this, alive, mods] {
+        brls::async([this, alive, mods, onDone = std::move(onDone)]() mutable {
             ModIndexSnapshot snapshot;
             std::string error;
             bool ok = mods->fetchLatest(snapshot, error);
             brls::sync([this, alive, ok, snapshot = std::move(snapshot),
-                        error = std::move(error)]() mutable {
+                        error = std::move(error),
+                        onDone = std::move(onDone)]() mutable {
                 if (!alive->load())
                     return;
                 refreshInFlight_ = false;
@@ -372,6 +308,8 @@ private:
                 recordRefreshTime(false, false, true);
                 brls::Application::notify(
                     tr("pipensx/settings/updated_mods", mods_->size()));
+                if (onDone)
+                    onDone();
             });
         });
     }
@@ -489,6 +427,9 @@ private:
         });
     }
 
+    // Re-sync the main-list cells. Called after a factory reset performed on the
+    // Advanced sub-page (via its onReset callback), since the nested settings tab
+    // does not get a lifecycle event when that activity pops.
     void applyValues() {
         const AppSettingsData& values = settings_->get();
         language_->setSelection(languageIndex(values.language), true);
@@ -498,93 +439,8 @@ private:
         streamSelection_->setSelection(
             values.streamSelection == StreamSelection::PackagesOnly ? 1 : 0,
             true);
-        installLocation_->setSelection(
-            values.installLocation == InstallLocation::SystemMemory ? 1 : 0,
-            true);
-        manager_->setInstallTarget(installTargetFor(values.installLocation));
         showCompleted_->setOn(values.showCompletedDownloads, false);
-        extendedTelemetry_->setOn(values.extendedTelemetry, false);
         checkForUpdates_->setOn(values.checkForUpdatesOnLaunch, false);
-        telemetry_set_enabled(values.extendedTelemetry ? 1 : 0);
-    }
-
-    void captureSnapshot() {
-        size_t active = 0;
-        size_t errors = 0;
-        for (const DownloadTask& task : manager_->snapshot()) {
-            if (task.status == DownloadStatus::Error)
-                ++errors;
-            else if (task.status != DownloadStatus::Completed &&
-                     task.status != DownloadStatus::Installed &&
-                     task.status != DownloadStatus::Paused)
-                ++active;
-        }
-        uint64_t freeBytes = 0;
-        struct statvfs storage {};
-        if (statvfs("sdmc:/", &storage) == 0)
-            freeBytes = static_cast<uint64_t>(storage.f_bavail) *
-                        static_cast<uint64_t>(storage.f_frsize);
-        uint32_t hos = hosversionGet();
-        diagnostic_snapshot("system", "manual",
-            "version=%s hos=%u.%u.%u operation_mode=%d telemetry=%d "
-            "catalog=%zu metadata=%zu installed=%zu active=%zu errors=%zu "
-            "sd_free_bytes=%llu",
-            PIPENSX_VERSION, HOSVER_MAJOR(hos), HOSVER_MINOR(hos),
-            HOSVER_MICRO(hos), static_cast<int>(appletGetOperationMode()),
-            telemetry_enabled(), catalog_->entries().size(), metadata_->size(),
-            installed_->titles().size(), active, errors,
-            static_cast<unsigned long long>(freeBytes));
-        brls::Application::notify(tr("pipensx/settings/snapshot_written"));
-    }
-
-    void confirmClearLog() {
-        auto* dialog = new brls::Dialog(
-            tr("pipensx/settings/clear_log_question"));
-        dialog->addButton(tr("pipensx/settings/clear_log"), [] {
-            if (!clearApplicationLog())
-                brls::Application::notify(
-                    tr("pipensx/settings/clear_log_failed"));
-            else
-                brls::Application::notify(tr("pipensx/settings/clear_log_done"));
-        });
-        dialog->addButton(tr("pipensx/common/cancel"), [] {});
-        dialog->open();
-    }
-
-    void confirmClearArtwork() {
-        auto* dialog = new brls::Dialog(
-            tr("pipensx/settings/clear_artwork_question"));
-        dialog->addButton(tr("pipensx/settings/clear_artwork_action"), [this] {
-            std::string error;
-            if (!metadata_->clearImageCache(error)) {
-                diagnostic_error("metadata", "clear_cache", "error=%s",
-                                 error.c_str());
-                brls::Application::notify(error);
-            } else {
-                brls::Application::notify(
-                    tr("pipensx/settings/clear_artwork_done"));
-            }
-        });
-        dialog->addButton(tr("pipensx/common/cancel"), [] {});
-        dialog->open();
-    }
-
-    void confirmReset() {
-        auto* dialog = new brls::Dialog(
-            tr("pipensx/settings/reset_question"));
-        dialog->addButton(tr("pipensx/settings/reset_action"), [this] {
-            std::string error;
-            if (!settings_->reset(error)) {
-                diagnostic_error("settings", "reset", "error=%s",
-                                 error.c_str());
-                brls::Application::notify(error);
-                return;
-            }
-            applyValues();
-            brls::Application::notify(tr("pipensx/settings/reset_done"));
-        });
-        dialog->addButton(tr("pipensx/common/cancel"), [] {});
-        dialog->open();
     }
 
     AppSettings* settings_;
@@ -601,9 +457,7 @@ private:
     brls::BooleanCell* checkForUpdates_ = nullptr;
     brls::DetailCell* updateAction_ = nullptr;
     brls::SelectorCell* streamSelection_ = nullptr;
-    brls::SelectorCell* installLocation_ = nullptr;
     brls::BooleanCell* showCompleted_ = nullptr;
-    brls::BooleanCell* extendedTelemetry_ = nullptr;
     bool refreshInFlight_ = false;
     bool updateInFlight_ = false;
 };

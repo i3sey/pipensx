@@ -285,9 +285,8 @@
   "settings": {
     "section_catalog": "Catalog",
     "section_downloads": "Downloads",
-    "section_updates": "Updates",
     "section_diagnostics": "Diagnostics",
-    "section_language": "Language",
+    "section_general": "General",
     "language": "Language",
     "language_auto": "Auto",
     "language_en": "English",
@@ -297,12 +296,8 @@
     "filter_all": "All",
     "filter_games": "Games",
     "auto_refresh": "Auto-refresh daily",
-    "update_catalog": "Update catalog",
-    "update_catalog_detail": "Langegen",
-    "update_artwork": "Update artwork",
-    "update_artwork_detail": "pipensx-metadata",
-    "update_mods": "Update mods",
-    "update_mods_detail": "ModCD",
+    "update_now": "Update now",
+    "update_now_detail": "Catalog, artwork, mods",
     "updating_mods": "Updating mods index from ModCD...",
     "updated_mods": "Mods index updated: {} titles.",
     "stream_selection": "Default streaming file selection",
@@ -355,7 +350,9 @@
     "reset_question": "Reset all pipensx settings?",
     "reset_action": "Reset settings",
     "reset_done": "Settings restored to defaults.",
-    "log_path": "Log: {}"
+    "log_path": "Log: {}",
+    "advanced": "Advanced",
+    "advanced_detail": "Diagnostics, storage, reset"
   },
   "about": {
     "version": "Version {}",

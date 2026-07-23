@@ -285,9 +285,8 @@
   "settings": {
     "section_catalog": "Каталог",
     "section_downloads": "Загрузки",
-    "section_updates": "Обновления",
     "section_diagnostics": "Диагностика",
-    "section_language": "Язык",
+    "section_general": "Общие",
     "language": "Язык",
     "language_auto": "Авто",
     "language_en": "English",
@@ -297,12 +296,8 @@
     "filter_all": "Все",
     "filter_games": "Игры",
     "auto_refresh": "Обновлять раз в сутки",
-    "update_catalog": "Обновить каталог",
-    "update_catalog_detail": "Langegen",
-    "update_artwork": "Обновить обложки",
-    "update_artwork_detail": "pipensx-metadata",
-    "update_mods": "Обновить моды",
-    "update_mods_detail": "ModCD",
+    "update_now": "Обновить сейчас",
+    "update_now_detail": "Каталог, обложки, моды",
     "updating_mods": "Обновление индекса модов с ModCD...",
     "updated_mods": "Индекс модов обновлён. Игр: {}",
     "stream_selection": "Выбор файлов по умолчанию",
@@ -355,7 +350,9 @@
     "reset_question": "Сбросить все настройки pipensx?",
     "reset_action": "Сбросить настройки",
     "reset_done": "Настройки сброшены.",
-    "log_path": "Журнал: {}"
+    "log_path": "Журнал: {}",
+    "advanced": "Дополнительно",
+    "advanced_detail": "Диагностика, хранилище, сброс"
   },
   "about": {
     "version": "Версия {}",
