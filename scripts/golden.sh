@@ -22,7 +22,7 @@ GOLDEN_DIR="$ROOT/tests/golden"
 OUT_DIR="${GOLDEN_OUT:-$ROOT/build-golden/golden-out}"
 FUZZ="${GOLDEN_FUZZ:-5%}"
 MAX_DIFF="${GOLDEN_MAX_DIFF:-25000}"
-SCREENS="${GOLDEN_SCREENS:-catalog detail frame downloads installed settings about torrent-selection}"
+SCREENS="${GOLDEN_SCREENS:-catalog detail frame downloads installed settings about torrent-selection bug-report bug-report-detail}"
 # Behaviour checks: these assert and exit non-zero instead of writing a
 # baseline, so they are never compared against tests/golden/. Entries are
 # <screen> or <screen>:<locale>; hints-budget runs in both because Russian hint

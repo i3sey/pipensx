@@ -9,7 +9,8 @@
 //                 [--locale en-US|ru]
 //                 --screen catalog|shelf-scroll|shelf-header|detail|torrent-selection|
 //                          torrent-selection-scroll|downloads|downloads-back|frame|
-//                          hints-budget|installed|settings|about
+//                          hints-budget|installed|settings|about|bug-report|
+//                          bug-report-detail
 //                 [--frames N] [--sandbox <dir>]
 //
 // downloads-back, torrent-selection-scroll and hints-budget are behaviour
@@ -57,6 +58,7 @@
 #include "ui/installed/installed_view.hpp"
 #include "ui/main_frame.hpp"
 #include "ui/settings/about_view.hpp"
+#include "ui/settings/bug_report_view.hpp"
 #include "ui/settings/settings_view.hpp"
 #include "ui/theme.hpp"
 
@@ -519,6 +521,21 @@ int main(int argc, char** argv) {
             &mods));
     } else if (screen == "about") {
         activity = new GoldenActivity(new AboutView());
+    } else if (screen == "bug-report" || screen == "bug-report-detail") {
+        // Fixed log fixture: the live path snapshots statvfs/firmware/clock,
+        // none of which are deterministic. BugReportActivity is its own
+        // AppletFrame, so it is pushed directly rather than wrapped.
+        static const std::string kFixtureLog =
+            "[  12345] [startup] boot\n"
+            "[  12800] [meta] name='Fixture Title' hash=0011223344\n"
+            "[  13010] [diagnostic] schema=1 level=error stage=net tag=timeout "
+            "peer=10.0.0.5 msg=connection_reset\n"
+            "[  13100] [diagnostic] schema=1 stage=system tag=report "
+            "version=1.0.0 hos=18.1.0 operation_mode=1 telemetry=0 catalog=42 "
+            "installed=3 active=1 errors=1 sd_free_bytes=126976000000\n";
+        activity = new BugReportActivity(&manager, &catalog, &metadata,
+                                         &installed, kFixtureLog,
+                                         screen == "bug-report-detail");
     } else {
         return fail("unknown --screen");
     }

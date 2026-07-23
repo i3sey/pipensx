@@ -21,6 +21,7 @@
 #include "ui/common/ui_helpers.hpp"
 #include "ui/i18n.hpp"
 #include "ui/settings/advanced_settings.hpp"
+#include "ui/settings/bug_report_view.hpp"
 #include "ui/settings/settings_cells.hpp"
 #include "ui/theme.hpp"
 
@@ -140,11 +141,15 @@ public:
             });
         content->addView(showCompleted_);
 
-        auto* advanced = actionCell(tr("pipensx/settings/advanced"),
+        auto* reportBug = actionCell(tr("pipensx/settings/report_bug"),
+            tr("pipensx/settings/report_bug_detail"),
+            [this] { openBugReport(); });
+        reportBug->setMarginTop(18);
+        content->addView(reportBug);
+
+        content->addView(actionCell(tr("pipensx/settings/advanced"),
             tr("pipensx/settings/advanced_detail"),
-            [this] { openAdvanced(); });
-        advanced->setMarginTop(18);
-        content->addView(advanced);
+            [this] { openAdvanced(); }));
 
         auto* scroll = new brls::ScrollingFrame();
         scroll->setGrow(1);
@@ -165,6 +170,11 @@ private:
                 return static_cast<int>(i);
         }
         return 0;
+    }
+
+    void openBugReport() {
+        brls::Application::pushActivity(new BugReportActivity(
+            manager_, catalog_, metadata_, installed_));
     }
 
     void openAdvanced() {

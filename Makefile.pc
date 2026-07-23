@@ -64,6 +64,7 @@ REQUEST_GATE_TEST_TARGET = tests/test_request_gate
 JOURNAL_TEST_TARGET = tests/test_install_journal
 WEB_SEED_TEST_TARGET = tests/test_web_seed
 MSE_TEST_TARGET = tests/test_mse
+BUG_REPORT_TEST_TARGET = tests/test_bug_report
 TEST_SRCS = \
     tests/test_piece.c       \
     src/core/sha1.c          \
@@ -159,7 +160,8 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 		$(RAM_BUDGET_TEST_TARGET) $(REQUEST_GATE_TEST_TARGET) \
 		$(JOURNAL_TEST_TARGET) $(WEB_SEED_TEST_TARGET) \
 		$(FAVORITES_TEST_TARGET) \
-		$(MSE_TEST_TARGET)
+		$(MSE_TEST_TARGET) \
+		$(BUG_REPORT_TEST_TARGET)
 	./$(TEST_TARGET)
 	./$(MANAGER_TEST_TARGET)
 	./$(PACKAGE_TEST_TARGET)
@@ -178,6 +180,8 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 	./$(WEB_SEED_TEST_TARGET)
 	./$(FAVORITES_TEST_TARGET)
 	./$(MSE_TEST_TARGET)
+	./$(BUG_REPORT_TEST_TARGET)
+	python3 tests/test_bug_report_decode.py
 	python3 tests/test_telemetry_analyzer.py
 	python3 scripts/check_i18n.py
 
@@ -230,6 +234,9 @@ $(WEB_SEED_TEST_TARGET): tests/test_web_seed.cpp src/app/web_seed_source.o \
 $(MSE_TEST_TARGET): tests/test_mse.c src/core/mse.c src/core/sha1.c
 	$(CC) $(CFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -lcrypto
 
+$(BUG_REPORT_TEST_TARGET): tests/test_bug_report.cpp src/app/bug_report.cpp
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ -lz
+
 $(TELEMETRY_TEST_TARGET): tests/test_telemetry.c src/core/util.c
 	$(CC) $(CFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
 
@@ -259,6 +266,6 @@ clean:
 		$(INSTALL_SPACE_TEST_TARGET) $(BATCH_INSTALL_TEST_TARGET) \
 		$(RAM_BUDGET_TEST_TARGET) $(REQUEST_GATE_TEST_TARGET) \
 		$(JOURNAL_TEST_TARGET) $(FAVORITES_TEST_TARGET) \
-		$(MSE_TEST_TARGET)
+		$(MSE_TEST_TARGET) $(BUG_REPORT_TEST_TARGET)
 
 .PHONY: all test clean

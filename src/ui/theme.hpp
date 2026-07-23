@@ -78,6 +78,13 @@ inline void registerColors() {
 
         {"pipensx/graph_bg", nvgRGBA(208, 210, 216, 120), nvgRGBA(30, 31, 36, 120)},
         {"pipensx/graph_grid", nvgRGBA(60, 60, 70, 35), nvgRGBA(180, 180, 190, 35)},
+
+        // Bug-report QR codes. Deliberately theme-independent pure black on
+        // pure white: a camera photographing a TV needs maximum contrast, and a
+        // theme-tinted or inverted (dark-mode) code scans far worse. These are
+        // the one place a "paper"/"ink" pair is fixed across both themes.
+        {"pipensx/qr_paper", nvgRGB(255, 255, 255), nvgRGB(255, 255, 255)},
+        {"pipensx/qr_ink", nvgRGB(0, 0, 0), nvgRGB(0, 0, 0)},
     };
     for (const auto& t : kTokens) {
         brls::Theme::getLightTheme().addColor(t.name, t.light);
@@ -107,5 +114,7 @@ inline NVGcolor meterUsed() { return color("pipensx/meter_used"); }
 inline NVGcolor meterBorder() { return color("pipensx/meter_border"); }
 inline NVGcolor graphBg() { return color("pipensx/graph_bg"); }
 inline NVGcolor graphGrid() { return color("pipensx/graph_grid"); }
+inline NVGcolor qrPaper() { return color("pipensx/qr_paper"); }
+inline NVGcolor qrInk() { return color("pipensx/qr_ink"); }
 
 } // namespace pipensx::ui::theme

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <switch.h>
+#include <sys/statvfs.h>
 
 #include <algorithm>
 #include <atomic>
@@ -14,7 +15,10 @@ extern "C" {
 #include "core/util.h"
 }
 #include "app/app_settings.hpp"
+#include "app/catalog_service.hpp"
 #include "app/download_manager.hpp"
+#include "app/game_metadata_service.hpp"
+#include "app/installed_title_service.hpp"
 #include "install/install_backend.hpp"
 #include "platform/switch_crashlog.h"
 #include "ui/i18n.hpp"
@@ -62,6 +66,42 @@ inline bool clearApplicationLog() {
 inline void startupStage(const char* stage) {
     switch_crashlog_stage(stage);
     log_msg("[startup] %s\n", stage);
+}
+
+// Write one structured "[diagnostic] schema=1 ... [system]" line capturing the
+// build, firmware, storage and library state. Shared by Advanced's "Capture
+// snapshot" action and the bug-report screen (which reads it straight back out
+// of the log tail it encodes). diagnostic_snapshot() flushes to disk on its own.
+inline void writeSystemSnapshot(DownloadManager* manager,
+                                CatalogService* catalog,
+                                GameMetadataService* metadata,
+                                InstalledTitleService* installed,
+                                const char* tag) {
+    size_t active = 0;
+    size_t errors = 0;
+    for (const DownloadTask& task : manager->snapshot()) {
+        if (task.status == DownloadStatus::Error)
+            ++errors;
+        else if (task.status != DownloadStatus::Completed &&
+                 task.status != DownloadStatus::Installed &&
+                 task.status != DownloadStatus::Paused)
+            ++active;
+    }
+    uint64_t freeBytes = 0;
+    struct statvfs storage {};
+    if (statvfs("sdmc:/", &storage) == 0)
+        freeBytes = static_cast<uint64_t>(storage.f_bavail) *
+                    static_cast<uint64_t>(storage.f_frsize);
+    uint32_t hos = hosversionGet();
+    diagnostic_snapshot("system", tag,
+        "version=%s hos=%u.%u.%u operation_mode=%d telemetry=%d "
+        "catalog=%zu metadata=%zu installed=%zu active=%zu errors=%zu "
+        "sd_free_bytes=%llu",
+        PIPENSX_VERSION, HOSVER_MAJOR(hos), HOSVER_MINOR(hos),
+        HOSVER_MICRO(hos), static_cast<int>(appletGetOperationMode()),
+        telemetry_enabled(), catalog->entries().size(), metadata->size(),
+        installed->titles().size(), active, errors,
+        static_cast<unsigned long long>(freeBytes));
 }
 
 inline bool isApplicationMode() {

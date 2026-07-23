@@ -352,7 +352,16 @@
     "reset_done": "Settings restored to defaults.",
     "log_path": "Log: {}",
     "advanced": "Advanced",
-    "advanced_detail": "Diagnostics, storage, reset"
+    "advanced_detail": "Diagnostics, storage, reset",
+    "report_bug": "Report a bug",
+    "report_bug_detail": "Show recent logs as QR codes for the developer",
+    "report_notice": "This shares recent logs, including titles you opened and network info, with the developer.",
+    "report_more_detail": "More detail",
+    "report_id": "Report {} · {} codes",
+    "report_id_truncated": "Report {} · {} codes (recent log only)",
+    "report_empty": "Log is empty — only device info was captured.",
+    "report_hint": "Photograph this whole screen and send it with a description of the problem.",
+    "report_hint_detailed": "Detailed mode: send a Capture-button screenshot for a clean scan. Press Y for the simpler view."
   },
   "about": {
     "version": "Version {}",

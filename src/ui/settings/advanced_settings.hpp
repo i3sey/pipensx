@@ -143,31 +143,7 @@ private:
     }
 
     void captureSnapshot() {
-        size_t active = 0;
-        size_t errors = 0;
-        for (const DownloadTask& task : manager_->snapshot()) {
-            if (task.status == DownloadStatus::Error)
-                ++errors;
-            else if (task.status != DownloadStatus::Completed &&
-                     task.status != DownloadStatus::Installed &&
-                     task.status != DownloadStatus::Paused)
-                ++active;
-        }
-        uint64_t freeBytes = 0;
-        struct statvfs storage {};
-        if (statvfs("sdmc:/", &storage) == 0)
-            freeBytes = static_cast<uint64_t>(storage.f_bavail) *
-                        static_cast<uint64_t>(storage.f_frsize);
-        uint32_t hos = hosversionGet();
-        diagnostic_snapshot("system", "manual",
-            "version=%s hos=%u.%u.%u operation_mode=%d telemetry=%d "
-            "catalog=%zu metadata=%zu installed=%zu active=%zu errors=%zu "
-            "sd_free_bytes=%llu",
-            PIPENSX_VERSION, HOSVER_MAJOR(hos), HOSVER_MINOR(hos),
-            HOSVER_MICRO(hos), static_cast<int>(appletGetOperationMode()),
-            telemetry_enabled(), catalog_->entries().size(), metadata_->size(),
-            installed_->titles().size(), active, errors,
-            static_cast<unsigned long long>(freeBytes));
+        writeSystemSnapshot(manager_, catalog_, metadata_, installed_, "manual");
         brls::Application::notify(tr("pipensx/settings/snapshot_written"));
     }
 

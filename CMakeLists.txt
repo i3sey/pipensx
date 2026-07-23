@@ -134,6 +134,7 @@ set(APP_SERVICE_SOURCES
     src/app/mod_index_service.cpp
     src/app/install_space.cpp
     src/app/magnet_resolver.cpp
+    src/app/bug_report.cpp
     src/install/install_journal.cpp
     src/install/package_stream.cpp
 )
@@ -145,6 +146,7 @@ set(UI_SOURCES
     src/ui/downloads/downloads_view.cpp
     src/ui/downloads/file_picker.cpp
     src/ui/settings/about_view.cpp
+    src/ui/settings/bug_report_view.cpp
 )
 
 if (NOT PIPENSX_GOLDEN)
