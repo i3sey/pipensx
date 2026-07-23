@@ -158,31 +158,12 @@ int main(int argc, char** argv) {
     UpdateService launchUpdater;
     const bool updatePendingConfirmation =
         launchUpdater.hasPendingConfirmation();
-    // A verified download left behind by a session that quit before its
-    // restart must chain through the minimal updater, never overwrite the NRO
-    // that is currently executing.
-    if (launchUpdater.stagedReady()) {
-        if (envHasNextLoad() &&
-            access(launchUpdater.helperPath().c_str(), F_OK) == 0) {
-            const std::string helper = launchUpdater.helperPath();
-            const std::string arguments =
-                "\"" + helper + "\" --finish-update";
-            const Result result = envSetNextLoad(helper.c_str(),
-                                                 arguments.c_str());
-            if (R_SUCCEEDED(result)) {
-                log_msg("[update] staged update ready; launching helper\n");
-                log_close();
-                return 0;
-            }
-            diagnostic_error("update", "helper_nextload", "result=0x%08x",
-                             result);
-        } else {
-            diagnostic_error("update", "helper_missing",
-                             "nextload=%d helper=%d",
-                             envHasNextLoad() ? 1 : 0,
-                             access(launchUpdater.helperPath().c_str(), F_OK) == 0);
-        }
-    }
+    // A verified download staged by a previous session that quit before the
+    // helper finished the swap. Do NOT auto-chain to the helper here: an
+    // unconditional envSetNextLoad + quit on every launch turns a single failed
+    // helper load into a crash loop that bricks the app. It is surfaced as a
+    // user-triggered "install now?" prompt once the UI is up (see below).
+    const bool updatePendingFinish = launchUpdater.stagedReady();
     AppSettings settings(SettingsPath, TelemetryFlagPath);
     std::string settingsError;
     if (!settings.load(settingsError))
@@ -301,7 +282,37 @@ int main(int argc, char** argv) {
 
         startupStage("push MainActivity");
         brls::Application::pushActivity(activity);
-        if (settings.get().checkForUpdatesOnLaunch) {
+        if (updatePendingFinish) {
+            // Finish an update staged before a previous quit. User-triggered so
+            // a helper that fails to load can never become an automatic loop.
+            startupStage("pending update prompt");
+            const std::string helper = launchUpdater.helperPath();
+            auto* dialog = new brls::Dialog(
+                tr("pipensx/settings/update_pending_install"));
+            dialog->addButton(tr("pipensx/settings/install_and_restart"),
+                              [helper] {
+#ifdef __SWITCH__
+                if (!envHasNextLoad()) {
+                    brls::Application::notify(
+                        tr("pipensx/settings/update_no_restart"));
+                    return;
+                }
+                const std::string arguments =
+                    "\"" + helper + "\" --finish-update";
+                const Result result = envSetNextLoad(helper.c_str(),
+                                                     arguments.c_str());
+                if (R_FAILED(result)) {
+                    brls::Application::notify(
+                        tr("pipensx/settings/update_restart_failed"));
+                    return;
+                }
+#endif
+                brls::Application::quit();
+            });
+            dialog->addButton(tr("pipensx/common/later"), [] {});
+            dialog->open();
+        }
+        if (!updatePendingFinish && settings.get().checkForUpdatesOnLaunch) {
             updater.checkAsync([](UpdateCheckResult result) {
                 if (!result.ok || !result.updateAvailable)
                     return;
@@ -350,8 +361,11 @@ int main(int argc, char** argv) {
                     if (!launchUpdater.confirmInstalled(error))
                         diagnostic_error("update", "confirm", "error=%s",
                                          error.c_str());
-                    else
+                    else {
                         log_msg("[update] installed update confirmed\n");
+                        brls::Application::notify(
+                            tr("pipensx/settings/updated_to", PIPENSX_VERSION));
+                    }
                 }
                 firstFrame = false;
             }

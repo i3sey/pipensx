@@ -219,12 +219,22 @@ target_link_libraries(pipensx PRIVATE
 )
 
 file(MAKE_DIRECTORY ${ROMFS_DIR})
+# The helper is chain-loaded by hbloader via envSetNextLoad. hbloader (notably
+# in application-override mode, which pipensx forces) can reject an NRO that
+# lacks a NACP/asset section and abort with a User Break while loading it, so
+# the helper is built as a complete homebrew NRO with a NACP and icon, exactly
+# like the main app.
 add_custom_target(sync_update_helper ALL
     COMMAND ${CMAKE_COMMAND} -E make_directory "${ROMFS_DIR}"
+    COMMAND ${NX_NACPTOOL_EXE}
+        --create "pipensx-updater" "${APP_AUTHOR}" "${PROJECT_VERSION}"
+        pipensx_updater.nacp
     COMMAND ${NX_ELF2NRO_EXE}
         pipensx_updater.elf "${ROMFS_DIR}/pipensx-updater.nro"
+        --icon=${APP_ICON}
+        --nacp=pipensx_updater.nacp
     DEPENDS pipensx_updater
-    BYPRODUCTS "${ROMFS_DIR}/pipensx-updater.nro"
+    BYPRODUCTS "${ROMFS_DIR}/pipensx-updater.nro" pipensx_updater.nacp
     VERBATIM
 )
 file(COPY
