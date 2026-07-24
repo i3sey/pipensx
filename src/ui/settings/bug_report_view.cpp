@@ -94,15 +94,15 @@ struct GridPlan {
     std::size_t payloadBytes = 0;  // compressed bytes per card
 };
 
-// Every arrangement worth trying for this box, best (fewest, largest codes)
-// first. Squarish grids only - a 5-across row of tiny codes reads worse than
-// two rows of large ones.
-std::vector<GridPlan> planGrids(float width, float height, float minPixels,
-                                qrcodegen::QrCode::Ecc ecc) {
-    std::vector<GridPlan> plans;
-    for (std::size_t count = 1; count <= kMaxCodes; ++count) {
-        const auto cols = static_cast<std::size_t>(
-            std::ceil(std::sqrt(static_cast<double>(count))));
+// The best arrangement of `count` codes on this box, or nothing if even one
+// module row does not fit. Every column split is tried, not just the square
+// one: the free area is wide and short (about 1216x400 on a 720p screen), so
+// three codes side by side keep a 397px cell while a 2x2 grid drops to 194px -
+// four times less log for the same screen.
+std::optional<GridPlan> planGrid(std::size_t count, float width, float height,
+                                 float minPixels, qrcodegen::QrCode::Ecc ecc) {
+    std::optional<GridPlan> best;
+    for (std::size_t cols = 1; cols <= count; ++cols) {
         const std::size_t rows = (count + cols - 1) / cols;
         const float cellW =
             (width - kCardGap * static_cast<float>(cols - 1)) /
@@ -118,7 +118,19 @@ std::vector<GridPlan> planGrids(float width, float height, float minPixels,
         const std::size_t payload = payloadForModules(maxModules, ecc);
         if (payload == 0)
             continue;
-        plans.push_back({count, cols, cell, payload});
+        if (!best || payload > best->payloadBytes)
+            best = GridPlan{count, cols, cell, payload};
+    }
+    return best;
+}
+
+// Every arrangement worth trying for this box, fewest codes first.
+std::vector<GridPlan> planGrids(float width, float height, float minPixels,
+                                qrcodegen::QrCode::Ecc ecc) {
+    std::vector<GridPlan> plans;
+    for (std::size_t count = 1; count <= kMaxCodes; ++count) {
+        if (auto plan = planGrid(count, width, height, minPixels, ecc))
+            plans.push_back(*plan);
     }
     return plans;
 }
