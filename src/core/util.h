@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <time.h>
 
 /* Monotonic time in milliseconds */
@@ -15,6 +16,17 @@ void log_init(const char *path);
 void log_close(void);
 void log_flush(void);
 int log_clear(void);
+
+/* The one open handle on the log. Everything that wants to write to or read
+ * from the log must go through it: the Switch's filesystem refuses to open a
+ * file that this process already holds open, so a second fopen() of the log
+ * path silently yields nothing. NULL when logging is disabled. */
+FILE *log_file(void);
+
+/* Copy up to `max` bytes from the end of the log into `buf`, flushing pending
+ * writes first, and return how many bytes were copied. The stream position is
+ * left at the end so appending continues undisturbed. */
+size_t log_read_tail(char *buf, size_t max);
 
 /* Logging — file-only on Switch, stdout and file on PC. */
 void log_msg(const char *fmt, ...);

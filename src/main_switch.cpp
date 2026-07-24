@@ -179,8 +179,7 @@ int main(int argc, char** argv) {
     std::set_terminate([] {
         switch_crashlog_stage("uncaught C++ exception");
         log_msg("[crash] std::terminate called\n");
-        if (gBorealisLog)
-            std::fflush(gBorealisLog);
+        log_flush();
         std::_Exit(134);
     });
 
@@ -392,11 +391,9 @@ int main(int argc, char** argv) {
         ncmExit();
     if (curlReady)
         curl_global_cleanup();
-    if (gBorealisLog) {
-        std::fflush(gBorealisLog);
-        std::fclose(gBorealisLog);
-        gBorealisLog = nullptr;
-    }
+    // Borealis writes into the same handle log_close() owns; drop its pointer
+    // before that handle goes away.
+    brls::Logger::setLogOutput(nullptr);
     log_close();
     return 0;
 }

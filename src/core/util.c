@@ -57,7 +57,10 @@ void log_init(const char *path) {
     if (!path) return;
     log_close();
     rotate_log_if_needed(path);
-    g_logfile = fopen(path, "a");
+    /* "a+", not "a": the bug-report screen reads the tail back through this
+     * same handle. On the Switch a second fopen() of a path this process
+     * already holds open returns NULL, so there is no other way to read it. */
+    g_logfile = fopen(path, "a+");
     if (g_logfile) {
         setvbuf(g_logfile, NULL, _IOFBF, 64 * 1024);
         fprintf(g_logfile, "=== pipensx log started ===\n");
@@ -79,6 +82,31 @@ void log_flush(void) {
     fflush(g_logfile);
     g_log_flush_ms = now_ms();
     funlockfile(g_logfile);
+}
+
+FILE *log_file(void) {
+    return g_logfile;
+}
+
+size_t log_read_tail(char *buf, size_t max) {
+    if (!g_logfile || !buf || max == 0) return 0;
+    size_t got = 0;
+    flockfile(g_logfile);
+    /* A read after a write on the same stream needs a seek in between (C11
+     * 7.21.5.3); fflush also makes the appended bytes visible to the read. */
+    if (fflush(g_logfile) == 0 && fseek(g_logfile, 0, SEEK_END) == 0) {
+        long size = ftell(g_logfile);
+        if (size > 0) {
+            size_t want = (size_t)size < max ? (size_t)size : max;
+            if (fseek(g_logfile, size - (long)want, SEEK_SET) == 0)
+                got = fread(buf, 1, want, g_logfile);
+        }
+    }
+    /* Back to the end: the stream stays open for append either way, but a
+     * mid-file position would make the next ftell()/log_clear() lie. */
+    fseek(g_logfile, 0, SEEK_END);
+    funlockfile(g_logfile);
+    return got;
 }
 
 int log_clear(void) {

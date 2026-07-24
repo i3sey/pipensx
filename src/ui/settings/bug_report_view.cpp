@@ -88,25 +88,13 @@ class ReportQrView : public brls::View {
     std::optional<qrcodegen::QrCode> qr_;
 };
 
-// Read the last `maxBytes` of a file. The bug report only wants recent history,
-// and the encoder trims further to fit the grid regardless.
-std::string readLogTail(const char* path, std::size_t maxBytes) {
-    FILE* file = std::fopen(path, "rb");
-    if (!file)
-        return {};
-    std::string out;
-    if (std::fseek(file, 0, SEEK_END) == 0) {
-        long size = std::ftell(file);
-        if (size > 0) {
-            std::size_t want =
-                std::min(static_cast<std::size_t>(size), maxBytes);
-            std::fseek(file, size - static_cast<long>(want), SEEK_SET);
-            out.resize(want);
-            std::size_t got = std::fread(&out[0], 1, want, file);
-            out.resize(got);
-        }
-    }
-    std::fclose(file);
+// Read the last `maxBytes` of the log. The bug report only wants recent
+// history, and the encoder trims further to fit the grid regardless. This goes
+// through log_read_tail (the one open handle) rather than fopen: the Switch
+// hands out no second handle on a file this process already holds open.
+std::string readLogTail(std::size_t maxBytes) {
+    std::string out(maxBytes, '\0');
+    out.resize(log_read_tail(&out[0], maxBytes));
     return out;
 }
 
@@ -192,10 +180,7 @@ void BugReportActivity::rebuild() {
         // Snapshot device state into the log, then flush both writers (the C
         // core and the borealis handle share the file) before reading it back.
         writeSystemSnapshot(manager_, catalog_, metadata_, installed_, "report");
-        log_flush();
-        if (gBorealisLog)
-            std::fflush(gBorealisLog);
-        tail = readLogTail(LogPath, 128 * 1024);
+        tail = readLogTail(128 * 1024);
     }
 
     const std::uint16_t sessionId = makeSessionId();

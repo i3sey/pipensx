@@ -32,7 +32,6 @@ inline pipensx::install::InstallStorageTarget installTargetFor(InstallLocation v
                : pipensx::install::InstallStorageTarget::SdCard;
 }
 
-inline FILE* gBorealisLog = nullptr;
 inline std::atomic<uint32_t> gCatalogTempSerial{0};
 inline constexpr const char* TelemetryFlagPath =
     "sdmc:/switch/pipensx/throughput_telemetry.enabled";
@@ -41,26 +40,21 @@ inline constexpr const char* SettingsPath =
 inline constexpr const char* LogPath =
     "sdmc:/switch/pipensx/pipensx.log";
 
+// Point borealis at the log handle log_init() already owns. Opening the path
+// a second time looks like it works on PC and writes nothing on the Switch,
+// whose filesystem refuses to hand out a second handle on a file this process
+// already has open - which silently dropped every borealis line on device.
 inline void openBorealisLog() {
-    if (gBorealisLog)
-        return;
-    gBorealisLog = std::fopen(LogPath, "a");
-    if (gBorealisLog) {
-        brls::Logger::setLogOutput(gBorealisLog);
+    if (FILE* file = log_file()) {
+        brls::Logger::setLogOutput(file);
         brls::Logger::setLogLevel(brls::LogLevel::LOG_DEBUG);
     }
 }
 
 inline bool clearApplicationLog() {
-    if (gBorealisLog) {
-        std::fflush(gBorealisLog);
-        brls::Logger::setLogOutput(nullptr);
-        std::fclose(gBorealisLog);
-        gBorealisLog = nullptr;
-    }
-    bool ok = log_clear() != 0;
-    openBorealisLog();
-    return ok;
+    // log_clear() truncates in place and keeps the handle, so borealis' output
+    // target stays valid across the clear.
+    return log_clear() != 0;
 }
 
 inline void startupStage(const char* stage) {
