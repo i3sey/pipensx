@@ -53,8 +53,14 @@ std::string dropNoisyLogLines(const std::string& logTail) {
         if (end == std::string::npos)
             end = logTail.size() - 1;
         const std::string_view line(logTail.data() + pos, end - pos + 1);
-        const bool noisy = line.find("[telemetry]") != std::string_view::npos &&
-                           line.find("stage=image") != std::string_view::npos;
+        // Per-image telemetry, and borealis' DEBUG stream (focus moves, cell
+        // recycling, input tokens). Both are bulk with no bearing on a bug:
+        // the DEBUG lines alone were 91% of a real session. Production runs at
+        // LOG_INFO, so this only bites when someone turns DEBUG back on.
+        const bool noisy =
+            (line.find("[telemetry]") != std::string_view::npos &&
+             line.find("stage=image") != std::string_view::npos) ||
+            line.find("[DEBUG]") != std::string_view::npos;
         if (!noisy)
             out.append(line);
         pos = end + 1;

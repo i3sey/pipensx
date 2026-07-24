@@ -47,7 +47,11 @@ inline constexpr const char* LogPath =
 inline void openBorealisLog() {
     if (FILE* file = log_file()) {
         brls::Logger::setLogOutput(file);
-        brls::Logger::setLogLevel(brls::LogLevel::LOG_DEBUG);
+        // INFO, not DEBUG: borealis logs every focus move, cell recycle and
+        // input token at DEBUG, which was 91% of a real session's log once
+        // these lines started reaching the file at all - and it crowds the
+        // app's own events out of a bug report, which only carries a few KB.
+        brls::Logger::setLogLevel(brls::LogLevel::LOG_INFO);
     }
 }
 

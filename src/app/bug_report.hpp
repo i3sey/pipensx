@@ -62,17 +62,17 @@ struct BugReport {
 
 // Compress logTail with zlib and split it into <= config.maxChunks framed
 // chunks. When the tail does not fit, it is cut down in two steps, cheapest
-// loss first: drop the repetitive per-image telemetry lines (which can be most
-// of a long session yet say nothing about a bug), then trim the oldest
-// remaining lines. Always returns at least one chunk, even for an empty tail.
-// sessionId groups the chunks and is echoed on screen so the dev can confirm a
-// complete capture.
+// loss first: drop the bulk lines that never explain a bug (see
+// dropNoisyLogLines), then trim the oldest remaining lines. Always returns at
+// least one chunk, even for an empty tail. sessionId groups the chunks and is
+// echoed on screen so the dev can confirm a complete capture.
 BugReport buildBugReport(const std::string& logTail,
                          const BugReportConfig& config,
                          std::uint16_t sessionId);
 
 // The step-one filter, exposed for tests: drops "[telemetry] ... stage=image"
-// lines, keeping everything else (including other telemetry stages) intact.
+// lines and borealis' "[DEBUG]" stream, keeping everything else (including
+// other telemetry stages and every other borealis level) intact.
 std::string dropNoisyLogLines(const std::string& logTail);
 
 } // namespace pipensx

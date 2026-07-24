@@ -360,7 +360,7 @@
     "report_more_detail": "More detail",
     "report_id": "Report {} · codes: {}",
     "report_id_truncated": "Report {} · codes: {} (recent log only)",
-    "report_id_filtered": "Report {} · codes: {} (image telemetry dropped)",
+    "report_id_filtered": "Report {} · codes: {} (verbose lines dropped)",
     "report_empty": "Log is empty — only device info was captured.",
     "report_hint": "Photograph this whole screen and send it with a description of the problem.",
     "report_hint_detailed": "Detailed mode: codes are denser and carry more log, so send a Capture-button screenshot rather than a photo. Y returns to the photo view."

@@ -93,8 +93,8 @@ def reassemble(chunk_bytes):
         "session": session,
         "total": total,
         "detailed": bool(by_idx[0]["flags"] & 0x01),
-        # The console dropped its repetitive per-image telemetry lines to make
-        # the rest of the log fit; the gaps in the timeline are expected.
+        # The console dropped its bulk lines (per-image telemetry, borealis
+        # DEBUG) to make the rest of the log fit; timeline gaps are expected.
         "filtered": bool(by_idx[0]["flags"] & 0x02),
         "bytes": len(log),
     }
@@ -147,7 +147,7 @@ def main():
         return 1
 
     mode = "detailed" if info["detailed"] else "default"
-    filtered = ", image telemetry dropped" if info["filtered"] else ""
+    filtered = ", verbose lines dropped" if info["filtered"] else ""
     print(
         f"decode_report: report {info['session']:04X} "
         f"({info['total']} codes, {mode} mode, {info['bytes']} bytes"
