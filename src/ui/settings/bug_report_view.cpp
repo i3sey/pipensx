@@ -131,6 +131,13 @@ std::vector<GridPlan> planGrids(float width, float height, float minPixels,
 // The card sizes itself to a whole number of module pixels within the cell it
 // is given, so the code is as large as the cell allows and the leftover is
 // zero instead of a white border of arbitrary width.
+//
+// The code goes to the GPU as one texture of one texel per module, drawn as a
+// single nearest-filtered quad. Drawing a rect per module instead is what the
+// About page does and it is fine there for one small code, but deko3d issues a
+// draw command per subpath: a screenful of full-size codes is thousands of
+// them, which exhausts the frame's command memory and aborts the process
+// inside nvgEndFrame.
 class ReportQrView : public brls::View {
   public:
     ReportQrView(const std::vector<std::uint8_t>& data,
@@ -140,46 +147,63 @@ class ReportQrView : public brls::View {
         } catch (const std::exception&) {
             qr_.reset();
         }
-        const int cells =
-            (qr_ ? qr_->getSize() : kMinModules) + kQuietZone * 2;
-        pixelsPerModule_ =
-            std::max(1.0f, std::floor(cell / static_cast<float>(cells)));
-        const float size = pixelsPerModule_ * static_cast<float>(cells);
+        cells_ = (qr_ ? qr_->getSize() : kMinModules) + kQuietZone * 2;
+        const float pixelsPerModule =
+            std::max(1.0f, std::floor(cell / static_cast<float>(cells_)));
+        const float size = pixelsPerModule * static_cast<float>(cells_);
         setWidth(size);
         setHeight(size);
+        // Upload here rather than lazily in draw(): deko3d uploads a texture by
+        // submitting to the render queue and waiting on it, which must not
+        // happen while the frame's commands are being recorded. Views are only
+        // built outside a frame (see GridBox::onLayout and the Y action).
+        texture_ = createTexture(brls::Application::getNVGContext());
+    }
+
+    ~ReportQrView() override {
+        if (texture_ > 0)
+            nvgDeleteImage(brls::Application::getNVGContext(), texture_);
     }
 
     void draw(NVGcontext* vg, float x, float y, float width, float height,
               brls::Style, brls::FrameContext*) override {
+        if (texture_ <= 0)
+            return;
+        const NVGpaint paint =
+            nvgImagePattern(vg, x, y, width, height, 0.0f, texture_, 1.0f);
         nvgBeginPath(vg);
         nvgRect(vg, x, y, width, height);
-        nvgFillColor(vg, theme::qrPaper());
-        nvgFill(vg);
-
-        if (!qr_)
-            return;
-
-        const int modules = qr_->getSize();
-        nvgBeginPath(vg);
-        for (int row = 0; row < modules; row++) {
-            for (int col = 0; col < modules; col++) {
-                if (!qr_->getModule(col, row))
-                    continue;
-                nvgRect(vg,
-                        x + static_cast<float>(col + kQuietZone) *
-                                pixelsPerModule_,
-                        y + static_cast<float>(row + kQuietZone) *
-                                pixelsPerModule_,
-                        pixelsPerModule_, pixelsPerModule_);
-            }
-        }
-        nvgFillColor(vg, theme::qrInk());
+        nvgFillPaint(vg, paint);
         nvgFill(vg);
     }
 
   private:
+    // One texel per module, quiet zone included, so the quad scales by a whole
+    // number and every module lands on the same count of screen pixels.
+    int createTexture(NVGcontext* vg) {
+        const NVGcolor paper = theme::qrPaper();
+        const NVGcolor ink = theme::qrInk();
+        std::vector<std::uint8_t> pixels(
+            static_cast<std::size_t>(cells_) * cells_ * 4);
+        for (int row = 0; row < cells_; row++) {
+            for (int col = 0; col < cells_; col++) {
+                const bool dark =
+                    qr_ && qr_->getModule(col - kQuietZone, row - kQuietZone);
+                const NVGcolor& color = dark ? ink : paper;
+                std::uint8_t* texel =
+                    &pixels[(static_cast<std::size_t>(row) * cells_ + col) * 4];
+                for (int channel = 0; channel < 4; channel++)
+                    texel[channel] = static_cast<std::uint8_t>(
+                        std::clamp(color.rgba[channel], 0.0f, 1.0f) * 255.0f);
+            }
+        }
+        return nvgCreateImageRGBA(vg, cells_, cells_, NVG_IMAGE_NEAREST,
+                                  pixels.data());
+    }
+
     std::optional<qrcodegen::QrCode> qr_;
-    float pixelsPerModule_ = 1.0f;
+    int cells_ = kMinModules + kQuietZone * 2;
+    int texture_ = 0;
 };
 
 // Box that reports its own size once borealis has laid it out. The grid can
