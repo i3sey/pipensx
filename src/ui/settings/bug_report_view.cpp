@@ -310,6 +310,17 @@ BugReportActivity::BugReportActivity(DownloadManager* manager,
     frame_->setTitle(tr("pipensx/settings/report_bug"));
 }
 
+std::string BugReportActivity::renderedState() {
+    std::size_t codes = 0;
+    if (gridHost_) {
+        for (brls::View* row : gridHost_->getChildren())
+            codes += static_cast<brls::Box*>(row)->getChildren().size();
+    }
+    return std::string(detailed_ ? "detailed " : "photo ") +
+           std::to_string(codes) + " " +
+           (caption_ ? caption_->getFullText() : std::string());
+}
+
 BugReportActivity::~BugReportActivity() {
     alive_->store(false);
 }

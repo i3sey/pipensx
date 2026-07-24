@@ -27,7 +27,7 @@ SCREENS="${GOLDEN_SCREENS:-catalog detail frame downloads installed settings abo
 # baseline, so they are never compared against tests/golden/. Entries are
 # <screen> or <screen>:<locale>; hints-budget runs in both because Russian hint
 # labels are ~20% wider than English and are what actually overruns the bar.
-BEHAVIOR_SCREENS="${GOLDEN_BEHAVIOR_SCREENS:-downloads-back torrent-selection-scroll hints-budget hints-budget:ru}"
+BEHAVIOR_SCREENS="${GOLDEN_BEHAVIOR_SCREENS:-downloads-back torrent-selection-scroll hints-budget hints-budget:ru bug-report-focus}"
 THEMES="${GOLDEN_THEMES:-light dark}"
 # frame is in the list because it is the only screen that renders the nav
 # sidebar, whose 248px width (theme.hpp installSidebarStyle) is the

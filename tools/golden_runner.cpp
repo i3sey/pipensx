@@ -10,11 +10,12 @@
 //                 --screen catalog|shelf-scroll|shelf-header|detail|torrent-selection|
 //                          torrent-selection-scroll|downloads|downloads-back|frame|
 //                          hints-budget|installed|settings|about|bug-report|
-//                          bug-report-detail
+//                          bug-report-detail|bug-report-focus
 //                 [--frames N] [--sandbox <dir>]
 //
-// downloads-back, torrent-selection-scroll and hints-budget are behaviour
-// checks: they assert and exit non-zero instead of producing a baseline.
+// downloads-back, torrent-selection-scroll, hints-budget and bug-report-focus
+// are behaviour checks: they assert and exit non-zero instead of producing a
+// baseline.
 //
 // Determinism notes:
 //   - run with LIBGL_ALWAYS_SOFTWARE=1 so Mesa llvmpipe rasterizes the same
@@ -349,6 +350,7 @@ int main(int argc, char** argv) {
     bool torrentSelectionScroll = false;
     bool hintsBudget = false;
     CatalogView* hintsCatalog = nullptr;
+    BugReportActivity* bugReportFocus = nullptr;
     if (screen == "catalog") {
         activity = new GoldenActivity(new CatalogView(
             &manager, &catalog, &metadata, &installed, &settings, [] {},
@@ -521,7 +523,8 @@ int main(int argc, char** argv) {
             &mods));
     } else if (screen == "about") {
         activity = new GoldenActivity(new AboutView());
-    } else if (screen == "bug-report" || screen == "bug-report-detail") {
+    } else if (screen == "bug-report" || screen == "bug-report-detail" ||
+               screen == "bug-report-focus") {
         // Fixed log and device state: the live path snapshots
         // statvfs/firmware/clock, none of which are deterministic.
         // BugReportActivity is its own AppletFrame, so it is pushed directly
@@ -553,9 +556,12 @@ int main(int argc, char** argv) {
                                         /*metadata=*/38, /*installed=*/3,
                                         /*active=*/1, /*errors=*/1,
                                         /*freeBytes=*/126976000000ull}};
-        activity = new BugReportActivity(&manager, &catalog, &metadata,
-                                         &installed, std::move(fixture),
-                                         screen == "bug-report-detail");
+        auto* report = new BugReportActivity(&manager, &catalog, &metadata,
+                                             &installed, std::move(fixture),
+                                             screen == "bug-report-detail");
+        activity = report;
+        if (screen == "bug-report-focus")
+            bugReportFocus = report;
     } else {
         return fail("unknown --screen");
     }
@@ -586,6 +592,51 @@ int main(int argc, char** argv) {
         return fail("downloads refresh stole focus from the sidebar");
     if (downloadsBackFrame) {
         std::printf("golden_runner: downloads-back focus preserved\n");
+        manager.shutdown();
+        std::fflush(nullptr);
+        _exit(0);
+    }
+
+    if (bugReportFocus) {
+        // The report screen owns no buttons, so nothing forces it to be
+        // focusable - and when it was not, focus silently stayed on the
+        // settings row that pushed it: that row's highlight and hints painted
+        // over the report, and Y went to the wrong activity. A screenshot
+        // cannot show any of that, because the stray highlight belongs to the
+        // activity underneath.
+        brls::View* root = bugReportFocus->getContentView();
+        auto insideReport = [root](brls::View* view) {
+            for (brls::View* node = view; node;
+                 node = reinterpret_cast<brls::View*>(node->getParent()))
+                if (node == root)
+                    return true;
+            return false;
+        };
+        if (!insideReport(brls::Application::getCurrentFocus()))
+            return fail("bug-report never took focus from the pushing screen");
+
+        const std::string before = bugReportFocus->renderedState();
+        brls::Action* toggle = nullptr;
+        for (const auto& action : root->getActions()) {
+            if (action->getType() == brls::ACTION_GAMEPAD &&
+                action->getButton() == brls::BUTTON_Y)
+                toggle = action.get();
+        }
+        if (!toggle)
+            return fail("bug-report registered no Y action");
+        toggle->getActionListener()(root);
+        for (int i = 0; i < 10; ++i) {
+            if (!brls::Application::mainLoop())
+                return fail("main loop ended while toggling detail mode");
+        }
+        const std::string after = bugReportFocus->renderedState();
+        if (after == before)
+            return fail("Y did not re-encode the report");
+        if (!insideReport(brls::Application::getCurrentFocus()))
+            return fail("rebuilding the grid dropped focus out of the screen");
+
+        std::printf("golden_runner: bug-report kept focus and toggled "
+                    "(%s -> %s)\n", before.c_str(), after.c_str());
         manager.shutdown();
         std::fflush(nullptr);
         _exit(0);

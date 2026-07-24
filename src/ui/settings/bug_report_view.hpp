@@ -42,6 +42,11 @@ class BugReportActivity : public brls::Activity {
     brls::View* createContentView() override;
     void onContentAvailable() override;
 
+    // What the screen is showing right now, as "<mode> <codes> <caption>". The
+    // golden harness uses it to prove the Y action reached this activity and
+    // re-encoded the report, which a screenshot cannot show.
+    std::string renderedState();
+
   private:
     // Read the device state and the log once, on entry.
     void captureReport();
