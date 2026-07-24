@@ -522,19 +522,39 @@ int main(int argc, char** argv) {
     } else if (screen == "about") {
         activity = new GoldenActivity(new AboutView());
     } else if (screen == "bug-report" || screen == "bug-report-detail") {
-        // Fixed log fixture: the live path snapshots statvfs/firmware/clock,
-        // none of which are deterministic. BugReportActivity is its own
-        // AppletFrame, so it is pushed directly rather than wrapped.
-        static const std::string kFixtureLog =
+        // Fixed log and device state: the live path snapshots
+        // statvfs/firmware/clock, none of which are deterministic.
+        // BugReportActivity is its own AppletFrame, so it is pushed directly
+        // rather than wrapped. The fixture carries the per-image telemetry
+        // chatter of a real session, so the encoder's "drop the noise before
+        // cutting history" step is part of what the baseline pins down.
+        std::string fixtureLog =
             "[  12345] [startup] boot\n"
             "[  12800] [meta] name='Fixture Title' hash=0011223344\n"
             "[  13010] [diagnostic] schema=1 level=error stage=net tag=timeout "
-            "peer=10.0.0.5 msg=connection_reset\n"
-            "[  13100] [diagnostic] schema=1 stage=system tag=report "
+            "peer=10.0.0.5 msg=connection_reset\n";
+        for (int i = 0; i < 40; ++i) {
+            char line[160];
+            std::snprintf(line, sizeof(line),
+                          "[  %5d] [telemetry] schema=1 stage=image tag=- "
+                          "event=load cache=source ok=1 duration_ms=%d "
+                          "bytes=465124\n",
+                          13200 + i * 7, 60 + i);
+            fixtureLog += line;
+        }
+        fixtureLog +=
+            "[  14100] [diagnostic] schema=1 stage=system tag=report "
             "version=1.0.0 hos=18.1.0 operation_mode=1 telemetry=0 catalog=42 "
             "installed=3 active=1 errors=1 sd_free_bytes=126976000000\n";
+        pipensx::ui::BugReportFixture fixture{
+            std::move(fixtureLog),
+            pipensx::ui::SystemSnapshot{/*hos=*/0x12010000, /*mode=*/1,
+                                        /*telemetry=*/false, /*catalog=*/42,
+                                        /*metadata=*/38, /*installed=*/3,
+                                        /*active=*/1, /*errors=*/1,
+                                        /*freeBytes=*/126976000000ull}};
         activity = new BugReportActivity(&manager, &catalog, &metadata,
-                                         &installed, kFixtureLog,
+                                         &installed, std::move(fixture),
                                          screen == "bug-report-detail");
     } else {
         return fail("unknown --screen");

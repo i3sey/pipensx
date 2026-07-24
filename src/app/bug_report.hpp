@@ -17,7 +17,7 @@
 //   3      2    session id            (uint16, big-endian)
 //   5      1    chunk index           (0-based)
 //   6      1    chunk total
-//   7      1    flags (bit0 = detailed mode)
+//   7      1    flags (bit0 = detailed mode, bit1 = noisy lines dropped)
 //   8      4    crc32 of the UNCOMPRESSED log tail (uint32, big-endian)
 //   12     4    total compressed length across all chunks (uint32, big-endian)
 //   16     ..   this chunk's slice of the zlib stream
@@ -43,15 +43,11 @@ struct BugReportConfig {
     bool detailed;
 };
 
-// Photo-of-TV default: few, low-density, high-error-correction codes.
-inline constexpr BugReportConfig kBugReportDefault{
-    /*maxChunks=*/9, /*chunkPayloadBytes=*/180, QrEcc::Quartile,
-    /*detailed=*/false};
-
-// Screenshot / clean-photo "super detailed": many denser codes, more log.
-inline constexpr BugReportConfig kBugReportDetailed{
-    /*maxChunks=*/16, /*chunkPayloadBytes=*/640, QrEcc::Medium,
-    /*detailed=*/true};
+// How much log the two capture modes are allowed to ask for. Both are far
+// above what any grid can carry; the grid geometry is what actually decides
+// the per-chunk budget (see fitReportToGrid in the view), and buildBugReport
+// trims the tail down to whatever that turns out to be.
+inline constexpr std::size_t kBugReportMaxTailBytes = 128 * 1024;
 
 inline constexpr std::uint8_t kBugReportHeaderSize = 16;
 inline constexpr std::uint8_t kBugReportFormatVersion = 1;
@@ -61,14 +57,22 @@ struct BugReport {
     std::string encodedTail; // the (possibly trimmed) tail actually encoded
     std::uint16_t sessionId;
     bool truncated; // true if the tail was trimmed to fit the grid
+    bool filtered;  // true if repetitive telemetry lines were dropped first
 };
 
-// Compress logTail with zlib, split it into <= config.maxChunks framed chunks,
-// trimming the oldest bytes of the tail (at a line boundary) until it fits.
-// Always returns at least one chunk, even for an empty tail. sessionId groups
-// the chunks and is echoed on screen so the dev can confirm a complete capture.
+// Compress logTail with zlib and split it into <= config.maxChunks framed
+// chunks. When the tail does not fit, it is cut down in two steps, cheapest
+// loss first: drop the repetitive per-image telemetry lines (which can be most
+// of a long session yet say nothing about a bug), then trim the oldest
+// remaining lines. Always returns at least one chunk, even for an empty tail.
+// sessionId groups the chunks and is echoed on screen so the dev can confirm a
+// complete capture.
 BugReport buildBugReport(const std::string& logTail,
                          const BugReportConfig& config,
                          std::uint16_t sessionId);
+
+// The step-one filter, exposed for tests: drops "[telemetry] ... stage=image"
+// lines, keeping everything else (including other telemetry stages) intact.
+std::string dropNoisyLogLines(const std::string& logTail);
 
 } // namespace pipensx

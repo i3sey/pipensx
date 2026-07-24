@@ -85,6 +85,15 @@ std::string reassemble(const BugReport& report) {
     return out;
 }
 
+// Stand-ins for the two capture modes. The real numbers are derived at
+// runtime from the box the grid lands in (see fitReportToGrid in the view);
+// these are representative of what a 720p screen yields.
+constexpr BugReportConfig kPhotoGrid{/*maxChunks=*/2, /*chunkPayloadBytes=*/380,
+                                     QrEcc::Quartile, /*detailed=*/false};
+constexpr BugReportConfig kScreenshotGrid{
+    /*maxChunks=*/6, /*chunkPayloadBytes=*/620, QrEcc::Medium,
+    /*detailed=*/true};
+
 } // namespace
 
 // When given an output directory, dump a multi-chunk report there so the
@@ -95,7 +104,7 @@ void dumpFixtures(const std::string& dir) {
     for (int i = 0; i < 4000; ++i)
         big += "[" + std::to_string(i) + "] peer 10.0.0." +
                std::to_string(i % 256) + " piece " + std::to_string(i) + "\n";
-    BugReport report = buildBugReport(big, kBugReportDefault, 0xBEEF);
+    BugReport report = buildBugReport(big, kPhotoGrid, 0xBEEF);
 
     for (std::size_t i = 0; i < report.chunks.size(); ++i) {
         char name[64];
@@ -118,9 +127,9 @@ int main(int argc, char** argv) {
     {
         std::string log = "[startup] boot\n[meta] name='Test'\n"
                           "[diagnostic] level=error stage=net tag=timeout\n";
-        BugReport report = buildBugReport(log, kBugReportDefault, 0x1234);
+        BugReport report = buildBugReport(log, kPhotoGrid, 0x1234);
         assert(report.chunks.size() >= 1);
-        assert(report.chunks.size() <= kBugReportDefault.maxChunks);
+        assert(report.chunks.size() <= kPhotoGrid.maxChunks);
         assert(!report.truncated);
         assert(report.sessionId == 0x1234);
         assert(report.chunks[0][7] == 0x00); // default flag
@@ -129,14 +138,14 @@ int main(int argc, char** argv) {
 
     // Empty tail still yields one valid chunk.
     {
-        BugReport report = buildBugReport("", kBugReportDefault, 0);
+        BugReport report = buildBugReport("", kPhotoGrid, 0);
         assert(report.chunks.size() == 1);
         assert(reassemble(report).empty());
     }
 
     // Detailed flag rides in the header.
     {
-        BugReport report = buildBugReport("hello\n", kBugReportDetailed, 7);
+        BugReport report = buildBugReport("hello\n", kScreenshotGrid, 7);
         assert(report.chunks[0][7] == 0x01);
         assert(reassemble(report) == "hello\n");
     }
@@ -150,9 +159,9 @@ int main(int argc, char** argv) {
             big += "[" + std::to_string(i) + "] peer 10.0.0." +
                    std::to_string(i % 256) + " piece " + std::to_string(i) +
                    " request queued\n";
-        BugReport report = buildBugReport(big, kBugReportDefault, 0xABCD);
+        BugReport report = buildBugReport(big, kPhotoGrid, 0xABCD);
         assert(report.truncated);
-        assert(report.chunks.size() <= kBugReportDefault.maxChunks);
+        assert(report.chunks.size() <= kPhotoGrid.maxChunks);
         // Kept the tail, dropped the head.
         assert(big.size() > report.encodedTail.size());
         assert(big.compare(big.size() - report.encodedTail.size(),
@@ -160,8 +169,8 @@ int main(int argc, char** argv) {
         assert(reassemble(report) == report.encodedTail);
 
         // Detailed mode fits more of the same log than default.
-        BugReport detailed = buildBugReport(big, kBugReportDetailed, 0xABCD);
-        assert(detailed.chunks.size() <= kBugReportDetailed.maxChunks);
+        BugReport detailed = buildBugReport(big, kScreenshotGrid, 0xABCD);
+        assert(detailed.chunks.size() <= kScreenshotGrid.maxChunks);
         assert(detailed.encodedTail.size() > report.encodedTail.size());
         assert(reassemble(detailed) == detailed.encodedTail);
     }

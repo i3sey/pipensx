@@ -355,13 +355,15 @@
     "advanced_detail": "Diagnostics, storage, reset",
     "report_bug": "Report a bug",
     "report_bug_detail": "Show recent logs as QR codes for the developer",
-    "report_notice": "This shares recent logs, including titles you opened and network info, with the developer.",
+    "report_notice": "Nothing is sent from the console. The log below is drawn as QR codes for you to photograph and send yourself.",
+    "report_summary": "pipensx {} · firmware {} · {} free · {} installed · catalog {} · downloads {} · errors {}",
     "report_more_detail": "More detail",
-    "report_id": "Report {} · {} codes",
-    "report_id_truncated": "Report {} · {} codes (recent log only)",
+    "report_id": "Report {} · codes: {}",
+    "report_id_truncated": "Report {} · codes: {} (recent log only)",
+    "report_id_filtered": "Report {} · codes: {} (image telemetry dropped)",
     "report_empty": "Log is empty — only device info was captured.",
     "report_hint": "Photograph this whole screen and send it with a description of the problem.",
-    "report_hint_detailed": "Detailed mode: send a Capture-button screenshot for a clean scan. Press Y for the simpler view."
+    "report_hint_detailed": "Detailed mode: codes are denser and carry more log, so send a Capture-button screenshot rather than a photo. Y returns to the photo view."
   },
   "about": {
     "version": "Version {}",

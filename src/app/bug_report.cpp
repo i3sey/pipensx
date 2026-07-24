@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <string_view>
 
 namespace pipensx {
 
@@ -44,6 +45,23 @@ std::size_t chunkCount(std::size_t compressedLen, std::size_t perChunk) {
 
 } // namespace
 
+std::string dropNoisyLogLines(const std::string& logTail) {
+    std::string out;
+    out.reserve(logTail.size());
+    for (std::size_t pos = 0; pos < logTail.size();) {
+        std::size_t end = logTail.find('\n', pos);
+        if (end == std::string::npos)
+            end = logTail.size() - 1;
+        const std::string_view line(logTail.data() + pos, end - pos + 1);
+        const bool noisy = line.find("[telemetry]") != std::string_view::npos &&
+                           line.find("stage=image") != std::string_view::npos;
+        if (!noisy)
+            out.append(line);
+        pos = end + 1;
+    }
+    return out;
+}
+
 BugReport buildBugReport(const std::string& logTail,
                          const BugReportConfig& config,
                          std::uint16_t sessionId) {
@@ -53,6 +71,19 @@ BugReport buildBugReport(const std::string& logTail,
 
     std::string tail = logTail;
     std::vector<std::uint8_t> compressed = deflate(tail);
+
+    // Step one, before cutting any history: throw away the per-image telemetry
+    // chatter. It compresses well but still crowds out real events, and it has
+    // never explained a bug.
+    bool filtered = false;
+    if (compressed.size() > maxCompressed) {
+        std::string trimmed = dropNoisyLogLines(tail);
+        if (trimmed.size() < tail.size()) {
+            filtered = true;
+            tail = std::move(trimmed);
+            compressed = deflate(tail);
+        }
+    }
 
     // Trim the oldest bytes until the compressed stream fits the grid. Each
     // pass scales the kept suffix toward the capacity (0.9 margin so we
@@ -84,12 +115,14 @@ BugReport buildBugReport(const std::string& logTail,
     const std::uint32_t compressedLen =
         static_cast<std::uint32_t>(compressed.size());
     const std::size_t total = chunkCount(compressed.size(), perChunk);
-    const std::uint8_t flags = config.detailed ? 0x01 : 0x00;
+    const std::uint8_t flags = static_cast<std::uint8_t>(
+        (config.detailed ? 0x01 : 0x00) | (filtered ? 0x02 : 0x00));
 
     BugReport report;
     report.sessionId = sessionId;
     report.encodedTail = tail;
     report.truncated = truncated;
+    report.filtered = filtered;
     report.chunks.reserve(total);
     for (std::size_t idx = 0; idx < total; ++idx) {
         std::vector<std::uint8_t> chunk;

@@ -62,40 +62,68 @@ inline void startupStage(const char* stage) {
     log_msg("[startup] %s\n", stage);
 }
 
-// Write one structured "[diagnostic] schema=1 ... [system]" line capturing the
-// build, firmware, storage and library state. Shared by Advanced's "Capture
-// snapshot" action and the bug-report screen (which reads it straight back out
-// of the log tail it encodes). diagnostic_snapshot() flushes to disk on its own.
-inline void writeSystemSnapshot(DownloadManager* manager,
-                                CatalogService* catalog,
-                                GameMetadataService* metadata,
-                                InstalledTitleService* installed,
-                                const char* tag) {
-    size_t active = 0;
-    size_t errors = 0;
+// Build, firmware, storage and library state at one instant. Logged as a
+// "[diagnostic] schema=1 ... [system]" line, and shown as-is on the bug-report
+// screen so a reporter can read the essentials out loud without a decoder.
+struct SystemSnapshot {
+    uint32_t hos;
+    int operationMode;
+    bool telemetry;
+    size_t catalog;
+    size_t metadata;
+    size_t installed;
+    size_t active;
+    size_t errors;
+    uint64_t freeBytes;
+};
+
+inline SystemSnapshot captureSystemSnapshot(DownloadManager* manager,
+                                            CatalogService* catalog,
+                                            GameMetadataService* metadata,
+                                            InstalledTitleService* installed) {
+    SystemSnapshot snapshot{};
     for (const DownloadTask& task : manager->snapshot()) {
         if (task.status == DownloadStatus::Error)
-            ++errors;
+            ++snapshot.errors;
         else if (task.status != DownloadStatus::Completed &&
                  task.status != DownloadStatus::Installed &&
                  task.status != DownloadStatus::Paused)
-            ++active;
+            ++snapshot.active;
     }
-    uint64_t freeBytes = 0;
     struct statvfs storage {};
     if (statvfs("sdmc:/", &storage) == 0)
-        freeBytes = static_cast<uint64_t>(storage.f_bavail) *
-                    static_cast<uint64_t>(storage.f_frsize);
-    uint32_t hos = hosversionGet();
+        snapshot.freeBytes = static_cast<uint64_t>(storage.f_bavail) *
+                             static_cast<uint64_t>(storage.f_frsize);
+    snapshot.hos = hosversionGet();
+    snapshot.operationMode = static_cast<int>(appletGetOperationMode());
+    snapshot.telemetry = telemetry_enabled() != 0;
+    snapshot.catalog = catalog->entries().size();
+    snapshot.metadata = metadata->size();
+    snapshot.installed = installed->titles().size();
+    return snapshot;
+}
+
+// Write one snapshot line into the log. Shared by Advanced's "Capture
+// snapshot" action and the bug-report screen (which reads it straight back out
+// of the log tail it encodes). diagnostic_snapshot() flushes to disk on its own.
+inline SystemSnapshot writeSystemSnapshot(DownloadManager* manager,
+                                          CatalogService* catalog,
+                                          GameMetadataService* metadata,
+                                          InstalledTitleService* installed,
+                                          const char* tag) {
+    SystemSnapshot snapshot =
+        captureSystemSnapshot(manager, catalog, metadata, installed);
     diagnostic_snapshot("system", tag,
         "version=%s hos=%u.%u.%u operation_mode=%d telemetry=%d "
         "catalog=%zu metadata=%zu installed=%zu active=%zu errors=%zu "
         "sd_free_bytes=%llu",
-        PIPENSX_VERSION, HOSVER_MAJOR(hos), HOSVER_MINOR(hos),
-        HOSVER_MICRO(hos), static_cast<int>(appletGetOperationMode()),
-        telemetry_enabled(), catalog->entries().size(), metadata->size(),
-        installed->titles().size(), active, errors,
-        static_cast<unsigned long long>(freeBytes));
+        PIPENSX_VERSION, HOSVER_MAJOR(snapshot.hos),
+        HOSVER_MINOR(snapshot.hos), HOSVER_MICRO(snapshot.hos),
+        snapshot.operationMode, snapshot.telemetry ? 1 : 0, snapshot.catalog,
+        snapshot.metadata, snapshot.installed, snapshot.active,
+        snapshot.errors,
+        static_cast<unsigned long long>(snapshot.freeBytes));
+    return snapshot;
 }
 
 inline bool isApplicationMode() {
