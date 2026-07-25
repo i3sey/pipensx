@@ -53,6 +53,7 @@
 #include "ui/catalog/catalog_view.hpp"
 #include "ui/common/ui_helpers.hpp"
 #include "ui/detail/game_detail.hpp"
+#include "ui/detail/screenshot_viewer.hpp"
 #include "ui/detail/torrent_selection.hpp"
 #include "ui/downloads/downloads_view.hpp"
 #include "ui/i18n.hpp"
@@ -418,6 +419,25 @@ int main(int argc, char** argv) {
             entries.front(), "", &manager, &metadata, &installed, &settings,
             &mods, [](const std::string&, const std::string&) {}, [] {},
             nullptr, &favorites);
+    } else if (screen == "screenshot-viewer-missing") {
+        // Decode fails (no such file): the viewer must show its labelled plate
+        // rather than an empty frame that reads as a crash.
+        activity = new ScreenshotViewerActivity(
+            &metadata, {(fixtures / "no-such-screenshot.jpg").string()}, 0,
+            "Fixture Game");
+    } else if (screen == "screenshot-viewer" ||
+               screen == "screenshot-viewer-preview") {
+        // Absolute paths: GameMetadataService reads those straight off disk,
+        // so the viewer decodes real pixels with image networking paused.
+        // Two fixtures on purpose — a 1280x720 shot fills the frame at full
+        // resolution, a 300x168 one (the shape of the catalogue's fastpic
+        // links) is capped at 2x and labelled instead of being stretched.
+        const std::string hires = (fixtures / "screenshot-hires.jpg").string();
+        const std::string lowres =
+            (fixtures / "screenshot-lowres.jpg").string();
+        const size_t index = screen == "screenshot-viewer-preview" ? 1 : 0;
+        activity = new ScreenshotViewerActivity(
+            &metadata, {hires, lowres, hires}, index, "Fixture Game");
     } else if (screen == "torrent-selection" ||
                screen == "torrent-selection-scroll") {
         // More files than fit on screen: the recycler only recycles once the

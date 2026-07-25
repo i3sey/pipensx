@@ -74,6 +74,14 @@ public:
 
     using ImageData = std::shared_ptr<const DecodedImage>;
     using ImageCallback = std::function<void(ImageData)>;
+
+    // Decode size classes. The same source URL can be held twice: once shrunk
+    // for grid/rail art, once near-native for the fullscreen viewer. The
+    // memory cache keys on url+class; the on-disk byte cache stays per URL, so
+    // the second class costs a decode, never a download.
+    static constexpr int kImageDimCard = 360;
+    static constexpr int kImageDimFull = 1280;
+
     using MetadataFetcher = std::function<bool(
         const std::string&, size_t, std::vector<uint8_t>&, std::string&)>;
 
@@ -98,13 +106,16 @@ public:
                         std::string& error) const;
     bool loadImage(const std::string& url, std::vector<uint8_t>& bytes,
                    std::string& error) const;
-    void requestImage(const std::string& url, ImageCallback callback) const;
+    void requestImage(const std::string& url, ImageCallback callback,
+                      int maxDim = kImageDimCard) const;
     // UI_PLAN F6: synchronous memory-cache probe (bumps LRU recency).
     // Non-null result = decoded RGBA ready for a same-frame texture upload.
-    ImageData cachedImage(const std::string& url) const;
+    ImageData cachedImage(const std::string& url,
+                          int maxDim = kImageDimCard) const;
     // UI_PLAN F6: warm the memory cache without a callback; no-op when the
     // URL is cached, queued, in retry backoff, or empty.
-    void prefetchImage(const std::string& url) const;
+    void prefetchImage(const std::string& url,
+                       int maxDim = kImageDimCard) const;
     // UI_PLAN F6: invalidate decoded covers (catalog refresh); the disk
     // cache stays — clearImageCache() removes both.
     void dropMemoryImageCache() const;
@@ -146,6 +157,13 @@ private:
         uint64_t access = 0;
     };
 
+    // Queued decode: the URL says what to read, maxDim which size class to
+    // produce. Both are needed to write the result under the right cache key.
+    struct ImageJob {
+        std::string url;
+        int maxDim = kImageDimCard;
+    };
+
     void imageWorkerMain() const;
     // Refresh availableModes_/localPlayerCounts_ from byHash_. Called from
     // every place that reassigns it (load, adopt).
@@ -155,7 +173,7 @@ private:
     ImageLoadResult loadImageInternal(const std::string& url,
                                       std::vector<uint8_t>& bytes,
                                       std::string& error) const;
-    void cacheImageLocked(const std::string& url,
+    void cacheImageLocked(const std::string& key,
                           ImageData image) const;
 
     std::string rootPath_;
@@ -166,7 +184,7 @@ private:
     MetadataFetcher metadataFetcher_;
     mutable std::mutex imageMutex_;
     mutable std::condition_variable imageReady_;
-    mutable std::deque<std::string> imageQueue_;
+    mutable std::deque<ImageJob> imageQueue_;
     mutable std::unordered_map<std::string, std::vector<ImageCallback>>
         imageRequests_;
     mutable std::unordered_map<std::string, CachedImage> imageCache_;

@@ -312,6 +312,12 @@ std::string hex32String(const uint8_t digest[32]) {
     return out;
 }
 
+// Memory-cache key: one entry per (source, size class). The disk cache below
+// stays keyed by URL alone — both classes decode from the same bytes.
+std::string imageCacheKey(const std::string& url, int maxDim) {
+    return url + '#' + std::to_string(maxDim);
+}
+
 std::string cacheNameForUrl(const std::string& url) {
     uint8_t digest[20];
     sha1(url.data(), url.size(), digest);
@@ -324,15 +330,17 @@ uint64_t monotonicMilliseconds() {
                                       .time_since_epoch()).count());
 }
 
-// Covers render at 180px. Cache decoded source art near 2x display size so
-// the working set survives shelf scrolling instead of thrashing the 96 MB LRU.
-constexpr int kMaxCoverDim = 360;
-
-void downscaleRgba(std::vector<uint8_t>& pixels, int& width, int& height) {
+// Shrink a decode to the requested size class. Covers render at 180px, so the
+// card class (360) caches source art near 2x display size: the working set
+// survives shelf scrolling instead of thrashing the 96 MB LRU. The fullscreen
+// viewer asks for kImageDimFull instead, because upscaling a 360px decode over
+// the whole screen is what "screenshots open in low resolution" looks like.
+void downscaleRgba(std::vector<uint8_t>& pixels, int& width, int& height,
+                   int maxDim) {
     const int longEdge = std::max(width, height);
-    if (longEdge <= kMaxCoverDim || width <= 0 || height <= 0)
+    if (maxDim <= 0 || longEdge <= maxDim || width <= 0 || height <= 0)
         return;
-    const int factor = (longEdge + kMaxCoverDim - 1) / kMaxCoverDim;
+    const int factor = (longEdge + maxDim - 1) / maxDim;
     const int dw = width / factor;
     const int dh = height / factor;
     if (dw <= 0 || dh <= 0)
@@ -989,7 +997,8 @@ bool GameMetadataService::clearImageCache(std::string& error) const {
 }
 
 void GameMetadataService::requestImage(const std::string& url,
-                                       ImageCallback callback) const {
+                                       ImageCallback callback,
+                                       int maxDim) const {
     if (!callback)
         return;
     if (url.empty()) {
@@ -997,24 +1006,25 @@ void GameMetadataService::requestImage(const std::string& url,
         return;
     }
 
+    const std::string key = imageCacheKey(url, maxDim);
     bool rejected = false;
     {
         std::lock_guard<std::mutex> lock(imageMutex_);
         const uint64_t now = monotonicMilliseconds();
-        auto retry = imageRetryAfter_.find(url);
+        auto retry = imageRetryAfter_.find(key);
         if (stoppingImages_ ||
             (retry != imageRetryAfter_.end() && retry->second > now)) {
             rejected = true;
         } else {
             if (retry != imageRetryAfter_.end())
                 imageRetryAfter_.erase(retry);
-            auto request = imageRequests_.find(url);
+            auto request = imageRequests_.find(key);
             if (request != imageRequests_.end()) {
                 request->second.push_back(std::move(callback));
                 return;
             }
-            imageRequests_[url].push_back(std::move(callback));
-            imageQueue_.push_back(url);
+            imageRequests_[key].push_back(std::move(callback));
+            imageQueue_.push_back(ImageJob{url, maxDim});
         }
     }
     if (rejected) {
@@ -1025,33 +1035,35 @@ void GameMetadataService::requestImage(const std::string& url,
 }
 
 GameMetadataService::ImageData
-GameMetadataService::cachedImage(const std::string& url) const {
+GameMetadataService::cachedImage(const std::string& url, int maxDim) const {
     if (url.empty())
         return nullptr;
     std::lock_guard<std::mutex> lock(imageMutex_);
-    auto cached = imageCache_.find(url);
+    auto cached = imageCache_.find(imageCacheKey(url, maxDim));
     if (cached == imageCache_.end())
         return nullptr;
     cached->second.access = ++imageAccess_;
     return cached->second.image;
 }
 
-void GameMetadataService::prefetchImage(const std::string& url) const {
+void GameMetadataService::prefetchImage(const std::string& url,
+                                        int maxDim) const {
     if (url.empty())
         return;
+    const std::string key = imageCacheKey(url, maxDim);
     {
         std::lock_guard<std::mutex> lock(imageMutex_);
         const uint64_t now = monotonicMilliseconds();
-        auto retry = imageRetryAfter_.find(url);
+        auto retry = imageRetryAfter_.find(key);
         if (stoppingImages_ ||
             (retry != imageRetryAfter_.end() && retry->second > now))
             return;
-        if (imageCache_.count(url) != 0 || imageRequests_.count(url) != 0)
+        if (imageCache_.count(key) != 0 || imageRequests_.count(key) != 0)
             return;
         // Empty callback slot: later requestImage() calls for the same URL
         // coalesce onto this in-flight decode instead of re-queueing it.
-        imageRequests_[url];
-        imageQueue_.push_back(url);
+        imageRequests_[key];
+        imageQueue_.push_back(ImageJob{url, maxDim});
     }
     imageReady_.notify_one();
 }
@@ -1071,10 +1083,10 @@ void GameMetadataService::setImageNetworkPaused(bool paused) const {
 }
 
 void GameMetadataService::cacheImageLocked(
-    const std::string& url, ImageData image) const {
+    const std::string& key, ImageData image) const {
     if (!image)
         return;
-    auto existing = imageCache_.find(url);
+    auto existing = imageCache_.find(key);
     if (existing != imageCache_.end()) {
         imageCacheBytes_ -= existing->second.image->pixels.size();
         imageCache_.erase(existing);
@@ -1097,12 +1109,12 @@ void GameMetadataService::cacheImageLocked(
     cached.image = std::move(image);
     cached.access = ++imageAccess_;
     imageCacheBytes_ += bytes;
-    imageCache_[url] = std::move(cached);
+    imageCache_[key] = std::move(cached);
 }
 
 void GameMetadataService::imageWorkerMain() const {
     while (true) {
-        std::string url;
+        ImageJob job;
         {
             std::unique_lock<std::mutex> lock(imageMutex_);
             imageReady_.wait(lock, [this] {
@@ -1110,16 +1122,18 @@ void GameMetadataService::imageWorkerMain() const {
             });
             if (stoppingImages_)
                 return;
-            url = std::move(imageQueue_.front());
+            job = std::move(imageQueue_.front());
             imageQueue_.pop_front();
         }
+        const std::string& url = job.url;
+        const std::string key = imageCacheKey(job.url, job.maxDim);
         const uint64_t startedMs = monotonicMilliseconds();
 
         ImageData result;
         bool memoryCacheHit = false;
         {
             std::lock_guard<std::mutex> lock(imageMutex_);
-            auto cached = imageCache_.find(url);
+            auto cached = imageCache_.find(key);
             if (cached != imageCache_.end()) {
                 cached->second.access = ++imageAccess_;
                 result = cached->second.image;
@@ -1145,7 +1159,7 @@ void GameMetadataService::imageWorkerMain() const {
                 if (pixels && width <= 4096 && height <= 4096 &&
                     decodedBytes <= 64 * 1024 * 1024) {
                     std::vector<uint8_t> rgba(pixels, pixels + decodedBytes);
-                    downscaleRgba(rgba, width, height);
+                    downscaleRgba(rgba, width, height, job.maxDim);
                     auto decoded = std::make_shared<DecodedImage>();
                     decoded->width = width;
                     decoded->height = height;
@@ -1162,7 +1176,8 @@ void GameMetadataService::imageWorkerMain() const {
             telemetry_log("image", "-",
                           "event=deferred reason=active_transfer");
             std::unique_lock<std::mutex> lock(imageMutex_);
-            imageQueue_.push_back(std::move(url));
+            // Copy, not move: `url` aliases job.url and the loop still holds it.
+            imageQueue_.push_back(job);
             imageReady_.wait(lock, [this] {
                 return stoppingImages_ ||
                        !imageNetworkPaused_.load(std::memory_order_relaxed);
@@ -1180,22 +1195,24 @@ void GameMetadataService::imageWorkerMain() const {
             }
         }
         telemetry_log("image", "-",
-                      "event=load cache=%s ok=%d duration_ms=%llu bytes=%zu",
+                      "event=load cache=%s ok=%d dim=%d duration_ms=%llu "
+                      "bytes=%zu",
                       memoryCacheHit ? "memory" : "source", loaded ? 1 : 0,
+                      job.maxDim,
                       (unsigned long long)(monotonicMilliseconds() - startedMs),
                       result ? result->pixels.size() : 0);
         std::vector<ImageCallback> callbacks;
         {
             std::lock_guard<std::mutex> lock(imageMutex_);
-            if (loaded && imageCache_.find(url) == imageCache_.end())
-                cacheImageLocked(url, result);
-            auto request = imageRequests_.find(url);
+            if (loaded && imageCache_.find(key) == imageCache_.end())
+                cacheImageLocked(key, result);
+            auto request = imageRequests_.find(key);
             if (request != imageRequests_.end()) {
                 callbacks = std::move(request->second);
                 imageRequests_.erase(request);
             }
             if (!loaded)
-                imageRetryAfter_[url] = monotonicMilliseconds() +
+                imageRetryAfter_[key] = monotonicMilliseconds() +
                                         kImageRetryDelayMs;
         }
         for (auto& callback : callbacks)

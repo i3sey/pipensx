@@ -1067,6 +1067,60 @@ void testImageMemoryCache() {
     rmdir(root.c_str());
 }
 
+// One source, two decode classes. The fullscreen viewer needs pixels the card
+// class throws away, so the memory cache has to hold both at once instead of
+// handing the viewer the 360px cover decode.
+void testImageSizeClassesCacheSeparately() {
+    char cwd[4096];
+    assert(getcwd(cwd, sizeof(cwd)));
+    // Bundled 1280x720 JPEG — big enough that the card class must shrink it.
+    const std::string source =
+        std::string(cwd) + "/resources/2026071002004100.jpg";
+    const std::string root = "/tmp/pipensx-image-class-test-" +
+                             std::to_string(static_cast<long long>(getpid()));
+    {
+        GameMetadataService service(root, root + "/missing-index.json");
+        auto decode = [&](int maxDim) {
+            std::mutex mutex;
+            std::condition_variable ready;
+            bool done = false;
+            GameMetadataService::ImageData result;
+            service.requestImage(source,
+                [&](GameMetadataService::ImageData data) {
+                    std::lock_guard<std::mutex> lock(mutex);
+                    result = std::move(data);
+                    done = true;
+                    ready.notify_all();
+                }, maxDim);
+            std::unique_lock<std::mutex> lock(mutex);
+            assert(ready.wait_for(lock, std::chrono::seconds(10),
+                                  [&] { return done; }));
+            return result;
+        };
+
+        GameMetadataService::ImageData card =
+            decode(GameMetadataService::kImageDimCard);
+        assert(card);
+        assert(card->width == 320 && card->height == 180);
+
+        GameMetadataService::ImageData full =
+            decode(GameMetadataService::kImageDimFull);
+        assert(full);
+        assert(full->width == 1280 && full->height == 720);
+
+        // Both survive: the viewer's decode must not evict the rail's, and the
+        // default class stays the card one for every existing call site.
+        assert(service.cachedImage(source).get() == card.get());
+        assert(service.cachedImage(source,
+                                   GameMetadataService::kImageDimFull).get() ==
+               full.get());
+    }
+    rmdir((root + "/catalog/metadata").c_str());
+    rmdir((root + "/catalog/images").c_str());
+    rmdir((root + "/catalog").c_str());
+    rmdir(root.c_str());
+}
+
 void testImageNetworkWaitsForActiveTransfer() {
     std::string root = "/tmp/pipensx-image-defer-test-" +
                        std::to_string(static_cast<long long>(getpid()));
@@ -1336,6 +1390,7 @@ int main() {
     testCatalogBrowseMatchFilterRequiresTitleIdMetadata();
     testAsyncImageDiskCache();
     testImageMemoryCache();
+    testImageSizeClassesCacheSeparately();
     testImageNetworkWaitsForActiveTransfer();
     testTrackerCancellation();
     runLiveResolutionIfRequested();
