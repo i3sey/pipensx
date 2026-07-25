@@ -32,7 +32,7 @@ jobs:
       - name: Install git (container has no VCS by default)
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends git ca-certificates
+          apt-get install -y --no-install-recommends git ca-certificates curl
 
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -52,6 +52,42 @@ jobs:
             sleep $((attempt * 10))
           done
           exit 1
+
+      - name: Refresh bundled catalog snapshots
+        # Every public build ships an offline first-launch snapshot of the
+        # Langegen torrent catalog and the pipensx-metadata index (see
+        # resources/catalog/*.json, CMakeLists.txt PIPENSX_CATALOG_SNAPSHOT /
+        # PIPENSX_METADATA_INDEX). Pull the latest of each into the checkout
+        # right before building so releases don't ship stale data committed
+        # weeks ago. Never fails the build: a bad download or a response that
+        # doesn't parse as JSON just falls back to the checked-in snapshot.
+        run: |
+          set -uo pipefail
+
+          fetch() {
+            local url="$1" dest="$2" tmp
+            tmp="$(mktemp)"
+            for attempt in 1 2 3; do
+              if curl -fsSL --max-time 60 -o "${tmp}" "${url}"; then
+                break
+              fi
+              echo "fetch ${url} attempt ${attempt} failed, retrying..." >&2
+              sleep $((attempt * 5))
+              [[ "${attempt}" -eq 3 ]] && { echo "Giving up on ${url}, keeping bundled ${dest}" >&2; rm -f "${tmp}"; return 0; }
+            done
+            if [[ "$(head -c1 "${tmp}")" != "[" ]] || [[ "$(wc -c < "${tmp}")" -lt 100000 ]]; then
+              echo "Response from ${url} doesn't look like a catalog snapshot, keeping bundled ${dest}" >&2
+              rm -f "${tmp}"
+              return 0
+            fi
+            mv "${tmp}" "${dest}"
+            echo "Refreshed ${dest} ($(wc -c < "${dest}") bytes)"
+          }
+
+          fetch "https://raw.githubusercontent.com/Langegen/switch-games/refs/heads/main/switch_games.json" \
+            resources/catalog/switch_games.json
+          fetch "https://github.com/i3sey/pipensx-metadata/releases/latest/download/game_metadata_index.json" \
+            resources/catalog/game_metadata_index.json
 
       - name: Build pipensx.nro
         env:
