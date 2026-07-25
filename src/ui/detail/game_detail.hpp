@@ -97,6 +97,7 @@ public:
         presentation_ = resolveCatalogPresentation(entry_, found,
                                                    catalogTextPreference());
         titleId_ = presentation_.titleId;
+        playersFact_ = playersFact(found);
 
         // F3: eShop-style two-column page. Left column is fixed (cover +
         // install button + size/status); the right column scrolls on its own.
@@ -368,6 +369,7 @@ private:
         addFactRow(table, tr("pipensx/detail/fact_release"),
                    presentation_.releaseDate);
         addFactRow(table, tr("pipensx/detail/fact_genre"), presentation_.genre);
+        addFactRow(table, tr("pipensx/detail/fact_players"), playersFact_);
         addFactRow(table, tr("pipensx/detail/fact_size"),
                    entry_.size ? formatBytes(entry_.size)
                                : tr("pipensx/common/unknown"));
@@ -848,6 +850,7 @@ private:
     ModIndexService* mods_ = nullptr;
     FavoritesService* favorites_ = nullptr;
     std::string titleId_;
+    std::string playersFact_;
     std::string operationMessage_;
     FailureCallback onFailure_;
     ChangeCallback onChange_;

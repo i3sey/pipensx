@@ -134,4 +134,27 @@ bool catalogEntryHasMatchedTitle(const GameMetadata* metadata) {
     return metadata && looksLikeTitleId(metadata->titleId);
 }
 
+bool catalogEntryMatchesPlayerFilter(const GameMetadata* metadata,
+                                     PlayerFilter filter) {
+    if (filter == PlayerFilter::Any)
+        return true;
+    if (!metadata)
+        return false;
+    switch (filter) {
+    case PlayerFilter::Splitscreen:
+        return (metadata->modes & kPlayerModeSplit) != 0;
+    case PlayerFilter::LocalCoop:
+        if (metadata->hasModes)
+            return (metadata->modes & kPlayerModeCoop) != 0;
+        return metadata->players >= 2;
+    case PlayerFilter::Lan:
+        return (metadata->modes & kPlayerModeLan) != 0;
+    case PlayerFilter::Online:
+        return (metadata->modes & kPlayerModeOnline) != 0;
+    case PlayerFilter::Any:
+        break;
+    }
+    return true;
+}
+
 } // namespace pipensx

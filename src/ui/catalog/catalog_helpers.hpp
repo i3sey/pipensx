@@ -7,6 +7,7 @@
 
 #include <borealis.hpp>
 
+#include "app/catalog_presentation.hpp"
 #include "app/catalog_service.hpp"
 #include "ui/i18n.hpp"
 #include "app/game_metadata_service.hpp"
@@ -71,6 +72,59 @@ inline std::string joinStrings(const std::vector<std::string>& values,
         out += value;
     }
     return out;
+}
+
+// Menu order of the player-mode filter; PlayerFilter::Any is offered
+// unconditionally and lives outside this table.
+struct PlayerModeOption {
+    PlayerFilter filter;
+    uint8_t bit;
+    const char* key;
+};
+
+inline const std::vector<PlayerModeOption>& playerModeOptions() {
+    static const std::vector<PlayerModeOption> options = {
+        {PlayerFilter::Splitscreen, kPlayerModeSplit,
+         "pipensx/catalog/players_split"},
+        {PlayerFilter::LocalCoop, kPlayerModeCoop,
+         "pipensx/catalog/players_coop"},
+        {PlayerFilter::Lan, kPlayerModeLan, "pipensx/catalog/players_lan"},
+        {PlayerFilter::Online, kPlayerModeOnline,
+         "pipensx/catalog/players_online"},
+    };
+    return options;
+}
+
+inline std::string playerFilterLabel(PlayerFilter filter) {
+    if (filter == PlayerFilter::Any)
+        return tr("pipensx/catalog/players_any");
+    for (const PlayerModeOption& option : playerModeOptions())
+        if (option.filter == filter)
+            return tr(option.key);
+    return {};
+}
+
+// Detail-page fact: "up to 4 - split screen, local co-op". Empty when the
+// index knows neither a player count nor a mode, so the row disappears.
+inline std::string playersFact(const GameMetadata* metadata) {
+    if (!metadata)
+        return {};
+    std::string count;
+    if (metadata->players >= 2)
+        count = tr("pipensx/detail/players_up_to",
+                   std::to_string(metadata->players));
+    else if (metadata->players == 1)
+        count = tr("pipensx/detail/players_single");
+    std::vector<std::string> modes;
+    for (const PlayerModeOption& option : playerModeOptions())
+        if (metadata->modes & option.bit)
+            modes.push_back(tr(option.key));
+    const std::string joined = joinStrings(modes, ", ");
+    if (count.empty())
+        return joined;
+    if (joined.empty())
+        return count;
+    return count + " • " + joined;
 }
 
 inline std::string shortDescription(const std::string& value) {

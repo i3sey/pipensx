@@ -14,6 +14,16 @@
 
 namespace pipensx {
 
+// Ways a game can be played together, as published in the metadata index's
+// optional "modes" array. Bit flags so a whole snapshot can be OR-ed into one
+// mask (see GameMetadataService::availablePlayerModes).
+enum PlayerMode : uint8_t {
+    kPlayerModeSplit = 1 << 0,
+    kPlayerModeCoop = 1 << 1,
+    kPlayerModeLan = 1 << 2,
+    kPlayerModeOnline = 1 << 3,
+};
+
 struct GameMetadata {
     std::string infoHash;
     std::string titleId;
@@ -27,6 +37,13 @@ struct GameMetadata {
     std::string bannerUrl;
     std::vector<std::string> screenshots;
     std::vector<std::string> categories;
+    // eShop "No. of players": how many can play on one console. 0 = unknown.
+    uint8_t players = 0;
+    // PlayerMode bits. `hasModes` separates "the index carries no mode record
+    // for this game" from "it does, and every mode is false" — only the former
+    // falls back to `players` in catalogEntryMatchesPlayerFilter.
+    uint8_t modes = 0;
+    bool hasModes = false;
 };
 
 struct MetadataManifest {
@@ -97,6 +114,16 @@ public:
     size_t size() const { return byHash_.size(); }
     const MetadataManifest& manifest() const { return manifest_; }
 
+    // PlayerMode bits present anywhere in the loaded index. The catalogue
+    // builds its player-filter menu from this, so an index that predates the
+    // field (or a mode nobody in it supports) simply has no menu entry.
+    uint8_t availablePlayerModes() const { return availableModes_; }
+    // True when the filter has anything to work with at all: either a mode
+    // flag, or a couch-multiplayer player count to fall back on.
+    bool hasPlayerData() const {
+        return availableModes_ != 0 || localPlayerCounts_;
+    }
+
     static bool parseIndex(const std::string& json,
                            std::vector<GameMetadata>& items,
                            std::string& error);
@@ -120,6 +147,9 @@ private:
     };
 
     void imageWorkerMain() const;
+    // Refresh availableModes_/localPlayerCounts_ from byHash_. Called from
+    // every place that reassigns it (load, adopt).
+    void recomputePlayerSummary();
     bool loadCachedSnapshot(MetadataSnapshot& snapshot,
                             std::string& error) const;
     ImageLoadResult loadImageInternal(const std::string& url,
@@ -149,6 +179,8 @@ private:
     mutable bool stoppingImages_ = false;
     std::unordered_map<std::string, GameMetadata> byHash_;
     MetadataManifest manifest_;
+    uint8_t availableModes_ = 0;
+    bool localPlayerCounts_ = false;
 };
 
 } // namespace pipensx

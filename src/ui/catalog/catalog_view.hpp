@@ -279,11 +279,17 @@ public:
             fitsOnly_ = !fitsOnly_;
             rebuildEntries();
         });
+        filterPlayers_ = makeChip(tr("pipensx/catalog/filter_players"),
+                                  [this] { openPlayerFilterMenu(); });
         filterFavorites_->setMarginLeft(16);
         header_->addView(filterFavorites_);
         header_->addView(filterFits_);
+        header_->addView(filterPlayers_);
         if (!favorites_)
             filterFavorites_->setVisibility(brls::Visibility::GONE);
+        // Hidden until a metadata index that carries player data is loaded, so
+        // the chip never offers a menu that can only answer "nothing found".
+        updatePlayerChipVisibility();
         auto* headerSpacer = new brls::Box();
         headerSpacer->setGrow(1.0f);
         headerSpacer->setShrink(1.0f);
@@ -740,6 +746,12 @@ private:
                 metadata_ ? metadata_->findByInfoHash(entry.infoHash) : nullptr;
             if (matchedGamesOnly && !catalogEntryHasMatchedTitle(meta))
                 continue;
+            // Unlike the Games filter above, this one also narrows a search:
+            // "which racing game can we play together" is exactly the question
+            // it exists for.
+            if (playerFilter_ != PlayerFilter::Any &&
+                !catalogEntryMatchesPlayerFilter(meta, playerFilter_))
+                continue;
             bool matches = !searching ||
                 lowerAscii(entry.title).find(needle) != std::string::npos ||
                 (meta && lowerAscii(meta->name).find(needle) !=
@@ -1079,6 +1091,12 @@ private:
         styleChip(filterGames_, gamesOnly);
         styleChip(filterFavorites_, favoritesOnly_);
         styleChip(filterFits_, fitsOnly_);
+        // The chip carries the active choice, so the header states the filter
+        // in force without opening the menu.
+        filterPlayers_->setText(playerFilter_ == PlayerFilter::Any
+            ? tr("pipensx/catalog/filter_players")
+            : ui::playerFilterLabel(playerFilter_));
+        styleChip(filterPlayers_, playerFilter_ != PlayerFilter::Any);
         count_->setText(countText_);
     }
 
@@ -1225,6 +1243,66 @@ private:
                        entries[static_cast<size_t>(right)].publishedAt;
             });
         return order;
+    }
+
+    // The menu lists Any plus every mode the loaded index actually has data
+    // for, so it grows on its own as metadata releases add modes — no new app
+    // build needed. Local co-op is also offered when the index only carries
+    // titledb player counts (the fallback in catalogEntryMatchesPlayerFilter).
+    std::vector<PlayerFilter> playerFilterChoices() const {
+        std::vector<PlayerFilter> choices = {PlayerFilter::Any};
+        if (!metadata_)
+            return choices;
+        const uint8_t available = metadata_->availablePlayerModes();
+        for (const ui::PlayerModeOption& option : ui::playerModeOptions()) {
+            const bool byCount = option.filter == PlayerFilter::LocalCoop &&
+                metadata_->hasPlayerData();
+            if ((available & option.bit) || byCount)
+                choices.push_back(option.filter);
+        }
+        return choices;
+    }
+
+    void updatePlayerChipVisibility() {
+        if (!filterPlayers_)
+            return;
+        const bool usable = metadata_ && metadata_->hasPlayerData();
+        filterPlayers_->setVisibility(usable ? brls::Visibility::VISIBLE
+                                             : brls::Visibility::GONE);
+        if (!usable && playerFilter_ != PlayerFilter::Any) {
+            playerFilter_ = PlayerFilter::Any;
+            rebuildEntries();
+        }
+    }
+
+    void openPlayerFilterMenu() {
+        if (busy_)
+            return;
+        const std::vector<PlayerFilter> choices = playerFilterChoices();
+        std::vector<std::string> labels;
+        labels.reserve(choices.size());
+        int selected = 0;
+        for (size_t i = 0; i < choices.size(); ++i) {
+            labels.push_back(ui::playerFilterLabel(choices[i]));
+            if (choices[i] == playerFilter_)
+                selected = static_cast<int>(i);
+        }
+        auto* dropdown = new brls::Dropdown(
+            tr("pipensx/catalog/players_title"), labels,
+            [this, choices](int index) {
+                if (index < 0 || index >= static_cast<int>(choices.size()))
+                    return;
+                setPlayerFilter(choices[static_cast<size_t>(index)]);
+            },
+            selected);
+        brls::Application::pushActivity(new brls::Activity(dropdown));
+    }
+
+    void setPlayerFilter(PlayerFilter filter) {
+        if (busy_ || playerFilter_ == filter)
+            return;
+        playerFilter_ = filter;
+        rebuildEntries();
     }
 
     void setFilter(CatalogFilter filter) {
@@ -1615,6 +1693,11 @@ private:
                     if (modsOk && mods_)
                         mods_->adopt(std::move(batch.mods));
                 }
+                // A metadata release can be the first one to carry player
+                // data, so the chip appears (or its menu grows) right here,
+                // without a new app build.
+                if (metadataOk)
+                    updatePlayerChipVisibility();
                 if (catalogOk || metadataOk || modsOk)
                     rebuildEntries();
                 recordRefreshSuccess(fetchCatalog && catalogOk,
@@ -1650,6 +1733,7 @@ private:
     brls::Button* filterGames_ = nullptr;
     brls::Button* filterFavorites_ = nullptr;
     brls::Button* filterFits_ = nullptr;
+    brls::Button* filterPlayers_ = nullptr;
     brls::Label* count_ = nullptr;
     brls::Label* status_;
     brls::Box* batchControls_ = nullptr;
@@ -1685,6 +1769,7 @@ private:
     // always comes back to the full catalog.
     bool favoritesOnly_ = false;
     bool fitsOnly_ = false;
+    PlayerFilter playerFilter_ = PlayerFilter::Any;
     brls::RepeatingTimer timer_;
     uint64_t observedSettingsGeneration_ = 0;
     uint64_t taskSignature_ = 0;

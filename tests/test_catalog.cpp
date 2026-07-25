@@ -35,6 +35,8 @@ using pipensx::CatalogRefreshBatch;
 using pipensx::CatalogService;
 using pipensx::catalogEntryIsGame;
 using pipensx::catalogEntryHasMatchedTitle;
+using pipensx::catalogEntryMatchesPlayerFilter;
+using pipensx::PlayerFilter;
 using pipensx::adoptCatalogRefresh;
 using pipensx::GameMetadata;
 using pipensx::GameMetadataService;
@@ -274,6 +276,68 @@ void testMetadataIndexParsing() {
     assert(items[0].screenshots.size() == 1);
     assert(items[0].categories.size() == 2);
     assert(!GameMetadataService::parseIndex("{}", items, error));
+}
+
+// The player fields are optional: an index published before they existed must
+// still parse, and must be distinguishable from one that says "no modes".
+void testMetadataIndexPlayerFields() {
+    const char* json =
+        "[{\"infoHash\":\"E21269D03D34B557F63CE915DEA14F765C9C9798\","
+        "\"titleId\":\"0100230005A52000\",\"name\":\"Couch\","
+        "\"players\":4,\"modes\":[\"split\",\"online\",\"unheard-of\"]},"
+        "{\"infoHash\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\","
+        "\"titleId\":\"0100230005A53000\",\"name\":\"Legacy\",\"players\":2},"
+        "{\"infoHash\":\"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\","
+        "\"titleId\":\"0100230005A54000\",\"name\":\"Old\"},"
+        "{\"infoHash\":\"CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC\","
+        "\"titleId\":\"0100230005A55000\",\"name\":\"Bogus\","
+        "\"players\":900,\"modes\":\"split\"}]";
+    std::vector<GameMetadata> items;
+    std::string error;
+    assert(GameMetadataService::parseIndex(json, items, error));
+    assert(items.size() == 4);
+    assert(items[0].players == 4);
+    assert(items[0].hasModes);
+    assert(items[0].modes ==
+           (pipensx::kPlayerModeSplit | pipensx::kPlayerModeOnline));
+    assert(items[1].players == 2);
+    assert(!items[1].hasModes && items[1].modes == 0);
+    assert(items[2].players == 0);
+    assert(!items[2].hasModes);
+    // Out-of-range count and a non-array "modes" are ignored, not fatal.
+    assert(items[3].players == 0);
+    assert(!items[3].hasModes && items[3].modes == 0);
+}
+
+void testPlayerFilterPredicate() {
+    GameMetadata igdb;
+    igdb.players = 4;
+    igdb.hasModes = true;
+    igdb.modes = pipensx::kPlayerModeSplit | pipensx::kPlayerModeLan;
+
+    assert(catalogEntryMatchesPlayerFilter(&igdb, PlayerFilter::Splitscreen));
+    assert(catalogEntryMatchesPlayerFilter(&igdb, PlayerFilter::Lan));
+    // A mode record is authoritative: four local players do not make it co-op.
+    assert(!catalogEntryMatchesPlayerFilter(&igdb, PlayerFilter::LocalCoop));
+    assert(!catalogEntryMatchesPlayerFilter(&igdb, PlayerFilter::Online));
+
+    // No mode record: the titledb player count answers Local co-op alone.
+    GameMetadata counted;
+    counted.players = 4;
+    assert(catalogEntryMatchesPlayerFilter(&counted, PlayerFilter::LocalCoop));
+    assert(!catalogEntryMatchesPlayerFilter(&counted, PlayerFilter::Splitscreen));
+
+    GameMetadata solo;
+    solo.players = 1;
+    assert(!catalogEntryMatchesPlayerFilter(&solo, PlayerFilter::LocalCoop));
+
+    GameMetadata unknown;
+    assert(!catalogEntryMatchesPlayerFilter(&unknown, PlayerFilter::LocalCoop));
+
+    // An unmatched catalogue release is in no mode, but still in "Any".
+    assert(!catalogEntryMatchesPlayerFilter(nullptr, PlayerFilter::LocalCoop));
+    assert(catalogEntryMatchesPlayerFilter(nullptr, PlayerFilter::Any));
+    assert(catalogEntryMatchesPlayerFilter(&solo, PlayerFilter::Any));
 }
 
 void testMetadataSnapshotAcceptsVerifiedIndex() {
@@ -1251,6 +1315,8 @@ int main() {
     testResolveFromPresetInfoDict();
     testTorrentConstruction();
     testMetadataIndexParsing();
+    testMetadataIndexPlayerFields();
+    testPlayerFilterPredicate();
     testMetadataSnapshotAcceptsVerifiedIndex();
     testMetadataSnapshotRejectsTamperedIndex();
     testMetadataLoadPrefersVerifiedRuntimeCache();

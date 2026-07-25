@@ -413,6 +413,31 @@ void parseMetadataObject(const nlohmann::json& item, GameMetadata& metadata) {
                 metadata.categories.push_back(value.get<std::string>());
         }
     }
+    metadata.players = 0;
+    if (item.contains("players") && item["players"].is_number_unsigned()) {
+        uint64_t players = item["players"].get<uint64_t>();
+        if (players > 0 && players <= 64)
+            metadata.players = static_cast<uint8_t>(players);
+    }
+    metadata.modes = 0;
+    metadata.hasModes = false;
+    if (item.contains("modes") && item["modes"].is_array()) {
+        metadata.hasModes = true;
+        for (const auto& value : item["modes"]) {
+            if (!value.is_string())
+                continue;
+            const std::string mode = value.get<std::string>();
+            if (mode == "split")
+                metadata.modes |= kPlayerModeSplit;
+            else if (mode == "coop")
+                metadata.modes |= kPlayerModeCoop;
+            else if (mode == "lan")
+                metadata.modes |= kPlayerModeLan;
+            else if (mode == "online")
+                metadata.modes |= kPlayerModeOnline;
+            // Unknown modes are ignored: a newer index must stay readable.
+        }
+    }
 }
 
 std::string manifestIndexSha(const std::string& json) {
@@ -674,9 +699,20 @@ bool GameMetadataService::loadCachedSnapshot(MetadataSnapshot& snapshot,
     return prepareSnapshot(manifestJson, indexJson, snapshot, error);
 }
 
+void GameMetadataService::recomputePlayerSummary() {
+    availableModes_ = 0;
+    localPlayerCounts_ = false;
+    for (const auto& entry : byHash_) {
+        availableModes_ |= entry.second.modes;
+        if (!entry.second.hasModes && entry.second.players >= 2)
+            localPlayerCounts_ = true;
+    }
+}
+
 bool GameMetadataService::load(std::string& error) {
     byHash_.clear();
     manifest_ = {};
+    recomputePlayerSummary();
 
     std::string cacheError;
     MetadataSnapshot cached;
@@ -708,6 +744,7 @@ bool GameMetadataService::load(std::string& error) {
     byHash_.reserve(items.size());
     for (GameMetadata& item : items)
         byHash_[item.infoHash] = std::move(item);
+    recomputePlayerSummary();
     log_msg("[metadata] loaded %zu game matches from %s\n", byHash_.size(),
             bundledPath_.c_str());
     return true;
@@ -720,6 +757,7 @@ void GameMetadataService::adopt(MetadataSnapshot snapshot) {
         next[item.infoHash] = std::move(item);
     byHash_ = std::move(next);
     manifest_ = std::move(snapshot.manifest);
+    recomputePlayerSummary();
 }
 
 bool GameMetadataService::fetchLatest(MetadataSnapshot& snapshot,
