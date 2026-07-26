@@ -584,31 +584,31 @@ private:
             bool actionable = task->status == DownloadStatus::Paused ||
                               task->status == DownloadStatus::Error;
             if (actionable) {
-                primary_->setText(tr("pipensx/common/resume"));
+                setTextIfChanged(primary_, tr("pipensx/common/resume"));
                 primary_->setProgress(-1.0f);
             } else {
-                primary_->setText(installButtonLabel(*task));
+                setTextIfChanged(primary_, installButtonLabel(*task));
                 primary_->setProgress(progressForButton(*task));
             }
             primary_->setState(brls::ButtonState::ENABLED);
-            secondary_->setText(tr("pipensx/detail/view_download"));
+            setTextIfChanged(secondary_, tr("pipensx/detail/view_download"));
             secondary_->setState(brls::ButtonState::ENABLED);
             if (task->status == DownloadStatus::Error && !task->error.empty())
-                statusLabel_->setText(task->error);
+                setTextIfChanged(statusLabel_, task->error);
         } else {
-            primary_->setText(tr("pipensx/common/install"));
+            setTextIfChanged(primary_, tr("pipensx/common/install"));
             primary_->setProgress(-1.0f);
             primary_->setState(brls::ButtonState::ENABLED);
-            secondary_->setText(tr("pipensx/common/options"));
+            setTextIfChanged(secondary_, tr("pipensx/common/options"));
             secondary_->setState(brls::ButtonState::ENABLED);
             if (!operationMessage_.empty())
-                statusLabel_->setText(operationMessage_);
+                setTextIfChanged(statusLabel_, operationMessage_);
             else if (installed_ && installed_->contains(titleId_))
-                statusLabel_->setText(
-                    tr("pipensx/detail/installed_hint"));
+                setTextIfChanged(statusLabel_,
+                                 tr("pipensx/detail/installed_hint"));
             else
-                statusLabel_->setText(
-                    tr("pipensx/detail/install_hint"));
+                setTextIfChanged(statusLabel_,
+                                 tr("pipensx/detail/install_hint"));
         }
     }
 

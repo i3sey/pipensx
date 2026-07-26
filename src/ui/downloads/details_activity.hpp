@@ -199,9 +199,12 @@ private:
             brls::Application::popActivity();
             return;
         }
-        frame_->setTitle(task->name);
-        status_->setText(tr("pipensx/downloads/status_line",
-                            downloadStatusLabel(task->status)));
+        if (frameTitle_ != task->name) {
+            frameTitle_ = task->name;
+            frame_->setTitle(frameTitle_);
+        }
+        setTextIfChanged(status_, tr("pipensx/downloads/status_line",
+                                     downloadStatusLabel(task->status)));
         status_->setTextColor(statusColor(task->status));
 
         bool installing = task->status == DownloadStatus::Installing ||
@@ -209,57 +212,63 @@ private:
         float progress = installing ? installProgressOf(*task)
                                     : progressOf(*task);
         progressBar_->setProgress(progress);
-        progress_->setText(tr("pipensx/downloads/progress_line",
-                              percentOf(progress),
-                              formatBytes(task->completedBytes),
-                              formatBytes(task->totalBytes)));
+        setTextIfChanged(progress_, tr("pipensx/downloads/progress_line",
+                                       percentOf(progress),
+                                       formatBytes(task->completedBytes),
+                                       formatBytes(task->totalBytes)));
 
         std::string eta;
         if (task->status == DownloadStatus::Downloading &&
             task->totalBytes > task->completedBytes)
             eta = formatEta(task->totalBytes - task->completedBytes,
                             task->speedBytesPerSecond);
-        eta_->setText(eta.empty() ? std::string()
-                                  : tr("pipensx/downloads/eta_line", eta));
+        setTextIfChanged(eta_, eta.empty()
+                                   ? std::string()
+                                   : tr("pipensx/downloads/eta_line", eta));
 
         if (task->mode == TransferMode::StreamInstall && task->packageCount) {
             const bool hasCurrent = !task->currentPackage.empty() &&
                                     task->packagesInstalled < task->packageCount;
             if (hasCurrent) {
-                package_->setText(
+                setTextIfChanged(
+                    package_,
                     tr("pipensx/downloads/package_of",
                        task->packagesInstalled + 1, task->packageCount));
             } else {
-                package_->setText(
+                setTextIfChanged(
+                    package_,
                     tr("pipensx/downloads/packages_installed",
                        task->packagesInstalled, task->packageCount));
             }
-            currentPackage_->setText(task->currentPackage);
+            setTextIfChanged(currentPackage_, task->currentPackage);
         } else {
-            package_->setText("");
-            currentPackage_->setText("");
+            setTextIfChanged(package_, "");
+            setTextIfChanged(currentPackage_, "");
         }
 
         recordSpeedSample(*task);
-        downloadSpeed_->setText(
-            tr("pipensx/downloads/speed_download",
-               formatSpeed(task->speedBytesPerSecond)));
+        setTextIfChanged(downloadSpeed_,
+                         tr("pipensx/downloads/speed_download",
+                            formatSpeed(task->speedBytesPerSecond)));
         if (task->mode == TransferMode::StreamInstall) {
             installSpeedItem_->setVisibility(brls::Visibility::VISIBLE);
-            installSpeed_->setText(
-                tr("pipensx/downloads/speed_install",
-                   formatSpeed(installSpeedSmoothed_)));
+            setTextIfChanged(installSpeed_,
+                             tr("pipensx/downloads/speed_install",
+                                formatSpeed(installSpeedSmoothed_)));
         } else {
             installSpeedItem_->setVisibility(brls::Visibility::GONE);
         }
-        peers_->setText(tr("pipensx/downloads/peers_line", task->peers,
-                           task->dhtGood, task->dhtDubious));
-        pieces_->setText(tr("pipensx/downloads/pieces_line", task->piecesDone,
+        setTextIfChanged(peers_, tr("pipensx/downloads/peers_line", task->peers,
+                                    task->dhtGood, task->dhtDubious));
+        setTextIfChanged(pieces_,
+                         tr("pipensx/downloads/pieces_line", task->piecesDone,
                             task->piecesTotal, task->piecesVerified));
-        path_->setText(tr("pipensx/downloads/output_line", task->dataPath));
-        error_->setText(task->error.empty()
-                            ? std::string()
-                            : tr("pipensx/downloads/error_line", task->error));
+        setTextIfChanged(path_,
+                         tr("pipensx/downloads/output_line", task->dataPath));
+        setTextIfChanged(error_,
+                         task->error.empty()
+                             ? std::string()
+                             : tr("pipensx/downloads/error_line", task->error));
 
         updateButtons(*task);
     }
@@ -273,8 +282,8 @@ private:
                       task.status == DownloadStatus::Installing ||
                       task.status == DownloadStatus::Committing ||
                       task.status == DownloadStatus::Verifying;
-        pauseButton_->setText(paused ? tr("pipensx/common/resume")
-                                     : tr("pipensx/common/pause"));
+        setTextIfChanged(pauseButton_, paused ? tr("pipensx/common/resume")
+                                              : tr("pipensx/common/pause"));
         setButtonAvailable(pauseButton_, paused || active);
 
         bool canVerify = task.status == DownloadStatus::Paused ||
@@ -352,6 +361,7 @@ private:
 
     std::string taskId_;
     DownloadManager* manager_;
+    std::string frameTitle_;
     brls::AppletFrame* frame_;
     brls::Label* status_;
     brls::Button* pauseButton_;

@@ -195,6 +195,20 @@ std::vector<Cell*> visibleCells(brls::RecyclerFrame* recycler) {
     return cells;
 }
 
+// Timer-driven refresh paths re-set most of their labels with unchanged text
+// every tick. Label::setText always invalidates, which schedules a Yoga
+// re-layout plus a nanovg text re-measure — so compare first and skip the
+// no-op sets.
+inline void setTextIfChanged(brls::Label* label, const std::string& text) {
+    if (label && label->getFullText() != text)
+        label->setText(text);
+}
+
+inline void setTextIfChanged(brls::Button* button, const std::string& text) {
+    if (button && button->getText() != text)
+        button->setText(text);
+}
+
 inline std::string formatBytes(uint64_t bytes) {
     char buffer[32];
     fmt_bytes(buffer, sizeof(buffer), bytes);
