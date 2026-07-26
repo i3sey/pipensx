@@ -134,6 +134,9 @@ set(APP_SERVICE_SOURCES
     src/app/mod_index_service.cpp
     src/app/install_space.cpp
     src/app/magnet_resolver.cpp
+    src/app/http_server.cpp
+    src/app/web_add_queue.cpp
+    src/app/web_server.cpp
     src/app/bug_report.cpp
     src/install/install_journal.cpp
     src/install/package_stream.cpp
@@ -260,6 +263,12 @@ add_custom_target(sync_i18n ALL
         "${CMAKE_CURRENT_SOURCE_DIR}/resources/i18n" "${ROMFS_DIR}/i18n"
     VERBATIM
 )
+# Web companion SPA, served from romfs:/web by src/app/web_server.cpp.
+add_custom_target(sync_web ALL
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_CURRENT_SOURCE_DIR}/resources/web" "${ROMFS_DIR}/web"
+    VERBATIM
+)
 file(COPY
     ${CMAKE_CURRENT_SOURCE_DIR}/resources/icon.png
     DESTINATION ${ROMFS_DIR}
@@ -277,6 +286,7 @@ endif ()
 set(PIPENSX_NRO_DEPENDS pipensx)
 list(APPEND PIPENSX_NRO_DEPENDS sync_update_helper)
 list(APPEND PIPENSX_NRO_DEPENDS sync_i18n)
+list(APPEND PIPENSX_NRO_DEPENDS sync_web)
 add_custom_target(sync_catalog_snapshot ALL
     COMMAND ${CMAKE_COMMAND} -E make_directory "${ROMFS_DIR}/catalog"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different

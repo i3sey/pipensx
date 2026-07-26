@@ -98,9 +98,14 @@ bool parseSettings(const std::string& text, AppSettingsData& values,
         !readBool(root, "check_for_updates_on_launch",
                   values.checkForUpdatesOnLaunch, error) ||
         !readBool(root, "catalog_disclaimer_ack",
-                  values.catalogDisclaimerAcknowledged, error)) {
+                  values.catalogDisclaimerAcknowledged, error) ||
+        !readBool(root, "web_server_enabled", values.webServerEnabled,
+                  error) ||
+        !readString(root, "web_server_pin", values.webServerPin, error)) {
         return false;
     }
+    if (!isValidWebPin(values.webServerPin))
+        values.webServerPin.clear();
 
     if (!isSupportedLanguage(values.language)) {
         error = "Setting 'language' has an unknown value.";
@@ -148,6 +153,8 @@ std::string serializeSettings(const AppSettingsData& values) {
     root["extended_telemetry"] = values.extendedTelemetry;
     root["check_for_updates_on_launch"] = values.checkForUpdatesOnLaunch;
     root["catalog_disclaimer_ack"] = values.catalogDisclaimerAcknowledged;
+    root["web_server_enabled"] = values.webServerEnabled;
+    root["web_server_pin"] = values.webServerPin;
     return root.dump(2) + "\n";
 }
 
@@ -159,6 +166,18 @@ bool isSupportedLanguage(const std::string& value) {
             return true;
     }
     return false;
+}
+
+bool isValidWebPin(const std::string& value) {
+    if (value.empty())
+        return true;
+    if (value.size() < 4 || value.size() > 8)
+        return false;
+    for (char c : value) {
+        if (c < '0' || c > '9')
+            return false;
+    }
+    return true;
 }
 
 bool AppSettingsData::operator==(const AppSettingsData& other) const {
@@ -173,7 +192,10 @@ bool AppSettingsData::operator==(const AppSettingsData& other) const {
            showCompletedDownloads == other.showCompletedDownloads &&
            extendedTelemetry == other.extendedTelemetry &&
            checkForUpdatesOnLaunch == other.checkForUpdatesOnLaunch &&
-           catalogDisclaimerAcknowledged == other.catalogDisclaimerAcknowledged;
+           catalogDisclaimerAcknowledged ==
+               other.catalogDisclaimerAcknowledged &&
+           webServerEnabled == other.webServerEnabled &&
+           webServerPin == other.webServerPin;
 }
 
 bool dailyRefreshDue(uint64_t nowMs, uint64_t lastRefreshMs) {

@@ -41,6 +41,11 @@ struct AppSettingsData {
     // First-run disclaimer: the catalog is a third-party RuTracker dump. Shown
     // once, then this is set so later launches skip it.
     bool catalogDisclaimerAcknowledged = false;
+    // Web companion LAN server (plain HTTP, port 8080). The PIN gates
+    // mutating endpoints; empty = no auth, otherwise 4-8 digits (enforced at
+    // parse time so a hand-edited settings.json cannot smuggle odd values).
+    bool webServerEnabled = true;
+    std::string webServerPin;
 
     bool operator==(const AppSettingsData& other) const;
     bool operator!=(const AppSettingsData& other) const {
@@ -54,6 +59,9 @@ struct AppSettingsData {
 inline constexpr const char* kLanguageValues[] = {"auto", "en-US", "ru"};
 
 bool isSupportedLanguage(const std::string& value);
+
+// True for a valid web PIN: empty (auth off) or 4-8 ASCII digits.
+bool isValidWebPin(const std::string& value);
 
 bool dailyRefreshDue(uint64_t nowMs, uint64_t lastRefreshMs);
 

@@ -4,6 +4,7 @@
 #include "app/game_metadata_service.hpp"
 #include "app/installed_title_service.hpp"
 #include "app/update_service.hpp"
+#include "app/web_server.hpp"
 #include "platform/switch_crashlog.h"
 #include "platform/switch_performance.hpp"
 
@@ -46,6 +47,7 @@ using pipensx::ModIndexService;
 using pipensx::SwitchPerformanceController;
 using pipensx::UpdateCheckResult;
 using pipensx::UpdateService;
+using pipensx::WebServer;
 
 using namespace pipensx::ui;
 
@@ -72,7 +74,7 @@ public:
                  GameMetadataService* metadata,
                  InstalledTitleService* installed, AppSettings* settings,
                  UpdateService* updater, ModIndexService* mods,
-                 FavoritesService* favorites)
+                 FavoritesService* favorites, WebServer* webServer)
         : manager_(manager), catalog_(catalog), metadata_(metadata),
           installed_(installed), settings_(settings), updater_(updater),
           mods_(mods), favorites_(favorites) {
@@ -95,9 +97,9 @@ public:
         });
         tabs->addNavTab(tr("pipensx/nav/settings"), NavIconType::Settings,
                         [settings, manager, catalog, metadata,
-                         installed, updater, mods] {
+                         installed, updater, mods, webServer] {
             return new SettingsView(settings, manager, catalog, metadata,
-                                    installed, updater, mods);
+                                    installed, updater, mods, webServer);
         });
         tabs->addNavTab(tr("pipensx/nav/about"), NavIconType::About, [] {
             return new AboutView();
@@ -274,10 +276,25 @@ int main(int argc, char** argv) {
 
         UpdateService updater;
 
+        startupStage("WebServer construction");
+        WebServer webServer(manager, "romfs:/web", PIPENSX_VERSION);
+        webServer.setPin(settings.get().webServerPin);
+        webServer.setStreamSelection(settings.get().streamSelection);
+        webServer.updateCatalog(catalog.entries());
+        // Every later adopt() (launch refresh, settings refresh, catalog tab)
+        // lands on the UI thread, so this callback keeps the companion's
+        // catalogue copy current from all of them.
+        catalog.setOnAdopt([&webServer](
+                               const std::vector<pipensx::CatalogEntry>& e) {
+            webServer.updateCatalog(e);
+        });
+        if (settings.get().webServerEnabled)
+            webServer.start();
+
         startupStage("MainActivity construction");
         auto* activity = new MainActivity(&manager, &catalog, &metadata,
                                           &installed, &settings, &updater,
-                                          &mods, &favorites);
+                                          &mods, &favorites, &webServer);
 
         startupStage("push MainActivity");
         brls::Application::pushActivity(activity);
@@ -371,6 +388,9 @@ int main(int argc, char** argv) {
         }
 
         startupStage("manager shutdown");
+        // The web server goes first: its threads call into manager, so they
+        // must be joined before the manager dies.
+        webServer.shutdown();
         updater.shutdown();
         manager.shutdown();
         performance.setActive(false);

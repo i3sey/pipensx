@@ -65,6 +65,8 @@ JOURNAL_TEST_TARGET = tests/test_install_journal
 WEB_SEED_TEST_TARGET = tests/test_web_seed
 MSE_TEST_TARGET = tests/test_mse
 BUG_REPORT_TEST_TARGET = tests/test_bug_report
+HTTP_TEST_TARGET = tests/test_http_server
+WEB_SERVER_TEST_TARGET = tests/test_web_server
 TEST_SRCS = \
     tests/test_piece.c       \
     src/core/sha1.c          \
@@ -138,6 +140,30 @@ src/app/catalog_presentation.o: src/app/catalog_presentation.cpp
 src/app/mod_index_service.o: src/app/mod_index_service.cpp
 	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
 
+src/app/http_server.o: src/app/http_server.cpp
+	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
+
+src/app/web_server.o: src/app/web_server.cpp
+	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
+
+src/app/web_add_queue.o: src/app/web_add_queue.cpp
+	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
+
+$(HTTP_TEST_TARGET): tests/test_http_server.cpp src/app/http_server.o \
+		src/core/net.o src/core/util.o
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ -pthread
+
+$(WEB_SERVER_TEST_TARGET): tests/test_web_server.cpp \
+		src/app/web_server.o src/app/web_add_queue.o src/app/http_server.o \
+		src/app/magnet_resolver.o src/app/install_space.cpp \
+		src/app/download_manager.o src/app/web_seed_source.o \
+		src/app/stream_ram_budget.o src/app/request_gate.o \
+		src/install/package_stream.o src/install/install_journal.o \
+		src/install/install_backend_pc.o \
+		$(filter-out src/main_pc.o,$(OBJS)) $(UTP_OBJS)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) \
+		$(INSTALL_LDFLAGS) -lz -pthread
+
 $(CATALOG_TEST_TARGET): tests/test_catalog.cpp \
 		src/app/catalog_service.o src/app/catalog_refresh.o \
 		src/app/catalog_presentation.o \
@@ -161,7 +187,8 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 		$(JOURNAL_TEST_TARGET) $(WEB_SEED_TEST_TARGET) \
 		$(FAVORITES_TEST_TARGET) \
 		$(MSE_TEST_TARGET) \
-		$(BUG_REPORT_TEST_TARGET)
+		$(BUG_REPORT_TEST_TARGET) \
+		$(HTTP_TEST_TARGET) $(WEB_SERVER_TEST_TARGET)
 	./$(TEST_TARGET)
 	./$(MANAGER_TEST_TARGET)
 	./$(PACKAGE_TEST_TARGET)
@@ -181,6 +208,8 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 	./$(FAVORITES_TEST_TARGET)
 	./$(MSE_TEST_TARGET)
 	./$(BUG_REPORT_TEST_TARGET)
+	./$(HTTP_TEST_TARGET)
+	./$(WEB_SERVER_TEST_TARGET)
 	python3 tests/test_bug_report_decode.py
 	python3 tests/test_telemetry_analyzer.py
 	python3 scripts/check_i18n.py
@@ -249,6 +278,23 @@ $(TORRENT_TEST_TARGET): tests/test_torrent.c \
 		$(filter-out src/core/torrent.o src/main_pc.o,$(OBJS)) $(UTP_OBJS)
 	$(CC) $(CFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -lstdc++
 
+# Manual browser testing for the web companion (not part of all/test):
+#   make -f Makefile.pc webserver && ./tools/webserver
+webserver: tools/webserver
+
+tools/webserver: tools/web_server_main.cpp \
+		src/app/web_server.o src/app/web_add_queue.o src/app/http_server.o \
+		src/app/catalog_service.o src/app/catalog_refresh.o \
+		src/app/mod_index_service.o src/app/game_metadata_service.o \
+		src/app/magnet_resolver.o src/app/install_space.cpp \
+		src/app/download_manager.o src/app/web_seed_source.o \
+		src/app/stream_ram_budget.o src/app/request_gate.o \
+		src/install/package_stream.o src/install/install_journal.o \
+		src/install/install_backend_pc.o \
+		$(filter-out src/main_pc.o,$(OBJS)) $(UTP_OBJS)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) \
+		$(INSTALL_LDFLAGS) -lz -pthread
+
 clean:
 	rm -f $(OBJS) $(UTP_OBJS) src/app/download_manager.o \
 		src/app/web_seed_source.o src/app/stream_ram_budget.o \
@@ -266,6 +312,8 @@ clean:
 		$(INSTALL_SPACE_TEST_TARGET) $(BATCH_INSTALL_TEST_TARGET) \
 		$(RAM_BUDGET_TEST_TARGET) $(REQUEST_GATE_TEST_TARGET) \
 		$(JOURNAL_TEST_TARGET) $(FAVORITES_TEST_TARGET) \
-		$(MSE_TEST_TARGET) $(BUG_REPORT_TEST_TARGET)
+		$(MSE_TEST_TARGET) $(BUG_REPORT_TEST_TARGET) \
+		src/app/http_server.o src/app/web_server.o src/app/web_add_queue.o \
+		$(HTTP_TEST_TARGET) $(WEB_SERVER_TEST_TARGET)
 
 .PHONY: all test clean

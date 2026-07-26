@@ -89,14 +89,67 @@ socket_t net_udp_socket(uint16_t local_port) {
     return fd;
 }
 
+socket_t net_tcp_listen(uint16_t port, int backlog) {
+    socket_t fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return INVALID_SOCK;
+    net_set_nonblock(fd);
+    int opt = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family      = AF_INET;
+    addr.sin_port        = htons(port);
+    addr.sin_addr.s_addr = INADDR_ANY;
+    if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        log_msg("[net] bind TCP port %u: %s\n", port, strerror(errno));
+        close(fd);
+        return INVALID_SOCK;
+    }
+    if (listen(fd, backlog) < 0) {
+        log_msg("[net] listen port %u: %s\n", port, strerror(errno));
+        close(fd);
+        return INVALID_SOCK;
+    }
+    return fd;
+}
+
+socket_t net_accept(socket_t listener, struct sockaddr_in *peer) {
+    struct sockaddr_in tmp;
+    socklen_t len = sizeof(tmp);
+    socket_t fd;
+    do {
+        fd = accept(listener, (struct sockaddr*)&tmp, &len);
+    } while (fd < 0 && errno == EINTR);
+    if (fd < 0) return INVALID_SOCK;
+    net_set_nonblock(fd);
+    if (peer) *peer = tmp;
+    return fd;
+}
+
+uint16_t net_local_port(socket_t fd) {
+    struct sockaddr_in addr;
+    socklen_t len = sizeof(addr);
+    if (getsockname(fd, (struct sockaddr*)&addr, &len) < 0) return 0;
+    return ntohs(addr.sin_port);
+}
+
 void net_close(socket_t fd) {
     if (fd >= 0) close(fd);
 }
 
 ssize_t net_send(socket_t fd, const uint8_t *buf, size_t len) {
+    /* Cap each send() call: libnx marshals the whole buffer through the bsd
+       service transfer memory, and multi-megabyte writes (web catalog
+       responses) can fail outright where a chunked series succeeds. Peer
+       traffic never exceeds block size, so this only matters for the web
+       server's large bodies. */
+    const size_t max_chunk = 32 * 1024;
     size_t sent = 0;
     while (sent < len) {
-        ssize_t n = send(fd, buf + sent, len - sent,
+        size_t chunk = len - sent;
+        if (chunk > max_chunk)
+            chunk = max_chunk;
+        ssize_t n = send(fd, buf + sent, chunk,
 #ifdef MSG_NOSIGNAL
                          MSG_NOSIGNAL
 #else

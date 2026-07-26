@@ -42,6 +42,18 @@ int net_set_tcp_receive_buffer(socket_t fd);
 /* Create nonblocking UDP socket bound to local_port (0 = any) */
 socket_t net_udp_socket(uint16_t local_port);
 
+/* Create nonblocking listening TCP socket bound to port (0 = ephemeral).
+   Returns INVALID_SOCK on failure. */
+socket_t net_tcp_listen(uint16_t port, int backlog);
+
+/* Accept one pending connection from a nonblocking listener.
+   Returns a nonblocking socket, or INVALID_SOCK when none pending
+   (EAGAIN) or on error. peer may be NULL. */
+socket_t net_accept(socket_t listener, struct sockaddr_in *peer);
+
+/* Local port a socket is bound to, 0 on error (for port-0 listeners). */
+uint16_t net_local_port(socket_t fd);
+
 /* Set socket nonblocking */
 int net_set_nonblock(socket_t fd);
 

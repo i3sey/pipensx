@@ -533,6 +533,8 @@ void CatalogService::adopt(std::vector<CatalogEntry> parsed) {
     sourceLabel_ = "Langegen switch-games";
     log_msg("[catalog] refreshed %zu entries from %s\n", entries_.size(),
             sourceLabel_.c_str());
+    if (onAdopt_)
+        onAdopt_(entries_);
 }
 
 } // namespace pipensx

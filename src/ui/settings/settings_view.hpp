@@ -18,6 +18,8 @@
 #include "app/installed_title_service.hpp"
 #include "app/mod_index_service.hpp"
 #include "app/update_service.hpp"
+#include "app/web_server.hpp"
+#include "ui/common/qr_view.hpp"
 #include "ui/common/ui_helpers.hpp"
 #include "ui/i18n.hpp"
 #include "ui/settings/advanced_settings.hpp"
@@ -32,10 +34,11 @@ public:
     SettingsView(AppSettings* settings, DownloadManager* manager,
                  CatalogService* catalog, GameMetadataService* metadata,
                  InstalledTitleService* installed, UpdateService* updater = nullptr,
-                 ModIndexService* mods = nullptr)
+                 ModIndexService* mods = nullptr, WebServer* webServer = nullptr)
         : brls::Box(brls::Axis::COLUMN), settings_(settings), manager_(manager),
           catalog_(catalog), metadata_(metadata), installed_(installed), updater_(updater),
-          mods_(mods), alive_(std::make_shared<std::atomic<bool>>(true)) {
+          mods_(mods), webServer_(webServer),
+          alive_(std::make_shared<std::atomic<bool>>(true)) {
         auto* content = new brls::Box(brls::Axis::COLUMN);
         content->setPadding(24, 34, 24, 34);
 
@@ -122,10 +125,14 @@ public:
                 values.streamSelection = selected == 1
                     ? StreamSelection::PackagesOnly
                     : StreamSelection::AllFiles;
-                if (!persist(values, "stream_selection"))
+                if (!persist(values, "stream_selection")) {
                     streamSelection_->setSelection(
                         previous == StreamSelection::PackagesOnly ? 1 : 0,
                         true);
+                    return;
+                }
+                if (webServer_)
+                    webServer_->setStreamSelection(values.streamSelection);
             });
         content->addView(streamSelection_);
 
@@ -140,6 +147,38 @@ public:
                     showCompleted_->setOn(previous, false);
             });
         content->addView(showCompleted_);
+
+        addSection(content, tr("pipensx/settings/section_web"));
+        webToggle_ = new brls::BooleanCell();
+        webToggle_->init(tr("pipensx/settings/web_toggle"),
+            settings_->get().webServerEnabled,
+            [this](bool enabled) {
+                AppSettingsData values = settings_->get();
+                bool previous = values.webServerEnabled;
+                values.webServerEnabled = enabled;
+                if (!persist(values, "web_server")) {
+                    webToggle_->setOn(previous, false);
+                    return;
+                }
+                if (webServer_) {
+                    if (enabled) {
+                        if (!webServer_->start())
+                            brls::Application::notify(
+                                tr("pipensx/settings/web_start_failed"));
+                    } else {
+                        webServer_->stop();
+                    }
+                }
+                updateWebCells();
+            });
+        content->addView(webToggle_);
+        webAddress_ = actionCell(tr("pipensx/settings/web_address"),
+            "", [this] { showWebQr(); });
+        content->addView(webAddress_);
+        webPin_ = actionCell(tr("pipensx/settings/web_pin"),
+            "", [this] { editWebPin(); });
+        content->addView(webPin_);
+        updateWebCells();
 
         auto* reportBug = actionCell(tr("pipensx/settings/report_bug"),
             tr("pipensx/settings/report_bug_detail"),
@@ -161,6 +200,12 @@ public:
         alive_->store(false);
     }
 
+    void willAppear(bool resetState) override {
+        brls::Box::willAppear(resetState);
+        // The console may have joined/left Wi-Fi since the last visit.
+        updateWebCells();
+    }
+
 private:
     // Settings-selector row for a stored language value; falls back to the
     // "auto" row so a value from a newer build cannot leave the cell blank.
@@ -170,6 +215,84 @@ private:
                 return static_cast<int>(i);
         }
         return 0;
+    }
+
+    std::string webAddressText() const {
+        if (!settings_->get().webServerEnabled)
+            return tr("pipensx/settings/web_disabled");
+        // No server (golden runner): a fixed address keeps the screenshot
+        // baselines deterministic — the host's real IP must never render.
+        if (!webServer_)
+            return "http://192.168.1.2:8080";
+        std::string ip = brls::Application::getPlatform()->getIpAddress();
+        if (ip.empty() || ip == "0.0.0.0")
+            return tr("pipensx/settings/web_address_none");
+        return "http://" + ip + ":" +
+               std::to_string(pipensx::WebServer::kDefaultPort);
+    }
+
+    void updateWebCells() {
+        if (webAddress_)
+            webAddress_->setDetailText(webAddressText());
+        if (webPin_)
+            webPin_->setDetailText(settings_->get().webServerPin.empty()
+                                       ? tr("pipensx/settings/web_pin_off")
+                                       : "••••");
+    }
+
+    void showWebQr() {
+        std::string url = webAddressText();
+        if (url.rfind("http://", 0) != 0) {
+            brls::Application::notify(url);
+            return;
+        }
+        // The QR carries the PIN so a scan lands authenticated; the SPA
+        // stores it and strips it from the visible URL.
+        std::string qrUrl = url;
+        const std::string& pin = settings_->get().webServerPin;
+        if (!pin.empty())
+            qrUrl += "/?pin=" + pin;
+        auto* box = new brls::Box(brls::Axis::COLUMN);
+        box->setAlignItems(brls::AlignItems::CENTER);
+        box->setPadding(28, 28, 28, 28);
+        auto* qr = new QrCodeView(qrUrl);
+        qr->setMarginBottom(16);
+        box->addView(qr);
+        auto* label = new brls::Label();
+        label->setText(url);
+        label->setFontSize(theme::kFontSmall);
+        label->setTextColor(theme::textSecondary());
+        box->addView(label);
+        auto* hint = new brls::Label();
+        hint->setText(tr("pipensx/settings/web_qr_hint"));
+        hint->setFontSize(theme::kFontCaption);
+        hint->setTextColor(theme::textTertiary());
+        hint->setMarginTop(8);
+        box->addView(hint);
+        auto* dialog = new brls::Dialog(box);
+        dialog->addButton(tr("pipensx/common/ok"), [] {});
+        dialog->open();
+    }
+
+    void editWebPin() {
+        brls::Application::getImeManager()->openForText(
+            [this](std::string text) {
+                if (!pipensx::isValidWebPin(text)) {
+                    brls::Application::notify(
+                        tr("pipensx/settings/web_pin_invalid"));
+                    return;
+                }
+                AppSettingsData values = settings_->get();
+                values.webServerPin = text;
+                if (!persist(values, "web_pin"))
+                    return;
+                if (webServer_)
+                    webServer_->setPin(text);
+                updateWebCells();
+            },
+            tr("pipensx/settings/web_pin"),
+            tr("pipensx/settings/web_pin_detail"), 8,
+            settings_->get().webServerPin, brls::KEYBOARD_DISABLE_NONE);
     }
 
     void openBugReport() {
@@ -451,6 +574,8 @@ private:
             true);
         showCompleted_->setOn(values.showCompletedDownloads, false);
         checkForUpdates_->setOn(values.checkForUpdatesOnLaunch, false);
+        webToggle_->setOn(values.webServerEnabled, false);
+        updateWebCells();
     }
 
     AppSettings* settings_;
@@ -460,6 +585,7 @@ private:
     InstalledTitleService* installed_;
     UpdateService* updater_;
     ModIndexService* mods_;
+    WebServer* webServer_;
     std::shared_ptr<std::atomic<bool>> alive_;
     brls::SelectorCell* language_ = nullptr;
     brls::SelectorCell* catalogFilter_ = nullptr;
@@ -468,6 +594,9 @@ private:
     brls::DetailCell* updateAction_ = nullptr;
     brls::SelectorCell* streamSelection_ = nullptr;
     brls::BooleanCell* showCompleted_ = nullptr;
+    brls::BooleanCell* webToggle_ = nullptr;
+    brls::DetailCell* webAddress_ = nullptr;
+    brls::DetailCell* webPin_ = nullptr;
     bool refreshInFlight_ = false;
     bool updateInFlight_ = false;
 };

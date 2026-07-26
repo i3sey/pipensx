@@ -1,5 +1,6 @@
 # Build artifacts
 /pipensx
+/tools/webserver
 /tests/test_*
 !/tests/test_*.c
 !/tests/test_*.cpp

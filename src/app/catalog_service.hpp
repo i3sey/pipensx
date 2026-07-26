@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -74,6 +75,13 @@ public:
     void adopt(std::vector<CatalogEntry> parsed);
 
     const std::vector<CatalogEntry>& entries() const { return entries_; }
+
+    // Runs on the UI thread at the end of every adopt(), so observers that
+    // keep their own copy of the catalogue (the web companion) stay current
+    // no matter which refresh path adopted the batch.
+    void setOnAdopt(std::function<void(const std::vector<CatalogEntry>&)> cb) {
+        onAdopt_ = std::move(cb);
+    }
     const std::string& sourceLabel() const { return sourceLabel_; }
     const std::string& rootPath() const { return rootPath_; }
 
@@ -95,6 +103,7 @@ private:
     std::string bundledPath_;
     std::vector<CatalogEntry> entries_;
     std::string sourceLabel_;
+    std::function<void(const std::vector<CatalogEntry>&)> onAdopt_;
 };
 
 } // namespace pipensx

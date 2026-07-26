@@ -62,6 +62,8 @@ void testUpdatePersistsEveryPublicSetting() {
     changed.showCompletedDownloads = false;
     changed.extendedTelemetry = true;
     changed.checkForUpdatesOnLaunch = false;
+    changed.webServerEnabled = false;
+    changed.webServerPin = "12345678";
     assert(settings.update(changed, error));
 
     AppSettings restored(SettingsPath, LegacyPath);
@@ -142,6 +144,28 @@ void testLegacyTelemetryFlagMigratesOnce() {
     assert(access(LegacyPath, F_OK) != 0);
 }
 
+// A hand-edited PIN that is not 4-8 digits silently degrades to "no PIN"
+// rather than locking the user out of their own companion page.
+void testInvalidWebPinIsCleared() {
+    cleanup();
+    {
+        std::ofstream output(SettingsPath);
+        output << R"({"version":1,"web_server_pin":"letters"})";
+    }
+    AppSettings settings(SettingsPath, LegacyPath);
+    std::string error;
+    assert(settings.load(error));
+    assert(settings.get().webServerPin.empty());
+    assert(settings.get().webServerEnabled);
+
+    assert(pipensx::isValidWebPin(""));
+    assert(pipensx::isValidWebPin("1234"));
+    assert(pipensx::isValidWebPin("12345678"));
+    assert(!pipensx::isValidWebPin("123"));
+    assert(!pipensx::isValidWebPin("123456789"));
+    assert(!pipensx::isValidWebPin("12a4"));
+}
+
 void testDailyRefreshDue() {
     const uint64_t day = 24ULL * 60ULL * 60ULL * 1000ULL;
     assert(dailyRefreshDue(1000, 0));
@@ -159,6 +183,7 @@ int main() {
     testInvalidFileFailsClosedToDefaults();
     testUnknownLanguageIsRejected();
     testLegacyTelemetryFlagMigratesOnce();
+    testInvalidWebPinIsCleared();
     testDailyRefreshDue();
     cleanup();
     std::puts("app settings tests passed");
