@@ -1,4 +1,5 @@
 #include "download_manager.hpp"
+#include "app_settings.hpp"
 #include "request_gate.hpp"
 #include "stream_budget_arbiter.hpp"
 #include "stream_ram_budget.hpp"
@@ -33,6 +34,12 @@ extern "C" {
 
 namespace pipensx {
 namespace {
+
+// TCP listen port for runner slot 0; slot i listens on kBasePeerPort + i
+// (51413-51416), so N=1 keeps the classic port. The shared DHT engine's UDP
+// socket also lives on 51413 (different protocol, no clash) and the magnet
+// resolver no longer binds a port of its own.
+constexpr uint16_t kBasePeerPort = 51413;
 
 bool hasPackageExtension(const std::string& path) {
     std::string lower = path;
@@ -1309,7 +1316,7 @@ DownloadManager::DownloadManager(std::string rootPath, bool startWorker)
     load();
     if (startWorker) {
         workerStarted_ = true;
-        worker_ = std::thread(&DownloadManager::workerMain, this);
+        worker_ = std::thread(&DownloadManager::schedulerMain, this);
     }
 }
 
@@ -1803,48 +1810,120 @@ bool DownloadManager::removeLocked(const std::string& id, bool deleteData,
     return false;
 }
 
-void DownloadManager::workerMain() {
-    while (!stopping_) {
-        ClaimedTask claim;
-        {
-            std::unique_lock<std::mutex> lock(mutex_);
-            condition_.wait(lock, [this] {
-                if (stopping_)
-                    return true;
-                for (const DownloadTask& task : tasks_)
-                    if (task.status == DownloadStatus::Queued)
-                        return true;
-                return false;
-            });
-            if (stopping_)
-                break;
-            for (DownloadTask& task : tasks_) {
-                if (task.status == DownloadStatus::Queued) {
-                    task.status = DownloadStatus::Checking;
-                    claim.id = task.id;
-                    claim.metainfoPath = task.metainfoPath;
-                    claim.dataPath = task.dataPath;
-                    claim.mode = task.mode;
-                    claim.packagesInstalled = task.packagesInstalled;
-                    claim.fileSelection = task.fileSelection;
-                    claim.initialPeers = task.initialPeers;
-                    // Fast resume: consume the trusted bitfield and persist
-                    // the disarmed state before the engine touches anything —
-                    // a crash from here on must fall back to a full scan.
-                    claim.resumeBitfield = std::move(task.resumeBitfield);
-                    task.resumeBitfield.clear();
-                    break;
-                }
-            }
-            std::string ignored;
-            saveLocked(ignored);
-        }
-
-        runTask(std::move(claim));
-    }
+bool taskClaimableUnderInstallToken(const DownloadTask& task,
+                                    bool installTokenHeld) {
+    if (task.status != DownloadStatus::Queued)
+        return false;
+    return !(task.mode == TransferMode::StreamInstall && installTokenHeld);
 }
 
-void DownloadManager::runTask(ClaimedTask claim) {
+DownloadTask* DownloadManager::claimableLocked() {
+    for (DownloadTask& task : tasks_)
+        if (taskClaimableUnderInstallToken(task, installTokenHeld_))
+            return &task;
+    return nullptr;
+}
+
+// Move finished runners out of runners_ and join them with mutex_ released
+// (a join can wait on engine teardown; holding the lock would stall the UI).
+void DownloadManager::reapRunnersLocked(std::unique_lock<std::mutex>& lock) {
+    std::vector<std::unique_ptr<RunnerSlot>> finished;
+    for (auto it = runners_.begin(); it != runners_.end();) {
+        if ((*it)->done) {
+            finished.push_back(std::move(*it));
+            it = runners_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    if (finished.empty())
+        return;
+    lock.unlock();
+    for (auto& runner : finished)
+        if (runner->thread.joinable())
+            runner->thread.join();
+    lock.lock();
+}
+
+void DownloadManager::schedulerMain() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    while (true) {
+        condition_.wait(lock, [this] {
+            if (stopping_)
+                return true;
+            for (const auto& runner : runners_)
+                if (runner->done)
+                    return true;
+            return runners_.size() < maxActive_ &&
+                   claimableLocked() != nullptr;
+        });
+        reapRunnersLocked(lock);
+        if (stopping_)
+            break;
+        if (runners_.size() >= maxActive_)
+            continue;
+        DownloadTask* task = claimableLocked();
+        if (!task)
+            continue;
+
+        task->status = DownloadStatus::Checking;
+        ClaimedTask claim;
+        claim.id = task->id;
+        claim.metainfoPath = task->metainfoPath;
+        claim.dataPath = task->dataPath;
+        claim.mode = task->mode;
+        claim.packagesInstalled = task->packagesInstalled;
+        claim.fileSelection = task->fileSelection;
+        claim.initialPeers = task->initialPeers;
+        // Fast resume: consume the trusted bitfield and persist the disarmed
+        // state before the engine touches anything — a crash from here on
+        // must fall back to a full scan.
+        claim.resumeBitfield = std::move(task->resumeBitfield);
+        task->resumeBitfield.clear();
+        std::string ignored;
+        saveLocked(ignored);
+
+        auto slot = std::make_unique<RunnerSlot>();
+        slot->taskId = claim.id;
+        slot->holdsInstallToken = claim.mode == TransferMode::StreamInstall;
+        if (slot->holdsInstallToken)
+            installTokenHeld_ = true;
+        uint32_t slotIndex = 0;
+        while (slotBitmap_ & (1u << slotIndex))
+            ++slotIndex;
+        slotBitmap_ |= 1u << slotIndex;
+        slot->slotIndex = slotIndex;
+        RunnerSlot* raw = slot.get();
+        runners_.push_back(std::move(slot));
+        raw->thread = std::thread(
+            [this, raw, moved = std::move(claim)]() mutable {
+                runTask(raw, std::move(moved));
+                std::lock_guard<std::mutex> guard(mutex_);
+                if (raw->holdsInstallToken)
+                    installTokenHeld_ = false;
+                slotBitmap_ &= ~(1u << raw->slotIndex);
+                raw->done = true;
+                condition_.notify_all();
+            });
+    }
+    // stopping_: runners break their tick loops on it; join them all.
+    std::vector<std::unique_ptr<RunnerSlot>> remaining;
+    remaining.swap(runners_);
+    installTokenHeld_ = false;
+    slotBitmap_ = 0;
+    lock.unlock();
+    for (auto& runner : remaining)
+        if (runner->thread.joinable())
+            runner->thread.join();
+}
+
+void DownloadManager::setMaxActiveDownloads(uint32_t count) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    maxActive_ = clampMaxActiveDownloads(count);
+    condition_.notify_all();
+}
+
+void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
     // Register this slot's engine overhead with the budget arbiter for the
     // whole task lifetime, error paths included.
     arbiter_.engineSlotStarted();
@@ -1946,7 +2025,8 @@ void DownloadManager::runTask(ClaimedTask claim) {
     }
 
     torrent_t* torrent = torrent_create_ex(
-        &metainfo, 51413, dataPath.c_str(), &options);
+        &metainfo, static_cast<uint16_t>(kBasePeerPort + slot->slotIndex),
+        dataPath.c_str(), &options);
     if (!torrent) {
         std::lock_guard<std::mutex> lock(mutex_);
         if (DownloadTask* task = findLocked(activeId)) {

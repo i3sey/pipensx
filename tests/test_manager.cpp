@@ -370,6 +370,108 @@ int main() {
         assert(manager.remove(third, true, error));
     }
 
+    {
+        // The scheduler's claim rule: a download-only task passes a
+        // stream-install task blocked on the install token.
+        pipensx::DownloadTask stream;
+        stream.status = DownloadStatus::Queued;
+        stream.mode = TransferMode::StreamInstall;
+        assert(pipensx::taskClaimableUnderInstallToken(stream, false));
+        assert(!pipensx::taskClaimableUnderInstallToken(stream, true));
+        pipensx::DownloadTask plain = stream;
+        plain.mode = TransferMode::DownloadOnly;
+        assert(pipensx::taskClaimableUnderInstallToken(plain, true));
+        pipensx::DownloadTask finished = plain;
+        finished.status = DownloadStatus::Completed;
+        assert(!pipensx::taskClaimableUnderInstallToken(finished, false));
+    }
+
+    {
+        // Two download-only tasks leave Queued concurrently with two slots.
+        std::string parallelRoot = std::string(root) + "/parallel-app";
+        std::string firstSource =
+            makeTorrent(root, "parallel-a.bin", "parallel payload a");
+        std::string secondSource =
+            makeTorrent(root, "parallel-b.bin", "parallel payload bb");
+        DownloadManager manager(parallelRoot, true);
+        manager.setMaxActiveDownloads(2);
+        std::string firstId, secondId;
+        assert(manager.importTorrent(
+            firstSource, TransferMode::DownloadOnly, firstId, error));
+        assert(manager.importTorrent(
+            secondSource, TransferMode::DownloadOnly, secondId, error));
+        auto activeCount = [&manager] {
+            int active = 0;
+            for (const auto& task : manager.snapshot())
+                if (task.status == DownloadStatus::Checking ||
+                    task.status == DownloadStatus::Downloading ||
+                    task.status == DownloadStatus::Verifying)
+                    ++active;
+            return active;
+        };
+        bool both = false;
+        for (int i = 0; i < 500 && !(both = activeCount() == 2); ++i)
+            usleep(10000);
+        assert(both);
+        manager.shutdown();
+        assert(manager.remove(firstId, true, error));
+        assert(manager.remove(secondId, true, error));
+        unlink(firstSource.c_str());
+        unlink(secondSource.c_str());
+        rmdir((parallelRoot + "/torrents").c_str());
+        rmdir((parallelRoot + "/downloads").c_str());
+        unlink((parallelRoot + "/queue.bencode").c_str());
+        rmdir(parallelRoot.c_str());
+    }
+
+    {
+        // Install token: with a stream install running, a second stream
+        // install stays Queued while a download-only task passes it.
+        std::string tokenRoot = std::string(root) + "/token-app";
+        std::string streamB =
+            makeTorrent(root, "package-b.nsp", "second package payload");
+        DownloadManager manager(tokenRoot, true);
+        manager.setMaxActiveDownloads(2);
+        std::string streamAId, streamBId, plainId;
+        assert(manager.importTorrent(
+            source, TransferMode::StreamInstall, streamAId, error));
+        assert(manager.importTorrent(
+            streamB, TransferMode::StreamInstall, streamBId, error));
+        assert(manager.importTorrent(
+            downloadOnlySource, TransferMode::DownloadOnly, plainId, error));
+        auto statusOf = [&manager](const std::string& id) {
+            for (const auto& task : manager.snapshot())
+                if (task.id == id)
+                    return task.status;
+            return DownloadStatus::Error;
+        };
+        auto started = [](DownloadStatus status) {
+            return status == DownloadStatus::Checking ||
+                   status == DownloadStatus::Downloading ||
+                   status == DownloadStatus::Verifying;
+        };
+        bool ok = false;
+        for (int i = 0; i < 500; ++i) {
+            if ((ok = started(statusOf(streamAId)) &&
+                      started(statusOf(plainId))))
+                break;
+            usleep(10000);
+        }
+        assert(ok);
+        // The second stream install is behind the download-only task in
+        // list order yet still waiting: only the token can block it.
+        assert(statusOf(streamBId) == DownloadStatus::Queued);
+        manager.shutdown();
+        assert(manager.remove(streamAId, true, error));
+        assert(manager.remove(streamBId, true, error));
+        assert(manager.remove(plainId, true, error));
+        unlink(streamB.c_str());
+        rmdir((tokenRoot + "/torrents").c_str());
+        rmdir((tokenRoot + "/downloads").c_str());
+        unlink((tokenRoot + "/queue.bencode").c_str());
+        rmdir(tokenRoot.c_str());
+    }
+
     unlink(source.c_str());
     unlink(downloadOnlySource.c_str());
     unlink(readmeSource.c_str());

@@ -3,6 +3,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -128,11 +129,17 @@ public:
     bool remove(const std::string& taskId, bool deleteData,
                 std::string& error);
 
-    // Make a queued task the next one to start. The worker always claims the
-    // first Queued entry in list order, so "next up" is a position, not a
-    // priority field — this moves the task ahead of every other queued one and
-    // leaves the order behind it alone.
+    // Make a queued task the next one to start. The scheduler always claims
+    // the first claimable Queued entry in list order, so "next up" is a
+    // position, not a priority field — this moves the task ahead of every
+    // other queued one and leaves the order behind it alone. Note: while the
+    // single install token is held, a stream-install task at the front can
+    // still be passed by download-only tasks behind it.
     bool moveToFront(const std::string& taskId, std::string& error);
+
+    // How many torrents may download concurrently (clamped to [1,4]).
+    // Shrinking takes effect as running tasks finish; nothing is preempted.
+    void setMaxActiveDownloads(uint32_t count);
 
     // Where stream installs commit content (PERF_PLAN 7.4). Applied to
     // coordinators started after the call; a transfer in flight keeps the
@@ -167,9 +174,22 @@ private:
         std::vector<uint8_t> resumeBitfield;
     };
 
+    // One active torrent slot: a runner thread owning one engine instance.
+    // The slot index picks the listen port (base + index), so N=1 always
+    // runs on the classic port.
+    struct RunnerSlot {
+        std::thread thread;
+        std::string taskId;
+        uint32_t slotIndex = 0;
+        bool holdsInstallToken = false;
+        std::atomic<bool> done{false};
+    };
+
     void load();
-    void workerMain();
-    void runTask(ClaimedTask claim);
+    void schedulerMain();
+    void runTask(RunnerSlot* slot, ClaimedTask claim);
+    DownloadTask* claimableLocked();
+    void reapRunnersLocked(std::unique_lock<std::mutex>& lock);
     bool saveLocked(std::string& error) const;
     DownloadTask* findLocked(const std::string& id);
     const DownloadTask* findLocked(const std::string& id) const;
@@ -185,7 +205,13 @@ private:
     std::condition_variable condition_;
     StreamBudgetArbiter arbiter_;
     std::vector<DownloadTask> tasks_;
-    std::thread worker_;
+    std::thread worker_; // scheduler thread
+    std::vector<std::unique_ptr<RunnerSlot>> runners_; // guarded by mutex_
+    uint32_t maxActive_ = 2;          // guarded by mutex_
+    // Single install token: only one stream-install task may write to NCM
+    // at a time; download-only tasks pass token-blocked stream tasks.
+    bool installTokenHeld_ = false;   // guarded by mutex_
+    uint32_t slotBitmap_ = 0;         // guarded by mutex_
     std::atomic<bool> stopping_{false};
     std::atomic<install::InstallStorageTarget> installTarget_{
         install::InstallStorageTarget::SdCard};
@@ -193,5 +219,10 @@ private:
 };
 
 const char* statusName(DownloadStatus status);
+
+// The scheduler's claim rule, exposed for tests: a Queued task may start
+// unless it is a stream install while another one holds the install token.
+bool taskClaimableUnderInstallToken(const DownloadTask& task,
+                                    bool installTokenHeld);
 
 } // namespace pipensx

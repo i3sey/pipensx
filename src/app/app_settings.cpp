@@ -173,14 +173,6 @@ bool isSupportedLanguage(const std::string& value) {
     return false;
 }
 
-uint32_t clampMaxActiveDownloads(uint64_t value) {
-    if (value < kMinActiveDownloads)
-        return kMinActiveDownloads;
-    if (value > kMaxActiveDownloads)
-        return kMaxActiveDownloads;
-    return static_cast<uint32_t>(value);
-}
-
 bool isValidWebPin(const std::string& value) {
     if (value.empty())
         return true;

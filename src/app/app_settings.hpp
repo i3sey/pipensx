@@ -68,11 +68,18 @@ bool isSupportedLanguage(const std::string& value);
 // True for a valid web PIN: empty (auth off) or 4-8 ASCII digits.
 bool isValidWebPin(const std::string& value);
 
-// Supported range for AppSettingsData::maxActiveDownloads.
+// Supported range for AppSettingsData::maxActiveDownloads. Inline because
+// DownloadManager uses it too and not every binary links app_settings.cpp.
 inline constexpr uint32_t kMinActiveDownloads = 1;
 inline constexpr uint32_t kMaxActiveDownloads = 4;
 
-uint32_t clampMaxActiveDownloads(uint64_t value);
+inline uint32_t clampMaxActiveDownloads(uint64_t value) {
+    if (value < kMinActiveDownloads)
+        return kMinActiveDownloads;
+    if (value > kMaxActiveDownloads)
+        return kMaxActiveDownloads;
+    return static_cast<uint32_t>(value);
+}
 
 bool dailyRefreshDue(uint64_t nowMs, uint64_t lastRefreshMs);
 
