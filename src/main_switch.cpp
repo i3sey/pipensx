@@ -22,6 +22,7 @@ extern "C" {
 #include <exception>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -61,6 +62,16 @@ constexpr const char* BundledCatalogPath =
 // SwitchPlatform read the console's system language, so a Russian console gets
 // a Russian UI with no user action; anything we do not ship a locale directory
 // for falls back to en-US per key.
+// Joins on scope exit so an exception between spawn and the explicit join
+// unwinds cleanly instead of hitting std::terminate in ~thread().
+struct ThreadJoiner {
+    std::thread thread;
+    ~ThreadJoiner() {
+        if (thread.joinable())
+            thread.join();
+    }
+};
+
 const std::string& borealisLocaleFor(const std::string& language) {
     if (language == "ru")
         return brls::LOCALE_RU;
@@ -255,16 +266,25 @@ int main(int argc, char** argv) {
         unlink("sdmc:/switch/pipensx/rutracker.cfg");
         unlink("sdmc:/switch/pipensx/rutracker_cookies.txt");
         CatalogService catalog("sdmc:/switch/pipensx", BundledCatalogPath);
+
+        // The metadata index parse (an ~8 MB JSON) runs on a worker thread in
+        // parallel with the catalog parse below; the service is not touched by
+        // anything else until the join before MainActivity construction, after
+        // which all access is UI-thread as before. Startup pays
+        // max(catalog, metadata) instead of their sum.
+        startupStage("GameMetadataService construction");
+        GameMetadataService metadata("sdmc:/switch/pipensx");
+        std::string metadataError;
+        bool metadataOk = true;
+        ThreadJoiner metadataLoader{
+            std::thread([&metadata, &metadataError, &metadataOk] {
+                metadataOk = metadata.load(metadataError);
+            })};
+
         std::string catalogError;
         if (!catalog.load(catalogError))
             log_msg("[catalog] initial load failed: %s\n",
                     catalogError.c_str());
-        startupStage("GameMetadataService construction");
-        GameMetadataService metadata("sdmc:/switch/pipensx");
-        std::string metadataError;
-        if (!metadata.load(metadataError))
-            log_msg("[metadata] initial load failed: %s\n",
-                    metadataError.c_str());
 
         startupStage("ModIndexService construction");
         ModIndexService mods("sdmc:/switch/pipensx");
@@ -279,12 +299,20 @@ int main(int argc, char** argv) {
             log_msg("[favorites] initial load skipped: %s\n",
                     favoritesError.c_str());
 
-        startupStage("InstalledTitleService refresh");
+        // The installed-title scan does one full control-data IPC read (NACP +
+        // up to 128 KB icon) per installed title — on a full console this was
+        // the single largest startup cost, all before the first frame. The
+        // service is internally locked and the UI already refreshes it via
+        // brls::async, so run the initial scan on its own thread and let the
+        // UI come up immediately; the list fills in when the scan lands.
+        startupStage("InstalledTitleService refresh (async)");
         InstalledTitleService installed("sdmc:/switch/pipensx");
-        std::string installedError;
-        if (!installed.refresh(installedError))
-            diagnostic_error("installed", "startup", "error=%s",
-                             installedError.c_str());
+        ThreadJoiner installedScanner{std::thread([&installed] {
+            std::string installedError;
+            if (!installed.refresh(installedError))
+                diagnostic_error("installed", "startup", "error=%s",
+                                 installedError.c_str());
+        })};
 
         startupStage("DownloadManager construction");
         SwitchPerformanceController performance;
@@ -309,6 +337,14 @@ int main(int argc, char** argv) {
         });
         if (settings.get().webServerEnabled)
             webServer.start();
+
+        // Barrier: from here on the UI reads the metadata service, so the
+        // parallel index parse must have landed.
+        startupStage("join metadata loader");
+        metadataLoader.thread.join();
+        if (!metadataOk)
+            log_msg("[metadata] initial load failed: %s\n",
+                    metadataError.c_str());
 
         startupStage("MainActivity construction");
         auto* activity = new MainActivity(&manager, &catalog, &metadata,
@@ -407,6 +443,10 @@ int main(int argc, char** argv) {
         }
 
         startupStage("manager shutdown");
+        // The startup title scan references `installed`, which lives on this
+        // stack frame — join before anything here is torn down.
+        if (installedScanner.thread.joinable())
+            installedScanner.thread.join();
         // The web server goes first: its threads call into manager, so they
         // must be joined before the manager dies.
         webServer.shutdown();
