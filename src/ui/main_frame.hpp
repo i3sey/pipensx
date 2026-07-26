@@ -12,8 +12,9 @@
 // untouched. We reach the private sidebar bits we need through the public
 // Sidebar::getItem() / Box::getChildren() surface.
 
-#include <chrono>
+#include <atomic>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -23,6 +24,7 @@
 #include "app/install_space.hpp"
 #include "app/web_server.hpp"
 #include "ui/common/storage_meter.hpp"
+#include "ui/common/ui_helpers.hpp"
 #include "ui/common/web_qr.hpp"
 #include "ui/i18n.hpp"
 #include "ui/theme.hpp"
@@ -183,14 +185,16 @@ public:
     void setState(bool running, const std::string& url) {
         dot_->running = running;
         if (!running) {
-            label_->setText(tr("pipensx/web/off"));
+            setTextIfChanged(label_, tr("pipensx/web/off"));
             label_->setTextColor(theme::textTertiary());
         } else if (url.empty()) {
-            label_->setText(tr("pipensx/settings/web_address_none"));
+            setTextIfChanged(label_, tr("pipensx/settings/web_address_none"));
             label_->setTextColor(theme::textTertiary());
         } else {
             // Drop the scheme: the footer column is 216px, every pixel counts.
-            label_->setText(url.rfind("http://", 0) == 0 ? url.substr(7) : url);
+            setTextIfChanged(label_, url.rfind("http://", 0) == 0
+                                         ? url.substr(7)
+                                         : url);
             label_->setTextColor(theme::textSecondary());
         }
     }
@@ -305,22 +309,20 @@ public:
         addView(dock_);
         refreshStorage();
         refreshWebStatus();
+        // The periodic refresh runs off a timer + brls::async, NOT from
+        // draw(): nsGetStorageSize and nifmGetCurrentIpAddress are
+        // synchronous service IPC and used to stall the frame being
+        // recorded every 2 seconds.
+        queryTimer_.setCallback([this] { scheduleRefresh(); });
+        queryTimer_.start(2000);
+    }
+
+    ~MainFrame() override {
+        queryTimer_.stop();
+        alive_->store(false);
     }
 
 protected:
-    void draw(NVGcontext* vg, float x, float y, float width, float height,
-              brls::Style style, brls::FrameContext* ctx) override {
-        if (footer_) {
-            const auto now = std::chrono::steady_clock::now();
-            if (now - lastQuery_ >= std::chrono::seconds(2)) {
-                lastQuery_ = now;
-                refreshStorage();
-                refreshWebStatus();
-            }
-        }
-        brls::Box::draw(vg, x, y, width, height, style, ctx);
-    }
-
     // Focus in the sidebar -> expanded menu; focus in a tab's content -> icon
     // rail. Both subtrees are direct children of this frame, so this fires on
     // every menu<->content crossing.
@@ -331,6 +333,32 @@ protected:
     }
 
 private:
+    void scheduleRefresh() {
+        if (!footer_ || !manager_ || queryInFlight_)
+            return;
+        queryInFlight_ = true;
+        auto alive = alive_;
+        std::string root = manager_->rootPath();
+        pipensx::WebServer* server = webServer_;
+        brls::async([this, alive, root, server] {
+            const pipensx::StorageSpaceSnapshot storage =
+                pipensx::queryStorageSpace(root);
+            const bool running = server ? server->running() : true;
+            std::string url = running ? webCompanionUrl(server, true) : "";
+            brls::sync([this, alive, storage, running, url = std::move(url)] {
+                if (!alive->load())
+                    return;
+                queryInFlight_ = false;
+                if (storage.available)
+                    footer_->setStorage(storage.totalBytes, storage.freeBytes);
+                else
+                    footer_->setUnavailable();
+                if (webRow_)
+                    webRow_->setState(running, url);
+            });
+        });
+    }
+
     void refreshStorage() {
         if (!footer_ || !manager_)
             return;
@@ -364,8 +392,10 @@ private:
     WebStatusRow* webRow_ = nullptr;
     DownloadManager* manager_ = nullptr;
     pipensx::WebServer* webServer_ = nullptr;
-    std::chrono::steady_clock::time_point lastQuery_ =
-        std::chrono::steady_clock::now() - std::chrono::seconds(10);
+    brls::RepeatingTimer queryTimer_;
+    bool queryInFlight_ = false;
+    std::shared_ptr<std::atomic<bool>> alive_ =
+        std::make_shared<std::atomic<bool>>(true);
 };
 
 }  // namespace pipensx::ui
