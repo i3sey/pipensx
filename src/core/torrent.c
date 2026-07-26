@@ -109,6 +109,16 @@ struct torrent {
     struct peer_addr queue[MAX_PEER_QUEUE];
     int      qhead, qtail, qsize;
 
+    /* O(1) membership test for the queue above (open addressing, tombstone
+       deletion). Sized 2x MAX_PEER_QUEUE so a free slot always exists; a
+       200-peer announce used to cost ~200k linear-scan comparisons here. */
+    struct {
+        uint32_t ip;
+        uint16_t port;
+        uint8_t  state; /* QH_EMPTY / QH_USED / QH_DEAD */
+    } qhash[2 * MAX_PEER_QUEUE];
+    uint32_t qhash_tombstones;
+
     struct {
         uint32_t ip;
         uint16_t port;
@@ -204,6 +214,78 @@ static int blocklist_blocked(const torrent_t *t, uint32_t ip, uint16_t port,
 }
 
 /* ---- peer queue ---- */
+#define QUEUE_HASH_CAP (2u * MAX_PEER_QUEUE)
+enum { QH_EMPTY = 0, QH_USED = 1, QH_DEAD = 2 };
+
+static uint32_t queue_hash_index(uint32_t ip, uint16_t port) {
+    uint32_t h = ip * 2654435761u;
+    h ^= (uint32_t)port * 40503u;
+    return h & (QUEUE_HASH_CAP - 1);
+}
+
+static int queue_hash_contains(const torrent_t *t, uint32_t ip,
+                               uint16_t port) {
+    uint32_t idx = queue_hash_index(ip, port);
+    for (uint32_t probe = 0; probe < QUEUE_HASH_CAP; probe++) {
+        uint32_t slot = (idx + probe) & (QUEUE_HASH_CAP - 1);
+        if (t->qhash[slot].state == QH_EMPTY)
+            return 0;
+        if (t->qhash[slot].state == QH_USED &&
+            t->qhash[slot].ip == ip && t->qhash[slot].port == port)
+            return 1;
+    }
+    return 0;
+}
+
+static void queue_hash_add_raw(torrent_t *t, uint32_t ip, uint16_t port) {
+    uint32_t idx = queue_hash_index(ip, port);
+    for (uint32_t probe = 0; probe < QUEUE_HASH_CAP; probe++) {
+        uint32_t slot = (idx + probe) & (QUEUE_HASH_CAP - 1);
+        if (t->qhash[slot].state != QH_USED) {
+            if (t->qhash[slot].state == QH_DEAD && t->qhash_tombstones)
+                t->qhash_tombstones--;
+            t->qhash[slot].state = QH_USED;
+            t->qhash[slot].ip    = ip;
+            t->qhash[slot].port  = port;
+            return;
+        }
+    }
+}
+
+/* Compact away tombstones by rehashing the live queue. Rare: fires only after
+   QUEUE_HASH_CAP/4 deletions have accumulated. Keeping used+dead below
+   capacity guarantees probes always hit an empty slot and terminate. */
+static void queue_hash_rebuild(torrent_t *t) {
+    memset(t->qhash, 0, sizeof(t->qhash));
+    t->qhash_tombstones = 0;
+    for (int i = 0; i < t->qsize; i++) {
+        const struct peer_addr *a =
+            &t->queue[(t->qhead + i) % MAX_PEER_QUEUE];
+        queue_hash_add_raw(t, a->ip, a->port);
+    }
+}
+
+static void queue_hash_add(torrent_t *t, uint32_t ip, uint16_t port) {
+    if (t->qhash_tombstones > QUEUE_HASH_CAP / 4)
+        queue_hash_rebuild(t);
+    queue_hash_add_raw(t, ip, port);
+}
+
+static void queue_hash_remove(torrent_t *t, uint32_t ip, uint16_t port) {
+    uint32_t idx = queue_hash_index(ip, port);
+    for (uint32_t probe = 0; probe < QUEUE_HASH_CAP; probe++) {
+        uint32_t slot = (idx + probe) & (QUEUE_HASH_CAP - 1);
+        if (t->qhash[slot].state == QH_EMPTY)
+            return;
+        if (t->qhash[slot].state == QH_USED &&
+            t->qhash[slot].ip == ip && t->qhash[slot].port == port) {
+            t->qhash[slot].state = QH_DEAD;
+            t->qhash_tombstones++;
+            return;
+        }
+    }
+}
+
 static int queue_insert(torrent_t *t, uint32_t ip, uint16_t port, int front,
                         int no_mse, uint8_t use_utp) {
     uint16_t host_port = ntohs(port);
@@ -219,14 +301,11 @@ static int queue_insert(torrent_t *t, uint32_t ip, uint16_t port, int front,
         return 0;
     if (t->qsize >= MAX_PEER_QUEUE) return 0;
     /* Dedup: skip if already queued or connected */
+    if (queue_hash_contains(t, ip, port))
+        return 0;
     for (int i = 0; i < MAX_ACTIVE_PEERS; i++) {
         if (t->peers[i] && t->peers[i]->addr.sin_addr.s_addr == ip &&
             t->peers[i]->addr.sin_port == port) return 0;
-    }
-    for (int i = 0; i < t->qsize; i++) {
-        int index = (t->qhead + i) % MAX_PEER_QUEUE;
-        if (t->queue[index].ip == ip && t->queue[index].port == port)
-            return 0;
     }
     if (blocklist_blocked(t, ip, port, now_ms()))
         return 0;
@@ -243,6 +322,7 @@ static int queue_insert(torrent_t *t, uint32_t ip, uint16_t port, int front,
     t->queue[index].no_mse  = (uint8_t)no_mse;
     t->queue[index].use_utp = use_utp;
     t->qsize++;
+    queue_hash_add(t, ip, port);
     return 1;
 }
 
@@ -263,6 +343,7 @@ static int queue_pop(torrent_t *t, uint32_t *ip, uint16_t *port,
     *use_utp = t->queue[t->qhead].use_utp;
     t->qhead = (t->qhead + 1) % MAX_PEER_QUEUE;
     t->qsize--;
+    queue_hash_remove(t, *ip, *port);
     return 1;
 }
 
@@ -271,19 +352,12 @@ uint32_t torrent_add_initial_peers(torrent_t *t, const uint8_t *compact,
     if (!t || !compact || count == 0)
         return 0;
     uint32_t accepted = 0;
+    /* Reverse walk + push-front preserves list order; queue_insert's hash
+       dedup drops repeated endpoints, so no O(n^2) pre-pass is needed. */
     for (uint32_t i = count; i > 0; --i) {
         uint32_t ip;
         uint16_t port;
         const uint8_t *endpoint = compact + (i - 1) * 6;
-        int seen_earlier = 0;
-        for (uint32_t j = 0; j + 1 < i; ++j) {
-            if (memcmp(endpoint, compact + j * 6, 6) == 0) {
-                seen_earlier = 1;
-                break;
-            }
-        }
-        if (seen_earlier)
-            continue;
         memcpy(&ip, endpoint, sizeof(ip));
         memcpy(&port, endpoint + sizeof(ip), sizeof(port));
         accepted += (uint32_t)queue_push_front(t, ip, port);
