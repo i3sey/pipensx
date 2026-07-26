@@ -45,6 +45,15 @@ include(${BOREALIS_LIBRARY}/cmake/toolchain.cmake)
 set(PIPENSX_VERSION "1.0.0" CACHE STRING "pipensx release version")
 project(pipensx VERSION ${PIPENSX_VERSION} LANGUAGES C CXX)
 
+# devkitA64 defaults Release to "-g -O2": the debug info balloons the ELF to
+# ~90 MB and slows every compile and link, while elf2nro strips it from the
+# NRO anyway. Keep Release lean.
+if (PLATFORM_SWITCH)
+    set(CMAKE_C_FLAGS_RELEASE "-O2 -DNDEBUG")
+    set(CMAKE_CXX_FLAGS_RELEASE "-O2 -DNDEBUG")
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+endif ()
+
 set(APP_TITLE "pipensx")
 set(APP_AUTHOR "pipensx")
 set(APP_ICON ${CMAKE_CURRENT_SOURCE_DIR}/resources/icon.jpg)
