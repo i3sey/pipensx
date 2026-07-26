@@ -135,6 +135,11 @@ struct dht_engine {
     int        searching;
     dht_peer_cb peer_cb;
     void       *peer_ud;
+
+    /* Tick timers; engine state, not function statics, so a re-created
+       engine starts from a clean slate. */
+    time_t     last_bootstrap;
+    time_t     last_search;
 };
 
 static struct dht_engine *g_engine = NULL; /* jech dht is a global singleton */
@@ -148,11 +153,15 @@ static atomic_flag g_engine_busy = ATOMIC_FLAG_INIT;
 static void dht_callback(void *closure, int event,
                          const uint8_t *info_hash,
                          const void *data, size_t data_len) {
-    (void)closure; (void)info_hash;
+    (void)closure;
     struct dht_engine *e = g_engine;
     if (!e) return;
 
     if (event == DHT_EVENT_VALUES) {
+        /* Route by info-hash: jech tags every event with the search it
+           belongs to (sr->id), so peers only reach the matching search. */
+        if (!e->searching || memcmp(info_hash, e->search_hash, 20) != 0)
+            return;
         /* data is a list of compact IPv4 peers (6 bytes each) */
         const uint8_t *p = (const uint8_t*)data;
         uint32_t count = (uint32_t)(data_len / 6);
@@ -303,28 +312,26 @@ void dht_engine_tick(dht_engine_t *e) {
 
     /* Re-bootstrap if still 0 good nodes (every 30s) */
     {
-        static time_t last_bootstrap = 0;
         int g = 0, d = 0, c = 0, in = 0;
         dht_nodes(AF_INET, &g, &d, &c, &in);
         time_t now = now_sec();
-        if (g == 0 && now - last_bootstrap > 30) {
+        if (g == 0 && now - e->last_bootstrap > 30) {
             log_msg("[dht] no good nodes, re-bootstrapping\n");
             for (size_t i = 0; i < sizeof(BOOTSTRAP)/sizeof(BOOTSTRAP[0]); i++) {
                 struct sockaddr_in addr;
                 if (net_resolve(BOOTSTRAP[i].host, BOOTSTRAP[i].port, &addr))
                     dht_ping_node((struct sockaddr*)&addr, sizeof(addr));
             }
-            last_bootstrap = now;
+            e->last_bootstrap = now;
         }
     }
 
     /* Re-issue search periodically */
     if (e->searching) {
-        static time_t last_search = 0;
         time_t now = now_sec();
-        if (now - last_search > 60) {
+        if (now - e->last_search > 60) {
             dht_search(e->search_hash, e->listen_port, AF_INET, dht_callback, NULL);
-            last_search = now;
+            e->last_search = now;
         }
     }
 }
