@@ -68,6 +68,11 @@
 #define MAX_PEER_TELEMETRY    8
 #define PEER_BLOCKLIST_SIZE   64
 #define PEER_BLOCKLIST_MS     60000
+/* Startup verification runs in time-budgeted batches per tick so the tick
+   still reaches poll(): sockets stay serviced and dials/handshakes proceed
+   while pieces are being checked. Request scheduling stays gated until the
+   check finishes, so nothing is downloaded that may already be on disk. */
+#define STARTUP_VERIFY_BUDGET_MS 50
 
 struct peer_addr {
     uint32_t ip;   /* network byte order */
@@ -1399,14 +1404,18 @@ int torrent_tick(torrent_t *t) {
     if (t->fatal_error)
         return -1;
     if (t->startup_verifying) {
-        if (t->startup_verify_index < t->pm->num_pieces) {
+        uint64_t verify_start = now_ms();
+        while (t->startup_verify_index < t->pm->num_pieces) {
             piece_mgr_check_existing(t->pm, t->startup_verify_index);
             t->startup_verify_index++;
-            return 1;
+            if (now_ms() - verify_start >= STARTUP_VERIFY_BUDGET_MS)
+                break;
         }
-        t->startup_verifying = 0;
-        log_msg("[torrent] startup verification complete: %u/%u pieces\n",
-                t->pm->num_done, t->pm->num_pieces);
+        if (t->startup_verify_index >= t->pm->num_pieces) {
+            t->startup_verifying = 0;
+            log_msg("[torrent] startup verification complete: %u/%u pieces\n",
+                    t->pm->num_done, t->pm->num_pieces);
+        }
     }
 
     if (t->pm->num_done == t->pm->num_pieces)
@@ -1696,9 +1705,13 @@ int torrent_tick(torrent_t *t) {
         }
     }
 
-    /* Hedging runs before refill so old critical blocks get first choice. */
-    schedule_hedged_requests(t, now2);
-    schedule_all_peers(t, now2);
+    /* Hedging runs before refill so old critical blocks get first choice.
+       Gated during startup verification: unchecked pieces look empty to the
+       picker but may already be valid on disk. */
+    if (!t->startup_verifying) {
+        schedule_hedged_requests(t, now2);
+        schedule_all_peers(t, now2);
+    }
 
     return check_completion(t);
 }

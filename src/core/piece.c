@@ -117,6 +117,7 @@ void piece_mgr_destroy(piece_mgr_t *pm) {
     free(pm->have_bf);
     free(pm->available_bf);
     free(pm->piece_order);
+    free(pm->verify_buf);
     free(pm);
 }
 
@@ -201,6 +202,15 @@ int piece_mgr_got_block(piece_mgr_t *pm, uint32_t idx, uint32_t offset,
     return 2;
 }
 
+/* Shared scratch for the verification paths: they run one piece at a time on
+   the torrent thread, so a single lazily-allocated piece_length buffer
+   replaces a malloc/free churn of one piece size per verified piece. */
+static uint8_t *verify_scratch(piece_mgr_t *pm) {
+    if (!pm->verify_buf)
+        pm->verify_buf = (uint8_t*)malloc((size_t)pm->mi->piece_length);
+    return pm->verify_buf;
+}
+
 int piece_mgr_verify_piece(piece_mgr_t *pm, uint32_t idx) {
     if (!pm || idx >= pm->num_pieces) return 0;
     piece_slot_t *sl = &pm->slots[idx];
@@ -210,7 +220,7 @@ int piece_mgr_verify_piece(piece_mgr_t *pm, uint32_t idx) {
     int64_t abs_off = (int64_t)idx * pm->mi->piece_length;
     if (!storage_range_readable(pm->store, abs_off, (size_t)plen))
         return sl->state == PS_DONE;
-    uint8_t *buf = (uint8_t*)malloc((size_t)plen);
+    uint8_t *buf = verify_scratch(pm);
     if (!buf) return 0;
 
     uint8_t digest[20];
@@ -225,7 +235,6 @@ int piece_mgr_verify_piece(piece_mgr_t *pm, uint32_t idx) {
             valid = 0;
         }
     }
-    free(buf);
     if (!valid) reset_piece(pm, idx);
     return valid;
 }
@@ -248,7 +257,7 @@ int piece_mgr_check_existing(piece_mgr_t *pm, uint32_t idx) {
         }
         return 1;
     }
-    uint8_t *buf = (uint8_t*)malloc((size_t)plen);
+    uint8_t *buf = verify_scratch(pm);
     if (!buf)
         return 0;
 
@@ -258,7 +267,6 @@ int piece_mgr_check_existing(piece_mgr_t *pm, uint32_t idx) {
         sha1(buf, (size_t)plen, digest);
         valid = memcmp(digest, pm->mi->piece_hashes + idx * 20, 20) == 0;
     }
-    free(buf);
 
     if (valid) {
         if (sl->state != PS_DONE) {

@@ -35,6 +35,7 @@ typedef struct {
     int               strict_fill_pending_first;
     uint32_t         *piece_order;
     uint32_t          piece_order_count;
+    uint8_t          *verify_buf; /* piece_length scratch, lazily allocated */
     int             (*request_allowed)(void *user, uint32_t piece);
     void             *request_allowed_user;
 } piece_mgr_t;
