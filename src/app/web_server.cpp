@@ -276,8 +276,25 @@ std::string WebServer::buildStateJson() {
 }
 
 void WebServer::onTick() {
-    if (http_.sseClientCount() == 0) return;
-    http_.broadcastSse("event: state\ndata: " + buildStateJson() + "\n\n");
+    if (http_.sseClientCount() == 0) {
+        lastStateJson_.clear();
+        return;
+    }
+    constexpr uint64_t kSseKeepaliveMs = 15000;
+    std::string state = buildStateJson();
+    uint64_t now = nowMs();
+    if (state == lastStateJson_) {
+        // Nothing changed — keep the connection visibly alive (and let dead
+        // clients surface as send failures) without re-sending the frame.
+        if (now - lastSseSentMs_ >= kSseKeepaliveMs) {
+            lastSseSentMs_ = now;
+            http_.broadcastSse(": keepalive\n\n");
+        }
+        return;
+    }
+    lastSseSentMs_ = now;
+    http_.broadcastSse("event: state\ndata: " + state + "\n\n");
+    lastStateJson_ = std::move(state);
 }
 
 HttpResponse WebServer::route(const HttpRequest& req) {

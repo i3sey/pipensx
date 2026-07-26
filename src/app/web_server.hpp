@@ -91,6 +91,11 @@ private:
     std::map<std::string, std::shared_ptr<const std::string>> staticCache_;
     StorageSpaceSnapshot storageCache_;
     uint64_t storageCacheAtMs_ = 0;
+    // SSE change detection: last broadcast state frame + when it was sent, so
+    // idle ticks push a tiny keepalive comment instead of an identical JSON
+    // frame every second.
+    std::string lastStateJson_;
+    uint64_t lastSseSentMs_ = 0;
 };
 
 // gzip (RFC 1952) compression for Content-Encoding — note bug_report's
