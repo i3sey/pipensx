@@ -134,6 +134,7 @@ set(APP_SERVICE_SOURCES
     src/app/catalog_refresh.cpp
     src/app/catalog_service.cpp
     src/app/catalog_presentation.cpp
+    src/app/snapshot_zstd.cpp
     src/app/download_manager.cpp
     src/app/web_seed_source.cpp
     src/app/request_gate.cpp
@@ -296,13 +297,28 @@ set(PIPENSX_NRO_DEPENDS pipensx)
 list(APPEND PIPENSX_NRO_DEPENDS sync_update_helper)
 list(APPEND PIPENSX_NRO_DEPENDS sync_i18n)
 list(APPEND PIPENSX_NRO_DEPENDS sync_web)
-add_custom_target(sync_catalog_snapshot ALL
+# The two JSON snapshots are ~19 MB — over 80% of the NRO uncompressed — and
+# JSON compresses ~5x, so they ship as zstd frames that the load path
+# decompresses (src/app/snapshot_zstd.cpp). Host zstd is required for the
+# Switch build; scripts/build_switch.sh checks for it too.
+find_program(ZSTD_EXE zstd)
+if (NOT ZSTD_EXE)
+    message(FATAL_ERROR
+        "zstd not found on the host — required to compress the bundled "
+        "catalog snapshots into romfs")
+endif ()
+add_custom_command(
+    OUTPUT "${ROMFS_DIR}/catalog/switch_games.json.zst"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${ROMFS_DIR}/catalog"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    COMMAND ${CMAKE_COMMAND} -E rm -f "${ROMFS_DIR}/catalog/switch_games.json"
+    COMMAND ${ZSTD_EXE} -15 -q -f
+        -o "${ROMFS_DIR}/catalog/switch_games.json.zst"
         "${PIPENSX_CATALOG_SNAPSHOT_ABS}"
-        "${ROMFS_DIR}/catalog/switch_games.json"
     DEPENDS "${PIPENSX_CATALOG_SNAPSHOT_ABS}"
     VERBATIM
+)
+add_custom_target(sync_catalog_snapshot ALL
+    DEPENDS "${ROMFS_DIR}/catalog/switch_games.json.zst"
 )
 list(APPEND PIPENSX_NRO_DEPENDS sync_catalog_snapshot)
 if (PIPENSX_METADATA_INDEX)
@@ -312,13 +328,19 @@ if (PIPENSX_METADATA_INDEX)
         message(FATAL_ERROR
             "PIPENSX_METADATA_INDEX does not exist: ${PIPENSX_METADATA_INDEX_ABS}")
     endif ()
-    add_custom_target(sync_metadata_index ALL
+    add_custom_command(
+        OUTPUT "${ROMFS_DIR}/catalog/game_metadata_index.json.zst"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${ROMFS_DIR}/catalog"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${PIPENSX_METADATA_INDEX_ABS}"
+        COMMAND ${CMAKE_COMMAND} -E rm -f
             "${ROMFS_DIR}/catalog/game_metadata_index.json"
+        COMMAND ${ZSTD_EXE} -15 -q -f
+            -o "${ROMFS_DIR}/catalog/game_metadata_index.json.zst"
+            "${PIPENSX_METADATA_INDEX_ABS}"
         DEPENDS "${PIPENSX_METADATA_INDEX_ABS}"
         VERBATIM
+    )
+    add_custom_target(sync_metadata_index ALL
+        DEPENDS "${ROMFS_DIR}/catalog/game_metadata_index.json.zst"
     )
     list(APPEND PIPENSX_NRO_DEPENDS sync_metadata_index)
 endif ()

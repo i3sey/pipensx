@@ -12,7 +12,7 @@ if [[ -z "${DEVKITPRO:-}" ]]; then
     exit 1
 fi
 
-for tool in "${CMAKE_BIN}" "${DEVKITPRO}/tools/bin/uam" \
+for tool in "${CMAKE_BIN}" zstd "${DEVKITPRO}/tools/bin/uam" \
     "${DEVKITPRO}/tools/bin/nacptool" "${DEVKITPRO}/tools/bin/elf2nro"; do
     if [[ "${tool}" == */* ]]; then
         [[ -x "${tool}" ]] || { echo "Missing tool: ${tool}" >&2; exit 1; }

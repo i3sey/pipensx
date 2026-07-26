@@ -56,7 +56,7 @@ using namespace pipensx::ui;
 namespace {
 
 constexpr const char* BundledCatalogPath =
-    "romfs:/catalog/switch_games.json";
+    "romfs:/catalog/switch_games.json.zst";
 
 // AppSettingsData::language -> the borealis locale to load. LOCALE_AUTO makes
 // SwitchPlatform read the console's system language, so a Russian console gets

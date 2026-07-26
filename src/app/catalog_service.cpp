@@ -1,5 +1,6 @@
 #include "catalog_service.hpp"
 #include "magnet_resolver.hpp"
+#include "snapshot_zstd.hpp"
 
 extern "C" {
 #include "../core/sha1.h"
@@ -125,6 +126,8 @@ bool readFile(const std::string& path, std::string& data,
         error = "Unable to read catalog file.";
         return false;
     }
+    if (isZstdPath(path))
+        return decompressZstd(data, kMaxCatalogBytes, error);
     return true;
 }
 

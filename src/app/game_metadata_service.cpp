@@ -1,4 +1,5 @@
 #include "game_metadata_service.hpp"
+#include "snapshot_zstd.hpp"
 
 extern "C" {
 #include "../core/sha1.h"
@@ -110,6 +111,8 @@ bool readFile(const std::string& path, std::vector<uint8_t>& bytes,
         error = "Unable to read metadata file.";
         return false;
     }
+    if (isZstdPath(path))
+        return decompressZstd(bytes, maxBytes, error);
     return true;
 }
 

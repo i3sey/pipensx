@@ -125,6 +125,9 @@ $(PACKAGE_TEST_TARGET): tests/test_package_stream.cpp \
 src/app/catalog_service.o: src/app/catalog_service.cpp
 	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
 
+src/app/snapshot_zstd.o: src/app/snapshot_zstd.cpp src/app/snapshot_zstd.hpp
+	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
+
 src/app/catalog_refresh.o: src/app/catalog_refresh.cpp
 	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
 
@@ -167,6 +170,7 @@ $(WEB_SERVER_TEST_TARGET): tests/test_web_server.cpp \
 $(CATALOG_TEST_TARGET): tests/test_catalog.cpp \
 		src/app/catalog_service.o src/app/catalog_refresh.o \
 		src/app/catalog_presentation.o \
+		src/app/snapshot_zstd.o \
 		src/app/mod_index_service.o \
 		src/app/game_metadata_service.o \
 		src/app/magnet_resolver.o \
@@ -175,7 +179,7 @@ $(CATALOG_TEST_TARGET): tests/test_catalog.cpp \
 		src/core/bencode.o src/core/metainfo.o src/core/sha1.o src/core/sha256.o \
 		src/core/mse.o \
 		src/core/util.o
-	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -lzstd
 
 test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 		$(CATALOG_TEST_TARGET) \
@@ -288,6 +292,7 @@ webserver: tools/webserver
 tools/webserver: tools/web_server_main.cpp \
 		src/app/web_server.o src/app/web_add_queue.o src/app/http_server.o \
 		src/app/catalog_service.o src/app/catalog_refresh.o \
+		src/app/snapshot_zstd.o \
 		src/app/mod_index_service.o src/app/game_metadata_service.o \
 		src/app/magnet_resolver.o src/app/install_space.cpp \
 		src/app/download_manager.o src/app/web_seed_source.o \
@@ -302,7 +307,7 @@ clean:
 	rm -f $(OBJS) $(UTP_OBJS) src/app/download_manager.o \
 		src/app/web_seed_source.o src/app/stream_ram_budget.o \
 		src/app/request_gate.o \
-		src/app/catalog_service.o \
+		src/app/catalog_service.o src/app/snapshot_zstd.o \
 		src/app/catalog_presentation.o src/app/game_metadata_service.o \
 		src/app/magnet_resolver.o \
 		src/install/*.o \

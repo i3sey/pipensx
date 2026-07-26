@@ -87,7 +87,8 @@ public:
 
     explicit GameMetadataService(std::string rootPath,
                                  std::string bundledPath =
-                                     "romfs:/catalog/game_metadata_index.json",
+                                     "romfs:/catalog/"
+                                     "game_metadata_index.json.zst",
                                  std::string manifestUrl =
                                      "https://github.com/i3sey/"
                                      "pipensx-metadata/releases/latest/"
