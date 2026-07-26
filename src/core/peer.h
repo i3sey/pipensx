@@ -68,8 +68,11 @@ typedef struct peer {
        unprocessed bytes are rbuf[rbuf_head .. rbuf_len). Consuming a message
        advances rbuf_head instead of memmoving the tail to the front, so the
        common case costs no copy. The tail is compacted to the front only when
-       it runs out of room (see peer_recv). */
-    uint8_t  rbuf[PEER_RECV_BUFFER_SIZE];
+       it runs out of room (see peer_recv).
+       Heap-allocated (PEER_RECV_BUFFER_SIZE) on first receive rather than
+       embedded: at 256 KiB × MAX_PEERS slots, embedding would cost ~24 MiB
+       up front and re-zero it on every dial, including the many that fail. */
+    uint8_t *rbuf;
     uint32_t rbuf_head;
     uint32_t rbuf_len;
     uint8_t  sbuf[PEER_BUF_SIZE];

@@ -152,6 +152,14 @@ peer_t *peer_create_utp(struct UTPSocket *us, struct sockaddr_in addr,
     return p;
 }
 
+/* Allocate the receive buffer on first use: dials that never get an answer
+   (the common case in a big announce) never pay the 256 KiB. */
+static int peer_rbuf_ensure(peer_t *p) {
+    if (!p->rbuf)
+        p->rbuf = (uint8_t*)malloc(PEER_RECV_BUFFER_SIZE);
+    return p->rbuf != NULL;
+}
+
 void peer_destroy(peer_t *p) {
     if (!p) return;
     if (p->transport == TRANSPORT_UTP) {
@@ -166,6 +174,7 @@ void peer_destroy(peer_t *p) {
     } else {
         net_close(p->fd);
     }
+    free(p->rbuf);
     free(p->bitfield);
     free(p->pex_buf);
     free(p);
@@ -557,22 +566,23 @@ int peer_process(peer_t *p, const peer_ctx_t *ctx,
 uint32_t peer_rbuf_space(const peer_t *p) {
     /* Unconsumed bytes are rbuf[rbuf_head..rbuf_len); everything else can be
        reclaimed by compaction, so report the full free capacity. */
-    return (uint32_t)(sizeof(p->rbuf) - (p->rbuf_len - p->rbuf_head));
+    return (uint32_t)(PEER_RECV_BUFFER_SIZE - (p->rbuf_len - p->rbuf_head));
 }
 
 int peer_rbuf_append(peer_t *p, const uint8_t *data, uint32_t len) {
     if (len == 0) return 0;
+    if (!peer_rbuf_ensure(p)) return -1;
     if (p->rbuf_head == p->rbuf_len) {
         p->rbuf_head = 0;
         p->rbuf_len  = 0;
     }
-    size_t tail = sizeof(p->rbuf) - p->rbuf_len;
+    size_t tail = PEER_RECV_BUFFER_SIZE - p->rbuf_len;
     if (tail < len && p->rbuf_head > 0) {
         /* Reclaim the consumed prefix so the tail can hold the new bytes. */
         memmove(p->rbuf, p->rbuf + p->rbuf_head, p->rbuf_len - p->rbuf_head);
         p->rbuf_len -= p->rbuf_head;
         p->rbuf_head = 0;
-        tail = sizeof(p->rbuf) - p->rbuf_len;
+        tail = PEER_RECV_BUFFER_SIZE - p->rbuf_len;
     }
     if (len > tail) {
         log_msg("[peer] recv buffer full\n");
@@ -606,11 +616,13 @@ int peer_recv(peer_t *p, const peer_ctx_t *ctx,
         return 0;
     }
 
+    if (!peer_rbuf_ensure(p)) return -1;
+
     for (;;) {
         if (peer_process(p, ctx, on_block, on_have, on_peers, ud) < 0)
             return -1;
 
-        size_t space = sizeof(p->rbuf) - p->rbuf_len;
+        size_t space = PEER_RECV_BUFFER_SIZE - p->rbuf_len;
         if (space == 0) {
             /* Tail is full but a partial message sits past rbuf_head; slide it
                to the front to reclaim the consumed prefix, then retry. */
@@ -619,7 +631,7 @@ int peer_recv(peer_t *p, const peer_ctx_t *ctx,
                         p->rbuf_len - p->rbuf_head);
                 p->rbuf_len -= p->rbuf_head;
                 p->rbuf_head = 0;
-                space = sizeof(p->rbuf) - p->rbuf_len;
+                space = PEER_RECV_BUFFER_SIZE - p->rbuf_len;
             }
             if (space == 0) {
                 log_msg("[peer] recv buffer full\n");

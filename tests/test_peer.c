@@ -260,10 +260,12 @@ static void test_handshake_applies_large_receive_buffer(void) {
     memset(&peer, 0, sizeof(peer));
     peer.fd = sockets[0];
     peer.state = PS_HANDSHAKE;
-    peer.rbuf[0] = 19;
-    memcpy(peer.rbuf + 1, "BitTorrent protocol", 19);
-    memcpy(peer.rbuf + 28, infoHash, sizeof(infoHash));
-    peer.rbuf_len = BT_HANDSHAKE_LEN;
+    uint8_t handshake[BT_HANDSHAKE_LEN];
+    memset(handshake, 0, sizeof(handshake));
+    handshake[0] = 19;
+    memcpy(handshake + 1, "BitTorrent protocol", 19);
+    memcpy(handshake + 28, infoHash, sizeof(infoHash));
+    assert(peer_rbuf_append(&peer, handshake, BT_HANDSHAKE_LEN) == 0);
 
     assert(peer_recv(&peer, &context, NULL, NULL, NULL, NULL) == 0);
     assert(peer.state == PS_ACTIVE);
@@ -273,6 +275,7 @@ static void test_handshake_applies_large_receive_buffer(void) {
                       &optionSize) == 0);
     assert(receiveBufferSize >= NET_TCP_RECEIVE_BUFFER_SIZE);
 
+    free(peer.rbuf);
     close(sockets[0]);
     close(sockets[1]);
 }
@@ -319,7 +322,13 @@ static void test_recv_drains_socket_until_would_block(void) {
 }
 
 static void test_receive_buffer_holds_256_kib(void) {
-    assert(sizeof(((peer_t*)0)->rbuf) >= 256 * 1024);
+    assert(PEER_RECV_BUFFER_SIZE >= 256 * 1024);
+    /* The buffer is heap-allocated on demand; an untouched peer reports the
+       full capacity as free without owning any of it yet. */
+    peer_t peer;
+    memset(&peer, 0, sizeof(peer));
+    assert(peer.rbuf == NULL);
+    assert(peer_rbuf_space(&peer) == PEER_RECV_BUFFER_SIZE);
 }
 
 /* A message torn across two reads must reassemble, and the second message
