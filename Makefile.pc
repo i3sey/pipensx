@@ -66,6 +66,7 @@ JOURNAL_TEST_TARGET = tests/test_install_journal
 WEB_SEED_TEST_TARGET = tests/test_web_seed
 MSE_TEST_TARGET = tests/test_mse
 DHT_CACHE_TEST_TARGET = tests/test_dht_cache
+DHT_SHARED_TEST_TARGET = tests/test_dht_shared
 BUG_REPORT_TEST_TARGET = tests/test_bug_report
 HTTP_TEST_TARGET = tests/test_http_server
 WEB_SERVER_TEST_TARGET = tests/test_web_server
@@ -199,6 +200,7 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 		$(JOURNAL_TEST_TARGET) $(WEB_SEED_TEST_TARGET) \
 		$(FAVORITES_TEST_TARGET) \
 		$(MSE_TEST_TARGET) $(DHT_CACHE_TEST_TARGET) \
+		$(DHT_SHARED_TEST_TARGET) \
 		$(BUG_REPORT_TEST_TARGET) \
 		$(HTTP_TEST_TARGET) $(WEB_SERVER_TEST_TARGET)
 	./$(TEST_TARGET)
@@ -221,6 +223,7 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 	./$(FAVORITES_TEST_TARGET)
 	./$(MSE_TEST_TARGET)
 	./$(DHT_CACHE_TEST_TARGET)
+	./$(DHT_SHARED_TEST_TARGET)
 	./$(BUG_REPORT_TEST_TARGET)
 	./$(HTTP_TEST_TARGET)
 	./$(WEB_SERVER_TEST_TARGET)
@@ -285,6 +288,12 @@ $(DHT_CACHE_TEST_TARGET): tests/test_dht_cache.c src/core/dht.c \
 		vendor/dht/dht.c src/core/net.c src/core/sha1.c src/core/util.c
 	$(CC) $(CFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
 
+# dht.c is a real prerequisite (the test #includes it as source) but must
+# not be passed to the compiler a second time — hence the filter-out in $^.
+$(DHT_SHARED_TEST_TARGET): tests/test_dht_shared.c src/core/dht.c \
+		vendor/dht/dht.c src/core/net.c src/core/sha1.c src/core/util.c
+	$(CC) $(CFLAGS) -Isrc -o $@ $(filter-out src/core/dht.c,$^) $(LDFLAGS)
+
 $(BUG_REPORT_TEST_TARGET): tests/test_bug_report.cpp src/app/bug_report.cpp
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ -lz
 
@@ -340,7 +349,8 @@ clean:
 		$(RAM_BUDGET_TEST_TARGET) $(BUDGET_ARBITER_TEST_TARGET) \
 		$(REQUEST_GATE_TEST_TARGET) \
 		$(JOURNAL_TEST_TARGET) $(FAVORITES_TEST_TARGET) \
-		$(MSE_TEST_TARGET) $(BUG_REPORT_TEST_TARGET) \
+		$(MSE_TEST_TARGET) $(DHT_SHARED_TEST_TARGET) \
+		$(BUG_REPORT_TEST_TARGET) \
 		src/app/http_server.o src/app/web_server.o src/app/web_add_queue.o \
 		$(HTTP_TEST_TARGET) $(WEB_SERVER_TEST_TARGET)
 
