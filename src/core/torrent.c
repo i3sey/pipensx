@@ -179,6 +179,10 @@ struct torrent {
     int64_t         announce_left;
     uint32_t startup_verify_index;
     int      startup_verifying;
+    /* Set when startup verification finished with every piece already valid
+       on disk: the resume path then skips the final verification pass, which
+       would re-read and re-hash the exact same bytes a second time. */
+    int      startup_verified_all;
     uint32_t final_verify_index;
     int      final_verifying;
     int      fatal_error;
@@ -1146,8 +1150,17 @@ static int check_completion(torrent_t *t) {
     if (t->pm->num_done != t->pm->num_pieces) {
         t->final_verifying = 0;
         t->final_verify_index = 0;
+        /* Downloading resumed after all — any later completion must go
+           through the real final verification below. */
+        t->startup_verified_all = 0;
         return 1;
     }
+
+    /* Resume of an already-complete torrent: startup verification just read
+       and hashed every piece from disk, so the final pass would produce the
+       same answer at the cost of a second full disk scan. */
+    if (t->startup_verified_all)
+        return 0;
 
     if (!t->final_verifying) {
         if (!storage_flush(t->store)) {
@@ -1469,6 +1482,8 @@ int torrent_tick(torrent_t *t) {
         }
         if (t->startup_verify_index >= t->pm->num_pieces) {
             t->startup_verifying = 0;
+            t->startup_verified_all =
+                t->pm->num_done == t->pm->num_pieces;
             log_msg("[torrent] startup verification complete: %u/%u pieces\n",
                     t->pm->num_done, t->pm->num_pieces);
         }
