@@ -108,6 +108,167 @@ static void reset_piece(piece_mgr_t *pm, uint32_t idx) {
     order_cursor_rewind(pm, idx);
 }
 
+/* Success tail shared by the inline verify path and the async apply path. */
+static void mark_piece_done(piece_mgr_t *pm, uint32_t idx, uint32_t plen) {
+    piece_slot_t *sl = &pm->slots[idx];
+    int64_t abs_off = (int64_t)idx * pm->mi->piece_length;
+    sl->state = PS_DONE;
+    bf_set(pm->have_bf, idx);
+    if (storage_range_readable(pm->store, abs_off, (size_t)plen))
+        bf_set(pm->available_bf, idx);
+    pm->num_done++;
+    pm->completed_bytes += (uint64_t)plen;
+    order_cursor_advance(pm);
+    log_msg("[piece] verified piece %u/%u\n", pm->num_done, pm->num_pieces);
+}
+
+/* ---- async hash worker ----
+   Hashes queued pieces strictly in FIFO order off the torrent thread; the
+   torrent thread applies results (write + mark done) strictly from the head
+   of the same ring, so writes land in exactly the order pieces completed.
+   Silent by design — all logging happens at apply time on the torrent
+   thread (same pattern as announce_worker in torrent.c). */
+static void *hash_worker(void *arg) {
+    piece_mgr_t *pm = (piece_mgr_t*)arg;
+    for (;;) {
+        pthread_mutex_lock(&pm->hash_mutex);
+        while (!pm->hash_shutdown && pm->hash_q_hashed == pm->hash_q_count)
+            pthread_cond_wait(&pm->hash_cond, &pm->hash_mutex);
+        if (pm->hash_shutdown && pm->hash_q_hashed == pm->hash_q_count) {
+            pthread_mutex_unlock(&pm->hash_mutex);
+            return NULL;
+        }
+        piece_hash_job_t *job = &pm->hash_q[
+            (pm->hash_q_head + pm->hash_q_hashed) % PIECE_HASH_QUEUE_MAX];
+        uint32_t idx  = job->idx;
+        uint8_t *buf  = job->buf;
+        uint32_t plen = job->plen;
+        pthread_mutex_unlock(&pm->hash_mutex);
+
+        /* buf is exclusively ours between enqueue and apply; piece_hashes
+           is immutable for the torrent's life — no locking needed. */
+        uint8_t digest[20];
+        sha1(buf, (size_t)plen, digest);
+        int ok = memcmp(digest, pm->mi->piece_hashes + idx * 20, 20) == 0;
+
+        pthread_mutex_lock(&pm->hash_mutex);
+        job->ok = ok;
+        job->done = 1;
+        pm->hash_q_hashed++;
+        pthread_cond_signal(&pm->hash_done_cond);
+        pthread_mutex_unlock(&pm->hash_mutex);
+    }
+}
+
+/* Apply one finished job on the torrent thread: write + mark done, or
+   reattach the buf and reset on mismatch/write failure (mirrors the inline
+   paths in got_block byte for byte). */
+static void hash_apply(piece_mgr_t *pm, const piece_hash_job_t *job) {
+    piece_slot_t *sl = &pm->slots[job->idx];
+    int status;
+    if (sl->state != PS_HASHING) { /* invariant guard — should not happen */
+        piece_buf_put(pm, job->buf);
+        return;
+    }
+    if (!job->ok) {
+        log_msg("[piece] SHA1 MISMATCH piece %u — resetting\n", job->idx);
+        sl->buf = job->buf; /* keep for re-download, like reset_piece */
+        reset_piece(pm, job->idx);
+        status = 0;
+    } else {
+        int64_t abs_off = (int64_t)job->idx * pm->mi->piece_length;
+        if (!storage_write(pm->store, abs_off, job->buf, (size_t)job->plen)) {
+            const char *error = storage_error(pm->store);
+            log_msg("[piece] write error piece %u: %s\n", job->idx,
+                    error[0] ? error : "storage_write failed");
+            sl->buf = job->buf;
+            reset_piece(pm, job->idx);
+            status = -1;
+        } else {
+            mark_piece_done(pm, job->idx, job->plen);
+            piece_buf_put(pm, job->buf);
+            status = 2;
+        }
+    }
+    if (pm->hash_result_cb)
+        pm->hash_result_cb(pm->hash_result_user, job->idx, status);
+}
+
+void piece_mgr_drain_hash_results(piece_mgr_t *pm) {
+    if (!pm || !pm->hash_started)
+        return;
+    for (;;) {
+        piece_hash_job_t job;
+        pthread_mutex_lock(&pm->hash_mutex);
+        if (pm->hash_q_count == 0 || !pm->hash_q[pm->hash_q_head].done) {
+            pthread_mutex_unlock(&pm->hash_mutex);
+            return;
+        }
+        job = pm->hash_q[pm->hash_q_head];
+        pm->hash_q_head = (pm->hash_q_head + 1) % PIECE_HASH_QUEUE_MAX;
+        pm->hash_q_count--;
+        pm->hash_q_hashed--;
+        pthread_mutex_unlock(&pm->hash_mutex);
+        hash_apply(pm, &job);
+    }
+}
+
+void piece_mgr_hash_flush(piece_mgr_t *pm) {
+    if (!pm || !pm->hash_started)
+        return;
+    pthread_mutex_lock(&pm->hash_mutex);
+    while (pm->hash_q_hashed < pm->hash_q_count)
+        pthread_cond_wait(&pm->hash_done_cond, &pm->hash_mutex);
+    pthread_mutex_unlock(&pm->hash_mutex);
+    piece_mgr_drain_hash_results(pm);
+}
+
+/* Detach the slot's buffer into the hash ring. Returns 1 on success (slot is
+   PS_HASHING, buf owned by the worker), 0 when the caller must hash inline
+   (worker unavailable or store-less unit-test manager — the ring is empty in
+   both modes, so inline writes cannot reorder against queued ones). */
+static int hash_enqueue(piece_mgr_t *pm, uint32_t idx, piece_slot_t *sl,
+                        uint32_t plen) {
+    if (!pm->hash_ok || !pm->store)
+        return 0;
+    if (!pm->hash_started) {
+        if (pthread_create(&pm->hash_thread, NULL, hash_worker, pm) != 0) {
+            log_msg("[piece] hash worker spawn failed, hashing inline\n");
+            pm->hash_ok = 0;
+            return 0;
+        }
+        pm->hash_started = 1;
+    }
+    pthread_mutex_lock(&pm->hash_mutex);
+    if (pm->hash_q_count == PIECE_HASH_QUEUE_MAX) {
+        /* Backpressure: wait for the HEAD job (not hash inline — that would
+           write this piece ahead of the queued ones) and apply it, freeing
+           a ring slot. Bounded by at most one in-flight hash. */
+        while (!pm->hash_q[pm->hash_q_head].done)
+            pthread_cond_wait(&pm->hash_done_cond, &pm->hash_mutex);
+        piece_hash_job_t head = pm->hash_q[pm->hash_q_head];
+        pm->hash_q_head = (pm->hash_q_head + 1) % PIECE_HASH_QUEUE_MAX;
+        pm->hash_q_count--;
+        pm->hash_q_hashed--;
+        pthread_mutex_unlock(&pm->hash_mutex);
+        hash_apply(pm, &head);
+        pthread_mutex_lock(&pm->hash_mutex);
+    }
+    piece_hash_job_t *job = &pm->hash_q[
+        (pm->hash_q_head + pm->hash_q_count) % PIECE_HASH_QUEUE_MAX];
+    job->idx  = idx;
+    job->buf  = sl->buf;
+    job->plen = plen;
+    job->done = 0;
+    job->ok   = 0;
+    pm->hash_q_count++;
+    pthread_cond_signal(&pm->hash_cond);
+    pthread_mutex_unlock(&pm->hash_mutex);
+    sl->buf = NULL;
+    sl->state = PS_HASHING;
+    return 1;
+}
+
 piece_mgr_t *piece_mgr_create_ex(const metainfo_t *mi, storage_t *store,
                                  int strict_order,
                                  const uint32_t *piece_order,
@@ -122,6 +283,22 @@ piece_mgr_t *piece_mgr_create_ex(const metainfo_t *mi, storage_t *store,
     pm->available_bf = (uint8_t*)calloc((mi->num_pieces + 7) / 8, 1);
     pm->strict_order = strict_order;
     pm->strict_order_lookahead = STRICT_ORDER_LOOKAHEAD;
+    /* Async hash worker sync primitives. On failure fall back to inline
+       hashing (hash_ok = 0), like the announce thread's async_ok. */
+    if (pthread_mutex_init(&pm->hash_mutex, NULL) == 0) {
+        if (pthread_cond_init(&pm->hash_cond, NULL) == 0) {
+            if (pthread_cond_init(&pm->hash_done_cond, NULL) == 0) {
+                pm->hash_ok = 1;
+            } else {
+                pthread_cond_destroy(&pm->hash_cond);
+                pthread_mutex_destroy(&pm->hash_mutex);
+            }
+        } else {
+            pthread_mutex_destroy(&pm->hash_mutex);
+        }
+    }
+    if (!pm->hash_ok)
+        log_msg("[piece] hash worker init failed, hashing inline\n");
     if (piece_order && piece_order_count) {
         pm->piece_order = (uint32_t*)malloc(
             piece_order_count * sizeof(uint32_t));
@@ -142,6 +319,11 @@ piece_mgr_t *piece_mgr_create_ex(const metainfo_t *mi, storage_t *store,
     if (!pm->slots || !pm->have_bf || !pm->available_bf ||
         (piece_order && piece_order_count &&
          (!pm->piece_order || !pm->order_pos))) {
+        if (pm->hash_ok) {
+            pthread_mutex_destroy(&pm->hash_mutex);
+            pthread_cond_destroy(&pm->hash_cond);
+            pthread_cond_destroy(&pm->hash_done_cond);
+        }
         free(pm->slots); free(pm->have_bf); free(pm->available_bf);
         free(pm->piece_order); free(pm->order_pos); free(pm);
         return NULL;
@@ -166,6 +348,25 @@ piece_mgr_t *piece_mgr_create(const metainfo_t *mi, storage_t *store) {
 
 void piece_mgr_destroy(piece_mgr_t *pm) {
     if (!pm) return;
+    /* Finish and apply in-flight hashes first (storage is still open), then
+       stop the worker before freeing anything it could touch. */
+    piece_mgr_hash_flush(pm);
+    if (pm->hash_started) {
+        pthread_mutex_lock(&pm->hash_mutex);
+        pm->hash_shutdown = 1;
+        pthread_cond_signal(&pm->hash_cond);
+        pthread_mutex_unlock(&pm->hash_mutex);
+        pthread_join(pm->hash_thread, NULL);
+        pm->hash_started = 0;
+    }
+    if (pm->hash_ok) {
+        pthread_mutex_destroy(&pm->hash_mutex);
+        pthread_cond_destroy(&pm->hash_cond);
+        pthread_cond_destroy(&pm->hash_done_cond);
+        pm->hash_ok = 0;
+    }
+    for (uint32_t i = 0; i < pm->hash_q_count; i++)
+        free(pm->hash_q[(pm->hash_q_head + i) % PIECE_HASH_QUEUE_MAX].buf);
     for (uint32_t i = 0; i < pm->num_pieces; i++) {
         free(pm->slots[i].buf);
         free(pm->slots[i].have_blocks);
@@ -194,6 +395,8 @@ void piece_mgr_set_strict_policy(piece_mgr_t *pm, uint32_t lookahead,
 void piece_mgr_mark_pending(piece_mgr_t *pm, uint32_t idx) {
     if (idx >= pm->num_pieces) return;
     piece_slot_t *sl = &pm->slots[idx];
+    if (sl->state == PS_DONE || sl->state == PS_HASHING)
+        return; /* complete (or completing) — never re-alloc a buf */
     if (sl->state == PS_EMPTY) sl->state = PS_PENDING;
     if (!sl->buf) {
         sl->buf = piece_buf_get(pm);
@@ -205,7 +408,8 @@ int piece_mgr_got_block(piece_mgr_t *pm, uint32_t idx, uint32_t offset,
                         const uint8_t *data, uint32_t len) {
     if (idx >= pm->num_pieces || !data) return -1;
     piece_slot_t *sl = &pm->slots[idx];
-    if (sl->state == PS_DONE) return 1; /* already have it */
+    if (sl->state == PS_DONE || sl->state == PS_HASHING)
+        return 1; /* already have it (buf may be detached to the worker) */
 
     int64_t plen = piece_len(pm, idx);
     if (offset % BLOCK_SIZE != 0 || (int64_t)offset >= plen) return -1;
@@ -230,7 +434,11 @@ int piece_mgr_got_block(piece_mgr_t *pm, uint32_t idx, uint32_t offset,
     if (sl->num_blocks_done != sl->num_blocks)
         return 1; /* not yet complete */
 
-    /* Verify SHA-1 */
+    /* Piece complete: hand it to the hash worker; verification finishes on
+       a later drain. Inline fallback when the worker is unavailable. */
+    if (hash_enqueue(pm, idx, sl, (uint32_t)plen))
+        return 1;
+
     uint8_t digest[20];
     sha1(sl->buf, (size_t)plen, digest);
     const uint8_t *expected = pm->mi->piece_hashes + idx * 20;
@@ -249,14 +457,7 @@ int piece_mgr_got_block(piece_mgr_t *pm, uint32_t idx, uint32_t offset,
         return -1;
     }
 
-    sl->state = PS_DONE;
-    bf_set(pm->have_bf, idx);
-    if (storage_range_readable(pm->store, abs_off, (size_t)plen))
-        bf_set(pm->available_bf, idx);
-    pm->num_done++;
-    pm->completed_bytes += (uint64_t)plen;
-    order_cursor_advance(pm);
-    log_msg("[piece] verified piece %u/%u\n", pm->num_done, pm->num_pieces);
+    mark_piece_done(pm, idx, (uint32_t)plen);
 
     /* Release buffer — piece is written */
     piece_buf_put(pm, sl->buf);
@@ -301,6 +502,21 @@ int piece_mgr_verify_piece(piece_mgr_t *pm, uint32_t idx) {
     return valid;
 }
 
+/* Mark a piece DONE without hashing it. Shared by the skipped-range branch
+   of piece_mgr_check_existing and the fast-resume preset. */
+static void mark_done_unhashed(piece_mgr_t *pm, uint32_t idx, int readable) {
+    piece_slot_t *sl = &pm->slots[idx];
+    sl->state = PS_DONE;
+    sl->num_blocks_done = sl->num_blocks;
+    memset(sl->have_blocks, 0xff, block_bitmap_size(sl->num_blocks));
+    bf_set(pm->have_bf, idx);
+    if (readable)
+        bf_set(pm->available_bf, idx);
+    pm->num_done++;
+    pm->completed_bytes += (uint64_t)piece_len(pm, idx);
+    order_cursor_advance(pm);
+}
+
 int piece_mgr_check_existing(piece_mgr_t *pm, uint32_t idx) {
     if (!pm || idx >= pm->num_pieces)
         return -1;
@@ -309,15 +525,8 @@ int piece_mgr_check_existing(piece_mgr_t *pm, uint32_t idx) {
     int64_t plen = piece_len(pm, idx);
     int64_t abs_off = (int64_t)idx * pm->mi->piece_length;
     if (storage_range_skipped(pm->store, abs_off, (size_t)plen)) {
-        if (sl->state != PS_DONE) {
-            sl->state = PS_DONE;
-            sl->num_blocks_done = sl->num_blocks;
-            memset(sl->have_blocks, 0xff, block_bitmap_size(sl->num_blocks));
-            bf_set(pm->have_bf, idx);
-            pm->num_done++;
-            pm->completed_bytes += (uint64_t)plen;
-            order_cursor_advance(pm);
-        }
+        if (sl->state != PS_DONE)
+            mark_done_unhashed(pm, idx, 0);
         return 1;
     }
     uint8_t *buf = verify_scratch(pm);
@@ -332,16 +541,8 @@ int piece_mgr_check_existing(piece_mgr_t *pm, uint32_t idx) {
     }
 
     if (valid) {
-        if (sl->state != PS_DONE) {
-            sl->state = PS_DONE;
-            sl->num_blocks_done = sl->num_blocks;
-            memset(sl->have_blocks, 0xff, block_bitmap_size(sl->num_blocks));
-            bf_set(pm->have_bf, idx);
-            bf_set(pm->available_bf, idx);
-            pm->num_done++;
-            pm->completed_bytes += (uint64_t)plen;
-            order_cursor_advance(pm);
-        }
+        if (sl->state != PS_DONE)
+            mark_done_unhashed(pm, idx, 1);
         return 1;
     }
 
@@ -349,8 +550,29 @@ int piece_mgr_check_existing(piece_mgr_t *pm, uint32_t idx) {
     return 0;
 }
 
+void piece_mgr_preset_have(piece_mgr_t *pm, const uint8_t *bf,
+                           uint32_t bf_len) {
+    if (!pm || !bf || bf_len != (pm->num_pieces + 7) / 8)
+        return;
+    for (uint32_t idx = 0; idx < pm->num_pieces; idx++) {
+        if (!bf_has(bf, idx) || pm->slots[idx].state == PS_DONE)
+            continue;
+        int64_t plen = piece_len(pm, idx);
+        int64_t abs_off = (int64_t)idx * pm->mi->piece_length;
+        /* Re-derive availability instead of trusting the saved bit: a SINK
+           range whose install journal regressed since the bitfield was
+           written must be downloaded again, not marked done. */
+        if (storage_range_skipped(pm->store, abs_off, (size_t)plen))
+            mark_done_unhashed(pm, idx, 0);
+        else if (storage_range_readable(pm->store, abs_off, (size_t)plen))
+            mark_done_unhashed(pm, idx, 1);
+    }
+}
+
 int piece_mgr_verify_all(piece_mgr_t *pm) {
-    if (!pm || !storage_flush(pm->store)) return 0;
+    if (!pm) return 0;
+    piece_mgr_hash_flush(pm);
+    if (!storage_flush(pm->store)) return 0;
 
     int all_valid = 1;
     for (uint32_t idx = 0; idx < pm->num_pieces; idx++) {
@@ -471,7 +693,8 @@ uint32_t piece_mgr_pick(const piece_mgr_t *pm,
     /* Second pass: allow re-requesting PENDING pieces (from a different peer) */
     for (uint32_t i = 0; i < pm->num_pieces; i++) {
         if (!request_allowed(pm, i)) continue;
-        if (pm->slots[i].state == PS_DONE) continue;
+        if (pm->slots[i].state == PS_DONE ||
+            pm->slots[i].state == PS_HASHING) continue;
         if (!bf_has(pm->have_bf, i)) {
             if (i / 8 < bf_bytes && bf_has(peer_bf, i))
                 return i;

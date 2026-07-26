@@ -126,6 +126,30 @@ static void test_stat_counts_active_peers(void) {
     assert(stat.num_active_peers == 2);
 }
 
+static void test_copy_have_bitfield_guards(void) {
+    torrent_t torrent = {0};
+    piece_mgr_t pm = {0};
+    uint8_t have_bf[2] = {0xa5, 0x30};
+    pm.num_pieces = 12;
+    pm.have_bf = have_bf;
+    torrent.pm = &pm;
+
+    assert(torrent_copy_have_bitfield(NULL, NULL, 0) == 0);
+    assert(torrent_copy_have_bitfield(&torrent, NULL, 0) == 2);
+
+    uint8_t out[2] = {0};
+    assert(torrent_copy_have_bitfield(&torrent, out, sizeof(out)) == 2);
+    assert(out[0] == 0xa5 && out[1] == 0x30);
+
+    /* Undersized buffer refused. */
+    assert(torrent_copy_have_bitfield(&torrent, out, 1) == 0);
+
+    /* Mid-startup-scan the bitfield is incomplete: refuse both forms. */
+    torrent.startup_verifying = 1;
+    assert(torrent_copy_have_bitfield(&torrent, NULL, 0) == 0);
+    assert(torrent_copy_have_bitfield(&torrent, out, sizeof(out)) == 0);
+}
+
 static void test_blocklist_cooldown_and_wrap(void) {
     torrent_t torrent = {0};
     uint32_t ip = htonl(0x5bd4c901u);
@@ -192,6 +216,7 @@ int main(void) {
     test_adaptive_hedge_follows_median_latency();
     test_rate_freeze_preserves_peer_dl_rate();
     test_stat_counts_active_peers();
+    test_copy_have_bitfield_guards();
     test_blocklist_cooldown_and_wrap();
     test_initial_peers_keep_verified_order();
     puts("torrent tests passed");

@@ -428,6 +428,22 @@ static void cb_block(void *ud, uint32_t idx, uint32_t off,
     }
 }
 
+/* Applied-async-hash bookkeeping. Runs on the torrent thread from the
+   piece manager's drain/flush/backpressure paths; piece.c already logged
+   and reset. Mirrors cb_block's result==2 / result<0 handling. */
+static void cb_hash_result(void *ud, uint32_t idx, int status) {
+    torrent_t *t = (torrent_t*)ud;
+    if (status == 2 && telemetry_enabled())
+        t->telemetry_verified_bytes += (uint64_t)piece_len(t->pm, idx);
+    if (status < 0) {
+        t->fatal_error = 1;
+        snprintf(t->error, sizeof(t->error), "%s",
+                 storage_error(t->store)[0]
+                    ? storage_error(t->store)
+                    : "piece processing failed");
+    }
+}
+
 /* ---- web-seed (BEP-19) hand-off ----
    Called on the torrent thread only (see torrent.h). Reuses the same piece
    store/verify path as peer blocks, so a web-seed piece is verified against its
@@ -435,7 +451,10 @@ static void cb_block(void *ud, uint32_t idx, uint32_t off,
 int torrent_piece_done(const torrent_t *t, uint32_t piece) {
     if (!t || !t->pm || piece >= t->pm->num_pieces)
         return 0;
-    return bf_has(t->pm->have_bf, piece) ? 1 : 0;
+    /* PS_HASHING counts as done: every block is received, so a web-seed
+       re-fetch of the piece would be wasted work. */
+    return (bf_has(t->pm->have_bf, piece) ||
+            t->pm->slots[piece].state == PS_HASHING) ? 1 : 0;
 }
 
 int torrent_submit_web_piece(torrent_t *t, uint32_t piece,
@@ -1332,12 +1351,26 @@ torrent_t *torrent_create_ex(const metainfo_t *mi,
                                 options ? options->piece_order : NULL,
                                 options ? options->piece_order_count : 0);
     if (!t->pm) { storage_close(t->store); free(t); return NULL; }
+    t->pm->hash_result_cb = cb_hash_result;
+    t->pm->hash_result_user = t;
     if (options) {
         t->pm->request_allowed = options->request_allowed;
         t->pm->request_allowed_user = options->request_allowed_user;
         piece_mgr_set_strict_policy(t->pm,
                                     options->strict_order_lookahead,
                                     options->strict_fill_pending_first);
+        if (options->have_bitfield &&
+            options->have_bitfield_len == (mi->num_pieces + 7) / 8) {
+            /* Fast resume: trust the bitfield saved at the last orderly
+               teardown and skip the startup hash scan. startup_verified_all
+               stays 0, so the final verification pass at completion still
+               re-hashes everything. */
+            piece_mgr_preset_have(t->pm, options->have_bitfield,
+                                  options->have_bitfield_len);
+            t->startup_verifying = 0;
+            log_msg("[torrent] fast-resume: %u/%u pieces preset\n",
+                    t->pm->num_done, t->pm->num_pieces);
+        }
     }
 
     /* DHT */
@@ -1498,6 +1531,10 @@ int torrent_tick(torrent_t *t) {
                     t->pm->num_done, t->pm->num_pieces);
         }
     }
+
+    /* Apply finished off-thread piece hashes (write + mark done) before the
+       completion check so the last piece completes in the same tick. */
+    piece_mgr_drain_hash_results(t->pm);
 
     if (t->pm->num_done == t->pm->num_pieces)
         return check_completion(t);
@@ -1818,6 +1855,24 @@ void torrent_set_rate_freeze(torrent_t *t, int freeze) {
         log_msg("[torrent] peer rate sampling %s\n",
                 freeze ? "frozen (request gate)" : "resumed");
     t->rate_freeze = freeze;
+}
+
+uint32_t torrent_copy_have_bitfield(torrent_t *t, uint8_t *out,
+                                    uint32_t out_len) {
+    if (!t || !t->pm)
+        return 0;
+    /* Finish and apply in-flight background hashes so a verified piece is
+       never dropped from the snapshot at pause/teardown. */
+    piece_mgr_hash_flush(t->pm);
+    if (t->startup_verifying)
+        return 0;
+    uint32_t need = (t->pm->num_pieces + 7) / 8;
+    if (!out)
+        return need;
+    if (out_len < need)
+        return 0;
+    memcpy(out, t->pm->have_bf, need);
+    return need;
 }
 
 void torrent_stat(const torrent_t *t, torrent_stat_t *s) {

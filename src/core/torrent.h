@@ -18,6 +18,16 @@ typedef struct {
     uint32_t hedge_after_ms; /* duplicate critical requests after this age */
     int strict_fill_pending_first;
     const char *telemetry_tag; /* copied by torrent_create_ex */
+    /*
+     * Fast resume: have-bitfield saved by torrent_copy_have_bitfield at a
+     * previous orderly teardown. Used only when have_bitfield_len equals
+     * (num_pieces+7)/8; copied during create, need not outlive the call.
+     * Skips the startup hash scan entirely; the final verification pass at
+     * completion still re-hashes everything, so a wrong bitfield self-heals
+     * at the cost of serving unverified pieces until then.
+     */
+    const uint8_t *have_bitfield;
+    uint32_t have_bitfield_len;
 } torrent_options_t;
 
 typedef struct {
@@ -76,11 +86,25 @@ int torrent_piece_done(const torrent_t *t, uint32_t piece);
 
 /*
  * Submit a whole piece fetched from a web seed. `len` must equal the piece's
- * length. Returns 2 if the piece is now complete and verified, 1 if stored but
- * not yet complete, 0 if ignored (already done / bad args), <0 on storage error.
+ * length. Returns 2 if the piece is now complete and verified inline, 1 if
+ * stored (final verification may complete asynchronously on a later tick),
+ * 0 if ignored (already done / bad args), <0 on storage error.
  */
 int torrent_submit_web_piece(torrent_t *t, uint32_t piece,
                              const uint8_t *data, uint32_t len);
+
+/*
+ * Snapshot the have-bitfield for fast-resume persistence. Torrent-thread
+ * only. Flushes any in-flight background piece verification first, so a
+ * verified piece is never dropped at pause/teardown. Returns the required
+ * byte count when out is NULL, the bytes copied otherwise. Returns 0 while
+ * startup verification is still running — the bitfield is incomplete then
+ * and MUST NOT be persisted (arming it would mark unscanned-but-valid
+ * pieces as absent). Note the storage layer never fsyncs, so a "clean"
+ * snapshot still trusts the OS cache to reach disk.
+ */
+uint32_t torrent_copy_have_bitfield(torrent_t *t, uint8_t *out,
+                                    uint32_t out_len);
 
 /* Fill stats for UI */
 void torrent_stat(const torrent_t *t, torrent_stat_t *s);

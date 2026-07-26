@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <stddef.h>
+#include <pthread.h>
 #include "../core/metainfo.h"
 #include "../platform/storage.h"
 
@@ -14,7 +15,10 @@
 typedef enum {
     PS_EMPTY    = 0,
     PS_PENDING  = 1,  /* requested from at least one peer */
-    PS_DONE     = 2   /* verified and written */
+    PS_DONE     = 2,  /* verified and written */
+    PS_HASHING  = 3   /* all blocks received; SHA-1 running on the hash
+                         worker; buf detached from the slot until the
+                         result is applied on the torrent thread */
 } piece_state_t;
 
 typedef struct {
@@ -25,6 +29,25 @@ typedef struct {
     uint32_t      num_blocks;
     uint32_t      num_blocks_done;
 } piece_slot_t;
+
+/* Async hash pipeline: one FIFO ring shared as job queue and result queue.
+   The torrent thread enqueues at tail (piece buf detached from its slot,
+   slot -> PS_HASHING); the worker hashes entries strictly in order and flags
+   them done; the torrent thread applies done entries strictly from head
+   (storage_write + mark DONE, or reset on mismatch), so pieces are written in
+   exactly the completion order they would have been written in with inline
+   hashing. Small on purpose: bounds detached-buffer RAM to
+   PIECE_HASH_QUEUE_MAX x piece_length; a full queue back-pressures the
+   torrent thread for at most one in-flight hash. */
+#define PIECE_HASH_QUEUE_MAX 2
+
+typedef struct {
+    uint32_t idx;
+    uint8_t *buf;    /* detached piece buffer; worker-owned until applied */
+    uint32_t plen;
+    int      done;   /* worker finished hashing (guarded by hash_mutex) */
+    int      ok;     /* digest matched expected (valid once done) */
+} piece_hash_job_t;
 
 typedef struct {
     const metainfo_t *mi;
@@ -51,6 +74,31 @@ typedef struct {
     uint32_t         *order_pos;  /* piece index -> piece_order position */
     int             (*request_allowed)(void *user, uint32_t piece);
     void             *request_allowed_user;
+    /* ---- async hash worker ----
+       hash_q / hash_q_head / hash_q_count / hash_q_hashed / hash_shutdown
+       are guarded by hash_mutex. hash_cond wakes the worker (new job or
+       shutdown); hash_done_cond wakes the torrent thread (flush and
+       queue-full backpressure). hash_ok / hash_started / hash_result_cb*
+       are torrent-thread-only. Job bufs are exclusively worker-owned
+       between enqueue and apply; the mutex hand-off publishes their
+       contents. */
+    piece_hash_job_t hash_q[PIECE_HASH_QUEUE_MAX];
+    uint32_t         hash_q_head;    /* oldest occupied entry */
+    uint32_t         hash_q_count;   /* occupied entries */
+    uint32_t         hash_q_hashed;  /* entries the worker has finished */
+    pthread_t        hash_thread;
+    pthread_mutex_t  hash_mutex;
+    pthread_cond_t   hash_cond;
+    pthread_cond_t   hash_done_cond;
+    int              hash_ok;        /* mutex/conds initialized */
+    int              hash_started;   /* worker thread spawned (lazy) */
+    int              hash_shutdown;
+    /* Reports each applied async result on the torrent thread, at apply
+       time, from whichever path applied it (drain, flush, backpressure).
+       status reuses got_block codes: 2 verified+written, 0 mismatch
+       (piece reset), -1 write error (piece reset). Optional. */
+    void           (*hash_result_cb)(void *user, uint32_t idx, int status);
+    void            *hash_result_user;
 } piece_mgr_t;
 
 piece_mgr_t *piece_mgr_create(const metainfo_t *mi, storage_t *store);
@@ -68,13 +116,26 @@ void piece_mgr_mark_pending(piece_mgr_t *pm, uint32_t idx);
 
 /*
  * Receive a block.  Returns:
- *   2 = piece complete and verified (have_bf updated)
- *   1 = block stored, piece not yet complete
- *   0 = hash mismatch (piece reset)
+ *   2 = piece complete and verified inline (worker unavailable; have_bf
+ *       updated)
+ *   1 = block stored. On the last block of a piece the slot moves to
+ *       PS_HASHING and verification completes asynchronously in
+ *       piece_mgr_drain_hash_results / piece_mgr_hash_flush.
+ *   0 = inline hash mismatch (piece reset)
  *  -1 = error (bad params etc.)
  */
 int piece_mgr_got_block(piece_mgr_t *pm, uint32_t idx, uint32_t offset,
                         const uint8_t *data, uint32_t len);
+
+/* Apply every finished async hash result (FIFO): verified pieces are
+   written and marked DONE, mismatches reset. Non-blocking; no-op when the
+   worker was never started. Torrent thread only. */
+void piece_mgr_drain_hash_results(piece_mgr_t *pm);
+
+/* Block until every queued hash job has finished, then apply all results.
+   Used before the fast-resume have_bf snapshot, by piece_mgr_destroy and
+   piece_mgr_verify_all, and by tests. Torrent thread only. */
+void piece_mgr_hash_flush(piece_mgr_t *pm);
 
 /* Verify one completed piece by reading it from storage. */
 int piece_mgr_verify_piece(piece_mgr_t *pm, uint32_t idx);
@@ -84,6 +145,16 @@ int piece_mgr_verify_piece(piece_mgr_t *pm, uint32_t idx);
  * Returns 1 when valid, 0 when absent/corrupt, and -1 on invalid arguments.
  */
 int piece_mgr_check_existing(piece_mgr_t *pm, uint32_t idx);
+
+/*
+ * Fast resume: mark the pieces set in a previously saved have-bitfield as
+ * DONE without hashing them. bf_len must be exactly (num_pieces+7)/8 or the
+ * call is a no-op. Bits over ranges that are neither skipped nor readable
+ * (e.g. an unconsumed SINK range after an install-journal regression) are
+ * dropped so those pieces download again.
+ */
+void piece_mgr_preset_have(piece_mgr_t *pm, const uint8_t *bf,
+                           uint32_t bf_len);
 
 /*
  * Flush and verify every completed piece from storage.
