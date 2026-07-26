@@ -49,6 +49,19 @@
    peer has a rate sample, assume PIPELINE_BOOTSTRAP_BPS so it can ramp. */
 #define PIPELINE_TARGET_MS     2000ULL
 #define PIPELINE_BOOTSTRAP_BPS (1024ULL * 1024ULL)  /* 1 MiB/s */
+/* A peer that has never delivered a block gets only a shallow probe window:
+   a bootstrap-rate window (128 requests) on a peer that turns out to be dead
+   locks that many head-piece blocks for the whole request timeout. */
+#define BOOTSTRAP_PIPELINE     16
+/* Requests to a zero-delivery peer expire on a short fuse so hostage blocks
+   return to the pool quickly; the full REQUEST_TIMEOUT_MS applies only once
+   the peer has proven it delivers. */
+#define FIRST_BLOCK_TIMEOUT_MS 4000
+/* A peer whose requests expired but that delivered a block this recently is
+   servicing its queue — release the stale blocks without a strike/cooldown,
+   otherwise the cooldown starves a productive peer and its rate EMA (and
+   with it the adaptive pipeline) collapses. */
+#define STRIKE_GRACE_MS        2000
 #define TIMEOUT_COOLDOWN_BASE_MS 2000
 #define TIMEOUT_COOLDOWN_MAX_MS  10000
 #define TIMEOUT_DISCONNECT_STRIKES 3
@@ -985,6 +998,10 @@ static uint32_t peer_pipeline_limit(const torrent_t *t, const peer_t *p) {
        gets a deep queue up to the ceiling while a slow peer holds only what it
        can service. Replaces the flat per-peer constant that pinned every peer
        at request_pipeline_limit regardless of speed. */
+    /* Zero-delivery peers stay on a probe window until the first block
+       arrives, no matter what the bootstrap rate says. */
+    if (!p->last_piece_ms)
+        return BOOTSTRAP_PIPELINE;
     uint64_t want = p->dl_rate_bps * PIPELINE_TARGET_MS / 1000 / BLOCK_SIZE;
     uint32_t ceiling = t->request_pipeline_limit; /* per-peer max in flight */
     if (want > ceiling)
@@ -1497,7 +1514,7 @@ void torrent_destroy(torrent_t *t) {
    requests (rate_freeze, PERF_PLAN 7.2) a peer's low throughput says
    nothing about the peer: keep the EMA and discard the interval, so
    pipelines regain their pre-gate depth immediately on resume. */
-static void sample_peer_rates(torrent_t *t, uint64_t elapsed_ms) {
+static void sample_peer_rates(torrent_t *t, uint64_t elapsed_ms, uint64_t now) {
     for (int i = 0; i < MAX_ACTIVE_PEERS; i++) {
         peer_t *p = t->peers[i];
         if (!p) continue;
@@ -1507,7 +1524,24 @@ static void sample_peer_rates(torrent_t *t, uint64_t elapsed_ms) {
         }
         uint64_t sample = (p->downloaded - p->rate_last_downloaded) * 1000 /
                           (elapsed_ms + 1);
-        p->dl_rate_bps = ema_update(p->dl_rate_bps, sample);
+        uint64_t next = ema_update(p->dl_rate_bps, sample);
+        /* The EMA has a fixed point: pipeline is sized from the rate, so a
+           peer whose window stays full can never measure faster than the
+           window allows. When the window is the binding constraint — kept
+           full, delivering, no strikes, no recent expiries, below the
+           ceiling — grow the estimate multiplicatively so a healthy peer
+           ramps instead of plateauing at its first measured rate. */
+        uint32_t limit = peer_pipeline_limit(t, p);
+        if (sample > 0 && p->timeout_strikes == 0 &&
+            limit < t->request_pipeline_limit &&
+            (uint32_t)p->pipeline_len * 4 >= limit * 3 &&
+            (p->last_expiry_ms == 0 ||
+             now - p->last_expiry_ms >= STRIKE_GRACE_MS)) {
+            uint64_t grown = p->dl_rate_bps * 3 / 2;
+            if (next < grown)
+                next = grown;
+        }
+        p->dl_rate_bps = next;
         p->rate_last_downloaded = p->downloaded;
     }
 }
@@ -1547,7 +1581,7 @@ int torrent_tick(torrent_t *t) {
         uint64_t sample_bps = t->speed_bytes * 1000 / (elapsed_ms + 1);
         t->speed_bps      = ema_update(t->speed_bps, sample_bps);
         t->speed_bytes    = 0;
-        sample_peer_rates(t, elapsed_ms);
+        sample_peer_rates(t, elapsed_ms, now);
         t->speed_time_ms  = now;
     }
     emit_telemetry(t, now);
@@ -1776,24 +1810,36 @@ int torrent_tick(torrent_t *t) {
                 continue;
             }
         }
-        int expired = peer_expire_requests(p, now2, REQUEST_TIMEOUT_MS,
+        uint64_t req_timeout = p->last_piece_ms ? REQUEST_TIMEOUT_MS
+                                                : FIRST_BLOCK_TIMEOUT_MS;
+        int expired = peer_expire_requests(p, now2, req_timeout,
                                            clear_request, t);
         if (expired > 0) {
             t->expired_requests += (uint32_t)expired;
             t->telemetry_expired_requests += (uint32_t)expired;
             p->telemetry_expired_requests += (uint32_t)expired;
-            if (p->timeout_strikes != UINT32_MAX)
-                p->timeout_strikes++;
-            uint64_t cooldown = TIMEOUT_COOLDOWN_BASE_MS *
-                                (uint64_t)p->timeout_strikes;
-            if (cooldown > TIMEOUT_COOLDOWN_MAX_MS)
-                cooldown = TIMEOUT_COOLDOWN_MAX_MS;
-            p->request_cooldown_until_ms = now2 + cooldown;
+            p->last_expiry_ms = now2;
+            /* A peer that delivered a block within the grace window is
+               working through its queue; the expired requests were just
+               queued too deep. Release them without a strike — the
+               cooldown would starve a productive peer. */
+            int graced = p->last_piece_ms && p->last_piece_ms <= now2 &&
+                         now2 - p->last_piece_ms < STRIKE_GRACE_MS;
+            uint64_t cooldown = 0;
+            if (!graced) {
+                if (p->timeout_strikes != UINT32_MAX)
+                    p->timeout_strikes++;
+                cooldown = TIMEOUT_COOLDOWN_BASE_MS *
+                           (uint64_t)p->timeout_strikes;
+                if (cooldown > TIMEOUT_COOLDOWN_MAX_MS)
+                    cooldown = TIMEOUT_COOLDOWN_MAX_MS;
+                p->request_cooldown_until_ms = now2 + cooldown;
+            }
             telemetry_log("peer", t->telemetry_tag,
                 "event=request_timeout expired=%d strikes=%u "
-                "cooldown_ms=%llu pipeline=%d",
+                "cooldown_ms=%llu pipeline=%d graced=%d",
                 expired, p->timeout_strikes,
-                (unsigned long long)cooldown, p->pipeline_len);
+                (unsigned long long)cooldown, p->pipeline_len, graced);
 
             uint64_t progress_ms = p->last_piece_ms
                                  ? p->last_piece_ms : p->connect_time_ms;

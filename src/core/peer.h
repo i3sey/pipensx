@@ -114,6 +114,9 @@ typedef struct peer {
     uint32_t block_lat_ema_ms;
     uint64_t telemetry_piece_bytes;
     uint32_t timeout_strikes;
+    /* Last time any of this peer's requests expired; gates the
+       window-binding growth in sample_peer_rates. */
+    uint64_t last_expiry_ms;
     uint32_t telemetry_expired_requests;
     uint32_t telemetry_hedged_requests;
     uint32_t telemetry_cancelled_requests;

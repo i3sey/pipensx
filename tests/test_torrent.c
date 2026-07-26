@@ -84,7 +84,7 @@ static void test_rate_freeze_preserves_peer_dl_rate(void) {
     torrent.peers[0] = &peer;
 
     /* Unfrozen idle interval decays the EMA (pre-7.2 behaviour). */
-    sample_peer_rates(&torrent, 1000);
+    sample_peer_rates(&torrent, 1000, 0);
     assert(peer.dl_rate_bps < 4 * 1024 * 1024);
 
     /* Frozen: the EMA holds exactly and the interval's bytes are
@@ -93,7 +93,7 @@ static void test_rate_freeze_preserves_peer_dl_rate(void) {
     torrent.rate_freeze = 1;
     for (int i = 0; i < 30; ++i) {
         peer.downloaded += 100 * 1024;
-        sample_peer_rates(&torrent, 1000);
+        sample_peer_rates(&torrent, 1000, 0);
         assert(peer.dl_rate_bps == held);
         assert(peer.rate_last_downloaded == peer.downloaded);
     }
@@ -102,9 +102,61 @@ static void test_rate_freeze_preserves_peer_dl_rate(void) {
        interval moves the EMA up instead of averaging in the gated lull. */
     torrent.rate_freeze = 0;
     peer.downloaded += 8 * 1024 * 1024;
-    sample_peer_rates(&torrent, 1000);
+    sample_peer_rates(&torrent, 1000, 0);
     assert(peer.dl_rate_bps > held);
     assert(peer.rate_last_downloaded == peer.downloaded);
+}
+
+static void test_probe_window_until_first_block(void) {
+    torrent_t torrent = {0};
+    torrent.request_pipeline_limit = 256;
+    peer_t peer = {0};
+    peer.state = PS_ACTIVE;
+    peer.dl_rate_bps = 8 * 1024 * 1024;
+
+    /* No block delivered yet: shallow probe window regardless of rate. */
+    assert(peer_pipeline_limit(&torrent, &peer) == BOOTSTRAP_PIPELINE);
+
+    /* First block arrived: window follows the rate estimate again
+       (8 MiB/s wants 1024 in flight, clamped to the per-peer ceiling). */
+    peer.last_piece_ms = 1;
+    assert(peer_pipeline_limit(&torrent, &peer) ==
+           torrent.request_pipeline_limit);
+    peer.dl_rate_bps = 1024 * 1024;
+    assert(peer_pipeline_limit(&torrent, &peer) ==
+           1024ULL * 1024 * PIPELINE_TARGET_MS / 1000 / BLOCK_SIZE);
+}
+
+static void test_window_binding_growth(void) {
+    torrent_t torrent = {0};
+    torrent.request_pipeline_limit = 256;
+    peer_t peer = {0};
+    peer.state = PS_ACTIVE;
+    peer.last_piece_ms = 1;
+    peer.dl_rate_bps = 1024 * 1024;
+    torrent.peers[0] = &peer;
+
+    /* Window full, delivering, clean: the estimate grows multiplicatively
+       past what the EMA alone would settle at. */
+    peer.pipeline_len = (int)peer_pipeline_limit(&torrent, &peer);
+    peer.downloaded = 1024 * 1024;
+    sample_peer_rates(&torrent, 1000, 10000);
+    assert(peer.dl_rate_bps == 1024 * 1024 * 3 / 2);
+
+    /* Recent expiry blocks growth: plain EMA applies. */
+    peer.pipeline_len = (int)peer_pipeline_limit(&torrent, &peer);
+    peer.last_expiry_ms = 10500;
+    uint64_t before = peer.dl_rate_bps;
+    peer.downloaded += before;
+    sample_peer_rates(&torrent, 1000, 11000);
+    assert(peer.dl_rate_bps <= before);
+
+    /* Idle window with an empty pipeline decays as before. */
+    peer.pipeline_len = 0;
+    peer.last_expiry_ms = 0;
+    before = peer.dl_rate_bps;
+    sample_peer_rates(&torrent, 1000, 12000);
+    assert(peer.dl_rate_bps < before);
 }
 
 static void test_stat_counts_active_peers(void) {
@@ -215,6 +267,8 @@ int main(void) {
     test_last_piece_age_marks_missing_sample();
     test_adaptive_hedge_follows_median_latency();
     test_rate_freeze_preserves_peer_dl_rate();
+    test_probe_window_until_first_block();
+    test_window_binding_growth();
     test_stat_counts_active_peers();
     test_copy_have_bitfield_guards();
     test_blocklist_cooldown_and_wrap();
