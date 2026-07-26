@@ -331,6 +331,7 @@
     "stream_selection": "Выбор файлов по умолчанию",
     "stream_all": "Все файлы",
     "stream_packages": "Только NSP/NSZ",
+    "max_active_downloads": "Одновременные загрузки",
     "install_location": "Куда устанавливать",
     "install_sd": "SD-карта",
     "install_nand": "Память консоли",

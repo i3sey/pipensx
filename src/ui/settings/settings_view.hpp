@@ -137,6 +137,27 @@ public:
             });
         content->addView(streamSelection_);
 
+        maxActiveDownloads_ = new brls::SelectorCell();
+        maxActiveDownloads_->init(tr("pipensx/settings/max_active_downloads"),
+            {"1", "2", "3", "4"},
+            static_cast<int>(settings_->get().maxActiveDownloads) - 1,
+            [this](int selected) {
+                AppSettingsData values = settings_->get();
+                uint32_t previous = values.maxActiveDownloads;
+                values.maxActiveDownloads =
+                    pipensx::clampMaxActiveDownloads(
+                        static_cast<uint64_t>(selected) + 1);
+                if (!persist(values, "max_active_downloads")) {
+                    maxActiveDownloads_->setSelection(
+                        static_cast<int>(previous) - 1, true);
+                    return;
+                }
+                if (manager_)
+                    manager_->setMaxActiveDownloads(
+                        values.maxActiveDownloads);
+            });
+        content->addView(maxActiveDownloads_);
+
         showCompleted_ = new brls::BooleanCell();
         showCompleted_->init(tr("pipensx/settings/show_completed"),
             settings_->get().showCompletedDownloads,
@@ -562,6 +583,7 @@ private:
     brls::BooleanCell* checkForUpdates_ = nullptr;
     brls::DetailCell* updateAction_ = nullptr;
     brls::SelectorCell* streamSelection_ = nullptr;
+    brls::SelectorCell* maxActiveDownloads_ = nullptr;
     brls::BooleanCell* showCompleted_ = nullptr;
     brls::BooleanCell* webToggle_ = nullptr;
     brls::DetailCell* webAddress_ = nullptr;

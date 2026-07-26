@@ -331,6 +331,7 @@
     "stream_selection": "Default streaming file selection",
     "stream_all": "All files",
     "stream_packages": "NSP/NSZ only",
+    "max_active_downloads": "Simultaneous downloads",
     "install_location": "Install location",
     "install_sd": "SD card",
     "install_nand": "System memory",

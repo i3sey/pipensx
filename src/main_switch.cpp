@@ -321,6 +321,7 @@ int main(int argc, char** argv) {
         DownloadManager manager("sdmc:/switch/pipensx");
         manager.setInstallTarget(
             installTargetFor(settings.get().installLocation));
+        manager.setMaxActiveDownloads(settings.get().maxActiveDownloads);
         metadata.setImageNetworkPaused(manager.hasActiveTransfer());
 
         UpdateService updater;
