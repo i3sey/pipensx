@@ -21,7 +21,10 @@
 
 #include "app/download_manager.hpp"
 #include "app/install_space.hpp"
+#include "app/web_server.hpp"
 #include "ui/common/storage_meter.hpp"
+#include "ui/common/web_qr.hpp"
+#include "ui/i18n.hpp"
 #include "ui/theme.hpp"
 
 namespace pipensx::ui {
@@ -158,6 +161,65 @@ private:
     brls::SidebarItem* owner_;
 };
 
+// One line of web-companion status for the sidebar footer: a state dot
+// (accent = serving, muted = off) and the reachable address. Non-focusable —
+// the QR/action surface is the global Minus hint, this is just the readout.
+class WebStatusRow : public brls::Box {
+public:
+    WebStatusRow() : brls::Box(brls::Axis::ROW) {
+        setFocusable(false);
+        setAlignItems(brls::AlignItems::CENTER);
+        setMarginBottom(8);
+        setClipsToBounds(true);
+        dot_ = new Dot();
+        addView(dot_);
+        label_ = new brls::Label();
+        label_->setSingleLine(true);
+        label_->setFontSize(theme::kFontCaption);
+        label_->setTextColor(theme::textSecondary());
+        addView(label_);
+    }
+
+    void setState(bool running, const std::string& url) {
+        dot_->running = running;
+        if (!running) {
+            label_->setText(tr("pipensx/web/off"));
+            label_->setTextColor(theme::textTertiary());
+        } else if (url.empty()) {
+            label_->setText(tr("pipensx/settings/web_address_none"));
+            label_->setTextColor(theme::textTertiary());
+        } else {
+            // Drop the scheme: the footer column is 216px, every pixel counts.
+            label_->setText(url.rfind("http://", 0) == 0 ? url.substr(7) : url);
+            label_->setTextColor(theme::textSecondary());
+        }
+    }
+
+private:
+    class Dot : public brls::View {
+    public:
+        Dot() {
+            setWidth(10);
+            setHeight(10);
+            setMarginRight(8);
+            setFocusable(false);
+            setAlignSelf(brls::AlignSelf::CENTER);
+        }
+        void draw(NVGcontext* vg, float x, float y, float width, float height,
+                  brls::Style, brls::FrameContext*) override {
+            nvgBeginPath(vg);
+            nvgCircle(vg, x + width / 2.0f, y + height / 2.0f, 4.0f);
+            nvgFillColor(vg, running ? theme::accent()
+                                     : theme::textTertiary());
+            nvgFill(vg);
+        }
+        bool running = false;
+    };
+
+    Dot* dot_ = nullptr;
+    brls::Label* label_ = nullptr;
+};
+
 // TabFrame that carries icons and folds to an icon rail while a tab is focused.
 class MainFrame : public brls::TabFrame {
 public:
@@ -201,6 +263,10 @@ public:
         if (dock_) {
             dock_->setWidth(collapsed ? kCollapsedWidth : expandedWidth_);
             footer_->setCompact(collapsed);
+            // The rail is 88px — no room for an address line.
+            if (webRow_)
+                webRow_->setVisibility(collapsed ? brls::Visibility::GONE
+                                                 : brls::Visibility::VISIBLE);
         }
     }
 
@@ -214,8 +280,10 @@ public:
     // area with nothing to clip it. The dock pins top+bottom instead, so its
     // height is definite, justifyContent flex-end parks the meter on the floor
     // whatever it measures, and clipsToBounds is the backstop.
-    void attachStorageFooter(DownloadManager* manager) {
+    void attachStorageFooter(DownloadManager* manager,
+                             pipensx::WebServer* webServer = nullptr) {
         manager_ = manager;
+        webServer_ = webServer;
         dock_ = new brls::Box(brls::Axis::COLUMN);
         dock_->setFocusable(false);
         dock_->setPositionType(brls::PositionType::ABSOLUTE);
@@ -227,11 +295,16 @@ public:
         dock_->setPadding(0, kFooterPad, kFooterPad, kFooterPad);
         dock_->setClipsToBounds(true);
 
+        webRow_ = new WebStatusRow();
+        webRow_->setVisibility(collapsed_ ? brls::Visibility::GONE
+                                          : brls::Visibility::VISIBLE);
+        dock_->addView(webRow_);
         footer_ = new StorageMeter();
         footer_->setCompact(collapsed_);
         dock_->addView(footer_);
         addView(dock_);
         refreshStorage();
+        refreshWebStatus();
     }
 
 protected:
@@ -242,6 +315,7 @@ protected:
             if (now - lastQuery_ >= std::chrono::seconds(2)) {
                 lastQuery_ = now;
                 refreshStorage();
+                refreshWebStatus();
             }
         }
         brls::Box::draw(vg, x, y, width, height, style, ctx);
@@ -268,6 +342,16 @@ private:
             footer_->setUnavailable();
     }
 
+    void refreshWebStatus() {
+        if (!webRow_)
+            return;
+        // A null server (golden runner) reads as "serving on the fixed fake
+        // address" so the baseline row looks like the real thing.
+        const bool running = webServer_ ? webServer_->running() : true;
+        webRow_->setState(running,
+                          running ? webCompanionUrl(webServer_, true) : "");
+    }
+
     // Wide enough for padding + the active-accent bar + the 28px icon.
     static constexpr float kCollapsedWidth = 88.0f;
     static constexpr float kFooterPad = 16.0f;
@@ -277,7 +361,9 @@ private:
     std::vector<brls::View*> labels_;
     brls::Box* dock_ = nullptr;
     StorageMeter* footer_ = nullptr;
+    WebStatusRow* webRow_ = nullptr;
     DownloadManager* manager_ = nullptr;
+    pipensx::WebServer* webServer_ = nullptr;
     std::chrono::steady_clock::time_point lastQuery_ =
         std::chrono::steady_clock::now() - std::chrono::seconds(10);
 };

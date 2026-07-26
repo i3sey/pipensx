@@ -1,7 +1,11 @@
 {
   "app": {
     "title": "pipensx",
-    "exit": "Выход"
+    "exit": "Выход",
+    "web_qr": "Веб QR"
+  },
+  "web": {
+    "off": "Веб выкл"
   },
   "nav": {
     "catalog": "Каталог",

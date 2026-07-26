@@ -188,9 +188,14 @@ public:
     }
 
     void onContentAvailable() override {
-        if (withExitAction_)
+        if (withExitAction_) {
             registerAction(tr("pipensx/app/exit"), brls::BUTTON_START,
                            [](brls::View*) { return true; }, /*hidden=*/true);
+            // Visible on-device on every screen (web companion QR) — must be
+            // part of the measured budget.
+            registerAction(tr("pipensx/app/web_qr"), brls::BUTTON_BACK,
+                           [](brls::View*) { return true; });
+        }
     }
 
 private:

@@ -21,6 +21,7 @@
 #include "app/web_server.hpp"
 #include "ui/common/qr_view.hpp"
 #include "ui/common/ui_helpers.hpp"
+#include "ui/common/web_qr.hpp"
 #include "ui/i18n.hpp"
 #include "ui/settings/advanced_settings.hpp"
 #include "ui/settings/bug_report_view.hpp"
@@ -220,15 +221,8 @@ private:
     std::string webAddressText() const {
         if (!settings_->get().webServerEnabled)
             return tr("pipensx/settings/web_disabled");
-        // No server (golden runner): a fixed address keeps the screenshot
-        // baselines deterministic — the host's real IP must never render.
-        if (!webServer_)
-            return "http://192.168.1.2:8080";
-        std::string ip = brls::Application::getPlatform()->getIpAddress();
-        if (ip.empty() || ip == "0.0.0.0")
-            return tr("pipensx/settings/web_address_none");
-        return "http://" + ip + ":" +
-               std::to_string(pipensx::WebServer::kDefaultPort);
+        std::string url = webCompanionUrl(webServer_, true);
+        return url.empty() ? tr("pipensx/settings/web_address_none") : url;
     }
 
     void updateWebCells() {
@@ -246,32 +240,7 @@ private:
             brls::Application::notify(url);
             return;
         }
-        // The QR carries the PIN so a scan lands authenticated; the SPA
-        // stores it and strips it from the visible URL.
-        std::string qrUrl = url;
-        const std::string& pin = settings_->get().webServerPin;
-        if (!pin.empty())
-            qrUrl += "/?pin=" + pin;
-        auto* box = new brls::Box(brls::Axis::COLUMN);
-        box->setAlignItems(brls::AlignItems::CENTER);
-        box->setPadding(28, 28, 28, 28);
-        auto* qr = new QrCodeView(qrUrl);
-        qr->setMarginBottom(16);
-        box->addView(qr);
-        auto* label = new brls::Label();
-        label->setText(url);
-        label->setFontSize(theme::kFontSmall);
-        label->setTextColor(theme::textSecondary());
-        box->addView(label);
-        auto* hint = new brls::Label();
-        hint->setText(tr("pipensx/settings/web_qr_hint"));
-        hint->setFontSize(theme::kFontCaption);
-        hint->setTextColor(theme::textTertiary());
-        hint->setMarginTop(8);
-        box->addView(hint);
-        auto* dialog = new brls::Dialog(box);
-        dialog->addButton(tr("pipensx/common/ok"), [] {});
-        dialog->open();
+        showWebQrDialog(url, settings_->get().webServerPin);
     }
 
     void editWebPin() {

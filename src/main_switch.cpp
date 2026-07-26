@@ -29,6 +29,7 @@ extern "C" {
 #include "app/mod_index_service.hpp"
 #include "ui/catalog/catalog_view.hpp"
 #include "ui/common/ui_helpers.hpp"
+#include "ui/common/web_qr.hpp"
 #include "ui/i18n.hpp"
 #include "ui/main_frame.hpp"
 #include "ui/downloads/downloads_view.hpp"
@@ -77,7 +78,7 @@ public:
                  FavoritesService* favorites, WebServer* webServer)
         : manager_(manager), catalog_(catalog), metadata_(metadata),
           installed_(installed), settings_(settings), updater_(updater),
-          mods_(mods), favorites_(favorites) {
+          mods_(mods), favorites_(favorites), webServer_(webServer) {
         auto* tabs = new pipensx::ui::MainFrame();
         using pipensx::ui::NavIconType;
         tabs->addNavTab(tr("pipensx/nav/catalog"), NavIconType::Catalog,
@@ -104,7 +105,7 @@ public:
         tabs->addNavTab(tr("pipensx/nav/about"), NavIconType::About, [] {
             return new AboutView();
         });
-        tabs->attachStorageFooter(manager);
+        tabs->attachStorageFooter(manager, webServer);
         frame_ = new brls::AppletFrame(tabs);
         frame_->setTitle(tr("pipensx/app/title"));
     }
@@ -124,6 +125,23 @@ public:
                 brls::Application::quit();
                 return true;
             }, /*hidden=*/true);
+        // Visible on every screen: the web companion QR is the whole pairing
+        // story, so it must not stay buried three levels deep in Settings.
+        registerAction(tr("pipensx/app/web_qr"), brls::BUTTON_BACK,
+            [this](brls::View*) {
+                const pipensx::AppSettingsData& values = settings_->get();
+                const std::string url = pipensx::ui::webCompanionUrl(
+                    webServer_, values.webServerEnabled);
+                if (url.empty()) {
+                    brls::Application::notify(
+                        tr(values.webServerEnabled
+                               ? "pipensx/settings/web_address_none"
+                               : "pipensx/web/off"));
+                    return true;
+                }
+                pipensx::ui::showWebQrDialog(url, values.webServerPin);
+                return true;
+            });
     }
 
 private:
@@ -135,6 +153,7 @@ private:
     UpdateService* updater_;
     ModIndexService* mods_;
     FavoritesService* favorites_;
+    WebServer* webServer_;
     brls::AppletFrame* frame_;
 };
 
