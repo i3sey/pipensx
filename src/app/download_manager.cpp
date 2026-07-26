@@ -113,6 +113,22 @@ bool makeDirectories(const std::string& path) {
     return mkdir(buffer, 0755) == 0 || errno == EEXIST;
 }
 
+bool directoryEmpty(const std::string& path) {
+    DIR* dir = opendir(path.c_str());
+    if (!dir)
+        return false;
+    bool empty = true;
+    while (struct dirent* entry = readdir(dir)) {
+        if (std::strcmp(entry->d_name, ".") != 0 &&
+            std::strcmp(entry->d_name, "..") != 0) {
+            empty = false;
+            break;
+        }
+    }
+    closedir(dir);
+    return empty;
+}
+
 bool copyFile(const std::string& source, const std::string& destination) {
     std::ifstream input(source, std::ios::binary);
     if (!input)
@@ -1270,6 +1286,7 @@ bool DownloadManager::previewTorrent(const std::string& path,
     preview.totalBytes = static_cast<uint64_t>(metainfo.total_length);
     preview.fileCount = metainfo.num_files;
     preview.trackerCount = metainfo.num_trackers;
+    preview.pieceCount = metainfo.num_pieces;
     preview.files.reserve(metainfo.num_files);
     for (uint32_t i = 0; i < metainfo.num_files; ++i) {
         TorrentPreview::File file;
@@ -1385,6 +1402,12 @@ bool DownloadManager::importTorrentActions(
     task.packageCount = installPackageCount;
     task.fileSelection = std::move(selection);
     task.initialPeers = initialPeers;
+    // Fast resume: a genuinely fresh download has nothing on disk to find,
+    // so an all-zero trusted bitfield lets the engine skip hashing the
+    // preallocated files. A re-import over kept data (same deterministic
+    // dataPath) stays untrusted so the full scan reclaims existing pieces.
+    if (preview.pieceCount > 0 && directoryEmpty(dataPath))
+        task.resumeBitfield.assign((preview.pieceCount + 7) / 8, 0);
     tasks_.push_back(std::move(task));
     taskId = preview.infoHash;
 
@@ -1444,6 +1467,7 @@ bool DownloadManager::verify(const std::string& taskId) {
     task->status = DownloadStatus::Queued;
     task->error.clear();
     task->piecesVerified = 0;
+    task->resumeBitfield.clear();  // a recheck must really rehash
     std::string ignored;
     saveLocked(ignored);
     condition_.notify_all();
@@ -1555,6 +1579,10 @@ bool DownloadManager::saveLocked(std::string& error) const {
         state << "4:name" << bstr(task.name);
         state << "13:package-count" << bint(task.packageCount);
         state << "13:packages-done" << bint(task.packagesInstalled);
+        if (!task.resumeBitfield.empty())
+            state << "9:resume-bf"
+                  << bstr(std::string(task.resumeBitfield.begin(),
+                                      task.resumeBitfield.end()));
         state << "9:selection" << bstr(std::string(task.fileSelection.begin(),
                                                    task.fileSelection.end()));
         state << "6:status" << bstr(persistedStatus(task.status));
@@ -1562,7 +1590,7 @@ bool DownloadManager::saveLocked(std::string& error) const {
         state << "e";
     }
     state << "e";
-    state << "7:versioni4e";
+    state << "7:versioni5e";
     state << "e";
 
     std::string temporary = statePath_ + ".tmp";
@@ -1619,7 +1647,7 @@ void DownloadManager::load() {
                      &version) ||
         version.type != BE_INT ||
         (version.ival != 1 && version.ival != 2 && version.ival != 3 &&
-         version.ival != 4))
+         version.ival != 4 && version.ival != 5))
         return;
 
     be_node_t list;
@@ -1660,6 +1688,11 @@ void DownloadManager::load() {
             if (dictionaryString(item, "selection", selection)) {
                 task.fileSelection.assign(selection.begin(), selection.end());
             }
+        }
+        if (version.ival >= 5) {
+            std::string bitfield;
+            if (dictionaryString(item, "resume-bf", bitfield))
+                task.resumeBitfield.assign(bitfield.begin(), bitfield.end());
         }
         task.status = persistedStatus(status);
         if (task.status == DownloadStatus::Completed ||
@@ -1733,6 +1766,7 @@ void DownloadManager::workerMain() {
         uint32_t packagesInstalled = 0;
         std::vector<uint8_t> fileSelection;
         std::vector<uint8_t> initialPeers;
+        std::vector<uint8_t> resumeBitfield;
         {
             std::unique_lock<std::mutex> lock(mutex_);
             condition_.wait(lock, [this] {
@@ -1755,9 +1789,16 @@ void DownloadManager::workerMain() {
                     packagesInstalled = task.packagesInstalled;
                     fileSelection = task.fileSelection;
                     initialPeers = task.initialPeers;
+                    // Fast resume: consume the trusted bitfield and persist
+                    // the disarmed state before the engine touches anything —
+                    // a crash from here on must fall back to a full scan.
+                    resumeBitfield = std::move(task.resumeBitfield);
+                    task.resumeBitfield.clear();
                     break;
                 }
             }
+            std::string ignored;
+            saveLocked(ignored);
         }
 
         metainfo_t metainfo;
@@ -1833,6 +1874,11 @@ void DownloadManager::workerMain() {
                 options.hedge_after_ms = 5000;
             }
             options.telemetry_tag = activeId.c_str();
+            if (!resumeBitfield.empty()) {
+                options.have_bitfield = resumeBitfield.data();
+                options.have_bitfield_len =
+                    static_cast<uint32_t>(resumeBitfield.size());
+            }
             std::lock_guard<std::mutex> lock(mutex_);
             if (DownloadTask* task = findLocked(activeId))
                 task->packageCount = coordinator->packageCount();
@@ -1989,6 +2035,16 @@ void DownloadManager::workerMain() {
         }
 
         webSeed.reset(); // join HTTP fetch threads before tearing down engine
+        // Fast resume: snapshot the have-bitfield on the torrent thread while
+        // the engine is still alive. Returns 0 (no arming) when the startup
+        // scan was interrupted — that bitfield would be incomplete.
+        std::vector<uint8_t> teardownBitfield;
+        if (uint32_t need = torrent_copy_have_bitfield(torrent, nullptr, 0)) {
+            teardownBitfield.resize(need);
+            if (!torrent_copy_have_bitfield(torrent, teardownBitfield.data(),
+                                            need))
+                teardownBitfield.clear();
+        }
         torrent_destroy(torrent);
         log_msg("[manager] torrent destroyed %s\n", activeId.c_str());
         if (coordinator) {
@@ -2009,6 +2065,13 @@ void DownloadManager::workerMain() {
                 removeLocked(activeId, deleteData, removeError);
             } else if (task) {
                 task->speedBytesPerSecond = 0;
+                // Arm fast resume for an interrupted task (pause / error /
+                // shutdown). A finished task never re-runs and verify() must
+                // do a real rehash, so it stays disarmed.
+                if (finished)
+                    task->resumeBitfield.clear();
+                else
+                    task->resumeBitfield = std::move(teardownBitfield);
                 std::string ignored;
                 saveLocked(ignored);
                 if (finished)

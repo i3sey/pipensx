@@ -87,6 +87,8 @@ int main() {
     std::string legacyRoot = std::string(root) + "/legacy-app";
     std::string activeRoot = std::string(root) + "/active-app";
     std::string queueRoot = std::string(root) + "/queue-app";
+    std::string v5Root = std::string(root) + "/v5-app";
+    std::string fastResumeRoot = std::string(root) + "/fast-resume-app";
     std::string selectiveSource = makeSelectiveTorrent(root);
 
     std::string taskId;
@@ -109,6 +111,9 @@ int main() {
         assert(tasks[0].status == DownloadStatus::Queued);
         assert(tasks[0].mode == TransferMode::StreamInstall);
         assert(tasks[0].packageCount == 1);
+        // Fresh import into an empty data directory arms an all-zero trusted
+        // bitfield (12-byte payload = 1 piece = 1 byte).
+        assert(tasks[0].resumeBitfield == std::vector<uint8_t>(1, 0));
         assert(manager.hasActiveTransfer());
         assert(manager.pause(tasks[0].id));
         assert(manager.snapshot()[0].status == DownloadStatus::Paused);
@@ -218,8 +223,98 @@ int main() {
         assert(tasks[0].status == DownloadStatus::Queued);
         assert(tasks[0].mode == TransferMode::StreamInstall);
         assert(tasks[0].packageCount == 1);
+        assert(tasks[0].resumeBitfield == std::vector<uint8_t>(1, 0));
         assert(manager.remove(taskId, true, error));
         assert(manager.snapshot().empty());
+    }
+
+    // Fast resume: a version-5 queue with a resume-bf blob loads, and a user
+    // recheck (verify) drops the trusted bitfield persistently.
+    {
+        {
+            DownloadManager createDirs(v5Root, false);
+        }
+        pipensx::TorrentPreview preview;
+        assert(DownloadManager::previewTorrent(source, preview, error));
+        std::string metainfoPath =
+            v5Root + "/torrents/" + preview.infoHash + ".torrent";
+        std::string dataPath = v5Root + "/downloads/package.nsp-" +
+                               preview.infoHash.substr(0, 8);
+        copyFile(source, metainfoPath);
+
+        std::string bitfield(1, '\x80');
+        std::string queue = "d5:tasksl";
+        queue += "d";
+        queue += "4:data" + bstr(dataPath);
+        queue += "5:error" + bstr("");
+        queue += "2:id" + bstr(preview.infoHash);
+        queue += "8:metainfo" + bstr(metainfoPath);
+        queue += "4:mode" + bstr("download");
+        queue += "4:name" + bstr(preview.name);
+        queue += "13:package-counti0e";
+        queue += "13:packages-donei0e";
+        queue += "9:resume-bf" + bstr(bitfield);
+        queue += "9:selection" + bstr(std::string(1, '\1'));
+        queue += "6:status" + bstr("completed");
+        queue += "5:totali12e";
+        queue += "e";
+        queue += "e7:versioni5ee";
+        std::ofstream output(v5Root + "/queue.bencode",
+                             std::ios::binary | std::ios::trunc);
+        output << queue;
+        output.close();
+
+        DownloadManager manager(v5Root, false);
+        auto tasks = manager.snapshot();
+        assert(tasks.size() == 1);
+        assert(tasks[0].status == DownloadStatus::Completed);
+        assert((tasks[0].resumeBitfield == std::vector<uint8_t>{0x80}));
+        assert(manager.verify(tasks[0].id));
+        assert(manager.snapshot()[0].resumeBitfield.empty());
+        {
+            DownloadManager reloaded(v5Root, false);
+            assert(reloaded.snapshot()[0].resumeBitfield.empty());
+        }
+        assert(manager.remove(tasks[0].id, true, error));
+    }
+
+    // Fast resume with a live worker: claiming the task persists the disarmed
+    // state, an orderly teardown (pause) arms it again.
+    {
+        DownloadManager manager(fastResumeRoot, true);
+        std::string frId;
+        assert(manager.importTorrent(downloadOnlySource,
+                                     TransferMode::DownloadOnly, frId, error));
+        bool disarmed = false;
+        for (int i = 0; i < 500; ++i) {
+            auto task = manager.snapshot()[0];
+            if (task.status != DownloadStatus::Queued &&
+                task.resumeBitfield.empty()) {
+                disarmed = true;
+                break;
+            }
+            usleep(10000);
+        }
+        assert(disarmed);
+        assert(manager.pause(frId));
+        bool armed = false;
+        for (int i = 0; i < 500; ++i) {
+            auto task = manager.snapshot()[0];
+            if (task.status == DownloadStatus::Paused &&
+                !task.resumeBitfield.empty()) {
+                armed = true;
+                break;
+            }
+            usleep(10000);
+        }
+        assert(armed);
+        manager.shutdown();
+        {
+            DownloadManager reloaded(fastResumeRoot, false);
+            assert(reloaded.snapshot()[0].resumeBitfield ==
+                   std::vector<uint8_t>(1, 0));
+        }
+        assert(manager.remove(frId, true, error));
     }
 
     // moveToFront: the worker claims the first Queued entry in list order, so
@@ -287,6 +382,14 @@ int main() {
     rmdir((activeRoot + "/downloads").c_str());
     unlink((activeRoot + "/queue.bencode").c_str());
     rmdir(activeRoot.c_str());
+    rmdir((v5Root + "/torrents").c_str());
+    rmdir((v5Root + "/downloads").c_str());
+    unlink((v5Root + "/queue.bencode").c_str());
+    rmdir(v5Root.c_str());
+    rmdir((fastResumeRoot + "/torrents").c_str());
+    rmdir((fastResumeRoot + "/downloads").c_str());
+    unlink((fastResumeRoot + "/queue.bencode").c_str());
+    rmdir(fastResumeRoot.c_str());
     rmdir((actionsRoot + "/torrents").c_str());
     rmdir((actionsRoot + "/downloads").c_str());
     unlink((actionsRoot + "/queue.bencode").c_str());

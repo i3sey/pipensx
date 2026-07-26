@@ -67,6 +67,10 @@ struct DownloadTask {
     /* Compact IPv4 endpoints verified during magnet resolution. Ephemeral:
        queued before tracker/DHT results and intentionally not persisted. */
     std::vector<uint8_t> initialPeers;
+    /* Fast resume: have-bitfield from the last orderly torrent teardown.
+       Empty = untrusted (crash or mid-run) and the next start does a full
+       hash scan. */
+    std::vector<uint8_t> resumeBitfield;
 };
 
 struct TorrentPreview {
@@ -77,6 +81,7 @@ struct TorrentPreview {
     uint32_t trackerCount = 0;
     uint32_t packageCount = 0;
     uint32_t cartridgeCount = 0;
+    uint32_t pieceCount = 0;
     struct File {
         std::string path;
         uint64_t length = 0;
