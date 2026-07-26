@@ -152,8 +152,23 @@ public:
     const std::string& torrentRoot() const { return torrentRoot_; }
 
 private:
+    // Everything the worker copies out of a task under mutex_ when it claims
+    // it; runTask then runs lock-free against these until it re-locks to
+    // publish progress.
+    struct ClaimedTask {
+        std::string id;
+        std::string metainfoPath;
+        std::string dataPath;
+        TransferMode mode = TransferMode::DownloadOnly;
+        uint32_t packagesInstalled = 0;
+        std::vector<uint8_t> fileSelection;
+        std::vector<uint8_t> initialPeers;
+        std::vector<uint8_t> resumeBitfield;
+    };
+
     void load();
     void workerMain();
+    void runTask(ClaimedTask claim);
     bool saveLocked(std::string& error) const;
     DownloadTask* findLocked(const std::string& id);
     const DownloadTask* findLocked(const std::string& id) const;
