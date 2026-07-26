@@ -39,6 +39,34 @@ static void block_set(piece_slot_t *sl, uint32_t block) {
     sl->have_blocks[block / 8] |= (uint8_t)(1u << (block % 8));
 }
 
+static uint32_t order_count(const piece_mgr_t *pm) {
+    return pm->piece_order_count ? pm->piece_order_count : pm->num_pieces;
+}
+
+static uint32_t order_piece_at(const piece_mgr_t *pm, uint32_t n) {
+    return pm->piece_order_count ? pm->piece_order[n] : n;
+}
+
+/* Slide the cursor forward past completed pieces. Amortized O(1): each order
+   position is walked over at most once per completion/rewind cycle. */
+static void order_cursor_advance(piece_mgr_t *pm) {
+    uint32_t count = order_count(pm);
+    while (pm->order_cursor < count) {
+        uint32_t i = order_piece_at(pm, pm->order_cursor);
+        if (i < pm->num_pieces && pm->slots[i].state != PS_DONE)
+            break;
+        pm->order_cursor++;
+    }
+}
+
+/* A piece went back to not-DONE: pull the cursor back to its position so the
+   picker sees it again. */
+static void order_cursor_rewind(piece_mgr_t *pm, uint32_t idx) {
+    uint32_t pos = pm->order_pos ? pm->order_pos[idx] : idx;
+    if (pos != (uint32_t)-1 && pos < pm->order_cursor)
+        pm->order_cursor = pos;
+}
+
 /* Buffers coming out of the pool (or reused across reset_piece) are NOT
    zeroed: a piece is only hashed or written once every block has been
    received, and each block overwrites its whole range, so no stale byte can
@@ -77,6 +105,7 @@ static void reset_piece(piece_mgr_t *pm, uint32_t idx) {
     memset(sl->request_counts, 0, sl->num_blocks);
     sl->num_blocks_done = 0;
     sl->state = PS_EMPTY;
+    order_cursor_rewind(pm, idx);
 }
 
 piece_mgr_t *piece_mgr_create_ex(const metainfo_t *mi, storage_t *store,
@@ -96,16 +125,25 @@ piece_mgr_t *piece_mgr_create_ex(const metainfo_t *mi, storage_t *store,
     if (piece_order && piece_order_count) {
         pm->piece_order = (uint32_t*)malloc(
             piece_order_count * sizeof(uint32_t));
-        if (pm->piece_order) {
+        pm->order_pos = (uint32_t*)malloc(
+            mi->num_pieces * sizeof(uint32_t));
+        if (pm->piece_order && pm->order_pos) {
             memcpy(pm->piece_order, piece_order,
                    piece_order_count * sizeof(uint32_t));
             pm->piece_order_count = piece_order_count;
+            for (uint32_t i = 0; i < mi->num_pieces; i++)
+                pm->order_pos[i] = (uint32_t)-1;
+            for (uint32_t n = 0; n < piece_order_count; n++) {
+                if (piece_order[n] < mi->num_pieces)
+                    pm->order_pos[piece_order[n]] = n;
+            }
         }
     }
     if (!pm->slots || !pm->have_bf || !pm->available_bf ||
-        (piece_order && piece_order_count && !pm->piece_order)) {
+        (piece_order && piece_order_count &&
+         (!pm->piece_order || !pm->order_pos))) {
         free(pm->slots); free(pm->have_bf); free(pm->available_bf);
-        free(pm->piece_order); free(pm);
+        free(pm->piece_order); free(pm->order_pos); free(pm);
         return NULL;
     }
     for (uint32_t i = 0; i < mi->num_pieces; i++) {
@@ -137,6 +175,7 @@ void piece_mgr_destroy(piece_mgr_t *pm) {
     free(pm->have_bf);
     free(pm->available_bf);
     free(pm->piece_order);
+    free(pm->order_pos);
     free(pm->verify_buf);
     for (uint32_t i = 0; i < pm->buf_pool_count; i++)
         free(pm->buf_pool[i]);
@@ -216,6 +255,7 @@ int piece_mgr_got_block(piece_mgr_t *pm, uint32_t idx, uint32_t offset,
         bf_set(pm->available_bf, idx);
     pm->num_done++;
     pm->completed_bytes += (uint64_t)plen;
+    order_cursor_advance(pm);
     log_msg("[piece] verified piece %u/%u\n", pm->num_done, pm->num_pieces);
 
     /* Release buffer — piece is written */
@@ -276,6 +316,7 @@ int piece_mgr_check_existing(piece_mgr_t *pm, uint32_t idx) {
             bf_set(pm->have_bf, idx);
             pm->num_done++;
             pm->completed_bytes += (uint64_t)plen;
+            order_cursor_advance(pm);
         }
         return 1;
     }
@@ -299,6 +340,7 @@ int piece_mgr_check_existing(piece_mgr_t *pm, uint32_t idx) {
             bf_set(pm->available_bf, idx);
             pm->num_done++;
             pm->completed_bytes += (uint64_t)plen;
+            order_cursor_advance(pm);
         }
         return 1;
     }
@@ -375,16 +417,17 @@ static int slot_has_requestable_block(const piece_slot_t *slot) {
 uint32_t piece_mgr_pick(const piece_mgr_t *pm,
                         const uint8_t *peer_bf, uint32_t bf_bytes) {
     if (pm->strict_order) {
-        uint32_t count = pm->piece_order_count
-                       ? pm->piece_order_count : pm->num_pieces;
+        uint32_t count = order_count(pm);
         uint32_t unfinished = 0;
         uint32_t pending_candidate = (uint32_t)-1;
         uint32_t empty_candidate = (uint32_t)-1;
         uint32_t lookahead = pm->strict_order_lookahead
                            ? pm->strict_order_lookahead
                            : STRICT_ORDER_LOOKAHEAD;
-        for (uint32_t n = 0; n < count; n++) {
-            uint32_t i = pm->piece_order_count ? pm->piece_order[n] : n;
+        /* Start at the maintained frontier instead of rescanning every
+           completed piece from position 0 on each pick. */
+        for (uint32_t n = pm->order_cursor; n < count; n++) {
+            uint32_t i = order_piece_at(pm, n);
             if (i >= pm->num_pieces)
                 continue;
             if (pm->slots[i].state == PS_DONE)
@@ -435,4 +478,16 @@ uint32_t piece_mgr_pick(const piece_mgr_t *pm,
         }
     }
     return (uint32_t)-1;
+}
+
+uint32_t piece_mgr_head_piece(const piece_mgr_t *pm) {
+    if (!pm)
+        return UINT32_MAX;
+    uint32_t count = order_count(pm);
+    for (uint32_t n = pm->order_cursor; n < count; n++) {
+        uint32_t i = order_piece_at(pm, n);
+        if (i < pm->num_pieces && pm->slots[i].state != PS_DONE)
+            return i;
+    }
+    return UINT32_MAX;
 }

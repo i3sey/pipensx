@@ -43,6 +43,12 @@ typedef struct {
     uint8_t          *verify_buf; /* piece_length scratch, lazily allocated */
     uint8_t          *buf_pool[PIECE_BUF_POOL_MAX]; /* recycled piece buffers */
     uint32_t          buf_pool_count;
+    /* Position in piece_order (or the identity order) of the first piece that
+       is not DONE. Advanced when pieces complete, rewound by reset_piece, so
+       the strict picker and head-piece queries start at the download frontier
+       instead of rescanning every completed piece. */
+    uint32_t          order_cursor;
+    uint32_t         *order_pos;  /* piece index -> piece_order position */
     int             (*request_allowed)(void *user, uint32_t piece);
     void             *request_allowed_user;
 } piece_mgr_t;
@@ -106,6 +112,10 @@ void piece_mgr_clear_all_block_requests(piece_mgr_t *pm, uint32_t idx,
  */
 uint32_t piece_mgr_pick(const piece_mgr_t *pm,
                         const uint8_t *peer_bf, uint32_t bf_bytes);
+
+/* First piece in download order that is not yet DONE, or UINT32_MAX when the
+   torrent is complete. O(1) thanks to the maintained order cursor. */
+uint32_t piece_mgr_head_piece(const piece_mgr_t *pm);
 
 /* Size of the last (possibly short) piece */
 int64_t piece_len(const piece_mgr_t *pm, uint32_t idx);

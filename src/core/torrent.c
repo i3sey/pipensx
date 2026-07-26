@@ -457,31 +457,22 @@ static void emit_telemetry(torrent_t *t, uint64_t now) {
         }
     }
 
-    uint32_t head = UINT32_MAX;
+    uint32_t head = piece_mgr_head_piece(t->pm);
     uint32_t head_done = 0, head_total = 0, head_requested = 0;
     uint32_t head_request_copies = 0, head_hedged = 0;
-    uint32_t count = t->pm->piece_order_count
-                   ? t->pm->piece_order_count : t->pm->num_pieces;
-    for (uint32_t n = 0; n < count; ++n) {
-        uint32_t idx = t->pm->piece_order_count
-                     ? t->pm->piece_order[n] : n;
-        if (idx >= t->pm->num_pieces ||
-            t->pm->slots[idx].state == PS_DONE)
-            continue;
-        head = idx;
-        piece_slot_t *slot = &t->pm->slots[idx];
+    if (head != UINT32_MAX) {
+        piece_slot_t *slot = &t->pm->slots[head];
         head_done = slot->num_blocks_done;
         head_total = slot->num_blocks;
         for (uint32_t block = 0; block < slot->num_blocks; ++block) {
             uint32_t requests = piece_mgr_block_request_count(
-                t->pm, idx, block);
+                t->pm, head, block);
             if (requests > 0)
                 head_requested++;
             head_request_copies += requests;
             if (requests > 1)
                 head_hedged++;
         }
-        break;
     }
 
     uint64_t rx_bps = t->telemetry_cb_bytes * 1000 / (elapsed_ms + 1);
@@ -962,16 +953,7 @@ static void schedule_all_peers(torrent_t *t, uint64_t now) {
 }
 
 static uint32_t current_head_piece(const torrent_t *t) {
-    uint32_t count = t->pm->piece_order_count
-                   ? t->pm->piece_order_count : t->pm->num_pieces;
-    for (uint32_t n = 0; n < count; ++n) {
-        uint32_t piece = t->pm->piece_order_count
-                       ? t->pm->piece_order[n] : n;
-        if (piece < t->pm->num_pieces &&
-            t->pm->slots[piece].state != PS_DONE)
-            return piece;
-    }
-    return UINT32_MAX;
+    return piece_mgr_head_piece(t->pm);
 }
 
 static peer_t *pick_hedge_peer(torrent_t *t, const peer_t *primary,
