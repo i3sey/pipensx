@@ -36,7 +36,6 @@
    hammer the tracker more than once per this window. */
 #define TRACKER_STARVED_REANNOUNCE_MS 15000ULL
 #define TRACKER_STARVED_ACTIVE_PEERS  5
-#define DHT_TICK_INTERVAL_MS  1000
 /* μTP LEDBAT/retransmit timers must be serviced regularly regardless of I/O. */
 #define UTP_TIMEOUT_INTERVAL_MS 500
 #define PEER_TIMEOUT_MS       60000
@@ -104,12 +103,13 @@ struct torrent {
     metainfo_t   mi;
     piece_mgr_t *pm;
     storage_t   *store;
-    dht_engine_t *dht;
+    dht_session_t *dht;
 
     /* Shared μTP transport (BEP-29). One libutp context multiplexes every μTP
        peer over a single dedicated UDP socket (ephemeral port; distinct from
-       the DHT socket which owns listen_port). Outgoing-only: every datagram on
-       utp_fd is a μTP packet, fed straight to utp_process_udp with no demux. */
+       the shared DHT socket on DHT_SHARED_PORT). Outgoing-only: every datagram
+       on utp_fd is a μTP packet, fed straight to utp_process_udp with no
+       demux. */
     utp_context *utp;
     socket_t     utp_fd;
     uint64_t     last_utp_ms;
@@ -173,7 +173,6 @@ struct torrent {
     uint64_t last_hedge_ms;
 
     uint64_t last_tracker_ms;
-    uint64_t last_dht_ms;
     uint64_t last_connect_ms;
 
     /* Async tracker announce: tracker_announce() blocks up to 5 s per tracker,
@@ -692,14 +691,6 @@ static void clear_peer_requests(torrent_t *t, peer_t *p) {
     for (int i = 0; i < p->pipeline_len; i++)
         clear_request(t, &p->pipeline[i]);
     p->pipeline_len = 0;
-}
-
-static void cb_dht_peer(void *ud, uint32_t ip_be, uint16_t port_be) {
-    torrent_t *t = (torrent_t*)ud;
-    uint16_t host_port = ntohs(port_be);
-    if (ip_be == 0 || ip_be == INADDR_NONE || host_port < 2)
-        return;
-    queue_push(t, ip_be, port_be);
 }
 
 /* ---- peer_ctx helper ---- */
@@ -1390,14 +1381,9 @@ torrent_t *torrent_create_ex(const metainfo_t *mi,
         }
     }
 
-    /* DHT */
-    uint8_t dht_id[20];
-    rand_bytes(dht_id, 20);
-    t->dht = dht_engine_create(listen_port, dht_id);
-    if (t->dht) {
-        dht_engine_bootstrap(t->dht);
-        dht_engine_search(t->dht, mi->info_hash, cb_dht_peer, t);
-    }
+    /* DHT: attach to the shared engine; the announce carries this
+       torrent's TCP listen port even though the DHT UDP port is shared. */
+    t->dht = dht_attach(mi->info_hash, listen_port);
 
     /* Shared μTP transport for the TCP→μTP dial fallback. */
     t->utp_fd = INVALID_SOCK;
@@ -1473,10 +1459,10 @@ void torrent_destroy(torrent_t *t) {
     }
 #endif
     if (t->dht) {
-        log_msg("[torrent] destroying DHT\n");
-        dht_engine_destroy(t->dht);
+        log_msg("[torrent] detaching DHT\n");
+        dht_detach(t->dht);
         t->dht = NULL;
-        log_msg("[torrent] DHT destroyed\n");
+        log_msg("[torrent] DHT detached\n");
     }
     log_msg("[torrent] destroying peers\n");
     for (int i = 0; i < MAX_ACTIVE_PEERS; i++)
@@ -1609,10 +1595,21 @@ int torrent_tick(torrent_t *t) {
         t->last_health_ms = now;
     }
 
-    /* DHT tick */
-    if (t->dht && now - t->last_dht_ms >= DHT_TICK_INTERVAL_MS) {
-        dht_engine_tick(t->dht);
-        t->last_dht_ms = now;
+    /* Drain DHT-found peers from this torrent's mailbox on the shared
+       engine — a mutex-guarded memcpy, cheap enough for every tick.
+       queue_push stays on this (the torrent's own) thread. */
+    if (t->dht) {
+        uint8_t found[32][6];
+        int nfound = dht_session_poll(t->dht, found, 32);
+        for (int i = 0; i < nfound; i++) {
+            uint32_t ip_be;
+            uint16_t port_be;
+            memcpy(&ip_be, found[i], 4);
+            memcpy(&port_be, found[i] + 4, 2);
+            if (ip_be == 0 || ip_be == INADDR_NONE || ntohs(port_be) < 2)
+                continue;
+            queue_push(t, ip_be, port_be);
+        }
     }
 
     /* μTP timers (LEDBAT congestion control, retransmit) run on their own
@@ -1669,19 +1666,11 @@ int torrent_tick(torrent_t *t) {
         t->last_connect_ms = now;
     }
 
-    /* Build poll set */
-    struct pollfd pfds[MAX_ACTIVE_PEERS + 2];
-    int           pfd_peer[MAX_ACTIVE_PEERS + 2];
+    /* Build poll set. The shared DHT engine polls its own socket on its
+       own thread — no DHT fd here. */
+    struct pollfd pfds[MAX_ACTIVE_PEERS + 1];
+    int           pfd_peer[MAX_ACTIVE_PEERS + 1];
     int npfd = 0;
-
-    /* DHT fd */
-    int dht_pfd_idx = -1;
-    if (t->dht) {
-        pfds[npfd].fd      = dht_engine_fd(t->dht);
-        pfds[npfd].events  = POLLIN;
-        pfds[npfd].revents = 0;
-        dht_pfd_idx = npfd++;
-    }
 
     /* μTP fd — one shared UDP socket for the whole libutp context. */
     int utp_pfd_idx = -1;
@@ -1710,10 +1699,6 @@ int torrent_tick(torrent_t *t) {
     int r = poll(pfds, npfd, 10);
     if (r < 0) return 1;
 
-    /* DHT readable */
-    if (dht_pfd_idx >= 0 && pfds[dht_pfd_idx].revents & POLLIN)
-        dht_engine_tick(t->dht);
-
     /* μTP readable: feed datagrams to libutp, which fires the peer callbacks. */
     if (utp_pfd_idx >= 0 && (pfds[utp_pfd_idx].revents & POLLIN))
         utp_drain_socket(t);
@@ -1722,7 +1707,7 @@ int torrent_tick(torrent_t *t) {
 
     /* Peer events (TCP peers only; the non-peer prefix fds are handled above) */
     for (int pi = 0; pi < npfd; pi++) {
-        if (pi == dht_pfd_idx || pi == utp_pfd_idx) continue;
+        if (pi == utp_pfd_idx) continue;
         if (!(pfds[pi].revents & (POLLIN|POLLOUT|POLLERR|POLLHUP))) continue;
         int slot = pfd_peer[pi];
         peer_t *p = t->peers[slot];
@@ -1932,7 +1917,7 @@ void torrent_stat(const torrent_t *t, torrent_stat_t *s) {
     }
     if (t->dht) {
         int g=0, d=0;
-        dht_engine_nodes((dht_engine_t*)t->dht, &g, &d);
+        dht_shared_nodes(&g, &d);
         s->dht_good    = (uint32_t)g;
         s->dht_dubious = (uint32_t)d;
     }

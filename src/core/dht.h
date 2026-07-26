@@ -3,44 +3,46 @@
 #include <stddef.h>
 #include "net.h"
 
-typedef struct dht_engine dht_engine_t;
+/*
+ * Shared DHT engine. jech's dht.c keeps its state in globals, so the process
+ * owns exactly one engine; concurrent torrents (and the magnet resolver)
+ * attach to it instead of racing to create their own. The first attach binds
+ * the UDP socket on DHT_SHARED_PORT, warm-starts from the node cache and
+ * spawns a dedicated engine thread; later attaches only refcount. The last
+ * detach joins the thread, persists the node cache and closes the socket.
+ *
+ * Each attachment is one info-hash search. Found peers land in a
+ * per-session mailbox the owner drains from its own thread with
+ * dht_session_poll — the engine thread never calls into attacher code.
+ */
+typedef struct dht_session dht_session_t;
 
-typedef void (*dht_peer_cb)(void *ud, uint32_t ip_be, uint16_t port_be);
+#define DHT_SHARED_PORT 51413
 
 /*
- * Create DHT engine, bind UDP socket on listen_port.
- * node_id: 20 random bytes (our DHT identity).
+ * announce_port: this attachment's TCP listen port, announced to the swarm
+ * (jech carries it per search); 0 = pure lookup without announce (magnet
+ * resolver). Returns NULL only when the engine cannot start (UDP bind or
+ * init failure). Attachments with the same info-hash share one search;
+ * the most recent search issue wins the announce port.
  */
-dht_engine_t *dht_engine_create(uint16_t listen_port,
-                                const uint8_t node_id[20]);
-void           dht_engine_destroy(dht_engine_t *e);
+dht_session_t *dht_attach(const uint8_t info_hash[20], uint16_t announce_port);
+void           dht_detach(dht_session_t *s);
 
 /*
- * Start searching for peers for info_hash.
- * on_peer callback fires for each found peer (ip/port in network byte order).
+ * Drain peers found for this session's info-hash; call from the owning
+ * thread. out: compact IPv4 endpoints (4-byte address + 2-byte port,
+ * network order). Returns the number of endpoints written.
  */
-void dht_engine_search(dht_engine_t *e, const uint8_t info_hash[20],
-                       dht_peer_cb on_peer, void *ud);
-
-/*
- * Bootstrap from well-known nodes.  Call once after create.
- */
-void dht_engine_bootstrap(dht_engine_t *e);
-
-/*
- * Call periodically from the main loop (pass current time).
- * Returns the udp socket fd (for inclusion in poll() set).
- */
-int  dht_engine_fd(dht_engine_t *e);
-void dht_engine_tick(dht_engine_t *e);  /* called when fd is readable OR on timeout */
+int dht_session_poll(dht_session_t *s, uint8_t (*out)[6], int max);
 
 /*
  * Node-cache persistence (fast warm start). Set the path once at startup,
- * before any engine exists; NULL or "" disables persistence (the default).
- * Every dht_engine_create then pings the cached nodes (live ones re-enter
- * the routing table with their true ID within ~1s) and reuses the stored
- * node ID; every dht_engine_destroy rewrites the cache with the current
- * good nodes (atomic tmp+rename, skipped when the table is empty).
+ * before any session exists; NULL or "" disables persistence (the default).
+ * The first attach of a busy period pings the cached nodes (live ones
+ * re-enter the routing table with their true ID within ~1s) and reuses the
+ * stored node ID; the last detach rewrites the cache with the current good
+ * nodes (atomic tmp+rename, skipped when the table is empty).
  */
 void dht_engine_set_cache_path(const char *path);
 
@@ -58,5 +60,5 @@ int dht_cache_read(const char *path, uint8_t node_id[20],
 int dht_cache_write(const char *path, const uint8_t node_id[20],
                     const uint8_t (*nodes)[6], int count);
 
-/* Stats */
-void dht_engine_nodes(dht_engine_t *e, int *good, int *dubious);
+/* Stats for the shared engine's routing table. */
+void dht_shared_nodes(int *good, int *dubious);

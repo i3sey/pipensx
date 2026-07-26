@@ -53,7 +53,6 @@ constexpr int kMaxEmptyReannounces = 2;
 constexpr uint64_t kDhtSearchTimeoutMs = 25 * 1000;
 constexpr uint32_t kDhtTargetPeers = 32;
 constexpr int kDhtPollIntervalMs = 250;
-constexpr uint16_t kDhtPort = 6881;
 
 // PEX amplification (RF_ACCESS_PLAN П1.2): when the tracker/DHT phase yields a
 // thin peer list, ask each of the few peers we have for their swarm view.
@@ -168,15 +167,6 @@ struct DhtSearch {
     std::vector<uint8_t> peers;
 };
 
-void dhtPeerFound(void* user, uint32_t ipBe, uint16_t portBe) {
-    DhtSearch* search = static_cast<DhtSearch*>(user);
-    uint8_t compact[6];
-    std::memcpy(compact, &ipBe, 4);
-    std::memcpy(compact + 4, &portBe, 2);
-    std::lock_guard<std::mutex> lock(search->mutex);
-    appendUniquePeers(search->peers, compact, 1);
-}
-
 uint32_t dhtPeerCount(DhtSearch& search) {
     std::lock_guard<std::mutex> lock(search.mutex);
     return static_cast<uint32_t>(search.peers.size() / 6);
@@ -215,24 +205,29 @@ void runDhtSearch(const uint8_t infoHash[20],
                   DhtSearch& search) {
     if (cancelled || stop)
         return;
-    uint8_t nodeId[20];
-    rand_bytes(nodeId, 20);
-    /* Fails when a running download already owns the DHT singleton or the
-       UDP port; the resolve then proceeds on trackers alone. */
-    dht_engine_t* engine = dht_engine_create(kDhtPort, nodeId);
-    if (!engine) {
+    /* Pure lookup (announce port 0) on the shared engine: when a download is
+       already running the resolver joins its warm routing table instead of
+       losing the old singleton race and falling back to trackers alone. */
+    dht_session_t* session = dht_attach(infoHash, 0);
+    if (!session) {
         log_msg("[magnet] dht unavailable, resolving without it\n");
         return;
     }
-    dht_engine_bootstrap(engine);
-    dht_engine_search(engine, infoHash, dhtPeerFound, &search);
     uint64_t deadline = now_ms() + kDhtSearchTimeoutMs;
     while (!cancelled && !stop && now_ms() < deadline &&
            dhtPeerCount(search) < kDhtTargetPeers) {
-        waitFd(dht_engine_fd(engine), POLLIN, kDhtPollIntervalMs);
-        dht_engine_tick(engine);
+        uint8_t found[32][6];
+        int count = dht_session_poll(session, found, 32);
+        if (count > 0) {
+            std::lock_guard<std::mutex> lock(search.mutex);
+            appendUniquePeers(search.peers, &found[0][0],
+                              static_cast<uint32_t>(count));
+        } else {
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(kDhtPollIntervalMs));
+        }
     }
-    dht_engine_destroy(engine);
+    dht_detach(session);
 }
 
 bool sendAll(socket_t fd, const uint8_t* data, size_t size) {
