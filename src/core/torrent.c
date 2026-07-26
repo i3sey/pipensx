@@ -334,10 +334,6 @@ static int queue_push(torrent_t *t, uint32_t ip, uint16_t port) {
     return queue_insert(t, ip, port, 0, 0, 0);
 }
 
-static int queue_push_front(torrent_t *t, uint32_t ip, uint16_t port) {
-    return queue_insert(t, ip, port, 1, 0, 0);
-}
-
 static int queue_pop(torrent_t *t, uint32_t *ip, uint16_t *port,
                      uint8_t *no_mse, uint8_t *use_utp) {
     if (t->qsize == 0) return 0;
@@ -356,15 +352,29 @@ uint32_t torrent_add_initial_peers(torrent_t *t, const uint8_t *compact,
     if (!t || !compact || count == 0)
         return 0;
     uint32_t accepted = 0;
-    /* Reverse walk + push-front preserves list order; queue_insert's hash
-       dedup drops repeated endpoints, so no O(n^2) pre-pass is needed. */
-    for (uint32_t i = count; i > 0; --i) {
+    /* Forward walk appends in list order and the queue's hash dedup keeps the
+       earliest occurrence of a repeated endpoint. The verified list must sit
+       ahead of anything already queued, so afterwards the pre-existing
+       entries are rotated to the back (their relative order and dial flags
+       preserved). */
+    int prior = t->qsize;
+    for (uint32_t i = 0; i < count; ++i) {
         uint32_t ip;
         uint16_t port;
-        const uint8_t *endpoint = compact + (i - 1) * 6;
+        const uint8_t *endpoint = compact + i * 6;
         memcpy(&ip, endpoint, sizeof(ip));
         memcpy(&port, endpoint + sizeof(ip), sizeof(port));
-        accepted += (uint32_t)queue_push_front(t, ip, port);
+        accepted += (uint32_t)queue_push(t, ip, port);
+    }
+    if (accepted > 0) {
+        for (int k = 0; k < prior; ++k) {
+            uint32_t ip;
+            uint16_t port;
+            uint8_t no_mse, use_utp;
+            if (!queue_pop(t, &ip, &port, &no_mse, &use_utp))
+                break;
+            queue_insert(t, ip, port, 0, no_mse, use_utp);
+        }
     }
     log_msg("[torrent] queued %u/%u verified initial peers\n",
             accepted, count);

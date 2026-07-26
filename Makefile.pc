@@ -274,9 +274,12 @@ $(PEER_TEST_TARGET): tests/test_peer.c src/core/peer.c src/core/net.c \
 		$(UTP_OBJS)
 	$(CC) $(CFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -lstdc++ -Wl,--wrap=setsockopt
 
-$(TORRENT_TEST_TARGET): tests/test_torrent.c \
+# torrent.c is a real prerequisite (the test #includes it as source) but must
+# not be passed to the compiler a second time — hence the filter-out in $^.
+$(TORRENT_TEST_TARGET): tests/test_torrent.c src/core/torrent.c \
 		$(filter-out src/core/torrent.o src/main_pc.o,$(OBJS)) $(UTP_OBJS)
-	$(CC) $(CFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -lstdc++
+	$(CC) $(CFLAGS) -Isrc -o $@ $(filter-out src/core/torrent.c,$^) \
+		$(LDFLAGS) -lstdc++
 
 # Manual browser testing for the web companion (not part of all/test):
 #   make -f Makefile.pc webserver && ./tools/webserver
