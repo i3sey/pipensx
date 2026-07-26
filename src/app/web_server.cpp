@@ -411,14 +411,7 @@ HttpResponse WebServer::handleCatalog(const HttpRequest& req) {
 HttpResponse WebServer::handleTaskCommand(const std::string& id,
                                           const std::string& command,
                                           const HttpRequest& req) {
-    bool known = false;
-    for (const DownloadTask& t : manager_.snapshot()) {
-        if (t.id == id) {
-            known = true;
-            break;
-        }
-    }
-    if (!known) return jsonError(404, "unknown task");
+    if (!manager_.hasTask(id)) return jsonError(404, "unknown task");
 
     std::string error;
     bool ok = false;

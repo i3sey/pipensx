@@ -1504,6 +1504,14 @@ std::vector<DownloadTask> DownloadManager::snapshot() const {
     return tasks_;
 }
 
+bool DownloadManager::hasTask(const std::string& id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const DownloadTask& task : tasks_)
+        if (task.id == id)
+            return true;
+    return false;
+}
+
 bool DownloadManager::hasActiveTransfer() const {
     std::lock_guard<std::mutex> lock(mutex_);
     for (const DownloadTask& task : tasks_) {

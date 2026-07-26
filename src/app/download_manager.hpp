@@ -136,6 +136,8 @@ public:
     }
 
     bool hasActiveTransfer() const;
+    // Existence check without the full deep copy snapshot() makes.
+    bool hasTask(const std::string& id) const;
     std::vector<DownloadTask> snapshot() const;
     bool save(std::string& error) const;
     void shutdown();

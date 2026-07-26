@@ -81,13 +81,9 @@ std::string WebAddQueue::enqueue(std::string title, std::string magnetUri,
                                  TransferMode mode, StreamSelection selection,
                                  std::string& error) {
     std::string hash = lowerAscii(std::move(infoHashHex));
-    if (!hash.empty()) {
-        for (const DownloadTask& task : manager_.snapshot()) {
-            if (task.id == hash) {
-                error = "This torrent is already in the download manager.";
-                return "";
-            }
-        }
+    if (!hash.empty() && manager_.hasTask(hash)) {
+        error = "This torrent is already in the download manager.";
+        return "";
     }
     std::lock_guard<std::mutex> lock(mutex_);
     if (!hash.empty()) {
