@@ -173,15 +173,26 @@ storage_t *storage_open(const metainfo_t *mi, const char *outdir) {
 static int find_file(storage_t *s, int64_t off,
                      int64_t len __attribute__((unused)),
                      struct file_handle **fh_out, int64_t *local_off) {
-    for (uint32_t i = 0; i < s->num_files; i++) {
-        struct file_handle *fh = &s->files[i];
-        if (off >= fh->offset && off < fh->offset + fh->length) {
-            *fh_out = fh;
-            *local_off = off - fh->offset;
-            return 1;
-        }
+    /* Files are laid out contiguously in ascending flat-offset order (the
+       cumulative sum from the metainfo), so the owning file is the last one
+       starting at or before `off`. Binary search — this runs per segment of
+       every read and write. */
+    uint32_t lo = 0, hi = s->num_files;
+    while (lo < hi) {
+        uint32_t mid = lo + (hi - lo) / 2;
+        if (s->files[mid].offset <= off)
+            lo = mid + 1;
+        else
+            hi = mid;
     }
-    return 0;
+    if (lo == 0)
+        return 0;
+    struct file_handle *fh = &s->files[lo - 1];
+    if (off >= fh->offset + fh->length)
+        return 0;
+    *fh_out = fh;
+    *local_off = off - fh->offset;
+    return 1;
 }
 
 int storage_write(storage_t *s, int64_t offset, const uint8_t *data, size_t len) {
