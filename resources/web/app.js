@@ -131,26 +131,136 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 
-/* ---------- notifications ---------- */
-function notifySupported() { return "Notification" in window; }
+/* ---------- alerts ----------
+   The page is plain http:// on the LAN — an insecure origin, where the
+   Notification API acts as permanently denied (Chrome M60+). So the primary
+   channel is in-tab: sound + vibration + title flash + favicon badge, all of
+   which still work on http. System notifications remain as a progressive
+   enhancement for secure contexts (localhost / the PC test driver). */
+
+// Notification API only counts where it can actually be granted.
+function notifySupported() {
+  return "Notification" in window && Notification.permission !== "denied";
+}
+function alertsOn() { return localStorage.getItem("pipensxAlerts") !== "off"; }
+
 function refreshNotifyRow() {
-  $("notify-row").hidden =
+  $("alerts-btn").textContent = alertsOn() ? "🔔 Alerts: on" : "🔕 Alerts: off";
+  $("notify-btn").hidden =
     !notifySupported() || Notification.permission !== "default";
 }
+$("alerts-btn").addEventListener("click", () => {
+  localStorage.setItem("pipensxAlerts", alertsOn() ? "off" : "on");
+  if (alertsOn()) { unlockAudio(); beep(); }
+  refreshNotifyRow();
+});
 $("notify-btn").addEventListener("click", async () => {
   await Notification.requestPermission();
   refreshNotifyRow();
 });
+
+// Autoplay policy: an AudioContext starts suspended until a user gesture.
+// Any first tap on the page unlocks it, so a later "installed" beep works
+// even if the user never touched the alerts button.
+let audioCtx = null;
+function unlockAudio() {
+  if (!audioCtx) {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    audioCtx = new Ctx();
+  }
+  if (audioCtx.state === "suspended") audioCtx.resume();
+}
+document.addEventListener("pointerdown", unlockAudio, { once: true });
+
+function beep(isError = false) {
+  if (!audioCtx || audioCtx.state !== "running") return;
+  // two short tones: up-chirp for done, low double for error
+  const seq = isError ? [[220, 0, 0.12], [180, 0.16, 0.14]]
+                      : [[660, 0, 0.09], [880, 0.11, 0.12]];
+  for (const [freq, at, dur] of seq) {
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = "sine";
+    osc.frequency.value = freq;
+    const t0 = audioCtx.currentTime + at;
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.exponentialRampToValueAtTime(0.12, t0 + 0.015);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    osc.connect(gain).connect(audioCtx.destination);
+    osc.start(t0);
+    osc.stop(t0 + dur + 0.02);
+  }
+}
+
+/* Title flash + favicon badge until the user looks at the tab again. */
+let flashTimer = null;
+let badgedIcon = null;
+function setFavicon(href) {
+  let link = document.querySelector('link[rel="icon"]');
+  if (link) link.href = href;
+}
+function buildBadgedIcon(done) {
+  const img = new Image();
+  img.src = "/icon-192.png";
+  img.onload = () => {
+    const c = document.createElement("canvas");
+    c.width = c.height = 64;
+    const g = c.getContext("2d");
+    g.drawImage(img, 0, 0, 64, 64);
+    g.beginPath();
+    g.arc(48, 16, 14, 0, Math.PI * 2);
+    g.fillStyle = "#ff5d5d";
+    g.fill();
+    badgedIcon = c.toDataURL("image/png");
+    done(badgedIcon);
+  };
+}
+function startFlash(message) {
+  stopFlash();
+  const base = "pipensx";
+  let tick = false;
+  document.title = message;
+  flashTimer = setInterval(() => {
+    tick = !tick;
+    document.title = tick ? base : message;
+  }, 1200);
+  if (badgedIcon) setFavicon(badgedIcon);
+  else buildBadgedIcon(setFavicon);
+}
+function stopFlash() {
+  if (flashTimer) clearInterval(flashTimer);
+  flashTimer = null;
+  document.title = "pipensx";
+  setFavicon("/icon-192.png");
+}
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) stopFlash();
+});
+window.addEventListener("focus", stopFlash);
+
+function fireAlert(title, body, isError) {
+  if (notifySupported() && Notification.permission === "granted") {
+    new Notification(title, { body, icon: "/icon-192.png" });
+    return;
+  }
+  if (!alertsOn()) return;
+  beep(isError);
+  if (navigator.vibrate) navigator.vibrate(isError ? [180, 90, 180] : [120]);
+  // Flash regardless of visibility: on a phone the tab is usually behind
+  // the browser chrome or another app; focus/visibility clears it.
+  startFlash((isError ? "✕ " : "✓ ") + body);
+}
+
 function notifyTransitions() {
   const interesting = { Installed: "installed", Completed: "downloaded", Error: "failed" };
   for (const t of state.tasks) {
     const prev = lastStatuses.get(t.id);
-    if (prev && prev !== t.status && interesting[t.status] &&
-        notifySupported() && Notification.permission === "granted") {
-      new Notification("pipensx: " + t.name, {
-        body: t.status === "Error" ? (t.error || "failed") : interesting[t.status],
-        icon: "/icon-192.png",
-      });
+    if (prev && prev !== t.status && interesting[t.status]) {
+      const what = t.status === "Error" ? (t.error || "failed")
+                                        : interesting[t.status];
+      fireAlert("pipensx: " + t.name, t.name + " — " + what,
+                t.status === "Error");
     }
     lastStatuses.set(t.id, t.status);
   }
