@@ -130,8 +130,11 @@ bool readFileBinary(const std::string& path, std::string& out) {
 
 std::string gzipCompress(const std::string& input) {
     z_stream stream{};
-    // 15 + 16 selects gzip framing (RFC 1952) instead of zlib
-    if (deflateInit2(&stream, Z_BEST_COMPRESSION, Z_DEFLATED, 15 + 16, 8,
+    // 15 + 16 selects gzip framing (RFC 1952) instead of zlib.
+    // Default level, not Z_BEST_COMPRESSION: on a multi-MB catalog level 9
+    // costs several times the CPU of level 6 for a couple of percent of size,
+    // and this runs on the Switch's server thread.
+    if (deflateInit2(&stream, Z_DEFAULT_COMPRESSION, Z_DEFLATED, 15 + 16, 8,
                      Z_DEFAULT_STRATEGY) != Z_OK)
         return "";
     std::string out;
@@ -392,16 +395,29 @@ HttpResponse WebServer::routeApi(const HttpRequest& req) {
 }
 
 HttpResponse WebServer::handleCatalog(const HttpRequest& req) {
-    std::lock_guard<std::mutex> lock(catalogMutex_);
-    std::string etag = "\"cat-" + std::to_string(catalogGeneration_) + "\"";
-    if (req.header("if-none-match") == etag) {
-        HttpResponse r = HttpResponse::empty(304);
-        r.extraHeaders.push_back({"ETag", etag});
-        return r;
+    // Grab the state under the lock, but do the expensive JSON build + gzip
+    // outside it: holding catalogMutex_ for the multi-MB encode blocked the
+    // UI thread's updateCatalog for the whole duration.
+    std::shared_ptr<const std::vector<CatalogEntry>> snapshot;
+    std::shared_ptr<const std::string> gz;
+    uint64_t generation;
+    {
+        std::lock_guard<std::mutex> lock(catalogMutex_);
+        generation = catalogGeneration_;
+        std::string etag = "\"cat-" + std::to_string(generation) + "\"";
+        if (req.header("if-none-match") == etag) {
+            HttpResponse r = HttpResponse::empty(304);
+            r.extraHeaders.push_back({"ETag", etag});
+            return r;
+        }
+        if (catalogGzip_ && catalogGzipGeneration_ == generation)
+            gz = catalogGzip_;
+        else
+            snapshot = catalog_;
     }
-    if (!catalogGzip_ || catalogGzipGeneration_ != catalogGeneration_) {
+    if (!gz) {
         Json list = Json::array();
-        for (const CatalogEntry& e : *catalog_) {
+        for (const CatalogEntry& e : *snapshot) {
             Json j;
             j["infoHash"] = lowerAscii(e.infoHash);
             j["title"] = e.title;
@@ -414,16 +430,25 @@ HttpResponse WebServer::handleCatalog(const HttpRequest& req) {
             j["description"] = e.description;
             list.push_back(std::move(j));
         }
-        catalogGzip_ =
-            std::make_shared<const std::string>(gzipCompress(dumpJson(list)));
-        catalogGzipGeneration_ = catalogGeneration_;
+        std::string compressed = gzipCompress(dumpJson(list));
+        if (compressed.empty() && !snapshot->empty())
+            return jsonError(500, "catalog compression failed");
+        gz = std::make_shared<const std::string>(std::move(compressed));
+        std::lock_guard<std::mutex> lock(catalogMutex_);
+        // Cache only if the catalog was not replaced mid-build; the response
+        // itself is still consistent with the generation it advertises.
+        if (catalogGeneration_ == generation) {
+            catalogGzip_ = gz;
+            catalogGzipGeneration_ = generation;
+        }
     }
     HttpResponse resp;
     resp.status = 200;
     resp.contentType = "application/json";
-    resp.body = catalogGzip_;
+    resp.body = std::move(gz);
     resp.extraHeaders.push_back({"Content-Encoding", "gzip"});
-    resp.extraHeaders.push_back({"ETag", etag});
+    resp.extraHeaders.push_back(
+        {"ETag", "\"cat-" + std::to_string(generation) + "\""});
     resp.extraHeaders.push_back({"Cache-Control", "no-cache"});
     return resp;
 }
