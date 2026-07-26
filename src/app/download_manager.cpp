@@ -1,5 +1,6 @@
 #include "download_manager.hpp"
 #include "request_gate.hpp"
+#include "stream_budget_arbiter.hpp"
 #include "stream_ram_budget.hpp"
 #include "web_seed_source.hpp"
 #include "../install/install_backend.hpp"
@@ -259,6 +260,7 @@ public:
                        const std::vector<uint8_t>& fileSelection,
                        uint32_t completedPackages,
                        install::InstallStorageTarget installTarget,
+                       StreamBudgetArbiter& arbiter,
                        Progress progress)
         : metainfo_(metainfo), taskId_(std::move(taskId)),
           backend_(streamInstall
@@ -269,6 +271,7 @@ public:
           initialCompletedPackages_(completedPackages),
           producerOrdinal_(completedPackages),
           progress_(std::move(progress)) {
+        arbiter_ = &arbiter;
         bool useSelection = !fileSelection.empty();
         if (useSelection && fileSelection.size() != metainfo_.num_files) {
             error_ = "Selected file actions do not match the torrent.";
@@ -316,7 +319,11 @@ public:
         if (streamInstall_ && error_.empty() && packageCount_ > completedPackages_) {
             journalPath_ = installJournalPath(workingRoot, taskId_);
             tryResume();
-            StreamRamBudget budget = detectStreamRamBudget(pieceLengthBytes_);
+            StreamRamBudget budget;
+            arbiterLease_ = arbiter_->acquire(
+                pieceLengthBytes_,
+                [this](const StreamRamBudget& shared) { applyBudget(shared); },
+                budget);
             if (!budget.valid) {
                 log_msg("[install] RAM budget rejected source=%s available=%llu "
                         "reserve=%llu piece=%llu kernel_headroom=%llu "
@@ -384,6 +391,7 @@ public:
 
     ~PackageCoordinator() {
         cancel();
+        arbiter_->release(arbiterLease_);
         if (!backend_)
             return;
         // F-B: an interruption with a journaled safe point keeps the partial
@@ -470,6 +478,42 @@ public:
     bool requestsCurtailed() const {
         std::lock_guard<std::mutex> lock(queueMutex_);
         return requestGate_.state() != pipensx::RequestGate::State::Free;
+    }
+
+    // Live budget resize from the arbiter when the active-slot or lease
+    // population changes. Runs on whichever thread triggered the change;
+    // queueMutex_ serialises it against the sink, the install worker and the
+    // adaptive-lookahead tick. The engine-side lookahead follows on the
+    // torrent thread's next torrent_set_strict_lookahead call.
+    void applyBudget(const StreamRamBudget& budget) {
+        std::lock_guard<std::mutex> lock(queueMutex_);
+        if (!budget.valid) {
+            // Shrunk below viability mid-flight: keep the last workable
+            // configuration; the gate's backpressure still bounds RAM.
+            return;
+        }
+        maxQueuedBytes_ = budget.maxQueuedBytes;
+        maxBufferedBytes_ = budget.maxBufferedBytes;
+        requestAheadBytes_ = budget.requestAheadBytes;
+        lookaheadMin_ = budget.lookaheadMin;
+        lookaheadMax_ = budget.lookaheadMax;
+        lookaheadWindow_ =
+            std::clamp(lookaheadWindow_, lookaheadMin_, lookaheadMax_);
+        if (lookaheadHealthy_)
+            lookaheadHealthy_ =
+                std::clamp(lookaheadHealthy_, lookaheadMin_, lookaheadMax_);
+        requestGate_.configure(maxBufferedBytes_, requestAheadBytes_,
+                               pieceLengthBytes_, producerOrdinal_);
+        // configure() resets the admission edge to the package start;
+        // re-anchor it to the live producer state immediately.
+        updateRequestGateLocked(now_ms());
+        telemetry_log("ram_budget", taskId_.c_str(),
+            "event=resize reorder_bytes=%zu queue_bytes=%zu "
+            "request_ahead_bytes=%llu lookahead_min=%u lookahead_max=%u "
+            "lookahead_window=%u",
+            maxBufferedBytes_, maxQueuedBytes_,
+            static_cast<unsigned long long>(requestAheadBytes_),
+            lookaheadMin_, lookaheadMax_, lookaheadWindow_);
     }
 
     std::string error() const {
@@ -1133,6 +1177,8 @@ private:
     // destructor (after the worker joined) — no lock needed.
     static constexpr uint64_t kJournalIntervalBytes = 32ull * 1024 * 1024;
     std::string journalPath_;
+    StreamBudgetArbiter* arbiter_ = nullptr;
+    uint64_t arbiterLease_ = 0;
     uint64_t journalConsumed_ = 0;
     bool journalValid_ = false;
     bool abandonResume_ = false;
@@ -1799,6 +1845,14 @@ void DownloadManager::workerMain() {
 }
 
 void DownloadManager::runTask(ClaimedTask claim) {
+    // Register this slot's engine overhead with the budget arbiter for the
+    // whole task lifetime, error paths included.
+    arbiter_.engineSlotStarted();
+    struct EngineSlotGuard {
+        StreamBudgetArbiter& arbiter;
+        ~EngineSlotGuard() { arbiter.engineSlotFinished(); }
+    } slotGuard{arbiter_};
+
     const std::string activeId = claim.id;
     const std::string dataPath = claim.dataPath;
     const TransferMode mode = claim.mode;
@@ -1827,6 +1881,7 @@ void DownloadManager::runTask(ClaimedTask claim) {
             mode == TransferMode::StreamInstall, fileSelection,
             packagesInstalled,
             installTarget_.load(std::memory_order_relaxed),
+            arbiter_,
             [this, activeId](uint32_t completed,
                              const std::string& package,
                              uint64_t installed, uint64_t expected,

@@ -13,6 +13,7 @@ extern "C" {
 }
 
 #include "../install/install_backend.hpp"
+#include "stream_budget_arbiter.hpp"
 
 namespace pipensx {
 
@@ -182,6 +183,7 @@ private:
 
     mutable std::mutex mutex_;
     std::condition_variable condition_;
+    StreamBudgetArbiter arbiter_;
     std::vector<DownloadTask> tasks_;
     std::thread worker_;
     std::atomic<bool> stopping_{false};

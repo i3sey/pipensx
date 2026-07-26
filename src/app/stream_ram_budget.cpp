@@ -17,7 +17,6 @@ namespace {
 constexpr uint64_t MiB = 1024 * 1024;
 constexpr uint64_t kPreferredReserveBytes = 256 * MiB;
 constexpr uint64_t kMinimumReserveBytes = 64 * MiB;
-constexpr uint64_t kFallbackAvailableBytes = 384 * MiB;
 constexpr uint64_t kPreferredMinBufferedBytes = 64 * MiB;
 constexpr uint64_t kMaxBufferedBytes = 256 * MiB;
 constexpr uint64_t kMaxPeakBytes = 384 * MiB;
@@ -149,7 +148,7 @@ StreamRamBudget selectStreamRamBudget(
     const StreamRamMemorySnapshot& memory,
     uint64_t pieceLengthBytes) {
     const uint64_t availableBytes = memory.heapDetected
-        ? memory.heapAvailableBytes : kFallbackAvailableBytes;
+        ? memory.heapAvailableBytes : kFallbackStreamRamBytes;
     StreamRamBudget budget =
         calculateStreamRamBudget(availableBytes, pieceLengthBytes);
     budget.memoryDetected = memory.heapDetected;
@@ -158,7 +157,7 @@ StreamRamBudget selectStreamRamBudget(
     return budget;
 }
 
-StreamRamBudget detectStreamRamBudget(uint64_t pieceLengthBytes) {
+StreamRamMemorySnapshot detectStreamRamMemorySnapshot() {
     StreamRamMemorySnapshot memory;
 #ifdef __SWITCH__
     memory.heapDetected =
@@ -175,7 +174,12 @@ StreamRamBudget detectStreamRamBudget(uint64_t pieceLengthBytes) {
         memory.kernelHeadroomDetected = true;
     }
 #endif
-    return selectStreamRamBudget(memory, pieceLengthBytes);
+    return memory;
+}
+
+StreamRamBudget detectStreamRamBudget(uint64_t pieceLengthBytes) {
+    return selectStreamRamBudget(detectStreamRamMemorySnapshot(),
+                                 pieceLengthBytes);
 }
 
 } // namespace pipensx

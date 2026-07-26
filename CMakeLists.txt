@@ -138,6 +138,7 @@ set(APP_SERVICE_SOURCES
     src/app/download_manager.cpp
     src/app/web_seed_source.cpp
     src/app/request_gate.cpp
+    src/app/stream_budget_arbiter.cpp
     src/app/stream_ram_budget.cpp
     src/app/game_metadata_service.cpp
     src/app/installed_title_service.cpp

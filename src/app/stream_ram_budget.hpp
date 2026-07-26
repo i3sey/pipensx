@@ -28,6 +28,10 @@ struct StreamRamBudget {
     uint32_t lookaheadMax = 0;
 };
 
+// Assumed free RAM when heap detection is unavailable (PC builds).
+inline constexpr uint64_t kFallbackStreamRamBytes = 384ull * 1024 * 1024;
+
+StreamRamMemorySnapshot detectStreamRamMemorySnapshot();
 StreamRamBudget calculateStreamRamBudget(uint64_t availableBytes,
                                          uint64_t pieceLengthBytes);
 StreamRamBudget selectStreamRamBudget(

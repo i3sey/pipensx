@@ -60,6 +60,7 @@ UPDATE_TRANSACTION_TEST_TARGET = tests/test_update_transaction
 INSTALL_SPACE_TEST_TARGET = tests/test_install_space
 BATCH_INSTALL_TEST_TARGET = tests/test_batch_install
 RAM_BUDGET_TEST_TARGET = tests/test_stream_ram_budget
+BUDGET_ARBITER_TEST_TARGET = tests/test_budget_arbiter
 REQUEST_GATE_TEST_TARGET = tests/test_request_gate
 JOURNAL_TEST_TARGET = tests/test_install_journal
 WEB_SEED_TEST_TARGET = tests/test_web_seed
@@ -100,6 +101,9 @@ src/app/web_seed_source.o: src/app/web_seed_source.cpp
 src/app/stream_ram_budget.o: src/app/stream_ram_budget.cpp
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
+src/app/stream_budget_arbiter.o: src/app/stream_budget_arbiter.cpp
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
 src/app/request_gate.o: src/app/request_gate.cpp
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
@@ -111,7 +115,8 @@ tests/test_manager.o: tests/test_manager.cpp
 
 $(MANAGER_TEST_TARGET): tests/test_manager.o src/app/download_manager.o \
 		src/app/web_seed_source.o \
-		src/app/stream_ram_budget.o src/app/request_gate.o \
+		src/app/stream_ram_budget.o src/app/stream_budget_arbiter.o \
+		src/app/request_gate.o \
 		src/install/package_stream.o src/install/install_journal.o \
 		src/install/install_backend_pc.o \
 		$(filter-out src/main_pc.o,$(OBJS)) $(UTP_OBJS)
@@ -161,7 +166,8 @@ $(WEB_SERVER_TEST_TARGET): tests/test_web_server.cpp \
 		src/app/web_server.o src/app/web_add_queue.o src/app/http_server.o \
 		src/app/magnet_resolver.o src/app/install_space.cpp \
 		src/app/download_manager.o src/app/web_seed_source.o \
-		src/app/stream_ram_budget.o src/app/request_gate.o \
+		src/app/stream_ram_budget.o src/app/stream_budget_arbiter.o \
+		src/app/request_gate.o \
 		src/install/package_stream.o src/install/install_journal.o \
 		src/install/install_backend_pc.o \
 		$(filter-out src/main_pc.o,$(OBJS)) $(UTP_OBJS)
@@ -188,7 +194,8 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 		$(TORRENT_TEST_TARGET) $(SETTINGS_TEST_TARGET) $(UPDATE_TEST_TARGET) \
 		$(UPDATE_TRANSACTION_TEST_TARGET) \
 		$(INSTALL_SPACE_TEST_TARGET) $(BATCH_INSTALL_TEST_TARGET) \
-		$(RAM_BUDGET_TEST_TARGET) $(REQUEST_GATE_TEST_TARGET) \
+		$(RAM_BUDGET_TEST_TARGET) $(BUDGET_ARBITER_TEST_TARGET) \
+		$(REQUEST_GATE_TEST_TARGET) \
 		$(JOURNAL_TEST_TARGET) $(WEB_SEED_TEST_TARGET) \
 		$(FAVORITES_TEST_TARGET) \
 		$(MSE_TEST_TARGET) $(DHT_CACHE_TEST_TARGET) \
@@ -207,6 +214,7 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 	./$(INSTALL_SPACE_TEST_TARGET)
 	./$(BATCH_INSTALL_TEST_TARGET)
 	./$(RAM_BUDGET_TEST_TARGET)
+	./$(BUDGET_ARBITER_TEST_TARGET)
 	./$(REQUEST_GATE_TEST_TARGET)
 	./$(JOURNAL_TEST_TARGET)
 	./$(WEB_SEED_TEST_TARGET)
@@ -242,7 +250,7 @@ $(FAVORITES_TEST_TARGET): tests/test_favorites.cpp \
 $(BATCH_INSTALL_TEST_TARGET): tests/test_batch_install.cpp \
 		src/app/catalog_batch_installer.cpp src/app/install_space.cpp \
 		src/app/download_manager.o src/app/web_seed_source.o \
-		src/app/stream_ram_budget.o \
+		src/app/stream_ram_budget.o src/app/stream_budget_arbiter.o \
 		src/app/request_gate.o \
 		src/install/package_stream.o src/install/install_journal.o \
 		src/install/install_backend_pc.o \
@@ -252,6 +260,10 @@ $(BATCH_INSTALL_TEST_TARGET): tests/test_batch_install.cpp \
 
 $(RAM_BUDGET_TEST_TARGET): tests/test_stream_ram_budget.cpp \
 		src/app/stream_ram_budget.cpp
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
+
+$(BUDGET_ARBITER_TEST_TARGET): tests/test_budget_arbiter.cpp \
+		src/app/stream_budget_arbiter.cpp src/app/stream_ram_budget.cpp
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
 
 $(REQUEST_GATE_TEST_TARGET): tests/test_request_gate.cpp \
@@ -302,7 +314,8 @@ tools/webserver: tools/web_server_main.cpp \
 		src/app/mod_index_service.o src/app/game_metadata_service.o \
 		src/app/magnet_resolver.o src/app/install_space.cpp \
 		src/app/download_manager.o src/app/web_seed_source.o \
-		src/app/stream_ram_budget.o src/app/request_gate.o \
+		src/app/stream_ram_budget.o src/app/stream_budget_arbiter.o \
+		src/app/request_gate.o \
 		src/install/package_stream.o src/install/install_journal.o \
 		src/install/install_backend_pc.o \
 		$(filter-out src/main_pc.o,$(OBJS)) $(UTP_OBJS)
@@ -312,7 +325,7 @@ tools/webserver: tools/web_server_main.cpp \
 clean:
 	rm -f $(OBJS) $(UTP_OBJS) src/app/download_manager.o \
 		src/app/web_seed_source.o src/app/stream_ram_budget.o \
-		src/app/request_gate.o \
+		src/app/stream_budget_arbiter.o src/app/request_gate.o \
 		src/app/catalog_service.o src/app/snapshot_zstd.o \
 		src/app/catalog_presentation.o src/app/game_metadata_service.o \
 		src/app/magnet_resolver.o \
@@ -324,7 +337,8 @@ clean:
 		$(TORRENT_TEST_TARGET) $(SETTINGS_TEST_TARGET) $(UPDATE_TEST_TARGET) \
 		$(UPDATE_TRANSACTION_TEST_TARGET) \
 		$(INSTALL_SPACE_TEST_TARGET) $(BATCH_INSTALL_TEST_TARGET) \
-		$(RAM_BUDGET_TEST_TARGET) $(REQUEST_GATE_TEST_TARGET) \
+		$(RAM_BUDGET_TEST_TARGET) $(BUDGET_ARBITER_TEST_TARGET) \
+		$(REQUEST_GATE_TEST_TARGET) \
 		$(JOURNAL_TEST_TARGET) $(FAVORITES_TEST_TARGET) \
 		$(MSE_TEST_TARGET) $(BUG_REPORT_TEST_TARGET) \
 		src/app/http_server.o src/app/web_server.o src/app/web_add_queue.o \
