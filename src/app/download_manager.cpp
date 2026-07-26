@@ -520,16 +520,26 @@ private:
         if (fileOffset < 0 || !data || size == 0)
             return setError("Invalid package stream chunk.");
 
+        uint32_t ordinal = ordinalIt->second;
+        uint64_t offset = static_cast<uint64_t>(fileOffset);
+        if (offset >= static_cast<uint64_t>(file.length))
+            return setError("Invalid package stream offset.");
+
+        // The multi-MiB copy happens before taking queueMutex_: sink() runs
+        // inside the torrent thread's piece callback, and the install worker
+        // holds the same mutex while draining, so copying under the lock
+        // stalls the whole event loop for the duration of the memcpy.
+        InstallChunk chunk;
+        chunk.fileIndex = fileIndex;
+        chunk.fileOffset = offset;
+        chunk.data.assign(data, data + size);
+        chunk.final = offset + size == static_cast<uint64_t>(file.length);
+
         std::unique_lock<std::mutex> lock(queueMutex_);
         if (!error_.empty() || !accepting_)
             return false;
-
-        uint32_t ordinal = ordinalIt->second;
         if (ordinal < producerOrdinal_)
             return true;
-        uint64_t offset = static_cast<uint64_t>(fileOffset);
-        if (offset >= static_cast<uint64_t>(file.length))
-            return setErrorLocked("Invalid package stream offset.");
 
         PendingKey key {ordinal, offset};
         if (pending_.find(key) != pending_.end())
@@ -539,11 +549,6 @@ private:
         // whole event loop. Chunks already in flight are always accepted —
         // the request gate below stops new requests once the buffer is full,
         // and the strict-order window bounds the overshoot.
-        InstallChunk chunk;
-        chunk.fileIndex = fileIndex;
-        chunk.fileOffset = offset;
-        chunk.data.assign(data, data + size);
-        chunk.final = chunk.fileOffset + size == static_cast<uint64_t>(file.length);
         pendingBytes_ += chunk.data.size();
         pending_.emplace(key, std::move(chunk));
         requestGate_.onArrived(ordinal, offset + size);
