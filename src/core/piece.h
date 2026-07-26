@@ -5,6 +5,11 @@
 #include "../platform/storage.h"
 
 #define BLOCK_SIZE  (16*1024)  /* 16 KB — standard BitTorrent block */
+/* Completed pieces hand their buffer back to a small recycle pool instead of
+   free(): piece buffers are piece_length (typically MiBs) and churn at piece
+   rate, so pooling avoids a large alloc+zero per piece and heap
+   fragmentation from the constant same-size malloc/free. */
+#define PIECE_BUF_POOL_MAX 4
 
 typedef enum {
     PS_EMPTY    = 0,
@@ -36,6 +41,8 @@ typedef struct {
     uint32_t         *piece_order;
     uint32_t          piece_order_count;
     uint8_t          *verify_buf; /* piece_length scratch, lazily allocated */
+    uint8_t          *buf_pool[PIECE_BUF_POOL_MAX]; /* recycled piece buffers */
+    uint32_t          buf_pool_count;
     int             (*request_allowed)(void *user, uint32_t piece);
     void             *request_allowed_user;
 } piece_mgr_t;

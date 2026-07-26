@@ -39,6 +39,25 @@ static void block_set(piece_slot_t *sl, uint32_t block) {
     sl->have_blocks[block / 8] |= (uint8_t)(1u << (block % 8));
 }
 
+/* Buffers coming out of the pool (or reused across reset_piece) are NOT
+   zeroed: a piece is only hashed or written once every block has been
+   received, and each block overwrites its whole range, so no stale byte can
+   ever be observed. */
+static uint8_t *piece_buf_get(piece_mgr_t *pm) {
+    if (pm->buf_pool_count)
+        return pm->buf_pool[--pm->buf_pool_count];
+    return (uint8_t*)malloc((size_t)pm->mi->piece_length);
+}
+
+static void piece_buf_put(piece_mgr_t *pm, uint8_t *buf) {
+    if (!buf)
+        return;
+    if (pm->buf_pool_count < PIECE_BUF_POOL_MAX)
+        pm->buf_pool[pm->buf_pool_count++] = buf;
+    else
+        free(buf);
+}
+
 static void reset_piece(piece_mgr_t *pm, uint32_t idx) {
     piece_slot_t *sl = &pm->slots[idx];
     if (sl->state == PS_DONE && pm->num_done > 0) {
@@ -51,8 +70,9 @@ static void reset_piece(piece_mgr_t *pm, uint32_t idx) {
         pm->available_bf[idx / 8] &=
             (uint8_t)~(1u << (7 - idx % 8));
     }
-    if (sl->buf)
-        memset(sl->buf, 0, (size_t)pm->mi->piece_length);
+    /* sl->buf is kept as-is: the block bitmap below is what guards against
+       stale data, and every block is fully rewritten before the piece is
+       hashed again. */
     memset(sl->have_blocks, 0, block_bitmap_size(sl->num_blocks));
     memset(sl->request_counts, 0, sl->num_blocks);
     sl->num_blocks_done = 0;
@@ -118,6 +138,8 @@ void piece_mgr_destroy(piece_mgr_t *pm) {
     free(pm->available_bf);
     free(pm->piece_order);
     free(pm->verify_buf);
+    for (uint32_t i = 0; i < pm->buf_pool_count; i++)
+        free(pm->buf_pool[i]);
     free(pm);
 }
 
@@ -135,7 +157,7 @@ void piece_mgr_mark_pending(piece_mgr_t *pm, uint32_t idx) {
     piece_slot_t *sl = &pm->slots[idx];
     if (sl->state == PS_EMPTY) sl->state = PS_PENDING;
     if (!sl->buf) {
-        sl->buf = (uint8_t*)calloc(1, (size_t)pm->mi->piece_length);
+        sl->buf = piece_buf_get(pm);
         /* ignore alloc failure — got_block checks */
     }
 }
@@ -155,7 +177,7 @@ int piece_mgr_got_block(piece_mgr_t *pm, uint32_t idx, uint32_t offset,
     if (blk >= sl->num_blocks || len != expected_len) return -1;
 
     if (!sl->buf) {
-        sl->buf = (uint8_t*)calloc(1, (size_t)pm->mi->piece_length);
+        sl->buf = piece_buf_get(pm);
         if (!sl->buf) return -1;
     }
     sl->state = PS_PENDING;
@@ -196,8 +218,8 @@ int piece_mgr_got_block(piece_mgr_t *pm, uint32_t idx, uint32_t offset,
     pm->completed_bytes += (uint64_t)plen;
     log_msg("[piece] verified piece %u/%u\n", pm->num_done, pm->num_pieces);
 
-    /* Free buffer — piece is written */
-    free(sl->buf);
+    /* Release buffer — piece is written */
+    piece_buf_put(pm, sl->buf);
     sl->buf = NULL;
     return 2;
 }
