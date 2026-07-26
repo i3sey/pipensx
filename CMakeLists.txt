@@ -275,7 +275,7 @@ add_custom_target(sync_i18n ALL
 )
 # Web companion SPA, served from romfs:/web by src/app/web_server.cpp.
 add_custom_target(sync_web ALL
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
+    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/resources/web" "${ROMFS_DIR}/web"
     VERBATIM
 )

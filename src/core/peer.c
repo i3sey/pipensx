@@ -125,8 +125,6 @@ static peer_t *peer_alloc(struct sockaddr_in addr, const peer_ctx_t *ctx) {
     p->state    = PS_CONNECTING;
     p->am_choked    = 1;
     p->peer_choked  = 1;
-    snprintf(p->addr_str, sizeof(p->addr_str), "%s:%u",
-             inet_ntoa(addr.sin_addr), ntohs(addr.sin_port));
     p->bf_bytes = ctx->bf_bytes;
     p->bitfield = (uint8_t*)calloc(1, ctx->bf_bytes);
     p->connect_time_ms = now_ms();

@@ -62,7 +62,6 @@ typedef struct peer {
     struct UTPSocket *us;        /* libutp socket when transport==TRANSPORT_UTP */
 
     struct sockaddr_in addr;
-    char               addr_str[32];
 
     /* Send/recv buffers. rbuf is a linear buffer with a read cursor: valid
        unprocessed bytes are rbuf[rbuf_head .. rbuf_len). Consuming a message

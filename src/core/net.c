@@ -2,6 +2,7 @@
 #include "util.h"
 #include <string.h>
 #include <stdio.h>
+#include <netinet/tcp.h>
 
 int net_resolve(const char *host, uint16_t port, struct sockaddr_in *out) {
     struct addrinfo hints, *res;
@@ -122,6 +123,10 @@ socket_t net_accept(socket_t listener, struct sockaddr_in *peer) {
     } while (fd < 0 && errno == EINTR);
     if (fd < 0) return INVALID_SOCK;
     net_set_nonblock(fd);
+    /* Accepted sockets serve the web companion's small HTTP/SSE frames;
+       Nagle only adds latency there. Best-effort. */
+    int nodelay = 1;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
     if (peer) *peer = tmp;
     return fd;
 }

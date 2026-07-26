@@ -949,8 +949,8 @@ static int try_connect(torrent_t *t) {
         if (!t->peers[i]) {
             t->peers[i] = p;
             t->num_peers++;
-            log_msg("[torrent] connecting %s peer\n",
-                    use_utp ? "uTP" : "TCP");
+            /* No per-dial log: the burst dialer fires up to 16 dials every
+               50 ms, and failures/timeouts are already logged. */
             return 1;
         }
     }
