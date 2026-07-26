@@ -465,9 +465,10 @@ bool CatalogService::loadFile(const std::string& path,
     std::vector<CatalogEntry> parsed;
     if (!parseJson(data, parsed, error))
         return false;
-    entries_ = std::move(parsed);
+    entries_ = std::make_shared<const std::vector<CatalogEntry>>(
+        std::move(parsed));
     sourceLabel_ = label;
-    log_msg("[catalog] loaded %zu entries from %s\n", entries_.size(),
+    log_msg("[catalog] loaded %zu entries from %s\n", entries_->size(),
             path.c_str());
     return true;
 }
@@ -486,7 +487,7 @@ bool CatalogService::load(std::string& error) {
 
     // A fresh public install intentionally has no bundled catalog. The UI
     // sees an empty list and starts the trusted live refresh in the background.
-    entries_.clear();
+    entries_ = std::make_shared<const std::vector<CatalogEntry>>();
     sourceLabel_.clear();
     error.clear();
     return true;
@@ -529,9 +530,12 @@ bool CatalogService::fetchLatest(std::vector<CatalogEntry>& parsed,
 void CatalogService::adopt(std::vector<CatalogEntry> parsed) {
     // UI thread only: entries() is read unsynchronised by the render thread, so
     // this swap must never happen on the fetch worker (data race → UAF).
-    entries_ = std::move(parsed);
+    // Observers holding the previous shared snapshot keep it alive until they
+    // pick up the new one.
+    entries_ = std::make_shared<const std::vector<CatalogEntry>>(
+        std::move(parsed));
     sourceLabel_ = "Langegen switch-games";
-    log_msg("[catalog] refreshed %zu entries from %s\n", entries_.size(),
+    log_msg("[catalog] refreshed %zu entries from %s\n", entries_->size(),
             sourceLabel_.c_str());
     if (onAdopt_)
         onAdopt_(entries_);

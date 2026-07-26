@@ -268,7 +268,9 @@ int main() {
                           "&tr=http://bt.t-ru.org/ann?magnet";
         entry.posterUrl = "https://example.com/cover.jpg";
         entry.size = 12;
-        server.updateCatalog({entry});
+        server.updateCatalog(
+            std::make_shared<const std::vector<CatalogEntry>>(
+                std::vector<CatalogEntry>{entry}));
 
         std::string resp = request(port, "GET", "/api/catalog");
         assert(resp.find("Content-Encoding: gzip") != std::string::npos);
@@ -296,7 +298,9 @@ int main() {
         broken.infoHash = "ffffffffffffffffffffffffffffffffffffffff";
         broken.title = "Half cyrillic \xD0";
         broken.description = "bad \xD0";
-        server.updateCatalog({entry, broken});
+        server.updateCatalog(
+            std::make_shared<const std::vector<CatalogEntry>>(
+                std::vector<CatalogEntry>{entry, broken}));
         resp = request(port, "GET", "/api/catalog");
         assert(resp.find("200 OK") != std::string::npos);
         json = gunzip(responseBody(resp));

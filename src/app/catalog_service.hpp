@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -74,12 +75,22 @@ public:
     // entries_ may only be reassigned here — never from a fetch worker.
     void adopt(std::vector<CatalogEntry> parsed);
 
-    const std::vector<CatalogEntry>& entries() const { return entries_; }
+    const std::vector<CatalogEntry>& entries() const { return *entries_; }
+
+    // Immutable shared snapshot of the live catalogue. Observers on other
+    // threads (the web companion) hold this instead of a ~10 MB deep copy;
+    // adopt() publishes a fresh vector, so a held snapshot stays valid and
+    // consistent for as long as the pointer is kept.
+    std::shared_ptr<const std::vector<CatalogEntry>> sharedEntries() const {
+        return entries_;
+    }
 
     // Runs on the UI thread at the end of every adopt(), so observers that
-    // keep their own copy of the catalogue (the web companion) stay current
-    // no matter which refresh path adopted the batch.
-    void setOnAdopt(std::function<void(const std::vector<CatalogEntry>&)> cb) {
+    // keep their own reference to the catalogue (the web companion) stay
+    // current no matter which refresh path adopted the batch.
+    void setOnAdopt(
+        std::function<void(std::shared_ptr<const std::vector<CatalogEntry>>)>
+            cb) {
         onAdopt_ = std::move(cb);
     }
     const std::string& sourceLabel() const { return sourceLabel_; }
@@ -101,9 +112,13 @@ private:
     std::string catalogRoot_;
     std::string cachePath_;
     std::string bundledPath_;
-    std::vector<CatalogEntry> entries_;
+    // Never null — starts as an empty vector. Reassigned only on the UI
+    // thread (see adopt()).
+    std::shared_ptr<const std::vector<CatalogEntry>> entries_ =
+        std::make_shared<const std::vector<CatalogEntry>>();
     std::string sourceLabel_;
-    std::function<void(const std::vector<CatalogEntry>&)> onAdopt_;
+    std::function<void(std::shared_ptr<const std::vector<CatalogEntry>>)>
+        onAdopt_;
 };
 
 } // namespace pipensx

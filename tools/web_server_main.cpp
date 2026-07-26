@@ -68,7 +68,8 @@ int main(int argc, char** argv) {
             return 1;
         }
         printf("catalog: %zu entries\n", entries.size());
-        server.updateCatalog(entries);
+        server.updateCatalog(std::make_shared<const std::vector<CatalogEntry>>(
+            std::move(entries)));
     }
 
     if (!server.start(port)) {

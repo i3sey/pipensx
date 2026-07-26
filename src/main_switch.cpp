@@ -327,14 +327,15 @@ int main(int argc, char** argv) {
         WebServer webServer(manager, "romfs:/web", PIPENSX_VERSION);
         webServer.setPin(settings.get().webServerPin);
         webServer.setStreamSelection(settings.get().streamSelection);
-        webServer.updateCatalog(catalog.entries());
+        webServer.updateCatalog(catalog.sharedEntries());
         // Every later adopt() (launch refresh, settings refresh, catalog tab)
         // lands on the UI thread, so this callback keeps the companion's
-        // catalogue copy current from all of them.
-        catalog.setOnAdopt([&webServer](
-                               const std::vector<pipensx::CatalogEntry>& e) {
-            webServer.updateCatalog(e);
-        });
+        // catalogue reference current from all of them.
+        catalog.setOnAdopt(
+            [&webServer](
+                std::shared_ptr<const std::vector<pipensx::CatalogEntry>> e) {
+                webServer.updateCatalog(std::move(e));
+            });
         if (settings.get().webServerEnabled)
             webServer.start();
 

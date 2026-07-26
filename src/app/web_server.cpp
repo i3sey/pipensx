@@ -191,13 +191,16 @@ void WebServer::setStreamSelection(StreamSelection selection) {
     streamSelection_ = selection;
 }
 
-void WebServer::updateCatalog(const std::vector<CatalogEntry>& entries) {
+void WebServer::updateCatalog(
+    std::shared_ptr<const std::vector<CatalogEntry>> entries) {
+    if (!entries)
+        entries = std::make_shared<const std::vector<CatalogEntry>>();
     std::lock_guard<std::mutex> lock(catalogMutex_);
-    catalog_ = entries;
+    catalog_ = std::move(entries);
     catalogIndex_.clear();
-    catalogIndex_.reserve(catalog_.size());
-    for (size_t i = 0; i < catalog_.size(); ++i)
-        catalogIndex_[lowerAscii(catalog_[i].infoHash)] = i;
+    catalogIndex_.reserve(catalog_->size());
+    for (size_t i = 0; i < catalog_->size(); ++i)
+        catalogIndex_[lowerAscii((*catalog_)[i].infoHash)] = i;
     ++catalogGeneration_;
     catalogGzip_ = nullptr;
 }
@@ -398,7 +401,7 @@ HttpResponse WebServer::handleCatalog(const HttpRequest& req) {
     }
     if (!catalogGzip_ || catalogGzipGeneration_ != catalogGeneration_) {
         Json list = Json::array();
-        for (const CatalogEntry& e : catalog_) {
+        for (const CatalogEntry& e : *catalog_) {
             Json j;
             j["infoHash"] = lowerAscii(e.infoHash);
             j["title"] = e.title;
@@ -505,7 +508,7 @@ HttpResponse WebServer::handleAddCatalog(const HttpRequest& req) {
         auto it = catalogIndex_.find(hash);
         if (it == catalogIndex_.end())
             return jsonError(404, "unknown catalog entry");
-        const CatalogEntry& entry = catalog_[it->second];
+        const CatalogEntry& entry = (*catalog_)[it->second];
         title = entry.title;
         magnet = entry.magnetUri;
         infoDict = entry.infoDict;

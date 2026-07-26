@@ -52,7 +52,9 @@ public:
 
     // UI-thread callers (startup + after every CatalogService::adopt()):
     // copies the entries so the server thread never touches CatalogService.
-    void updateCatalog(const std::vector<CatalogEntry>& entries);
+    // Takes a shared immutable snapshot (see CatalogService::sharedEntries)
+    // instead of deep-copying the ~10 MB catalogue into the server.
+    void updateCatalog(std::shared_ptr<const std::vector<CatalogEntry>> entries);
 
 private:
     HttpResponse route(const HttpRequest& req);
@@ -80,7 +82,9 @@ private:
     StreamSelection streamSelection_ = StreamSelection::AllFiles;
 
     std::mutex catalogMutex_;
-    std::vector<CatalogEntry> catalog_;
+    // Shared immutable snapshot published by CatalogService — never null.
+    std::shared_ptr<const std::vector<CatalogEntry>> catalog_ =
+        std::make_shared<const std::vector<CatalogEntry>>();
     std::unordered_map<std::string, size_t> catalogIndex_;  // lower hash → idx
     uint64_t catalogGeneration_ = 0;
     // Built lazily on the server thread; invalidated by updateCatalog().
