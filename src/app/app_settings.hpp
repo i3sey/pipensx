@@ -46,6 +46,11 @@ struct AppSettingsData {
     // parse time so a hand-edited settings.json cannot smuggle odd values).
     bool webServerEnabled = true;
     std::string webServerPin;
+    // How many torrents download at once. 1 keeps the classic serial queue;
+    // higher values split bandwidth, RAM budget and SD throughput between
+    // tasks. Hand-edited values are clamped to the supported range at parse
+    // time.
+    uint32_t maxActiveDownloads = 2;
 
     bool operator==(const AppSettingsData& other) const;
     bool operator!=(const AppSettingsData& other) const {
@@ -62,6 +67,12 @@ bool isSupportedLanguage(const std::string& value);
 
 // True for a valid web PIN: empty (auth off) or 4-8 ASCII digits.
 bool isValidWebPin(const std::string& value);
+
+// Supported range for AppSettingsData::maxActiveDownloads.
+inline constexpr uint32_t kMinActiveDownloads = 1;
+inline constexpr uint32_t kMaxActiveDownloads = 4;
+
+uint32_t clampMaxActiveDownloads(uint64_t value);
 
 bool dailyRefreshDue(uint64_t nowMs, uint64_t lastRefreshMs);
 

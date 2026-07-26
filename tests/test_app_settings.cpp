@@ -40,6 +40,7 @@ void testMissingFileUsesSafeDefaults() {
     assert(values.showCompletedDownloads);
     assert(!values.extendedTelemetry);
     assert(values.checkForUpdatesOnLaunch);
+    assert(values.maxActiveDownloads == 2);
     // "auto" keeps the console's system language, so a Russian Switch gets a
     // Russian UI on first launch with no user action.
     assert(values.language == "auto");
@@ -64,6 +65,7 @@ void testUpdatePersistsEveryPublicSetting() {
     changed.checkForUpdatesOnLaunch = false;
     changed.webServerEnabled = false;
     changed.webServerPin = "12345678";
+    changed.maxActiveDownloads = 3;
     assert(settings.update(changed, error));
 
     AppSettings restored(SettingsPath, LegacyPath);
@@ -166,6 +168,26 @@ void testInvalidWebPinIsCleared() {
     assert(!pipensx::isValidWebPin("12a4"));
 }
 
+// A hand-edited count outside [1,4] degrades to the nearest supported value
+// rather than failing the whole settings load.
+void testMaxActiveDownloadsClamped() {
+    cleanup();
+    {
+        std::ofstream output(SettingsPath);
+        output << R"({"version":1,"max_active_downloads":99})";
+    }
+    AppSettings settings(SettingsPath, LegacyPath);
+    std::string error;
+    assert(settings.load(error));
+    assert(settings.get().maxActiveDownloads == pipensx::kMaxActiveDownloads);
+
+    assert(pipensx::clampMaxActiveDownloads(0) == 1);
+    assert(pipensx::clampMaxActiveDownloads(1) == 1);
+    assert(pipensx::clampMaxActiveDownloads(4) == 4);
+    assert(pipensx::clampMaxActiveDownloads(5) == 4);
+    assert(pipensx::clampMaxActiveDownloads(UINT64_MAX) == 4);
+}
+
 void testDailyRefreshDue() {
     const uint64_t day = 24ULL * 60ULL * 60ULL * 1000ULL;
     assert(dailyRefreshDue(1000, 0));
@@ -184,6 +206,7 @@ int main() {
     testUnknownLanguageIsRejected();
     testLegacyTelemetryFlagMigratesOnce();
     testInvalidWebPinIsCleared();
+    testMaxActiveDownloadsClamped();
     testDailyRefreshDue();
     cleanup();
     std::puts("app settings tests passed");

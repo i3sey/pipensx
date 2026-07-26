@@ -104,6 +104,10 @@ bool parseSettings(const std::string& text, AppSettingsData& values,
         !readString(root, "web_server_pin", values.webServerPin, error)) {
         return false;
     }
+    uint64_t maxActive = values.maxActiveDownloads;
+    if (!readUnsigned(root, "max_active_downloads", maxActive, error))
+        return false;
+    values.maxActiveDownloads = clampMaxActiveDownloads(maxActive);
     if (!isValidWebPin(values.webServerPin))
         values.webServerPin.clear();
 
@@ -155,6 +159,7 @@ std::string serializeSettings(const AppSettingsData& values) {
     root["catalog_disclaimer_ack"] = values.catalogDisclaimerAcknowledged;
     root["web_server_enabled"] = values.webServerEnabled;
     root["web_server_pin"] = values.webServerPin;
+    root["max_active_downloads"] = values.maxActiveDownloads;
     return root.dump(2) + "\n";
 }
 
@@ -166,6 +171,14 @@ bool isSupportedLanguage(const std::string& value) {
             return true;
     }
     return false;
+}
+
+uint32_t clampMaxActiveDownloads(uint64_t value) {
+    if (value < kMinActiveDownloads)
+        return kMinActiveDownloads;
+    if (value > kMaxActiveDownloads)
+        return kMaxActiveDownloads;
+    return static_cast<uint32_t>(value);
 }
 
 bool isValidWebPin(const std::string& value) {
@@ -195,7 +208,8 @@ bool AppSettingsData::operator==(const AppSettingsData& other) const {
            catalogDisclaimerAcknowledged ==
                other.catalogDisclaimerAcknowledged &&
            webServerEnabled == other.webServerEnabled &&
-           webServerPin == other.webServerPin;
+           webServerPin == other.webServerPin &&
+           maxActiveDownloads == other.maxActiveDownloads;
 }
 
 bool dailyRefreshDue(uint64_t nowMs, uint64_t lastRefreshMs) {
