@@ -35,10 +35,28 @@ int  dht_engine_fd(dht_engine_t *e);
 void dht_engine_tick(dht_engine_t *e);  /* called when fd is readable OR on timeout */
 
 /*
- * Save/load node cache to/from file (for fast restart).
+ * Node-cache persistence (fast warm start). Set the path once at startup,
+ * before any engine exists; NULL or "" disables persistence (the default).
+ * Every dht_engine_create then pings the cached nodes (live ones re-enter
+ * the routing table with their true ID within ~1s) and reuses the stored
+ * node ID; every dht_engine_destroy rewrites the cache with the current
+ * good nodes (atomic tmp+rename, skipped when the table is empty).
  */
-void dht_engine_save(dht_engine_t *e, const char *path);
-void dht_engine_load(dht_engine_t *e, const char *path);
+void dht_engine_set_cache_path(const char *path);
+
+/*
+ * Cache file codec, exposed for tests. Format: "PXD1" magic, 20-byte node
+ * ID, u16 LE count (<= DHT_CACHE_MAX_NODES), then count compact endpoints
+ * (4-byte IPv4 + 2-byte port, network order). Read returns the node count
+ * (clamped to max_nodes) or -1 when the file is missing or malformed;
+ * write returns 1 on success.
+ */
+#define DHT_CACHE_MAGIC "PXD1"
+#define DHT_CACHE_MAX_NODES 256
+int dht_cache_read(const char *path, uint8_t node_id[20],
+                   uint8_t (*nodes)[6], int max_nodes);
+int dht_cache_write(const char *path, const uint8_t node_id[20],
+                    const uint8_t (*nodes)[6], int count);
 
 /* Stats */
 void dht_engine_nodes(dht_engine_t *e, int *good, int *dubious);

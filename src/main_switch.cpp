@@ -9,6 +9,7 @@
 #include "platform/switch_performance.hpp"
 
 extern "C" {
+#include "core/dht.h"
 #include "core/util.h"
 }
 
@@ -316,6 +317,7 @@ int main(int argc, char** argv) {
 
         startupStage("DownloadManager construction");
         SwitchPerformanceController performance;
+        dht_engine_set_cache_path("sdmc:/switch/pipensx/dht.cache");
         DownloadManager manager("sdmc:/switch/pipensx");
         manager.setInstallTarget(
             installTargetFor(settings.get().installLocation));

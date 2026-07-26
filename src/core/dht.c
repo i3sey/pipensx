@@ -62,6 +62,68 @@ int dht_sendto(int s, const void *buf, int len, int flags,
     return (int)r;
 }
 
+/* ---- node cache (fast warm start) ---- */
+
+static char g_cache_path[512];
+
+void dht_engine_set_cache_path(const char *path) {
+    if (!path) {
+        g_cache_path[0] = '\0';
+        return;
+    }
+    snprintf(g_cache_path, sizeof(g_cache_path), "%s", path);
+}
+
+int dht_cache_read(const char *path, uint8_t node_id[20],
+                   uint8_t (*nodes)[6], int max_nodes) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    uint8_t magic[4], cnt_le[2];
+    int ok = fread(magic, 1, 4, f) == 4 &&
+             memcmp(magic, DHT_CACHE_MAGIC, 4) == 0 &&
+             fread(node_id, 1, 20, f) == 20 &&
+             fread(cnt_le, 1, 2, f) == 2;
+    int n = 0;
+    if (ok) {
+        n = cnt_le[0] | (cnt_le[1] << 8);
+        if (n > DHT_CACHE_MAX_NODES) ok = 0;
+    }
+    if (ok) {
+        if (n > max_nodes) n = max_nodes;
+        ok = fread(nodes, 6, (size_t)n, f) == (size_t)n;
+    }
+    fclose(f);
+    return ok ? n : -1;
+}
+
+int dht_cache_write(const char *path, const uint8_t node_id[20],
+                    const uint8_t (*nodes)[6], int count) {
+    if (count <= 0 || count > DHT_CACHE_MAX_NODES) return 0;
+    char tmp[600];
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    FILE *f = fopen(tmp, "wb");
+    if (!f) return 0;
+    uint8_t cnt_le[2] = { (uint8_t)(count & 0xff), (uint8_t)(count >> 8) };
+    int ok = fwrite(DHT_CACHE_MAGIC, 1, 4, f) == 4 &&
+             fwrite(node_id, 1, 20, f) == 20 &&
+             fwrite(cnt_le, 1, 2, f) == 2 &&
+             fwrite(nodes, 6, (size_t)count, f) == (size_t)count;
+    if (fclose(f) != 0) ok = 0;
+    if (!ok) {
+        remove(tmp);
+        return 0;
+    }
+    if (rename(tmp, path) != 0) {
+        /* FAT (sdmc) may refuse rename-over-existing; retry after unlink. */
+        remove(path);
+        if (rename(tmp, path) != 0) {
+            remove(tmp);
+            return 0;
+        }
+    }
+    return 1;
+}
+
 /* ---- engine ---- */
 struct dht_engine {
     socket_t   fd;
@@ -113,6 +175,17 @@ dht_engine_t *dht_engine_create(uint16_t listen_port, const uint8_t node_id[20])
         atomic_flag_clear(&g_engine_busy);
         return NULL;
     }
+    /* Warm start: a cached node list from the last orderly teardown. The
+       stored node ID is reused so remote buckets that still remember us keep
+       us as the same node. */
+    uint8_t cached_nodes[DHT_CACHE_MAX_NODES][6];
+    uint8_t cached_id[20];
+    int cached_count = -1;
+    if (g_cache_path[0]) {
+        cached_count = dht_cache_read(g_cache_path, cached_id, cached_nodes,
+                                      DHT_CACHE_MAX_NODES);
+        if (cached_count >= 0) node_id = cached_id;
+    }
     memcpy(e->node_id, node_id, 20);
     e->listen_port = listen_port;
 
@@ -130,6 +203,20 @@ dht_engine_t *dht_engine_create(uint16_t listen_port, const uint8_t node_id[20])
         return NULL;
     }
 
+    /* Ping cached nodes instead of inserting them: live ones reply and enter
+       the routing table with their true ID (jech marks ping replies as
+       confirmed), dead ones never pollute it. */
+    for (int i = 0; i < cached_count; i++) {
+        struct sockaddr_in addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sin_family = AF_INET;
+        memcpy(&addr.sin_addr, cached_nodes[i], 4);
+        memcpy(&addr.sin_port, cached_nodes[i] + 4, 2);
+        dht_ping_node((struct sockaddr*)&addr, sizeof(addr));
+    }
+    if (cached_count > 0)
+        log_msg("[dht] cache: pinged %d nodes\n", cached_count);
+
     g_engine = e;
     log_msg("[dht] init port=%u\n", listen_port);
     return e;
@@ -137,6 +224,24 @@ dht_engine_t *dht_engine_create(uint16_t listen_port, const uint8_t node_id[20])
 
 void dht_engine_destroy(dht_engine_t *e) {
     if (!e) return;
+    /* Persist good nodes for the next warm start. Skipped when the table is
+       empty so an offline session cannot clobber a useful cache. */
+    if (g_cache_path[0]) {
+        struct sockaddr_in sins[128];
+        int num = 128, num6 = 0;
+        /* num6 must be a real pointer: dht_get_nodes writes *num6
+           unconditionally. */
+        dht_get_nodes(sins, &num, NULL, &num6);
+        if (num > 0) {
+            uint8_t nodes[128][6];
+            for (int i = 0; i < num; i++) {
+                memcpy(nodes[i], &sins[i].sin_addr, 4);
+                memcpy(nodes[i] + 4, &sins[i].sin_port, 2);
+            }
+            if (dht_cache_write(g_cache_path, e->node_id, nodes, num))
+                log_msg("[dht] saved %d nodes to %s\n", num, g_cache_path);
+        }
+    }
     dht_uninit();
     net_close(e->fd);
     g_engine = NULL;
@@ -222,27 +327,6 @@ void dht_engine_tick(dht_engine_t *e) {
             last_search = now;
         }
     }
-}
-
-void dht_engine_save(dht_engine_t *e __attribute__((unused)), const char *path) {
-    struct sockaddr_in nodes[128];
-    int count = 128;
-    dht_get_nodes(nodes, &count, NULL, 0);
-    FILE *f = fopen(path, "wb");
-    if (!f) return;
-    fwrite(&count, sizeof(int), 1, f);
-    fwrite(nodes, sizeof(struct sockaddr_in), count, f);
-    fclose(f);
-    log_msg("[dht] saved %d nodes to %s\n", count, path);
-}
-
-void dht_engine_load(dht_engine_t *e __attribute__((unused)), const char *path) {
-    /*
-     * The old cache stored only socket addresses, but jech/dht requires the
-     * corresponding 20-byte node ID when restoring a node. Passing NULL here
-     * corrupts the DHT table. Ignore legacy caches and bootstrap normally.
-     */
-    (void)path;
 }
 
 void dht_engine_nodes(dht_engine_t *e __attribute__((unused)), int *good, int *dubious) {

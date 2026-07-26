@@ -26,6 +26,7 @@ int main(int argc, char **argv) {
     signal(SIGPIPE, SIG_IGN);
 
     log_init("pipensx.log");
+    dht_engine_set_cache_path("dht.cache");
 
     curl_global_init(CURL_GLOBAL_DEFAULT);
 
