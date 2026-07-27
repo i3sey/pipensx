@@ -2,7 +2,16 @@
   "permissions": {
     "allow": [
       "WebFetch(domain:switchbrew.org)",
-      "WebFetch(domain:wiki.switchbrew.org)"
+      "WebFetch(domain:wiki.switchbrew.org)",
+      "Bash(make test)",
+      "Bash(make golden)",
+      "Bash(make switch)",
+      "Bash(make -f Makefile.pc test)",
+      "Bash(make -f Makefile.pc tests/*)",
+      "Bash(scripts/golden.sh check)",
+      "Bash(./scripts/golden.sh check)",
+      "mcp__context7__resolve-library-id",
+      "mcp__context7__query-docs"
     ]
   }
 }
