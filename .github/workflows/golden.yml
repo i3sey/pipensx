@@ -44,8 +44,12 @@ jobs:
             -DPIPENSX_GOLDEN=ON -DCMAKE_BUILD_TYPE=Release
           cmake --build build-golden --target golden_runner
 
+      # No xvfb-run wrapper here: golden.sh starts its own virtual display
+      # (and pins SDL to x11, which the wrapper alone would not do). Wrapping
+      # it again just nests a second Xvfb. The xvfb package above is still
+      # required — the script needs xvfb-run on PATH.
       - name: Compare against golden screenshots
-        run: xvfb-run -a scripts/golden.sh check
+        run: scripts/golden.sh check
 
       - name: Upload diffs and current renders
         if: failure()
