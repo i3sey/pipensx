@@ -77,9 +77,9 @@ public:
     }
 
     void setTask(const DownloadTask& task, GameMetadataService* service) {
-        title_->setText(task.name);
-        placeholder_->setText(placeholderLetter(task.name));
-        status_->setText(taskStatusText(task));
+        setTextIfChanged(title_, task.name);
+        setTextIfChanged(placeholder_, placeholderLetter(task.name));
+        setTextIfChanged(status_, taskStatusText(task));
         status_->setTextColor(statusColor(task.status));
         float progress = (task.status == DownloadStatus::Installing ||
                           task.status == DownloadStatus::Committing)
@@ -111,7 +111,7 @@ public:
             meta += tr("pipensx/downloads/cell_waiting");
         else if (task.status == DownloadStatus::Error && !task.error.empty())
             meta += "   " + task.error;
-        meta_->setText(meta);
+        setTextIfChanged(meta_, meta);
 
         std::string iconUrl;
         if (service) {

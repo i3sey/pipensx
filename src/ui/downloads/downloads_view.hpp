@@ -26,6 +26,7 @@ public:
     explicit DownloadDataSource(MainView* owner) : owner_(owner) {}
 
     void setTasks(std::vector<DownloadTask> tasks);
+    const DownloadTask* taskAt(brls::IndexPath index) const;
     std::string taskIdAt(brls::IndexPath index) const;
     brls::IndexPath indexForTask(const std::string& taskId) const;
     int numberOfSections(brls::RecyclerFrame*) override;
@@ -239,34 +240,42 @@ private:
         bool settingsChanged = settingsGeneration != settingsGeneration_;
         bool structureChanged = !initialized_ || settingsChanged ||
                                 next.size() != tasks_.size();
-        bool changed = structureChanged;
+        bool progressChanged = false;
         if (!structureChanged) {
+            // Scan every task: bailing out on the first progress delta used to
+            // hide a later task's status change, so a section reshuffle went
+            // through the cheap path and the list jumped under the cursor.
             for (size_t i = 0; i < next.size(); ++i) {
                 if (next[i].id != tasks_[i].id ||
                     next[i].status != tasks_[i].status) {
                     structureChanged = true;
-                    changed = true;
                     break;
                 }
-                if (next[i].completedBytes != tasks_[i].completedBytes ||
+                progressChanged =
+                    progressChanged ||
+                    next[i].completedBytes != tasks_[i].completedBytes ||
                     next[i].speedBytesPerSecond !=
                         tasks_[i].speedBytesPerSecond ||
-                    next[i].peers != tasks_[i].peers) {
-                    changed = true;
-                    break;
-                }
-                if (next[i].packagesInstalled !=
-                        tasks_[i].packagesInstalled ||
+                    next[i].peers != tasks_[i].peers ||
+                    next[i].packagesInstalled != tasks_[i].packagesInstalled ||
                     next[i].installedBytes != tasks_[i].installedBytes ||
-                    next[i].currentPackage != tasks_[i].currentPackage) {
-                    changed = true;
-                    break;
-                }
+                    next[i].currentPackage != tasks_[i].currentPackage;
             }
         }
-        if (!changed)
+        if (!structureChanged && !progressChanged)
             return;
-        float offset = recycler_->getContentOffsetY();
+        // Same rows in the same order, only numbers moved: repaint the cells on
+        // screen. reloadData() would recycle every cell, snap the scroll to the
+        // focused row and re-home focus — once per tick that reads as a blink.
+        if (!structureChanged) {
+            tasks_ = std::move(next);
+            dataSource_->setTasks(tasks_);
+            for (auto* cell : visibleCells<DownloadCell>(recycler_))
+                if (const DownloadTask* task =
+                        dataSource_->taskAt(cell->getIndexPath()))
+                    cell->setTask(*task, metadata_);
+            return;
+        }
         brls::View* focused = brls::Application::getCurrentFocus();
         bool ownsFocus = containsFocus(focused);
         auto* focusedCell = ownsFocus
@@ -300,8 +309,6 @@ private:
                 brls::Application::giveFocus(recycler_);
             }
         }
-        if (!empty && !structureChanged)
-            recycler_->setContentOffsetY(offset, false);
     }
 
     DownloadManager* manager_;

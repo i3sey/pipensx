@@ -45,14 +45,19 @@ void DownloadDataSource::setTasks(std::vector<DownloadTask> tasks) {
         sections_.push_back({"", {}});
 }
 
-std::string DownloadDataSource::taskIdAt(brls::IndexPath index) const {
+const DownloadTask* DownloadDataSource::taskAt(brls::IndexPath index) const {
     if (index.section >= sections_.size())
-        return {};
+        return nullptr;
     const Section& section = sections_[index.section];
     if (index.row < 0 ||
         static_cast<size_t>(index.row) >= section.tasks.size())
-        return {};
-    return section.tasks[static_cast<size_t>(index.row)].id;
+        return nullptr;
+    return &section.tasks[static_cast<size_t>(index.row)];
+}
+
+std::string DownloadDataSource::taskIdAt(brls::IndexPath index) const {
+    const DownloadTask* task = taskAt(index);
+    return task ? task->id : std::string{};
 }
 
 brls::IndexPath DownloadDataSource::indexForTask(
