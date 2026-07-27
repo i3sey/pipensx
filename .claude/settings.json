@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:switchbrew.org)",
+      "WebFetch(domain:wiki.switchbrew.org)"
+    ]
+  }
+}
