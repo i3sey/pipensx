@@ -97,7 +97,9 @@ libnx change done.
 
 ## 5. Constraints that live in prose, not headers
 
-Applet RAM budget, tile override, sysmodule tradeoffs — already written up.
-Read, do not re-derive or restate:
-`docs/plans/ESHOP_APPLET_PLAN.md`, `docs/plans/SYSMODULE_PLAN.md`,
-`docs/plans/PERF_PLAN.md`.
+Applet RAM budget, tile override, sysmodule tradeoffs — written up in
+`docs/plans/ESHOP_APPLET_PLAN.md`, `docs/plans/SYSMODULE_PLAN.md` and
+`docs/plans/PERF_PLAN.md`. Read them for the reasoning instead of re-deriving
+it, but treat them as historical (see `docs/plans/README.md`): they may
+describe code that has since changed. Confirm anything load-bearing against
+the source before acting on it.
