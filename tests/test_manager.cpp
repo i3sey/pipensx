@@ -285,10 +285,17 @@ int main() {
         std::string frId;
         assert(manager.importTorrent(downloadOnlySource,
                                      TransferMode::DownloadOnly, frId, error));
+        // Wait for Downloading, not merely "not Queued": the claim sets
+        // Checking before the worker has polled the torrent even once, and
+        // torrent_copy_have_bitfield() refuses to arm while startup_verifying
+        // is still set. Pausing on Checking therefore races the first poll —
+        // win it and the teardown arms, lose it and resumeBitfield stays
+        // empty. Downloading is set only once stat.verifying has cleared,
+        // which is exactly the precondition arming needs.
         bool disarmed = false;
         for (int i = 0; i < 500; ++i) {
             auto task = manager.snapshot()[0];
-            if (task.status != DownloadStatus::Queued &&
+            if (task.status == DownloadStatus::Downloading &&
                 task.resumeBitfield.empty()) {
                 disarmed = true;
                 break;
