@@ -43,14 +43,28 @@ if [[ "$MODE" != "check" && "$MODE" != "update" ]]; then
 fi
 command -v compare >/dev/null || { echo "golden: ImageMagick 'compare' not found" >&2; exit 2; }
 
-# Make the public `make golden` target work in a headless Linux shell. CI may
-# already wrap this script in xvfb-run, in which case DISPLAY is set and this
-# branch is skipped.
-if [[ -z "${DISPLAY:-}" && "$(uname -s)" == "Linux" ]]; then
+# Always render on a private X server, not the developer's session. Each of the
+# ~40 renders opens a real 1280x720 SDL window: on a desktop that flashes
+# windows, steals keyboard focus mid-run, and a stray keypress reaches the
+# runner and perturbs the screenshot. Also makes `make golden` work in a
+# headless shell, which is how CI runs it. GOLDEN_HEADLESS=0 opts out to watch
+# the render. (SDL_VIDEODRIVER=offscreen is not a substitute: it picks a
+# different GL config and the frames come out wrong.)
+if [[ "$(uname -s)" == "Linux" && "${GOLDEN_HEADLESS:-1}" != "0" &&
+      -z "${GOLDEN_IN_XVFB:-}" ]]; then
     command -v xvfb-run >/dev/null || {
-        echo "golden: DISPLAY is unset and xvfb-run is not installed" >&2
+        echo "golden: xvfb-run not found; install it (Arch:" \
+             "xorg-server-xvfb, Debian: xvfb) or set GOLDEN_HEADLESS=0 to" \
+             "render on your desktop" >&2
         exit 2
     }
+    export GOLDEN_IN_XVFB=1
+    # Xvfb only owns an X display, and SDL2 prefers its wayland backend when
+    # WAYLAND_DISPLAY is set — it would open the window on the real compositor
+    # and ignore the virtual server entirely. Pin the backend to x11 and drop
+    # the wayland socket so there is nothing else for SDL to fall back to.
+    export SDL_VIDEODRIVER=x11
+    unset WAYLAND_DISPLAY
     exec xvfb-run -a "$0" "$@"
 fi
 
