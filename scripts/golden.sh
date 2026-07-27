@@ -93,11 +93,28 @@ for entry in $BEHAVIOR_SCREENS; do
     fi
 done
 
+# Per-image budget. The focus highlight draws a radial gradient whose phase
+# comes from the wall clock (borealis animation.cpp, updateHighlightAnimation),
+# so the highlight border differs between any two runs — the wider the focused
+# row, the longer that border and the more pixels drift. The torrent-selection
+# rows are the widest in the app and land at 15-22k against a 25000 default,
+# close enough that an unlucky phase would fail the run for no reason. They get
+# their own ceiling instead of pushing everyone else's up. (Fixing the cause
+# would mean patching borealis, which is a pinned submodule.)
+budget_for() {
+    case "$1" in
+        torrent-selection-*|ru-torrent-selection-*) echo 40000 ;;
+        *) echo "$MAX_DIFF" ;;
+    esac
+}
+
 # render_and_compare <name> <screen> <theme> <locale>
 render_and_compare() {
     local name="$1" screen="$2" theme="$3" locale="$4"
     local current="$OUT_DIR/$name.png"
     local golden="$GOLDEN_DIR/$name.png"
+    local budget
+    budget="$(budget_for "$name")"
 
     if ! "$RUNNER" --fixtures "$FIXTURES" --out "$current" \
                    --theme "$theme" --screen "$screen" --locale "$locale" \
@@ -125,11 +142,11 @@ render_and_compare() {
     if ! [[ "$ae" =~ ^[0-9]+([.][0-9]+([eE][+-][0-9]+)?)?$ ]]; then
         echo "FAIL  $name: compare error: $ae"
         fail=1
-    elif [[ "${ae%%.*}" -gt "$MAX_DIFF" ]]; then
-        echo "FAIL  $name: $ae px differ (budget $MAX_DIFF, fuzz $FUZZ)"
+    elif [[ "${ae%%.*}" -gt "$budget" ]]; then
+        echo "FAIL  $name: $ae px differ (budget $budget, fuzz $FUZZ)"
         fail=1
     else
-        echo "ok    $name: $ae px within budget $MAX_DIFF"
+        echo "ok    $name: $ae px within budget $budget"
         rm -f "$OUT_DIR/diff/$name.png"
     fi
 }

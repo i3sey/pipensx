@@ -47,11 +47,12 @@ silence a diff you have not explained.
 It always renders on its own Xvfb display, so nothing flashes on your desktop
 and stray keypresses cannot reach the runner. `GOLDEN_HEADLESS=0` to watch it.
 
-Two screens (`torrent-selection`, `ru-torrent-selection`) routinely land at
-15-22k of the 25000 budget with ~7k run-to-run noise, mostly the footer clock
-and the focus-highlight pulse. A failure there is as likely to be noise as a
-regression — check the diff in `build-golden/golden-out/diff/` before believing
-it.
+Run-to-run noise is real and mostly the focus highlight: its radial gradient is
+phased off the wall clock inside borealis, so the highlight border drifts
+between any two runs, proportionally to how wide the focused row is. The
+`torrent-selection` screens are the widest and get their own 40000 budget via
+`budget_for()`; everything else stays on the default. Check the diff in
+`build-golden/golden-out/diff/` before believing a failure.
 
 ## libnx and Switch-only code
 
