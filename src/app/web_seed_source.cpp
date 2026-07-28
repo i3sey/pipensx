@@ -144,6 +144,10 @@ bool WebSeedSource::fetchPiece(uint32_t piece, std::vector<uint8_t>& out) {
     curl_easy_setopt(curl, CURLOPT_RANGE, range);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+    /* Every handle here runs on a background thread; without this
+       libcurl installs signal handlers to time out DNS, which is not
+       thread-safe (libcurl-thread(3)). */
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeRange);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);

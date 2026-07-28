@@ -147,6 +147,10 @@ bool httpGet(const std::string& url, std::string& body, std::string& error) {
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "pipensx/0.4");
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+    /* Every handle here runs on a background thread; without this
+       libcurl installs signal handlers to time out DNS, which is not
+       thread-safe (libcurl-thread(3)). */
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 45L);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeHttp);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buffer);

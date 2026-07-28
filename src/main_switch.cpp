@@ -18,6 +18,7 @@ extern "C" {
 #include <switch.h>
 #include <switch-ipcext.h>
 
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
@@ -223,6 +224,11 @@ int main(int argc, char** argv) {
     try {
         log_msg("[startup] applet_type=%d operation_mode=%d\n",
                 (int)appletGetAppletType(), (int)appletGetOperationMode());
+
+        // Our own sockets pass MSG_NOSIGNAL, and every curl handle now sets
+        // CURLOPT_NOSIGNAL — which also stops libcurl asking the system to
+        // ignore SIGPIPE. Do it here instead, as main_pc.c already does.
+        signal(SIGPIPE, SIG_IGN);
 
         startupStage("curl_global_init");
         CURLcode curlResult = curl_global_init(CURL_GLOBAL_DEFAULT);

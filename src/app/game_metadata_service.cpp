@@ -168,6 +168,10 @@ bool httpGetOnce(const std::string& url, size_t limit,
         url.find("weserv.nl/") != std::string::npos ||
         url.find("i0.wp.com/") != std::string::npos ||
         url.find("duckduckgo.com/") != std::string::npos;
+    /* Every handle here runs on a background thread; without this
+       libcurl installs signal handlers to time out DNS, which is not
+       thread-safe (libcurl-thread(3)). */
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, relayRequest ? 20L : 25L);
     curl_easy_setopt(curl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeBytes);
