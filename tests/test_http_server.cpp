@@ -249,9 +249,22 @@ void testServer() {
 
     // SSE: initial payload + at least two broadcast frames; 2nd client 503
     {
-        int fd = clientConnect(port);
-        sendAll(fd, "GET /events HTTP/1.1\r\n\r\n");
-        std::string got = readUntil(fd, "retry: 5000");
+        // The block above closed both connections, but the server only learns
+        // that on its next poll — until then the cap is still full and this
+        // client legitimately gets the canned 503. Retry rather than race it;
+        // a cap that never reopens still fails, just on the assert below.
+        int fd = -1;
+        std::string got;
+        for (int i = 0; i < 200; ++i) {
+            fd = clientConnect(port);
+            sendAll(fd, "GET /events HTTP/1.1\r\n\r\n");
+            got = readUntil(fd, "retry: 5000");
+            if (got.find("503") == std::string::npos) break;
+            close(fd);
+            fd = -1;
+            usleep(10000);
+        }
+        assert(fd >= 0);
         assert(got.find("text/event-stream") != std::string::npos);
         assert(got.find("Content-Length") == std::string::npos);
         got = readUntil(fd, "data: tick\n\ndata: tick\n\n", got);
