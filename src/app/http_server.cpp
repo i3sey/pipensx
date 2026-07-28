@@ -526,7 +526,10 @@ void HttpServer::loopMain() {
                     acceptPending();
                 }
             }
-            for (size_t i = 0; i < conns_.size(); ++i) {
+            // acceptPending() above may have appended to conns_; those
+            // entries have no pollfd this round, so stop at what was polled.
+            size_t polled = pfds.size() - connBase;
+            for (size_t i = 0; i < polled; ++i) {
                 Conn& c = *conns_[i];
                 short rev = pfds[connBase + i].revents;
                 if (rev & (POLLERR | POLLNVAL)) {
