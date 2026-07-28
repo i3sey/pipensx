@@ -1039,12 +1039,23 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
             if (cancelled || now_ms() >= deadline)
                 break;
-            uint32_t added = mergeDht() + reannounce();
+            uint32_t added = mergeDht();
+            /* Stop pestering the trackers once they have twice repeated
+               themselves — but keep the round going. */
+            if (emptyReannounces < kMaxEmptyReannounces)
+                added += reannounce();
             peerCount = static_cast<uint32_t>(peers.size() / 6);
-            if (added)
+            if (added) {
                 emptyReannounces = 0;
-            else if (++emptyReannounces >= kMaxEmptyReannounces)
-                break;
+            } else {
+                /* Nothing new anywhere. RuTracker hands out a stable peer
+                   set, so giving up here ended the resolve after a third of
+                   the budget with every peer tried exactly once. Sweep the
+                   ones we know again instead: a peer that dropped our SYN or
+                   was mid-disconnect can answer the next time around. */
+                ++emptyReannounces;
+                nextPeer = 0;
+            }
             continue;
         }
 
