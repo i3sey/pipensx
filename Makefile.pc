@@ -204,7 +204,6 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 		$(BUG_REPORT_TEST_TARGET) \
 		$(HTTP_TEST_TARGET) $(WEB_SERVER_TEST_TARGET)
 	./$(TEST_TARGET)
-	./$(MANAGER_TEST_TARGET)
 	./$(PACKAGE_TEST_TARGET)
 	./$(CATALOG_TEST_TARGET)
 	./$(TELEMETRY_TEST_TARGET)
@@ -230,6 +229,9 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 	python3 tests/test_bug_report_decode.py
 	python3 tests/test_telemetry_analyzer.py
 	python3 scripts/check_i18n.py
+	# last: bootstraps DHT against live routers, so it fails on a bad
+	# network. Running it here keeps that from hiding the other 25.
+	./$(MANAGER_TEST_TARGET)
 
 $(SETTINGS_TEST_TARGET): tests/test_app_settings.cpp src/app/app_settings.cpp
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
