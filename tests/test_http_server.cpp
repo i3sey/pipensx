@@ -267,6 +267,42 @@ void testServer() {
         close(fd);
     }
 
+    // deep pipelining on the default caps: every buffered request used to
+    // cost a stack frame (handleReadable -> dispatch -> respond -> pumpWrite
+    // -> handleReadable) before any of them was answered, so a single write
+    // of a few thousand overflowed the stack. All of them must be answered.
+    {
+        HttpServer deep;  // default Options: ~2 MB of request buffering
+        std::string err;
+        assert(deep.start(
+            0, [](const HttpRequest&) { return HttpResponse::empty(204); },
+            err));
+        int fd = clientConnect(deep.boundPort());
+        int rcvbuf = 8 * 1024 * 1024;  // hold every reply, never block the server
+        setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+
+        constexpr int kCount = 5000;
+        std::string blast;
+        for (int i = 0; i < kCount; ++i) blast += "GET /none HTTP/1.1\r\n\r\n";
+        sendAll(fd, blast);
+
+        std::string got;
+        char chunk[65536];
+        int seen = 0;
+        while (seen < kCount) {
+            ssize_t n = recv(fd, chunk, sizeof(chunk), 0);
+            if (n <= 0) break;
+            got.append(chunk, (size_t)n);
+            seen = 0;
+            for (size_t p = got.find("204 No Content"); p != std::string::npos;
+                 p = got.find("204 No Content", p + 1))
+                ++seen;
+        }
+        assert(seen == kCount);
+        close(fd);
+        deep.stop();
+    }
+
     server.stop();
     assert(!server.running());
     printf("server ok\n");

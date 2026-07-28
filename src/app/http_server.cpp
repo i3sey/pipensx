@@ -490,7 +490,10 @@ void HttpServer::pumpWrite(Conn& c) {
     c.outBodyOff = 0;
     c.bodyExpected = 0;
     c.isHead = false;
-    if (!c.inbuf.empty()) handleReadable(c);
+    // Buffered pipelined bytes are picked up by handleReadable's own loop
+    // (via dispatch) or by loopMain on the next pass. Calling it from here
+    // instead put one stack frame on the pipeline per request — 5000 of them
+    // in a single write overflowed the stack.
 }
 
 void HttpServer::loopMain() {
@@ -538,7 +541,10 @@ void HttpServer::loopMain() {
                 }
                 if (rev & POLLOUT) pumpWrite(c);
                 if (c.dead) continue;
-                if (rev & (POLLIN | POLLHUP)) handleReadable(c);
+                // !inbuf.empty(): a response finished draining and pipelined
+                // requests are still buffered, with no new bytes to wake us.
+                if ((rev & (POLLIN | POLLHUP)) || !c.inbuf.empty())
+                    handleReadable(c);
             }
         }
 
