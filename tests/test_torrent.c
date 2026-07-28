@@ -46,6 +46,90 @@ static void test_bencode_rejects_deep_nesting(void) {
     free(b);
 }
 
+/* A fake BEP-15 tracker on loopback. It answers the connect handshake
+   honestly and then echoes `announce_txid_delta` added to the transaction id
+   the client sent, so a reply that does not match can be simulated. */
+struct fake_udp_tracker {
+    int fd;
+    uint16_t port;
+    uint32_t announce_txid_delta;
+};
+
+static uint32_t rd32(const uint8_t *p) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+           ((uint32_t)p[2] << 8) | (uint32_t)p[3];
+}
+static void wr32(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16);
+    p[2] = (uint8_t)(v >> 8);  p[3] = (uint8_t)v;
+}
+
+static void *fake_udp_tracker_run(void *arg) {
+    struct fake_udp_tracker *s = arg;
+    uint8_t req[128], resp[26];
+    struct sockaddr_in peer;
+    socklen_t plen = sizeof(peer);
+
+    /* connect: action 0, echo the transaction id, hand out a connection id */
+    ssize_t n = recvfrom(s->fd, req, sizeof(req), 0, (struct sockaddr *)&peer,
+                         &plen);
+    if (n < 16) return NULL;
+    memset(resp, 0, sizeof(resp));
+    wr32(resp, 0);
+    wr32(resp + 4, rd32(req + 12));
+    memset(resp + 8, 0xAB, 8);
+    sendto(s->fd, resp, 16, 0, (struct sockaddr *)&peer, plen);
+
+    /* announce: action 1, one compact peer at 1.2.3.4:5678 */
+    plen = sizeof(peer);
+    n = recvfrom(s->fd, req, sizeof(req), 0, (struct sockaddr *)&peer, &plen);
+    if (n < 16) return NULL;
+    memset(resp, 0, sizeof(resp));
+    wr32(resp, 1);
+    wr32(resp + 4, rd32(req + 12) + s->announce_txid_delta);
+    resp[20] = 1; resp[21] = 2; resp[22] = 3; resp[23] = 4;
+    resp[24] = 0x16; resp[25] = 0x2E;
+    sendto(s->fd, resp, 26, 0, (struct sockaddr *)&peer, plen);
+    return NULL;
+}
+
+static uint32_t announce_against_fake(uint32_t txid_delta) {
+    struct fake_udp_tracker s = {-1, 0, txid_delta};
+    s.fd = socket(AF_INET, SOCK_DGRAM, 0);
+    assert(s.fd >= 0);
+    struct sockaddr_in a;
+    memset(&a, 0, sizeof(a));
+    a.sin_family = AF_INET;
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    assert(bind(s.fd, (struct sockaddr *)&a, sizeof(a)) == 0);
+    socklen_t alen = sizeof(a);
+    assert(getsockname(s.fd, (struct sockaddr *)&a, &alen) == 0);
+    s.port = ntohs(a.sin_port);
+
+    pthread_t th;
+    assert(pthread_create(&th, NULL, fake_udp_tracker_run, &s) == 0);
+
+    char url[64];
+    snprintf(url, sizeof(url), "udp://127.0.0.1:%u", (unsigned)s.port);
+    uint8_t info_hash[20], peer_id[20], compact[6 * 8];
+    memset(info_hash, 0x11, sizeof(info_hash));
+    memset(peer_id, 0x22, sizeof(peer_id));
+    uint32_t got = tracker_announce_url_ex_cancel(
+        url, info_hash, peer_id, 51413, 0, 100, compact, 8, NULL, NULL, NULL);
+
+    pthread_join(th, NULL);
+    close(s.fd);
+    return got;
+}
+
+static void test_udp_tracker_checks_transaction_id(void) {
+    /* A well-behaved tracker still works. */
+    assert(announce_against_fake(0) == 1);
+    /* A reply that does not echo the transaction id is not ours. Before the
+       check, the peers in it were accepted. */
+    assert(announce_against_fake(1) == 0);
+}
+
 /* Single-file torrent whose three numbers can be set independently, so the
    metadata can be made deliberately inconsistent. */
 static int parse_single(long long pieceLen, long long fileLen, int pieces,
@@ -370,6 +454,7 @@ int main(void) {
     test_bencode_rejects_deep_nesting();
     test_metainfo_path_join_bounds();
     test_metainfo_rejects_bad_numbers();
+    test_udp_tracker_checks_transaction_id();
     puts("torrent tests passed");
     return 0;
 }

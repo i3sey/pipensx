@@ -205,6 +205,23 @@ static uint32_t http_announce(const char *url,
 #define UDP_CONNECT  0
 #define UDP_ANNOUNCE 1
 
+/* BEP-15: every reply repeats the action and transaction_id of the request.
+   Checking both, plus the source address, is what keeps an unsolicited
+   datagram on our ephemeral port from steering the exchange. */
+static int udp_reply_matches(const uint8_t *resp, uint32_t action,
+                             uint32_t txid,
+                             const struct sockaddr_in *expect,
+                             const struct sockaddr_in *from) {
+    if (from->sin_addr.s_addr != expect->sin_addr.s_addr ||
+        from->sin_port != expect->sin_port)
+        return 0;
+    uint32_t got_action = ((uint32_t)resp[0]<<24)|((uint32_t)resp[1]<<16)|
+                          ((uint32_t)resp[2]<< 8)|((uint32_t)resp[3]);
+    uint32_t got_txid   = ((uint32_t)resp[4]<<24)|((uint32_t)resp[5]<<16)|
+                          ((uint32_t)resp[6]<< 8)|((uint32_t)resp[7]);
+    return got_action == action && got_txid == txid;
+}
+
 static uint32_t udp_announce(const char *host, uint16_t tport,
                              const uint8_t *info_hash,
                              const uint8_t *peer_id,
@@ -227,8 +244,10 @@ static uint32_t udp_announce(const char *host, uint16_t tport,
     con_req[6]=(magic>> 8)&0xFF; con_req[7]=(magic    )&0xFF;
     /* action=connect */
     con_req[8]=con_req[9]=con_req[10]=0; con_req[11]=UDP_CONNECT;
-    /* transaction_id */
-    uint32_t txid = (uint32_t)now_ms();
+    /* transaction_id. BEP-15 uses it to match responses to requests, so a
+       predictable one (it was the clock) is a spoofing aid. */
+    uint32_t txid = 0;
+    rand_bytes((uint8_t*)&txid, sizeof(txid));
     con_req[12]=(txid>>24)&0xFF; con_req[13]=(txid>>16)&0xFF;
     con_req[14]=(txid>> 8)&0xFF; con_req[15]=(txid    )&0xFF;
 
@@ -238,12 +257,20 @@ static uint32_t udp_announce(const char *host, uint16_t tport,
     struct pollfd pfd = { fd, POLLIN, 0 };
     if (poll(&pfd, 1, 5000) <= 0) { net_close(fd); return 0; }
 
+    /* Read into a scratch address: passing &addr here let whoever answered
+       first replace the tracker we resolved, and the announce below then
+       went to them. */
     uint8_t con_resp[16];
-    socklen_t alen = sizeof(addr);
-    if (recvfrom(fd, con_resp, 16, 0, (struct sockaddr*)&addr, &alen) < 16) {
+    struct sockaddr_in from;
+    socklen_t alen = sizeof(from);
+    if (recvfrom(fd, con_resp, 16, 0, (struct sockaddr*)&from, &alen) < 16) {
         net_close(fd); return 0;
     }
-    uint64_t conn_id = ((uint64_t)con_resp[8]<<56)|((uint64_t)con_resp[9]<<48)|
+    if (!udp_reply_matches(con_resp, UDP_CONNECT, txid, &addr, &from)) {
+        log_msg("[tracker] UDP %s:%u: bogus connect reply\n", host, tport);
+        net_close(fd); return 0;
+    }
+    uint64_t conn_id =((uint64_t)con_resp[8]<<56)|((uint64_t)con_resp[9]<<48)|
                        ((uint64_t)con_resp[10]<<40)|((uint64_t)con_resp[11]<<32)|
                        ((uint64_t)con_resp[12]<<24)|((uint64_t)con_resp[13]<<16)|
                        ((uint64_t)con_resp[14]<< 8)|((uint64_t)con_resp[15]);
@@ -274,10 +301,16 @@ static uint32_t udp_announce(const char *host, uint16_t tport,
     if (poll(&pfd, 1, 5000) <= 0) { net_close(fd); return 0; }
 
     uint8_t resp[1500];
-    ssize_t rlen = recvfrom(fd, resp, sizeof(resp), 0, NULL, NULL);
+    alen = sizeof(from);
+    ssize_t rlen = recvfrom(fd, resp, sizeof(resp), 0,
+                            (struct sockaddr*)&from, &alen);
     net_close(fd);
 
     if (rlen < 20) return 0;
+    if (!udp_reply_matches(resp, UDP_ANNOUNCE, txid, &addr, &from)) {
+        log_msg("[tracker] UDP %s:%u: bogus announce reply\n", host, tport);
+        return 0;
+    }
     uint32_t count = (uint32_t)((rlen - 20) / 6);
     if (count > max_peers) count = max_peers;
     memcpy(compact_out, resp + 20, count * 6);
