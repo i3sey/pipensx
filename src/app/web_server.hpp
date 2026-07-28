@@ -68,6 +68,8 @@ private:
     HttpResponse handleAddTorrent(const HttpRequest& req);
     HttpResponse handleCatalog(const HttpRequest& req);
     bool authorized(const HttpRequest& req) const;
+    // False when the request names an origin other than the host it reached.
+    static bool sameOrigin(const HttpRequest& req);
     std::string buildStateJson();
     void onTick();
 

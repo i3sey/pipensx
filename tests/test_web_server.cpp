@@ -185,12 +185,40 @@ int main() {
         resp = request(port, "POST", "/api/auth/check", "",
                        "X-Pipensx-Pin: 1234\r\n");
         assert(resp.find("204") != std::string::npos);
+        // header only: a PIN in the query string would ride along on any
+        // cross-site link and sit in browser history
         resp = request(port, "POST", "/api/auth/check?pin=1234");
-        assert(resp.find("204") != std::string::npos);
+        assert(resp.find("401") != std::string::npos);
         // reads stay open
         resp = request(port, "GET", "/api/tasks");
         assert(resp.find("200 OK") != std::string::npos);
         server.setPin("");
+    }
+
+    // CSRF: a page served from somewhere else must not drive the console
+    {
+        const std::string host = "Host: 192.168.1.50:8080\r\n";
+        std::string resp = request(port, "POST", "/api/auth/check", "",
+                                   host + "Origin: http://evil.example\r\n");
+        assert(resp.find("403") != std::string::npos);
+
+        resp = request(port, "POST", "/api/auth/check", "",
+                       host + "Origin: http://192.168.1.50:8080\r\n");
+        assert(resp.find("204") != std::string::npos);
+
+        // "null" origin (sandboxed iframe, file://) is not the host either
+        resp = request(port, "POST", "/api/auth/check", "",
+                       host + "Origin: null\r\n");
+        assert(resp.find("403") != std::string::npos);
+
+        // no Origin at all: not a browser (curl, a script on the LAN)
+        resp = request(port, "POST", "/api/auth/check");
+        assert(resp.find("204") != std::string::npos);
+
+        // reads are untouched — they mutate nothing
+        resp = request(port, "GET", "/api/tasks", "",
+                       host + "Origin: http://evil.example\r\n");
+        assert(resp.find("200 OK") != std::string::npos);
     }
 
     // upload torrent (download mode) → task appears; duplicate → 409

@@ -208,11 +208,25 @@ void WebServer::updateCatalog(
     catalogGzip_ = nullptr;
 }
 
+// A cross-site request carries an Origin; a same-origin one names the host
+// the client already dialled, which is exactly what Host says. No Origin at
+// all means it is not a browser (curl, a script on the LAN) — allowed, the
+// companion is a LAN service by design. "null" (sandboxed iframe, file://)
+// has no "://" and is rejected.
+bool WebServer::sameOrigin(const HttpRequest& req) {
+    std::string origin = req.header("origin");
+    if (origin.empty()) return true;
+    size_t scheme = origin.find("://");
+    if (scheme == std::string::npos) return false;
+    return origin.substr(scheme + 3) == req.header("host");
+}
+
 bool WebServer::authorized(const HttpRequest& req) const {
     std::lock_guard<std::mutex> lock(configMutex_);
     if (pin_.empty()) return true;
+    // Header only: a PIN in the query string lands in browser history and
+    // logs, and would let a plain cross-site link carry it.
     std::string provided = req.header("x-pipensx-pin");
-    if (provided.empty()) provided = req.queryParam("pin");
     if (provided.size() != pin_.size()) return false;
     // constant-time compare; a LAN PIN hardly merits it but it costs nothing
     unsigned char diff = 0;
@@ -376,8 +390,11 @@ HttpResponse WebServer::routeApi(const HttpRequest& req) {
         return jsonError(404, "not found");
     }
 
-    // Everything below mutates → PIN check (auth/check exists so the UI can
-    // validate a remembered PIN explicitly).
+    // Everything below mutates → a page on another origin must not be able
+    // to drive the console just because the browser can reach it.
+    if (!sameOrigin(req)) return jsonError(403, "cross-origin");
+    // PIN check (auth/check exists so the UI can validate a remembered PIN
+    // explicitly).
     if (!authorized(req)) return jsonError(401, "pin");
     if (parts[0] == "auth" && parts.size() == 2 && parts[1] == "check")
         return HttpResponse::empty(204);
