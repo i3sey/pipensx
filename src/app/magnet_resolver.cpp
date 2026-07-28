@@ -877,6 +877,17 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
     std::thread dhtThread([&spec, &cancelled, &dhtStop, &dhtSearch] {
         runDhtSearch(spec.infoHash, cancelled, dhtStop, dhtSearch);
     });
+    /* The search now outlives the tracker phase, so every exit path below has
+       to stop and join it. */
+    struct DhtJoin {
+        std::atomic<bool>& stop;
+        std::thread& thread;
+        ~DhtJoin() {
+            stop.store(true);
+            if (thread.joinable())
+                thread.join();
+        }
+    } dhtJoin{dhtStop, dhtThread};
     std::vector<uint8_t> peers;
     std::string firstFailure;
     bool sawTrackerFailure = false;
@@ -913,22 +924,36 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
         if (peers.size() / 6 >= kMaxMergedPeers)
             break;
     }
-    /* When RuTracker answered — with peers or an authoritative "not
-       registered" — there is nothing to wait for. When the trackers were
-       unreachable (blocked in RF), the DHT search keeps running until its
-       own deadline as the fallback peer source. */
-    if (!peers.empty() || sawNotRegistered)
-        dhtStop.store(true);
-    dhtThread.join();
-    {
+    /* Merge whatever the DHT search has turned up so far. appendUniquePeers
+       dedups, so calling this repeatedly just picks up the newcomers. Only
+       ever called with every metadata worker joined: it grows `peers`, and a
+       live worker holds peers.data(). */
+    auto mergeDht = [&]() -> uint32_t {
         std::lock_guard<std::mutex> lock(dhtSearch.mutex);
-        uint32_t dhtCount = static_cast<uint32_t>(dhtSearch.peers.size() / 6);
-        if (dhtCount) {
-            appendUniquePeers(peers, dhtSearch.peers.data(), dhtCount);
-            log_msg("[magnet] dht added %u peers, total=%u\n",
-                    dhtCount, static_cast<unsigned>(peers.size() / 6));
-        }
-    }
+        uint32_t before = static_cast<uint32_t>(peers.size() / 6);
+        if (!dhtSearch.peers.empty())
+            appendUniquePeers(
+                peers, dhtSearch.peers.data(),
+                static_cast<uint32_t>(dhtSearch.peers.size() / 6));
+        uint32_t added = static_cast<uint32_t>(peers.size() / 6) - before;
+        if (added)
+            log_msg("[magnet] dht added %u peers, total=%u\n", added,
+                    static_cast<unsigned>(peers.size() / 6));
+        return added;
+    };
+
+    /* "Not registered" is authoritative — nothing left to look for. Peers,
+       on the other hand, are not an answer: a tracker's whole peer list can
+       be unreachable (blocked network, every peer NATed), and then the DHT is
+       the only other source we have. So the search keeps running alongside
+       the metadata workers and every retry round merges what it found. When
+       the trackers gave us nothing at all there is nothing to run alongside,
+       so wait for it here. */
+    if (sawNotRegistered)
+        dhtStop.store(true);
+    if (peers.empty() || sawNotRegistered)
+        dhtThread.join();
+    mergeDht();
     uint32_t peerCount = static_cast<uint32_t>(peers.size() / 6);
     if (!peerCount) {
         if (sawNotRegistered) {
@@ -1006,15 +1031,15 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
             /* Every known peer was tried once without metadata. Rather than
                failing on the first sweep — which is what a second device behind
                the same NAT hits when the seeders already have a connection from
-               that IP — back off briefly, pull a rotated peer set, and keep
-               trying until the deadline. */
+               that IP — back off briefly, pull a rotated peer set plus what the
+               DHT has found meanwhile, and keep trying until the deadline. */
             uint64_t backoffUntil = now_ms() + kReannounceBackoffMs;
             while (!cancelled && now_ms() < backoffUntil &&
                    now_ms() < deadline)
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
             if (cancelled || now_ms() >= deadline)
                 break;
-            uint32_t added = reannounce();
+            uint32_t added = mergeDht() + reannounce();
             peerCount = static_cast<uint32_t>(peers.size() / 6);
             if (added)
                 emptyReannounces = 0;
