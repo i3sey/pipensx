@@ -352,16 +352,25 @@ uint32_t tracker_announce(const metainfo_t *mi,
                           const uint8_t *peer_id,
                           uint16_t listen_port,
                           int64_t downloaded, int64_t left,
-                          uint8_t *compact_out, uint32_t max_peers) {
+                          uint8_t *compact_out, uint32_t max_peers,
+                          tracker_cancel_cb cancel, void *cancel_user) {
     uint32_t total = 0;
     uint8_t tmp[200*6];
 
     for (uint32_t t = 0; t < mi->num_trackers && total < max_peers; t++) {
+        /* Each tracker blocks for up to CURLOPT_TIMEOUT, and there can be
+           MAX_TRACKERS of them — a teardown waiting on this thread must not
+           have to sit through the whole list. */
+        if (cancel && cancel(cancel_user)) {
+            log_msg("[tracker] announce cancelled after %u tracker(s)\n", t);
+            break;
+        }
         const char *url = mi->trackers[t];
         uint32_t n = 0;
 
-        n = tracker_announce_url(url, mi->info_hash, peer_id, listen_port,
-                                 downloaded, left, tmp, 200);
+        n = tracker_announce_url_ex_cancel(url, mi->info_hash, peer_id,
+                                           listen_port, downloaded, left, tmp,
+                                           200, NULL, cancel, cancel_user);
 
         uint32_t can = (total + n <= max_peers) ? n : max_peers - total;
         memcpy(compact_out + total*6, tmp, can*6);

@@ -6,6 +6,7 @@
 #include "util.h"
 #include "utp.h"
 #include "../platform/storage.h"
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -189,6 +190,9 @@ struct torrent {
     uint8_t         announce_compact[200*6];
     int64_t         announce_downloaded;
     int64_t         announce_left;
+    /* Set by torrent_destroy before it joins the announce thread, read by
+       that thread between trackers and from curl's progress callback. */
+    atomic_int      announce_stop;
     uint32_t startup_verify_index;
     int      startup_verifying;
     /* Set when startup verification finished with every piece already valid
@@ -1230,6 +1234,10 @@ static void announce_push_results(torrent_t *t, const uint8_t *compact,
         queue_push(t, *(uint32_t*)(compact+i*6), *(uint16_t*)(compact+i*6+4));
 }
 
+static int announce_cancelled(void *user) {
+    return atomic_load(&((torrent_t*)user)->announce_stop);
+}
+
 static void *announce_worker(void *arg) {
     torrent_t *t = (torrent_t*)arg;
     /* mi/peer_id/listen_port are immutable for the torrent's life;
@@ -1237,7 +1245,7 @@ static void *announce_worker(void *arg) {
     uint8_t compact[200*6];
     uint32_t n = tracker_announce(&t->mi, t->peer_id, t->listen_port,
                                   t->announce_downloaded, t->announce_left,
-                                  compact, 200);
+                                  compact, 200, announce_cancelled, t);
     pthread_mutex_lock(&t->announce_mutex);
     memcpy(t->announce_compact, compact, (size_t)n*6);
     t->announce_count = n;
@@ -1264,7 +1272,8 @@ static void announce_start(torrent_t *t, int64_t downloaded, int64_t left) {
     }
     uint8_t compact[200*6];
     uint32_t n = tracker_announce(&t->mi, t->peer_id, t->listen_port,
-                                  downloaded, left, compact, 200);
+                                  downloaded, left, compact, 200,
+                                  announce_cancelled, t);
     announce_push_results(t, compact, n);
     log_msg("[torrent] announce (sync): %u peers\n", n);
 }
@@ -1431,9 +1440,12 @@ torrent_t *torrent_create(const metainfo_t *mi,
 void torrent_destroy(torrent_t *t) {
     if (!t) return;
     log_msg("[torrent] destroy begin\n");
-    /* Join any in-flight announce (bounded by the tracker curl timeout) before
-       tearing down state it reads. */
+    /* Join any in-flight announce before tearing down state it reads. Tell it
+       to give up first: otherwise the join waits out CURLOPT_TIMEOUT for every
+       remaining tracker in the list, and a pause on a torrent with dead
+       trackers hangs the UI for as long as that takes. */
     if (t->announce_active) {
+        atomic_store(&t->announce_stop, 1);
         pthread_join(t->announce_thread, NULL);
         t->announce_active = 0;
     }
