@@ -327,16 +327,32 @@ bool recvFrame(PeerWire& wire, std::vector<uint8_t>& payload) {
     return size == 0 || wireRecvAll(wire, payload.data(), size, kIoTimeoutMs);
 }
 
-socket_t tcpConnect(const uint8_t* compact) {
+// What one peer attempt achieved, and where it died. Telling "we never reached
+// it" apart from "it answered but the handshake did not take" is the difference
+// between a network that blocks BitTorrent and a protocol problem — and it is
+// exactly what a bug report cannot reconstruct from a bare "failed" line.
+struct PeerAttempt {
+    bool connected = false;         // TCP session established
+    bool handshakeVerified = false; // BT handshake for our info-hash completed
+    const char* failure = "";       // stage the attempt died at
+    int error = 0;                  // errno there, 0 when there is none to give
+};
+
+socket_t tcpConnect(const uint8_t* compact, PeerAttempt& attempt) {
     sockaddr_in address{};
     address.sin_family = AF_INET;
     std::memcpy(&address.sin_addr.s_addr, compact, 4);
     std::memcpy(&address.sin_port, compact + 4, 2);
     socket_t fd = net_tcp_connect(&address);
-    if (fd == INVALID_SOCK)
+    if (fd == INVALID_SOCK) {
+        attempt.failure = "connect";
+        attempt.error = errno;
         return INVALID_SOCK;
+    }
     if (!waitFd(fd, POLLOUT, kIoTimeoutMs)) {
         net_close(fd);
+        attempt.failure = "connect timed out";
+        attempt.error = 0;
         return INVALID_SOCK;
     }
     int socketError = 0;
@@ -344,6 +360,8 @@ socket_t tcpConnect(const uint8_t* compact) {
     if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &socketError, &errorSize) != 0 ||
         socketError != 0) {
         net_close(fd);
+        attempt.failure = "connect refused";
+        attempt.error = socketError;
         return INVALID_SOCK;
     }
     return fd;
@@ -431,10 +449,12 @@ bool mseHandshake(socket_t fd, const uint8_t infoHash[20],
 // peer drops it (encryption-only), reconnect and retry over MSE/PE. On success
 // `wire` owns the socket and carries any encryption state.
 bool connectPeer(const uint8_t* compact, const uint8_t infoHash[20],
-                 const uint8_t peerId[20], PeerWire& wire) {
-    socket_t fd = tcpConnect(compact);
+                 const uint8_t peerId[20], PeerWire& wire,
+                 PeerAttempt& attempt) {
+    socket_t fd = tcpConnect(compact, attempt);
     if (fd == INVALID_SOCK)
         return false;
+    attempt.connected = true;
 
     uint8_t handshake[68];
     buildBtHandshake(handshake, infoHash, peerId);
@@ -450,13 +470,15 @@ bool connectPeer(const uint8_t* compact, const uint8_t infoHash[20],
     net_close(fd);
     wire = PeerWire{};
 
-    fd = tcpConnect(compact);
+    fd = tcpConnect(compact, attempt);
     if (fd == INVALID_SOCK)
         return false;
     if (!mseHandshake(fd, infoHash, peerId, wire) ||
         !readBtHandshakeReply(wire, infoHash)) {
         net_close(fd);
         wire = PeerWire{};
+        attempt.failure = "plaintext and MSE handshake";
+        attempt.error = 0;
         return false;
     }
     net_set_tcp_receive_buffer(fd);
@@ -567,8 +589,8 @@ bool fetchMetadataFromPeer(const uint8_t* compact,
                            std::atomic<bool>& stopWorkers,
                            const MagnetResolver::ProgressCallback& progress,
                            std::vector<uint8_t>& metadata,
-                           bool& handshakeVerified) {
-    handshakeVerified = false;
+                           PeerAttempt& attempt) {
+    attempt = PeerAttempt{};
     if (cancelled || stopWorkers || now_ms() >= deadline)
         return false;
     if (progress)
@@ -576,15 +598,15 @@ bool fetchMetadataFromPeer(const uint8_t* compact,
                   peerCount});
 
     PeerWire wire;
-    if (!connectPeer(compact, spec.infoHash, peerId, wire)) {
-        log_msg("[magnet] peer %u/%u connect or handshake failed\n",
-                peerIndex + 1, peerCount);
+    if (!connectPeer(compact, spec.infoHash, peerId, wire, attempt)) {
+        log_msg("[magnet] peer %u/%u failed at %s (errno %d)\n",
+                peerIndex + 1, peerCount, attempt.failure, attempt.error);
         net_close(wire.fd);
         return false;
     }
     log_msg("[magnet] peer %u/%u BitTorrent handshake ok%s\n",
             peerIndex + 1, peerCount, wire.encrypted ? " (MSE)" : "");
-    handshakeVerified = true;
+    attempt.handshakeVerified = true;
 
     uint8_t extension = 0;
     size_t metadataSize = 0;
@@ -680,7 +702,8 @@ void harvestPexFromPeer(const uint8_t* compact, const MagnetSpec& spec,
                         std::atomic<bool>& cancelled,
                         std::vector<uint8_t>& out) {
     PeerWire wire;
-    if (!connectPeer(compact, spec.infoHash, peerId, wire)) {
+    PeerAttempt attempt;
+    if (!connectPeer(compact, spec.infoHash, peerId, wire, attempt)) {
         net_close(wire.fd);
         return;
     }
@@ -1074,12 +1097,12 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
                     }
 
                     std::vector<uint8_t> candidate;
-                    bool handshakeVerified = false;
+                    PeerAttempt attempt;
                     bool fetched = fetchMetadataFromPeer(
                         peers.data() + peerIndex * 6, spec, peerId, peerIndex,
                         peerCount, deadline, cancelled, stopWorkers, progress,
-                        candidate, handshakeVerified);
-                    if (handshakeVerified) {
+                        candidate, attempt);
+                    if (attempt.handshakeVerified) {
                         std::lock_guard<std::mutex> lock(mutex);
                         appendUniquePeers(verifiedEndpoints,
                                           peers.data() + peerIndex * 6, 1);
