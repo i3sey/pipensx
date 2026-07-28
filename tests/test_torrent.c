@@ -46,6 +46,41 @@ static void test_bencode_rejects_deep_nesting(void) {
     free(b);
 }
 
+/* Single-file torrent whose three numbers can be set independently, so the
+   metadata can be made deliberately inconsistent. */
+static int parse_single(long long pieceLen, long long fileLen, int pieces,
+                        metainfo_t *mi) {
+    static uint8_t buf[8192];
+    size_t n = (size_t)snprintf(
+        (char *)buf, sizeof(buf),
+        "d4:infod6:lengthi%llde4:name4:test12:piece lengthi%llde6:pieces%d:",
+        fileLen, pieceLen, pieces * 20);
+    for (int i = 0; i < pieces * 20; i++) buf[n++] = 'H';
+    memcpy(buf + n, "ee", 2);
+    n += 2;
+    return metainfo_parse(buf, n, mi);
+}
+
+static void test_metainfo_rejects_bad_numbers(void) {
+    metainfo_t mi;
+    assert(parse_single(16384, 100, 1, &mi)); /* ceil(100/16384) == 1 */
+    metainfo_free(&mi);
+    assert(parse_single(16384, 16385, 2, &mi)); /* one byte into piece 2 */
+    metainfo_free(&mi);
+
+    assert(!parse_single(0, 100, 1, &mi));          /* zero piece length */
+    assert(!parse_single(-16384, 100, 1, &mi));     /* negative */
+    assert(!parse_single(1LL << 40, 1LL << 40, 1, &mi)); /* absurd */
+    assert(!parse_single(16384, -5, 1, &mi));       /* negative file length */
+    assert(!parse_single(16384, 100, 7, &mi));      /* piece count mismatch */
+
+    /* A 23-digit integer used to wrap into a plausible piece length. */
+    const char ovf[] = "d4:infod6:lengthi99999999999999999999999e4:name4:test"
+                       "12:piece lengthi99999999999999999999999e6:pieces20:"
+                       "HHHHHHHHHHHHHHHHHHHHee";
+    assert(!metainfo_parse((const uint8_t *)ovf, sizeof(ovf) - 1, &mi));
+}
+
 static void test_metainfo_path_join_bounds(void) {
     metainfo_t mi;
     const char *ok[] = {"dir", "file.nsp"};
@@ -334,6 +369,7 @@ int main(void) {
     test_initial_peers_keep_verified_order();
     test_bencode_rejects_deep_nesting();
     test_metainfo_path_join_bounds();
+    test_metainfo_rejects_bad_numbers();
     puts("torrent tests passed");
     return 0;
 }

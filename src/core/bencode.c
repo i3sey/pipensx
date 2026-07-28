@@ -1,4 +1,5 @@
 #include "bencode.h"
+#include <stdint.h>
 #include <string.h>
 
 /* Parse integer: iNNNe */
@@ -10,7 +11,13 @@ static int parse_int(const char **p, const char *end, int64_t *out) {
     if (s < end && *s == '-') { neg = 1; s++; }
     int64_t v = 0;
     int digits = 0;
-    while (s < end && *s >= '0' && *s <= '9') { v = v * 10 + (*s - '0'); s++; digits++; }
+    while (s < end && *s >= '0' && *s <= '9') {
+        /* Signed overflow is UB, and a wrapped value looks like a plausible
+           piece length to everything downstream. Reject instead. */
+        if (v > (INT64_MAX - (*s - '0')) / 10) return 0;
+        v = v * 10 + (*s - '0');
+        s++; digits++;
+    }
     if (!digits || s >= end || *s != 'e') return 0;
     s++;
     *out = neg ? -v : v;
@@ -24,7 +31,13 @@ static int parse_str(const char **p, const char *end,
     const char *s = *p;
     if (s >= end || *s < '0' || *s > '9') return 0;
     size_t len = 0;
-    while (s < end && *s >= '0' && *s <= '9') { len = len * 10 + (*s - '0'); s++; }
+    while (s < end && *s >= '0' && *s <= '9') {
+        /* A wrapped length could come back small enough to pass the bounds
+           check below and misframe the rest of the buffer. */
+        if (len > (SIZE_MAX - (size_t)(*s - '0')) / 10) return 0;
+        len = len * 10 + (size_t)(*s - '0');
+        s++;
+    }
     if (s >= end || *s != ':') return 0;
     s++;
     if ((size_t)(end - s) < len) return 0;

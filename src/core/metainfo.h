@@ -7,6 +7,12 @@
 #define MAX_NAME_LEN  256
 #define MAX_WEB_SEEDS 8
 
+/* Sanity ceilings for untrusted metadata. Real torrents top out around
+   16 MiB pieces; the cap only has to keep piece.c's per-piece malloc and
+   the total-length arithmetic in a range that cannot overflow. */
+#define MAX_PIECE_LENGTH (256LL * 1024 * 1024)
+#define MAX_TOTAL_LENGTH (1LL << 50) /* 1 PiB */
+
 typedef struct {
     char    path[MAX_NAME_LEN]; /* relative path, '/' separated */
     int64_t length;

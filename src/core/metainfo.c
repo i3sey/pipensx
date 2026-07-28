@@ -75,6 +75,13 @@ int metainfo_parse(const uint8_t *data, size_t len, metainfo_t *mi) {
         log_msg("[meta] no piece length\n");
         return 0;
     }
+    /* Nothing downstream checks this: piece.c mallocs piece_length and
+       indexes at idx * piece_length. 256 MiB is far above any real torrent
+       (16 MiB is the practical ceiling) and still a sane allocation. */
+    if (v.ival <= 0 || v.ival > MAX_PIECE_LENGTH) {
+        log_msg("[meta] bad piece length %lld\n", (long long)v.ival);
+        return 0;
+    }
     mi->piece_length = v.ival;
 
     /* pieces */
@@ -103,6 +110,11 @@ int metainfo_parse(const uint8_t *data, size_t len, metainfo_t *mi) {
             be_node_t item;
             while (be_list_next(&fp, fe, &item)) fc++;
         }
+        if (fc > MAX_FILES) {
+            log_msg("[meta] too many files (%u)\n", fc);
+            free(mi->piece_hashes);
+            return 0;
+        }
         mi->num_files = fc;
         mi->files = (mi_file_t*)calloc(fc, sizeof(mi_file_t));
         if (!mi->files) { free(mi->piece_hashes); return 0; }
@@ -117,8 +129,14 @@ int metainfo_parse(const uint8_t *data, size_t len, metainfo_t *mi) {
             mi_file_t *f = &mi->files[fi];
             /* length */
             be_node_t fv;
-            if (be_dict_get(item.buf, item.buf + item.raw_len, "length", 6, &fv) && fv.type == BE_INT)
+            if (be_dict_get(item.buf, item.buf + item.raw_len, "length", 6, &fv) && fv.type == BE_INT) {
+                if (fv.ival < 0 || fv.ival > MAX_TOTAL_LENGTH) {
+                    log_msg("[meta] bad file length %lld\n", (long long)fv.ival);
+                    metainfo_free(mi);
+                    return 0;
+                }
                 f->length = fv.ival;
+            }
             /* path list */
             be_node_t path_node;
             if (be_dict_get(item.buf, item.buf + item.raw_len, "path", 4, &path_node)
@@ -162,11 +180,31 @@ int metainfo_parse(const uint8_t *data, size_t len, metainfo_t *mi) {
         mi->files = (mi_file_t*)calloc(1, sizeof(mi_file_t));
         if (!mi->files) { free(mi->piece_hashes); return 0; }
         be_node_t lv;
-        if (be_dict_get(info_node.buf, info_node.buf + info_node.raw_len, "length", 6, &lv) && lv.type == BE_INT)
+        if (be_dict_get(info_node.buf, info_node.buf + info_node.raw_len, "length", 6, &lv) && lv.type == BE_INT) {
+            if (lv.ival < 0 || lv.ival > MAX_TOTAL_LENGTH) {
+                log_msg("[meta] bad file length %lld\n", (long long)lv.ival);
+                metainfo_free(mi);
+                return 0;
+            }
             mi->files[0].length = lv.ival;
+        }
         strncpy_safe(mi->files[0].path, MAX_NAME_LEN, mi->name, strlen(mi->name));
         mi->files[0].offset = 0;
         mi->total_length = mi->files[0].length;
+    }
+
+    /* The piece count comes from the "pieces" string, the byte count from
+       the file list — nothing tied them together, so a torrent could claim
+       one piece for a terabyte, or half a million pieces for one byte, and
+       every consumer of piece_len()/total_length inherited the mismatch. */
+    if (mi->num_pieces !=
+        (uint32_t)((mi->total_length + mi->piece_length - 1) /
+                   mi->piece_length)) {
+        log_msg("[meta] %u pieces does not match %lld bytes at %lld\n",
+                mi->num_pieces, (long long)mi->total_length,
+                (long long)mi->piece_length);
+        metainfo_free(mi);
+        return 0;
     }
 
     /* Warn about FAT32 limit */
