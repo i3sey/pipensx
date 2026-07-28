@@ -1,8 +1,45 @@
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "../src/core/torrent.c"
+
+/* Minimal multi-file torrent whose single file has the given "path" list. */
+static int parse_with_path(const char *const *parts, size_t nparts,
+                           metainfo_t *mi) {
+    static uint8_t buf[8192];
+    size_t n = 0;
+#define PUT(...) \
+    n += (size_t)snprintf((char *)buf + n, sizeof(buf) - n, __VA_ARGS__)
+    PUT("d4:infod5:filesld6:lengthi100e4:pathl");
+    for (size_t i = 0; i < nparts; i++)
+        PUT("%zu:%s", strlen(parts[i]), parts[i]);
+    PUT("eee4:name4:test12:piece lengthi16384e6:pieces20:");
+#undef PUT
+    memcpy(buf + n, "HHHHHHHHHHHHHHHHHHHH", 20);
+    n += 20;
+    memcpy(buf + n, "ee", 2);
+    n += 2;
+    return metainfo_parse(buf, n, mi);
+}
+
+static void test_metainfo_path_join_bounds(void) {
+    metainfo_t mi;
+    const char *ok[] = {"dir", "file.nsp"};
+    assert(parse_with_path(ok, 2, &mi));
+    assert(strcmp(mi.files[0].path, "dir/file.nsp") == 0);
+    metainfo_free(&mi);
+
+    /* Each component fits on its own; together they do not. This used to
+       walk off the end of a MAX_NAME_LEN stack buffer, one strncat per
+       component, before the path was ever checked for safety. */
+    char big[201];
+    memset(big, 'A', 200);
+    big[200] = 0;
+    const char *toolong[] = {big, big, big};
+    assert(!parse_with_path(toolong, 3, &mi));
+}
 
 static void test_ema_update(void) {
     uint64_t value = ema_update(0, 1000);
@@ -273,6 +310,7 @@ int main(void) {
     test_copy_have_bitfield_guards();
     test_blocklist_cooldown_and_wrap();
     test_initial_peers_keep_verified_order();
+    test_metainfo_path_join_bounds();
     puts("torrent tests passed");
     return 0;
 }

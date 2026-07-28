@@ -123,18 +123,27 @@ int metainfo_parse(const uint8_t *data, size_t len, metainfo_t *mi) {
             be_node_t path_node;
             if (be_dict_get(item.buf, item.buf + item.raw_len, "path", 4, &path_node)
                 && path_node.type == BE_LIST) {
-                char tmp[MAX_NAME_LEN] = "";
                 const char *pp = path_node.buf + 1;
                 const char *pe = path_node.buf + path_node.raw_len - 1;
                 be_node_t part;
                 int first = 1;
+                size_t plen = 0;
                 while (be_list_next(&pp, pe, &part)) {
                     if (part.type != BE_STR) continue;
-                    if (!first) strncat(tmp, "/", sizeof(tmp)-1);
-                    strncat(tmp, part.sval, part.slen < sizeof(tmp)-1 ? part.slen : sizeof(tmp)-1);
+                    /* Bound each component against the space that is left.
+                       strncat's n is a per-call cap, so capping every
+                       component at MAX_NAME_LEN-1 let a few of them walk
+                       right off the end of the buffer. */
+                    size_t need = (first ? 0u : 1u) + part.slen;
+                    if (plen + need >= MAX_NAME_LEN) { plen = 0; break; }
+                    if (!first) f->path[plen++] = '/';
+                    memcpy(f->path + plen, part.sval, part.slen);
+                    plen += part.slen;
                     first = 0;
                 }
-                strncpy_safe(f->path, MAX_NAME_LEN, tmp, strlen(tmp));
+                /* Overflowed: leave the path empty and let the safety check
+                   below reject the torrent — it would not fit on disk. */
+                f->path[plen] = 0;
             }
             if (!metainfo_path_is_safe(f->path)) {
                 log_msg("[meta] unsafe file path '%s'\n", f->path);
