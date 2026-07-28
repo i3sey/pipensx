@@ -54,6 +54,21 @@ between any two runs, proportionally to how wide the focused row is. The
 `budget_for()`; everything else stays on the default. Check the diff in
 `build-golden/golden-out/diff/` before believing a failure.
 
+## LSP
+
+Use clangd for C/C++ work in `src/` and `tests/` — it catches C++20-only
+constructs leaking into the shared C++17 code (see above) before a build does.
+`compile_commands.json` is generated from `Makefile.pc` (matches its stricter
+C++17 flags) and gitignored — regenerate after touching source-file lists or
+flags:
+
+```
+make -f Makefile.pc clean && bear -- make -f Makefile.pc test
+```
+
+Not covered: `src/ui` (borealis), which only compiles under CMake/golden —
+clangd falls back to generic flags there.
+
 ## libnx and Switch-only code
 
 Covered by the `libnx` skill (`.claude/skills/libnx/`) — invoke it before

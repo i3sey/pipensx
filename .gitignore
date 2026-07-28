@@ -18,6 +18,10 @@ build_switch/
 build-switch/
 build-golden/
 
+# LSP
+compile_commands.json
+.cache/
+
 # Log files
 *.log
 
