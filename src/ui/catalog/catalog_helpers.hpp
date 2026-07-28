@@ -32,6 +32,11 @@ inline std::string classifyResolveFailure(const std::string& error) {
     if (lower.find("not registered") != std::string::npos ||
         lower.find("stale") != std::string::npos)
         return tr("pipensx/health/stale");
+    // Reachable-peer failures come before the metadata one: not getting a
+    // connection open is a network problem, and "no metadata" would send the
+    // reporter after the catalog entry instead of their Wi-Fi.
+    if (lower.find("could not connect") != std::string::npos)
+        return tr("pipensx/health/network_blocked");
     if (lower.find("metadata") != std::string::npos)
         return tr("pipensx/health/no_metadata");
     if (lower.find("no usable peers") != std::string::npos ||

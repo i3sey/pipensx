@@ -1017,6 +1017,7 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
     uint32_t nextPeer = 0;
     bool resolved = false;
     std::atomic<bool> stopWorkers{false};
+    std::atomic<uint32_t> reachedPeers{0}; // peers we got a TCP session to
     std::vector<uint8_t> metadata;
     std::vector<uint8_t> verifiedEndpoints;
 
@@ -1102,6 +1103,8 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
                         peers.data() + peerIndex * 6, spec, peerId, peerIndex,
                         peerCount, deadline, cancelled, stopWorkers, progress,
                         candidate, attempt);
+                    if (attempt.connected)
+                        reachedPeers.fetch_add(1);
                     if (attempt.handshakeVerified) {
                         std::lock_guard<std::mutex> lock(mutex);
                         appendUniquePeers(verifiedEndpoints,
@@ -1143,8 +1146,18 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
         }
     }
     if (metadata.empty()) {
-        error = "Peers were found, but none returned torrent metadata. "
-                "Try this catalog item again later.";
+        /* Not one of them let us open a TCP session — that is a network
+           blocking BitTorrent, not a stale catalog entry, and telling the two
+           apart is the difference between "try again later" (useless here)
+           and "try another network" (the thing that actually works). */
+        if (!reachedPeers.load())
+            error = "Found " + std::to_string(peerCount) +
+                    " peers but could not connect to any of them. This "
+                    "network appears to block BitTorrent — try another "
+                    "Wi-Fi or a phone hotspot.";
+        else
+            error = "Peers were found, but none returned torrent metadata. "
+                    "Try this catalog item again later.";
         return false;
     }
     if (progress)

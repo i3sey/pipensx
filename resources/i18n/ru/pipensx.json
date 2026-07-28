@@ -102,6 +102,7 @@
   "health": {
     "stale": "Устарел",
     "no_metadata": "Нет метаданных",
+    "network_blocked": "Сеть блокирует соединения",
     "no_peers": "Нет пиров",
     "resolve_failed": "Не удалось",
     "fresh": "Свежий",
