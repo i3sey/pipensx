@@ -58,16 +58,15 @@ between any two runs, proportionally to how wide the focused row is. The
 
 Use clangd for C/C++ work in `src/` and `tests/` — it catches C++20-only
 constructs leaking into the shared C++17 code (see above) before a build does.
-`compile_commands.json` is generated from `Makefile.pc` (matches its stricter
-C++17 flags) and gitignored — regenerate after touching source-file lists or
-flags:
+`.clangd` routes `src/ui/**` to `build-golden`'s compile database (C++20,
+borealis includes) and everything else to the root one, generated from
+`Makefile.pc` (C++17 — the stricter build). Both are gitignored; regenerate
+after touching source-file lists or flags:
 
 ```
 make -f Makefile.pc clean && bear -- make -f Makefile.pc test
+cmake -S . -B build-golden -DPIPENSX_GOLDEN=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 ```
-
-Not covered: `src/ui` (borealis), which only compiles under CMake/golden —
-clangd falls back to generic flags there.
 
 ## libnx and Switch-only code
 
