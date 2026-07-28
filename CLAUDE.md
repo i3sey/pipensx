@@ -47,12 +47,10 @@ silence a diff you have not explained.
 It always renders on its own Xvfb display, so nothing flashes on your desktop
 and stray keypresses cannot reach the runner. `GOLDEN_HEADLESS=0` to watch it.
 
-Run-to-run noise is real and mostly the focus highlight: its radial gradient is
-phased off the wall clock inside borealis, so the highlight border drifts
-between any two runs, proportionally to how wide the focused row is. The
-`torrent-selection` screens are the widest and get their own 40000 budget via
-`budget_for()`; everything else stays on the default. Check the diff in
-`build-golden/golden-out/diff/` before believing a failure.
+Run-to-run noise is real, and the `torrent-selection` screens carry their own
+budget because of it. Triaging a failure, re-rendering one screen instead of
+all 38, and deciding whether to re-baseline are covered by the `golden` skill
+(`.claude/skills/golden/`) — invoke it before reading a diff image.
 
 ## LSP
 
@@ -68,6 +66,12 @@ make -f Makefile.pc clean && bear -- make -f Makefile.pc test
 cmake -S . -B build-golden -DPIPENSX_GOLDEN=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 ```
 
+It is also how you navigate the big files without reading them whole:
+`documentSymbol` first, then `Read` with `offset`/`limit` at the line it
+names. `src/ui/catalog/catalog_view.hpp` is 78 KB; its symbol map is under a
+tenth of that. `goToDefinition`, `findReferences` and `incomingCalls` resolve
+through the real AST, so they follow what grep cannot.
+
 ## libnx and Switch-only code
 
 Covered by the `libnx` skill (`.claude/skills/libnx/`) — invoke it before
@@ -79,6 +83,11 @@ rules that cost a build to rediscover.
 - `docs/plans/` is **historical**, not a roadmap: it documents design work and
   may describe code that has since changed or been removed (see its README).
   Source, tests, `README.md` and `BUILD.md` are authoritative.
+- Search `src/` and `tests/` (244 files), not the tree. `vendor/` is 5525
+  files of pinned third-party code: a domain term barely touches it, but a
+  generic C identifier drowns in it — `malloc` is 7 hits in our code and 376
+  in vendor. Reach into `vendor/` only when the task names it, and then name
+  the subdirectory.
 - Git: branch off `main`, then `git merge --ff-only` back and push — history
   stays linear, no merge commits.
 - CI on push and PR: `ci` (make test + gitleaks history scan) and `golden`.
