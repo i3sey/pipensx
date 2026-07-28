@@ -34,9 +34,15 @@ static int parse_str(const char **p, const char *end,
     return 1;
 }
 
+/* Nesting cap. Every structure we parse is a handful of levels deep (root
+   dict -> info -> files -> file dict -> path list is the deepest). Without a
+   cap, a peer's extension handshake of a few thousand 'l' bytes recurses
+   once per byte and blows the thread stack. */
+#define BE_MAX_DEPTH 16
+
 /* Skip one value without saving */
-static int be_skip(const char **p, const char *end) {
-    if (*p >= end) return 0;
+static int be_skip(const char **p, const char *end, int depth) {
+    if (*p >= end || depth > BE_MAX_DEPTH) return 0;
     char c = **p;
     if (c == 'i') {
         int64_t dummy;
@@ -47,7 +53,7 @@ static int be_skip(const char **p, const char *end) {
     } else if (c == 'l') {
         (*p)++;
         while (*p < end && **p != 'e') {
-            if (!be_skip(p, end)) return 0;
+            if (!be_skip(p, end, depth + 1)) return 0;
         }
         if (*p >= end) return 0;
         (*p)++;
@@ -57,7 +63,7 @@ static int be_skip(const char **p, const char *end) {
         while (*p < end && **p != 'e') {
             const char *kv; size_t kl;
             if (!parse_str(p, end, &kv, &kl)) return 0;
-            if (!be_skip(p, end)) return 0;
+            if (!be_skip(p, end, depth + 1)) return 0;
         }
         if (*p >= end) return 0;
         (*p)++;
@@ -81,12 +87,12 @@ int be_decode(const char **p, const char *end, be_node_t *out) {
         out->type = BE_LIST;
         /* We don't recurse here; caller uses be_list_next */
         const char *tmp = *p;
-        if (!be_skip(&tmp, end)) return 0;
+        if (!be_skip(&tmp, end, 0)) return 0;
         *p = tmp;
     } else if (c == 'd') {
         out->type = BE_DICT;
         const char *tmp = *p;
-        if (!be_skip(&tmp, end)) return 0;
+        if (!be_skip(&tmp, end, 0)) return 0;
         *p = tmp;
     } else {
         return 0;

@@ -1,8 +1,10 @@
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
+#include "../src/core/bencode.h"
 #include "../src/core/torrent.c"
 
 /* Minimal multi-file torrent whose single file has the given "path" list. */
@@ -22,6 +24,26 @@ static int parse_with_path(const char *const *parts, size_t nparts,
     memcpy(buf + n, "ee", 2);
     n += 2;
     return metainfo_parse(buf, n, mi);
+}
+
+/* A peer's extension handshake goes straight into be_dict_get (peer.c). A
+   few thousand 'l' bytes used to recurse once per byte and take the thread
+   stack with it; the parse must fail instead of crashing. */
+static void test_bencode_rejects_deep_nesting(void) {
+    enum { kDepth = 100000 };
+    char *b = malloc(4 + kDepth * 2 + 1);
+    assert(b);
+    size_t n = 0;
+    memcpy(b + n, "d1:x", 4);
+    n += 4;
+    memset(b + n, 'l', kDepth);
+    n += kDepth;
+    memset(b + n, 'e', kDepth);
+    n += kDepth;
+    b[n++] = 'e';
+    be_node_t v;
+    assert(!be_dict_get(b, b + n, "m", 1, &v));
+    free(b);
 }
 
 static void test_metainfo_path_join_bounds(void) {
@@ -310,6 +332,7 @@ int main(void) {
     test_copy_have_bitfield_guards();
     test_blocklist_cooldown_and_wrap();
     test_initial_peers_keep_verified_order();
+    test_bencode_rejects_deep_nesting();
     test_metainfo_path_join_bounds();
     puts("torrent tests passed");
     return 0;
