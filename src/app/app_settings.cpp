@@ -63,6 +63,11 @@ bool readUnsigned(const Json& root, const char* key, uint64_t& value,
     return true;
 }
 
+// Schema version written by this build. Bumped when a stored value has to be
+// reinterpreted rather than merely added: parseSettings migrates anything
+// older forward, so a bump is always paired with a rule below.
+constexpr int kSettingsVersion = 2;
+
 bool parseSettings(const std::string& text, AppSettingsData& values,
                    std::string& error) {
     Json root = Json::parse(text, nullptr, false);
@@ -70,10 +75,15 @@ bool parseSettings(const std::string& text, AppSettingsData& values,
         error = "Settings file is not valid JSON.";
         return false;
     }
-    if (root.contains("version") &&
-        (!root["version"].is_number_integer() || root["version"] != 1)) {
-        error = "Settings file has an unsupported version.";
-        return false;
+    // No version key at all predates versioning, so it is a v1 file.
+    int fileVersion = 1;
+    if (root.contains("version")) {
+        if (!root["version"].is_number_integer() || root["version"] < 1 ||
+            root["version"] > kSettingsVersion) {
+            error = "Settings file has an unsupported version.";
+            return false;
+        }
+        fileVersion = root["version"].get<int>();
     }
 
     std::string catalog = catalogFilterName(values.catalogFilter);
@@ -108,6 +118,14 @@ bool parseSettings(const std::string& text, AppSettingsData& values,
     if (!readUnsigned(root, "max_active_downloads", maxActive, error))
         return false;
     values.maxActiveDownloads = clampMaxActiveDownloads(maxActive);
+    // v1 -> v2: concurrent downloads became opt-in. Nothing splits the link
+    // between engines, so the count a v1 build wrote — its default 2 included
+    // — is not a choice we can tell apart from one the user made. Everyone
+    // lands back on the serial queue. The migration is idempotent and the
+    // file is not rewritten here: the first update() from the UI stamps
+    // kSettingsVersion, so a count the user raises afterwards sticks.
+    if (fileVersion < 2)
+        values.maxActiveDownloads = kMinActiveDownloads;
     if (!isValidWebPin(values.webServerPin))
         values.webServerPin.clear();
 
@@ -144,7 +162,7 @@ bool parseSettings(const std::string& text, AppSettingsData& values,
 
 std::string serializeSettings(const AppSettingsData& values) {
     Json root;
-    root["version"] = 1;
+    root["version"] = kSettingsVersion;
     root["language"] = values.language;
     root["catalog_filter"] = catalogFilterName(values.catalogFilter);
     root["refresh_catalog_on_launch"] = values.refreshCatalogOnLaunch;

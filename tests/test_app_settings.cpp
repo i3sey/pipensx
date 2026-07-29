@@ -174,7 +174,7 @@ void testMaxActiveDownloadsClamped() {
     cleanup();
     {
         std::ofstream output(SettingsPath);
-        output << R"({"version":1,"max_active_downloads":99})";
+        output << R"({"version":2,"max_active_downloads":99})";
     }
     AppSettings settings(SettingsPath, LegacyPath);
     std::string error;
@@ -186,6 +186,56 @@ void testMaxActiveDownloadsClamped() {
     assert(pipensx::clampMaxActiveDownloads(4) == 4);
     assert(pipensx::clampMaxActiveDownloads(5) == 4);
     assert(pipensx::clampMaxActiveDownloads(UINT64_MAX) == 4);
+}
+
+// v1 -> v2: every stored download count goes back to the serial queue, and
+// everything else in the file comes through untouched. Raising the count
+// afterwards has to survive a restart — the update() that persists it also
+// stamps the new version, which is what ends the reset.
+void testVersionOneResetsActiveDownloads() {
+    cleanup();
+    {
+        std::ofstream output(SettingsPath);
+        output << R"({"version":1,"max_active_downloads":4,)"
+               << R"("language":"ru","web_server_pin":"4242"})";
+    }
+    {
+        AppSettings settings(SettingsPath, LegacyPath);
+        std::string error;
+        assert(settings.load(error));
+        assert(settings.get().maxActiveDownloads == 1);
+        assert(settings.get().language == "ru");
+        assert(settings.get().webServerPin == "4242");
+    }
+    // update() stamps the new version, so a deliberate 4 now sticks.
+    {
+        AppSettings settings(SettingsPath, LegacyPath);
+        std::string error;
+        assert(settings.load(error));
+        AppSettingsData values = settings.get();
+        values.maxActiveDownloads = 4;
+        assert(settings.update(values, error));
+    }
+    {
+        AppSettings settings(SettingsPath, LegacyPath);
+        std::string error;
+        assert(settings.load(error));
+        assert(settings.get().maxActiveDownloads == 4);
+    }
+}
+
+// A file from a build newer than this one is not something we can safely
+// reinterpret, so it fails closed instead of being silently downgraded.
+void testFutureVersionIsRejected() {
+    cleanup();
+    {
+        std::ofstream output(SettingsPath);
+        output << R"({"version":99,"language":"ru"})";
+    }
+    AppSettings settings(SettingsPath, LegacyPath);
+    std::string error;
+    assert(!settings.load(error));
+    assert(!error.empty());
 }
 
 void testDailyRefreshDue() {
@@ -207,6 +257,8 @@ int main() {
     testLegacyTelemetryFlagMigratesOnce();
     testInvalidWebPinIsCleared();
     testMaxActiveDownloadsClamped();
+    testVersionOneResetsActiveDownloads();
+    testFutureVersionIsRejected();
     testDailyRefreshDue();
     cleanup();
     std::puts("app settings tests passed");
