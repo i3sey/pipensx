@@ -149,6 +149,14 @@ struct torrent {
     uint64_t speed_time_ms;
     uint64_t last_health_ms;
     uint32_t expired_requests;
+    /* Cached DHT routing-table counts. dht_shared_nodes() locks the shared
+       engine's global mutex and walks the whole table under it, while the
+       engine thread holds that same mutex across a full receive burst — so
+       reading it per torrent_stat() (every tick, ~100 Hz) parked the peer
+       event loop behind the DHT thread. These two numbers only feed a UI
+       counter; sample them on the 1 Hz speed tick instead. */
+    uint32_t dht_good;
+    uint32_t dht_dubious;
 
     char     telemetry_tag[48];
     uint32_t telemetry_generation;
@@ -1581,6 +1589,12 @@ int torrent_tick(torrent_t *t) {
         t->speed_bytes    = 0;
         sample_peer_rates(t, elapsed_ms, now);
         t->speed_time_ms  = now;
+        if (t->dht) {
+            int good = 0, dubious = 0;
+            dht_shared_nodes(&good, &dubious);
+            t->dht_good    = (uint32_t)good;
+            t->dht_dubious = (uint32_t)dubious;
+        }
     }
     emit_telemetry(t, now);
     if (now - t->last_health_ms >= 10000) {
@@ -1927,12 +1941,8 @@ void torrent_stat(const torrent_t *t, torrent_stat_t *s) {
         if (t->peers[i] && t->peers[i]->state == PS_ACTIVE)
             s->num_active_peers++;
     }
-    if (t->dht) {
-        int g=0, d=0;
-        dht_shared_nodes(&g, &d);
-        s->dht_good    = (uint32_t)g;
-        s->dht_dubious = (uint32_t)d;
-    }
+    s->dht_good    = t->dht_good;
+    s->dht_dubious = t->dht_dubious;
     s->downloaded = t->downloaded;
     s->total_bytes = (uint64_t)t->mi.total_length;
     s->completed_bytes = t->pm->completed_bytes;
