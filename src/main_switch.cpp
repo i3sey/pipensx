@@ -328,7 +328,10 @@ int main(int argc, char** argv) {
         manager.setInstallTarget(
             installTargetFor(settings.get().installLocation));
         manager.setMaxActiveDownloads(settings.get().maxActiveDownloads);
-        metadata.setImageNetworkThrottled(manager.hasActiveTransfer());
+        metadata.setImageNetwork(
+            manager.hasActiveTransfer()
+                ? GameMetadataService::ImageNetwork::Throttled
+                : GameMetadataService::ImageNetwork::Full);
 
         UpdateService updater;
 
@@ -432,7 +435,9 @@ int main(int argc, char** argv) {
         while (true) {
             bool activeTransfer = manager.hasActiveTransfer();
             performance.setActive(activeTransfer);
-            metadata.setImageNetworkThrottled(activeTransfer);
+            metadata.setImageNetwork(
+                activeTransfer ? GameMetadataService::ImageNetwork::Throttled
+                               : GameMetadataService::ImageNetwork::Full);
             if (!brls::Application::mainLoop())
                 break;
             if (firstFrame) {

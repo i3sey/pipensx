@@ -947,9 +947,14 @@ GameMetadataService::ImageLoadResult GameMetadataService::loadImageInternal(
                 path.c_str());
     }
     error.clear();
+    const ImageNetwork mode = imageNetwork_.load(std::memory_order_relaxed);
+    if (mode == ImageNetwork::Off) {
+        error = "Image network is off.";
+        return ImageLoadResult::Failed;
+    }
     // While a torrent transfers, covers still fetch — just under a receive cap
     // so they take a slice of the link instead of racing the swarm for it.
-    const long recvCap = imageNetworkThrottled_.load(std::memory_order_relaxed)
+    const long recvCap = mode == ImageNetwork::Throttled
                              ? kThrottledImageBytesPerSecond : 0;
     if (!httpGet(url, kMaxImageBytes, bytes, error, &stoppingRequested_,
                  recvCap))
@@ -1094,8 +1099,8 @@ void GameMetadataService::dropMemoryImageCache() const {
     imageRetryAfter_.clear();
 }
 
-void GameMetadataService::setImageNetworkThrottled(bool throttled) const {
-    imageNetworkThrottled_.store(throttled, std::memory_order_relaxed);
+void GameMetadataService::setImageNetwork(ImageNetwork mode) const {
+    imageNetwork_.store(mode, std::memory_order_relaxed);
 }
 
 void GameMetadataService::cacheImageLocked(

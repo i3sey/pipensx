@@ -957,7 +957,7 @@ void testAsyncImageDiskCache() {
     std::vector<GameMetadataService::ImageData> results;
     {
         GameMetadataService service(root, root + "/missing-index.json");
-        service.setImageNetworkThrottled(true);
+        service.setImageNetwork(GameMetadataService::ImageNetwork::Off);
         auto callback = [&](GameMetadataService::ImageData data) {
             std::lock_guard<std::mutex> lock(mutex);
             results.push_back(std::move(data));
@@ -1022,7 +1022,7 @@ void testImageMemoryCache() {
 
     {
         GameMetadataService service(root, root + "/missing-index.json");
-        service.setImageNetworkThrottled(true);
+        service.setImageNetwork(GameMetadataService::ImageNetwork::Off);
 
         // Cold: nothing decoded yet.
         assert(!service.cachedImage(url));
@@ -1132,7 +1132,7 @@ void testImageNetworkThrottledDuringActiveTransfer() {
     GameMetadataService::ImageData result;
     {
         GameMetadataService service(root, root + "/missing-index.json");
-        service.setImageNetworkThrottled(true);
+        service.setImageNetwork(GameMetadataService::ImageNetwork::Throttled);
         service.requestImage("http://127.0.0.1:1/throttled-cover.jpg",
             [&](GameMetadataService::ImageData data) {
                 std::lock_guard<std::mutex> lock(mutex);

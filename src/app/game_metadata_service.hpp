@@ -120,9 +120,16 @@ public:
     // UI_PLAN F6: invalidate decoded covers (catalog refresh); the disk
     // cache stays — clearImageCache() removes both.
     void dropMemoryImageCache() const;
-    // Active transfer: covers keep loading, under a per-fetch receive cap
-    // so they take a slice of the link instead of racing the swarm.
-    void setImageNetworkThrottled(bool throttled) const;
+    enum class ImageNetwork {
+        Full,
+        // Active transfer: covers keep loading, under a per-fetch receive cap
+        // so they take a slice of the link instead of racing the swarm.
+        Throttled,
+        // Cache-only. Nothing uncached ever reaches the network — the golden
+        // runner renders placeholders instead of fixture URLs.
+        Off,
+    };
+    void setImageNetwork(ImageNetwork mode) const;
     bool clearImageCache(std::string& error) const;
 
     size_t size() const { return byHash_.size(); }
@@ -194,7 +201,7 @@ private:
     mutable std::vector<std::thread> imageWorkers_;
     mutable size_t imageCacheBytes_ = 0;
     mutable uint64_t imageAccess_ = 0;
-    mutable std::atomic<bool> imageNetworkThrottled_{false};
+    mutable std::atomic<ImageNetwork> imageNetwork_{ImageNetwork::Full};
     mutable std::atomic<bool> stoppingRequested_{false};
     mutable bool stoppingImages_ = false;
     std::unordered_map<std::string, GameMetadata> byHash_;

@@ -314,7 +314,8 @@ int main(int argc, char** argv) {
     if (!metadata.load(error))
         std::fprintf(stderr, "golden_runner: metadata fixture: %s\n",
                      error.c_str());
-    metadata.setImageNetworkPaused(true); // placeholders only, no network
+    metadata.setImageNetwork(
+        GameMetadataService::ImageNetwork::Off); // placeholders, no network
 
     // Fixture mod index: no network, the table lists the fixture title so the
     // ModCD chip and fact row are covered by the golden screens.
