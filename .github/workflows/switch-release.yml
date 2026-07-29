@@ -32,7 +32,7 @@ jobs:
       - name: Install git (container has no VCS by default)
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends git ca-certificates curl zstd
+          apt-get install -y --no-install-recommends git ca-certificates curl zstd zip
 
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -106,12 +106,29 @@ jobs:
           PIPENSX_VERSION="${PIPENSX_VERSION#v}" make switch
           sha256sum build-switch/pipensx.nro > build-switch/pipensx.nro.sha256
 
+      - name: Pack the SD-card archive
+        # Unzips straight onto the card root: hbmenu lists switch/<name>/<name>.nro,
+        # and the app creates sdmc:/switch/pipensx itself on first launch, so the
+        # NRO is the only file that belongs in here.
+        env:
+          PIPENSX_VERSION: ${{ inputs.version }}
+        run: |
+          set -u
+          # Same "v" strip as the build step, so the archive name cannot
+          # disagree with the version baked into the binary.
+          version="${PIPENSX_VERSION#v}"
+          mkdir -p sdcard/switch/pipensx
+          cp build-switch/pipensx.nro sdcard/switch/pipensx/pipensx.nro
+          cd sdcard
+          zip -r -q "../build-switch/pipensx-${version}-sdcard.zip" switch
+
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: pipensx-nro
           path: |
             build-switch/pipensx.nro
             build-switch/pipensx.nro.sha256
+            build-switch/pipensx-*-sdcard.zip
           if-no-files-found: error
 
   draft-release:
@@ -133,6 +150,7 @@ jobs:
           gh release create "${{ inputs.version }}" \
             dist/pipensx.nro \
             dist/pipensx.nro.sha256 \
+            dist/pipensx-*-sdcard.zip \
             --repo "${{ github.repository }}" \
             --title "${{ inputs.version }}" \
             --draft \
