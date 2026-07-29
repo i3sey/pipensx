@@ -167,7 +167,7 @@ private:
     // so anything past 200 was letterbox the column could not afford.
     static constexpr float kCoverHeight = 200.0f;
 
-    // Left column: cover, full-width Install/Options, size, status (F3).
+    // Left column: cover, full-width Install / Select files, size, status (F3).
     //
     // The column does not scroll, so its height is a hard budget: 720 minus the
     // AppletFrame header (88) and footer (73) minus this page's 24px top/bottom
@@ -221,7 +221,7 @@ private:
         });
         left->addView(primary_);
 
-        // Options and the wishlist toggle share one row: a fourth full-width
+        // File selection and the wishlist toggle share one row: a fourth full-width
         // button does not fit the column budget, and a square star needs no
         // translation (Russian "В избранном" would not fit it anyway).
         auto* actions = new brls::Box(brls::Axis::ROW);
@@ -232,7 +232,7 @@ private:
         secondary_->setFontSize(theme::kFontSmall);
         secondary_->setGrow(1);
         secondary_->setHeight(56);
-        secondary_->setText(tr("pipensx/common/options"));
+        secondary_->setText(tr("pipensx/common/select_files"));
         secondary_->registerClickAction([this](brls::View*) {
             onSecondary();
             return true;
@@ -599,7 +599,7 @@ private:
             setTextIfChanged(primary_, tr("pipensx/common/install"));
             primary_->setProgress(-1.0f);
             primary_->setState(brls::ButtonState::ENABLED);
-            setTextIfChanged(secondary_, tr("pipensx/common/options"));
+            setTextIfChanged(secondary_, tr("pipensx/common/select_files"));
             secondary_->setState(brls::ButtonState::ENABLED);
             if (!operationMessage_.empty())
                 setTextIfChanged(statusLabel_, operationMessage_);
@@ -626,7 +626,7 @@ private:
                     new DetailsActivity(task->id, manager_));
             return;
         }
-        // One-tap install: resolve, then queue silently (picker only on Options).
+        // One-tap install: resolve, then queue silently (picker only on Select files).
         startInstall(false);
     }
 
@@ -639,12 +639,12 @@ private:
                 new DetailsActivity(task->id, manager_));
             return;
         }
-        // Options: always open the per-file picker after resolve.
+        // Select files: always open the per-file picker after resolve.
         startInstall(true);
     }
 
     // One-tap: resolve the magnet inline, then import immediately (no second
-    // dialog) unless forcePicker is set (the "Options" path), which always
+    // dialog) unless forcePicker is set (the "Select files" path), which always
     // opens the per-file selection screen after resolve.
     void startInstall(bool forcePicker) {
         if (busy_)
@@ -769,7 +769,7 @@ private:
             refreshSizeMeter();
         }
 
-        // Options path: the per-file picker owns the temp file and unlinks it
+        // Picker path: the per-file picker owns the temp file and unlinks it
         // on cancel. Each row chooses Skip, Download, or Install directly.
         if (forcePicker) {
             openSelection(path, std::move(preview), std::move(initialPeers));
