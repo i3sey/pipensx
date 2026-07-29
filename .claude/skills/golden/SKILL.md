@@ -89,7 +89,7 @@ did not think you touched.
 ## 3. Behaviour screens are not screenshots
 
 `GOLDEN_BEHAVIOR_SCREENS` (`downloads-back`, `torrent-selection-scroll`,
-`hints-budget`, `hints-budget:ru`, `bug-report-focus`) assert inside the
+`hints-budget`, `hints-budget:ru`, `bug-report-focus`, `sidebar-touch`) assert inside the
 runner and exit non-zero. They are never compared against `tests/golden/`,
 so there is no diff to triage and no baseline to update — the failure detail
 is in `build-golden/golden-out/<name>-behavior.log`. Read that log, not the

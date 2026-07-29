@@ -45,6 +45,17 @@ inline void installSidebarStyle() {
     style.addMetric("brls/sidebar/padding_top", 28.0f);
 }
 
+// Box that reports no hit at all, so touches fall through to whatever sits
+// under it. setFocusable(false) is not enough: Box::hitTest claims any point
+// inside its frame regardless, and unlike a focus request a touch does not
+// walk on to the next sibling once a view has answered.
+class TouchThroughBox : public brls::Box {
+public:
+    using brls::Box::Box;
+
+    brls::View* hitTest(brls::Point) override { return nullptr; }
+};
+
 // Decorative glyph shown to the left of a sidebar label. Non-focusable; its
 // colour tracks the owning item's active state so it lights up with the accent
 // when its tab is selected — matching the label the sidebar already recolours.
@@ -288,7 +299,9 @@ public:
                              pipensx::WebServer* webServer = nullptr) {
         manager_ = manager;
         webServer_ = webServer;
-        dock_ = new brls::Box(brls::Axis::COLUMN);
+        // Pinned over the full height of the sidebar column, so it has to be
+        // touch-transparent or it eats every tap aimed at the tab items.
+        dock_ = new TouchThroughBox(brls::Axis::COLUMN);
         dock_->setFocusable(false);
         dock_->setPositionType(brls::PositionType::ABSOLUTE);
         dock_->setPositionTop(0);

@@ -10,12 +10,12 @@
 //                 --screen catalog|shelf-scroll|shelf-header|detail|torrent-selection|
 //                          torrent-selection-scroll|downloads|downloads-back|frame|
 //                          hints-budget|installed|settings|about|bug-report|
-//                          bug-report-detail|bug-report-focus
+//                          bug-report-detail|bug-report-focus|sidebar-touch
 //                 [--frames N] [--sandbox <dir>]
 //
-// downloads-back, torrent-selection-scroll, hints-budget and bug-report-focus
-// are behaviour checks: they assert and exit non-zero instead of producing a
-// baseline.
+// downloads-back, torrent-selection-scroll, hints-budget, bug-report-focus and
+// sidebar-touch are behaviour checks: they assert and exit non-zero instead of
+// producing a baseline.
 //
 // Determinism notes:
 //   - run with LIBGL_ALWAYS_SOFTWARE=1 so Mesa llvmpipe rasterizes the same
@@ -353,6 +353,7 @@ int main(int argc, char** argv) {
     brls::View* focusAfterLayout = nullptr;
     MainFrame* downloadsBackFrame = nullptr;
     brls::View* downloadsBackSidebarFocus = nullptr;
+    bool sidebarTouch = false;
     int torrentSelectionRows = 0;
     bool torrentSelectionScroll = false;
     bool hintsBudget = false;
@@ -519,6 +520,23 @@ int main(int argc, char** argv) {
                         [] { return new AboutView(); });
         tabs->attachStorageFooter(&manager);
         activity = new GoldenActivity(tabs);
+    } else if (screen == "sidebar-touch") {
+        // Behaviour check, not a baseline: the storage dock is pinned over the
+        // whole sidebar column, and a plain Box there answers the hit test
+        // itself — which silently made every tab unreachable by finger while
+        // the gamepad kept working. Screenshots cannot see that.
+        sidebarTouch = true;
+        auto* tabs = new MainFrame();
+        tabs->addNavTab(tr("pipensx/nav/catalog"), NavIconType::Catalog, [&] {
+            return new CatalogView(&manager, &catalog, &metadata, &installed,
+                                   &settings, [] {}, &mods, &favorites);
+        });
+        tabs->addNavTab(tr("pipensx/nav/downloads"), NavIconType::Downloads,
+                        [&] {
+            return new MainView(&manager, &metadata, &settings);
+        });
+        tabs->attachStorageFooter(&manager);
+        activity = new GoldenActivity(tabs);
     } else if (screen == "hints-budget") {
         // Behaviour check, not a baseline: the catalog registers more gamepad
         // actions than the bottom bar can lay out, and the hints silently
@@ -613,6 +631,36 @@ int main(int argc, char** argv) {
         if (!brls::Application::mainLoop())
             return fail("main loop ended before capture");
     }
+    if (sidebarTouch) {
+        // Focus starts on the first sidebar item, so it doubles as the tap
+        // target: a finger on its centre has to reach the item that owns the
+        // TapGestureRecognizer, not the readout docked on top of it.
+        brls::View* item = brls::Application::getCurrentFocus();
+        if (!item)
+            return fail("sidebar-touch: nothing focused in the sidebar");
+        brls::Rect box = item->getFrame();
+        brls::View* hit = activity->getContentView()->hitTest(
+            brls::Point(box.getMinX() + box.getWidth() / 2,
+                        box.getMinY() + box.getHeight() / 2));
+        bool reachesItem = false;
+        for (brls::View* node = hit; node;
+             node = reinterpret_cast<brls::View*>(node->getParent())) {
+            if (node == item) {
+                reachesItem = true;
+                break;
+            }
+        }
+        if (!reachesItem) {
+            std::fprintf(stderr, "golden_runner: sidebar tap landed on %s\n",
+                         hit ? hit->describe().c_str() : "nothing");
+            return fail("a tap on a sidebar item never reaches it");
+        }
+        std::printf("golden_runner: sidebar item reachable by touch\n");
+        manager.shutdown();
+        std::fflush(nullptr);
+        _exit(0);
+    }
+
     if (downloadsBackFrame &&
         brls::Application::getCurrentFocus() != downloadsBackSidebarFocus)
         return fail("downloads refresh stole focus from the sidebar");
