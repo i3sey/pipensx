@@ -40,7 +40,7 @@ void testMissingFileUsesSafeDefaults() {
     assert(values.showCompletedDownloads);
     assert(!values.extendedTelemetry);
     assert(values.checkForUpdatesOnLaunch);
-    assert(values.maxActiveDownloads == 2);
+    assert(values.maxActiveDownloads == 1);
     // "auto" keeps the console's system language, so a Russian Switch gets a
     // Russian UI on first launch with no user action.
     assert(values.language == "auto");

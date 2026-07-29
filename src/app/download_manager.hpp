@@ -207,7 +207,7 @@ private:
     std::vector<DownloadTask> tasks_;
     std::thread worker_; // scheduler thread
     std::vector<std::unique_ptr<RunnerSlot>> runners_; // guarded by mutex_
-    uint32_t maxActive_ = 2;          // guarded by mutex_
+    uint32_t maxActive_ = 1;          // guarded by mutex_
     // Single install token: only one stream-install task may write to NCM
     // at a time; download-only tasks pass token-blocked stream tasks.
     bool installTokenHeld_ = false;   // guarded by mutex_

@@ -46,11 +46,13 @@ struct AppSettingsData {
     // parse time so a hand-edited settings.json cannot smuggle odd values).
     bool webServerEnabled = true;
     std::string webServerPin;
-    // How many torrents download at once. 1 keeps the classic serial queue;
-    // higher values split bandwidth, RAM budget and SD throughput between
-    // tasks. Hand-edited values are clamped to the supported range at parse
-    // time.
-    uint32_t maxActiveDownloads = 2;
+    // How many torrents download at once. The default 1 is the serial
+    // queue: nothing shares the link, so a single transfer runs at the speed
+    // the swarm can actually give it. Raising it splits bandwidth, RAM budget
+    // and SD throughput between tasks — opt-in, not something a stock install
+    // does behind the user's back. Hand-edited values are clamped to the
+    // supported range at parse time.
+    uint32_t maxActiveDownloads = 1;
 
     bool operator==(const AppSettingsData& other) const;
     bool operator!=(const AppSettingsData& other) const {
