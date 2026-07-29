@@ -109,18 +109,15 @@ jobs:
       - name: Pack the SD-card archive
         # Unzips straight onto the card root: hbmenu lists switch/<name>/<name>.nro,
         # and the app creates sdmc:/switch/pipensx itself on first launch, so the
-        # NRO is the only file that belongs in here.
-        env:
-          PIPENSX_VERSION: ${{ inputs.version }}
+        # NRO is the only file that belongs in here. The name is deliberately
+        # fixed across releases — the version is the release's job, and a stable
+        # asset name is what a "latest download" link can point at.
         run: |
           set -u
-          # Same "v" strip as the build step, so the archive name cannot
-          # disagree with the version baked into the binary.
-          version="${PIPENSX_VERSION#v}"
           mkdir -p sdcard/switch/pipensx
           cp build-switch/pipensx.nro sdcard/switch/pipensx/pipensx.nro
           cd sdcard
-          zip -r -q "../build-switch/pipensx-${version}-sdcard.zip" switch
+          zip -r -q ../build-switch/SDOut.zip switch
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -128,7 +125,7 @@ jobs:
           path: |
             build-switch/pipensx.nro
             build-switch/pipensx.nro.sha256
-            build-switch/pipensx-*-sdcard.zip
+            build-switch/SDOut.zip
           if-no-files-found: error
 
   draft-release:
@@ -150,7 +147,7 @@ jobs:
           gh release create "${{ inputs.version }}" \
             dist/pipensx.nro \
             dist/pipensx.nro.sha256 \
-            dist/pipensx-*-sdcard.zip \
+            dist/SDOut.zip \
             --repo "${{ github.repository }}" \
             --title "${{ inputs.version }}" \
             --draft \
