@@ -957,7 +957,7 @@ void testAsyncImageDiskCache() {
     std::vector<GameMetadataService::ImageData> results;
     {
         GameMetadataService service(root, root + "/missing-index.json");
-        service.setImageNetworkPaused(true);
+        service.setImageNetworkThrottled(true);
         auto callback = [&](GameMetadataService::ImageData data) {
             std::lock_guard<std::mutex> lock(mutex);
             results.push_back(std::move(data));
@@ -1022,7 +1022,7 @@ void testImageMemoryCache() {
 
     {
         GameMetadataService service(root, root + "/missing-index.json");
-        service.setImageNetworkPaused(true);
+        service.setImageNetworkThrottled(true);
 
         // Cold: nothing decoded yet.
         assert(!service.cachedImage(url));
@@ -1121,8 +1121,10 @@ void testImageSizeClassesCacheSeparately() {
     rmdir(root.c_str());
 }
 
-void testImageNetworkWaitsForActiveTransfer() {
-    std::string root = "/tmp/pipensx-image-defer-test-" +
+// A transfer throttles cover fetches, it does not stop them: the request has
+// to reach the network and come back on its own, with nothing to un-pause.
+void testImageNetworkThrottledDuringActiveTransfer() {
+    std::string root = "/tmp/pipensx-image-throttle-test-" +
                        std::to_string(static_cast<long long>(getpid()));
     std::mutex mutex;
     std::condition_variable ready;
@@ -1130,21 +1132,14 @@ void testImageNetworkWaitsForActiveTransfer() {
     GameMetadataService::ImageData result;
     {
         GameMetadataService service(root, root + "/missing-index.json");
-        service.setImageNetworkPaused(true);
-        service.requestImage("http://127.0.0.1:1/deferred-cover.jpg",
+        service.setImageNetworkThrottled(true);
+        service.requestImage("http://127.0.0.1:1/throttled-cover.jpg",
             [&](GameMetadataService::ImageData data) {
                 std::lock_guard<std::mutex> lock(mutex);
                 result = std::move(data);
                 callbacks++;
                 ready.notify_all();
             });
-        {
-            std::unique_lock<std::mutex> lock(mutex);
-            assert(!ready.wait_for(lock, std::chrono::milliseconds(250), [&] {
-                return callbacks > 0;
-            }));
-        }
-        service.setImageNetworkPaused(false);
         std::unique_lock<std::mutex> lock(mutex);
         assert(ready.wait_for(lock, std::chrono::seconds(5), [&] {
             return callbacks == 1;
@@ -1391,7 +1386,7 @@ int main() {
     testAsyncImageDiskCache();
     testImageMemoryCache();
     testImageSizeClassesCacheSeparately();
-    testImageNetworkWaitsForActiveTransfer();
+    testImageNetworkThrottledDuringActiveTransfer();
     testTrackerCancellation();
     runLiveResolutionIfRequested();
     std::puts("catalog tests passed");

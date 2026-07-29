@@ -41,6 +41,10 @@ constexpr size_t kMaxImageBytes = 3 * 1024 * 1024;
 constexpr size_t kMaxImageCacheBytes = 96 * 1024 * 1024;
 constexpr uint64_t kImageRetryDelayMs = 30 * 1000;
 constexpr size_t kImageWorkerCount = 2;
+// Per-connection receive cap while a torrent is transferring: covers keep
+// arriving, they just stop competing with the swarm for the link. Ceiling is
+// per fetch, so the real worst case is this times kImageWorkerCount.
+constexpr long kThrottledImageBytesPerSecond = 128 * 1024;
 constexpr const char* kDefaultMetadataIndexUrl =
     "https://github.com/i3sey/pipensx-metadata/releases/latest/download/"
     "game_metadata_index.json";
@@ -151,7 +155,8 @@ bool httpGetOnce(const std::string& url, size_t limit,
                  bool followRedirects = true,
                  std::string* effectiveUrl = nullptr,
                  bool verifyTls = false,
-                 const std::atomic<bool>* stopping = nullptr) {
+                 const std::atomic<bool>* stopping = nullptr,
+                 long maxRecvBytesPerSecond = 0) {
     data.clear();
     CURL* curl = curl_easy_init();
     if (!curl) {
@@ -172,7 +177,12 @@ bool httpGetOnce(const std::string& url, size_t limit,
        libcurl installs signal handlers to time out DNS, which is not
        thread-safe (libcurl-thread(3)). */
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, relayRequest ? 20L : 25L);
+    // A throttled fetch is slow by design, so the wall-clock timeout has to
+    // cover kMaxImageBytes at the cap instead of tripping on it.
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT,
+                     maxRecvBytesPerSecond ? 60L : (relayRequest ? 20L : 25L));
+    curl_easy_setopt(curl, CURLOPT_MAX_RECV_SPEED_LARGE,
+                     (curl_off_t)maxRecvBytesPerSecond);
     curl_easy_setopt(curl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeBytes);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buffer);
@@ -261,11 +271,12 @@ std::string ddgRelayUrl(const std::string& sourceUrl) {
 
 bool httpGet(const std::string& url, size_t limit, std::vector<uint8_t>& data,
              std::string& error,
-             const std::atomic<bool>* stopping = nullptr) {
+             const std::atomic<bool>* stopping = nullptr,
+             long maxRecvBytesPerSecond = 0) {
     auto attempt = [&](const std::string& requestUrl) {
         std::string attemptError;
         if (!httpGetOnce(requestUrl, limit, data, attemptError, true, nullptr,
-                         false, stopping)) {
+                         false, stopping, maxRecvBytesPerSecond)) {
             error = std::move(attemptError);
             return false;
         }
@@ -936,11 +947,12 @@ GameMetadataService::ImageLoadResult GameMetadataService::loadImageInternal(
                 path.c_str());
     }
     error.clear();
-    if (imageNetworkPaused_.load(std::memory_order_relaxed)) {
-        error = "Image network deferred during active transfer.";
-        return ImageLoadResult::Deferred;
-    }
-    if (!httpGet(url, kMaxImageBytes, bytes, error, &stoppingRequested_))
+    // While a torrent transfers, covers still fetch — just under a receive cap
+    // so they take a slice of the link instead of racing the swarm for it.
+    const long recvCap = imageNetworkThrottled_.load(std::memory_order_relaxed)
+                             ? kThrottledImageBytesPerSecond : 0;
+    if (!httpGet(url, kMaxImageBytes, bytes, error, &stoppingRequested_,
+                 recvCap))
         return ImageLoadResult::Failed;
     if (bytes.size() < 8) {
         error = "Downloaded image is too small.";
@@ -1082,11 +1094,8 @@ void GameMetadataService::dropMemoryImageCache() const {
     imageRetryAfter_.clear();
 }
 
-void GameMetadataService::setImageNetworkPaused(bool paused) const {
-    bool previous = imageNetworkPaused_.exchange(
-        paused, std::memory_order_relaxed);
-    if (previous && !paused)
-        imageReady_.notify_all();
+void GameMetadataService::setImageNetworkThrottled(bool throttled) const {
+    imageNetworkThrottled_.store(throttled, std::memory_order_relaxed);
 }
 
 void GameMetadataService::cacheImageLocked(
@@ -1149,12 +1158,10 @@ void GameMetadataService::imageWorkerMain() const {
         }
 
         std::string error;
-        bool deferred = false;
         if (!result) {
             std::vector<uint8_t> bytes;
-            ImageLoadResult loadResult = loadImageInternal(url, bytes, error);
-            deferred = loadResult == ImageLoadResult::Deferred;
-            if (loadResult == ImageLoadResult::Loaded) {
+            if (loadImageInternal(url, bytes, error) ==
+                ImageLoadResult::Loaded) {
                 int width = 0;
                 int height = 0;
                 int channels = 0;
@@ -1178,20 +1185,6 @@ void GameMetadataService::imageWorkerMain() const {
                 if (pixels)
                     stbi_image_free(pixels);
             }
-        }
-        if (deferred) {
-            telemetry_log("image", "-",
-                          "event=deferred reason=active_transfer");
-            std::unique_lock<std::mutex> lock(imageMutex_);
-            // Copy, not move: `url` aliases job.url and the loop still holds it.
-            imageQueue_.push_back(job);
-            imageReady_.wait(lock, [this] {
-                return stoppingImages_ ||
-                       !imageNetworkPaused_.load(std::memory_order_relaxed);
-            });
-            if (stoppingImages_)
-                return;
-            continue;
         }
         bool loaded = static_cast<bool>(result);
         if (!loaded) {

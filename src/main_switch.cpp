@@ -328,7 +328,7 @@ int main(int argc, char** argv) {
         manager.setInstallTarget(
             installTargetFor(settings.get().installLocation));
         manager.setMaxActiveDownloads(settings.get().maxActiveDownloads);
-        metadata.setImageNetworkPaused(manager.hasActiveTransfer());
+        metadata.setImageNetworkThrottled(manager.hasActiveTransfer());
 
         UpdateService updater;
 
@@ -432,7 +432,7 @@ int main(int argc, char** argv) {
         while (true) {
             bool activeTransfer = manager.hasActiveTransfer();
             performance.setActive(activeTransfer);
-            metadata.setImageNetworkPaused(activeTransfer);
+            metadata.setImageNetworkThrottled(activeTransfer);
             if (!brls::Application::mainLoop())
                 break;
             if (firstFrame) {
