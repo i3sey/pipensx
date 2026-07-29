@@ -359,6 +359,7 @@ int main(int argc, char** argv) {
     bool hintsBudget = false;
     CatalogView* hintsCatalog = nullptr;
     BugReportActivity* bugReportFocus = nullptr;
+    brls::Activity* detailRailNav = nullptr;
     if (screen == "catalog") {
         activity = new GoldenActivity(new CatalogView(
             &manager, &catalog, &metadata, &installed, &settings, [] {},
@@ -418,7 +419,7 @@ int main(int argc, char** argv) {
         cell->setShelf("Popular", cards, nullptr, [](int) {}, 1, [] {});
         content->addView(cell);
         activity = new GoldenActivity(content);
-    } else if (screen == "detail") {
+    } else if (screen == "detail" || screen == "detail-rail-nav") {
         const auto& entries = catalog.entries();
         if (entries.empty())
             return fail("detail screen needs a non-empty catalog fixture");
@@ -426,6 +427,11 @@ int main(int argc, char** argv) {
             entries.front(), "", &manager, &metadata, &installed, &settings,
             &mods, [](const std::string&, const std::string&) {}, [] {},
             nullptr, &favorites);
+        // Behaviour check, not a baseline: the screenshot rail is the only
+        // focusable view in the right column, so nothing forces UP out of it.
+        // A screenshot cannot see a dead end in the focus graph.
+        if (screen == "detail-rail-nav")
+            detailRailNav = activity;
     } else if (screen == "screenshot-viewer-missing") {
         // Decode fails (no such file): the viewer must show its labelled plate
         // rather than an empty frame that reads as a crash.
@@ -666,6 +672,60 @@ int main(int argc, char** argv) {
         return fail("downloads refresh stole focus from the sidebar");
     if (downloadsBackFrame) {
         std::printf("golden_runner: downloads-back focus preserved\n");
+        manager.shutdown();
+        std::fflush(nullptr);
+        _exit(0);
+    }
+
+    if (detailRailNav) {
+        // The right column holds the fact table, the rail and the description,
+        // but only the rail is focusable — the other two are plain Labels. So
+        // the upward walk finds nothing in the column, then meets content's ROW
+        // axis (which ignores UP) and dies at the frame, and the rail becomes a
+        // one-way trip: the shots are reachable but nothing leads back out
+        // upwards. Assert the rail routes UP to the primary action.
+        brls::View* root = detailRailNav->getContentView();
+        // The cover in the left column is an AsyncRgbaImage too, but only the
+        // rail's thumbnails are focusable.
+        std::function<brls::View*(brls::View*)> firstShot =
+            [&](brls::View* node) -> brls::View* {
+            if (auto* image = dynamic_cast<AsyncRgbaImage*>(node))
+                if (image->isFocusable())
+                    return image;
+            if (auto* box = dynamic_cast<brls::Box*>(node))
+                for (brls::View* child : box->getChildren())
+                    if (brls::View* found = firstShot(child))
+                        return found;
+            return nullptr;
+        };
+        brls::View* shot = firstShot(root);
+        if (!shot)
+            return fail("detail-rail-nav: no focusable screenshot in the rail");
+        brls::Application::giveFocus(shot);
+        for (int i = 0; i < 5; ++i)
+            brls::Application::mainLoop();
+        if (brls::Application::getCurrentFocus() != shot)
+            return fail("detail-rail-nav: could not park focus on the rail");
+
+        // Application::navigate() is private; this mirrors its precedence —
+        // the custom route wins over the tree walk, and only checking the walk
+        // would miss the fix entirely.
+        brls::View* next = nullptr;
+        if (shot->hasCustomNavigationRouteByPtr(brls::FocusDirection::UP))
+            next = shot->getCustomNavigationRoutePtr(brls::FocusDirection::UP);
+        else if (shot->hasParent())
+            next = shot->getNextFocus(brls::FocusDirection::UP, shot);
+        if (!next)
+            return fail("detail-rail-nav: UP out of the screenshot rail leads "
+                        "nowhere");
+        if (!dynamic_cast<InstallButton*>(next)) {
+            std::fprintf(stderr, "golden_runner: UP from the rail landed on "
+                                 "%s\n", next->describe().c_str());
+            return fail("detail-rail-nav: UP left the rail for something other "
+                        "than the primary action");
+        }
+        std::printf("golden_runner: screenshot rail routes UP to the install "
+                    "button\n");
         manager.shutdown();
         std::fflush(nullptr);
         _exit(0);

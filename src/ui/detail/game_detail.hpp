@@ -304,6 +304,16 @@ private:
                 image->setFocusable(true);
                 image->setScalingType(brls::ImageScalingType::FIT);
                 image->setClipsToBounds(false);  // no letterbox edge bands
+                // The rail is the only focusable thing in this column — the
+                // fact table and the description are plain Labels. So the
+                // upward walk finds nothing here, then hits content's ROW axis
+                // (which ignores UP) and dies at the frame: the rail reads as a
+                // dead end. Route UP to the primary action explicitly. DOWN is
+                // left to the normal walk, which reaches "show more" when the
+                // description has one; a dead end at a column's bottom is what
+                // anyone expects anyway.
+                image->setCustomNavigationRoute(brls::FocusDirection::UP,
+                                                primary_);
                 // O6: A opens the fullscreen pager at this shot.
                 image->registerClickAction(
                     [this, screenshots, i, viewerTitle](brls::View*) {
