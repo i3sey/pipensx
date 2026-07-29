@@ -131,6 +131,8 @@ int dht_cache_write(const char *path, const uint8_t node_id[20],
 /* Per-session mailbox size: 256 compact endpoints. Full mailbox drops the
    newest peers; the periodic re-search refills them. */
 #define DHT_SESSION_MAILBOX 256
+/* Datagrams the engine thread handles per jech_mu hold. See the drain loop. */
+#define DHT_DRAIN_PER_PASS  32
 
 struct dht_session {
     uint8_t  info_hash[20];
@@ -259,7 +261,12 @@ static void *dht_thread_main(void *arg) {
             uint8_t buf[4096];
             struct sockaddr_in from;
             socklen_t fromlen;
-            for (;;) {
+            /* Bounded per pass: jech_mu is also taken by the torrent threads
+               (dht_session_poll), so an unbounded drain lets a DHT burst park
+               a peer event loop for as long as the socket keeps yielding
+               datagrams. Leftovers stay queued for the next poll(), which
+               returns immediately while the socket is still readable. */
+            for (int drained = 0; drained < DHT_DRAIN_PER_PASS; drained++) {
                 fromlen = sizeof(from);
                 ssize_t n = recvfrom(g_dht.fd, buf, sizeof(buf) - 1, 0,
                                      (struct sockaddr*)&from, &fromlen);
