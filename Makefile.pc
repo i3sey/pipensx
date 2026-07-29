@@ -286,7 +286,8 @@ $(WEB_SEED_TEST_TARGET): tests/test_web_seed.cpp src/app/web_seed_source.o \
 		src/core/util.o
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -pthread
 
-$(MSE_TEST_TARGET): tests/test_mse.c src/core/mse.c src/core/sha1.c
+$(MSE_TEST_TARGET): tests/test_mse.c src/core/mse.c src/core/sha1.c \
+	src/core/util.c
 	$(CC) $(CFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -lcrypto
 
 $(DHT_CACHE_TEST_TARGET): tests/test_dht_cache.c src/core/dht.c \

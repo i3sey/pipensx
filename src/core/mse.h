@@ -41,9 +41,14 @@ void rc4_discard(rc4_t *rc4, size_t n);
 extern const uint8_t MSE_PRIME[MSE_DH_LEN];
 
 /*
- * Fill `priv` with a fresh private exponent (caller supplies randomness via
- * rand_bytes). pub = 2^priv mod P. Both outputs are MSE_DH_LEN big-endian.
+ * Generate a fresh private exponent. MSE specifies Xa/Xb as a 160-bit random
+ * integer, so `priv` is zero-padded to MSE_DH_LEN with 20 random low bytes. A
+ * wider exponent is still valid DH but costs ~5x the modexp, and both modexps
+ * of a connect run on the caller's event-loop thread.
  */
+void mse_dh_private(uint8_t priv[MSE_DH_LEN]);
+
+/* pub = 2^priv mod P. Both outputs are MSE_DH_LEN big-endian. */
 void mse_dh_public(const uint8_t priv[MSE_DH_LEN], uint8_t pub[MSE_DH_LEN]);
 
 /* secret = peer_pub^priv mod P, MSE_DH_LEN big-endian. */

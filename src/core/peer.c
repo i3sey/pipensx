@@ -485,7 +485,7 @@ int peer_connected(peer_t *p, const peer_ctx_t *ctx) {
            path runs for a TCP connect and a μTP UTP_ON_CONNECT (μTP+MSE is the
            DPI-evasion case). */
         uint8_t priv[MSE_DH_LEN];
-        rand_bytes(priv, sizeof(priv));
+        mse_dh_private(priv);
         uint8_t ia[BT_HANDSHAKE_LEN];
         build_handshake(ia, ctx);
         uint8_t out[MSE_DH_LEN];

@@ -52,6 +52,33 @@ static void test_dh_shared_secret_matches(void) {
     assert(nonzero);
 }
 
+// mse_dh_private must stay inside the 160 bits MSE specifies for Xa/Xb — a
+// wider exponent still agrees with itself, so only the width check catches a
+// regression back to the ~5x-costlier full-length draw.
+static void test_dh_private_is_160_bit(void) {
+    uint8_t privA[MSE_DH_LEN], privB[MSE_DH_LEN];
+    mse_dh_private(privA);
+    mse_dh_private(privB);
+    assert(memcmp(privA, privB, MSE_DH_LEN) != 0); // actually random
+
+    int high_bytes = 0, low_bytes = 0;
+    for (int i = 0; i < MSE_DH_LEN - 20; ++i)
+        high_bytes |= privA[i] | privB[i];
+    for (int i = MSE_DH_LEN - 20; i < MSE_DH_LEN; ++i)
+        low_bytes |= privA[i];
+    assert(high_bytes == 0); // zero-padded above 160 bits
+    assert(low_bytes != 0);  // and not an all-zero exponent
+
+    // Still a working exchange at the shorter width.
+    uint8_t pubA[MSE_DH_LEN], pubB[MSE_DH_LEN];
+    uint8_t secretA[MSE_DH_LEN], secretB[MSE_DH_LEN];
+    mse_dh_public(privA, pubA);
+    mse_dh_public(privB, pubB);
+    mse_dh_secret(privA, pubB, secretA);
+    mse_dh_secret(privB, pubA, secretB);
+    assert(memcmp(secretA, secretB, MSE_DH_LEN) == 0);
+}
+
 static void test_stream_key_roundtrip(void) {
     uint8_t secret[MSE_DH_LEN];
     uint8_t info_hash[20];
@@ -226,6 +253,7 @@ static void test_handshake_loopback(void) {
 int main(void) {
     test_rc4_known_answer();
     test_dh_shared_secret_matches();
+    test_dh_private_is_160_bit();
     test_stream_key_roundtrip();
     test_handshake_loopback();
     puts("mse tests passed");

@@ -1,5 +1,6 @@
 #include "mse.h"
 #include "sha1.h"
+#include "util.h" /* rand_bytes */
 
 #include <string.h>
 
@@ -102,6 +103,13 @@ static void dh_modexp(const uint8_t *base, size_t base_len,
     BN_CTX_free(ctx);
 }
 #endif
+
+#define MSE_PRIV_LEN 20 /* MSE: Xa/Xb is a 160-bit random integer */
+
+void mse_dh_private(uint8_t priv[MSE_DH_LEN]) {
+    memset(priv, 0, MSE_DH_LEN);
+    rand_bytes(priv + MSE_DH_LEN - MSE_PRIV_LEN, MSE_PRIV_LEN);
+}
 
 void mse_dh_public(const uint8_t priv[MSE_DH_LEN], uint8_t pub[MSE_DH_LEN]) {
     static const uint8_t g[1] = {2};

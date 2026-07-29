@@ -394,7 +394,7 @@ bool mseHandshake(socket_t fd, const uint8_t infoHash[20],
                   const uint8_t peerId[20], PeerWire& wire) {
     mse_client_t client;
     uint8_t priv[MSE_DH_LEN];
-    rand_bytes(priv, sizeof(priv));
+    mse_dh_private(priv);
     uint8_t ia[68];
     buildBtHandshake(ia, infoHash, peerId);
     uint8_t out[512];
