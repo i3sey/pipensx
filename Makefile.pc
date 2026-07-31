@@ -73,6 +73,7 @@ DHT_SHARED_TEST_TARGET = tests/test_dht_shared
 BUG_REPORT_TEST_TARGET = tests/test_bug_report
 HTTP_TEST_TARGET = tests/test_http_server
 WEB_SERVER_TEST_TARGET = tests/test_web_server
+PROBE_REPORT_TEST_TARGET = tests/test_probe_report
 TEST_SRCS = \
     tests/test_piece.c       \
     src/core/sha1.c          \
@@ -192,6 +193,12 @@ $(CATALOG_TEST_TARGET): tests/test_catalog.cpp \
 		src/core/util.o
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -lzstd
 
+# The sysmodule probe's telemetry (sample ring, event log, ini parser) is plain
+# C with no libnx, so the PC build covers it. The rest of src/probe is Switch
+# services and only builds under CMake.
+$(PROBE_REPORT_TEST_TARGET): tests/test_probe_report.c src/probe/probe_report.c
+	$(CC) $(CFLAGS) -o $@ $^
+
 test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 		$(CATALOG_TEST_TARGET) \
 		$(TELEMETRY_TEST_TARGET) $(PEER_TEST_TARGET) \
@@ -205,7 +212,8 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 		$(MSE_TEST_TARGET) $(DHT_CACHE_TEST_TARGET) \
 		$(DHT_SHARED_TEST_TARGET) \
 		$(BUG_REPORT_TEST_TARGET) \
-		$(HTTP_TEST_TARGET) $(WEB_SERVER_TEST_TARGET)
+		$(HTTP_TEST_TARGET) $(WEB_SERVER_TEST_TARGET) \
+		$(PROBE_REPORT_TEST_TARGET)
 	./$(TEST_TARGET)
 	./$(PACKAGE_TEST_TARGET)
 	./$(CATALOG_TEST_TARGET)
@@ -229,6 +237,7 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 	./$(BUG_REPORT_TEST_TARGET)
 	./$(HTTP_TEST_TARGET)
 	./$(WEB_SERVER_TEST_TARGET)
+	./$(PROBE_REPORT_TEST_TARGET)
 	python3 tests/test_bug_report_decode.py
 	python3 tests/test_telemetry_analyzer.py
 	python3 scripts/check_i18n.py
@@ -358,6 +367,7 @@ clean:
 		$(MSE_TEST_TARGET) $(DHT_SHARED_TEST_TARGET) \
 		$(BUG_REPORT_TEST_TARGET) \
 		src/app/http_server.o src/app/web_server.o src/app/web_add_queue.o \
-		$(HTTP_TEST_TARGET) $(WEB_SERVER_TEST_TARGET)
+		$(HTTP_TEST_TARGET) $(WEB_SERVER_TEST_TARGET) \
+		$(PROBE_REPORT_TEST_TARGET)
 
 .PHONY: all test clean

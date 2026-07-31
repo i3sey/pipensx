@@ -179,6 +179,32 @@ target_compile_options(pipensx_updater PRIVATE
     -fdata-sections
 )
 
+# Sysmodule probe (docs/plans/SYSMODULE_PLAN.md, ESHOP_APPLET_PLAN.md §5.4):
+# a daemon that answers the background-download and half-awake hypotheses on
+# hardware. It links neither borealis nor the torrent engine, so it needs its
+# own libnx init - see src/probe/probe_main.c __appInit.
+program_target(pipensx_probe
+    "src/probe/probe_main.c;src/probe/probe_report.c")
+set_target_properties(pipensx_probe PROPERTIES
+    C_STANDARD 11
+)
+target_include_directories(pipensx_probe PRIVATE src)
+target_compile_definitions(pipensx_probe PRIVATE __SWITCH__)
+target_compile_options(pipensx_probe PRIVATE
+    -Wall
+    -Wextra
+    -ffunction-sections
+    -fdata-sections
+)
+
+# H8 client: a throwaway NRO launched from hbmenu while the probe runs.
+program_target(pipensx_probe_client "tools/probe_client.c")
+set_target_properties(pipensx_probe_client PROPERTIES
+    C_STANDARD 11
+)
+target_compile_definitions(pipensx_probe_client PRIVATE __SWITCH__)
+target_compile_options(pipensx_probe_client PRIVATE -Wall -Wextra)
+
 set(APP_SOURCES
     ${CORE_SOURCES}
     src/platform/switch_crashlog.c
@@ -232,6 +258,57 @@ target_link_libraries(pipensx PRIVATE
     mbedcrypto
     z
     miniupnpc
+)
+
+# Probe packaging: ELF -> NSO -> exefs.nsp next to an NPDM, laid out the way
+# Atmosphere expects under /atmosphere/contents/<title id>/.
+#
+# No flags/boot2.flag on purpose: the probe is launched at runtime (ovl-sysmodules
+# or pm:shell), so a hung probe can never keep the console from booting. See
+# src/probe/README.md.
+find_program(NX_ELF2NSO_EXE NAMES elf2nso
+    HINTS "$ENV{DEVKITPRO}/tools/bin" "/opt/devkitpro/tools/bin")
+find_program(NX_NPDMTOOL_EXE NAMES npdmtool
+    HINTS "$ENV{DEVKITPRO}/tools/bin" "/opt/devkitpro/tools/bin")
+find_program(NX_BUILD_PFS0_EXE NAMES build_pfs0
+    HINTS "$ENV{DEVKITPRO}/tools/bin" "/opt/devkitpro/tools/bin")
+
+set(PROBE_TITLE_ID 00FF0000504E5358)
+set(PROBE_EXEFS_DIR ${CMAKE_BINARY_DIR}/probe-exefs)
+set(PROBE_OUT_DIR
+    ${CMAKE_BINARY_DIR}/probe/atmosphere/contents/${PROBE_TITLE_ID})
+
+add_custom_target(pipensx_probe_nsp ALL
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${PROBE_EXEFS_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${PROBE_OUT_DIR}"
+    COMMAND ${NX_ELF2NSO_EXE} pipensx_probe.elf "${PROBE_EXEFS_DIR}/main"
+    COMMAND ${NX_NPDMTOOL_EXE}
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/probe/probe.json"
+        "${PROBE_EXEFS_DIR}/main.npdm"
+    COMMAND ${NX_BUILD_PFS0_EXE} "${PROBE_EXEFS_DIR}" "${PROBE_OUT_DIR}/exefs.nsp"
+    COMMAND ${CMAKE_COMMAND} -E copy
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/probe/toolbox.json"
+        "${PROBE_OUT_DIR}/toolbox.json"
+    DEPENDS pipensx_probe "${CMAKE_CURRENT_SOURCE_DIR}/src/probe/probe.json"
+    BYPRODUCTS "${PROBE_OUT_DIR}/exefs.nsp" "${PROBE_EXEFS_DIR}/main"
+        "${PROBE_EXEFS_DIR}/main.npdm"
+    VERBATIM
+)
+
+add_custom_target(pipensx_probe_client_nro ALL
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/probe/switch"
+    COMMAND ${NX_NACPTOOL_EXE}
+        --create "pipensx-probe-client" "${APP_AUTHOR}" "${PROJECT_VERSION}"
+        pipensx_probe_client.nacp
+    COMMAND ${NX_ELF2NRO_EXE}
+        pipensx_probe_client.elf
+        "${CMAKE_BINARY_DIR}/probe/switch/pipensx-probe-client.nro"
+        --icon=${APP_ICON}
+        --nacp=pipensx_probe_client.nacp
+    DEPENDS pipensx_probe_client
+    BYPRODUCTS "${CMAKE_BINARY_DIR}/probe/switch/pipensx-probe-client.nro"
+        pipensx_probe_client.nacp
+    VERBATIM
 )
 
 file(MAKE_DIRECTORY ${ROMFS_DIR})
