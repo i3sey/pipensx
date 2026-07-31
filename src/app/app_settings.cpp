@@ -1,5 +1,7 @@
 #include "app_settings.hpp"
 
+#include "download_manager.hpp"  // clampMaxActiveDownloads
+
 #include <borealis/extern/nlohmann/json.hpp>
 
 #include <cerrno>

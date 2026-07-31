@@ -1,5 +1,4 @@
 #include "download_manager.hpp"
-#include "app_settings.hpp"
 #include "request_gate.hpp"
 #include "stream_budget_arbiter.hpp"
 #include "stream_ram_budget.hpp"

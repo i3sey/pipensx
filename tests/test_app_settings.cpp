@@ -1,4 +1,5 @@
 #include "app/app_settings.hpp"
+#include "app/download_manager.hpp"  // clampMaxActiveDownloads
 
 #include <cassert>
 #include <cstdio>

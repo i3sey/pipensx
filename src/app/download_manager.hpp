@@ -18,6 +18,19 @@ extern "C" {
 
 namespace pipensx {
 
+// Supported range for setMaxActiveDownloads(). Inline because the settings
+// layer validates against it and not every binary links download_manager.cpp.
+inline constexpr uint32_t kMinActiveDownloads = 1;
+inline constexpr uint32_t kMaxActiveDownloads = 4;
+
+inline uint32_t clampMaxActiveDownloads(uint64_t value) {
+    if (value < kMinActiveDownloads)
+        return kMinActiveDownloads;
+    if (value > kMaxActiveDownloads)
+        return kMaxActiveDownloads;
+    return static_cast<uint32_t>(value);
+}
+
 enum class DownloadStatus {
     Queued,
     Checking,
@@ -137,7 +150,8 @@ public:
     // still be passed by download-only tasks behind it.
     bool moveToFront(const std::string& taskId, std::string& error);
 
-    // How many torrents may download concurrently (clamped to [1,4]).
+    // How many torrents may download concurrently (clamped to
+    // [kMinActiveDownloads, kMaxActiveDownloads]).
     // Shrinking takes effect as running tasks finish; nothing is preempted.
     void setMaxActiveDownloads(uint32_t count);
 
