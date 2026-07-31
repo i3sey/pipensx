@@ -197,6 +197,32 @@ target_compile_options(pipensx_probe PRIVATE
     -fdata-sections
 )
 
+# The daemon (docs/plans/SYSMODULE_PHASES.md phase 2): the engine's future
+# home. Skeleton for now - libnx init lifted from the probe plus the app's own
+# HttpServer as the control plane, no engine and no borealis. Kept at C++17
+# like Makefile.pc so the shared sources stay in the stricter dialect.
+set(PIPENSX_DAEMON_HEAP_MB 32 CACHE STRING
+    "Heap ceiling the daemon sysmodule asks the kernel for, in MiB")
+program_target(pipensx_daemon
+    "src/daemon/daemon_main.cpp;src/app/http_server.cpp;src/core/net.c;src/core/util.c")
+set_target_properties(pipensx_daemon PROPERTIES
+    C_STANDARD 11
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+)
+target_include_directories(pipensx_daemon PRIVATE src)
+target_compile_definitions(pipensx_daemon PRIVATE
+    __SWITCH__
+    PIPENSX_VERSION="${PROJECT_VERSION}"
+    PIPENSX_DAEMON_HEAP_MB=${PIPENSX_DAEMON_HEAP_MB}
+)
+target_compile_options(pipensx_daemon PRIVATE
+    -Wall
+    -Wextra
+    -ffunction-sections
+    -fdata-sections
+)
+
 # H8 client: a throwaway NRO launched from hbmenu while the probe runs.
 program_target(pipensx_probe_client "tools/probe_client.c")
 set_target_properties(pipensx_probe_client PROPERTIES
@@ -308,6 +334,32 @@ add_custom_target(pipensx_probe_client_nro ALL
     DEPENDS pipensx_probe_client
     BYPRODUCTS "${CMAKE_BINARY_DIR}/probe/switch/pipensx-probe-client.nro"
         pipensx_probe_client.nacp
+    VERBATIM
+)
+
+# Daemon packaging, same layout as the probe's. Deliberately not an ALL target:
+# `make switch` builds the app, `make daemon` builds this. No flags/boot2.flag
+# either - until the daemon has survived everything else, a hang has to be
+# curable by switching it off in ovlSysmodules.
+set(DAEMON_TITLE_ID 00FF0000504E5344)
+set(DAEMON_EXEFS_DIR ${CMAKE_BINARY_DIR}/daemon-exefs)
+set(DAEMON_OUT_DIR
+    ${CMAKE_BINARY_DIR}/daemon/atmosphere/contents/${DAEMON_TITLE_ID})
+
+add_custom_target(pipensx_daemon_nsp
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${DAEMON_EXEFS_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${DAEMON_OUT_DIR}"
+    COMMAND ${NX_ELF2NSO_EXE} pipensx_daemon.elf "${DAEMON_EXEFS_DIR}/main"
+    COMMAND ${NX_NPDMTOOL_EXE}
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/daemon/daemon.json"
+        "${DAEMON_EXEFS_DIR}/main.npdm"
+    COMMAND ${NX_BUILD_PFS0_EXE} "${DAEMON_EXEFS_DIR}" "${DAEMON_OUT_DIR}/exefs.nsp"
+    COMMAND ${CMAKE_COMMAND} -E copy
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/daemon/toolbox.json"
+        "${DAEMON_OUT_DIR}/toolbox.json"
+    DEPENDS pipensx_daemon "${CMAKE_CURRENT_SOURCE_DIR}/src/daemon/daemon.json"
+    BYPRODUCTS "${DAEMON_OUT_DIR}/exefs.nsp" "${DAEMON_EXEFS_DIR}/main"
+        "${DAEMON_EXEFS_DIR}/main.npdm"
     VERBATIM
 )
 

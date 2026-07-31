@@ -4,9 +4,10 @@ CMAKE_BIN ?= cmake
 PIPENSX_METADATA_INDEX ?= $(CURDIR)/resources/catalog/game_metadata_index.json
 MTP_DIR ?=
 NRO_SRC ?= $(CURDIR)/build-switch/pipensx.nro
+PIPENSX_DAEMON_HEAP_MB ?= 32
 DEPLOY_CLEAN ?= 0
 
-.PHONY: help pc test switch probe golden clean audit deploy
+.PHONY: help pc test switch probe daemon golden clean audit deploy
 
 help:
 	@echo "pipensx build targets:"
@@ -14,6 +15,7 @@ help:
 	@echo "  make test     Build and run the PC test suite"
 	@echo "  make switch   Build build-switch/pipensx.nro"
 	@echo "  make probe    Build the sysmodule probe (src/probe/README.md)"
+	@echo "  make daemon   Build the pipensx daemon sysmodule (src/daemon/)"
 	@echo "  make golden   Run deterministic UI screenshot tests"
 	@echo "  make audit    Scan the complete Git history with gitleaks"
 	@echo "  make deploy MTP_DIR='mtp://...' [DEPLOY_CLEAN=1]"
@@ -36,6 +38,15 @@ probe: switch
 	$(CMAKE_BIN) --build build-switch --target pipensx_probe_nsp --parallel
 	$(CMAKE_BIN) --build build-switch --target pipensx_probe_client_nro --parallel
 	@echo "Probe SD layout: $(CURDIR)/build-switch/probe/"
+
+# Also out of `make switch`: until the daemon has proven itself, it ships
+# separately and is started by hand from ovlSysmodules.
+# PIPENSX_DAEMON_HEAP_MB=64 make daemon  to re-measure the memory ceiling.
+daemon: switch
+	$(CMAKE_BIN) -S . -B build-switch \
+		-DPIPENSX_DAEMON_HEAP_MB=$(PIPENSX_DAEMON_HEAP_MB) >/dev/null
+	$(CMAKE_BIN) --build build-switch --target pipensx_daemon_nsp --parallel
+	@echo "Daemon SD layout: $(CURDIR)/build-switch/daemon/"
 
 golden:
 	CMAKE_BIN="$(CMAKE_BIN)" scripts/golden.sh check
