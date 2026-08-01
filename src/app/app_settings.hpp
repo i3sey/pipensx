@@ -65,6 +65,11 @@ struct AppSettingsData {
     std::string realDebridToken;
     DebridProviderKind debridProvider = DebridProviderKind::TorBox;
     bool firstRunCompleted = false;
+    // Outbound proxy for every HTTPS call the app makes (catalog, artwork,
+    // updates, debrid). Empty = direct. Peer traffic does NOT go through it:
+    // the torrent engine speaks raw TCP/uTP, not curl. Validated at parse
+    // time so a hand-edited settings.json cannot smuggle an odd scheme.
+    std::string proxyUrl;
 
     bool operator==(const AppSettingsData& other) const;
     bool operator!=(const AppSettingsData& other) const {
@@ -81,6 +86,19 @@ bool isSupportedLanguage(const std::string& value);
 
 // True for a valid web PIN: empty (auth off) or 4-8 ASCII digits.
 bool isValidWebPin(const std::string& value);
+
+// Empty (direct) or scheme://host[:port] with scheme one of http, https,
+// socks4, socks5, socks5h. curl accepts far more than that; this is the
+// subset worth supporting on a console, and rejecting the rest early beats
+// every request failing with a curl error nobody can read.
+bool isValidProxyUrl(const std::string& value);
+
+// Points libcurl at the proxy for every handle the app creates, including
+// ones already constructed — curl re-reads the environment per transfer, so
+// a change takes effect on the next request rather than the next launch.
+// Empty clears it. Global by design: threading a setting through nine
+// independent curl_easy_init() call sites buys nothing over one env var.
+void applyProxySetting(const std::string& proxyUrl);
 
 // The supported range for AppSettingsData::maxActiveDownloads lives in
 // download_manager.hpp: it is the engine's limit, and settings only validate

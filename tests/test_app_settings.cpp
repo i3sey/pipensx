@@ -3,6 +3,7 @@
 
 #include <cassert>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <string>
 #include <unistd.h>
@@ -14,6 +15,8 @@ using pipensx::DebridProviderKind;
 using pipensx::StreamSelection;
 using pipensx::InstallLocation;
 using pipensx::dailyRefreshDue;
+using pipensx::isValidProxyUrl;
+using pipensx::applyProxySetting;
 
 namespace {
 
@@ -302,6 +305,46 @@ void testVersionThreeHonoursTorrentingOff() {
     assert(!settings.get().torrentingEnabled);
 }
 
+void testProxyUrlValidation() {
+    assert(isValidProxyUrl(""));
+    assert(isValidProxyUrl("socks5://192.168.1.2:10808"));
+    assert(isValidProxyUrl("socks5h://proxy.lan:1080"));
+    assert(isValidProxyUrl("http://10.0.0.1:3128"));
+    assert(isValidProxyUrl("https://proxy.example.com"));
+    // No scheme, unsupported scheme, or anything past host:port.
+    assert(!isValidProxyUrl("192.168.1.2:10808"));
+    assert(!isValidProxyUrl("ftp://proxy:21"));
+    assert(!isValidProxyUrl("socks5://proxy:1080/path"));
+    assert(!isValidProxyUrl("socks5://user@proxy:1080"));
+    assert(!isValidProxyUrl("socks5://proxy:0"));
+    assert(!isValidProxyUrl("socks5://proxy:70000"));
+    assert(!isValidProxyUrl("socks5://proxy:abc"));
+    assert(!isValidProxyUrl("socks5://"));
+    assert(!isValidProxyUrl("socks5://host with space:1080"));
+}
+
+// A hand-edited settings.json must not be able to smuggle a proxy the
+// validator would reject through the parser.
+void testInvalidProxyUrlIsCleared() {
+    cleanup();
+    {
+        std::ofstream output(SettingsPath);
+        output << R"({"version":3,"proxy_url":"ftp://nope:21"})";
+    }
+    AppSettings settings(SettingsPath, LegacyPath);
+    std::string error;
+    assert(settings.load(error));
+    assert(settings.get().proxyUrl.empty());
+}
+
+void testProxySettingReachesEnvironment() {
+    applyProxySetting("socks5://192.168.1.2:10808");
+    const char* value = std::getenv("ALL_PROXY");
+    assert(value && std::string(value) == "socks5://192.168.1.2:10808");
+    applyProxySetting("");
+    assert(std::getenv("ALL_PROXY") == nullptr);
+}
+
 } // namespace
 
 int main() {
@@ -318,6 +361,9 @@ int main() {
     testLegacyDebridKeysTolerated();
     testPreV3FileKeepsTorrentingOn();
     testVersionThreeHonoursTorrentingOff();
+    testProxyUrlValidation();
+    testInvalidProxyUrlIsCleared();
+    testProxySettingReachesEnvironment();
     testDailyRefreshDue();
     cleanup();
     std::puts("app settings tests passed");

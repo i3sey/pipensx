@@ -156,6 +156,10 @@ bool parseSettings(const std::string& text, AppSettingsData& values,
                       values.firstRunCompleted, error))
             return false;
     }
+    if (!readString(root, "proxy_url", values.proxyUrl, error))
+        return false;
+    if (!isValidProxyUrl(values.proxyUrl))
+        values.proxyUrl.clear();
     // v2 -> v3: debrid arrived and the struct default flipped torrenting off,
     // but a pre-v3 file was written by a build where torrenting was the only
     // way to download anything. Migrate it back on rather than silently
@@ -219,6 +223,7 @@ std::string serializeSettings(const AppSettingsData& values) {
         values.debridProvider == DebridProviderKind::RealDebrid
             ? "realdebrid" : "torbox";
     root["first_run_completed"] = values.firstRunCompleted;
+    root["proxy_url"] = values.proxyUrl;
     return root.dump(2) + "\n";
 }
 
@@ -244,6 +249,53 @@ bool isValidWebPin(const std::string& value) {
     return true;
 }
 
+bool isValidProxyUrl(const std::string& value) {
+    if (value.empty())
+        return true;
+    static const char* kSchemes[] = {"http://", "https://", "socks4://",
+                                     "socks5://", "socks5h://"};
+    const char* rest = nullptr;
+    for (const char* scheme : kSchemes) {
+        size_t length = std::strlen(scheme);
+        if (value.size() > length && value.compare(0, length, scheme) == 0) {
+            rest = value.c_str() + length;
+            break;
+        }
+    }
+    if (!rest)
+        return false;
+    // host[:port] and nothing else — no path, no credentials, no spaces. The
+    // string ends up in an environment variable, so keep it boring.
+    std::string authority(rest);
+    if (authority.find_first_of("/ \t@?#") != std::string::npos)
+        return false;
+    size_t colon = authority.rfind(':');
+    if (colon != std::string::npos) {
+        std::string port = authority.substr(colon + 1);
+        if (port.empty() || port.size() > 5)
+            return false;
+        for (char c : port)
+            if (c < '0' || c > '9')
+                return false;
+        if (std::stoi(port) == 0 || std::stoi(port) > 65535)
+            return false;
+        authority.resize(colon);
+    }
+    return !authority.empty();
+}
+
+void applyProxySetting(const std::string& proxyUrl) {
+    if (proxyUrl.empty()) {
+        unsetenv("ALL_PROXY");
+        unsetenv("all_proxy");
+        return;
+    }
+    // Both spellings: libcurl checks the lowercase name first and some
+    // builds only consult one of them.
+    setenv("ALL_PROXY", proxyUrl.c_str(), 1);
+    setenv("all_proxy", proxyUrl.c_str(), 1);
+}
+
 bool AppSettingsData::operator==(const AppSettingsData& other) const {
     return language == other.language &&
            catalogFilter == other.catalogFilter &&
@@ -265,7 +317,8 @@ bool AppSettingsData::operator==(const AppSettingsData& other) const {
            torboxApiKey == other.torboxApiKey &&
            realDebridToken == other.realDebridToken &&
            debridProvider == other.debridProvider &&
-           firstRunCompleted == other.firstRunCompleted;
+           firstRunCompleted == other.firstRunCompleted &&
+           proxyUrl == other.proxyUrl;
 }
 
 bool dailyRefreshDue(uint64_t nowMs, uint64_t lastRefreshMs) {

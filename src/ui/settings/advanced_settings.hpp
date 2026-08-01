@@ -63,6 +63,18 @@ public:
             });
         content->addView(installLocation_);
 
+        addSection(content, tr("pipensx/settings/section_network"));
+        proxy_ = actionCell(tr("pipensx/settings/proxy"), "",
+            [this] { editProxy(); });
+        content->addView(proxy_);
+        refreshProxyDetail();
+        auto* proxyNote = new brls::Label();
+        proxyNote->setText(tr("pipensx/settings/proxy_note"));
+        proxyNote->setFontSize(16);
+        proxyNote->setTextColor(theme::textSecondary());
+        proxyNote->setMarginBottom(10);
+        content->addView(proxyNote);
+
         addSection(content, tr("pipensx/settings/section_diagnostics"));
         auto* description = new brls::Label();
         description->setText(tr("pipensx/settings/diagnostics_note"));
@@ -122,6 +134,33 @@ public:
     }
 
 private:
+    void refreshProxyDetail() {
+        const std::string& url = settings_->get().proxyUrl;
+        proxy_->setDetailText(url.empty()
+            ? tr("pipensx/settings/proxy_direct") : url);
+    }
+
+    void editProxy() {
+        brls::Application::getImeManager()->openForText(
+            [this](std::string text) {
+                if (!pipensx::isValidProxyUrl(text)) {
+                    brls::Application::notify(
+                        tr("pipensx/settings/proxy_invalid"));
+                    return;
+                }
+                AppSettingsData values = settings_->get();
+                values.proxyUrl = text;
+                if (!persist(values, "proxy_url"))
+                    return;
+                // Takes effect on the next request, not the next launch.
+                pipensx::applyProxySetting(text);
+                refreshProxyDetail();
+            },
+            tr("pipensx/settings/proxy"),
+            tr("pipensx/settings/proxy_detail"), 128,
+            settings_->get().proxyUrl, brls::KEYBOARD_DISABLE_NONE);
+    }
+
     bool persist(const AppSettingsData& values, const char* tag) {
         std::string error;
         if (settings_->update(values, error))
@@ -140,6 +179,9 @@ private:
         manager_->setInstallTarget(installTargetFor(values.installLocation));
         extendedTelemetry_->setOn(values.extendedTelemetry, false);
         telemetry_set_enabled(values.extendedTelemetry ? 1 : 0);
+        // A reset clears the proxy, so the environment has to follow it.
+        pipensx::applyProxySetting(values.proxyUrl);
+        refreshProxyDetail();
     }
 
     void captureSnapshot() {
@@ -208,6 +250,7 @@ private:
     brls::AppletFrame* frame_ = nullptr;
     brls::SelectorCell* installLocation_ = nullptr;
     brls::BooleanCell* extendedTelemetry_ = nullptr;
+    brls::DetailCell* proxy_ = nullptr;
 };
 
 }  // namespace pipensx::ui

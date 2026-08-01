@@ -404,7 +404,13 @@
     "debrid_provider": "Сервис debrid",
     "debrid_link": "Привязать аккаунт debrid",
     "debrid_linked": "{} — привязан",
-    "debrid_not_linked": "{} — не привязан"
+    "debrid_not_linked": "{} — не привязан",
+    "section_network": "Сеть",
+    "proxy": "Прокси",
+    "proxy_direct": "Прямое подключение",
+    "proxy_detail": "socks5://192.168.1.2:10808 — оставьте пустым для прямого подключения",
+    "proxy_invalid": "Укажите схема://хост:порт со схемой http, https, socks4, socks5 или socks5h.",
+    "proxy_note": "Через прокси идут каталог, обложки, обновления и загрузки debrid. Пиринговый трафик его не использует."
   },
   "about": {
     "version": "Версия {}",

@@ -404,7 +404,13 @@
     "debrid_provider": "Debrid provider",
     "debrid_link": "Link debrid account",
     "debrid_linked": "{} — linked",
-    "debrid_not_linked": "{} — not linked"
+    "debrid_not_linked": "{} — not linked",
+    "section_network": "Network",
+    "proxy": "Proxy",
+    "proxy_direct": "Direct connection",
+    "proxy_detail": "socks5://192.168.1.2:10808 — leave empty for a direct connection",
+    "proxy_invalid": "Use scheme://host:port with http, https, socks4, socks5 or socks5h.",
+    "proxy_note": "Routes catalog, artwork, updates and debrid downloads through a proxy on your network. Peer-to-peer traffic does not use it."
   },
   "about": {
     "version": "Version {}",

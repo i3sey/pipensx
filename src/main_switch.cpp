@@ -206,6 +206,11 @@ int main(int argc, char** argv) {
         diagnostic_error("settings", "startup", "error=%s",
                          settingsError.c_str());
     telemetry_set_enabled(settings.get().extendedTelemetry ? 1 : 0);
+    // Before curl_global_init and before any service builds a handle: curl
+    // reads the proxy from the environment when it sets up a transfer.
+    pipensx::applyProxySetting(settings.get().proxyUrl);
+    if (!settings.get().proxyUrl.empty())
+        log_msg("[startup] proxy %s\n", settings.get().proxyUrl.c_str());
     log_msg("[telemetry] setting enabled=%d interval_ms=5000 build='%s %s'\n",
             telemetry_enabled(), __DATE__, __TIME__);
     startupStage("entered main");
