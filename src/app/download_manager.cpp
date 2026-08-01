@@ -2212,30 +2212,48 @@ void DownloadManager::runDebridTask(const ClaimedTask& claim) {
                 : result == DebridRunResult::Stopped ? "stopped" : "FAILED",
             runError.empty() ? "" : ": ", runError.c_str());
 
-    std::lock_guard<std::mutex> lock(mutex_);
-    DownloadTask* task = findLocked(activeId);
-    if (!task)
-        return;
-    // The transfer may have created the remote id we never had; record it
-    // before anything else so a removal below can still clean the account.
-    if (!createdId.empty() && task->debridId.empty())
-        task->debridId = createdId;
-    if (task->status == DownloadStatus::Removing) {
-        bool deleteData = task->error == "delete-data";
-        std::string removeId = task->debridId;
-        DebridProviderKind removeProvider = task->debridProvider;
-        std::string removeError;
-        removeLocked(activeId, deleteData, removeError);
-        removeFromDebridAsync(removeProvider, apiKey, removeId);
-        return;
+    // Decided under the lock, acted on outside it: the account cleanup below
+    // is a full HTTPS round trip, and holding mutex_ across it freezes every
+    // snapshot() the UI makes.
+    std::string removeId;
+    DebridProviderKind removeProvider = claim.debridProvider;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        DownloadTask* task = findLocked(activeId);
+        if (!task)
+            return;
+        // The transfer may have created the remote id we never had; record
+        // it before anything else so the removal can still clean the account.
+        if (!createdId.empty() && task->debridId.empty())
+            task->debridId = createdId;
+        if (task->status == DownloadStatus::Removing) {
+            bool deleteData = task->error == "delete-data";
+            removeId = task->debridId;
+            removeProvider = task->debridProvider;
+            std::string removeError;
+            removeLocked(activeId, deleteData, removeError);
+        } else {
+            if (result == DebridRunResult::Failed) {
+                task->status = DownloadStatus::Error;
+                task->error = runError;
+            }
+            task->speedBytesPerSecond = 0;
+            std::string ignored;
+            saveLocked(ignored);
+            return;
+        }
     }
-    if (result == DebridRunResult::Failed) {
-        task->status = DownloadStatus::Error;
-        task->error = runError;
+    // This runner thread is about to end anyway, so the cleanup rides it out
+    // instead of spawning a detached thread that would outlive the manager.
+    if (!removeId.empty() && !apiKey.empty()) {
+        std::string error;
+        if (!makeProvider(removeProvider, apiKey)->remove(removeId, error))
+            log_msg("[debrid] account cleanup failed id=%s: %s\n",
+                    removeId.c_str(), error.c_str());
+        else
+            log_msg("[debrid] account cleanup done id=%s\n", removeId.c_str());
     }
-    task->speedBytesPerSecond = 0;
-    std::string ignored;
-    saveLocked(ignored);
+    log_msg("[debrid] runner finished for %s\n", activeId.c_str());
 }
 
 void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
