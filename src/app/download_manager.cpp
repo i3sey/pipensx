@@ -3,7 +3,6 @@
 #include "stream_budget_arbiter.hpp"
 #include "stream_ram_budget.hpp"
 #include "web_seed_source.hpp"
-#include "torbox_client.hpp"
 #include "torbox_provider.hpp"
 #include "real_debrid_provider.hpp"
 #include "debrid_transfer.hpp"
@@ -32,7 +31,6 @@ extern "C" {
 #include <memory>
 #include <mutex>
 #include <sstream>
-#include <stdexcept>
 #include <sys/stat.h>
 #include <thread>
 #include <typeinfo>

@@ -12,7 +12,6 @@ extern "C" {
 #include "../core/util.h"
 }
 
-#include <cctype>
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
