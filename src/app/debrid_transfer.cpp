@@ -193,11 +193,9 @@ RangeFetcher curlRangeFetcher() {
             error = "Refusing plaintext download URL (HTTPS required).";
             return false;
         }
-        {
-            size_t hostEnd = url.find('/', 8);
-            std::string host = url.substr(8, hostEnd - 8);
-            log_msg("[debrid] downloading from %s over HTTPS\n", host.c_str());
-        }
+        size_t hostEnd = url.find('/', 8);
+        const std::string host = url.substr(8, hostEnd - 8);
+        log_msg("[debrid] downloading from %s over HTTPS\n", host.c_str());
         CURL* curl = curl_easy_init();
         if (!curl) {
             error = "Unable to initialize network transfer.";
@@ -235,11 +233,19 @@ RangeFetcher curlRangeFetcher() {
             return false;
         }
         if (rc != CURLE_OK) {
-            // The bare curl string ("Timeout was reached") never says which
-            // host or how far it got, and that is the whole question here.
-            error = std::string(curl_easy_strerror(rc)) + " (HTTP " +
-                    std::to_string(httpStatus) + ", " +
-                    std::to_string(state.received) + " bytes)";
+            // The provider hands out a specific CDN node, and that node can
+            // be unreachable while its API is fine. "Timeout was reached" on
+            // its own sends people to check their account; naming the host
+            // and the fact that nothing arrived points at the network.
+            if (state.received == 0 && httpStatus == 0)
+                error = "Could not reach " + host +
+                        " — the debrid service is up but its download server "
+                        "is not reachable from this console (" +
+                        curl_easy_strerror(rc) + ").";
+            else
+                error = std::string(curl_easy_strerror(rc)) + " from " + host +
+                        " (HTTP " + std::to_string(httpStatus) + ", " +
+                        std::to_string(state.received) + " bytes)";
             return false;
         }
         return true;
