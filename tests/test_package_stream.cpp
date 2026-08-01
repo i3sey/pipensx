@@ -143,6 +143,49 @@ std::vector<uint8_t> makeSolidNcz(const std::vector<uint8_t>& nca,
     return out;
 }
 
+std::vector<uint8_t> makeSolidNczWithTrailing(const std::vector<uint8_t>& nca,
+                                              size_t trailingBytes) {
+    // A well-formed solid NCZ whose PFS0 entry carries padding after the
+    // single zstd frame (alignment bytes real nsz tooling appends). The
+    // decoder must decompress the frame and tolerate the trailing bytes
+    // rather than feeding them back into zstd.
+    std::vector<uint8_t> out = makeSolidNcz(nca);
+    out.insert(out.end(), trailingBytes, 0x00);
+    return out;
+}
+
+std::vector<uint8_t> makeMultiFrameSolidNcz(const std::vector<uint8_t>& nca,
+                                            size_t frames) {
+    // A solid NCZ whose body is stored as several concatenated Zstandard
+    // frames rather than one. Real nsz tooling emits multi-frame solid
+    // streams for large NCAs; the decoder must keep decompressing past each
+    // frame boundary until the whole declared output is produced, instead of
+    // treating the first frame's end as the end of the stream.
+    assert(nca.size() > 0x4000);
+    assert(frames >= 1);
+    const size_t bodySize = nca.size() - 0x4000;
+    const uint8_t* body = nca.data() + 0x4000;
+    std::vector<uint8_t> compressed;
+    size_t chunk = (bodySize + frames - 1) / frames;
+    for (size_t off = 0; off < bodySize; off += chunk) {
+        size_t len = std::min(chunk, bodySize - off);
+        std::vector<uint8_t> frame(ZSTD_compressBound(len));
+        size_t n = ZSTD_compress(frame.data(), frame.size(),
+                                 body + off, len, 3);
+        assert(!ZSTD_isError(n));
+        frame.resize(n);
+        compressed.insert(compressed.end(), frame.begin(), frame.end());
+    }
+    std::array<uint8_t, 16> empty {};
+    std::vector<uint8_t> out(nca.begin(), nca.begin() + 0x4000);
+    out.insert(out.end(), {'N', 'C', 'Z', 'S', 'E', 'C', 'T', 'N'});
+    append64(out, 1);
+    appendNczSection(out, NczTestLayout::LegacyCountAfterMagic, 0x4000,
+                     bodySize, 1, empty, empty);
+    out.insert(out.end(), compressed.begin(), compressed.end());
+    return out;
+}
+
 std::vector<uint8_t> makeSolidNczWithSections(
     const std::vector<uint8_t>& nca,
     const std::vector<std::pair<uint64_t, uint64_t>>& sections) {
@@ -279,6 +322,26 @@ void feed(PackageStream& stream, const std::vector<uint8_t>& data) {
     }
 }
 
+// Feed in fixed-size chunks so the decoder's pending buffer is guaranteed to
+// pause inside the window where a count-prefixed NCZ header is not yet fully
+// buffered — the situation that must not let a more permissive layout win.
+void feedChunked(PackageStream& stream, const std::vector<uint8_t>& data,
+                 size_t chunkSize) {
+    size_t offset = 0;
+    while (offset < data.size()) {
+        size_t count = std::min(chunkSize, data.size() - offset);
+        if (!stream.write(data.data() + offset, count)) {
+            std::cerr << stream.error() << '\n';
+            assert(false);
+        }
+        offset += count;
+    }
+    if (!stream.finish()) {
+        std::cerr << stream.error() << '\n';
+        assert(false);
+    }
+}
+
 void testNsp() {
     std::vector<uint8_t> first {1, 2, 3, 4, 5};
     std::vector<uint8_t> second(100000);
@@ -395,6 +458,75 @@ void testManyNczSections() {
     Capture capture;
     PackageStream stream(true, capture.callbacks());
     feed(stream, package);
+    assert(capture.files.size() == 1);
+    assert(capture.files[0] == nca);
+}
+
+void testSolidNczToleratesTrailingBytes() {
+    std::vector<uint8_t> nca(0x4000 + 180000);
+    for (size_t i = 0; i < nca.size(); ++i)
+        nca[i] = static_cast<uint8_t>((i * 43) ^ (i >> 7));
+    // Trailing region larger than the biggest feed() chunk so the padding
+    // spans several stream.write() calls after the frame ends.
+    auto package = makePfs0({{"00112233445566778899aabbccddeeff.ncz",
+                              makeSolidNczWithTrailing(nca, 200000)}});
+    Capture capture;
+    PackageStream stream(true, capture.callbacks());
+    feed(stream, package);
+    assert(capture.files.size() == 1);
+    assert(capture.files[0] == nca);
+}
+
+void testMultiFrameSolidNcz() {
+    std::vector<uint8_t> nca(0x4000 + 260000);
+    for (size_t i = 0; i < nca.size(); ++i)
+        nca[i] = static_cast<uint8_t>((i * 53) ^ (i >> 6));
+    auto package = makePfs0({{"00112233445566778899aabbccddeeff.ncz",
+                              makeMultiFrameSolidNcz(nca, 3)}});
+    Capture capture;
+    PackageStream stream(true, capture.callbacks());
+    feed(stream, package);
+    assert(capture.files.size() == 1);
+    assert(capture.files[0] == nca);
+}
+
+void testMultiFrameSolidNczToleratesTrailingBytes() {
+    std::vector<uint8_t> nca(0x4000 + 240000);
+    for (size_t i = 0; i < nca.size(); ++i)
+        nca[i] = static_cast<uint8_t>((i * 61) ^ (i >> 5));
+    // Several frames, then alignment padding after the final frame: exercises
+    // both "keep going past a frame boundary" and "drop trailing padding once
+    // the whole output is produced" in one stream.
+    auto ncz = makeMultiFrameSolidNcz(nca, 4);
+    ncz.insert(ncz.end(), 150000, 0x00);
+    auto package = makePfs0({{"00112233445566778899aabbccddeeff.ncz", ncz}});
+    Capture capture;
+    PackageStream stream(true, capture.callbacks());
+    feed(stream, package);
+    assert(capture.files.size() == 1);
+    assert(capture.files[0] == nca);
+}
+
+void testCountHeaderNotShadowedBySectionList() {
+    // A real count-prefixed NCZ (NCZSECTN + count + 64-byte sections) with a
+    // section table large enough that it cannot fully buffer on the first
+    // parse attempt. Fed in small chunks, the decoder's pending buffer pauses
+    // while the count layout still says "need more"; the permissive
+    // section-list fallback must NOT be accepted in that window, or it fixes a
+    // 1-entry header at 0x4048 and feeds the section table into zstd.
+    const size_t sectionCount = 200;
+    const size_t sectionSize = 700;
+    std::vector<uint8_t> nca(0x4000 + sectionCount * sectionSize);
+    for (size_t i = 0; i < nca.size(); ++i)
+        nca[i] = static_cast<uint8_t>((i * 47) ^ (i >> 5));
+    std::vector<std::pair<uint64_t, uint64_t>> sections;
+    for (size_t i = 0; i < sectionCount; ++i)
+        sections.emplace_back(0x4000 + i * sectionSize, sectionSize);
+    auto package = makePfs0({{"00112233445566778899aabbccddeeff.ncz",
+                              makeSolidNczWithSections(nca, sections)}});
+    Capture capture;
+    PackageStream stream(true, capture.callbacks());
+    feedChunked(stream, package, 512);
     assert(capture.files.size() == 1);
     assert(capture.files[0] == nca);
 }
@@ -680,6 +812,10 @@ int main() {
     testLegacySectionListNsz();
     testLooseNczSectionFields();
     testManyNczSections();
+    testSolidNczToleratesTrailingBytes();
+    testMultiFrameSolidNcz();
+    testMultiFrameSolidNczToleratesTrailingBytes();
+    testCountHeaderNotShadowedBySectionList();
     testNczSectionStartsBeforeHeaderEnd();
     testBlockNsz();
     testOfficialBlockNsz();

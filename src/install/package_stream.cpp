@@ -58,6 +58,34 @@ std::string hexPreview(const uint8_t* data, size_t size) {
     return out;
 }
 
+// Space-free hex so a wide dump survives a truncated on-screen error line.
+std::string hexCompact(const uint8_t* data, size_t size) {
+    static const char hex[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(size * 2);
+    for (size_t i = 0; i < size; ++i) {
+        out.push_back(hex[data[i] >> 4]);
+        out.push_back(hex[data[i] & 0xf]);
+    }
+    return out;
+}
+
+// Offset of the first occurrence of a byte pattern within a bounded window,
+// or -1 if absent. Used to locate where the real compressed stream begins
+// (zstd magic 28 b5 2f fd) or an NCZBLOCK header when the parsed header size
+// lands short.
+long findBytes(const uint8_t* data, size_t size, const uint8_t* pattern,
+               size_t patternLen, size_t limit) {
+    size_t scan = std::min(size, limit);
+    if (patternLen == 0 || scan < patternLen)
+        return -1;
+    for (size_t i = 0; i + patternLen <= scan; ++i) {
+        if (std::memcmp(data + i, pattern, patternLen) == 0)
+            return static_cast<long>(i);
+    }
+    return -1;
+}
+
 struct PfsEntry {
     uint64_t offset = 0;
     uint64_t size = 0;
@@ -506,16 +534,34 @@ private:
         uint64_t parsedOutputSize = 0;
         std::vector<NczSection> parsedSections;
         bool parsed = false;
+        const NczLayout* chosen = nullptr;
         for (const auto& layout : layouts) {
             HeaderResult result =
                 tryParseLayout(layout, headerSize, parsedOutputSize,
                                parsedSections);
+            if (result == HeaderResult::NeedMore) {
+                waitingForMore = true;
+                continue;
+            }
             if (result == HeaderResult::Parsed) {
+                // A higher-priority layout is still short on data and might yet
+                // be the right interpretation — most importantly a count-
+                // prefixed header (NCZSECTN + count + sections) whose large
+                // section table has not fully buffered. Its 154 KB table can
+                // dwarf the first network chunk, so on the first parse it says
+                // "need more" while the permissive section-list fallback would
+                // happily fix a bogus 1-entry header at 0x4048 and feed the
+                // section table into zstd. Don't accept a lower-priority match
+                // until every higher-priority candidate has definitively
+                // failed; otherwise wait for more bytes.
+                if (waitingForMore)
+                    break;
                 parsed = true;
+                chosen = &layout;
                 break;
             }
-            if (result == HeaderResult::NeedMore)
-                waitingForMore = true;
+            // Invalid: this layout is ruled out; keep trying lower-priority
+            // ones (they no longer risk shadowing this candidate).
         }
         if (!parsed) {
             if (waitingForMore)
@@ -531,6 +577,32 @@ private:
 
         sections_ = std::move(parsedSections);
         outputSize_ = parsedOutputSize;
+
+        // Snapshot the raw section header so a later decode failure can report
+        // exactly what layout was parsed and from which bytes. Also locate the
+        // real compressed-stream start (zstd frame magic or NCZBLOCK header)
+        // relative to 0x4000 so we know the true header size independent of how
+        // the section table is laid out.
+        dbgLayout_ = chosen ? chosen->name : "none";
+        dbgSectionHeaderSize_ = headerSize;
+        dbgCount_ = chosen ? static_cast<uint64_t>(
+            (headerSize - ncaHeaderSize - chosen->firstEntryOffset) /
+            chosen->entrySize) : 0;
+        dbgHeaderLen_ = std::min<size_t>(dbgHeader_.size(),
+                                         pending_.size() - ncaHeaderSize);
+        std::memcpy(dbgHeader_.data(), pending_.data() + ncaHeaderSize,
+                    dbgHeaderLen_);
+        {
+            // Scan the entire buffered NCZ region (not just the snapshot) so
+            // the real stream start is found even behind a long section table.
+            static const uint8_t zstdMagic[4] = {0x28, 0xB5, 0x2F, 0xFD};
+            static const uint8_t blockMagic[8] =
+                {'N', 'C', 'Z', 'B', 'L', 'O', 'C', 'K'};
+            const uint8_t* region = pending_.data() + ncaHeaderSize;
+            size_t regionLen = pending_.size() - ncaHeaderSize;
+            dbgZstdAt_ = findBytes(region, regionLen, zstdMagic, 4, 1u << 20);
+            dbgBlockAt_ = findBytes(region, regionLen, blockMagic, 8, 1u << 20);
+        }
 
         blockMode_ = std::memcmp(pending_.data() + headerSize,
                                  "NCZBLOCK", 8) == 0;
@@ -600,6 +672,7 @@ private:
         outputPosition_ = ncaHeaderSize;
         telemetryOutputBytes_ += ncaHeaderSize;
         telemetryTotalOutputBytes_ += ncaHeaderSize;
+        dbgFinalHeaderSize_ = headerSize;
         pending_.consume(headerSize);
         headerReady_ = true;
         telemetry_log("decode", telemetryTag_.c_str(),
@@ -607,6 +680,14 @@ private:
             blockMode_ ? "block" : "solid",
             (unsigned long long)outputSize_,
             (unsigned long long)blockSize_, blockSizes_.size());
+        log_msg("[install] NCZ header layout=%s sections=%llu "
+                "hdr_bytes=%zu mode=%s out=%llu zstdAt=%ld blockAt=%ld "
+                "H@4000=%s\n",
+                dbgLayout_, (unsigned long long)dbgCount_, dbgFinalHeaderSize_,
+                blockMode_ ? "block" : "solid",
+                (unsigned long long)outputSize_, dbgZstdAt_, dbgBlockAt_,
+                hexPreview(dbgHeader_.data(),
+                           std::min<size_t>(256, dbgHeaderLen_)).c_str());
         return true;
     }
 
@@ -666,7 +747,13 @@ private:
     }
 
     bool processSolid(std::string& error) {
-        if (pending_.empty() || solidEnded_)
+        if (solidEnded_) {
+            // Frame already decoded; whatever still arrives is entry padding.
+            // Drop it so pending_ does not grow across the trailing region.
+            pending_.clear();
+            return true;
+        }
+        if (pending_.empty())
             return true;
         ZSTD_inBuffer input { pending_.data(), pending_.size(), 0 };
         while (input.pos < input.size) {
@@ -679,13 +766,53 @@ private:
                 telemetryTotalZstdUs_ += elapsedUs;
             }
             if (ZSTD_isError(result)) {
-                error = ZSTD_getErrorName(result);
+                // Enrich the bare zstd message with decoder state so an
+                // on-device failure is diagnosable from the error alone:
+                // out near outputSize_ means trailing bytes after a finished
+                // frame; out near 0 means the zstd stream started at a
+                // misaligned offset (header misparse). The hex preview shows
+                // the bytes zstd rejected.
+                const uint8_t* src =
+                    static_cast<const uint8_t*>(input.src) + input.pos;
+                size_t avail = input.size - input.pos;
+                static const uint8_t zstdMagic[4] = {0x28, 0xB5, 0x2F, 0xFD};
+                static const uint8_t blockMagic[8] =
+                    {'N', 'C', 'Z', 'B', 'L', 'O', 'C', 'K'};
+                long magicAt = findBytes(src, avail, zstdMagic, 4, 4096);
+                long blockAt = findBytes(src, avail, blockMagic, 8, 4096);
+                error = std::string(ZSTD_getErrorName(result)) +
+                        " [out " + std::to_string(outputPosition_) + "/" +
+                        std::to_string(outputSize_) + " layout=" + dbgLayout_ +
+                        " n=" + std::to_string(dbgCount_) +
+                        " hdr=" + std::to_string(dbgFinalHeaderSize_) +
+                        " blk=" + (blockMode_ ? "1" : "0") +
+                        " magicAt=" + std::to_string(magicAt) +
+                        " blockAt=" + std::to_string(blockAt) +
+                        " H=" + hexCompact(dbgHeader_.data(), dbgHeaderLen_) +
+                        " Z=" + hexCompact(src, std::min<size_t>(8, avail)) +
+                        "]";
                 return false;
             }
             if (out.pos && !emit(outputBuffer_.data(), out.pos, error))
                 return false;
-            if (result == 0)
-                solidEnded_ = true;
+            if (result == 0) {
+                // A Zstandard frame just ended. A solid NCZ is often a single
+                // frame, but nsz tooling also emits several concatenated
+                // frames for one section, so a frame boundary is not
+                // necessarily the end of the stream. Only once the whole
+                // declared output has been produced is the section complete;
+                // then any remaining input is entry padding aligned onto the
+                // frame. Feeding that padding back into zstd makes it look for
+                // a new frame and fail with "Unknown frame descriptor", so
+                // stop and discard it. If output is still short, more frames
+                // follow — keep decoding.
+                if (outputPosition_ >= outputSize_) {
+                    solidEnded_ = true;
+                    pending_.clear();
+                    return true;
+                }
+                continue;
+            }
             if (out.pos == 0 && input.pos == input.size)
                 break;
         }
@@ -820,6 +947,15 @@ private:
     bool headerReady_ = false;
     bool blockMode_ = false;
     bool solidEnded_ = false;
+    // Diagnostics captured at header parse to characterise a decode failure.
+    const char* dbgLayout_ = "none";
+    uint64_t dbgCount_ = 0;
+    size_t dbgSectionHeaderSize_ = 0;
+    size_t dbgFinalHeaderSize_ = 0;
+    long dbgZstdAt_ = -1;
+    long dbgBlockAt_ = -1;
+    std::array<uint8_t, 1024> dbgHeader_ {};
+    size_t dbgHeaderLen_ = 0;
     uint32_t telemetryGeneration_ = 0;
     uint64_t telemetryStartMs_ = 0;
     uint64_t telemetryLastMs_ = 0;
