@@ -161,6 +161,11 @@ struct CurlSink {
     const std::function<bool(const uint8_t*, size_t)>* sink;
     const std::function<bool()>* cancelled;
     bool aborted = false;
+    // Which side gave up matters: the sink refusing bytes is an install-side
+    // failure, and blaming the network for it sends everyone hunting in the
+    // wrong place.
+    bool sinkRefused = false;
+    uint64_t received = 0;
 };
 
 size_t curlWrite(char* ptr, size_t size, size_t nmemb, void* userdata) {
@@ -172,8 +177,10 @@ size_t curlWrite(char* ptr, size_t size, size_t nmemb, void* userdata) {
     }
     if (!(*c->sink)(reinterpret_cast<const uint8_t*>(ptr), total)) {
         c->aborted = true;
+        c->sinkRefused = true;
         return 0;
     }
+    c->received += total;
     return total;
 }
 
@@ -214,17 +221,27 @@ RangeFetcher curlRangeFetcher() {
         long httpStatus = 0;
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpStatus);
         curl_easy_cleanup(curl);
+        if (rc != CURLE_OK || state.aborted)
+            log_msg("[debrid] fetch ended rc=%d (%s) http=%ld got=%llu%s\n",
+                    static_cast<int>(rc), curl_easy_strerror(rc), httpStatus,
+                    static_cast<unsigned long long>(state.received),
+                    state.sinkRefused ? " sink-refused" : "");
         if (state.aborted) {
             if (cancelled())
                 return false;
-            error = "The download stream was interrupted.";
+            error = state.sinkRefused
+                ? "The installer rejected the downloaded data."
+                : "The download stream was interrupted.";
             return false;
         }
         if (rc != CURLE_OK) {
-            error = curl_easy_strerror(rc);
+            // The bare curl string ("Timeout was reached") never says which
+            // host or how far it got, and that is the whole question here.
+            error = std::string(curl_easy_strerror(rc)) + " (HTTP " +
+                    std::to_string(httpStatus) + ", " +
+                    std::to_string(state.received) + " bytes)";
             return false;
         }
-        (void)httpStatus;
         return true;
     };
 }

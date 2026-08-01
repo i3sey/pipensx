@@ -25,6 +25,7 @@ extern "C" {
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <typeinfo>
 #include <vector>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -213,7 +214,21 @@ int main(int argc, char** argv) {
 
     std::set_terminate([] {
         switch_crashlog_stage("uncaught C++ exception");
-        log_msg("[crash] std::terminate called\n");
+        // "std::terminate called" on its own names nothing. Rethrowing the
+        // in-flight exception is the only way to get its type and message
+        // into the log, and it is safe here: we _Exit either way.
+        if (std::exception_ptr current = std::current_exception()) {
+            try {
+                std::rethrow_exception(current);
+            } catch (const std::exception& e) {
+                log_msg("[crash] std::terminate: %s: %s\n",
+                        typeid(e).name(), e.what());
+            } catch (...) {
+                log_msg("[crash] std::terminate: non-std exception\n");
+            }
+        } else {
+            log_msg("[crash] std::terminate called with no live exception\n");
+        }
         log_flush();
         std::_Exit(134);
     });

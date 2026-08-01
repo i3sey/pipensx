@@ -32,8 +32,10 @@ extern "C" {
 #include <memory>
 #include <mutex>
 #include <sstream>
+#include <stdexcept>
 #include <sys/stat.h>
 #include <thread>
+#include <typeinfo>
 #include <unistd.h>
 
 namespace pipensx {
@@ -2047,7 +2049,36 @@ void DownloadManager::schedulerMain() {
         runners_.push_back(std::move(slot));
         raw->thread = std::thread(
             [this, raw, moved = std::move(claim)]() mutable {
-                runTask(raw, std::move(moved));
+                // Thread entry point: an exception that escapes here is an
+                // instant std::terminate and takes the whole app with it,
+                // losing the state file and the log along the way. A failed
+                // task is a failed task — report it and let the slot unwind.
+                const std::string id = moved.id;
+                try {
+                    runTask(raw, std::move(moved));
+                } catch (const std::exception& e) {
+                    log_msg("[manager] task %s threw %s: %s\n", id.c_str(),
+                            typeid(e).name(), e.what());
+                    std::lock_guard<std::mutex> guard(mutex_);
+                    if (DownloadTask* task = findLocked(id)) {
+                        task->status = DownloadStatus::Error;
+                        task->error = std::string("Internal error: ") + e.what();
+                        task->speedBytesPerSecond = 0;
+                        std::string ignored;
+                        saveLocked(ignored);
+                    }
+                } catch (...) {
+                    log_msg("[manager] task %s threw a non-std exception\n",
+                            id.c_str());
+                    std::lock_guard<std::mutex> guard(mutex_);
+                    if (DownloadTask* task = findLocked(id)) {
+                        task->status = DownloadStatus::Error;
+                        task->error = "Internal error during the transfer.";
+                        task->speedBytesPerSecond = 0;
+                        std::string ignored;
+                        saveLocked(ignored);
+                    }
+                }
                 std::lock_guard<std::mutex> guard(mutex_);
                 if (raw->holdsInstallToken)
                     installTokenHeld_ = false;
@@ -2176,6 +2207,10 @@ void DownloadManager::runDebridTask(const ClaimedTask& claim) {
             !spec.debridId.empty() ? " (catalog)" : "");
     DebridRunResult result =
         transfer.run(spec, shouldStop, onProgress, createdId, runError);
+    log_msg("[debrid] transfer %s %s%s%s\n", activeId.c_str(),
+            result == DebridRunResult::Finished ? "finished"
+                : result == DebridRunResult::Stopped ? "stopped" : "FAILED",
+            runError.empty() ? "" : ": ", runError.c_str());
 
     std::lock_guard<std::mutex> lock(mutex_);
     DownloadTask* task = findLocked(activeId);
