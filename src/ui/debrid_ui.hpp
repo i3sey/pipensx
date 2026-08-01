@@ -10,9 +10,9 @@
 
 #include "app/app_settings.hpp"
 #include "app/download_manager.hpp"
-#include "app/real_debrid_provider.hpp"
 #include "app/torbox_pairing_server.hpp"
 #include "app/torbox_provider.hpp"
+#include "app/torrserver_provider.hpp"
 #include "ui/common/qr_view.hpp"
 #include "ui/i18n.hpp"
 #include "ui/theme.hpp"
@@ -20,21 +20,21 @@
 namespace pipensx::ui {
 
 inline const std::string& activeDebridKey(const AppSettingsData& values) {
-    return values.debridProvider == DebridProviderKind::RealDebrid
-        ? values.realDebridToken : values.torboxApiKey;
+    return values.debridProvider == DebridProviderKind::TorrServer
+        ? values.torrserverUrl : values.torboxApiKey;
 }
 
 inline std::unique_ptr<DebridProvider> makeDebridProvider(
     DebridProviderKind kind, const std::string& key) {
-    if (kind == DebridProviderKind::RealDebrid)
-        return std::unique_ptr<DebridProvider>(new RealDebridProvider(key));
+    if (kind == DebridProviderKind::TorrServer)
+        return std::unique_ptr<DebridProvider>(new TorrserverProvider(key));
     return std::unique_ptr<DebridProvider>(new TorboxProvider(key));
 }
 
 // Brand names stay untranslated — they are the same in every locale, and the
 // catalog strings take them as a format argument.
 inline const char* debridProviderName(DebridProviderKind kind) {
-    return kind == DebridProviderKind::RealDebrid ? "Real-Debrid" : "TorBox";
+    return kind == DebridProviderKind::TorrServer ? "TorrServer" : "TorBox";
 }
 
 // "http://<ip>:8424/" while the console has a LAN address, "" otherwise. The
@@ -58,8 +58,11 @@ public:
           provider_(provider), alive_(std::make_shared<std::atomic<bool>>(true)) {
         setPadding(30, 40, 30, 40);
         auto* explanation = new brls::Label();
-        explanation->setText(tr("pipensx/debrid/link_hint",
-                                debridProviderName(provider_)));
+        // Spelled out rather than picking the key with a ternary: the i18n
+        // checker only sees keys that appear as a literal first argument.
+        explanation->setText(provider_ == DebridProviderKind::TorrServer
+            ? tr("pipensx/debrid/link_hint_url")
+            : tr("pipensx/debrid/link_hint", debridProviderName(provider_)));
         explanation->setFontSize(theme::kFontSmall);
         explanation->setTextColor(theme::textSecondary());
         explanation->setMarginBottom(18);
@@ -71,7 +74,11 @@ public:
                 kTorboxPairingPort,
                 [provider](const std::string& key, std::string& error) {
                     return makeDebridProvider(provider, key)->validate(error);
-                });
+                },
+                provider == DebridProviderKind::TorrServer
+                    ? "Paste the address of your TorrServer, for example "
+                      "http://192.168.1.10:8090."
+                    : kTorboxPairingHint);
             std::string error;
             if (server_->start(error)) {
                 auto* qr = new QrCodeView(pairingUrl);
@@ -144,9 +151,15 @@ private:
         saveKey(key);
     }
 
+    // The stored key for the provider this screen links — an API key for
+    // TorBox, the server address for TorrServer.
+    const std::string& activeKey() const {
+        return provider_ == DebridProviderKind::TorrServer
+            ? settings_->get().torrserverUrl : settings_->get().torboxApiKey;
+    }
+
     void refresh() {
-        const std::string& key = provider_ == DebridProviderKind::RealDebrid
-            ? settings_->get().realDebridToken : settings_->get().torboxApiKey;
+        const std::string& key = activeKey();
         status_->setText(key.empty() ? tr("pipensx/debrid/not_linked")
                                      : tr("pipensx/debrid/linked"));
         unlink_->setVisibility(key.empty() ? brls::Visibility::GONE
@@ -154,11 +167,16 @@ private:
     }
 
     void openKeyboard() {
+        const std::string prompt =
+            provider_ == DebridProviderKind::TorrServer
+                ? tr("pipensx/debrid/keyboard_prompt_url")
+                : tr("pipensx/debrid/keyboard_prompt",
+                     debridProviderName(provider_));
         brls::Application::getImeManager()->openForText(
             [this](std::string text) { validate(std::move(text)); },
-            tr("pipensx/debrid/keyboard_prompt",
-               debridProviderName(provider_)),
-            "", 128, "", brls::KEYBOARD_DISABLE_NONE);
+            // Prefilled with what is stored: an address gets corrected far
+            // more often than it gets typed from scratch.
+            prompt, "", 128, activeKey(), brls::KEYBOARD_DISABLE_NONE);
     }
 
     void validate(std::string text) {
@@ -188,10 +206,14 @@ private:
         }).detach();
     }
 
-    void saveKey(const std::string& key) {
+    void saveKey(const std::string& typed) {
+        // "192.168.1.10:8090" is what a user types; the provider needs a URL.
+        const std::string key =
+            provider_ == DebridProviderKind::TorrServer
+                ? TorrserverProvider::normalizeBaseUrl(typed) : typed;
         AppSettingsData values = settings_->get();
-        if (provider_ == DebridProviderKind::RealDebrid)
-            values.realDebridToken = key;
+        if (provider_ == DebridProviderKind::TorrServer)
+            values.torrserverUrl = key;
         else
             values.torboxApiKey = key;
         std::string error;
@@ -199,8 +221,8 @@ private:
             brls::Application::notify(error);
             return;
         }
-        if (provider_ == DebridProviderKind::RealDebrid)
-            manager_->setRealDebridToken(key);
+        if (provider_ == DebridProviderKind::TorrServer)
+            manager_->setTorrserverUrl(key);
         else
             manager_->setTorboxApiKey(key);
         brls::Application::notify(key.empty()
@@ -271,8 +293,8 @@ inline void showFirstRunChoice(AppSettings* settings,
     dialog->addButton(tr("pipensx/debrid/first_run_torbox"), [finish] {
         finish(DebridProviderKind::TorBox, false);
     });
-    dialog->addButton(tr("pipensx/debrid/first_run_realdebrid"), [finish] {
-        finish(DebridProviderKind::RealDebrid, false);
+    dialog->addButton(tr("pipensx/debrid/first_run_torrserver"), [finish] {
+        finish(DebridProviderKind::TorrServer, false);
     });
     dialog->addButton(tr("pipensx/debrid/first_run_torrent"), [finish] {
         finish(DebridProviderKind::TorBox, true);

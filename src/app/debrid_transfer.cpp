@@ -188,13 +188,18 @@ RangeFetcher curlRangeFetcher() {
               const std::function<bool(const uint8_t*, size_t)>& sink,
               const std::function<bool()>& cancelled,
               std::string& error) -> bool {
-        if (url.compare(0, 8, "https://") != 0) {
-            error = "Refusing plaintext download URL (HTTPS required).";
+        const bool plain = url.compare(0, 7, "http://") == 0;
+        if (!plain && url.compare(0, 8, "https://") != 0) {
+            error = "Unsupported download URL scheme.";
             return false;
         }
-        size_t hostEnd = url.find('/', 8);
-        const std::string host = url.substr(8, hostEnd - 8);
-        log_msg("[debrid] downloading from %s over HTTPS\n", host.c_str());
+        // Whether plaintext is acceptable at all is the provider's call and
+        // was settled before we got here; this only has to speak both.
+        const size_t hostStart = plain ? 7 : 8;
+        size_t hostEnd = url.find('/', hostStart);
+        const std::string host = url.substr(hostStart, hostEnd - hostStart);
+        log_msg("[debrid] downloading from %s over %s\n", host.c_str(),
+                plain ? "HTTP" : "HTTPS");
         CURL* curl = curl_easy_init();
         if (!curl) {
             error = "Unable to initialize network transfer.";
@@ -205,7 +210,7 @@ RangeFetcher curlRangeFetcher() {
         curl_easy_setopt(curl, CURLOPT_RESUME_FROM_LARGE,
                          static_cast<curl_off_t>(offset));
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-        curlPinHttpsOnly(curl);
+        curlPinScheme(curl, url);
         curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
         curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
         curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 60L);
@@ -249,6 +254,15 @@ RangeFetcher curlRangeFetcher() {
         }
         return true;
     };
+}
+
+// A hosted service hands out links that carry the account's credentials, so a
+// plaintext one is a leak and a bug. A LAN server the user pointed us at is
+// plain HTTP by nature — the provider says which it is.
+bool linkAllowed(const DebridProvider& provider, const std::string& url) {
+    return url.compare(0, 8, "https://") == 0 ||
+           (provider.allowsPlaintextLinks() &&
+            url.compare(0, 7, "http://") == 0);
 }
 
 struct RunContext {
@@ -486,7 +500,7 @@ Step downloadPlainFile(RunContext& ctx, size_t kthSelected,
     if (!ctx.provider.resolveDownloadUrl(ctx.debridId, info, kthSelected,
                                          file, url, ctx.error))
         return Step::Failed;
-    if (url.compare(0, 8, "https://") != 0) {
+    if (!linkAllowed(ctx.provider, url)) {
         ctx.error = "Debrid service returned a plaintext download link.";
         return Step::Failed;
     }
@@ -504,7 +518,7 @@ Step downloadPlainFile(RunContext& ctx, size_t kthSelected,
             if (ctx.provider.resolveDownloadUrl(ctx.debridId, info,
                                                 kthSelected, file, fresh,
                                                 ctx.error)) {
-                if (fresh.compare(0, 8, "https://") != 0) {
+                if (!linkAllowed(ctx.provider, fresh)) {
                     ctx.error =
                         "Debrid service returned a plaintext download link.";
                     return Step::Failed;
@@ -664,7 +678,7 @@ Step streamInstallPackage(RunContext& ctx, size_t kthSelected,
                                              kthSelected, file, url,
                                              ctx.error))
             return Step::Failed;
-        if (url.compare(0, 8, "https://") != 0) {
+        if (!linkAllowed(ctx.provider, url)) {
             ctx.error = "Debrid service returned a plaintext download link.";
             return Step::Failed;
         }

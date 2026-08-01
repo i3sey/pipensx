@@ -138,17 +138,18 @@ bool parseSettings(const std::string& text, AppSettingsData& values,
         values.webServerPin.clear();
     // v3 keys: absent in an older file, so only read them when present and
     // otherwise leave the struct defaults in place.
-    if (root.contains("real_debrid_token")) {
-        if (!readString(root, "real_debrid_token", values.realDebridToken,
-                        error))
+    if (root.contains("torrserver_url")) {
+        if (!readString(root, "torrserver_url", values.torrserverUrl, error))
             return false;
     }
     if (root.contains("debrid_provider")) {
         std::string provider = "torbox";
         if (!readString(root, "debrid_provider", provider, error))
             return false;
-        values.debridProvider = provider == "realdebrid"
-            ? DebridProviderKind::RealDebrid
+        // "realdebrid" was a provider we no longer ship; it lands on the
+        // default rather than on a kind that cannot fetch anything.
+        values.debridProvider = provider == "torrserver"
+            ? DebridProviderKind::TorrServer
             : DebridProviderKind::TorBox;
     }
     if (root.contains("first_run_completed")) {
@@ -218,10 +219,10 @@ std::string serializeSettings(const AppSettingsData& values) {
     root["max_active_downloads"] = values.maxActiveDownloads;
     root["torrenting_enabled"] = values.torrentingEnabled;
     root["torbox_api_key"] = values.torboxApiKey;
-    root["real_debrid_token"] = values.realDebridToken;
+    root["torrserver_url"] = values.torrserverUrl;
     root["debrid_provider"] =
-        values.debridProvider == DebridProviderKind::RealDebrid
-            ? "realdebrid" : "torbox";
+        values.debridProvider == DebridProviderKind::TorrServer
+            ? "torrserver" : "torbox";
     root["first_run_completed"] = values.firstRunCompleted;
     root["proxy_url"] = values.proxyUrl;
     return root.dump(2) + "\n";
@@ -315,7 +316,7 @@ bool AppSettingsData::operator==(const AppSettingsData& other) const {
            maxActiveDownloads == other.maxActiveDownloads &&
            torrentingEnabled == other.torrentingEnabled &&
            torboxApiKey == other.torboxApiKey &&
-           realDebridToken == other.realDebridToken &&
+           torrserverUrl == other.torrserverUrl &&
            debridProvider == other.debridProvider &&
            firstRunCompleted == other.firstRunCompleted &&
            proxyUrl == other.proxyUrl;

@@ -31,14 +31,13 @@ std::string htmlEscape(const std::string& text) {
     return escaped;
 }
 
-std::string formPage(const std::string& message) {
+std::string formPage(const std::string& message, const std::string& hint) {
     return "<!doctype html><html><head><meta name=\"viewport\" "
         "content=\"width=device-width,initial-scale=1\">"
-        "<title>Link TorBox</title></head>"
+        "<title>Link pipensx</title></head>"
         "<body style=\"font-family:sans-serif;max-width:26em;margin:3em "
-        "auto;padding:0 1em\"><h2>Link TorBox</h2>"
-        "<p>Paste your TorBox API key. Find it at "
-        "torbox.app &gt; Settings &gt; API.</p>" +
+        "auto;padding:0 1em\"><h2>Link pipensx</h2>"
+        "<p>" + htmlEscape(hint) + "</p>" +
         (message.empty() ? std::string()
                          : "<p style=\"color:#b00\">" + htmlEscape(message) +
                            "</p>") +
@@ -76,8 +75,9 @@ HttpServer::Options pairingOptions() {
 
 } // namespace
 
-TorboxPairingServer::TorboxPairingServer(uint16_t port, Validator validator)
-    : port_(port), validator_(std::move(validator)),
+TorboxPairingServer::TorboxPairingServer(uint16_t port, Validator validator,
+                                         std::string hint)
+    : port_(port), validator_(std::move(validator)), hint_(std::move(hint)),
       server_(pairingOptions()) {}
 
 TorboxPairingServer::~TorboxPairingServer() {
@@ -110,17 +110,18 @@ bool TorboxPairingServer::parsePostKey(const std::string& body,
 HttpResponse TorboxPairingServer::handleRequest(const HttpRequest& request,
                                                 const Validator& validator,
                                                 bool& keyAccepted,
-                                                std::string& key) {
+                                                std::string& key,
+                                                const std::string& hint) {
     keyAccepted = false;
     if (request.method == "GET" && request.path == "/")
-        return page(200, formPage(""));
+        return page(200, formPage("", hint));
     if (request.method == "POST" && request.path == "/key") {
         std::string posted;
         if (!parsePostKey(request.body, posted))
-            return page(200, formPage("Invalid request format."));
+            return page(200, formPage("Invalid request format.", hint));
         std::string error;
         if (!validator(posted, error))
-            return page(200, formPage(error));
+            return page(200, formPage(error, hint));
         keyAccepted = true;
         key = posted;
         return page(200, successPage());
@@ -138,7 +139,7 @@ bool TorboxPairingServer::start(std::string& error) {
             bool accepted = false;
             std::string key;
             HttpResponse response =
-                handleRequest(request, validator_, accepted, key);
+                handleRequest(request, validator_, accepted, key, hint_);
             if (accepted) {
                 std::lock_guard<std::mutex> lock(mutex_);
                 key_ = key;

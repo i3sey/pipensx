@@ -180,18 +180,18 @@ public:
 
         debridProvider_ = new brls::SelectorCell();
         debridProvider_->init(tr("pipensx/settings/debrid_provider"),
-            {"TorBox", "Real-Debrid"},
-            settings_->get().debridProvider == DebridProviderKind::RealDebrid
+            {"TorBox", "TorrServer"},
+            settings_->get().debridProvider == DebridProviderKind::TorrServer
                 ? 1 : 0,
             [this](int selected) {
                 AppSettingsData values = settings_->get();
                 const DebridProviderKind previous = values.debridProvider;
                 values.debridProvider = selected == 1
-                    ? DebridProviderKind::RealDebrid
+                    ? DebridProviderKind::TorrServer
                     : DebridProviderKind::TorBox;
                 if (!persist(values, "debrid_provider"))
                     debridProvider_->setSelection(
-                        previous == DebridProviderKind::RealDebrid ? 1 : 0,
+                        previous == DebridProviderKind::TorrServer ? 1 : 0,
                         true);
                 refreshDebridLinkDetail();
             });
@@ -624,8 +624,7 @@ private:
         if (!debridLink_)
             return;
         const AppSettingsData& values = settings_->get();
-        const char* provider = values.debridProvider ==
-            DebridProviderKind::RealDebrid ? "Real-Debrid" : "TorBox";
+        const char* provider = debridProviderName(values.debridProvider);
         // Spelled out rather than picking the key with a ternary: the i18n
         // checker only sees keys that appear as a literal first argument.
         debridLink_->setDetailText(
@@ -652,11 +651,11 @@ private:
         updateWebCells();
         torrenting_->setOn(values.torrentingEnabled, false);
         debridProvider_->setSelection(
-            values.debridProvider == DebridProviderKind::RealDebrid ? 1 : 0,
+            values.debridProvider == DebridProviderKind::TorrServer ? 1 : 0,
             true);
         manager_->setTorrentingEnabled(values.torrentingEnabled);
         manager_->setTorboxApiKey(values.torboxApiKey);
-        manager_->setRealDebridToken(values.realDebridToken);
+        manager_->setTorrserverUrl(values.torrserverUrl);
         refreshDebridLinkDetail();
     }
 

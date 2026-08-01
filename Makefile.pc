@@ -77,9 +77,8 @@ PROBE_REPORT_TEST_TARGET = tests/test_probe_report
 TORBOX_CLIENT_TEST_TARGET = tests/test_torbox_client
 TORBOX_PAIRING_TEST_TARGET = tests/test_torbox_pairing
 DEBRID_TRANSFER_TEST_TARGET = tests/test_debrid_transfer
-RD_CLIENT_TEST_TARGET = tests/test_real_debrid_client
 TB_PROVIDER_TEST_TARGET = tests/test_torbox_provider
-RD_PROVIDER_TEST_TARGET = tests/test_real_debrid_provider
+TS_PROVIDER_TEST_TARGET = tests/test_torrserver_provider
 TEST_SRCS = \
     tests/test_piece.c       \
     src/core/sha1.c          \
@@ -109,10 +108,7 @@ src/app/torbox_client.o: src/app/torbox_client.cpp
 src/app/torbox_provider.o: src/app/torbox_provider.cpp
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
-src/app/real_debrid_provider.o: src/app/real_debrid_provider.cpp
-	$(CXX) $(CXXFLAGS) -c -o $@ $<
-
-src/app/real_debrid_client.o: src/app/real_debrid_client.cpp
+src/app/torrserver_provider.o: src/app/torrserver_provider.cpp
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
 src/app/debrid_transfer.o: src/app/debrid_transfer.cpp
@@ -147,8 +143,7 @@ $(MANAGER_TEST_TARGET): tests/test_manager.o src/app/download_manager.o \
 		src/app/stream_ram_budget.o src/app/stream_budget_arbiter.o \
 		src/app/request_gate.o \
 		src/app/debrid_transfer.o src/app/torbox_client.o \
-		src/app/torbox_provider.o src/app/real_debrid_client.o \
-		src/app/real_debrid_provider.o \
+		src/app/torbox_provider.o src/app/torrserver_provider.o \
 		src/install/package_stream.o src/install/install_journal.o \
 		src/install/install_backend_pc.o \
 		$(filter-out src/main_pc.o,$(OBJS)) $(UTP_OBJS)
@@ -201,8 +196,7 @@ $(WEB_SERVER_TEST_TARGET): tests/test_web_server.cpp \
 		src/app/stream_ram_budget.o src/app/stream_budget_arbiter.o \
 		src/app/request_gate.o \
 		src/app/debrid_transfer.o src/app/torbox_client.o \
-		src/app/torbox_provider.o src/app/real_debrid_client.o \
-		src/app/real_debrid_provider.o \
+		src/app/torbox_provider.o src/app/torrserver_provider.o \
 		src/install/package_stream.o src/install/install_journal.o \
 		src/install/install_backend_pc.o \
 		$(filter-out src/main_pc.o,$(OBJS)) $(UTP_OBJS)
@@ -245,8 +239,8 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 		$(HTTP_TEST_TARGET) $(WEB_SERVER_TEST_TARGET) \
 		$(PROBE_REPORT_TEST_TARGET) \
 		$(TORBOX_CLIENT_TEST_TARGET) $(TORBOX_PAIRING_TEST_TARGET) \
-		$(DEBRID_TRANSFER_TEST_TARGET) $(RD_CLIENT_TEST_TARGET) \
-		$(TB_PROVIDER_TEST_TARGET) $(RD_PROVIDER_TEST_TARGET)
+		$(DEBRID_TRANSFER_TEST_TARGET) \
+		$(TB_PROVIDER_TEST_TARGET) $(TS_PROVIDER_TEST_TARGET)
 	./$(TEST_TARGET)
 	./$(PACKAGE_TEST_TARGET)
 	./$(CATALOG_TEST_TARGET)
@@ -274,9 +268,8 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 	./$(TORBOX_CLIENT_TEST_TARGET)
 	./$(TORBOX_PAIRING_TEST_TARGET)
 	./$(DEBRID_TRANSFER_TEST_TARGET)
-	./$(RD_CLIENT_TEST_TARGET)
 	./$(TB_PROVIDER_TEST_TARGET)
-	./$(RD_PROVIDER_TEST_TARGET)
+	./$(TS_PROVIDER_TEST_TARGET)
 	python3 tests/test_bug_report_decode.py
 	python3 tests/test_telemetry_analyzer.py
 	python3 scripts/check_i18n.py
@@ -309,7 +302,7 @@ $(BATCH_INSTALL_TEST_TARGET): tests/test_batch_install.cpp \
 		src/app/stream_ram_budget.o src/app/stream_budget_arbiter.o \
 		src/app/request_gate.o src/app/debrid_transfer.o \
 		src/app/torbox_client.o src/app/torbox_provider.o \
-		src/app/real_debrid_client.o src/app/real_debrid_provider.o \
+		src/app/torrserver_provider.o \
 		src/install/package_stream.o src/install/install_journal.o \
 		src/install/install_backend_pc.o \
 		$(filter-out src/main_pc.o,$(OBJS)) $(UTP_OBJS)
@@ -357,17 +350,12 @@ $(TORBOX_CLIENT_TEST_TARGET): tests/test_torbox_client.cpp \
 		src/app/torbox_client.o src/core/util.o
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
 
-$(RD_CLIENT_TEST_TARGET): tests/test_real_debrid_client.cpp \
-		src/app/real_debrid_client.o src/core/util.o
-	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
-
 $(TB_PROVIDER_TEST_TARGET): tests/test_torbox_provider.cpp \
 		src/app/torbox_provider.o src/app/torbox_client.o src/core/util.o
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
 
-$(RD_PROVIDER_TEST_TARGET): tests/test_real_debrid_provider.cpp \
-		src/app/real_debrid_provider.o src/app/real_debrid_client.o \
-		src/core/util.o
+$(TS_PROVIDER_TEST_TARGET): tests/test_torrserver_provider.cpp \
+		src/app/torrserver_provider.o src/core/util.o
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
 
 $(TORBOX_PAIRING_TEST_TARGET): tests/test_torbox_pairing.cpp \
@@ -411,8 +399,7 @@ tools/webserver: tools/web_server_main.cpp \
 		src/app/stream_ram_budget.o src/app/stream_budget_arbiter.o \
 		src/app/request_gate.o \
 		src/app/debrid_transfer.o src/app/torbox_client.o \
-		src/app/torbox_provider.o src/app/real_debrid_client.o \
-		src/app/real_debrid_provider.o \
+		src/app/torbox_provider.o src/app/torrserver_provider.o \
 		src/install/package_stream.o src/install/install_journal.o \
 		src/install/install_backend_pc.o \
 		$(filter-out src/main_pc.o,$(OBJS)) $(UTP_OBJS)
@@ -424,8 +411,8 @@ clean:
 		src/app/web_seed_source.o src/app/stream_ram_budget.o \
 		src/app/stream_budget_arbiter.o src/app/request_gate.o \
 		src/app/torbox_client.o src/app/torbox_pairing_server.o \
-		src/app/debrid_transfer.o src/app/real_debrid_client.o \
-		src/app/real_debrid_provider.o src/app/torbox_provider.o \
+		src/app/debrid_transfer.o src/app/torrserver_provider.o \
+		src/app/torbox_provider.o \
 		src/app/catalog_service.o src/app/snapshot_zstd.o \
 		src/app/catalog_presentation.o src/app/game_metadata_service.o \
 		src/app/magnet_resolver.o \
@@ -446,7 +433,7 @@ clean:
 		$(HTTP_TEST_TARGET) $(WEB_SERVER_TEST_TARGET) \
 		$(PROBE_REPORT_TEST_TARGET) \
 		$(TORBOX_CLIENT_TEST_TARGET) $(TORBOX_PAIRING_TEST_TARGET) \
-		$(DEBRID_TRANSFER_TEST_TARGET) $(RD_CLIENT_TEST_TARGET) \
-		$(TB_PROVIDER_TEST_TARGET) $(RD_PROVIDER_TEST_TARGET)
+		$(DEBRID_TRANSFER_TEST_TARGET) \
+		$(TB_PROVIDER_TEST_TARGET) $(TS_PROVIDER_TEST_TARGET)
 
 .PHONY: all test clean

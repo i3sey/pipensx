@@ -350,7 +350,7 @@ int main(int argc, char** argv) {
             installTargetFor(settings.get().installLocation));
         manager.setMaxActiveDownloads(settings.get().maxActiveDownloads);
         manager.setTorboxApiKey(settings.get().torboxApiKey);
-        manager.setRealDebridToken(settings.get().realDebridToken);
+        manager.setTorrserverUrl(settings.get().torrserverUrl);
         manager.setTorrentingEnabled(settings.get().torrentingEnabled);
         metadata.setImageNetwork(
             manager.hasActiveTransfer()

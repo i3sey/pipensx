@@ -159,7 +159,7 @@ public:
     bool importDebrid(const DebridImport& import,
                       std::string& taskId, std::string& error);
     void setTorboxApiKey(const std::string& key);
-    void setRealDebridToken(const std::string& token);
+    void setTorrserverUrl(const std::string& url);
     std::string torboxApiKey() const;
     void setTorrentingEnabled(bool enabled);
     bool torrentingEnabled() const;
@@ -258,7 +258,7 @@ private:
     std::string downloadRoot_;
     std::string statePath_;
     std::string torboxApiKey_;
-    std::string realDebridToken_;
+    std::string torrserverUrl_;
     // Off until someone opts in. The constructor starts the worker before any
     // caller can configure the manager, so a restored Queued torrent task is
     // eligible for pickup during that window — defaulting to true would let it

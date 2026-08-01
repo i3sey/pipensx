@@ -23,7 +23,7 @@ struct DebridInfo {
     std::vector<std::string> links;
 };
 
-enum class DebridProviderKind { TorBox, RealDebrid };
+enum class DebridProviderKind { TorBox, TorrServer };
 
 class DebridProvider {
 public:
@@ -45,6 +45,10 @@ public:
                                     std::string& url, std::string& error) = 0;
     virtual bool remove(const std::string& id, std::string& error) = 0;
     virtual const char* name() const = 0;
+    // A download link from a hosted service carries the account's credentials
+    // and must stay on HTTPS. A server the user runs on their own LAN does
+    // not, and cannot present a certificate for a private address anyway.
+    virtual bool allowsPlaintextLinks() const { return false; }
 };
 
 } // namespace pipensx

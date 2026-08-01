@@ -53,7 +53,7 @@ void testMissingFileUsesSafeDefaults() {
     // Torrenting stays off until the user opts in on the first-run screen.
     assert(!values.torrentingEnabled);
     assert(values.torboxApiKey.empty());
-    assert(values.realDebridToken.empty());
+    assert(values.torrserverUrl.empty());
     assert(values.debridProvider == DebridProviderKind::TorBox);
     assert(!values.firstRunCompleted);
 }
@@ -81,8 +81,8 @@ void testUpdatePersistsEveryPublicSetting() {
     changed.catalogDisclaimerAcknowledged = true;
     changed.torrentingEnabled = true;
     changed.torboxApiKey = "0a1b2c3d-4e5f-6789-abcd-ef0123456789";
-    changed.realDebridToken = "rd-token";
-    changed.debridProvider = DebridProviderKind::RealDebrid;
+    changed.torrserverUrl = "http://192.168.1.10:8090";
+    changed.debridProvider = DebridProviderKind::TorrServer;
     changed.firstRunCompleted = true;
     assert(settings.update(changed, error));
 
