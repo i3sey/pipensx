@@ -9,7 +9,8 @@
 //                 [--locale en-US|ru]
 //                 --screen catalog|shelf-scroll|shelf-header|detail|torrent-selection|
 //                          torrent-selection-scroll|downloads|downloads-back|frame|
-//                          hints-budget|installed|settings|about|bug-report|
+//                          hints-budget|installed|settings|settings-debrid|
+//                          about|bug-report|
 //                          bug-report-detail|bug-report-focus|sidebar-touch
 //                 [--frames N] [--sandbox <dir>]
 //
@@ -356,6 +357,7 @@ int main(int argc, char** argv) {
     bool sidebarTouch = false;
     int torrentSelectionRows = 0;
     bool torrentSelectionScroll = false;
+    bool settingsDebrid = false;
     bool hintsBudget = false;
     CatalogView* hintsCatalog = nullptr;
     BugReportActivity* bugReportFocus = nullptr;
@@ -571,6 +573,20 @@ int main(int argc, char** argv) {
         activity = new GoldenActivity(new SettingsView(
             &settings, &manager, &catalog, &metadata, &installed, nullptr,
             &mods));
+    } else if (screen == "settings-debrid") {
+        // The debrid section is well below the fold on the settings screen,
+        // so it needs a shot of its own. A key is planted first: "linked" is
+        // the state worth pinning, since it is the one the detail text
+        // composes from the provider name.
+        pipensx::AppSettingsData values = settings.get();
+        values.torboxApiKey = "golden-fixture-key";
+        values.debridProvider = pipensx::DebridProviderKind::TorBox;
+        if (!settings.update(values, error))
+            return fail("settings-debrid could not plant a linked key");
+        activity = new GoldenActivity(new SettingsView(
+            &settings, &manager, &catalog, &metadata, &installed, nullptr,
+            &mods));
+        settingsDebrid = true;
     } else if (screen == "about") {
         activity = new GoldenActivity(new AboutView());
     } else if (screen == "bug-report" || screen == "bug-report-detail" ||
@@ -627,6 +643,30 @@ int main(int argc, char** argv) {
         // catalog's actions.
         if (i == 10 && hintsCatalog)
             brls::Application::giveFocus(hintsCatalog);
+        // The settings scroller is NATURAL: it follows the d-pad, not focus,
+        // and getNextFocus() cannot reach a row that is still off-screen. So
+        // scroll it directly to the cell's own offset — that is independent
+        // of how many rows sit above the section, unlike counting presses.
+        // The headroom puts the section heading and its two other rows in
+        // frame rather than the link cell alone.
+        if (i == 30 && settingsDebrid) {
+            brls::View* link =
+                activity->getContentView()->getView("settings-debrid-link");
+            if (!link)
+                return fail("settings-debrid: link cell not found");
+            brls::ScrollingFrame* scroller = nullptr;
+            for (brls::View* node = reinterpret_cast<brls::View*>(
+                     link->getParent());
+                 node && !scroller;
+                 node = reinterpret_cast<brls::View*>(node->getParent()))
+                scroller = dynamic_cast<brls::ScrollingFrame*>(node);
+            if (!scroller)
+                return fail("settings-debrid: link cell is not in a scroller");
+            constexpr float kHeadroom = 240.0f;
+            float offset = link->getLocalY() - kHeadroom;
+            scroller->setContentOffsetY(offset < 0 ? 0 : offset, false);
+            brls::Application::giveFocus(link);
+        }
         if (i == 20 && downloadsBackFrame) {
             downloadsBackSidebarFocus = brls::Application::getCurrentFocus();
             auto values = settings.get();

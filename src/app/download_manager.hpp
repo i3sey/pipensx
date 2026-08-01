@@ -1,5 +1,7 @@
 #pragma once
 
+#include "debrid_provider.hpp"
+
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
@@ -34,6 +36,7 @@ inline uint32_t clampMaxActiveDownloads(uint64_t value) {
 enum class DownloadStatus {
     Queued,
     Checking,
+    Fetching,
     Downloading,
     Paused,
     Verifying,
@@ -44,6 +47,8 @@ enum class DownloadStatus {
     Error,
     Removing,
 };
+
+enum class TaskSource { Torrent, Debrid };
 
 enum class TransferMode {
     DownloadOnly,
@@ -64,6 +69,10 @@ struct DownloadTask {
     std::string error;
     DownloadStatus status = DownloadStatus::Queued;
     TransferMode mode = TransferMode::DownloadOnly;
+    TaskSource source = TaskSource::Torrent;
+    DebridProviderKind debridProvider = DebridProviderKind::TorBox;
+    std::string debridId;
+    double fetchProgress = 0.0;
     uint64_t totalBytes = 0;
     uint64_t completedBytes = 0;
     uint64_t speedBytesPerSecond = 0;
@@ -107,6 +116,18 @@ struct TorrentPreview {
     std::vector<File> files;
 };
 
+struct DebridImport {
+    std::string infoHash;               // lowercase hex, becomes task id
+    std::string name;
+    uint64_t totalBytes = 0;
+    DebridProviderKind provider = DebridProviderKind::TorBox;
+    std::string debridId;              // nonzero when already created (catalog)
+    std::string torrentPath;           // local .torrent to copy+upload ("" for catalog)
+    TransferMode mode = TransferMode::DownloadOnly;
+    std::vector<uint8_t> fileSelection;
+    uint32_t packageCount = 0;         // selected packages (0 if mode DownloadOnly)
+};
+
 class DownloadManager {
 public:
     explicit DownloadManager(std::string rootPath, bool startWorker = true);
@@ -135,6 +156,13 @@ public:
                        std::string& error) {
         return importTorrent(path, TransferMode::DownloadOnly, taskId, error);
     }
+    bool importDebrid(const DebridImport& import,
+                      std::string& taskId, std::string& error);
+    void setTorboxApiKey(const std::string& key);
+    void setRealDebridToken(const std::string& token);
+    std::string torboxApiKey() const;
+    void setTorrentingEnabled(bool enabled);
+    bool torrentingEnabled() const;
     bool pause(const std::string& taskId);
     bool resume(const std::string& taskId);
     bool retry(const std::string& taskId);
@@ -179,9 +207,13 @@ private:
     // publish progress.
     struct ClaimedTask {
         std::string id;
+        std::string name;
         std::string metainfoPath;
         std::string dataPath;
         TransferMode mode = TransferMode::DownloadOnly;
+        TaskSource source = TaskSource::Torrent;
+        DebridProviderKind debridProvider = DebridProviderKind::TorBox;
+        std::string debridId;
         uint32_t packagesInstalled = 0;
         std::vector<uint8_t> fileSelection;
         std::vector<uint8_t> initialPeers;
@@ -202,6 +234,9 @@ private:
     void load();
     void schedulerMain();
     void runTask(RunnerSlot* slot, ClaimedTask claim);
+    // The debrid half of runTask: no engine, no peers, no arbiter slot — the
+    // provider fetches the torrent and we pull the result over HTTPS.
+    void runDebridTask(const ClaimedTask& claim);
     DownloadTask* claimableLocked();
     void reapRunnersLocked(std::unique_lock<std::mutex>& lock);
     bool saveLocked(std::string& error) const;
@@ -209,11 +244,26 @@ private:
     const DownloadTask* findLocked(const std::string& id) const;
     bool removeLocked(const std::string& id, bool deleteData,
                       std::string& error);
+    // Fires a detached thread, so it must not touch *this: the manager can be
+    // torn down while a provider call is still in flight.
+    static void removeFromDebridAsync(DebridProviderKind provider,
+                                      const std::string& apiKey,
+                                      const std::string& debridId);
+    std::string apiKeyFor(DebridProviderKind provider) const;
+    static std::unique_ptr<class DebridProvider> makeProvider(
+        DebridProviderKind provider, const std::string& key);
 
     std::string rootPath_;
     std::string torrentRoot_;
     std::string downloadRoot_;
     std::string statePath_;
+    std::string torboxApiKey_;
+    std::string realDebridToken_;
+    // Off until someone opts in. The constructor starts the worker before any
+    // caller can configure the manager, so a restored Queued torrent task is
+    // eligible for pickup during that window — defaulting to true would let it
+    // reach a tracker on a console where the user has torrenting disabled.
+    std::atomic<bool> torrentingEnabled_{false};
 
     mutable std::mutex mutex_;
     std::condition_variable condition_;

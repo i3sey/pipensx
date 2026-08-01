@@ -160,7 +160,8 @@
     "installing_extras_skipped_hint": "Installing game files. Extra files skipped — use Select files to include them.",
     "installing_extras_skipped": "Installing game files. Extra files skipped.",
     "added_installing": "Added. Installing to SD...",
-    "already_in_downloads": "Already in downloads."
+    "already_in_downloads": "Already in downloads.",
+    "status_fetching": "Fetching {}%"
   },
   "torrent": {
     "title": "Choose torrent files",
@@ -233,7 +234,9 @@
     "eta_seconds": "{}s",
     "eta_minutes": "{}m {}s",
     "eta_hours": "{}h {}m",
-    "eta_days": "{}d {}h"
+    "eta_days": "{}d {}h",
+    "status_fetching": "Fetching",
+    "cell_fetching": "Debrid service is fetching this   {}%"
   },
   "picker": {
     "folder": "[Folder]  {}",
@@ -393,7 +396,15 @@
     "report_id_filtered": "Report {} · codes: {} (verbose lines dropped)",
     "report_empty": "Log is empty — only device info was captured.",
     "report_hint": "Photograph this whole screen and send it with a description of the problem.",
-    "report_hint_detailed": "Detailed mode: codes are denser and carry more log, so send a Capture-button screenshot rather than a photo. Y returns to the photo view."
+    "report_hint_detailed": "Detailed mode: codes are denser and carry more log, so send a Capture-button screenshot rather than a photo. Y returns to the photo view.",
+    "section_debrid": "Transfer method",
+    "torrenting": "Direct BitTorrent (reveals your IP)",
+    "torrenting_warning": "Direct BitTorrent exposes your public IP address to other peers. Enable it only if you accept that.",
+    "torrenting_enable": "Enable BitTorrent",
+    "debrid_provider": "Debrid provider",
+    "debrid_link": "Link debrid account",
+    "debrid_linked": "{} — linked",
+    "debrid_not_linked": "{} — not linked"
   },
   "about": {
     "version": "Version {}",
@@ -409,5 +420,34 @@
   },
   "disclaimer": {
     "catalog": "Catalog is a RuTracker dump by @Langegen. Not affiliated."
+  },
+  "debrid": {
+    "link_hint": "Scan the code from a device on the same network, or type your {} API key by hand. It is stored only in the pipensx settings.",
+    "link_title": "Link {} account",
+    "enter_key": "Enter the key by hand",
+    "enter_key_detail": "Software keyboard",
+    "unlink": "Unlink the account",
+    "unlink_detail": "Remove the saved key",
+    "linked": "Account linked.",
+    "not_linked": "No account linked.",
+    "keyboard_prompt": "{} API key",
+    "no_key": "No key entered.",
+    "validating": "Checking the key…",
+    "rejected": "The debrid service rejected this key.",
+    "linked_notify": "Debrid account linked.",
+    "unlinked_notify": "Debrid account unlinked.",
+    "needs_account": "Debrid mode needs a linked account. Link one now?",
+    "link_now": "Link account",
+    "first_run": "Choose how pipensx fetches releases. Debrid is recommended: direct BitTorrent exposes your public IP address to other peers.",
+    "first_run_torbox": "TorBox (recommended)",
+    "first_run_realdebrid": "Real-Debrid",
+    "first_run_torrent": "Direct BitTorrent — accept IP exposure",
+    "choose_mode": "Choose what to do with the files.",
+    "mode_install": "Install the game packages",
+    "mode_download": "Download every file",
+    "submitting": "Submitting…",
+    "sending_magnet": "Sending the magnet to the debrid service…",
+    "magnet_rejected": "The debrid service rejected the magnet.",
+    "queued": "Added to the debrid queue. Metadata may still be fetching."
   }
 }

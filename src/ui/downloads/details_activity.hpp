@@ -275,9 +275,10 @@ private:
 
     void updateButtons(const DownloadTask& task) {
         bool paused = task.status == DownloadStatus::Paused ||
-                      task.status == DownloadStatus::Error;
+                            task.status == DownloadStatus::Error;
         bool active = task.status == DownloadStatus::Queued ||
                       task.status == DownloadStatus::Checking ||
+                      task.status == DownloadStatus::Fetching ||
                       task.status == DownloadStatus::Downloading ||
                       task.status == DownloadStatus::Installing ||
                       task.status == DownloadStatus::Committing ||

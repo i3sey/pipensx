@@ -207,6 +207,17 @@ void WebAddQueue::runJob(const std::string& jobId) {
         if (job) job->data.progress = progress;
     };
 
+    // Resolving a magnet talks to the DHT and to peers, so it has to sit
+    // behind the same gate as the transfer itself — otherwise a phone could
+    // put the console on the torrent network while the user has torrenting
+    // switched off. The companion has no debrid path of its own yet.
+    if (!manager_.torrentingEnabled()) {
+        fail("Torrenting is disabled. Enable it in Settings, or add this "
+             "release from the console in debrid mode.",
+             WebAddJobState::Error);
+        return;
+    }
+
     std::string error;
     std::vector<uint8_t> initialPeers;
     if (!resolver_(data, path, *cancelled, progressCb, initialPeers, error)) {

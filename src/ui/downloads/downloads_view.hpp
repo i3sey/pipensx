@@ -86,7 +86,8 @@ public:
     }
 
     void openFilePicker() {
-        brls::Application::pushActivity(new FilePickerActivity(manager_));
+        brls::Application::pushActivity(
+            new FilePickerActivity(manager_, settings_));
     }
 
     // O7: per-row context menu on A. Replaces the old blind Y/X hotkeys — the
@@ -115,6 +116,7 @@ public:
 
         bool active = task.status == DownloadStatus::Queued ||
                       task.status == DownloadStatus::Checking ||
+                      task.status == DownloadStatus::Fetching ||
                       task.status == DownloadStatus::Downloading ||
                       task.status == DownloadStatus::Installing ||
                       task.status == DownloadStatus::Committing ||

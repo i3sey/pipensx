@@ -9,8 +9,10 @@
 
 #include <borealis.hpp>
 
+#include "app/app_settings.hpp"
 #include "app/download_manager.hpp"
 #include "ui/common/ui_helpers.hpp"
+#include "ui/debrid_ui.hpp"
 #include "ui/i18n.hpp"
 
 namespace pipensx::ui {
@@ -57,8 +59,8 @@ private:
 
 class FilePickerActivity : public brls::Activity {
 public:
-    explicit FilePickerActivity(DownloadManager* manager)
-        : manager_(manager), currentPath_("sdmc:/") {
+    FilePickerActivity(DownloadManager* manager, AppSettings* settings)
+        : manager_(manager), settings_(settings), currentPath_("sdmc:/") {
         recycler_ = new brls::RecyclerFrame();
         recycler_->setPadding(8, 32, 8, 32);
         recycler_->estimatedRowHeight = 64;
@@ -101,10 +103,27 @@ public:
             text += tr("pipensx/picker/preview_packages",
                        preview.packageCount);
         auto* dialog = new brls::Dialog(text);
-        auto add = [this, path = entry.path](TransferMode mode) {
+        auto add = [this, path = entry.path, preview](TransferMode mode) {
             std::string id;
             std::string error;
-            if (manager_->importTorrent(path, mode, id, error)) {
+            bool imported = false;
+            if (debridModeActive(settings_)) {
+                if (!ensureDebridLinked(settings_, manager_))
+                    return;
+                DebridImport import;
+                import.infoHash = preview.infoHash;
+                import.name = preview.name;
+                import.totalBytes = preview.totalBytes;
+                import.provider = settings_->get().debridProvider;
+                import.torrentPath = path;
+                import.mode = mode;
+                import.packageCount = mode == TransferMode::StreamInstall
+                    ? preview.packageCount : 0;
+                imported = manager_->importDebrid(import, id, error);
+            } else {
+                imported = manager_->importTorrent(path, mode, id, error);
+            }
+            if (imported) {
                 brls::Application::notify(tr("pipensx/picker/added"));
                 brls::Application::popActivity();
             } else {
@@ -147,13 +166,13 @@ private:
     }
 
     void loadDirectory(const std::string& path) {
+        std::vector<FileEntry> directories;
+        std::vector<FileEntry> files;
         DIR* dir = opendir(path.c_str());
         if (!dir) {
             brls::Application::notify(tr("pipensx/picker/unable_to_open"));
             return;
         }
-        std::vector<FileEntry> directories;
-        std::vector<FileEntry> files;
         while (dirent* item = readdir(dir)) {
             if (std::strcmp(item->d_name, ".") == 0 ||
                 std::strcmp(item->d_name, "..") == 0)
@@ -204,6 +223,7 @@ private:
     }
 
     DownloadManager* manager_;
+    AppSettings* settings_;
     std::string currentPath_;
     std::vector<FileEntry> entries_;
     brls::RecyclerFrame* recycler_;

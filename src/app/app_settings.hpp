@@ -1,5 +1,7 @@
 #pragma once
 
+#include "debrid_provider.hpp"
+
 #include <cstdint>
 #include <string>
 
@@ -38,8 +40,7 @@ struct AppSettingsData {
     bool showCompletedDownloads = true;
     bool extendedTelemetry = false;
     bool checkForUpdatesOnLaunch = true;
-    // First-run disclaimer: the catalog is a third-party RuTracker dump. Shown
-    // once, then this is set so later launches skip it.
+    // First-run disclaimer: catalog comes from a third party. Shown once.
     bool catalogDisclaimerAcknowledged = false;
     // Web companion LAN server (plain HTTP, port 8080). The PIN gates
     // mutating endpoints; empty = no auth, otherwise 4-8 digits (enforced at
@@ -53,6 +54,17 @@ struct AppSettingsData {
     // does behind the user's back. Hand-edited values are clamped to the
     // supported range at parse time.
     uint32_t maxActiveDownloads = 1;
+    // Debrid: transfers are fetched over HTTPS from the provider instead of
+    // from peers. A fresh install starts debrid-first, so torrenting is off
+    // until the user opts in; settings files older than v3 predate the switch
+    // and are migrated to true so an upgrade does not silently stop them.
+    // The key and the token are stored in the clear, like webServerPin — the
+    // SD card offers nothing better to hide them behind.
+    bool torrentingEnabled = false;
+    std::string torboxApiKey;
+    std::string realDebridToken;
+    DebridProviderKind debridProvider = DebridProviderKind::TorBox;
+    bool firstRunCompleted = false;
 
     bool operator==(const AppSettingsData& other) const;
     bool operator!=(const AppSettingsData& other) const {

@@ -7,10 +7,13 @@
 #include <vector>
 
 #include "catalog_service.hpp"
+#include "debrid_provider.hpp"
 #include "install_space.hpp"
 #include "magnet_resolver.hpp"
 
 namespace pipensx {
+
+enum class InstallSource { Torrent, Debrid };
 
 struct PreparedCatalogInstall {
     CatalogEntry entry;
@@ -21,6 +24,8 @@ struct PreparedCatalogInstall {
     TransferMode mode = TransferMode::DownloadOnly;
     InstallSpaceEstimate space;
     bool selected = true;
+    InstallSource source = InstallSource::Torrent;
+    std::string debridId;
 };
 
 struct BatchItemFailure {
@@ -42,7 +47,7 @@ public:
     BatchPreparation(const BatchPreparation&) = delete;
     BatchPreparation& operator=(const BatchPreparation&) = delete;
     BatchPreparation(BatchPreparation&&) noexcept = default;
-    BatchPreparation& operator=(BatchPreparation&&) = delete;
+    BatchPreparation& operator=(BatchPreparation&&) = default;
 
     const std::vector<PreparedCatalogInstall>& items() const { return items_; }
     std::vector<PreparedCatalogInstall>& items() { return items_; }
@@ -64,6 +69,11 @@ struct BatchEnqueueResult {
     size_t skipped = 0;
 };
 
+struct DebridBatchTiming {
+    uint32_t pollIntervalMs = 2000;
+    uint32_t resolveWindowMs = 60000;
+};
+
 class CatalogBatchInstaller {
 public:
     using ResolveTorrent = std::function<bool(
@@ -80,6 +90,20 @@ public:
                              const ProgressCallback& progress) const;
     BatchEnqueueResult enqueue(BatchPreparation& prepared,
                                DownloadManager& manager) const;
+
+    BatchPreparation prepareViaDebrid(
+        const std::vector<CatalogEntry>& entries,
+        StreamSelection selection,
+        DebridProvider& provider,
+        std::atomic<bool>& cancelled,
+        const ProgressCallback& progress,
+        DebridBatchTiming timing = {}) const;
+
+    BatchEnqueueResult enqueueViaDebrid(
+        BatchPreparation& prepared,
+        DownloadManager& manager,
+        DebridProviderKind providerKind,
+        DebridProvider& provider) const;
 
 private:
     std::string rootPath_;

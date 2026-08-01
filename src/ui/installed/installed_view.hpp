@@ -156,6 +156,7 @@ private:
                 continue;
             if (task.status == DownloadStatus::Queued ||
                 task.status == DownloadStatus::Checking ||
+                task.status == DownloadStatus::Fetching ||
                 task.status == DownloadStatus::Downloading ||
                 task.status == DownloadStatus::Installing ||
                 task.status == DownloadStatus::Committing ||

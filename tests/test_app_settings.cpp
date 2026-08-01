@@ -10,6 +10,7 @@
 using pipensx::AppSettings;
 using pipensx::AppSettingsData;
 using pipensx::CatalogFilter;
+using pipensx::DebridProviderKind;
 using pipensx::StreamSelection;
 using pipensx::InstallLocation;
 using pipensx::dailyRefreshDue;
@@ -45,6 +46,13 @@ void testMissingFileUsesSafeDefaults() {
     // "auto" keeps the console's system language, so a Russian Switch gets a
     // Russian UI on first launch with no user action.
     assert(values.language == "auto");
+    assert(!values.catalogDisclaimerAcknowledged);
+    // Torrenting stays off until the user opts in on the first-run screen.
+    assert(!values.torrentingEnabled);
+    assert(values.torboxApiKey.empty());
+    assert(values.realDebridToken.empty());
+    assert(values.debridProvider == DebridProviderKind::TorBox);
+    assert(!values.firstRunCompleted);
 }
 
 void testUpdatePersistsEveryPublicSetting() {
@@ -67,6 +75,12 @@ void testUpdatePersistsEveryPublicSetting() {
     changed.webServerEnabled = false;
     changed.webServerPin = "12345678";
     changed.maxActiveDownloads = 3;
+    changed.catalogDisclaimerAcknowledged = true;
+    changed.torrentingEnabled = true;
+    changed.torboxApiKey = "0a1b2c3d-4e5f-6789-abcd-ef0123456789";
+    changed.realDebridToken = "rd-token";
+    changed.debridProvider = DebridProviderKind::RealDebrid;
+    changed.firstRunCompleted = true;
     assert(settings.update(changed, error));
 
     AppSettings restored(SettingsPath, LegacyPath);
@@ -247,6 +261,47 @@ void testDailyRefreshDue() {
     assert(dailyRefreshDue(999, 1000));
 }
 
+void testLegacyDebridKeysTolerated() {
+    cleanup();
+    {
+        std::ofstream output(SettingsPath);
+        output << "{\"version\":1,\"torrenting_enabled\":true,"
+               << "\"torbox_api_key\":\"abc\"}";
+    }
+    AppSettings settings(SettingsPath, LegacyPath);
+    std::string error;
+    assert(settings.load(error));
+    assert(settings.get().torrentingEnabled);
+    assert(settings.get().torboxApiKey == "abc");
+}
+
+// v2 -> v3: the struct default flipped torrenting off when debrid landed. A
+// file written before that has no say in the matter, so it must migrate to on
+// rather than leave an existing install unable to download anything.
+void testPreV3FileKeepsTorrentingOn() {
+    cleanup();
+    {
+        std::ofstream output(SettingsPath);
+        output << "{\"version\":2,\"web_server_enabled\":true}";
+    }
+    AppSettings settings(SettingsPath, LegacyPath);
+    std::string error;
+    assert(settings.load(error));
+    assert(settings.get().torrentingEnabled);
+}
+
+void testVersionThreeHonoursTorrentingOff() {
+    cleanup();
+    {
+        std::ofstream output(SettingsPath);
+        output << "{\"version\":3,\"torrenting_enabled\":false}";
+    }
+    AppSettings settings(SettingsPath, LegacyPath);
+    std::string error;
+    assert(settings.load(error));
+    assert(!settings.get().torrentingEnabled);
+}
+
 } // namespace
 
 int main() {
@@ -260,6 +315,9 @@ int main() {
     testMaxActiveDownloadsClamped();
     testVersionOneResetsActiveDownloads();
     testFutureVersionIsRejected();
+    testLegacyDebridKeysTolerated();
+    testPreV3FileKeepsTorrentingOn();
+    testVersionThreeHonoursTorrentingOff();
     testDailyRefreshDue();
     cleanup();
     std::puts("app settings tests passed");

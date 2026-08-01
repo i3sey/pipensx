@@ -19,12 +19,14 @@
 #include "app/installed_title_service.hpp"
 #include "app/magnet_resolver.hpp"
 #include "app/mod_index_service.hpp"
+#include "app/nx_file_types.hpp"
 #include "ui/catalog/catalog_helpers.hpp"
 #include "ui/common/async_image.hpp"
 #include "ui/common/storage_meter.hpp"
 #include "ui/common/ui_helpers.hpp"
 #include "ui/detail/screenshot_viewer.hpp"
 #include "ui/detail/torrent_selection.hpp"
+#include "ui/debrid_ui.hpp"
 #include "ui/downloads/details_activity.hpp"
 #include "ui/theme.hpp"
 
@@ -470,6 +472,9 @@ private:
         switch (task.status) {
             case DownloadStatus::Queued:
                 return tr("pipensx/detail/status_queued");
+            case DownloadStatus::Fetching:
+                return tr("pipensx/detail/status_fetching",
+                          percentOf(static_cast<float>(task.fetchProgress)));
             case DownloadStatus::Checking:
             case DownloadStatus::Downloading: {
                 return tr("pipensx/detail/status_downloading",
@@ -659,6 +664,21 @@ private:
     void startInstall(bool forcePicker) {
         if (busy_)
             return;
+        if (debridModeActive(settings_)) {
+            if (forcePicker) {
+                auto* dialog = new brls::Dialog(
+                    tr("pipensx/debrid/choose_mode"));
+                dialog->addButton(tr("pipensx/debrid/mode_install"),
+                    [this] { startDebridInstall(TransferMode::StreamInstall); });
+                dialog->addButton(tr("pipensx/debrid/mode_download"),
+                    [this] { startDebridInstall(TransferMode::DownloadOnly); });
+                dialog->addButton(tr("pipensx/common/cancel"), [] {});
+                dialog->open();
+            } else {
+                startDebridInstall(TransferMode::StreamInstall);
+            }
+            return;
+        }
         busy_ = true;
         operationMessage_.clear();
         cancelled_->store(false);
@@ -742,6 +762,77 @@ private:
                 if (onFailure_)
                     onFailure_(hash, "");  // clear stale failure
                 finishImport(tmp, forcePicker, std::move(initialPeers));
+            });
+        });
+    }
+
+    void startDebridInstall(TransferMode mode) {
+        if (busy_ || !ensureDebridLinked(settings_, manager_))
+            return;
+        busy_ = true;
+        primary_->setState(brls::ButtonState::DISABLED);
+        secondary_->setState(brls::ButtonState::DISABLED);
+        primary_->setText(tr("pipensx/debrid/submitting"));
+        statusLabel_->setText(tr("pipensx/debrid/sending_magnet"));
+
+        auto alive = alive_;
+        const AppSettingsData values = settings_->get();
+        const DebridProviderKind providerKind = values.debridProvider;
+        const std::string key = activeDebridKey(values);
+        const CatalogEntry entry = entry_;
+        brls::async([this, alive, providerKind, key, entry, mode] {
+            auto provider = makeDebridProvider(providerKind, key);
+            std::string debridId;
+            std::string error;
+            DebridInfo info;
+            const bool ok = provider->createFromMagnet(
+                entry.magnetUri, debridId, error);
+            if (ok) {
+                std::string ignored;
+                provider->fetchInfo(debridId, info, ignored);
+            }
+            brls::sync([this, alive, ok, error, debridId, info, entry,
+                        providerKind, key, mode] {
+                if (!alive->load()) {
+                    if (ok)
+                        removeDebridTransferAsync(providerKind, key, debridId);
+                    return;
+                }
+                busy_ = false;
+                if (!ok) {
+                    operationMessage_ = error.empty()
+                        ? tr("pipensx/debrid/magnet_rejected") : error;
+                    refreshButtons();
+                    brls::Application::notify(operationMessage_);
+                    return;
+                }
+                DebridImport import;
+                import.infoHash = catalogLower(entry.infoHash);
+                import.name = info.name.empty() ? entry.title : info.name;
+                import.totalBytes = info.bytes ? info.bytes : entry.size;
+                import.provider = providerKind;
+                import.debridId = debridId;
+                import.mode = mode;
+                if (mode == TransferMode::StreamInstall && !info.files.empty()) {
+                    import.fileSelection.reserve(info.files.size());
+                    for (const DebridFile& file : info.files) {
+                        const bool package = isPackageName(file.path);
+                        import.fileSelection.push_back(package ? 1 : 0);
+                        import.packageCount += package ? 1 : 0;
+                    }
+                }
+                std::string id;
+                std::string importError;
+                if (!manager_->importDebrid(import, id, importError)) {
+                    removeDebridTransferAsync(providerKind, key, debridId);
+                    operationMessage_ = importError;
+                    brls::Application::notify(importError);
+                } else {
+                    statusLabel_->setText(tr("pipensx/debrid/queued"));
+                    if (onChange_)
+                        onChange_();
+                }
+                refreshButtons();
             });
         });
     }

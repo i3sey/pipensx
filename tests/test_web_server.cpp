@@ -147,6 +147,9 @@ int main() {
     }
 
     DownloadManager manager(rootStr, /*startWorker=*/false);
+    // The add endpoints are gated on torrenting, which is off by default; the
+    // gate itself is asserted separately below.
+    manager.setTorrentingEnabled(true);
     auto fakeResolver = [](const WebAddJob&, const std::string& path,
                            std::atomic<bool>&,
                            const MagnetResolver::ProgressCallback&,
@@ -241,6 +244,22 @@ int main() {
         resp = request(port, "POST", "/api/add/torrent?mode=bogus",
                        gTorrentBytes);
         assert(resp.find("400") != std::string::npos);
+    }
+
+    // Torrenting gate: with it off the companion must refuse before it can
+    // put the console on the torrent network, and reads must stay open.
+    {
+        manager.setTorrentingEnabled(false);
+        std::string resp = request(port, "POST",
+                                   "/api/add/torrent?mode=download",
+                                   gTorrentBytes);
+        assert(resp.find("409") != std::string::npos);
+        assert(responseBody(resp).find("torrenting is disabled") !=
+               std::string::npos);
+
+        resp = request(port, "GET", "/api/tasks");
+        assert(resp.find("200 OK") != std::string::npos);
+        manager.setTorrentingEnabled(true);
     }
 
     // task commands

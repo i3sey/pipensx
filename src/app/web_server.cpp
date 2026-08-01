@@ -576,6 +576,12 @@ HttpResponse WebServer::handleAddTorrent(const HttpRequest& req) {
     if (!parseMode(req.queryParam("mode"), mode))
         return jsonError(400, "mode must be \"install\" or \"download\"");
 
+    // Parsing the upload is offline, but the task it creates is a torrent one
+    // and the worker would just error it out. Say so now instead of accepting
+    // an upload that is going to fail a second later.
+    if (!manager_.torrentingEnabled())
+        return jsonError(409, "torrenting is disabled in Settings");
+
     const std::string path =
         manager_.rootPath() + "/_web_upload_" +
         std::to_string(gUploadSerial.fetch_add(1)) + ".torrent";

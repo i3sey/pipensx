@@ -3,6 +3,11 @@
 #include "stream_budget_arbiter.hpp"
 #include "stream_ram_budget.hpp"
 #include "web_seed_source.hpp"
+#include "torbox_client.hpp"
+#include "torbox_provider.hpp"
+#include "real_debrid_provider.hpp"
+#include "debrid_transfer.hpp"
+#include "nx_file_types.hpp"
 #include "../install/install_backend.hpp"
 #include "../install/install_journal.hpp"
 #include "../install/package_stream.hpp"
@@ -39,32 +44,6 @@ namespace {
 // socket also lives on 51413 (different protocol, no clash) and the magnet
 // resolver no longer binds a port of its own.
 constexpr uint16_t kBasePeerPort = 51413;
-
-bool hasPackageExtension(const std::string& path) {
-    std::string lower = path;
-    for (char& c : lower)
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return lower.size() >= 4 &&
-           (lower.substr(lower.size() - 4) == ".nsp" ||
-            lower.substr(lower.size() - 4) == ".nsz");
-}
-
-bool isCompressedPackage(const std::string& path) {
-    std::string lower = path;
-    for (char& c : lower)
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return lower.size() >= 4 &&
-           lower.substr(lower.size() - 4) == ".nsz";
-}
-
-bool isCartridgeDump(const std::string& path) {
-    std::string lower = path;
-    for (char& c : lower)
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return lower.size() >= 4 &&
-           (lower.substr(lower.size() - 4) == ".xci" ||
-            lower.substr(lower.size() - 4) == ".xcz");
-}
 
 uint8_t actionValue(FileAction action) {
     return static_cast<uint8_t>(action);
@@ -245,7 +224,7 @@ void upgradeLegacySelection(DownloadTask& task) {
             if (task.fileSelection[i] == 0) {
                 actions.push_back(actionValue(FileAction::Skip));
             } else if (task.mode == TransferMode::StreamInstall &&
-                       hasPackageExtension(metainfo.files[i].path)) {
+                       isPackageName(metainfo.files[i].path)) {
                 actions.push_back(actionValue(FileAction::Install));
             } else {
                 actions.push_back(actionValue(FileAction::Download));
@@ -287,7 +266,7 @@ public:
         uint32_t ordinal = 0;
         for (uint32_t i = 0; i < metainfo_.num_files; ++i) {
             FileAction action = streamInstall_ &&
-                                      hasPackageExtension(metainfo_.files[i].path)
+                                      isPackageName(metainfo_.files[i].path)
                                   ? FileAction::Install
                                   : FileAction::Download;
             if (useSelection) {
@@ -306,7 +285,7 @@ public:
                 continue;
             }
             if (!streamInstall_ ||
-                !hasPackageExtension(metainfo_.files[i].path)) {
+                !isPackageName(metainfo_.files[i].path)) {
                 error_ = "Only NSP/NSZ package files can be installed.";
                 return;
             }
@@ -783,7 +762,7 @@ private:
         const mi_file_t& file = metainfo_.files[fileIndex];
         if (journal.packageId != file.path ||
             journal.packageSize != static_cast<uint64_t>(file.length) ||
-            journal.compressed != isCompressedPackage(file.path) ||
+            journal.compressed != isCompressedName(file.path) ||
             journal.state.consumed == 0 ||
             journal.state.consumed >= static_cast<uint64_t>(file.length) ||
             journal.backendState.empty()) {
@@ -845,7 +824,7 @@ private:
         const mi_file_t& file = metainfo_.files[activeFileIndex_];
         journal.packageId = file.path;
         journal.packageSize = static_cast<uint64_t>(file.length);
-        journal.compressed = isCompressedPackage(file.path);
+        journal.compressed = isCompressedName(file.path);
         if (!saveInstallJournal(journalPath_, journal)) {
             log_msg("[install] journal write failed '%s'\n",
                     journalPath_.c_str());
@@ -873,7 +852,7 @@ private:
             activeFileIndex_ = chunk.fileIndex;
             currentPackage_ = file.path;
             stream_ = std::make_unique<install::PackageStream>(
-                isCompressedPackage(file.path), makeCallbacks(), taskId_);
+                isCompressedName(file.path), makeCallbacks(), taskId_);
             if (progress_)
                 progress_(completedPackages_, currentPackage_, 0, 0,
                           DownloadStatus::Installing);
@@ -1285,12 +1264,22 @@ const char* persistedMode(TransferMode mode) {
     return mode == TransferMode::StreamInstall ? "install" : "download";
 }
 
+const char* persistedSource(TaskSource source) {
+    return source == TaskSource::Debrid ? "debrid" : "torrent";
+}
+
+TaskSource persistedSource(const std::string& value) {
+    return (value == "debrid" || value == "torbox")
+           ? TaskSource::Debrid : TaskSource::Torrent;
+}
+
 } // namespace
 
 const char* statusName(DownloadStatus status) {
     switch (status) {
         case DownloadStatus::Queued: return "Queued";
         case DownloadStatus::Checking: return "Checking";
+        case DownloadStatus::Fetching: return "Fetching on debrid service";
         case DownloadStatus::Downloading: return "Downloading";
         case DownloadStatus::Paused: return "Paused";
         case DownloadStatus::Verifying: return "Verifying";
@@ -1344,11 +1333,11 @@ bool DownloadManager::previewTorrent(const std::string& path,
         TorrentPreview::File file;
         file.path = metainfo.files[i].path;
         file.length = static_cast<uint64_t>(metainfo.files[i].length);
-        file.package = hasPackageExtension(metainfo.files[i].path);
-        file.compressed = isCompressedPackage(metainfo.files[i].path);
+        file.package = isPackageName(metainfo.files[i].path);
+        file.compressed = isCompressedName(metainfo.files[i].path);
         if (file.package)
             ++preview.packageCount;
-        file.cartridge = isCartridgeDump(metainfo.files[i].path);
+        file.cartridge = isCartridgeName(metainfo.files[i].path);
         if (file.cartridge)
             ++preview.cartridgeCount;
         preview.files.push_back(std::move(file));
@@ -1473,6 +1462,115 @@ bool DownloadManager::importTorrentActions(
     return true;
 }
 
+bool DownloadManager::importDebrid(const DebridImport& import,
+                                    std::string& taskId, std::string& error) {
+    if (import.infoHash.size() != 40) {
+        error = "Invalid torrent hash for the debrid task.";
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (findLocked(import.infoHash)) {
+        error = "This torrent is already in the download manager.";
+        return false;
+    }
+
+    std::string metainfoPath;
+    if (!import.torrentPath.empty()) {
+        metainfoPath = torrentRoot_ + "/" + import.infoHash + ".torrent";
+        if (!copyFile(import.torrentPath, metainfoPath)) {
+            error = "Unable to copy the torrent file into application storage.";
+            return false;
+        }
+    }
+    std::string dataPath = downloadRoot_ + "/" + safeComponent(import.name) +
+                           "-" + import.infoHash.substr(0, 8);
+    if (!makeDirectories(dataPath)) {
+        if (!metainfoPath.empty())
+            unlink(metainfoPath.c_str());
+        error = "Unable to create the download directory.";
+        return false;
+    }
+
+    DownloadTask task;
+    task.id = import.infoHash;
+    task.name = import.name;
+    task.metainfoPath = metainfoPath;
+    task.dataPath = dataPath;
+    task.totalBytes = import.totalBytes;
+    task.status = DownloadStatus::Queued;
+    task.mode = import.mode;
+    task.source = TaskSource::Debrid;
+    task.debridProvider = import.provider;
+    task.debridId = import.debridId;
+    task.packageCount = import.mode == TransferMode::StreamInstall
+                        ? import.packageCount : 0;
+    task.fileSelection = import.fileSelection;
+    tasks_.push_back(std::move(task));
+    taskId = import.infoHash;
+
+    if (!saveLocked(error)) {
+        tasks_.pop_back();
+        if (!metainfoPath.empty())
+            unlink(metainfoPath.c_str());
+        removeTree(dataPath);
+        return false;
+    }
+    condition_.notify_all();
+    return true;
+}
+
+void DownloadManager::setTorboxApiKey(const std::string& key) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    torboxApiKey_ = key;
+}
+
+void DownloadManager::setRealDebridToken(const std::string& token) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    realDebridToken_ = token;
+}
+
+std::string DownloadManager::apiKeyFor(DebridProviderKind provider) const {
+    return provider == DebridProviderKind::RealDebrid
+               ? realDebridToken_ : torboxApiKey_;
+}
+
+std::unique_ptr<DebridProvider> DownloadManager::makeProvider(
+    DebridProviderKind provider, const std::string& key) {
+    if (provider == DebridProviderKind::RealDebrid)
+        return std::make_unique<RealDebridProvider>(key);
+    return std::make_unique<TorboxProvider>(key);
+}
+
+// Best-effort: a transfer we drop locally should not sit on the account
+// burning the user's quota. Detached because it is one HTTPS round-trip we
+// never want a caller — least of all one holding mutex_ — to wait on.
+void DownloadManager::removeFromDebridAsync(DebridProviderKind provider,
+                                            const std::string& apiKey,
+                                            const std::string& debridId) {
+    if (apiKey.empty() || debridId.empty())
+        return;
+    std::thread([provider, apiKey, debridId] {
+        std::string error;
+        if (!makeProvider(provider, apiKey)->remove(debridId, error))
+            log_msg("[debrid] account cleanup failed id=%s: %s\n",
+                    debridId.c_str(), error.c_str());
+    }).detach();
+}
+
+std::string DownloadManager::torboxApiKey() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return torboxApiKey_;
+}
+
+void DownloadManager::setTorrentingEnabled(bool enabled) {
+    torrentingEnabled_.store(enabled);
+    condition_.notify_all();
+}
+
+bool DownloadManager::torrentingEnabled() const {
+    return torrentingEnabled_.load();
+}
+
 bool DownloadManager::pause(const std::string& taskId) {
     std::lock_guard<std::mutex> lock(mutex_);
     DownloadTask* task = findLocked(taskId);
@@ -1480,6 +1578,7 @@ bool DownloadManager::pause(const std::string& taskId) {
         return false;
     if (task->status != DownloadStatus::Queued &&
         task->status != DownloadStatus::Checking &&
+        task->status != DownloadStatus::Fetching &&
         task->status != DownloadStatus::Downloading &&
         task->status != DownloadStatus::Installing &&
         task->status != DownloadStatus::Committing &&
@@ -1515,6 +1614,11 @@ bool DownloadManager::verify(const std::string& taskId) {
     std::lock_guard<std::mutex> lock(mutex_);
     DownloadTask* task = findLocked(taskId);
     if (!task || task->status != DownloadStatus::Completed)
+        return false;
+    // A recheck rehashes against the local pieces. A debrid task has no
+    // pieces — requeueing it would silently re-download the whole thing from
+    // the provider, so there is nothing honest to offer here.
+    if (task->source == TaskSource::Debrid)
         return false;
     task->status = DownloadStatus::Queued;
     task->error.clear();
@@ -1563,6 +1667,7 @@ bool DownloadManager::remove(const std::string& taskId, bool deleteData,
     }
 
     if (task->status == DownloadStatus::Checking ||
+        task->status == DownloadStatus::Fetching ||
         task->status == DownloadStatus::Downloading ||
         task->status == DownloadStatus::Installing ||
         task->status == DownloadStatus::Committing ||
@@ -1572,7 +1677,13 @@ bool DownloadManager::remove(const std::string& taskId, bool deleteData,
         condition_.notify_all();
         return true;
     }
-    return removeLocked(taskId, deleteData, error);
+    std::string debridId = task->debridId;
+    DebridProviderKind provider = task->debridProvider;
+    std::string apiKey = apiKeyFor(provider);
+    if (!removeLocked(taskId, deleteData, error))
+        return false;
+    removeFromDebridAsync(provider, apiKey, debridId);
+    return true;
 }
 
 std::vector<DownloadTask> DownloadManager::snapshot() const {
@@ -1594,6 +1705,7 @@ bool DownloadManager::hasActiveTransfer() const {
         switch (task.status) {
             case DownloadStatus::Queued:
             case DownloadStatus::Checking:
+            case DownloadStatus::Fetching:
             case DownloadStatus::Downloading:
             case DownloadStatus::Verifying:
             case DownloadStatus::Installing:
@@ -1624,6 +1736,7 @@ bool DownloadManager::saveLocked(std::string& error) const {
             continue;
         state << "d";
         state << "4:data" << bstr(task.dataPath);
+        state << "9:debrid-id" << bstr(task.debridId);
         state << "5:error" << bstr(task.error);
         state << "2:id" << bstr(task.id);
         state << "8:metainfo" << bstr(task.metainfoPath);
@@ -1631,12 +1744,17 @@ bool DownloadManager::saveLocked(std::string& error) const {
         state << "4:name" << bstr(task.name);
         state << "13:package-count" << bint(task.packageCount);
         state << "13:packages-done" << bint(task.packagesInstalled);
+        // Bencode dict keys must stay in lexicographic order.
+        state << "8:provider" << bstr(
+            task.debridProvider == DebridProviderKind::RealDebrid
+                ? "realdebrid" : "torbox");
         if (!task.resumeBitfield.empty())
             state << "9:resume-bf"
                   << bstr(std::string(task.resumeBitfield.begin(),
                                       task.resumeBitfield.end()));
         state << "9:selection" << bstr(std::string(task.fileSelection.begin(),
                                                    task.fileSelection.end()));
+        state << "6:source" << bstr(persistedSource(task.source));
         state << "6:status" << bstr(persistedStatus(task.status));
         state << "5:total" << bint(task.totalBytes);
         state << "e";
@@ -1741,20 +1859,47 @@ void DownloadManager::load() {
                 task.fileSelection.assign(selection.begin(), selection.end());
             }
         }
+        if (version.ival >= 4) {
+            std::string source;
+            uint64_t torboxId = 0;
+            if (dictionaryString(item, "source", source))
+                task.source = persistedSource(source);
+            // v4 only ever spoke TorBox, and kept the transfer id as an int.
+            if (dictionaryInteger(item, "torbox-id", torboxId)) {
+                task.debridProvider = DebridProviderKind::TorBox;
+                task.debridId = std::to_string(torboxId);
+            }
+        }
+        // v5 gained two independent sets of keys — the resume bitfield and the
+        // debrid provider/id. Each is optional, so a state file written by
+        // either lineage loads with the other side's fields left at default.
         if (version.ival >= 5) {
             std::string bitfield;
             if (dictionaryString(item, "resume-bf", bitfield))
                 task.resumeBitfield.assign(bitfield.begin(), bitfield.end());
+            std::string provider;
+            std::string debridId;
+            if (dictionaryString(item, "provider", provider))
+                task.debridProvider =
+                    provider == "realdebrid"
+                        ? DebridProviderKind::RealDebrid
+                        : DebridProviderKind::TorBox;
+            if (dictionaryString(item, "debrid-id", debridId))
+                task.debridId = debridId;
         }
         task.status = persistedStatus(status);
         if (task.status == DownloadStatus::Completed ||
             task.status == DownloadStatus::Installed)
             task.completedBytes = task.totalBytes;
-        if (!isManagedChild(torrentRoot_, task.metainfoPath) ||
-            !isManagedChild(downloadRoot_, task.dataPath)) {
+        bool metainfoRequired = task.source == TaskSource::Torrent ||
+                                !task.metainfoPath.empty();
+        if (!isManagedChild(downloadRoot_, task.dataPath) ||
+            (metainfoRequired &&
+             !isManagedChild(torrentRoot_, task.metainfoPath))) {
             task.status = DownloadStatus::Error;
             task.error = "The stored task contains an invalid path.";
-        } else if (access(task.metainfoPath.c_str(), R_OK) != 0) {
+        } else if (metainfoRequired &&
+                   access(task.metainfoPath.c_str(), R_OK) != 0) {
             task.status = DownloadStatus::Error;
             task.error = "The stored .torrent file is missing.";
         }
@@ -1783,7 +1928,8 @@ bool DownloadManager::removeLocked(const std::string& id, bool deleteData,
     for (auto it = tasks_.begin(); it != tasks_.end(); ++it) {
         if (it->id != id)
             continue;
-        if (!isManagedChild(torrentRoot_, it->metainfoPath) ||
+        if ((!it->metainfoPath.empty() &&
+             !isManagedChild(torrentRoot_, it->metainfoPath)) ||
             !isManagedChild(downloadRoot_, it->dataPath)) {
             error = "Refusing to remove a path outside application storage.";
             it->status = DownloadStatus::Error;
@@ -1800,7 +1946,8 @@ bool DownloadManager::removeLocked(const std::string& id, bool deleteData,
             saveLocked(ignored);
             return false;
         }
-        unlink(it->metainfoPath.c_str());
+        if (!it->metainfoPath.empty())
+            unlink(it->metainfoPath.c_str());
         install::removeInstallJournal(installJournalPath(rootPath_, it->id));
         tasks_.erase(it);
         return saveLocked(error);
@@ -1868,9 +2015,13 @@ void DownloadManager::schedulerMain() {
         task->status = DownloadStatus::Checking;
         ClaimedTask claim;
         claim.id = task->id;
+        claim.name = task->name;
         claim.metainfoPath = task->metainfoPath;
         claim.dataPath = task->dataPath;
         claim.mode = task->mode;
+        claim.source = task->source;
+        claim.debridProvider = task->debridProvider;
+        claim.debridId = task->debridId;
         claim.packagesInstalled = task->packagesInstalled;
         claim.fileSelection = task->fileSelection;
         claim.initialPeers = task->initialPeers;
@@ -1922,7 +2073,157 @@ void DownloadManager::setMaxActiveDownloads(uint32_t count) {
     condition_.notify_all();
 }
 
+void DownloadManager::runDebridTask(const ClaimedTask& claim) {
+    const std::string& activeId = claim.id;
+    std::string apiKey;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        apiKey = apiKeyFor(claim.debridProvider);
+    }
+    if (apiKey.empty()) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (DownloadTask* task = findLocked(activeId)) {
+            task->status = DownloadStatus::Error;
+            task->error =
+                claim.debridProvider == DebridProviderKind::RealDebrid
+                    ? "Real-Debrid token missing — link your account in "
+                      "Settings."
+                    : "TorBox key missing — link your account in Settings.";
+            std::string ignored;
+            saveLocked(ignored);
+        }
+        return;
+    }
+
+    DebridTaskSpec spec;
+    spec.taskId = activeId;
+    spec.debridId = claim.debridId;
+    spec.torrentPath = claim.metainfoPath;
+    spec.dataPath = claim.dataPath;
+    spec.workingRoot = rootPath_;
+    spec.installTarget = installTarget_.load(std::memory_order_relaxed);
+    spec.mode = claim.mode;
+    spec.fileSelection = claim.fileSelection;
+    spec.packagesInstalled = claim.packagesInstalled;
+
+    // The provider takes a magnet, not our .torrent, and it names files its
+    // own way — so the selection travels as (basename, size) pairs rather
+    // than as the metainfo's index mask.
+    metainfo_t metainfo;
+    if (claim.metainfoPath.empty() ||
+        !metainfo_load(claim.metainfoPath.c_str(), &metainfo)) {
+        spec.magnet = "magnet:?xt=urn:btih:" + activeId;
+    } else {
+        char hex[41];
+        for (int i = 0; i < 20; ++i)
+            std::snprintf(hex + i * 2, 3, "%02x", metainfo.info_hash[i]);
+        std::vector<std::string> trackers;
+        for (uint32_t i = 0; i < metainfo.num_trackers; ++i)
+            trackers.emplace_back(metainfo.trackers[i]);
+        spec.magnet = buildRichMagnet(hex, metainfo.name, trackers);
+        for (uint32_t i = 0; i < metainfo.num_files; ++i) {
+            if (i >= claim.fileSelection.size() || !claim.fileSelection[i])
+                continue;
+            std::string path = metainfo.files[i].path;
+            size_t slash = path.find_last_of('/');
+            spec.selectionPaths.emplace_back(
+                slash == std::string::npos ? path : path.substr(slash + 1),
+                static_cast<uint64_t>(metainfo.files[i].length));
+        }
+        metainfo_free(&metainfo);
+    }
+
+    auto shouldStop = [this, &activeId] {
+        if (stopping_)
+            return true;
+        std::lock_guard<std::mutex> lock(mutex_);
+        const DownloadTask* task = findLocked(activeId);
+        return !task || task->status == DownloadStatus::Paused ||
+               task->status == DownloadStatus::Removing;
+    };
+    auto onProgress = [this, &activeId](const DebridProgress& p) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        DownloadTask* task = findLocked(activeId);
+        if (!task || task->status == DownloadStatus::Removing ||
+            task->status == DownloadStatus::Paused)
+            return;
+        bool packageCommitted = p.packagesInstalled != task->packagesInstalled;
+        task->status = p.status;
+        task->completedBytes = p.completedBytes;
+        if (p.totalBytes)
+            task->totalBytes = p.totalBytes;
+        task->speedBytesPerSecond = p.speedBytesPerSecond;
+        task->fetchProgress = p.fetchProgress;
+        task->packagesInstalled = p.packagesInstalled;
+        task->currentPackage = p.currentPackage;
+        task->installedBytes = p.installedBytes;
+        task->installTotalBytes = p.installTotalBytes;
+        // Only package boundaries hit the state file; the per-chunk progress
+        // above is in-memory until then.
+        if (packageCommitted) {
+            std::string ignored;
+            saveLocked(ignored);
+        }
+    };
+
+    auto provider = makeProvider(claim.debridProvider, apiKey);
+    DebridTransfer transfer(*provider);
+    std::string createdId;
+    std::string runError;
+    log_msg("[manager] starting debrid transfer \"%s\"%s%s\n",
+            claim.name.c_str(),
+            spec.mode == TransferMode::StreamInstall ? " (install)" : "",
+            !spec.debridId.empty() ? " (catalog)" : "");
+    DebridRunResult result =
+        transfer.run(spec, shouldStop, onProgress, createdId, runError);
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    DownloadTask* task = findLocked(activeId);
+    if (!task)
+        return;
+    // The transfer may have created the remote id we never had; record it
+    // before anything else so a removal below can still clean the account.
+    if (!createdId.empty() && task->debridId.empty())
+        task->debridId = createdId;
+    if (task->status == DownloadStatus::Removing) {
+        bool deleteData = task->error == "delete-data";
+        std::string removeId = task->debridId;
+        DebridProviderKind removeProvider = task->debridProvider;
+        std::string removeError;
+        removeLocked(activeId, deleteData, removeError);
+        removeFromDebridAsync(removeProvider, apiKey, removeId);
+        return;
+    }
+    if (result == DebridRunResult::Failed) {
+        task->status = DownloadStatus::Error;
+        task->error = runError;
+    }
+    task->speedBytesPerSecond = 0;
+    std::string ignored;
+    saveLocked(ignored);
+}
+
 void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
+    // Both branches below happen before the arbiter registration: a debrid
+    // task runs no engine, so reserving engine RAM for it would starve the
+    // torrent slots for nothing.
+    if (claim.source == TaskSource::Torrent && !torrentingEnabled_.load()) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (DownloadTask* task = findLocked(claim.id)) {
+            task->status = DownloadStatus::Error;
+            task->error =
+                "Torrenting disabled — enable it in Settings to retry.";
+            task->speedBytesPerSecond = 0;
+            std::string ignored;
+            saveLocked(ignored);
+        }
+        return;
+    }
+    if (claim.source == TaskSource::Debrid) {
+        runDebridTask(claim);
+        return;
+    }
+
     // Register this slot's engine overhead with the budget arbiter for the
     // whole task lifetime, error paths included.
     arbiter_.engineSlotStarted();
@@ -2069,6 +2370,17 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
             if (!task || task->status == DownloadStatus::Paused ||
                 task->status == DownloadStatus::Removing)
                 break;
+            // The user can flip torrenting off mid-transfer; stop talking to
+            // peers on the next tick rather than at the end of the download.
+            if (!torrentingEnabled_.load()) {
+                task->status = DownloadStatus::Error;
+                task->error =
+                    "Torrenting disabled — enable it in Settings to retry.";
+                task->speedBytesPerSecond = 0;
+                std::string ignored;
+                saveLocked(ignored);
+                break;
+            }
         }
 
         std::string installError = coordinator

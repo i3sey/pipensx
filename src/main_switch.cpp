@@ -33,6 +33,7 @@ extern "C" {
 #include "ui/catalog/catalog_view.hpp"
 #include "ui/common/ui_helpers.hpp"
 #include "ui/common/web_qr.hpp"
+#include "ui/debrid_ui.hpp"
 #include "ui/i18n.hpp"
 #include "ui/main_frame.hpp"
 #include "ui/downloads/downloads_view.hpp"
@@ -328,6 +329,9 @@ int main(int argc, char** argv) {
         manager.setInstallTarget(
             installTargetFor(settings.get().installLocation));
         manager.setMaxActiveDownloads(settings.get().maxActiveDownloads);
+        manager.setTorboxApiKey(settings.get().torboxApiKey);
+        manager.setRealDebridToken(settings.get().realDebridToken);
+        manager.setTorrentingEnabled(settings.get().torrentingEnabled);
         metadata.setImageNetwork(
             manager.hasActiveTransfer()
                 ? GameMetadataService::ImageNetwork::Throttled
@@ -417,17 +421,20 @@ int main(int argc, char** argv) {
             // Narrow the stock 720px dialog frame for this short one-liner.
             if (auto* frame = dialog->getView("brls/dialog/applet"))
                 frame->setWidth(520);
-            dialog->addButton(tr("pipensx/common/ok"), [&settings] {
+            dialog->addButton(tr("pipensx/common/ok"), [&settings, &manager] {
                 pipensx::AppSettingsData values = settings.get();
-                if (values.catalogDisclaimerAcknowledged)
-                    return;
-                values.catalogDisclaimerAcknowledged = true;
-                std::string error;
-                if (!settings.update(values, error))
-                    log_msg("[settings] disclaimer ack persist failed: %s\n",
-                            error.c_str());
+                if (!values.catalogDisclaimerAcknowledged) {
+                    values.catalogDisclaimerAcknowledged = true;
+                    std::string error;
+                    if (!settings.update(values, error))
+                        log_msg("[settings] disclaimer ack persist failed: %s\n",
+                                error.c_str());
+                }
+                showFirstRunChoice(&settings, &manager);
             });
             dialog->open();
+        } else {
+            showFirstRunChoice(&settings, &manager);
         }
 
         startupStage("first main loop");

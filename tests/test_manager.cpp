@@ -5,14 +5,19 @@ extern "C" {
 }
 
 #include <cassert>
+#include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <string>
+#include <sys/stat.h>
+#include <thread>
 #include <vector>
 #include <unistd.h>
 
 using pipensx::DownloadManager;
 using pipensx::DownloadStatus;
+using pipensx::DownloadTask;
 using pipensx::FileAction;
 using pipensx::TransferMode;
 
@@ -70,6 +75,283 @@ static void copyFile(const std::string& source, const std::string& destination) 
     std::ifstream input(source, std::ios::binary);
     std::ofstream output(destination, std::ios::binary);
     output << input.rdbuf();
+}
+
+// Encode a C++ string as a bencode string ("len:value")
+static std::string bencodeStr(const std::string& s) {
+    return std::to_string(s.size()) + ":" + s;
+}
+
+// Recursively remove a directory tree (test cleanup only)
+static void removeAll(const std::string& path) {
+    system(("rm -rf " + path).c_str());
+}
+
+// Create a single directory (ignores EEXIST)
+static void makeDir(const std::string& path) {
+    mkdir(path.c_str(), 0755);
+}
+
+// Write binary content to a file
+static void writeFile(const std::string& path, const std::string& content) {
+    std::ofstream f(path, std::ios::binary);
+    f.write(content.data(), static_cast<std::streamsize>(content.size()));
+}
+
+static void testTorboxTaskPersistenceRoundTrip() {
+    const std::string root = "/tmp/pipensx-manager-torbox-test";
+    removeAll(root);
+    makeDir(root);
+    makeDir(root + "/downloads");
+    makeDir(root + "/downloads/example-aabbccdd");
+
+    std::string dataPath = root + "/downloads/example-aabbccdd";
+    std::string state =
+        "d5:tasksl"
+        "d"
+        "4:data" + bencodeStr(dataPath) +
+        "5:error0:"
+        "2:id40:aabbccddaabbccddaabbccddaabbccddaabbccdd"
+        "8:metainfo0:"
+        "4:mode7:install"
+        "4:name7:Example"
+        "13:package-counti1e"
+        "13:packages-donei0e"
+        "9:selection0:"
+        "6:source6:torbox"
+        "6:status6:queued"
+        "9:torbox-idi297464e"
+        "5:totali1000000e"
+        "e"
+        "e"
+        "7:versioni4e"
+        "e";
+    writeFile(root + "/queue.bencode", state);
+
+    pipensx::DownloadManager manager(root, false);
+    auto tasks = manager.snapshot();
+    assert(tasks.size() == 1);
+    assert(tasks[0].source == pipensx::TaskSource::Debrid);
+    assert(tasks[0].debridProvider == pipensx::DebridProviderKind::TorBox);
+    assert(tasks[0].debridId == "297464");
+    assert(tasks[0].status == pipensx::DownloadStatus::Queued);
+    assert(tasks[0].metainfoPath.empty());
+
+    // Round trip: save and reload
+    std::string error;
+    assert(manager.save(error));
+    pipensx::DownloadManager reloaded(root, false);
+    auto again = reloaded.snapshot();
+    assert(again.size() == 1);
+    assert(again[0].source == pipensx::TaskSource::Debrid);
+    assert(again[0].debridProvider == pipensx::DebridProviderKind::TorBox);
+    assert(again[0].debridId == "297464");
+
+    removeAll(root);
+}
+
+static void testLegacyQueueLoadsAsTorrentSource() {
+    const std::string root = "/tmp/pipensx-manager-legacy-test";
+    removeAll(root);
+    makeDir(root);
+    makeDir(root + "/torrents");
+    makeDir(root + "/downloads");
+    makeDir(root + "/downloads/example-aabbccdd");
+
+    // Create a real .torrent file using the existing fixture helper
+    std::string torrentPath = makeTorrent(
+        root + "/torrents", "example.bin", "payload");
+
+    std::string dataPath = root + "/downloads/example-aabbccdd";
+
+    // Write a v3 state (no source/torbox-id keys — legacy torrent task)
+    std::string state =
+        "d5:tasksl"
+        "d"
+        "4:data" + bencodeStr(dataPath) +
+        "5:error0:"
+        "2:id40:aabbccddaabbccddaabbccddaabbccddaabbccdd"
+        "8:metainfo" + bencodeStr(torrentPath) +
+        "4:mode8:download"
+        "4:name7:Example"
+        "13:package-counti0e"
+        "13:packages-donei0e"
+        "9:selection0:"
+        "6:status6:queued"
+        "5:totali1000000e"
+        "e"
+        "e"
+        "7:versioni3e"
+        "e";
+    writeFile(root + "/queue.bencode", state);
+
+    pipensx::DownloadManager manager(root, false);
+    auto tasks = manager.snapshot();
+    assert(tasks.size() == 1);
+    assert(tasks[0].source == pipensx::TaskSource::Torrent);
+    assert(tasks[0].debridId.empty());
+    assert(tasks[0].status == pipensx::DownloadStatus::Queued);
+
+    removeAll(root);
+}
+
+static void testV4TorrentActionsRemainTriState() {
+    const std::string root = "/tmp/pipensx-manager-v4-actions-test";
+    removeAll(root);
+    makeDir(root);
+    makeDir(root + "/torrents");
+    makeDir(root + "/downloads");
+    makeDir(root + "/downloads/example-aabbccdd");
+    const std::string torrentPath = makeTorrent(
+        root + "/torrents", "package.nsp", "payload");
+    const std::string selection(
+        1, static_cast<char>(pipensx::FileAction::Install));
+    const std::string state =
+        "d5:tasksl"
+        "d"
+        "4:data" + bencodeStr(root + "/downloads/example-aabbccdd") +
+        "5:error0:"
+        "2:id40:aabbccddaabbccddaabbccddaabbccddaabbccdd"
+        "8:metainfo" + bencodeStr(torrentPath) +
+        "4:mode7:install"
+        "4:name7:Example"
+        "13:package-counti1e"
+        "13:packages-donei0e"
+        "9:selection" + bencodeStr(selection) +
+        "6:status6:queued"
+        "5:totali1000000e"
+        "e"
+        "e"
+        "7:versioni4e"
+        "e";
+    writeFile(root + "/queue.bencode", state);
+
+    {
+        pipensx::DownloadManager manager(root, false);
+        const auto tasks = manager.snapshot();
+        assert(tasks.size() == 1);
+        assert(tasks[0].source == pipensx::TaskSource::Torrent);
+        assert(tasks[0].fileSelection.size() == 1);
+        assert(tasks[0].fileSelection[0] ==
+               static_cast<uint8_t>(pipensx::FileAction::Install));
+    }
+    removeAll(root);
+}
+
+static void testTorrentTaskWithEmptyMetainfoStillErrors() {
+    const std::string root = "/tmp/pipensx-manager-empty-metainfo-test";
+    removeAll(root);
+    makeDir(root);
+    makeDir(root + "/downloads");
+    makeDir(root + "/downloads/example-aabbccdd");
+
+    std::string dataPath = root + "/downloads/example-aabbccdd";
+
+    // Write a v3 state (no source field — inferred as torrent) with empty
+    // metainfo path. This should load as Error: torrent tasks require a
+    // real metainfo file.
+    std::string state =
+        "d5:tasksl"
+        "d"
+        "4:data" + bencodeStr(dataPath) +
+        "5:error0:"
+        "2:id40:aabbccddaabbccddaabbccddaabbccddaabbccdd"
+        "8:metainfo0:"
+        "4:mode8:download"
+        "4:name7:Example"
+        "13:package-counti0e"
+        "13:packages-donei0e"
+        "9:selection0:"
+        "6:status6:queued"
+        "5:totali1000000e"
+        "e"
+        "e"
+        "7:versioni3e"
+        "e";
+    writeFile(root + "/queue.bencode", state);
+
+    pipensx::DownloadManager manager(root, false);
+    auto tasks = manager.snapshot();
+    assert(tasks.size() == 1);
+    assert(tasks[0].source == pipensx::TaskSource::Torrent);
+    assert(tasks[0].status == pipensx::DownloadStatus::Error);
+
+    removeAll(root);
+}
+
+static void testImportDebridCatalogTask() {
+    const std::string root = "/tmp/pipensx-manager-debrid-import";
+    removeAll(root);
+
+    pipensx::DownloadManager manager(root, false);
+    pipensx::DebridImport import;
+    import.infoHash = "aabbccddaabbccddaabbccddaabbccddaabbccdd";
+    import.name = "Example Game";
+    import.totalBytes = 1000000;
+    import.debridId = "297464";
+    import.provider = pipensx::DebridProviderKind::TorBox;
+    import.mode = pipensx::TransferMode::StreamInstall;
+    import.fileSelection = {1, 0};
+    import.packageCount = 1;
+
+    std::string taskId, error;
+    assert(manager.importDebrid(import, taskId, error));
+    assert(taskId == import.infoHash);
+    auto tasks = manager.snapshot();
+    assert(tasks.size() == 1);
+    assert(tasks[0].source == pipensx::TaskSource::Debrid);
+    assert(tasks[0].debridId == "297464");
+    assert(tasks[0].metainfoPath.empty());
+    assert(tasks[0].status == pipensx::DownloadStatus::Queued);
+    assert(tasks[0].packageCount == 1);
+
+    // Duplicate rejected by info hash.
+    assert(!manager.importDebrid(import, taskId, error));
+    assert(!error.empty());
+
+    removeAll(root);
+}
+
+static void testImportDebridPickerCopiesTorrent() {
+    const std::string root = "/tmp/pipensx-manager-debrid-picker";
+    removeAll(root);
+    makeDir(root);
+    makeDir(root + "/src");
+
+    std::string torrentPath = makeTorrent(
+        root + "/src", "example.bin", "payload");
+
+    std::string error;
+    pipensx::TorrentPreview preview;
+    assert(DownloadManager::previewTorrent(torrentPath, preview, error));
+    assert(preview.infoHash.size() == 40);
+
+    // DebridImport with torrentPath set, debridId empty.
+    pipensx::DownloadManager manager(root + "/app", false);
+    pipensx::DebridImport import;
+    import.infoHash = preview.infoHash;
+    import.name = preview.name;
+    import.totalBytes = preview.totalBytes;
+    import.debridId = "";
+    import.provider = pipensx::DebridProviderKind::TorBox;
+    import.torrentPath = torrentPath;
+    import.mode = pipensx::TransferMode::DownloadOnly;
+
+    std::string taskId;
+    assert(manager.importDebrid(import, taskId, error));
+    assert(taskId == preview.infoHash);
+
+    auto tasks = manager.snapshot();
+    assert(tasks.size() == 1);
+
+    std::string expectedMetainfoPath =
+        root + "/app/torrents/" + preview.infoHash + ".torrent";
+    assert(tasks[0].metainfoPath == expectedMetainfoPath);
+
+    struct stat st;
+    assert(stat(expectedMetainfoPath.c_str(), &st) == 0);
+
+    removeAll(root);
 }
 
 int main() {
@@ -153,6 +435,7 @@ int main() {
 
     {
         DownloadManager manager(activeRoot, true);
+        manager.setTorrentingEnabled(true);  // torrenting is off by default
         std::vector<uint8_t> actions{
             static_cast<uint8_t>(FileAction::Skip),
             static_cast<uint8_t>(FileAction::Download),
@@ -282,6 +565,7 @@ int main() {
     // state, an orderly teardown (pause) arms it again.
     {
         DownloadManager manager(fastResumeRoot, true);
+        manager.setTorrentingEnabled(true);  // torrenting is off by default
         std::string frId;
         assert(manager.importTorrent(downloadOnlySource,
                                      TransferMode::DownloadOnly, frId, error));
@@ -401,6 +685,7 @@ int main() {
         std::string secondSource =
             makeTorrent(root, "parallel-b.bin", "parallel payload bb");
         DownloadManager manager(parallelRoot, true);
+        manager.setTorrentingEnabled(true);  // torrenting is off by default
         manager.setMaxActiveDownloads(2);
         std::string firstId, secondId;
         assert(manager.importTorrent(
@@ -438,6 +723,7 @@ int main() {
         std::string streamB =
             makeTorrent(root, "package-b.nsp", "second package payload");
         DownloadManager manager(tokenRoot, true);
+        manager.setTorrentingEnabled(true);  // torrenting is off by default
         manager.setMaxActiveDownloads(2);
         std::string streamAId, streamBId, plainId;
         assert(manager.importTorrent(
@@ -515,6 +801,56 @@ int main() {
     unlink((appRoot + "/queue.bencode").c_str());
     rmdir(appRoot.c_str());
     rmdir(root);
+
+    testTorboxTaskPersistenceRoundTrip();
+    testLegacyQueueLoadsAsTorrentSource();
+    testV4TorrentActionsRemainTriState();
+    testTorrentTaskWithEmptyMetainfoStillErrors();
+    testImportDebridCatalogTask();
+    testImportDebridPickerCopiesTorrent();
+
+    // --- Torrenting gate: a torrent task is refused while torrenting is off ---
+    {
+        char gateTemplate[] = "/tmp/pipensx-gate-XXXXXX";
+        char* gateRoot = mkdtemp(gateTemplate);
+        assert(gateRoot);
+
+        // Minimal single-file .torrent (package) so importTorrent succeeds.
+        const std::string payload = "test payload";
+        uint8_t digest[20];
+        sha1(reinterpret_cast<const uint8_t*>(payload.data()), payload.size(),
+             digest);
+        std::string torrent = "d8:announce14:http://tracker4:infod6:lengthi";
+        torrent += std::to_string(payload.size());
+        torrent += "e4:name11:package.nsp12:piece lengthi";
+        torrent += std::to_string(payload.size());
+        torrent += "e6:pieces20:";
+        torrent.append(reinterpret_cast<const char*>(digest), 20);
+        torrent += "ee";
+        std::string tpath = std::string(gateRoot) + "/g.torrent";
+        std::ofstream(tpath, std::ios::binary)
+            .write(torrent.data(),
+                   static_cast<std::streamsize>(torrent.size()));
+
+        DownloadManager manager(std::string(gateRoot) + "/app", true);
+        manager.setTorrentingEnabled(false);
+        std::string id, err;
+        assert(manager.importTorrent(tpath, id, err));
+
+        // Worker should mark it Error (gate fires before any network use).
+        bool sawError = false;
+        for (int i = 0; i < 100 && !sawError; ++i) {
+            for (const DownloadTask& t : manager.snapshot())
+                if (t.id == id && t.status == DownloadStatus::Error &&
+                    t.error.find("Torrenting disabled") != std::string::npos)
+                    sawError = true;
+            if (!sawError)
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        assert(sawError);
+        manager.shutdown();
+    }
+
     std::puts("manager tests passed");
     return 0;
 }

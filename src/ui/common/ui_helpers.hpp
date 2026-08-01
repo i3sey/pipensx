@@ -296,6 +296,7 @@ inline NVGcolor statusColor(DownloadStatus status) {
             return theme::textSecondary();
         case DownloadStatus::Queued:
         case DownloadStatus::Checking:
+        case DownloadStatus::Fetching:
         case DownloadStatus::Downloading:
         case DownloadStatus::Verifying:
         case DownloadStatus::Installing:
@@ -313,6 +314,8 @@ inline std::string downloadStatusLabel(DownloadStatus status) {
             return tr("pipensx/downloads/status_queued");
         case DownloadStatus::Checking:
             return tr("pipensx/downloads/status_checking");
+        case DownloadStatus::Fetching:
+            return tr("pipensx/downloads/status_fetching");
         case DownloadStatus::Downloading:
             return tr("pipensx/downloads/status_downloading");
         case DownloadStatus::Paused:
@@ -341,6 +344,12 @@ inline std::string taskStatusText(const DownloadTask& task) {
     };
 
     switch (task.status) {
+        // Fetch progress is the provider's own cache-fill percentage, not a
+        // byte count we can derive from the task.
+        case DownloadStatus::Fetching:
+            return withPercent(downloadStatusLabel(task.status),
+                               percentOf(
+                                   static_cast<float>(task.fetchProgress)));
         case DownloadStatus::Checking:
         case DownloadStatus::Downloading:
         case DownloadStatus::Verifying:

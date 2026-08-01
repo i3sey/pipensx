@@ -81,10 +81,11 @@ public:
         setTextIfChanged(placeholder_, placeholderLetter(task.name));
         setTextIfChanged(status_, taskStatusText(task));
         status_->setTextColor(statusColor(task.status));
-        float progress = (task.status == DownloadStatus::Installing ||
-                          task.status == DownloadStatus::Committing)
-            ? installProgressOf(task)
-            : progressOf(task);
+        const float progress = task.status == DownloadStatus::Fetching
+            ? static_cast<float>(task.fetchProgress)
+            : (task.status == DownloadStatus::Installing ||
+               task.status == DownloadStatus::Committing)
+                ? installProgressOf(task) : progressOf(task);
         progress_->setProgress(progress);
 
         std::string meta = formatBytes(task.completedBytes) + " / " +
@@ -98,6 +99,9 @@ public:
         } else if (task.status == DownloadStatus::Installed) {
             meta = tr("pipensx/downloads/cell_installed_packages",
                       task.packagesInstalled);
+        } else if (task.status == DownloadStatus::Fetching) {
+            meta = tr("pipensx/downloads/cell_fetching",
+                      percentOf(static_cast<float>(task.fetchProgress)));
         } else if (task.status == DownloadStatus::Downloading) {
             meta += "   " + formatSpeed(task.speedBytesPerSecond) +
                     tr("pipensx/downloads/cell_peers", task.peers);

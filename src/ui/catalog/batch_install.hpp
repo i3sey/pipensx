@@ -18,6 +18,7 @@
 #include "ui/common/action_icon.hpp"
 #include "ui/common/storage_meter.hpp"
 #include "ui/common/ui_helpers.hpp"
+#include "ui/debrid_ui.hpp"
 #include "ui/i18n.hpp"
 #include "ui/theme.hpp"
 
@@ -125,12 +126,12 @@ public:
     using CompletionCallback =
         std::function<void(const std::unordered_set<std::string>&)>;
 
-    BatchInstallActivity(DownloadManager* manager,
+    BatchInstallActivity(DownloadManager* manager, AppSettings* settings,
                          std::vector<CatalogEntry> entries,
                          StreamSelection selection,
                          CompletionCallback completion,
                          std::function<void()> viewDownloads)
-        : manager_(manager), entries_(std::move(entries)),
+        : manager_(manager), settings_(settings), entries_(std::move(entries)),
           selection_(selection), completion_(std::move(completion)),
           viewDownloads_(std::move(viewDownloads)),
           alive_(std::make_shared<std::atomic<bool>>(true)),
@@ -151,6 +152,13 @@ public:
         };
         installer_ = std::make_shared<CatalogBatchInstaller>(
             manager_->rootPath(), std::move(resolver));
+        debridMode_ = debridModeActive(settings_);
+        if (debridMode_) {
+            const AppSettingsData values = settings_->get();
+            debridProvider_ = std::shared_ptr<DebridProvider>(
+                makeDebridProvider(values.debridProvider,
+                                   activeDebridKey(values)).release());
+        }
 
         auto* content = new brls::Box(brls::Axis::COLUMN);
         content->setGrow(1);
@@ -262,6 +270,19 @@ public:
     ~BatchInstallActivity() override {
         alive_->store(false);
         cancelled_->store(true);
+        if (debridMode_ && !enqueueFinished_ && prepared_ && debridProvider_) {
+            std::vector<std::string> ids;
+            for (const PreparedCatalogInstall& item : prepared_->items())
+                if (!item.debridId.empty())
+                    ids.push_back(item.debridId);
+            auto provider = debridProvider_;
+            std::thread([provider, ids] {
+                for (const std::string& id : ids) {
+                    std::string ignored;
+                    provider->remove(id, ignored);
+                }
+            }).detach();
+        }
     }
 
     brls::View* createContentView() override { return frame_; }
@@ -290,9 +311,12 @@ private:
         auto alive = alive_;
         auto cancelled = cancelled_;
         auto installer = installer_;
+        auto provider = debridProvider_;
         auto entries = entries_;
+        const bool debridMode = debridMode_;
         StreamSelection selection = selection_;
-        brls::async([this, alive, cancelled, installer, entries, selection] {
+        brls::async([this, alive, cancelled, installer, provider, entries,
+                     debridMode, selection] {
             auto progress = [this, alive](
                                 const pipensx::BatchPrepareProgress& value) {
                 std::string stage;
@@ -318,7 +342,11 @@ private:
                 });
             };
             auto prepared = std::make_shared<BatchPreparation>(
-                installer->prepare(entries, selection, *cancelled, progress));
+                debridMode && provider
+                    ? installer->prepareViaDebrid(entries, selection,
+                          *provider, *cancelled, progress)
+                    : installer->prepare(entries, selection, *cancelled,
+                          progress));
             brls::sync([this, alive, prepared] {
                 if (!alive->load())
                     return;
@@ -431,7 +459,11 @@ private:
         }
 
         pipensx::BatchEnqueueResult result =
-            installer_->enqueue(*prepared_, *manager_);
+            debridMode_ && debridProvider_
+                ? installer_->enqueueViaDebrid(
+                      *prepared_, *manager_, settings_->get().debridProvider,
+                      *debridProvider_)
+                : installer_->enqueue(*prepared_, *manager_);
         for (const std::string& hash : result.queuedInfoHashes)
             remaining_.erase(catalogLower(hash));
         if (completion_)
@@ -473,6 +505,7 @@ private:
     }
 
     DownloadManager* manager_ = nullptr;
+    AppSettings* settings_ = nullptr;
     std::vector<CatalogEntry> entries_;
     StreamSelection selection_ = StreamSelection::AllFiles;
     CompletionCallback completion_;
@@ -481,6 +514,7 @@ private:
     std::shared_ptr<std::atomic<bool>> alive_;
     std::shared_ptr<std::atomic<bool>> cancelled_;
     std::shared_ptr<CatalogBatchInstaller> installer_;
+    std::shared_ptr<DebridProvider> debridProvider_;
     std::shared_ptr<BatchPreparation> prepared_;
     StorageSpaceSnapshot storage_;
     brls::AppletFrame* frame_ = nullptr;
@@ -496,6 +530,7 @@ private:
     brls::ActionIdentifier cancelAction_ = ACTION_NONE;
     brls::ActionIdentifier queueAction_ = ACTION_NONE;
     bool enqueueFinished_ = false;
+    bool debridMode_ = false;
 };
 
 }  // namespace pipensx::ui

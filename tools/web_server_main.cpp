@@ -50,6 +50,9 @@ int main(int argc, char** argv) {
 
     mkdir(root.c_str(), 0755);
     DownloadManager manager(root);
+    // Manual browser-testing harness: no settings file to read the choice
+    // from, and exercising the companion's add flow needs transfers to run.
+    manager.setTorrentingEnabled(true);
     WebServer server(manager, "resources/web", "dev");
     if (!pin.empty()) server.setPin(pin);
 

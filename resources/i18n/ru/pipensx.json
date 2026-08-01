@@ -160,7 +160,8 @@
     "installing_extras_skipped_hint": "Ставим файлы игры. Лишние пропущены — включите их через «Выбрать файлы».",
     "installing_extras_skipped": "Ставим файлы игры. Лишние файлы пропущены.",
     "added_installing": "Добавлено. Установка на SD...",
-    "already_in_downloads": "Уже в загрузках."
+    "already_in_downloads": "Уже в загрузках.",
+    "status_fetching": "Загрузка на сервисе {}%"
   },
   "torrent": {
     "title": "Выбор файлов раздачи",
@@ -233,7 +234,9 @@
     "eta_seconds": "{} с",
     "eta_minutes": "{} мин {} с",
     "eta_hours": "{} ч {} мин",
-    "eta_days": "{} дн {} ч"
+    "eta_days": "{} дн {} ч",
+    "status_fetching": "Загрузка на сервисе",
+    "cell_fetching": "Сервис загружает раздачу   {}%"
   },
   "picker": {
     "folder": "[Папка]  {}",
@@ -393,7 +396,15 @@
     "report_id_filtered": "Отчёт {} · кодов: {} (подробные строки убраны)",
     "report_empty": "Журнал пуст — записаны только данные устройства.",
     "report_hint": "Сфотографируйте весь экран и приложите описание проблемы.",
-    "report_hint_detailed": "Подробный режим: коды плотнее и вмещают больше лога — пришлите скриншот кнопкой Capture, а не фото. Y возвращает к фото-виду."
+    "report_hint_detailed": "Подробный режим: коды плотнее и вмещают больше лога — пришлите скриншот кнопкой Capture, а не фото. Y возвращает к фото-виду.",
+    "section_debrid": "Способ загрузки",
+    "torrenting": "Прямой BitTorrent (раскрывает ваш IP)",
+    "torrenting_warning": "Прямой BitTorrent показывает ваш публичный IP-адрес другим участникам раздачи. Включайте, только если готовы к этому.",
+    "torrenting_enable": "Включить BitTorrent",
+    "debrid_provider": "Сервис debrid",
+    "debrid_link": "Привязать аккаунт debrid",
+    "debrid_linked": "{} — привязан",
+    "debrid_not_linked": "{} — не привязан"
   },
   "about": {
     "version": "Версия {}",
@@ -409,5 +420,34 @@
   },
   "disclaimer": {
     "catalog": "Каталог — дамп RuTracker от @Langegen. Проект не связан с ними."
+  },
+  "debrid": {
+    "link_hint": "Отсканируйте код с устройства в той же сети или введите API-ключ {} вручную. Ключ хранится только в настройках pipensx.",
+    "link_title": "Привязка аккаунта {}",
+    "enter_key": "Ввести ключ вручную",
+    "enter_key_detail": "Экранная клавиатура",
+    "unlink": "Отвязать аккаунт",
+    "unlink_detail": "Удалить сохранённый ключ",
+    "linked": "Аккаунт привязан.",
+    "not_linked": "Аккаунт не привязан.",
+    "keyboard_prompt": "API-ключ {}",
+    "no_key": "Ключ не введён.",
+    "validating": "Проверка ключа…",
+    "rejected": "Сервис debrid отклонил этот ключ.",
+    "linked_notify": "Аккаунт debrid привязан.",
+    "unlinked_notify": "Аккаунт debrid отвязан.",
+    "needs_account": "Для режима debrid нужен привязанный аккаунт. Привязать сейчас?",
+    "link_now": "Привязать аккаунт",
+    "first_run": "Выберите, как pipensx будет загружать релизы. Рекомендуется debrid: прямой BitTorrent показывает ваш публичный IP-адрес другим участникам.",
+    "first_run_torbox": "TorBox (рекомендуется)",
+    "first_run_realdebrid": "Real-Debrid",
+    "first_run_torrent": "Прямой BitTorrent — согласен раскрыть IP",
+    "choose_mode": "Выберите, что сделать с файлами.",
+    "mode_install": "Установить пакеты игры",
+    "mode_download": "Скачать все файлы",
+    "submitting": "Отправка…",
+    "sending_magnet": "Отправка magnet-ссылки в сервис debrid…",
+    "magnet_rejected": "Сервис debrid отклонил magnet-ссылку.",
+    "queued": "Добавлено в очередь debrid. Метаданные ещё могут загружаться."
   }
 }

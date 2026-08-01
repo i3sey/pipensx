@@ -10,6 +10,9 @@
 #include <sstream>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <utility>
+
+#include <borealis/extern/nlohmann/json.hpp>
 
 namespace pipensx {
 namespace {
@@ -68,7 +71,7 @@ bool readUnsigned(const Json& root, const char* key, uint64_t& value,
 // Schema version written by this build. Bumped when a stored value has to be
 // reinterpreted rather than merely added: parseSettings migrates anything
 // older forward, so a bump is always paired with a rule below.
-constexpr int kSettingsVersion = 2;
+constexpr int kSettingsVersion = 3;
 
 bool parseSettings(const std::string& text, AppSettingsData& values,
                    std::string& error) {
@@ -113,7 +116,10 @@ bool parseSettings(const std::string& text, AppSettingsData& values,
                   values.catalogDisclaimerAcknowledged, error) ||
         !readBool(root, "web_server_enabled", values.webServerEnabled,
                   error) ||
-        !readString(root, "web_server_pin", values.webServerPin, error)) {
+        !readString(root, "web_server_pin", values.webServerPin, error) ||
+        !readBool(root, "torrenting_enabled", values.torrentingEnabled,
+                  error) ||
+        !readString(root, "torbox_api_key", values.torboxApiKey, error)) {
         return false;
     }
     uint64_t maxActive = values.maxActiveDownloads;
@@ -130,6 +136,32 @@ bool parseSettings(const std::string& text, AppSettingsData& values,
         values.maxActiveDownloads = kMinActiveDownloads;
     if (!isValidWebPin(values.webServerPin))
         values.webServerPin.clear();
+    // v3 keys: absent in an older file, so only read them when present and
+    // otherwise leave the struct defaults in place.
+    if (root.contains("real_debrid_token")) {
+        if (!readString(root, "real_debrid_token", values.realDebridToken,
+                        error))
+            return false;
+    }
+    if (root.contains("debrid_provider")) {
+        std::string provider = "torbox";
+        if (!readString(root, "debrid_provider", provider, error))
+            return false;
+        values.debridProvider = provider == "realdebrid"
+            ? DebridProviderKind::RealDebrid
+            : DebridProviderKind::TorBox;
+    }
+    if (root.contains("first_run_completed")) {
+        if (!readBool(root, "first_run_completed",
+                      values.firstRunCompleted, error))
+            return false;
+    }
+    // v2 -> v3: debrid arrived and the struct default flipped torrenting off,
+    // but a pre-v3 file was written by a build where torrenting was the only
+    // way to download anything. Migrate it back on rather than silently
+    // stopping an install that already works.
+    if (fileVersion < 3)
+        values.torrentingEnabled = true;
 
     if (!isSupportedLanguage(values.language)) {
         error = "Setting 'language' has an unknown value.";
@@ -180,6 +212,13 @@ std::string serializeSettings(const AppSettingsData& values) {
     root["web_server_enabled"] = values.webServerEnabled;
     root["web_server_pin"] = values.webServerPin;
     root["max_active_downloads"] = values.maxActiveDownloads;
+    root["torrenting_enabled"] = values.torrentingEnabled;
+    root["torbox_api_key"] = values.torboxApiKey;
+    root["real_debrid_token"] = values.realDebridToken;
+    root["debrid_provider"] =
+        values.debridProvider == DebridProviderKind::RealDebrid
+            ? "realdebrid" : "torbox";
+    root["first_run_completed"] = values.firstRunCompleted;
     return root.dump(2) + "\n";
 }
 
@@ -221,7 +260,12 @@ bool AppSettingsData::operator==(const AppSettingsData& other) const {
                other.catalogDisclaimerAcknowledged &&
            webServerEnabled == other.webServerEnabled &&
            webServerPin == other.webServerPin &&
-           maxActiveDownloads == other.maxActiveDownloads;
+           maxActiveDownloads == other.maxActiveDownloads &&
+           torrentingEnabled == other.torrentingEnabled &&
+           torboxApiKey == other.torboxApiKey &&
+           realDebridToken == other.realDebridToken &&
+           debridProvider == other.debridProvider &&
+           firstRunCompleted == other.firstRunCompleted;
 }
 
 bool dailyRefreshDue(uint64_t nowMs, uint64_t lastRefreshMs) {

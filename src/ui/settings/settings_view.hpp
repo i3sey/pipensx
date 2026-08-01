@@ -22,6 +22,7 @@
 #include "ui/common/qr_view.hpp"
 #include "ui/common/ui_helpers.hpp"
 #include "ui/common/web_qr.hpp"
+#include "ui/debrid_ui.hpp"
 #include "ui/i18n.hpp"
 #include "ui/settings/advanced_settings.hpp"
 #include "ui/settings/bug_report_view.hpp"
@@ -169,6 +170,44 @@ public:
                     showCompleted_->setOn(previous, false);
             });
         content->addView(showCompleted_);
+
+        addSection(content, tr("pipensx/settings/section_debrid"));
+        torrenting_ = new brls::BooleanCell();
+        torrenting_->init(tr("pipensx/settings/torrenting"),
+            settings_->get().torrentingEnabled,
+            [this](bool enabled) { setTorrenting(enabled); });
+        content->addView(torrenting_);
+
+        debridProvider_ = new brls::SelectorCell();
+        debridProvider_->init(tr("pipensx/settings/debrid_provider"),
+            {"TorBox", "Real-Debrid"},
+            settings_->get().debridProvider == DebridProviderKind::RealDebrid
+                ? 1 : 0,
+            [this](int selected) {
+                AppSettingsData values = settings_->get();
+                const DebridProviderKind previous = values.debridProvider;
+                values.debridProvider = selected == 1
+                    ? DebridProviderKind::RealDebrid
+                    : DebridProviderKind::TorBox;
+                if (!persist(values, "debrid_provider"))
+                    debridProvider_->setSelection(
+                        previous == DebridProviderKind::RealDebrid ? 1 : 0,
+                        true);
+                refreshDebridLinkDetail();
+            });
+        content->addView(debridProvider_);
+
+        debridLink_ = actionCell(tr("pipensx/settings/debrid_link"), "",
+            [this] {
+                DebridLinkView::push(settings_, manager_,
+                                     settings_->get().debridProvider);
+            });
+        // Named so the golden runner can focus it: the debrid section sits
+        // far below the fold, and scrolling to it by counting d-pad presses
+        // would break every time a row above it is added.
+        debridLink_->setId("settings-debrid-link");
+        content->addView(debridLink_);
+        refreshDebridLinkDetail();
 
         addSection(content, tr("pipensx/settings/section_web"));
         webToggle_ = new brls::BooleanCell();
@@ -550,6 +589,51 @@ private:
         });
     }
 
+    // Turning torrenting ON is the risky direction, so it goes through a
+    // confirmation; turning it off needs none. The toggle is snapped back to
+    // false first so the cell never shows "on" while the dialog is up.
+    void setTorrenting(bool enabled) {
+        const bool previous = settings_->get().torrentingEnabled;
+        if (enabled && !previous) {
+            torrenting_->setOn(false, false);
+            auto* dialog = new brls::Dialog(
+                tr("pipensx/settings/torrenting_warning"));
+            dialog->addButton(tr("pipensx/settings/torrenting_enable"),
+                [this] {
+                    AppSettingsData values = settings_->get();
+                    values.torrentingEnabled = true;
+                    if (persist(values, "torrenting")) {
+                        manager_->setTorrentingEnabled(true);
+                        torrenting_->setOn(true, false);
+                    }
+                });
+            dialog->addButton(tr("pipensx/common/cancel"), [] {});
+            dialog->open();
+            return;
+        }
+        AppSettingsData values = settings_->get();
+        values.torrentingEnabled = enabled;
+        if (!persist(values, "torrenting")) {
+            torrenting_->setOn(previous, false);
+            return;
+        }
+        manager_->setTorrentingEnabled(enabled);
+    }
+
+    void refreshDebridLinkDetail() {
+        if (!debridLink_)
+            return;
+        const AppSettingsData& values = settings_->get();
+        const char* provider = values.debridProvider ==
+            DebridProviderKind::RealDebrid ? "Real-Debrid" : "TorBox";
+        // Spelled out rather than picking the key with a ternary: the i18n
+        // checker only sees keys that appear as a literal first argument.
+        debridLink_->setDetailText(
+            activeDebridKey(values).empty()
+                ? tr("pipensx/settings/debrid_not_linked", provider)
+                : tr("pipensx/settings/debrid_linked", provider));
+    }
+
     // Re-sync the main-list cells. Called after a factory reset performed on the
     // Advanced sub-page (via its onReset callback), since the nested settings tab
     // does not get a lifecycle event when that activity pops.
@@ -566,6 +650,14 @@ private:
         checkForUpdates_->setOn(values.checkForUpdatesOnLaunch, false);
         webToggle_->setOn(values.webServerEnabled, false);
         updateWebCells();
+        torrenting_->setOn(values.torrentingEnabled, false);
+        debridProvider_->setSelection(
+            values.debridProvider == DebridProviderKind::RealDebrid ? 1 : 0,
+            true);
+        manager_->setTorrentingEnabled(values.torrentingEnabled);
+        manager_->setTorboxApiKey(values.torboxApiKey);
+        manager_->setRealDebridToken(values.realDebridToken);
+        refreshDebridLinkDetail();
     }
 
     AppSettings* settings_;
@@ -588,6 +680,9 @@ private:
     brls::BooleanCell* webToggle_ = nullptr;
     brls::DetailCell* webAddress_ = nullptr;
     brls::DetailCell* webPin_ = nullptr;
+    brls::BooleanCell* torrenting_ = nullptr;
+    brls::SelectorCell* debridProvider_ = nullptr;
+    brls::DetailCell* debridLink_ = nullptr;
     bool refreshInFlight_ = false;
     bool updateInFlight_ = false;
 };

@@ -600,6 +600,9 @@ private:
     void prepareSelectedEntries() {
         if (!batchMode_ || selectedHashes_.empty() || busy_)
             return;
+        if (debridModeActive(settings_) &&
+            !ensureDebridLinked(settings_, manager_))
+            return;
 
         std::unordered_set<std::string> managed;
         for (const DownloadTask& task : manager_->snapshot())
@@ -655,8 +658,8 @@ private:
             ? settings_->get().streamSelection
             : StreamSelection::AllFiles;
         brls::Application::pushActivity(new BatchInstallActivity(
-            manager_, std::move(entries), selection, std::move(completion),
-            openDownloads_));
+            manager_, settings_, std::move(entries), selection,
+            std::move(completion), openDownloads_));
     }
 
     void refreshBatchStatus() {
@@ -1468,6 +1471,8 @@ private:
         switch (status) {
             case DownloadStatus::Queued:
                 return tr("pipensx/detail/status_queued");
+            case DownloadStatus::Fetching:
+                return tr("pipensx/downloads/status_fetching");
             case DownloadStatus::Checking:
             case DownloadStatus::Downloading:
             case DownloadStatus::Verifying:
