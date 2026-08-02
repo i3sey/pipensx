@@ -4,6 +4,9 @@ namespace pipensx::ui {
 
 brls::RecyclerCell* CatalogDataSource::cellForRow(
     brls::RecyclerFrame* recycler, brls::IndexPath index) {
+    if (index.row == 0)
+        return recycler->dequeueReusableCell("TopInset");
+
     if (entries_.empty()) {
         auto* cell = static_cast<TextMessageCell*>(
             recycler->dequeueReusableCell("Message"));
@@ -20,7 +23,7 @@ brls::RecyclerCell* CatalogDataSource::cellForRow(
 
     if (index.row < headerRowCount()) {
         const bool hasHero = heroIndex_ >= 0;
-        if (hasHero && index.row == 0) {
+        if (hasHero && index.row == 1) {
             auto* cell =
                 static_cast<HeroCell*>(recycler->dequeueReusableCell("Hero"));
             cell->setHero(makeInfo(heroIndex_), heroImage_, metadata_,
@@ -28,7 +31,8 @@ brls::RecyclerCell* CatalogDataSource::cellForRow(
             return cell;
         }
         const CatalogShelf& shelf =
-            shelves_[static_cast<size_t>(index.row - (hasHero ? 1 : 0))];
+            shelves_[static_cast<size_t>(
+                index.row - 1 - (hasHero ? 1 : 0))];
         std::vector<GridCardInfo> infos;
         infos.reserve(shelf.items.size());
         for (int pick : shelf.items)

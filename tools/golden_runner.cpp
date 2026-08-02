@@ -362,6 +362,8 @@ int main(int argc, char** argv) {
     bool settingsDebrid = false;
     bool hintsBudget = false;
     CatalogView* hintsCatalog = nullptr;
+    bool catalogHeaderClearance = false;
+    CatalogView* collapsedCatalog = nullptr;
     BugReportActivity* bugReportFocus = nullptr;
     brls::Activity* detailRailNav = nullptr;
     if (screen == "catalog") {
@@ -547,6 +549,18 @@ int main(int argc, char** argv) {
         });
         tabs->attachStorageFooter(&manager);
         activity = new GoldenActivity(tabs);
+    } else if (screen == "catalog-header-clearance") {
+        // Regression check: the catalog's first shelf must remain below the
+        // filter row after focus folds the sidebar to its icon rail.
+        catalogHeaderClearance = true;
+        auto* tabs = new MainFrame();
+        tabs->addNavTab(tr("pipensx/nav/catalog"), NavIconType::Catalog, [&] {
+            collapsedCatalog = new CatalogView(
+                &manager, &catalog, &metadata, &installed, &settings, [] {},
+                &mods, &favorites);
+            return collapsedCatalog;
+        });
+        activity = new GoldenActivity(tabs);
     } else if (screen == "hints-budget") {
         // Behaviour check, not a baseline: the catalog registers more gamepad
         // actions than the bottom bar can lay out, and the hints silently
@@ -650,6 +664,15 @@ int main(int argc, char** argv) {
         // catalog's actions.
         if (i == 10 && hintsCatalog)
             brls::Application::giveFocus(hintsCatalog);
+        if (i == 10 && collapsedCatalog) {
+            brls::View* focus = brls::Application::getCurrentFocus();
+            brls::View* next = focus
+                ? focus->getNextFocus(brls::FocusDirection::RIGHT, focus)
+                : nullptr;
+            if (!next)
+                return fail("catalog-header-clearance: RIGHT never entered catalog");
+            brls::Application::giveFocus(next);
+        }
         // The settings scroller is NATURAL: it follows the d-pad, not focus,
         // and getNextFocus() cannot reach a row that is still off-screen. So
         // scroll it directly to the cell's own offset — that is independent
@@ -818,6 +841,31 @@ int main(int argc, char** argv) {
 
         std::printf("golden_runner: bug-report kept focus and toggled "
                     "(%s -> %s)\n", before.c_str(), after.c_str());
+        manager.shutdown();
+        std::fflush(nullptr);
+        _exit(0);
+    }
+
+    if (catalogHeaderClearance) {
+        if (!collapsedCatalog)
+            return fail("catalog-header-clearance: catalog tab was never built");
+        const auto& children = collapsedCatalog->getChildren();
+        if (children.empty())
+            return fail("catalog-header-clearance: no catalog header");
+        brls::View* header = children.front();
+        auto* host = dynamic_cast<brls::Box*>(children.back());
+        auto* recycler = host && !host->getChildren().empty()
+            ? dynamic_cast<brls::RecyclerFrame*>(host->getChildren().front())
+            : nullptr;
+        const std::vector<ShelfCell*> shelves = visibleCells<ShelfCell>(recycler);
+        if (shelves.empty())
+            return fail("catalog-header-clearance: no rendered shelf");
+        const float clearance = shelves.front()->getFrame().getMinY() -
+                                header->getFrame().getMaxY();
+        if (clearance < 28.0f)
+            return fail("catalog-header-clearance: first shelf overlaps filters");
+        std::printf("golden_runner: first shelf clears collapsed header by %.0fpx\n",
+                    clearance);
         manager.shutdown();
         std::fflush(nullptr);
         _exit(0);

@@ -37,6 +37,9 @@ inline constexpr float kGameCoverWidth = 112.0f;
 // Cover + name line (17px) + sub line (15px) + inner margins.
 inline constexpr float kCardHeight = 232.0f;
 inline constexpr float kRowHeight = 248.0f;
+// RecyclerFrame positions cells independently of its outer padding on some
+// backends. Keep a real first row so the shelf never enters the filter header.
+inline constexpr float kTopInsetHeight = 24.0f;
 inline constexpr int kShelfItems = 12;
 inline constexpr float kShelfSpacing = 2 * theme::kSpacingUnit;
 // Shelf title (21px) + margin + card strip + bottom breathing room.
@@ -295,6 +298,16 @@ private:
 // One recycled grid row holding kColumns cards. Left/right moves between the
 // cards via the regular Box navigation; up/down lands on getDefaultFocus(),
 // which preserves the column the user was in (shared focusColumn state).
+class TopInsetCell : public brls::RecyclerCell {
+public:
+    TopInsetCell() {
+        setFocusable(false);
+        setHeight(grid::kTopInsetHeight);
+        setLineBottom(0);
+        setLineColor(brls::TRANSPARENT);
+    }
+};
+
 class GridRowCell : public brls::RecyclerCell {
 public:
     explicit GridRowCell(std::shared_ptr<int> focusColumn)

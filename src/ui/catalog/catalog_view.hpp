@@ -88,9 +88,10 @@ public:
                selectable_[static_cast<size_t>(row)] != 0;
     }
 
-    // Recycler row layout: [hero?][shelves][grid rows of kColumns cards].
+    // Recycler row layout: [top inset][hero?][shelves][grid rows of cards].
     int headerRowCount() const {
-        return (heroIndex_ >= 0 ? 1 : 0) + static_cast<int>(shelves_.size());
+        return 1 + (heroIndex_ >= 0 ? 1 : 0) +
+               static_cast<int>(shelves_.size());
     }
     int rowForEntry(int index) const {
         return headerRowCount() + index / grid::kColumns;
@@ -99,16 +100,18 @@ public:
 
     int numberOfRows(brls::RecyclerFrame*, int) override {
         if (entries_.empty())
-            return 1;
+            return 2;
         const int gridRows =
             (static_cast<int>(entries_.size()) + grid::kColumns - 1) /
             grid::kColumns;
         return headerRowCount() + gridRows;
     }
     float heightForRow(brls::RecyclerFrame*, brls::IndexPath index) override {
+        if (index.row == 0)
+            return grid::kTopInsetHeight;
         if (entries_.empty())
             return 100;
-        if (heroIndex_ >= 0 && index.row == 0)
+        if (heroIndex_ >= 0 && index.row == 1)
             return grid::kHeroHeight;
         return index.row < headerRowCount() ? grid::kShelfHeight
                                             : grid::kRowHeight;
@@ -221,6 +224,7 @@ public:
         recycler_->setGrow(1);
         recycler_->setPadding(6, 32, 6, 32);
         recycler_->estimatedRowHeight = grid::kRowHeight;
+        recycler_->registerCell("TopInset", [] { return new TopInsetCell(); });
         recycler_->registerCell("GridRow", [column = focusColumn_] {
             return new GridRowCell(column);
         });
@@ -492,7 +496,7 @@ public:
                 returnFocusShelf_ = card->shelfRow();
         } else if (auto* hero = dynamic_cast<HeroCard*>(focus)) {
             if (hero->infoHash() == picked->infoHash)
-                returnFocusShelf_ = 0;  // hero is always the first row
+                returnFocusShelf_ = 1;  // row 0 is the top inset
         }
         auto onClose = [this, alive = alive_] {
             if (alive->load())
@@ -715,7 +719,7 @@ private:
                 focusShelf = card->shelfRow();
             } else if (auto* hero = dynamic_cast<HeroCard*>(focus)) {
                 focusHash = hero->infoHash();
-                focusShelf = 0;  // hero is always the first recycler row
+                focusShelf = 1;  // row 0 is the top inset
             }
         }
 
