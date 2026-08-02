@@ -61,6 +61,14 @@ inline bool clearApplicationLog() {
     return log_clear() != 0;
 }
 
+inline std::string readApplicationLogTail(std::size_t maxBytes) {
+    if (!maxBytes)
+        return {};
+    std::string tail(maxBytes, '\0');
+    tail.resize(log_read_tail(tail.data(), maxBytes));
+    return tail;
+}
+
 inline void startupStage(const char* stage) {
     switch_crashlog_stage(stage);
     log_msg("[startup] %s\n", stage);

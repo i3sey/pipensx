@@ -1,34 +1,32 @@
 #pragma once
 
 #include <functional>
+#include <optional>
 #include <string>
 #include <utility>
 
 #include <borealis.hpp>
 
 #include "app/app_settings.hpp"
+#include "app/bug_report.hpp"
 #include "app/download_manager.hpp"
+#include "ui/common/setup_summary_panel.hpp"
+#include "ui/common/ui_helpers.hpp"
 #include "ui/debrid_ui.hpp"
 #include "ui/i18n.hpp"
 #include "ui/theme.hpp"
 
 namespace pipensx::ui {
 
-// One choice on the first-run screen: a heading plus the paragraph that says
-// when to pick it. A focusable Box rather than a DetailCell — the cells put
-// their detail text on the right and clip it, and the whole point here is the
-// two lines under the heading.
 class FirstRunOption : public brls::Box {
 public:
-    FirstRunOption(const std::string& heading, const std::string& detail,
-                   std::function<void()> onChoose)
-        : brls::Box(brls::Axis::COLUMN), onChoose_(std::move(onChoose)) {
+    FirstRunOption(const std::string& heading, std::function<void()> onChoose,
+                   std::function<void()> onFocus)
+        : brls::Box(brls::Axis::COLUMN), onChoose_(std::move(onChoose)),
+          onFocus_(std::move(onFocus)) {
         setFocusable(true);
-        setPadding(18, 24, 18, 24);
-        setMarginBottom(12);
-        // surface(), not panel(): panel is translucent and lands within a
-        // couple of RGB steps of the page background in the dark theme, which
-        // makes the cards read as loose paragraphs rather than choices.
+        setPadding(16, 24, 16, 24);
+        setMarginBottom(8);
         setBackgroundColor(theme::surface());
         setCornerRadius(theme::kRadiusLarge);
         setHighlightCornerRadius(theme::kRadiusLarge);
@@ -37,15 +35,7 @@ public:
         title->setText(heading);
         title->setFontSize(theme::kFontBody);
         title->setTextColor(theme::textPrimary());
-        title->setMarginBottom(6);
         addView(title);
-
-        auto* body = new brls::Label();
-        body->setText(detail);
-        body->setFontSize(theme::kFontSmall);
-        body->setTextColor(theme::textSecondary());
-        body->setSingleLine(false);
-        addView(body);
 
         registerClickAction([this](brls::View*) {
             onChoose_();
@@ -53,69 +43,117 @@ public:
         });
     }
 
+    void onFocusGained() override {
+        brls::Box::onFocusGained();
+        if (onFocus_)
+            onFocus_();
+    }
+
 private:
     std::function<void()> onChoose_;
+    std::function<void()> onFocus_;
 };
 
-// Shown once, after the catalog disclaimer. Three ways to fetch a release,
-// each with the reason to pick it — the choice turns on whether the console
-// joins the swarm itself, and that has consequences a one-line dialog button
-// cannot explain.
 class FirstRunView : public brls::Box {
 public:
-    FirstRunView(AppSettings* settings, DownloadManager* manager)
-        : brls::Box(brls::Axis::COLUMN), settings_(settings),
-          manager_(manager) {
-        setPadding(20, 40, 24, 40);
+    FirstRunView(AppSettings* settings, DownloadManager* manager,
+                 std::optional<SetupSummaryFixture> fixture = std::nullopt)
+        : brls::Box(brls::Axis::ROW), settings_(settings), manager_(manager) {
+        setPadding(24, 40, 24, 40);
 
-        auto* content = new brls::Box(brls::Axis::COLUMN);
+        auto* left = new brls::Box(brls::Axis::COLUMN);
+        left->setWidthPercentage(54);
+        left->setShrink(0);
+        left->setMarginRight(24);
 
         auto* intro = new brls::Label();
         intro->setText(tr("pipensx/first_run/intro"));
         intro->setFontSize(theme::kFontSmall);
         intro->setTextColor(theme::textSecondary());
         intro->setSingleLine(false);
-        intro->setMarginBottom(18);
-        content->addView(intro);
+        intro->setMarginBottom(16);
+        left->addView(intro);
 
-        content->addView(new FirstRunOption(
+        left->addView(new FirstRunOption(
             tr("pipensx/first_run/torrserver"),
-            tr("pipensx/first_run/torrserver_detail"),
-            [this] { choose(DebridProviderKind::TorrServer, false); }));
-        content->addView(new FirstRunOption(
+            [this] { choose(DebridProviderKind::TorrServer, false); },
+            [this] { updateSelection(DebridProviderKind::TorrServer, false); }));
+        left->addView(new FirstRunOption(
             tr("pipensx/first_run/torbox"),
-            tr("pipensx/first_run/torbox_detail"),
-            [this] { choose(DebridProviderKind::TorBox, false); }));
-        content->addView(new FirstRunOption(
+            [this] { choose(DebridProviderKind::TorBox, false); },
+            [this] { updateSelection(DebridProviderKind::TorBox, false); }));
+        left->addView(new FirstRunOption(
             tr("pipensx/first_run/direct"),
-            tr("pipensx/first_run/direct_detail"),
-            [this] { choose(DebridProviderKind::TorBox, true); }));
-        // The intro Label is index 0 and invisible to the focus walk; land on
-        // the first option instead of leaving focus on the frame.
-        content->setDefaultFocusedIndex(1);
+            [this] { choose(DebridProviderKind::TorBox, true); },
+            [this] { updateSelection(DebridProviderKind::TorBox, true); }));
+        left->setDefaultFocusedIndex(1);
 
         auto* note = new brls::Label();
         note->setText(tr("pipensx/first_run/note"));
         note->setFontSize(theme::kFontCaption);
         note->setTextColor(theme::textTertiary());
         note->setSingleLine(false);
-        note->setMarginTop(6);
-        content->addView(note);
+        note->setMarginTop(8);
+        left->addView(note);
+        addView(left);
 
-        auto* scroll = new brls::ScrollingFrame();
-        scroll->setGrow(1);
-        scroll->setContentView(content);
-        addView(scroll);
+        summary_ = new SetupSummaryPanel();
+        summary_->setGrow(1);
+        addView(summary_);
+
+        const std::string ip = fixture
+            ? fixture->lanAddress
+            : brls::Application::getPlatform()->getIpAddress();
+        const bool online = !ip.empty() && ip != "0.0.0.0";
+        summary_->setConnection(
+            online ? tr("pipensx/setup_summary/network_available")
+                   : tr("pipensx/setup_summary/network_unavailable"),
+            online ? theme::success() : theme::warning());
+        summary_->setCheck(tr("pipensx/setup_summary/not_checked"),
+                           theme::textSecondary());
+
+        const std::string tail = fixture
+            ? fixture->diagnosticTail
+            : readApplicationLogTail(kBugReportMaxTailBytes);
+        const DiagnosticSummary diagnostics = summarizeDiagnostics(tail);
+        summary_->setDiagnostics(setupDiagnosticText(diagnostics),
+                                 setupDiagnosticColor(diagnostics));
+        updateSelection(DebridProviderKind::TorrServer, false);
     }
 
     static void push(AppSettings* settings, DownloadManager* manager) {
-        auto* frame = new brls::AppletFrame(
-            new FirstRunView(settings, manager));
+        auto* frame = new brls::AppletFrame(new FirstRunView(settings, manager));
         frame->setTitle(tr("pipensx/first_run/title"));
         brls::Application::pushActivity(new brls::Activity(frame));
     }
 
+    std::string summaryState() const {
+        return summary_->renderedState();
+    }
+
+    bool summaryFits() {
+        return summary_->contentFits();
+    }
+
 private:
+    void updateSelection(DebridProviderKind provider, bool torrenting) {
+        if (torrenting)
+            summary_->setSelected(
+                tr("pipensx/first_run/direct_summary",
+                   tr("pipensx/first_run/direct_detail")),
+                theme::accent());
+        else if (provider == DebridProviderKind::TorrServer)
+            summary_->setSelected(
+                tr("pipensx/first_run/torrserver_summary",
+                   tr("pipensx/first_run/torrserver_detail")),
+                theme::accent());
+        else
+            summary_->setSelected(
+                tr("pipensx/first_run/torbox_summary",
+                   tr("pipensx/first_run/torbox_detail")),
+                theme::accent());
+    }
+
     void choose(DebridProviderKind provider, bool torrenting) {
         AppSettingsData values = settings_->get();
         values.debridProvider = provider;
@@ -127,9 +165,6 @@ private:
             return;
         }
         manager_->setTorrentingEnabled(torrenting);
-        // Pop first, then push: the setup screen replaces this one instead of
-        // stacking on it, so backing out of setup lands on the app rather
-        // than on a choice that has already been made.
         AppSettings* settings = settings_;
         DownloadManager* manager = manager_;
         brls::Application::popActivity(brls::TransitionAnimation::FADE,
@@ -141,6 +176,7 @@ private:
 
     AppSettings* settings_;
     DownloadManager* manager_;
+    SetupSummaryPanel* summary_ = nullptr;
 };
 
 inline void showFirstRunChoice(AppSettings* settings,

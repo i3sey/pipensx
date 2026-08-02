@@ -3,6 +3,7 @@
 #include <zlib.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <string_view>
 
@@ -43,7 +44,68 @@ std::size_t chunkCount(std::size_t compressedLen, std::size_t perChunk) {
     return (compressedLen + perChunk - 1) / perChunk;
 }
 
+bool startsWith(std::string_view value, std::string_view prefix) {
+    return value.size() >= prefix.size() &&
+           value.compare(0, prefix.size(), prefix) == 0;
+}
+
+bool takeField(std::string_view& line, std::string_view name,
+               std::string& value) {
+    if (!startsWith(line, name))
+        return false;
+    line.remove_prefix(name.size());
+    const std::size_t end = line.find(' ');
+    const std::string_view token = line.substr(0, end);
+    if (token.empty() || token.size() > 64 ||
+        !std::all_of(token.begin(), token.end(), [](unsigned char c) {
+            return std::isalnum(c) || c == '_' || c == '-' || c == '.';
+        }))
+        return false;
+    value.assign(token);
+    line.remove_prefix(end == std::string_view::npos ? line.size() : end + 1);
+    return true;
+}
+
 } // namespace
+
+DiagnosticSummary summarizeDiagnostics(const std::string& logTail) {
+    DiagnosticSummary summary;
+    for (std::size_t pos = 0; pos < logTail.size();) {
+        std::size_t end = logTail.find('\n', pos);
+        if (end == std::string::npos)
+            end = logTail.size();
+        std::string_view line(logTail.data() + pos, end - pos);
+        pos = end < logTail.size() ? end + 1 : end;
+
+        constexpr std::string_view marker = "[diagnostic] ";
+        if (!startsWith(line, marker)) {
+            if (line.empty() || line.front() != '[')
+                continue;
+            const std::size_t prefix = line.find("] ");
+            if (prefix == std::string_view::npos)
+                continue;
+            line.remove_prefix(prefix + 2);
+            if (!startsWith(line, marker))
+                continue;
+        }
+        line.remove_prefix(marker.size());
+        if (!startsWith(line, "schema=1 "))
+            continue;
+        line.remove_prefix(sizeof("schema=1 ") - 1);
+
+        DiagnosticSummary record;
+        if (!takeField(line, "level=", record.level) ||
+            !takeField(line, "stage=", record.stage) ||
+            !takeField(line, "tag=", record.tag))
+            continue;
+        if (record.level == "error")
+            ++summary.errorCount;
+        summary.level = std::move(record.level);
+        summary.stage = std::move(record.stage);
+        summary.tag = std::move(record.tag);
+    }
+    return summary;
+}
 
 std::string dropNoisyLogLines(const std::string& logTail) {
     std::string out;

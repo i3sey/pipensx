@@ -10,7 +10,7 @@
 //                 --screen catalog|shelf-scroll|shelf-header|detail|torrent-selection|
 //                          torrent-selection-scroll|downloads|downloads-back|frame|
 //                          hints-budget|installed|settings|settings-debrid|help|
-//                          first-run|
+//                          first-run|first-run-focus|debrid-link|
 //                          about|bug-report|
 //                          bug-report-detail|bug-report-focus|sidebar-touch
 //                 [--frames N] [--sandbox <dir>]
@@ -366,7 +366,14 @@ int main(int argc, char** argv) {
     bool catalogHeaderClearance = false;
     CatalogView* collapsedCatalog = nullptr;
     BugReportActivity* bugReportFocus = nullptr;
+    FirstRunView* firstRunFocus = nullptr;
     brls::Activity* detailRailNav = nullptr;
+    const std::string setupDiagnosticFixture =
+        "cut-off secret body api_key=DO_NOT_SHOW\n"
+        "[  13010] [diagnostic] schema=1 level=error stage=net "
+        "tag=timeout api_key=DO_NOT_SHOW url=http://user:key@host\n"
+        "[  14100] [diagnostic] schema=1 level=snapshot stage=system "
+        "tag=setup version=1.0.0\n";
     if (screen == "catalog") {
         activity = new GoldenActivity(new CatalogView(
             &manager, &catalog, &metadata, &installed, &settings, [] {},
@@ -610,11 +617,24 @@ int main(int argc, char** argv) {
     } else if (screen == "help") {
         activity = new GoldenActivity(
             new HelpView(&manager, &catalog, &metadata, &installed));
-    } else if (screen == "first-run") {
-        // The choice screen the app pushes once, before anything is set up:
-        // its three paragraphs are the longest prose we ship, and Russian
-        // runs longer than English on every one of them.
-        activity = new GoldenActivity(new FirstRunView(&settings, &manager));
+    } else if (screen == "first-run" || screen == "first-run-focus") {
+        auto* view = new FirstRunView(
+            &settings, &manager,
+            SetupSummaryFixture{"192.168.50.42", setupDiagnosticFixture});
+        activity = new GoldenActivity(view);
+        if (screen == "first-run-focus")
+            firstRunFocus = view;
+    } else if (screen == "debrid-link") {
+        pipensx::AppSettingsData values = settings.get();
+        values.debridProvider = pipensx::DebridProviderKind::TorBox;
+        values.torboxApiKey = "golden-fixture-key";
+        if (!settings.update(values, error))
+            return fail("debrid-link could not plant a linked key");
+        activity = new GoldenActivity(new DebridLinkView(
+            &settings, &manager, pipensx::DebridProviderKind::TorBox,
+            DebridLinkFixture{{"192.168.50.42", setupDiagnosticFixture},
+                              /*pairingAvailable=*/true,
+                              /*validationSucceeded=*/true}));
     } else if (screen == "about") {
         activity = new GoldenActivity(new AboutView());
     } else if (screen == "bug-report" || screen == "bug-report-detail" ||
@@ -739,6 +759,34 @@ int main(int argc, char** argv) {
             return fail("a tap on a sidebar item never reaches it");
         }
         std::printf("golden_runner: sidebar item reachable by touch\n");
+        manager.shutdown();
+        std::fflush(nullptr);
+        _exit(0);
+    }
+
+    if (firstRunFocus) {
+        auto* option = dynamic_cast<FirstRunOption*>(
+            brls::Application::getCurrentFocus());
+        if (!option)
+            return fail("first-run-focus did not start on the first option");
+        std::vector<std::string> states{firstRunFocus->summaryState()};
+        for (int i = 0; i < 2; ++i) {
+            brls::View* next = option->getNextFocus(brls::FocusDirection::DOWN,
+                                                    option);
+            option = dynamic_cast<FirstRunOption*>(next);
+            if (!option)
+                return fail("first-run-focus could not reach every option");
+            brls::Application::giveFocus(option);
+            for (int frame = 0; frame < 5; ++frame)
+                brls::Application::mainLoop();
+            states.push_back(firstRunFocus->summaryState());
+        }
+        if (states[0] == states[1] || states[1] == states[2] ||
+            brls::Application::getCurrentFocus() != option)
+            return fail("first-run-focus did not update the summary in place");
+        if (!firstRunFocus->summaryFits())
+            return fail("first-run-focus summary clips on the direct option");
+        std::printf("golden_runner: first-run summary followed all options\n");
         manager.shutdown();
         std::fflush(nullptr);
         _exit(0);

@@ -60,6 +60,20 @@ struct BugReport {
     bool filtered;  // true if repetitive telemetry lines were dropped first
 };
 
+// Safe aggregate for setup screens. The diagnostic body is deliberately not
+// represented, so API keys, URLs and other details cannot reach the UI.
+struct DiagnosticSummary {
+    std::size_t errorCount = 0;
+    std::string level;
+    std::string stage;
+    std::string tag;
+};
+
+// Parse complete schema=1 diagnostic records from a recent log tail. A cut-off
+// first line and free text are ignored; only the three identifier fields of the
+// newest record survive.
+DiagnosticSummary summarizeDiagnostics(const std::string& logTail);
+
 // Compress logTail with zlib and split it into <= config.maxChunks framed
 // chunks. When the tail does not fit, it is cut down in two steps, cheapest
 // loss first: drop the bulk lines that never explain a bug (see

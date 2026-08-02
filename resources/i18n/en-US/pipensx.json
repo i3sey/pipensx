@@ -427,15 +427,34 @@
   "disclaimer": {
     "catalog": "Catalog is a RuTracker dump by @Langegen. Not affiliated."
   },
+  "setup_summary": {
+    "connection": "Connection",
+    "check": "Check",
+    "selected": "Selected",
+    "last_diagnostic": "Latest diagnostic",
+    "network_available": "Network connection available",
+    "network_unavailable": "No network connection",
+    "pairing_available": "Ready to pair from a phone",
+    "pairing_unavailable": "Manual entry only",
+    "not_checked": "Not checked yet",
+    "check_success": "Connection confirmed",
+    "provider_saved": "{}\nSaved value: yes",
+    "provider_not_saved": "{}\nSaved value: no",
+    "no_diagnostics": "No entries",
+    "diagnostics": "Errors: {}\nLast: {}/{} ({})"
+  },
   "first_run": {
     "title": "How to fetch releases",
     "intro": "pipensx can take files straight from the swarm, or through a server that sits in between.",
     "torrserver": "Your own TorrServer",
-    "torrserver_detail": "For a TorrServer already running on your router, home server or VPS. The console downloads from it over your own network and never joins the swarm.",
+    "torrserver_detail": "For a TorrServer already running on your router, home server or VPS. The console downloads from it over your own network.",
     "torbox": "TorBox",
     "torbox_detail": "A paid cloud service. Enter the key on the console, or send it from your phone by scanning a QR code.",
     "direct": "Straight from the swarm",
-    "direct_detail": "Nothing to set up, but every peer in the swarm sees your IP address. In Russia, Ukraine and the CIS this is largely ignored; in Germany, Austria, France and the USA your provider forwards a copyright notice for it, sometimes with a bill attached.",
+    "direct_detail": "Every peer in the swarm sees your IP address. In Russia, Ukraine and the CIS this is largely ignored; in Germany, Austria, France and the USA your provider may forward a copyright notice, sometimes with a bill attached.",
+    "torrserver_summary": "TorrServer\n{}\nConsole stays out of the swarm\nSetup required",
+    "torbox_summary": "TorBox\n{}\nConsole stays out of the swarm\nSetup required",
+    "direct_summary": "Direct BitTorrent\n{}\nConsole joins the swarm\nNo setup needed",
     "note": "You can change this later in Settings."
   },
   "debrid": {

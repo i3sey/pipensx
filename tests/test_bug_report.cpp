@@ -122,6 +122,39 @@ void dumpFixtures(const std::string& dir) {
 }
 
 int main(int argc, char** argv) {
+    // Setup summaries expose only structured identifiers, never diagnostic
+    // bodies or unrelated log text.
+    {
+        DiagnosticSummary empty = summarizeDiagnostics("");
+        assert(empty.errorCount == 0);
+        assert(empty.level.empty());
+        assert(empty.stage.empty());
+        assert(empty.tag.empty());
+
+        DiagnosticSummary several = summarizeDiagnostics(
+            "[diagnostic] schema=1 level=error stage=net tag=timeout secret=one\n"
+            "[  123] [diagnostic] schema=1 level=error stage=auth tag=login api_key=DO_NOT_SHOW\n"
+            "[diagnostic] schema=1 level=snapshot stage=system tag=report url=http://user:key@host\n");
+        assert(several.errorCount == 2);
+        assert(several.level == "snapshot");
+        assert(several.stage == "system");
+        assert(several.tag == "report");
+
+        DiagnosticSummary truncated = summarizeDiagnostics(
+            "hema=1 level=error stage=old tag=cut secret=DO_NOT_SHOW\n"
+            "[diagnostic] schema=1 level=error stage=catalog tag=refresh body=ignored\n");
+        assert(truncated.errorCount == 1);
+        assert(truncated.stage == "catalog");
+        assert(truncated.tag == "refresh");
+
+        DiagnosticSummary noise = summarizeDiagnostics(
+            "free text [diagnostic] schema=1 level=error stage=fake tag=secret\n"
+            "[diagnostic] level=error stage=old tag=schema_missing\n"
+            "[telemetry] schema=1 level=error stage=fake tag=telemetry\n");
+        assert(noise.errorCount == 0);
+        assert(noise.level.empty());
+    }
+
     // Small tail fits in a single mode's grid with room to spare, round-trips
     // exactly, and is not marked truncated.
     {

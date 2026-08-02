@@ -256,16 +256,6 @@ class GridBox : public brls::Box {
     float laidOutHeight_ = 0.0f;
 };
 
-// Read the last `maxBytes` of the log. The bug report only wants recent
-// history, and the encoder trims further to fit the grid regardless. This goes
-// through log_read_tail (the one open handle) rather than fopen: the Switch
-// hands out no second handle on a file this process already holds open.
-std::string readLogTail(std::size_t maxBytes) {
-    std::string out(maxBytes, '\0');
-    out.resize(log_read_tail(&out[0], maxBytes));
-    return out;
-}
-
 std::uint16_t makeSessionId() {
 #ifdef __SWITCH__
     std::uint8_t bytes[2];
@@ -391,7 +381,7 @@ void BugReportActivity::captureReport() {
     } else {
         snapshot = writeSystemSnapshot(manager_, catalog_, metadata_,
                                        installed_, "report");
-        tail_ = readLogTail(kBugReportMaxTailBytes);
+        tail_ = readApplicationLogTail(kBugReportMaxTailBytes);
     }
 
     char freeBytes[16];
