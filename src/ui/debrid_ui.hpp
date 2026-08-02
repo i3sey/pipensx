@@ -270,36 +270,4 @@ inline bool debridModeActive(const AppSettings* settings) {
     return settings && !settings->get().torrentingEnabled;
 }
 
-inline void showFirstRunChoice(AppSettings* settings,
-                               DownloadManager* manager) {
-    if (!settings || settings->get().firstRunCompleted)
-        return;
-    auto finish = [settings, manager](DebridProviderKind provider,
-                                      bool torrenting) {
-        AppSettingsData values = settings->get();
-        values.debridProvider = provider;
-        values.torrentingEnabled = torrenting;
-        values.firstRunCompleted = true;
-        std::string error;
-        if (!settings->update(values, error)) {
-            brls::Application::notify(error);
-            return;
-        }
-        manager->setTorrentingEnabled(torrenting);
-        if (!torrenting)
-            DebridLinkView::push(settings, manager, provider);
-    };
-    auto* dialog = new brls::Dialog(tr("pipensx/debrid/first_run"));
-    dialog->addButton(tr("pipensx/debrid/first_run_torbox"), [finish] {
-        finish(DebridProviderKind::TorBox, false);
-    });
-    dialog->addButton(tr("pipensx/debrid/first_run_torrserver"), [finish] {
-        finish(DebridProviderKind::TorrServer, false);
-    });
-    dialog->addButton(tr("pipensx/debrid/first_run_torrent"), [finish] {
-        finish(DebridProviderKind::TorBox, true);
-    });
-    dialog->open();
-}
-
 }  // namespace pipensx::ui

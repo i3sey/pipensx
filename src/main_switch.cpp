@@ -34,7 +34,7 @@ extern "C" {
 #include "ui/catalog/catalog_view.hpp"
 #include "ui/common/ui_helpers.hpp"
 #include "ui/common/web_qr.hpp"
-#include "ui/debrid_ui.hpp"
+#include "ui/first_run_view.hpp"
 #include "ui/i18n.hpp"
 #include "ui/main_frame.hpp"
 #include "ui/downloads/downloads_view.hpp"

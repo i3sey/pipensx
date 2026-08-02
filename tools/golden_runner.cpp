@@ -10,6 +10,7 @@
 //                 --screen catalog|shelf-scroll|shelf-header|detail|torrent-selection|
 //                          torrent-selection-scroll|downloads|downloads-back|frame|
 //                          hints-budget|installed|settings|settings-debrid|
+//                          first-run|
 //                          about|bug-report|
 //                          bug-report-detail|bug-report-focus|sidebar-touch
 //                 [--frames N] [--sandbox <dir>]
@@ -57,6 +58,7 @@
 #include "ui/detail/screenshot_viewer.hpp"
 #include "ui/detail/torrent_selection.hpp"
 #include "ui/downloads/downloads_view.hpp"
+#include "ui/first_run_view.hpp"
 #include "ui/i18n.hpp"
 #include "ui/installed/installed_view.hpp"
 #include "ui/main_frame.hpp"
@@ -587,6 +589,11 @@ int main(int argc, char** argv) {
             &settings, &manager, &catalog, &metadata, &installed, nullptr,
             &mods));
         settingsDebrid = true;
+    } else if (screen == "first-run") {
+        // The choice screen the app pushes once, before anything is set up:
+        // its three paragraphs are the longest prose we ship, and Russian
+        // runs longer than English on every one of them.
+        activity = new GoldenActivity(new FirstRunView(&settings, &manager));
     } else if (screen == "about") {
         activity = new GoldenActivity(new AboutView());
     } else if (screen == "bug-report" || screen == "bug-report-detail" ||

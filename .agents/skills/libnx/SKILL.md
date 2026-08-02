@@ -33,10 +33,9 @@ anything: `vendor/libnx-ext/libnx-ipcext/` (es, ns-ext, account-ext) and
 `vendor/libnx-ext/libnx-ext/`. Both are on the Switch target's include path
 only.
 
-For what a call *means* rather than what it takes, WebFetch
-`switchbrew.org/wiki/` (allowed in `.claude/settings.json`): per-command
-firmware gates, service ownership, error semantics, and the NCA/CNMT/ticket
-formats behind `package_stream.cpp`. The header will not tell you that
+For what a call *means* rather than what it takes, consult
+`switchbrew.org/wiki/`: per-command firmware gates, service ownership, error
+semantics, and the NCA/CNMT/ticket formats behind `package_stream.cpp`. The header will not tell you that
 `ncmContentStorageRevertToPlaceHolder` needs 2.0.0+ — the wiki will.
 
 ## 2. Most sources compile twice, and the second build is easy to forget
