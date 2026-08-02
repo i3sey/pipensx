@@ -57,6 +57,7 @@ public:
     std::string backupPath() const { return targetPath_ + ".previous"; }
     const std::string& helperPath() const { return helperPath_; }
     void checkAsync(CheckCallback callback);
+    bool checkCompleted() const { return checkCompleted_.load(); }
     void installAsync(ReleaseInfo release, InstallCallback callback);
     void cancel();
     void shutdown();
@@ -83,6 +84,7 @@ private:
     mutable std::atomic<bool> stopping_{false};
     mutable std::mutex stopMutex_;
     mutable std::condition_variable stopReady_;
+    std::atomic<bool> checkCompleted_{false};
 };
 
 } // namespace pipensx

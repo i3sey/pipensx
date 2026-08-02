@@ -77,8 +77,10 @@ public:
             });
         content->addView(checkForUpdates_);
         updateAction_ = actionCell(tr("pipensx/settings/check_update_now"),
-            tr("pipensx/settings/check_update_detail"),
+            tr("pipensx/settings/check_update_detail", PIPENSX_VERSION),
             [this] { checkForUpdateNow(); });
+        if (updater_ && updater_->checkCompleted())
+            markUpdateChecked();
         content->addView(updateAction_);
 
         addSection(content, tr("pipensx/settings/section_catalog"));
@@ -488,6 +490,7 @@ private:
                 if (!alive->load())
                     return;
                 updateInFlight_ = false;
+                markUpdateChecked();
                 if (!result.ok) {
                     updateAction_->setDetailText(
                         tr("pipensx/settings/check_failed"));
@@ -519,6 +522,11 @@ private:
         });
         dialog->addButton(tr("pipensx/common/later"), [] {});
         dialog->open();
+    }
+
+    void markUpdateChecked() {
+        updateAction_->setTextColor(theme::accent());
+        updateAction_->setDetailTextColor(theme::accent());
     }
 
     void installUpdate(const ReleaseInfo& release) {

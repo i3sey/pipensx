@@ -623,7 +623,9 @@ void UpdateService::discardStaged() const {
 
 void UpdateService::checkAsync(CheckCallback callback) {
     workers_.emplace_back([this, callback = std::move(callback)]() mutable {
-        callback(check());
+        UpdateCheckResult result = check();
+        checkCompleted_.store(true);
+        callback(std::move(result));
     });
 }
 

@@ -83,8 +83,6 @@ public:
         peers_ = addLine(networkCard, theme::kFontBody);
         pieces_ = addLine(networkCard, theme::kFontBody);
 
-        path_ = addLine(content, theme::kFontCaption);
-        path_->setTextColor(theme::textTertiary());
         error_ = addLine(content, theme::kFontSmall);
         error_->setTextColor(theme::error());
 
@@ -263,8 +261,6 @@ private:
         setTextIfChanged(pieces_,
                          tr("pipensx/downloads/pieces_line", task->piecesDone,
                             task->piecesTotal, task->piecesVerified));
-        setTextIfChanged(path_,
-                         tr("pipensx/downloads/output_line", task->dataPath));
         setTextIfChanged(error_,
                          task->error.empty()
                              ? std::string()
@@ -379,7 +375,6 @@ private:
     SpeedGraphView* speedGraph_;
     brls::Label* peers_;
     brls::Label* pieces_;
-    brls::Label* path_;
     brls::Label* error_;
     brls::RepeatingTimer timer_;
     std::vector<DownloadTask> cache_;
