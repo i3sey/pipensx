@@ -12,6 +12,7 @@
     "downloads": "Downloads",
     "installed": "Installed",
     "settings": "Settings",
+    "help": "Help",
     "about": "About"
   },
   "common": {
@@ -385,7 +386,7 @@
     "log_path": "Log: {}",
     "advanced": "Advanced",
     "advanced_detail": "Diagnostics, storage, reset",
-    "report_bug": "Report a bug",
+    "report_bug": "Show recent logs as QR codes",
     "report_bug_detail": "Show recent logs as QR codes for the developer",
     "report_notice": "Nothing is sent from the console. The log below is drawn as QR codes for you to photograph and send yourself.",
     "report_summary": "pipensx {} · firmware {} · {} free · {} installed · catalog {} · downloads {} · errors {}",

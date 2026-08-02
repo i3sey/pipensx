@@ -146,6 +146,21 @@ bool selected(const DebridTaskSpec& spec, size_t index,
            (index < spec.fileSelection.size() && spec.fileSelection[index]);
 }
 
+bool installs(const DebridTaskSpec& spec, size_t index,
+              const DebridFile& file) {
+    if (spec.mode != TransferMode::StreamInstall || !isPackageName(file.path))
+        return false;
+    if (spec.fileSelection.empty() || !spec.selectionPaths.empty())
+        return true;
+    for (uint8_t action : spec.fileSelection)
+        if (action == static_cast<uint8_t>(FileAction::Install))
+            return index < spec.fileSelection.size() &&
+                   spec.fileSelection[index] ==
+                       static_cast<uint8_t>(FileAction::Install);
+    // Older persisted debrid tasks used 1 as their selected-package marker.
+    return true;
+}
+
 bool sleepSlices(const std::function<bool()>& shouldStop, int totalMs) {
     int slices = totalMs / 250;
     for (int i = 0; i < slices; ++i) {
@@ -756,8 +771,7 @@ DebridRunResult DebridTransfer::run(
             return DebridRunResult::Stopped;
         const DebridFile& file = ctx.files[i];
         Step fs = Step::Ok;
-        if (spec.mode == TransferMode::StreamInstall &&
-            isPackageName(file.path)) {
+        if (installs(ctx.spec, i, file)) {
             if (packageOrdinal >= spec.packagesInstalled)
                 fs = streamInstallPackage(ctx, kthSelected, file);
             ++packageOrdinal;

@@ -19,13 +19,11 @@
 #include "app/mod_index_service.hpp"
 #include "app/update_service.hpp"
 #include "app/web_server.hpp"
-#include "ui/common/qr_view.hpp"
 #include "ui/common/ui_helpers.hpp"
 #include "ui/common/web_qr.hpp"
 #include "ui/debrid_ui.hpp"
 #include "ui/i18n.hpp"
 #include "ui/settings/advanced_settings.hpp"
-#include "ui/settings/bug_report_view.hpp"
 #include "ui/settings/settings_cells.hpp"
 #include "ui/theme.hpp"
 
@@ -243,12 +241,6 @@ public:
         content->addView(webPin_);
         updateWebCells();
 
-        auto* reportBug = actionCell(tr("pipensx/settings/report_bug"),
-            tr("pipensx/settings/report_bug_detail"),
-            [this] { openBugReport(); });
-        reportBug->setMarginTop(18);
-        content->addView(reportBug);
-
         content->addView(actionCell(tr("pipensx/settings/advanced"),
             tr("pipensx/settings/advanced_detail"),
             [this] { openAdvanced(); }));
@@ -297,7 +289,7 @@ private:
     }
 
     void showWebQr() {
-        std::string url = webAddressText();
+        const std::string url = webAddressText();
         if (url.rfind("http://", 0) != 0) {
             brls::Application::notify(url);
             return;
@@ -324,11 +316,6 @@ private:
             tr("pipensx/settings/web_pin"),
             tr("pipensx/settings/web_pin_detail"), 8,
             settings_->get().webServerPin, brls::KEYBOARD_DISABLE_NONE);
-    }
-
-    void openBugReport() {
-        brls::Application::pushActivity(new BugReportActivity(
-            manager_, catalog_, metadata_, installed_));
     }
 
     void openAdvanced() {

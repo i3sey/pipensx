@@ -40,6 +40,7 @@ extern "C" {
 #include "ui/downloads/downloads_view.hpp"
 #include "ui/installed/installed_view.hpp"
 #include "ui/settings/about_view.hpp"
+#include "ui/settings/help_view.hpp"
 #include "ui/settings/settings_view.hpp"
 #include "ui/theme.hpp"
 
@@ -116,6 +117,10 @@ public:
                          installed, updater, mods, webServer] {
             return new SettingsView(settings, manager, catalog, metadata,
                                     installed, updater, mods, webServer);
+        });
+        tabs->addNavTab(tr("pipensx/nav/help"), NavIconType::Help,
+                        [manager, catalog, metadata, installed] {
+            return new HelpView(manager, catalog, metadata, installed);
         });
         tabs->addNavTab(tr("pipensx/nav/about"), NavIconType::About, [] {
             return new AboutView();

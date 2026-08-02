@@ -1468,6 +1468,20 @@ bool DownloadManager::importDebrid(const DebridImport& import,
         error = "Invalid torrent hash for the debrid task.";
         return false;
     }
+    if (!import.fileSelection.empty()) {
+        bool hasSelectedFile = false;
+        for (uint8_t action : import.fileSelection) {
+            if (!isValidFileAction(action)) {
+                error = "Selected file action is invalid.";
+                return false;
+            }
+            hasSelectedFile |= action != actionValue(FileAction::Skip);
+        }
+        if (!hasSelectedFile) {
+            error = "Select at least one file.";
+            return false;
+        }
+    }
     std::lock_guard<std::mutex> lock(mutex_);
     if (findLocked(import.infoHash)) {
         error = "This torrent is already in the download manager.";

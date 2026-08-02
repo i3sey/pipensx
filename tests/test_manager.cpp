@@ -312,6 +312,27 @@ static void testImportDebridCatalogTask() {
     removeAll(root);
 }
 
+static void testImportDebridRejectsEmptySelection() {
+    const std::string root = "/tmp/pipensx-manager-debrid-empty-selection";
+    removeAll(root);
+
+    pipensx::DownloadManager manager(root, false);
+    pipensx::DebridImport import;
+    import.infoHash = "aabbccddaabbccddaabbccddaabbccddaabbccdd";
+    import.name = "Example Game";
+    import.fileSelection = {
+        static_cast<uint8_t>(pipensx::FileAction::Skip),
+        static_cast<uint8_t>(pipensx::FileAction::Skip),
+    };
+
+    std::string taskId, error;
+    assert(!manager.importDebrid(import, taskId, error));
+    assert(error == "Select at least one file.");
+    assert(manager.snapshot().empty());
+
+    removeAll(root);
+}
+
 static void testImportDebridPickerCopiesTorrent() {
     const std::string root = "/tmp/pipensx-manager-debrid-picker";
     removeAll(root);
@@ -807,6 +828,7 @@ int main() {
     testV4TorrentActionsRemainTriState();
     testTorrentTaskWithEmptyMetainfoStillErrors();
     testImportDebridCatalogTask();
+    testImportDebridRejectsEmptySelection();
     testImportDebridPickerCopiesTorrent();
 
     // --- Torrenting gate: a torrent task is refused while torrenting is off ---

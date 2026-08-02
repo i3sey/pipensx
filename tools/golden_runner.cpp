@@ -9,7 +9,7 @@
 //                 [--locale en-US|ru]
 //                 --screen catalog|shelf-scroll|shelf-header|detail|torrent-selection|
 //                          torrent-selection-scroll|downloads|downloads-back|frame|
-//                          hints-budget|installed|settings|settings-debrid|
+//                          hints-budget|installed|settings|settings-debrid|help|
 //                          first-run|
 //                          about|bug-report|
 //                          bug-report-detail|bug-report-focus|sidebar-touch
@@ -64,6 +64,7 @@
 #include "ui/main_frame.hpp"
 #include "ui/settings/about_view.hpp"
 #include "ui/settings/bug_report_view.hpp"
+#include "ui/settings/help_view.hpp"
 #include "ui/settings/settings_view.hpp"
 #include "ui/theme.hpp"
 
@@ -528,6 +529,9 @@ int main(int argc, char** argv) {
             return new SettingsView(&settings, &manager, &catalog, &metadata,
                                     &installed, nullptr, &mods);
         });
+        tabs->addNavTab(tr("pipensx/nav/help"), NavIconType::Help, [&] {
+            return new HelpView(&manager, &catalog, &metadata, &installed);
+        });
         tabs->addNavTab(tr("pipensx/nav/about"), NavIconType::About,
                         [] { return new AboutView(); });
         tabs->attachStorageFooter(&manager);
@@ -603,6 +607,9 @@ int main(int argc, char** argv) {
             &settings, &manager, &catalog, &metadata, &installed, nullptr,
             &mods));
         settingsDebrid = true;
+    } else if (screen == "help") {
+        activity = new GoldenActivity(
+            new HelpView(&manager, &catalog, &metadata, &installed));
     } else if (screen == "first-run") {
         // The choice screen the app pushes once, before anything is set up:
         // its three paragraphs are the longest prose we ship, and Russian

@@ -1,9 +1,11 @@
 #pragma once
 
 #include <algorithm>
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <borealis.hpp>
@@ -665,18 +667,7 @@ private:
         if (busy_)
             return;
         if (debridModeActive(settings_)) {
-            if (forcePicker) {
-                auto* dialog = new brls::Dialog(
-                    tr("pipensx/debrid/choose_mode"));
-                dialog->addButton(tr("pipensx/debrid/mode_install"),
-                    [this] { startDebridInstall(TransferMode::StreamInstall); });
-                dialog->addButton(tr("pipensx/debrid/mode_download"),
-                    [this] { startDebridInstall(TransferMode::DownloadOnly); });
-                dialog->addButton(tr("pipensx/common/cancel"), [] {});
-                dialog->open();
-            } else {
-                startDebridInstall(TransferMode::StreamInstall);
-            }
+            startDebridInstall(TransferMode::StreamInstall, forcePicker);
             return;
         }
         busy_ = true;
@@ -766,40 +757,70 @@ private:
         });
     }
 
-    void startDebridInstall(TransferMode mode) {
+    void startDebridInstall(TransferMode mode, bool forcePicker = false) {
         if (busy_ || !ensureDebridLinked(settings_, manager_))
             return;
         busy_ = true;
+        cancelled_->store(false);
         primary_->setState(brls::ButtonState::DISABLED);
         secondary_->setState(brls::ButtonState::DISABLED);
         primary_->setText(tr("pipensx/debrid/submitting"));
         statusLabel_->setText(tr("pipensx/debrid/sending_magnet"));
 
         auto alive = alive_;
+        auto cancelled = cancelled_;
         const AppSettingsData values = settings_->get();
         const DebridProviderKind providerKind = values.debridProvider;
         const std::string key = activeDebridKey(values);
         const CatalogEntry entry = entry_;
-        brls::async([this, alive, providerKind, key, entry, mode] {
+        brls::async([this, alive, cancelled, providerKind, key, entry, mode,
+                     forcePicker] {
             auto provider = makeDebridProvider(providerKind, key);
             std::string debridId;
             std::string error;
             DebridInfo info;
-            const bool ok = provider->createFromMagnet(
-                entry.magnetUri, debridId, error);
+            bool ok = provider->createFromMagnet(entry.magnetUri, debridId,
+                                                  error);
             if (ok) {
-                std::string ignored;
-                provider->fetchInfo(debridId, info, ignored);
+                const auto deadline = std::chrono::steady_clock::now() +
+                                      std::chrono::seconds(60);
+                do {
+                    std::string fetchError;
+                    if (!provider->fetchInfo(debridId, info, fetchError))
+                        error = std::move(fetchError);
+                    log_msg("[DEBUG-debrid-picker] poll id=%s files=%u\n",
+                            debridId.c_str(),
+                            static_cast<unsigned>(info.files.size()));
+                    if (!forcePicker || !info.files.empty())
+                        break;
+                    for (int i = 0; i < 8 && alive->load() &&
+                                         !cancelled->load(); ++i)
+                        std::this_thread::sleep_for(
+                            std::chrono::milliseconds(250));
+                } while (alive->load() && !cancelled->load() &&
+                         std::chrono::steady_clock::now() < deadline);
+                if (forcePicker && info.files.empty() && alive->load() &&
+                    !cancelled->load()) {
+                    ok = false;
+                    if (error.empty())
+                        error = "Unable to resolve torrent metadata.";
+                }
             }
-            brls::sync([this, alive, ok, error, debridId, info, entry,
-                        providerKind, key, mode] {
-                if (!alive->load()) {
-                    if (ok)
+            brls::sync([this, alive, cancelled, ok, error, debridId, info,
+                        entry, providerKind, key, mode, forcePicker] {
+                if (!alive->load() || cancelled->load()) {
+                    if (!debridId.empty())
                         removeDebridTransferAsync(providerKind, key, debridId);
+                    if (alive->load()) {
+                        busy_ = false;
+                        refreshButtons();
+                    }
                     return;
                 }
                 busy_ = false;
                 if (!ok) {
+                    if (!debridId.empty())
+                        removeDebridTransferAsync(providerKind, key, debridId);
                     operationMessage_ = error.empty()
                         ? tr("pipensx/debrid/magnet_rejected") : error;
                     refreshButtons();
@@ -813,11 +834,38 @@ private:
                 import.provider = providerKind;
                 import.debridId = debridId;
                 import.mode = mode;
+                if (forcePicker && !info.files.empty()) {
+                    TorrentPreview preview;
+                    preview.name = import.name;
+                    preview.totalBytes = import.totalBytes;
+                    preview.fileCount = static_cast<uint32_t>(info.files.size());
+                    for (const DebridFile& file : info.files) {
+                        const bool package = isPackageName(file.path);
+                        preview.files.push_back({file.path, file.bytes, package,
+                                                 isCompressedName(file.path),
+                                                 isCartridgeName(file.path)});
+                        preview.packageCount += package ? 1 : 0;
+                        preview.cartridgeCount += isCartridgeName(file.path) ? 1 : 0;
+                    }
+                    StreamSelection selection = settings_->get().streamSelection;
+                    log_msg("[DEBUG-debrid-picker] push id=%s files=%u\n",
+                            debridId.c_str(), preview.fileCount);
+                    brls::Application::pushActivity(new TorrentSelectionActivity(
+                        manager_, "", std::move(preview),
+                        TransferMode::StreamInstall, selection, {}, import,
+                        [providerKind, key, debridId] {
+                            removeDebridTransferAsync(providerKind, key, debridId);
+                        }));
+                    log_msg("[DEBUG-debrid-picker] push complete id=%s\n",
+                            debridId.c_str());
+                    return;
+                }
                 if (mode == TransferMode::StreamInstall && !info.files.empty()) {
                     import.fileSelection.reserve(info.files.size());
                     for (const DebridFile& file : info.files) {
                         const bool package = isPackageName(file.path);
-                        import.fileSelection.push_back(package ? 1 : 0);
+                        import.fileSelection.push_back(static_cast<uint8_t>(
+                            package ? FileAction::Install : FileAction::Skip));
                         import.packageCount += package ? 1 : 0;
                     }
                 }

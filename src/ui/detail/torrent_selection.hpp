@@ -253,11 +253,14 @@ public:
                              pipensx::TorrentPreview preview,
                              TransferMode preferred,
                              StreamSelection initialSelection,
-                             std::vector<uint8_t> initialPeers = {})
+                             std::vector<uint8_t> initialPeers = {},
+                             DebridImport debridImport = {},
+                             std::function<void()> abandon = {})
         : manager_(manager), path_(std::move(path)),
           preview_(std::move(preview)), preferred_(preferred),
           initialSelection_(initialSelection),
           initialPeers_(std::move(initialPeers)),
+          debridImport_(std::move(debridImport)), abandon_(std::move(abandon)),
           storage_(pipensx::queryStorageSpace(manager->rootPath())) {
         auto* content = new brls::Box(brls::Axis::COLUMN);
         content->setGrow(1);
@@ -367,6 +370,8 @@ public:
     ~TorrentSelectionActivity() override {
         if (!finished_ && !path_.empty())
             ::unlink(path_.c_str());
+        if (!finished_ && abandon_)
+            abandon_();
     }
 
     brls::View* createContentView() override {
@@ -524,12 +529,24 @@ private:
         }
         std::string id;
         std::string error;
-        if (!manager_->importTorrentActions(path_, actions, id, error,
-                                            initialPeers_)) {
+        bool imported;
+        if (debridImport_.debridId.empty()) {
+            imported = manager_->importTorrentActions(path_, actions, id, error,
+                                                       initialPeers_);
+        } else {
+            DebridImport import = debridImport_;
+            import.mode = mode;
+            import.fileSelection = std::move(actions);
+            import.packageCount = static_cast<uint32_t>(
+                dataSource_->installCount());
+            imported = manager_->importDebrid(import, id, error);
+        }
+        if (!imported) {
             brls::Application::notify(error);
             return;
         }
-        ::unlink(path_.c_str());
+        if (!path_.empty())
+            ::unlink(path_.c_str());
         finished_ = true;
         brls::Application::notify(mode == TransferMode::StreamInstall
             ? tr("pipensx/torrent/added_installing")
@@ -543,6 +560,8 @@ private:
     TransferMode preferred_;
     StreamSelection initialSelection_;
     std::vector<uint8_t> initialPeers_;
+    DebridImport debridImport_;
+    std::function<void()> abandon_;
     // Queried once at construction instead of once per A press: on Switch this
     // is an nsGetStorageSize IPC. confirmSelection() re-queries before it
     // commits, so a stale reading can never let an oversized install through.

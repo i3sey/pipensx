@@ -245,10 +245,19 @@ inline void removeDebridTransferAsync(DebridProviderKind provider,
                                       std::string key, std::string id) {
     if (key.empty() || id.empty())
         return;
-    std::thread([provider, key, id] {
-        std::string ignored;
-        makeDebridProvider(provider, key)->remove(id, ignored);
-    }).detach();
+    log_msg("[DEBUG-debrid-picker] cleanup queued id=%s\n", id.c_str());
+    brls::async([provider, key = std::move(key), id = std::move(id)] {
+        try {
+            log_msg("[DEBUG-debrid-picker] cleanup started id=%s\n", id.c_str());
+            std::string ignored;
+            makeDebridProvider(provider, key)->remove(id, ignored);
+            log_msg("[DEBUG-debrid-picker] cleanup finished id=%s\n", id.c_str());
+        } catch (const std::exception& e) {
+            log_msg("[DEBUG-debrid-picker] cleanup threw: %s\n", e.what());
+        } catch (...) {
+            log_msg("[DEBUG-debrid-picker] cleanup threw non-std exception\n");
+        }
+    });
 }
 
 inline bool ensureDebridLinked(AppSettings* settings,

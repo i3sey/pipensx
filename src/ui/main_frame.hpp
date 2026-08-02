@@ -31,7 +31,9 @@
 
 namespace pipensx::ui {
 
-enum class NavIconType { Catalog, Downloads, Installed, Settings, About };
+enum class NavIconType {
+    Catalog, Downloads, Installed, Settings, Help, About
+};
 
 // Shrinks the stock sidebar so the icon rail + expanded menu both look right.
 // Style metrics back a shared global table, so this must run once after
@@ -88,8 +90,9 @@ public:
             case NavIconType::Catalog:   drawCatalog(vg, gx, gy, s); break;
             case NavIconType::Downloads: drawDownloads(vg, gx, gy, s); break;
             case NavIconType::Installed: drawInstalled(vg, gx, gy, s); break;
-            case NavIconType::Settings:  drawSettings(vg, gx, gy, s); break;
-            case NavIconType::About:     drawAbout(vg, gx, gy, s); break;
+            case NavIconType::Settings:    drawSettings(vg, gx, gy, s); break;
+            case NavIconType::Help:        drawAbout(vg, gx, gy, s); break;
+            case NavIconType::About:       drawAbout(vg, gx, gy, s); break;
         }
     }
 
