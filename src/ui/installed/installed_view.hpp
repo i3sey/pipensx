@@ -210,10 +210,10 @@ class InstalledView : public brls::Box {
 public:
     InstalledView(InstalledTitleService* installed, DownloadManager* manager,
                   GameMetadataService* metadata, AppSettings* settings,
-                  CatalogService* catalog)
+                  CatalogService* catalog, bool checkOnEntry = true)
         : brls::Box(brls::Axis::COLUMN), installed_(installed),
           manager_(manager), metadata_(metadata), settings_(settings),
-          catalog_(catalog),
+          catalog_(catalog), checkOnEntry_(checkOnEntry),
           alive_(std::make_shared<std::atomic<bool>>(true)) {
         status_ = new brls::Label();
         status_->setFontSize(15);
@@ -249,6 +249,12 @@ public:
         dataSource_->setInstallOne(
             [this](const std::string& titleId) { installUpdate(titleId); });
         reload();
+        recheckTimer_.setCallback([this] { pollUpdateRecheck(); });
+        // Entering the tab re-checks every installed title so verdicts are
+        // fresh without pressing L. Skipped when nothing is installed and
+        // disabled in the golden runner, which pins planted fixture states.
+        if (checkOnEntry_ && !installed_->titles().empty())
+            checkAllTitles();
 
         registerAction(tr("pipensx/common/refresh"), brls::BUTTON_RB,
                        [this](brls::View*) {
@@ -262,7 +268,10 @@ public:
         });
     }
 
-    ~InstalledView() override { alive_->store(false); }
+    ~InstalledView() override {
+        recheckTimer_.stop();
+        alive_->store(false);
+    }
 
 private:
     EmptyStateView* ensureEmptyState() {
@@ -408,8 +417,9 @@ private:
                                 ".torrent";
         auto alive = alive_;
         auto cancelled = cancelled_;
+        const std::string latestVersion = entry.latestVersion;
         brls::async([this, alive, cancelled, magnet, tmp,
-                     infoDict = std::move(infoDict)] {
+                     infoDict = std::move(infoDict), latestVersion] {
             std::string err;
             MagnetResolver resolver;
             auto progress = [this, alive](const pipensx::MagnetProgress& p) {
@@ -440,7 +450,8 @@ private:
                 magnet, tmp, *cancelled, progress, err, &initialPeers,
                 infoDict.empty() ? nullptr : &infoDict);
             brls::sync([this, alive, ok, err = std::move(err), tmp,
-                        initialPeers = std::move(initialPeers)]() mutable {
+                        initialPeers = std::move(initialPeers),
+                        latestVersion]() mutable {
                 if (!alive->load()) {
                     ::unlink(tmp.c_str());
                     return;
@@ -454,13 +465,15 @@ private:
                     reload();
                     return;
                 }
-                finishUpdateImport(tmp, std::move(initialPeers));
+                finishUpdateImport(tmp, std::move(initialPeers),
+                                   latestVersion);
             });
         });
     }
 
     void finishUpdateImport(const std::string& path,
-                            std::vector<uint8_t> initialPeers) {
+                            std::vector<uint8_t> initialPeers,
+                            const std::string& latestVersion) {
         TorrentPreview preview;
         std::string err;
         if (!manager_->previewTorrent(path, preview, err)) {
@@ -469,13 +482,80 @@ private:
             reload();
             return;
         }
-        const std::vector<uint8_t> actions = selectUpdateFiles(preview);
+        const std::vector<size_t> matches =
+            updateVersionMatches(preview, latestVersion);
+        if (matches.size() > 1) {
+            // Several packages carry the update version: let the user pick
+            // which one is actually the update (mods reusing the version tag
+            // of the release they patch can look identical on paper).
+            chooseUpdateFile(preview, path, std::move(initialPeers), matches,
+                             0);
+            return;
+        }
+        importUpdateTorrent(preview, path, std::move(initialPeers),
+                            selectUpdateFiles(preview, latestVersion));
+    }
+
+    // The tmp torrent stays alive until the choice lands; the chooser pages
+    // through matches two at a time (brls::Dialog fits three buttons).
+    void chooseUpdateFile(const TorrentPreview& preview,
+                          const std::string& path,
+                          std::vector<uint8_t> initialPeers,
+                          const std::vector<size_t>& matches, size_t start) {
+        auto* dialog =
+            new brls::Dialog(tr("pipensx/installed/update_choose_file"));
+        size_t shown = 0;
+        for (size_t i = start; i < matches.size() && shown < 2; ++i, ++shown) {
+            const size_t index = matches[i];
+            dialog->addButton(
+                fileChoiceLabel(preview.files[index].path),
+                [this, preview, path, index,
+                 initialPeers = std::move(initialPeers)]() mutable {
+                    importUpdateTorrent(preview, path,
+                                        std::move(initialPeers),
+                                        selectFiles(preview, {index}));
+                });
+        }
+        const size_t remaining = matches.size() - start - shown;
+        if (remaining > 0)
+            dialog->addButton(
+                tr("pipensx/installed/update_more_files", remaining),
+                [this, preview, path, matches,
+                 initialPeers = std::move(initialPeers), start = start + shown]() mutable {
+                    chooseUpdateFile(preview, path, std::move(initialPeers),
+                                     matches, start);
+                });
+        else
+            dialog->addButton(tr("pipensx/common/later"), [] {});
+        dialog->open();
+    }
+
+    static std::string fileChoiceLabel(const std::string& path) {
+        // Keep both ends of the path: deep directories distinguish duplicate
+        // file names (a mod folder and the release root may share one).
+        constexpr size_t kMax = 60;
+        if (path.size() <= kMax)
+            return path;
+        return path.substr(0, 18) + "..." +
+               path.substr(path.size() - (kMax - 21));
+    }
+
+    void importUpdateTorrent(const TorrentPreview& preview,
+                             const std::string& path,
+                             std::vector<uint8_t> initialPeers,
+                             std::vector<uint8_t> actions) {
         std::string id;
+        std::string err;
         if (manager_->importTorrentActions(path, actions, id, err,
                                            initialPeers)) {
             log_msg("[game_updates] imported update torrent %s\n", id.c_str());
             brls::Application::notify(
                 tr("pipensx/installed/update_added"));
+            // Once the task settles (installed, failed or removed) refresh
+            // the installed list and re-check, so the row flips to Latest
+            // without another manual press.
+            pendingRecheckTaskId_ = catalogLower(id);
+            recheckTimer_.start(1000);
         } else if (err.find("already in the download manager") !=
                    std::string::npos) {
             brls::Application::notify(
@@ -487,6 +567,67 @@ private:
         }
         ::unlink(path.c_str());
         reload();
+    }
+
+    // UI-thread tick while an update task we started is in flight: wait for
+    // a terminal state, then refresh installed titles and re-check them.
+    void pollUpdateRecheck() {
+        if (pendingRecheckTaskId_.empty())
+            return;
+        const DownloadTask* task = nullptr;
+        for (const DownloadTask& candidate : manager_->snapshot()) {
+            if (catalogLower(candidate.id) == pendingRecheckTaskId_) {
+                task = &candidate;
+                break;
+            }
+        }
+        const bool settled = !task || isTerminalStatus(task->status);
+        if (!settled)
+            return;
+        // Another stream install still running: the installed scan would
+        // race it (same reason RB refresh refuses), keep polling.
+        if (hasActiveStreamInstall() || refreshing_)
+            return;
+        recheckTimer_.stop();
+        pendingRecheckTaskId_.clear();
+        recheckAfterInstall();
+    }
+
+    static bool isTerminalStatus(DownloadStatus status) {
+        switch (status) {
+        case DownloadStatus::Installed:
+        case DownloadStatus::Completed:
+        case DownloadStatus::Error:
+        case DownloadStatus::Removing:
+            return true;
+        default:
+            return false;
+        }
+    }
+
+    // Refresh the installed list, then re-check every title. Mirrors
+    // refresh() but always re-checks on success; callers ensure no stream
+    // install is active and no other refresh is in flight.
+    void recheckAfterInstall() {
+        refreshing_ = true;
+        status_->setText(tr("pipensx/installed/refreshing"));
+        auto alive = alive_;
+        InstalledTitleService* installed = installed_;
+        brls::async([this, alive, installed] {
+            std::string error;
+            const bool ok = installed->refresh(error);
+            brls::sync([this, alive, ok, error] {
+                if (!alive->load())
+                    return;
+                refreshing_ = false;
+                if (!ok) {
+                    status_->setText(error);
+                    brls::Application::notify(error);
+                    return;
+                }
+                checkAllTitles();
+            });
+        });
     }
 
     void reload() {
@@ -552,6 +693,9 @@ private:
     std::shared_ptr<std::atomic<bool>> cancelled_ =
         std::make_shared<std::atomic<bool>>(false);
     std::atomic<uint32_t> updateTempSerial_{0};
+    brls::RepeatingTimer recheckTimer_;
+    std::string pendingRecheckTaskId_;
+    bool checkOnEntry_ = true;
     bool refreshing_ = false;
     bool updateInFlight_ = false;
 };

@@ -2,9 +2,34 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 
 namespace pipensx {
 namespace {
+
+// First "[vN]" numeric tag in a file name
+// ("Minecraft [0100D71004694800][v10092544].nsp" -> 10092544). Returns false
+// when the name carries no numeric [vN] tag.
+bool fileVersionTag(const std::string& path, uint64_t& value) {
+    std::string lower = path;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c) {
+                       return static_cast<char>(std::tolower(c));
+                   });
+    for (size_t i = 0; i + 2 < lower.size(); ++i) {
+        if (lower[i] == '[' && lower[i + 1] == 'v' &&
+            lower[i + 2] >= '0' && lower[i + 2] <= '9') {
+            char* end = nullptr;
+            const unsigned long long v =
+                strtoull(lower.c_str() + i + 2, &end, 10);
+            if (end != lower.c_str() + i + 2) {
+                value = static_cast<uint64_t>(v);
+                return true;
+            }
+        }
+    }
+    return false;
+}
 
 bool isUpdateFile(const std::string& path) {
     std::string lower = path;
@@ -28,27 +53,76 @@ bool isUpdateFile(const std::string& path) {
 
 } // namespace
 
-std::vector<uint8_t> selectUpdateFiles(const TorrentPreview& preview) {
-    std::vector<uint8_t> actions;
-    actions.reserve(preview.files.size());
-    bool matched = false;
-    for (const auto& file : preview.files) {
-        if (file.package && isUpdateFile(file.path)) {
-            actions.push_back(static_cast<uint8_t>(FileAction::Install));
-            matched = true;
-        } else {
-            actions.push_back(static_cast<uint8_t>(FileAction::Skip));
-        }
+std::vector<size_t> updateVersionMatches(const TorrentPreview& preview,
+                                         const std::string& latestVersion) {
+    std::vector<size_t> matches;
+    const uint64_t wanted = strtoull(latestVersion.c_str(), nullptr, 10);
+    if (wanted == 0)
+        return matches;
+    for (size_t i = 0; i < preview.files.size(); ++i) {
+        uint64_t tag = 0;
+        if (preview.files[i].package &&
+            fileVersionTag(preview.files[i].path, tag) && tag == wanted)
+            matches.push_back(i);
     }
-    if (matched)
-        return actions;
-    actions.clear();
-    for (const auto& file : preview.files) {
-        actions.push_back(
-            static_cast<uint8_t>(file.package ? FileAction::Install
-                                              : FileAction::Skip));
+    return matches;
+}
+
+std::vector<uint8_t> selectFiles(const TorrentPreview& preview,
+                                 const std::vector<size_t>& picks) {
+    std::vector<uint8_t> actions(
+        preview.files.size(), static_cast<uint8_t>(FileAction::Skip));
+    for (const size_t i : picks) {
+        if (i < actions.size())
+            actions[i] = static_cast<uint8_t>(FileAction::Install);
     }
     return actions;
+}
+
+std::vector<uint8_t> selectUpdateFiles(const TorrentPreview& preview,
+                                       const std::string& latestVersion) {
+    const std::vector<size_t> matches =
+        updateVersionMatches(preview, latestVersion);
+    if (!matches.empty())
+        return selectFiles(preview, matches);
+
+    std::vector<size_t> marked;
+    for (size_t i = 0; i < preview.files.size(); ++i) {
+        if (preview.files[i].package && isUpdateFile(preview.files[i].path))
+            marked.push_back(i);
+    }
+    if (!marked.empty()) {
+        // No exact tag: install only the highest-tagged marked package, so a
+        // stray marker cannot drag unrelated packages along.
+        uint64_t bestTag = 0;
+        bool haveBest = false;
+        std::vector<size_t> best;
+        for (const size_t i : marked) {
+            uint64_t tag = 0;
+            const bool hasTag = fileVersionTag(preview.files[i].path, tag);
+            if (hasTag) {
+                if (!haveBest || tag > bestTag) {
+                    bestTag = tag;
+                    haveBest = true;
+                    best = {i};
+                } else if (tag == bestTag) {
+                    best.push_back(i);
+                }
+            } else if (!haveBest) {
+                best.push_back(i);
+            }
+        }
+        return selectFiles(preview, best.empty() ? marked : best);
+    }
+
+    // Nothing marked: install every package. Already-installed content keys
+    // short-circuit at commit, so the worst case is re-downloading.
+    std::vector<size_t> all;
+    for (size_t i = 0; i < preview.files.size(); ++i) {
+        if (preview.files[i].package)
+            all.push_back(i);
+    }
+    return selectFiles(preview, all);
 }
 
 std::string updateMagnetFor(const std::string& infoHash,

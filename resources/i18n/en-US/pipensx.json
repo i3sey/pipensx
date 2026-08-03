@@ -270,7 +270,9 @@
     "update_download": "Download & install",
     "update_resolving": "Resolving update torrent...",
     "update_added": "Update added to downloads",
-    "update_choose_more": "Other bundles ({0})..."
+    "update_choose_more": "Other bundles ({0})...",
+    "update_choose_file": "Several packages carry this update version. Which is the update?",
+    "update_more_files": "Other files ({0})..."
   },
   "batch": {
     "frame_title": "Batch install",

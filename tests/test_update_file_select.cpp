@@ -26,20 +26,22 @@ TorrentPreview::File plain(const std::string& path) {
 }
 
 void expectActions(const TorrentPreview& preview,
+                   const std::string& latestVersion,
                    const std::vector<uint8_t>& expected) {
-    const std::vector<uint8_t> actions = pipensx::selectUpdateFiles(preview);
+    const std::vector<uint8_t> actions =
+        pipensx::selectUpdateFiles(preview, latestVersion);
     assert(actions.size() == expected.size());
     for (size_t i = 0; i < expected.size(); ++i)
         assert(actions[i] == expected[i]);
 }
 
-void testSelectsUpdateMarkedPackagesOnly() {
+void testExactVersionTagIsTheUpdate() {
     TorrentPreview preview;
     preview.files = {package("Game [0100AAAA00B00000].nsp"),
                      package("Game Update [v131072].nsp"),
                      package("Game DLC 1.nsp"),
                      plain("readme.txt")};
-    expectActions(preview, {
+    expectActions(preview, "131072", {
         static_cast<uint8_t>(FileAction::Skip),
         static_cast<uint8_t>(FileAction::Install),
         static_cast<uint8_t>(FileAction::Skip),
@@ -47,24 +49,79 @@ void testSelectsUpdateMarkedPackagesOnly() {
     });
 }
 
-void testMatchesUpdateMarkersCaseInsensitively() {
+// The regression from the Switch log: a mod bundle named
+// "TagNX exeFS Mod (1.26.30)/Minecraft [0100D71004694800][v9895936].nsp"
+// next to the real "Minecraft [0100D71004694800][v10092544].nsp" must not be
+// treated as the update.
+void testModBundleWithOlderVersionTagIsExcluded() {
+    TorrentPreview preview;
+    preview.files = {package("Minecraft [0100D71004694800][v10092544].nsp"),
+                     package("TagNX exeFS Mod (1.26.30)/"
+                             "Minecraft [0100D71004694800][v9895936].nsp"),
+                     plain("readme.txt")};
+    expectActions(preview, "10092544", {
+        static_cast<uint8_t>(FileAction::Install),
+        static_cast<uint8_t>(FileAction::Skip),
+        static_cast<uint8_t>(FileAction::Skip),
+    });
+}
+
+void testExactVersionWinsOverOtherTags() {
+    TorrentPreview preview;
+    preview.files = {package("Game Update [v131072].nsp"),
+                     package("Game [v999999].nsp")};
+    expectActions(preview, "131072", {
+        static_cast<uint8_t>(FileAction::Install),
+        static_cast<uint8_t>(FileAction::Skip),
+    });
+}
+
+void testMultipleFilesWithTheVersionAreAllReported() {
+    TorrentPreview preview;
+    preview.files = {package("Game Update [v131072].nsp"),
+                     package("Mods/Game Update [v131072].nsp"),
+                     package("Game [v0].nsp")};
+    const std::vector<size_t> matches =
+        pipensx::updateVersionMatches(preview, "131072");
+    assert(matches.size() == 2);
+    assert(matches[0] == 0 && matches[1] == 1);
+    // The default mask installs both; the caller shows a chooser instead.
+    expectActions(preview, "131072", {
+        static_cast<uint8_t>(FileAction::Install),
+        static_cast<uint8_t>(FileAction::Install),
+        static_cast<uint8_t>(FileAction::Skip),
+    });
+}
+
+void testNoVersionMatches() {
+    TorrentPreview preview;
+    preview.files = {package("Game Update [v131072].nsp"),
+                     package("Game [v0].nsp")};
+    assert(pipensx::updateVersionMatches(preview, "131073").empty());
+    assert(pipensx::updateVersionMatches(preview, "").empty());
+    assert(pipensx::updateVersionMatches(preview, "0").empty());
+}
+
+void testUnknownVersionPrefersHighestTag() {
+    TorrentPreview preview;
+    preview.files = {package("Game Update [v131072].nsp"),
+                     package("Game [v999999].nsp"),
+                     package("Game DLC 1.nsp")};
+    expectActions(preview, "131073", {
+        static_cast<uint8_t>(FileAction::Skip),
+        static_cast<uint8_t>(FileAction::Install),
+        static_cast<uint8_t>(FileAction::Skip),
+    });
+}
+
+void testMarkerFallbackWithoutTags() {
     TorrentPreview preview;
     preview.files = {package("GAME.UPDATE.v1.2.0.nsz"),
                      package("game_upd_v1.1.0.nsz"),
                      package("Game.PATCH.v2.0.0.nsp")};
-    expectActions(preview, {
+    expectActions(preview, "", {
         static_cast<uint8_t>(FileAction::Install),
         static_cast<uint8_t>(FileAction::Install),
-        static_cast<uint8_t>(FileAction::Install),
-    });
-}
-
-void testVersionTagWithNonZeroDigitIsAnUpdate() {
-    TorrentPreview preview;
-    preview.files = {package("Game [v0].nsp"),
-                     package("Game [v196608].nsp")};
-    expectActions(preview, {
-        static_cast<uint8_t>(FileAction::Skip),
         static_cast<uint8_t>(FileAction::Install),
     });
 }
@@ -74,7 +131,7 @@ void testFallsBackToAllPackagesWhenNothingMatches() {
     preview.files = {package("Game [v0].nsp"),
                      package("Game DLC 1.nsp"),
                      plain("readme.txt")};
-    expectActions(preview, {
+    expectActions(preview, "131072", {
         static_cast<uint8_t>(FileAction::Install),
         static_cast<uint8_t>(FileAction::Install),
         static_cast<uint8_t>(FileAction::Skip),
@@ -83,7 +140,20 @@ void testFallsBackToAllPackagesWhenNothingMatches() {
 
 void testEmptyPreviewYieldsEmptyActions() {
     TorrentPreview preview;
-    assert(pipensx::selectUpdateFiles(preview).empty());
+    assert(pipensx::selectUpdateFiles(preview, "131072").empty());
+    assert(pipensx::updateVersionMatches(preview, "131072").empty());
+}
+
+void testSelectFilesInstallsExactlyThePicks() {
+    TorrentPreview preview;
+    preview.files = {package("A.nsp"),
+                     package("B.nsp"),
+                     plain("readme.txt")};
+    const std::vector<uint8_t> actions = pipensx::selectFiles(preview, {1});
+    assert(actions.size() == 3);
+    assert(actions[0] == static_cast<uint8_t>(FileAction::Skip));
+    assert(actions[1] == static_cast<uint8_t>(FileAction::Install));
+    assert(actions[2] == static_cast<uint8_t>(FileAction::Skip));
 }
 
 void testMagnetPrefersCatalogEntry() {
@@ -110,11 +180,16 @@ void testMagnetFallsBackToRuTrackerMagnetWhenNoCatalogEntry() {
 } // namespace
 
 int main() {
-    testSelectsUpdateMarkedPackagesOnly();
-    testMatchesUpdateMarkersCaseInsensitively();
-    testVersionTagWithNonZeroDigitIsAnUpdate();
+    testExactVersionTagIsTheUpdate();
+    testModBundleWithOlderVersionTagIsExcluded();
+    testExactVersionWinsOverOtherTags();
+    testMultipleFilesWithTheVersionAreAllReported();
+    testNoVersionMatches();
+    testUnknownVersionPrefersHighestTag();
+    testMarkerFallbackWithoutTags();
     testFallsBackToAllPackagesWhenNothingMatches();
     testEmptyPreviewYieldsEmptyActions();
+    testSelectFilesInstallsExactlyThePicks();
     testMagnetPrefersCatalogEntry();
     testMagnetFallsBackToRuTrackerMagnetWhenNoCatalogEntry();
     std::puts("update file selection tests passed");
