@@ -13,6 +13,11 @@ struct InstalledTitle {
     std::string titleId;
     std::string name;
     std::string publisher;
+    // Installed title version as a decimal string: the title version of the
+    // installed Patch content meta read from ncm (0 when no patch is
+    // installed). Compared against the metadata index's latestVersion by the
+    // game-update check; empty when the ncm read is unavailable.
+    std::string version;
     std::string iconPath;
 };
 
@@ -25,6 +30,11 @@ public:
 
     std::vector<InstalledTitle> titles() const;
     uint64_t generation() const;
+    const std::string& rootPath() const { return rootPath_; }
+    // Golden-runner seam: the PC shim reports an empty library, but the
+    // installed-populated screen needs rows to pin the update chips. Replaces
+    // the enumerated set like a refresh would (generation bumps).
+    void injectTitles(std::vector<InstalledTitle> titles);
 
     static std::string formatTitleId(uint64_t applicationId);
 

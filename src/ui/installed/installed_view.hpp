@@ -6,8 +6,10 @@
 
 #include <borealis.hpp>
 
+#include "app/app_settings.hpp"
 #include "app/download_manager.hpp"
 #include "app/game_metadata_service.hpp"
+#include "app/game_update_service.hpp"
 #include "app/installed_title_service.hpp"
 #include "ui/common/async_image.hpp"
 #include "ui/common/ui_helpers.hpp"
@@ -18,6 +20,8 @@ namespace pipensx::ui {
 
 class InstalledCell : public brls::RecyclerCell {
 public:
+    using CheckOne = std::function<void(const std::string&, const std::string&)>;
+
     InstalledCell() {
         setFocusable(true);
         setAxis(brls::Axis::ROW);
@@ -46,27 +50,96 @@ public:
         labels->addView(title_);
         labels->addView(subtitle_);
         addView(labels);
+
+        // Update-state chip (Q10 colours): right-aligned coloured label.
+        chip_ = new brls::Label();
+        chip_->setSingleLine(true);
+        chip_->setFontSize(13);
+        chip_->setMarginLeft(12);
+        chip_->setShrink(0.0f);
+        addView(chip_);
+
+        registerClickAction([this](brls::View*) {
+            if (onCheckOne_ && !titleId_.empty())
+                onCheckOne_(titleId_, version_);
+            return true;
+        });
+        addGestureRecognizer(new brls::TapGestureRecognizer(this));
     }
 
     void setTitle(const InstalledTitle& title,
                   GameMetadataService* metadata) {
         title_->setText(title.name);
-        std::string subtitle = title.publisher;
-        if (!subtitle.empty())
-            subtitle += "   ";
-        subtitle += title.titleId;
-        subtitle_->setText(subtitle);
+        titleId_ = title.titleId;
+        publisher_ = title.publisher;
+        version_ = title.version;
+        updateSubtitle();
         setArtworkUrl(image_, metadata, title.iconPath, currentIconPath_,
                       imageState_);
     }
 
+    void setResult(const GameUpdateResult* result, CheckOne onCheckOne) {
+        onCheckOne_ = std::move(onCheckOne);
+        const GameUpdateState state =
+            result ? result->state : GameUpdateState::NotChecked;
+        currentState_ = state;
+        currentFoundVersion_ = result ? result->foundVersion : std::string();
+        updateSubtitle();
+        switch (state) {
+        case GameUpdateState::UpdateAvailable:
+            chip_->setText(tr("pipensx/installed/update_chip_available"));
+            chip_->setTextColor(theme::warning());
+            break;
+        case GameUpdateState::UpToDate:
+            chip_->setText(tr("pipensx/installed/update_chip_latest"));
+            chip_->setTextColor(theme::success());
+            break;
+        case GameUpdateState::CheckError:
+            chip_->setText(tr("pipensx/installed/update_chip_error"));
+            chip_->setTextColor(theme::error());
+            break;
+        case GameUpdateState::SourceUnknown:
+            chip_->setText(tr("pipensx/installed/update_chip_no_source"));
+            chip_->setTextColor(theme::textTertiary());
+            break;
+        case GameUpdateState::NotChecked:
+        case GameUpdateState::Checking:
+        default:
+            chip_->setText(tr("pipensx/installed/update_chip_not_checked"));
+            chip_->setTextColor(theme::textTertiary());
+            break;
+        }
+    }
+
 private:
+    // req #4: current version always, found version when an update is known.
+    void updateSubtitle() {
+        std::string subtitle = publisher_;
+        if (!subtitle.empty())
+            subtitle += "   ";
+        subtitle += titleId_;
+        if (!version_.empty()) {
+            subtitle += "  v" + version_;
+            if (currentState_ == GameUpdateState::UpdateAvailable &&
+                !currentFoundVersion_.empty())
+                subtitle += " → v" + currentFoundVersion_;
+        }
+        subtitle_->setText(subtitle);
+    }
+
     AsyncRgbaImage* image_ = nullptr;
     brls::Label* title_ = nullptr;
     brls::Label* subtitle_ = nullptr;
+    brls::Label* chip_ = nullptr;
     std::string currentIconPath_;
     std::shared_ptr<ImageRequestState> imageState_ =
         std::make_shared<ImageRequestState>();
+    std::string titleId_;
+    std::string publisher_;
+    std::string version_;
+    std::string currentFoundVersion_;
+    GameUpdateState currentState_ = GameUpdateState::NotChecked;
+    CheckOne onCheckOne_;
 };
 
 class InstalledDataSource : public brls::RecyclerDataSource {
@@ -76,6 +149,11 @@ public:
 
     void setTitles(std::vector<InstalledTitle> titles) {
         titles_ = std::move(titles);
+    }
+
+    void setResults(const GameUpdateResults* results) { results_ = results; }
+    void setCheckOne(InstalledCell::CheckOne onCheckOne) {
+        onCheckOne_ = std::move(onCheckOne);
     }
 
     int numberOfRows(brls::RecyclerFrame*, int) override {
@@ -90,23 +168,34 @@ public:
             cell->setMessage(tr("pipensx/installed/empty_cell"));
             return cell;
         }
+        const InstalledTitle& title = titles_[static_cast<size_t>(index.row)];
         auto* cell = static_cast<InstalledCell*>(
             recycler->dequeueReusableCell("Installed"));
-        cell->setTitle(titles_[static_cast<size_t>(index.row)], metadata_);
+        cell->setTitle(title, metadata_);
+        const GameUpdateResult* result = nullptr;
+        if (results_) {
+            auto it = results_->find(title.titleId);
+            if (it != results_->end())
+                result = &it->second;
+        }
+        cell->setResult(result, onCheckOne_);
         return cell;
     }
 
 private:
     GameMetadataService* metadata_;
     std::vector<InstalledTitle> titles_;
+    const GameUpdateResults* results_ = nullptr;
+    InstalledCell::CheckOne onCheckOne_;
 };
 
 class InstalledView : public brls::Box {
 public:
     InstalledView(InstalledTitleService* installed, DownloadManager* manager,
-                  GameMetadataService* metadata)
+                  GameMetadataService* metadata, AppSettings* settings)
         : brls::Box(brls::Axis::COLUMN), installed_(installed),
-          manager_(manager), alive_(std::make_shared<std::atomic<bool>>(true)) {
+          manager_(manager), settings_(settings),
+          alive_(std::make_shared<std::atomic<bool>>(true)) {
         status_ = new brls::Label();
         status_->setFontSize(15);
         status_->setMarginTop(10);
@@ -126,11 +215,28 @@ public:
         // grow(1) box, so hiding only the recycler would leave its slot behind.
         recyclerHost_ = recyclerHost(recycler_);
         addView(recyclerHost_);
+
+        updates_ = std::make_unique<GameUpdateService>(
+            metadata, installed->rootPath() + "/game-updates.json");
+        std::string loadError;
+        if (!updates_->load(loadError))
+            diagnostic_error("game_updates", "load", "error=%s",
+                             loadError.c_str());
+        dataSource_->setResults(&updates_->results());
+        dataSource_->setCheckOne(
+            [this](const std::string& titleId, const std::string& version) {
+                checkOneTitle(titleId, version);
+            });
         reload();
 
         registerAction(tr("pipensx/common/refresh"), brls::BUTTON_RB,
                        [this](brls::View*) {
             refresh();
+            return true;
+        });
+        registerAction(tr("pipensx/installed/update_check_all"),
+                       brls::BUTTON_LB, [this](brls::View*) {
+            checkAllTitles();
             return true;
         });
     }
@@ -166,6 +272,30 @@ private:
         return false;
     }
 
+    // "Проверить всё" (LB): synchronous in-memory check of every installed
+    // title, then persist and re-render. Re-entrancy is guarded by the
+    // service itself; the work is microseconds, so no spinner is shown.
+    void checkAllTitles() {
+        std::string saveError;
+        updates_->checkAll(installed_->titles(), installed_->generation(),
+                           settings_->get().lastMetadataRefreshMs, saveError);
+        if (!saveError.empty())
+            diagnostic_error("game_updates", "save", "error=%s",
+                             saveError.c_str());
+        reload();
+    }
+
+    // "Проверить" на отдельное приложение (A-тап по строке).
+    void checkOneTitle(const std::string& titleId,
+                       const std::string& version) {
+        std::string saveError;
+        updates_->checkOne(titleId, version, saveError);
+        if (!saveError.empty())
+            diagnostic_error("game_updates", "save", "error=%s",
+                             saveError.c_str());
+        reload();
+    }
+
     void reload() {
         std::vector<InstalledTitle> titles = installed_->titles();
         size_t count = titles.size();
@@ -178,7 +308,11 @@ private:
             emptyState_->setVisibility(brls::Visibility::GONE);
         recyclerHost_->setVisibility(empty ? brls::Visibility::GONE
                                            : brls::Visibility::VISIBLE);
-        status_->setText(tr("pipensx/installed/count", count));
+        std::string text = tr("pipensx/installed/count", count);
+        if (updates_->stale(installed_->generation(),
+                            settings_->get().lastMetadataRefreshMs))
+            text += "   " + tr("pipensx/installed/update_stale");
+        status_->setText(text);
     }
 
     void refresh() {
@@ -212,11 +346,13 @@ private:
 
     InstalledTitleService* installed_;
     DownloadManager* manager_;
+    AppSettings* settings_;
     brls::Label* status_ = nullptr;
     EmptyStateView* emptyState_ = nullptr;
     brls::RecyclerFrame* recycler_ = nullptr;
     brls::Box* recyclerHost_ = nullptr;
     InstalledDataSource* dataSource_ = nullptr;
+    std::unique_ptr<GameUpdateService> updates_;
     std::shared_ptr<std::atomic<bool>> alive_;
     bool refreshing_ = false;
 };

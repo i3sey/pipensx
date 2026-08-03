@@ -41,6 +41,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -78,6 +79,7 @@ using pipensx::AppSettings;
 using pipensx::CatalogService;
 using pipensx::DownloadManager;
 using pipensx::GameMetadataService;
+using pipensx::InstalledTitle;
 using pipensx::InstalledTitleService;
 using pipensx::ModIndexService;
 using namespace pipensx::ui;
@@ -529,7 +531,8 @@ int main(int argc, char** argv) {
         });
         tabs->addNavTab(tr("pipensx/nav/installed"), NavIconType::Installed,
                         [&] {
-            return new InstalledView(&installed, &manager, &metadata);
+            return new InstalledView(&installed, &manager, &metadata,
+                                     &settings);
         });
         tabs->addNavTab(tr("pipensx/nav/settings"), NavIconType::Settings,
                         [&] {
@@ -593,9 +596,76 @@ int main(int argc, char** argv) {
         });
         tabs->attachStorageFooter(&manager);
         activity = new GoldenActivity(tabs, /*withExitAction=*/true);
-    } else if (screen == "installed") {
+    } else if (screen == "installed" || screen == "installed-populated") {
+        if (screen == "installed-populated") {
+            // The PC shim reports an empty library; seed rows so the update
+            // chips and version subtitle are pinned. Four rows cover every
+            // chip state: update available, up to date, no source, error.
+            std::vector<InstalledTitle> fixtureTitles;
+            {
+                InstalledTitle t;
+                t.applicationId = 0x0100000000010000ULL;
+                t.titleId = "0100000000010000";
+                t.name = "Pipen Odyssey";
+                t.publisher = "Pipensx Fixtures";
+                t.version = "65536";
+                fixtureTitles.push_back(std::move(t));
+            }
+            {
+                InstalledTitle t;
+                t.applicationId = 0x0100000000020000ULL;
+                t.titleId = "0100000000020000";
+                t.name = "Kart Nova Deluxe";
+                t.publisher = "Pipensx Fixtures";
+                t.version = "65536";
+                fixtureTitles.push_back(std::move(t));
+            }
+            {
+                InstalledTitle t;
+                t.applicationId = 0x0100000000030000ULL;
+                t.titleId = "0100000000030000";
+                t.name = "Mystery Homebrew";
+                t.publisher = "Solo Dev";
+                t.version = "0";
+                fixtureTitles.push_back(std::move(t));
+            }
+            {
+                InstalledTitle t;
+                t.applicationId = 0x0100000000040000ULL;
+                t.titleId = "0100000000040000";
+                t.name = "Broken Versions";
+                t.publisher = "Pipensx Fixtures";
+                t.version = "1.0";
+                fixtureTitles.push_back(std::move(t));
+            }
+            installed.injectTitles(std::move(fixtureTitles));
+            // Seed the update-check results: generations 0 vs the live (>0)
+            // generation also pins the stale status text deterministically.
+            std::ofstream state("sdmc:/switch/pipensx/game-updates.json",
+                                std::ios::binary | std::ios::trunc);
+            state
+                << "{\"version\":1,\"installed_generation\":0,"
+                   "\"metadata_refresh_ms\":0,\"last_checked_at\":1,"
+                   "\"results\":["
+                   "{\"title_id\":\"0100000000010000\",\"state\":"
+                   "\"update_available\",\"current_version\":\"65536\","
+                   "\"found_version\":\"131072\",\"error\":\"\","
+                   "\"checked_at\":1},"
+                   "{\"title_id\":\"0100000000020000\",\"state\":"
+                   "\"up_to_date\",\"current_version\":\"65536\","
+                   "\"found_version\":\"65536\",\"error\":\"\","
+                   "\"checked_at\":1},"
+                   "{\"title_id\":\"0100000000030000\",\"state\":"
+                   "\"source_unknown\",\"current_version\":\"0\","
+                   "\"found_version\":\"\",\"error\":\"\",\"checked_at\":1},"
+                   "{\"title_id\":\"0100000000040000\",\"state\":"
+                   "\"check_error\",\"current_version\":\"1.0\","
+                   "\"found_version\":\"196608\",\"error\":\"not numeric\","
+                   "\"checked_at\":1}"
+                   "]}\n";
+        }
         activity = new GoldenActivity(
-            new InstalledView(&installed, &manager, &metadata));
+            new InstalledView(&installed, &manager, &metadata, &settings));
     } else if (screen == "settings") {
         activity = new GoldenActivity(new SettingsView(
             &settings, &manager, &catalog, &metadata, &installed, nullptr,

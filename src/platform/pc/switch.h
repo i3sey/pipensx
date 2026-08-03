@@ -130,7 +130,8 @@ typedef struct {
 
 typedef struct {
     NacpLanguageEntry lang[16];
-    u8 reserved[0x4000 - 16 * sizeof(NacpLanguageEntry)];
+    char display_version[0x10];
+    u8 reserved[0x4000 - 16 * sizeof(NacpLanguageEntry) - 0x10];
 } NacpStruct; /* sizeof == 0x4000, same as libnx */
 
 typedef struct {
@@ -178,5 +179,66 @@ static inline Result nacpGetLanguageEntry(NacpStruct* nacp,
     (void)nacp;
     if (out)
         *out = NULL;
+    return 0x236;
+}
+
+/* ---- ncm (installed title version) ---- */
+
+typedef enum {
+    NcmStorageId_BuiltInUser = 4,
+    NcmStorageId_SdCard = 5,
+} NcmStorageId;
+
+typedef enum {
+    NcmContentMetaType_Unknown = 0x0,
+    NcmContentMetaType_Application = 0x80,
+    NcmContentMetaType_Patch = 0x81,
+    NcmContentMetaType_AddOnContent = 0x82,
+} NcmContentMetaType;
+
+typedef enum {
+    NcmContentInstallType_Unknown = 7,
+} NcmContentInstallType;
+
+typedef struct {
+    u64 id;
+    u32 version;
+    u8 type;
+    u8 install_type;
+    u8 padding[2];
+} NcmContentMetaKey;
+
+typedef struct {
+    u8 _placeholder;
+} NcmContentMetaDatabase;
+
+static inline Result ncmOpenContentMetaDatabase(
+    NcmContentMetaDatabase* out, NcmStorageId storage_id) {
+    (void)out;
+    (void)storage_id;
+    return 0x236; /* generic libnx-style failure: no content metas on PC */
+}
+
+static inline void ncmContentMetaDatabaseClose(NcmContentMetaDatabase* db) {
+    (void)db;
+}
+
+static inline Result ncmContentMetaDatabaseList(
+    NcmContentMetaDatabase* db, s32* out_entries_total,
+    s32* out_entries_written, NcmContentMetaKey* out_keys, s32 count,
+    NcmContentMetaType meta_type, u64 id, u64 id_min, u64 id_max,
+    NcmContentInstallType install_type) {
+    (void)db;
+    (void)out_keys;
+    (void)count;
+    (void)meta_type;
+    (void)id;
+    (void)id_min;
+    (void)id_max;
+    (void)install_type;
+    if (out_entries_total)
+        *out_entries_total = 0;
+    if (out_entries_written)
+        *out_entries_written = 0;
     return 0x236;
 }

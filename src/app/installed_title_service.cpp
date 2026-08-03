@@ -16,6 +16,7 @@ extern "C" {
 #include <memory>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <unordered_map>
 
 namespace pipensx {
 namespace {
@@ -100,6 +101,17 @@ uint64_t InstalledTitleService::generation() const {
     return generation_;
 }
 
+void InstalledTitleService::injectTitles(std::vector<InstalledTitle> titles) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::unordered_set<std::string> ids;
+    ids.reserve(titles.size());
+    for (const InstalledTitle& title : titles)
+        ids.insert(upperAscii(title.titleId));
+    titles_ = std::move(titles);
+    titleIds_ = std::move(ids);
+    ++generation_;
+}
+
 bool InstalledTitleService::refresh(std::string& error) {
     std::lock_guard<std::mutex> refreshLock(refreshMutex_);
     const uint64_t startedMs = now_ms();
@@ -126,6 +138,64 @@ bool InstalledTitleService::refresh(std::string& error) {
             break;
     }
 
+    // Installed title version = the Patch content meta's title version (the
+    // base application meta is always v0). Read once per storage; a title
+    // with no patch installed has version 0. The list call is single-shot
+    // (no offset), so probe the total first, then fetch the full set.
+    std::unordered_map<uint64_t, uint32_t> patchVersions;
+    {
+        constexpr s32 MaxPatches = 8192;
+        const NcmStorageId storages[] = {NcmStorageId_BuiltInUser,
+                                         NcmStorageId_SdCard};
+        for (NcmStorageId storage : storages) {
+            NcmContentMetaDatabase database;
+            const Result openRc = ncmOpenContentMetaDatabase(&database,
+                                                             storage);
+            if (R_FAILED(openRc)) {
+#ifdef __SWITCH__
+                diagnostic_error("installed", "ncm_open",
+                                 "result=0x%08x", openRc);
+#endif
+                continue;
+            }
+            s32 total = 0;
+            s32 written = 0;
+            Result rc = ncmContentMetaDatabaseList(
+                &database, &total, &written, nullptr, 0,
+                NcmContentMetaType_Patch, 0, 0, 0xFFFFFFFFFFFFFFFFULL,
+                NcmContentInstallType_Unknown);
+            if (R_FAILED(rc)) {
+                ncmContentMetaDatabaseClose(&database);
+                diagnostic_error("installed", "ncm_list",
+                                 "result=0x%08x", rc);
+                continue;
+            }
+            if (total > MaxPatches) {
+                total = MaxPatches;
+                diagnostic_error("installed", "ncm_truncate",
+                                 "count=%d", total);
+            }
+            std::vector<NcmContentMetaKey> keys(
+                static_cast<size_t>(total));
+            if (!keys.empty()) {
+                rc = ncmContentMetaDatabaseList(
+                    &database, &total, &written, keys.data(),
+                    static_cast<s32>(keys.size()),
+                    NcmContentMetaType_Patch, 0, 0,
+                    0xFFFFFFFFFFFFFFFFULL, NcmContentInstallType_Unknown);
+                if (R_SUCCEEDED(rc)) {
+                    for (s32 index = 0; index < written; ++index)
+                        patchVersions[keys[static_cast<size_t>(index)].id] =
+                            keys[static_cast<size_t>(index)].version;
+                } else {
+                    diagnostic_error("installed", "ncm_list",
+                                     "result=0x%08x", rc);
+                }
+            }
+            ncmContentMetaDatabaseClose(&database);
+        }
+    }
+
     std::vector<InstalledTitle> next;
     next.reserve(records.size());
     auto control = std::make_unique<NsApplicationControlData>();
@@ -135,6 +205,12 @@ bool InstalledTitleService::refresh(std::string& error) {
         title.titleId = formatTitleId(record.application_id);
         title.name = title.titleId;
         title.iconPath = iconRoot_ + "/" + title.titleId + ".jpg";
+
+        const auto patch = patchVersions.find(record.application_id ^ 0x800);
+        title.version =
+            patch == patchVersions.end()
+                ? "0"
+                : std::to_string(patch->second);
 
         std::memset(control.get(), 0, sizeof(*control));
         u64 actualSize = 0;

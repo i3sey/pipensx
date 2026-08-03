@@ -403,6 +403,9 @@ void parseMetadataObject(const nlohmann::json& item, GameMetadata& metadata) {
     metadata.titleId = stringValue(item, "titleId");
     if (metadata.titleId.empty())
         metadata.titleId = stringValue(item, "id");
+    metadata.latestVersion = stringValue(item, "latestVersion");
+    if (metadata.latestVersion.empty())
+        metadata.latestVersion = stringValue(item, "latest_version");
     metadata.match = stringValue(item, "match");
     metadata.name = stringValue(item, "name");
     metadata.intro = stringValue(item, "intro");
@@ -735,6 +738,36 @@ void GameMetadataService::recomputePlayerSummary() {
     }
 }
 
+void GameMetadataService::rebuildTitleIdIndex() {
+    std::unordered_map<std::string, std::vector<std::string>> next;
+    next.reserve(byHash_.size());
+    for (const auto& entry : byHash_) {
+        const GameMetadata& metadata = entry.second;
+        if (metadata.latestVersion.empty())
+            continue;
+        std::string titleId = metadata.titleId;
+        std::transform(titleId.begin(), titleId.end(), titleId.begin(),
+                       [](unsigned char c) {
+                           return static_cast<char>(std::toupper(c));
+                       });
+        next[titleId].push_back(metadata.latestVersion);
+    }
+    byTitleId_ = std::move(next);
+}
+
+bool GameMetadataService::collectLatestVersions(
+    const std::string& titleId, std::vector<std::string>& out) const {
+    std::string key = titleId;
+    std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) {
+        return static_cast<char>(std::toupper(c));
+    });
+    auto it = byTitleId_.find(key);
+    if (it == byTitleId_.end())
+        return false;
+    out.insert(out.end(), it->second.begin(), it->second.end());
+    return true;
+}
+
 bool GameMetadataService::load(std::string& error) {
     byHash_.clear();
     manifest_ = {};
@@ -771,6 +804,7 @@ bool GameMetadataService::load(std::string& error) {
     for (GameMetadata& item : items)
         byHash_[item.infoHash] = std::move(item);
     recomputePlayerSummary();
+    rebuildTitleIdIndex();
     log_msg("[metadata] loaded %zu game matches from %s\n", byHash_.size(),
             bundledPath_.c_str());
     return true;
@@ -784,6 +818,7 @@ void GameMetadataService::adopt(MetadataSnapshot snapshot) {
     byHash_ = std::move(next);
     manifest_ = std::move(snapshot.manifest);
     recomputePlayerSummary();
+    rebuildTitleIdIndex();
 }
 
 bool GameMetadataService::fetchLatest(MetadataSnapshot& snapshot,

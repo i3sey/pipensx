@@ -142,6 +142,7 @@ set(APP_SERVICE_SOURCES
     src/app/stream_budget_arbiter.cpp
     src/app/stream_ram_budget.cpp
     src/app/game_metadata_service.cpp
+    src/app/game_update_service.cpp
     src/app/installed_title_service.cpp
     src/app/mod_index_service.cpp
     src/app/install_space.cpp

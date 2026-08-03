@@ -1,5 +1,7 @@
 #pragma once
 
+#include "update_source.hpp"
+
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
@@ -37,6 +39,12 @@ struct GameMetadata {
     std::string bannerUrl;
     std::vector<std::string> screenshots;
     std::vector<std::string> categories;
+    // Newest published version of the game's bundled update, in the same
+    // display form as the installed title's NACP display_version ("1.2.3",
+    // optional leading 'v'). Carried by the metadata index (titledb-derived);
+    // empty when the index does not emit it yet — the game-update check then
+    // reports "source unknown" for this title.
+    std::string latestVersion;
     // eShop "No. of players": how many can play on one console. 0 = unknown.
     uint8_t players = 0;
     // PlayerMode bits. `hasModes` separates "the index carries no mode record
@@ -64,7 +72,7 @@ struct MetadataSnapshot {
     std::vector<uint8_t> indexData;
 };
 
-class GameMetadataService {
+class GameMetadataService : public IUpdateMetadataSource {
 public:
     struct DecodedImage {
         int width = 0;
@@ -103,6 +111,9 @@ public:
     bool fetchLatest(MetadataSnapshot& snapshot, std::string& error) const;
     void adopt(MetadataSnapshot snapshot);
     const GameMetadata* findByInfoHash(const std::string& infoHash) const;
+    // IUpdateMetadataSource: candidate update versions for a title id.
+    bool collectLatestVersions(const std::string& titleId,
+                               std::vector<std::string>& out) const override;
     bool refreshDetails(const std::string& titleId, GameMetadata& metadata,
                         std::string& error) const;
     bool loadImage(const std::string& url, std::vector<uint8_t>& bytes,
@@ -177,6 +188,9 @@ private:
     // Refresh availableModes_/localPlayerCounts_ from byHash_. Called from
     // every place that reassigns it (load, adopt).
     void recomputePlayerSummary();
+    // Rebuild byTitleId_ (titleId → latestVersion strings) from byHash_.
+    // Called from every place that reassigns byHash_ (load, adopt).
+    void rebuildTitleIdIndex();
     bool loadCachedSnapshot(MetadataSnapshot& snapshot,
                             std::string& error) const;
     ImageLoadResult loadImageInternal(const std::string& url,
@@ -205,6 +219,10 @@ private:
     mutable std::atomic<bool> stoppingRequested_{false};
     mutable bool stoppingImages_ = false;
     std::unordered_map<std::string, GameMetadata> byHash_;
+    // titleId (upper-case hex) → non-empty latestVersion of every entry that
+    // carries one. Built beside byHash_ (same UI-thread-only reassignment
+    // rule) and consumed by collectLatestVersions().
+    std::unordered_map<std::string, std::vector<std::string>> byTitleId_;
     MetadataManifest manifest_;
     uint8_t availableModes_ = 0;
     bool localPlayerCounts_ = false;

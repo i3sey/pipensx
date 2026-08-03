@@ -59,6 +59,7 @@ TORRENT_TEST_TARGET = tests/test_torrent
 SETTINGS_TEST_TARGET = tests/test_app_settings
 FAVORITES_TEST_TARGET = tests/test_favorites
 UPDATE_TEST_TARGET = tests/test_update_service
+GAME_UPDATE_TEST_TARGET = tests/test_game_update_service
 UPDATE_TRANSACTION_TEST_TARGET = tests/test_update_transaction
 INSTALL_SPACE_TEST_TARGET = tests/test_install_space
 BATCH_INSTALL_TEST_TARGET = tests/test_batch_install
@@ -233,6 +234,7 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 		$(CATALOG_TEST_TARGET) \
 		$(TELEMETRY_TEST_TARGET) $(PEER_TEST_TARGET) \
 		$(TORRENT_TEST_TARGET) $(SETTINGS_TEST_TARGET) $(UPDATE_TEST_TARGET) \
+		$(GAME_UPDATE_TEST_TARGET) \
 		$(UPDATE_TRANSACTION_TEST_TARGET) \
 		$(INSTALL_SPACE_TEST_TARGET) $(BATCH_INSTALL_TEST_TARGET) \
 		$(RAM_BUDGET_TEST_TARGET) $(BUDGET_ARBITER_TEST_TARGET) \
@@ -256,6 +258,7 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 	./$(TORRENT_TEST_TARGET)
 	./$(SETTINGS_TEST_TARGET)
 	./$(UPDATE_TEST_TARGET)
+	./$(GAME_UPDATE_TEST_TARGET)
 	./$(UPDATE_TRANSACTION_TEST_TARGET)
 	./$(INSTALL_SPACE_TEST_TARGET)
 	./$(BATCH_INSTALL_TEST_TARGET)
@@ -291,6 +294,11 @@ $(SETTINGS_TEST_TARGET): tests/test_app_settings.cpp src/app/app_settings.cpp
 $(UPDATE_TEST_TARGET): tests/test_update_service.cpp src/app/update_service.cpp \
 		src/app/update_transaction.o src/core/sha256.c
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -Wl,--wrap=rename
+
+$(GAME_UPDATE_TEST_TARGET): tests/test_game_update_service.cpp \
+		src/app/game_update_service.cpp src/app/update_service.cpp \
+		src/app/update_transaction.o src/core/sha256.c src/core/util.o
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
 
 $(UPDATE_TRANSACTION_TEST_TARGET): tests/test_update_transaction.c \
 		src/app/update_transaction.c src/core/sha256.c

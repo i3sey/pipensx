@@ -109,8 +109,8 @@ public:
             return new MainView(manager, metadata, settings);
         });
         tabs->addNavTab(tr("pipensx/nav/installed"), NavIconType::Installed,
-                        [installed, manager, metadata] {
-            return new InstalledView(installed, manager, metadata);
+                        [installed, manager, metadata, settings] {
+            return new InstalledView(installed, manager, metadata, settings);
         });
         tabs->addNavTab(tr("pipensx/nav/settings"), NavIconType::Settings,
                         [settings, manager, catalog, metadata,

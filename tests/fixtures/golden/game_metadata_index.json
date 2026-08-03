@@ -14,7 +14,11 @@
       "https://example.invalid/pipen-odyssey/s1.jpg",
       "https://example.invalid/pipen-odyssey/s2.jpg"
     ],
-    "categories": ["Adventure", "Platformer"]
+    "categories": [
+      "Adventure",
+      "Platformer"
+    ],
+    "latestVersion": "131072"
   },
   {
     "infoHash": "EF47FD2FAD86A00074507991E1907AA097FC40F5",
@@ -25,6 +29,17 @@
     "description": "Second fixture entry keeps the catalog grid populated and deterministic.",
     "publisher": "Pipensx Fixtures",
     "releaseDate": "2023-07-22",
-    "categories": ["Racing"]
+    "categories": [
+      "Racing"
+    ],
+    "latestVersion": "65536"
+  },
+  {
+    "infoHash": "AB12CD34EF56AB12CD34EF56AB12CD34EF56AB12",
+    "titleId": "0100000000040000",
+    "match": "Broken Versions",
+    "name": "Broken Versions",
+    "publisher": "Pipensx Fixtures",
+    "latestVersion": "196608"
   }
 ]
