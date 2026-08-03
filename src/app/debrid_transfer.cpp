@@ -2,7 +2,9 @@
 #include "curl_https.hpp"
 #include "download_manager.hpp"
 #include "debrid_provider.hpp"
+#include "install_pacer.hpp"
 #include "nx_file_types.hpp"
+#include "stream_ram_budget.hpp"
 #include "../install/install_backend.hpp"
 #include "../install/package_stream.hpp"
 
@@ -13,11 +15,15 @@ extern "C" {
 }
 
 #include <cerrno>
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <sys/stat.h>
 #include <thread>
 
@@ -65,6 +71,77 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 enum class Step { Ok, Stopped, Failed };
+
+class DebridStreamQueue {
+public:
+    DebridStreamQueue(size_t maximumBytes, InstallPacer& pacer,
+                      const std::function<bool()>& cancelled)
+        : maximumBytes_(maximumBytes), pacer_(pacer), cancelled_(cancelled) {}
+
+    bool push(const uint8_t* data, size_t size) {
+        pacer_.observeSource(size, now_ms());
+        std::unique_lock<std::mutex> lock(mutex_);
+        bool measurementPaused = false;
+        while (!stopped_ && !cancelled_() && !queue_.empty() &&
+               bufferedBytes_ + size > maximumBytes_) {
+            if (!measurementPaused) {
+                pacer_.setSourceMeasurementEnabled(false, now_ms());
+                measurementPaused = true;
+            }
+            ready_.wait_for(lock, std::chrono::milliseconds(50));
+        }
+        if (measurementPaused)
+            pacer_.setSourceMeasurementEnabled(true, now_ms());
+        if (stopped_ || cancelled_())
+            return false;
+        queue_.emplace_back(data, data + size);
+        bufferedBytes_ += size;
+        pacer_.setBufferedBytes(bufferedBytes_);
+        ready_.notify_all();
+        return true;
+    }
+
+    bool pop(std::vector<uint8_t>& chunk) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        while (queue_.empty() && !finished_ && !stopped_ && !cancelled_())
+            ready_.wait_for(lock, std::chrono::milliseconds(50));
+        if (queue_.empty())
+            return false;
+        chunk = std::move(queue_.front());
+        queue_.pop_front();
+        bufferedBytes_ -= chunk.size();
+        pacer_.setBufferedBytes(bufferedBytes_);
+        ready_.notify_all();
+        return true;
+    }
+
+    void finish() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        finished_ = true;
+        // Success or failure, no more bytes can arrive from this attempt.
+        // Let the consumer drain what was already delivered and then report
+        // the fetch result instead of waiting forever on an empty queue.
+        pacer_.setSourceComplete(true);
+        ready_.notify_all();
+    }
+
+    void stop() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        stopped_ = true;
+        ready_.notify_all();
+    }
+
+private:
+    size_t maximumBytes_;
+    InstallPacer& pacer_;
+    const std::function<bool()>& cancelled_;
+    mutable std::mutex mutex_;
+    std::condition_variable ready_;
+    std::deque<std::vector<uint8_t>> queue_;
+    size_t bufferedBytes_ = 0;
+    bool finished_ = false;
+    bool stopped_ = false;
+};
 
 bool makeDirectories(const std::string& path) {
     if (path.empty())
@@ -307,13 +384,10 @@ struct RunContext {
     std::unique_ptr<install::InstallBackend> backend;
     std::string error;
 
-    Clock::time_point installWindowStart = Clock::now();
-    uint64_t installWindowBytes = 0;
-    uint64_t installSpeed = 0;
     // Compressed bytes pulled from the debrid link for the package currently
     // streaming. Added to completedSoFar so the download bar advances mid-
     // package instead of only jumping when a package finishes.
-    uint64_t packageDownloadedBytes = 0;
+    std::atomic<uint64_t> packageDownloadedBytes {0};
 
     void emit(const DebridProgress& p) const {
         if (*progress)
@@ -556,7 +630,8 @@ Step downloadPlainFile(RunContext& ctx, size_t kthSelected,
 
 install::PackageCallbacks makeCallbacks(RunContext& ctx,
                                         install::InstallBackend* backend,
-                                        const std::string& displayName) {
+                                        const std::string& displayName,
+                                        InstallPacer& pacer) {
     install::PackageCallbacks callbacks;
     callbacks.skipFile = [backend](const std::string& name) {
         return backend->shouldSkipFile(name);
@@ -574,26 +649,17 @@ install::PackageCallbacks makeCallbacks(RunContext& ctx,
             ctx.error = backend->error();
         return ok;
     };
-    callbacks.writeFile = [backend, &ctx, displayName](const uint8_t* data,
-                                                       size_t size) {
+    callbacks.writeFile = [backend, &ctx, displayName, &pacer](
+                              const uint8_t* data, size_t size) {
+        if (!pacer.waitForWrite(size, [&ctx] { return ctx.stop(); }))
+            return false;
         bool ok = backend->writeFile(data, size);
         if (ok) {
-            ctx.installWindowBytes += size;
-            Clock::time_point now = Clock::now();
-            double elapsed =
-                std::chrono::duration<double>(now - ctx.installWindowStart)
-                    .count();
-            if (elapsed >= 1.0) {
-                ctx.installSpeed = static_cast<uint64_t>(
-                    ctx.installWindowBytes / elapsed);
-                ctx.installWindowStart = now;
-                ctx.installWindowBytes = 0;
-            }
             DebridProgress p;
             p.status = DownloadStatus::Installing;
             p.totalBytes = ctx.totalBytes;
-            p.completedBytes = ctx.completedSoFar + ctx.packageDownloadedBytes;
-            p.speedBytesPerSecond = ctx.installSpeed;
+            p.completedBytes = ctx.completedSoFar +
+                               ctx.packageDownloadedBytes.load();
             p.packagesInstalled = ctx.packagesInstalled;
             p.currentPackage = displayName;
             p.installedBytes = backend->installedBytes();
@@ -616,9 +682,6 @@ install::PackageCallbacks makeCallbacks(RunContext& ctx,
 Step attemptStreamInstall(RunContext& ctx, const DebridFile& file,
                           const std::string& url,
                           const std::string& displayName) {
-    ctx.installWindowStart = Clock::now();
-    ctx.installWindowBytes = 0;
-    ctx.installSpeed = 0;
     ctx.packageDownloadedBytes = 0;
     if (!ctx.backend)
         ctx.backend = install::createInstallBackend(ctx.spec.workingRoot,
@@ -628,24 +691,47 @@ Step attemptStreamInstall(RunContext& ctx, const DebridFile& file,
         ctx.error = backend->error();
         return Step::Failed;
     }
-    install::PackageStream stream(isCompressedName(file.path),
-                                  makeCallbacks(ctx, backend, displayName),
-                                  ctx.spec.taskId);
-    auto sink = [&stream, &ctx](const uint8_t* data, size_t n) -> bool {
-        // Count before writing so the writeFile callback (fired synchronously
-        // from stream.write during decompression) sees the updated total.
-        ctx.packageDownloadedBytes += n;
-        return stream.write(data, n);
-    };
-    std::string err;
-    bool ok = ctx.fetcher(url, 0, sink, *ctx.shouldStop, err);
-    if (!ok) {
+    StreamRamBudget budget = detectStreamRamBudget(1 * 1024 * 1024);
+    const size_t maximumBuffered = budget.valid
+        ? budget.maxBufferedBytes : 64 * 1024 * 1024;
+    InstallPacer pacer(maximumBuffered);
+    pacer.beginPackage(isCompressedName(file.path));
+    install::PackageStream stream(
+        isCompressedName(file.path),
+        makeCallbacks(ctx, backend, displayName, pacer), ctx.spec.taskId);
+    DebridStreamQueue queue(maximumBuffered, pacer, *ctx.shouldStop);
+    std::string fetchError;
+    bool fetchOk = false;
+    std::thread producer([&] {
+        auto sink = [&queue, &ctx](const uint8_t* data, size_t n) -> bool {
+            ctx.packageDownloadedBytes.fetch_add(n);
+            return queue.push(data, n);
+        };
+        fetchOk = ctx.fetcher(url, 0, sink, *ctx.shouldStop, fetchError);
+        queue.finish();
+    });
+
+    bool streamOk = true;
+    std::vector<uint8_t> chunk;
+    while (queue.pop(chunk)) {
+        if (!stream.write(chunk.data(), chunk.size())) {
+            streamOk = false;
+            queue.stop();
+            break;
+        }
+        pacer.observeConsumed(stream.consumed(), backend->installedBytes(),
+                              now_ms());
+    }
+    queue.stop();
+    producer.join();
+    if (!fetchOk || !streamOk) {
         backend->rollbackPackage();
         if (ctx.stop())
             return Step::Stopped;
         if (ctx.error.empty())
             ctx.error = !stream.error().empty() ? stream.error()
-                        : (err.empty() ? "Package download failed." : err);
+                        : (fetchError.empty() ? "Package download failed."
+                                              : fetchError);
         return Step::Failed;
     }
 

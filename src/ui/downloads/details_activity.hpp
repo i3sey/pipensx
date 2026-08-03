@@ -215,11 +215,10 @@ private:
                                        formatBytes(task->completedBytes),
                                        formatBytes(task->totalBytes)));
 
+        const uint64_t now = now_ms();
         std::string eta;
-        if (task->status == DownloadStatus::Downloading &&
-            task->totalBytes > task->completedBytes)
-            eta = formatEta(task->totalBytes - task->completedBytes,
-                            task->speedBytesPerSecond);
+        if (auto seconds = taskEtaSeconds(*task, now))
+            eta = formatEtaSeconds(*seconds);
         setTextIfChanged(eta_, eta.empty()
                                    ? std::string()
                                    : tr("pipensx/downloads/eta_line", eta));
@@ -244,15 +243,16 @@ private:
             setTextIfChanged(currentPackage_, "");
         }
 
-        recordSpeedSample(*task);
+        recordSpeedSample(*task, now);
         setTextIfChanged(downloadSpeed_,
-                         tr("pipensx/downloads/speed_download",
-                            formatSpeed(task->speedBytesPerSecond)));
+                          tr("pipensx/downloads/speed_download",
+                             formatSpeed(task->speedBytesPerSecond)));
+        const uint64_t installSpeed = currentInstallSpeed(*task, now);
         if (task->mode == TransferMode::StreamInstall) {
             installSpeedItem_->setVisibility(brls::Visibility::VISIBLE);
             setTextIfChanged(installSpeed_,
                              tr("pipensx/downloads/speed_install",
-                                formatSpeed(installSpeedSmoothed_)));
+                                formatSpeed(installSpeed)));
         } else {
             installSpeedItem_->setVisibility(brls::Visibility::GONE);
         }
@@ -306,29 +306,13 @@ private:
         samples.push_back(value);
     }
 
-    void recordSpeedSample(const DownloadTask& task) {
-        uint64_t now = now_ms();
+    void recordSpeedSample(const DownloadTask& task, uint64_t now) {
         appendSpeedSample(downloadSpeedSamples_, task.speedBytesPerSecond);
 
         if (task.mode == TransferMode::StreamInstall) {
-            uint64_t installSpeed = 0;
-            if (hasInstallSample_ && now > lastInstallSampleMs_ &&
-                task.installedBytes >= lastInstallBytes_) {
-                uint64_t elapsed = now - lastInstallSampleMs_;
-                installSpeed =
-                    (task.installedBytes - lastInstallBytes_) * 1000 / elapsed;
-            }
-            lastInstallBytes_ = task.installedBytes;
-            lastInstallSampleMs_ = now;
-            hasInstallSample_ = true;
-            installSpeedSmoothed_ = emaUpdate(installSpeedSmoothed_,
-                                              installSpeed);
-            appendSpeedSample(installSpeedSamples_, installSpeedSmoothed_);
+            appendSpeedSample(installSpeedSamples_,
+                              currentInstallSpeed(task, now));
         } else {
-            hasInstallSample_ = false;
-            lastInstallBytes_ = 0;
-            lastInstallSampleMs_ = now;
-            installSpeedSmoothed_ = 0;
             installSpeedSamples_.clear();
         }
 
@@ -380,10 +364,6 @@ private:
     std::vector<DownloadTask> cache_;
     std::vector<uint64_t> downloadSpeedSamples_;
     std::vector<uint64_t> installSpeedSamples_;
-    uint64_t installSpeedSmoothed_ = 0;
-    uint64_t lastInstallBytes_ = 0;
-    uint64_t lastInstallSampleMs_ = 0;
-    bool hasInstallSample_ = false;
 };
 
 }  // namespace pipensx::ui

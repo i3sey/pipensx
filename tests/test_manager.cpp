@@ -375,7 +375,62 @@ static void testImportDebridPickerCopiesTorrent() {
     removeAll(root);
 }
 
+static void testTaskEtaUsesFreshProgressDomain() {
+    DownloadTask task;
+    task.status = DownloadStatus::Downloading;
+    task.completedBytes = 1000;
+    task.totalBytes = 3500;
+    task.speedBytesPerSecond = 1000;
+    task.downloadProgressUpdatedAtMs = 1000;
+    auto eta = pipensx::taskEtaSeconds(task, 1000);
+    assert(eta && *eta == 3);
+
+    assert(!pipensx::taskEtaSeconds(
+        task, 1001 + pipensx::kProgressRateStaleMs));
+    pipensx::updateTaskDownloadProgress(task, 1500, 5000);
+    eta = pipensx::taskEtaSeconds(task, 5000);
+    assert(eta && *eta == 2);
+    // Payload activity keeps ETA fresh before the next piece completes.
+    pipensx::updateTaskDownloadProgress(task, 1500, 8000);
+    eta = pipensx::taskEtaSeconds(task, 8000);
+    assert(eta && *eta == 2);
+
+    task.speedBytesPerSecond = 0;
+    assert(!pipensx::taskEtaSeconds(task, 1000));
+
+    task.status = DownloadStatus::Queued;
+    pipensx::updateTaskInstallProgress(
+        task, 100, 2100, DownloadStatus::Installing, 1000);
+    assert(!pipensx::taskEtaSeconds(task, 1000));
+
+    // A partial window is not enough to publish a noisy rate.
+    pipensx::updateTaskInstallProgress(
+        task, 600, 2100, DownloadStatus::Installing, 1500);
+    assert(!pipensx::taskEtaSeconds(task, 1500));
+
+    pipensx::updateTaskInstallProgress(
+        task, 1100, 2100, DownloadStatus::Installing, 2000);
+    assert(pipensx::currentInstallSpeed(task, 2000) == 1000);
+    eta = pipensx::taskEtaSeconds(task, 2000);
+    assert(eta && *eta == 1);
+
+    assert(pipensx::currentInstallSpeed(
+               task, 2000 + pipensx::kProgressRateStaleMs) == 1000);
+    assert(!pipensx::taskEtaSeconds(
+        task, 2001 + pipensx::kProgressRateStaleMs));
+
+    pipensx::updateTaskInstallProgress(
+        task, 2100, 2100, DownloadStatus::Committing, 6000);
+    assert(!pipensx::taskEtaSeconds(task, 6000));
+    assert(task.installSpeedBytesPerSecond == 0);
+
+    pipensx::updateTaskInstallProgress(
+        task, 0, 0, DownloadStatus::Installing, 7000);
+    assert(!pipensx::taskEtaSeconds(task, 7000));
+}
+
 int main() {
+    testTaskEtaUsesFreshProgressDomain();
     char rootTemplate[] = "/tmp/pipensx-manager-XXXXXX";
     char* root = mkdtemp(rootTemplate);
     assert(root);

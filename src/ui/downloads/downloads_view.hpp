@@ -258,10 +258,14 @@ private:
                     next[i].completedBytes != tasks_[i].completedBytes ||
                     next[i].speedBytesPerSecond !=
                         tasks_[i].speedBytesPerSecond ||
+                    next[i].installSpeedBytesPerSecond !=
+                        tasks_[i].installSpeedBytesPerSecond ||
                     next[i].peers != tasks_[i].peers ||
                     next[i].packagesInstalled != tasks_[i].packagesInstalled ||
                     next[i].installedBytes != tasks_[i].installedBytes ||
-                    next[i].currentPackage != tasks_[i].currentPackage;
+                    next[i].currentPackage != tasks_[i].currentPackage ||
+                    next[i].status == DownloadStatus::Downloading ||
+                    next[i].status == DownloadStatus::Installing;
             }
         }
         if (!structureChanged && !progressChanged)

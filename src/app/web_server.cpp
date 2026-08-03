@@ -238,6 +238,7 @@ bool WebServer::authorized(const HttpRequest& req) const {
 std::string WebServer::buildStateJson() {
     Json state;
     Json tasks = Json::array();
+    uint64_t now = nowMs();
     for (const DownloadTask& t : manager_.snapshot()) {
         Json j;
         j["id"] = t.id;
@@ -258,6 +259,9 @@ std::string WebServer::buildStateJson() {
         j["packagesInstalled"] = t.packagesInstalled;
         j["installedBytes"] = t.installedBytes;
         j["installTotalBytes"] = t.installTotalBytes;
+        j["installSpeedBps"] = currentInstallSpeed(t, now);
+        const auto eta = taskEtaSeconds(t, now);
+        j["etaSeconds"] = eta ? *eta : 0;
         j["currentPackage"] = t.currentPackage;
         tasks.push_back(std::move(j));
     }
@@ -282,7 +286,6 @@ std::string WebServer::buildStateJson() {
     }
     state["jobs"] = std::move(jobs);
 
-    uint64_t now = nowMs();
     if (!storageCacheAtMs_ || now - storageCacheAtMs_ > kStorageCacheTtlMs) {
         storageCache_ = queryStorageSpace(manager_.downloadRoot());
         storageCacheAtMs_ = now;

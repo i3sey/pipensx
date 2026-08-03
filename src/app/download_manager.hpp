@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -24,6 +25,8 @@ namespace pipensx {
 // layer validates against it and not every binary links download_manager.cpp.
 inline constexpr uint32_t kMinActiveDownloads = 1;
 inline constexpr uint32_t kMaxActiveDownloads = 4;
+inline constexpr uint64_t kInstallRateWindowMs = 1000;
+inline constexpr uint64_t kProgressRateStaleMs = 3000;
 
 inline uint32_t clampMaxActiveDownloads(uint64_t value) {
     if (value < kMinActiveDownloads)
@@ -76,6 +79,7 @@ struct DownloadTask {
     uint64_t totalBytes = 0;
     uint64_t completedBytes = 0;
     uint64_t speedBytesPerSecond = 0;
+    uint64_t downloadProgressUpdatedAtMs = 0;
     uint32_t peers = 0;
     uint32_t dhtGood = 0;
     uint32_t dhtDubious = 0;
@@ -86,6 +90,12 @@ struct DownloadTask {
     uint32_t packagesInstalled = 0;
     uint64_t installedBytes = 0;
     uint64_t installTotalBytes = 0;
+    uint64_t installSpeedBytesPerSecond = 0;
+    uint64_t installSpeedUpdatedAtMs = 0;
+    // Transient baseline for the shared install-rate estimator. Rate state is
+    // intentionally omitted from queue persistence.
+    uint64_t installRateBaseBytes = 0;
+    uint64_t installRateBaseAtMs = 0;
     std::string currentPackage;
     std::vector<uint8_t> fileSelection;
     /* Compact IPv4 endpoints verified during magnet resolution. Ephemeral:
@@ -283,6 +293,15 @@ private:
 };
 
 const char* statusName(DownloadStatus status);
+
+void updateTaskInstallProgress(DownloadTask& task, uint64_t installedBytes,
+                               uint64_t installTotalBytes,
+                               DownloadStatus status, uint64_t nowMs);
+void updateTaskDownloadProgress(DownloadTask& task, uint64_t completedBytes,
+                                uint64_t nowMs);
+uint64_t currentInstallSpeed(const DownloadTask& task, uint64_t nowMs);
+std::optional<uint64_t> taskEtaSeconds(const DownloadTask& task,
+                                       uint64_t nowMs);
 
 // The scheduler's claim rule, exposed for tests: a Queued task may start
 // unless it is a stream install while another one holds the install token.

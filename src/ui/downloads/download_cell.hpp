@@ -96,6 +96,9 @@ public:
                       task.packagesInstalled + 1, task.packageCount);
             if (!task.currentPackage.empty())
                 meta += "   " + task.currentPackage;
+            if (auto eta = taskEtaSeconds(task, now_ms()))
+                meta += tr("pipensx/downloads/cell_eta",
+                           formatEtaSeconds(*eta));
         } else if (task.status == DownloadStatus::Installed) {
             meta = tr("pipensx/downloads/cell_installed_packages",
                       task.packagesInstalled);
@@ -105,12 +108,9 @@ public:
         } else if (task.status == DownloadStatus::Downloading) {
             meta += "   " + formatSpeed(task.speedBytesPerSecond) +
                     tr("pipensx/downloads/cell_peers", task.peers);
-            if (task.totalBytes > task.completedBytes) {
-                std::string eta = formatEta(task.totalBytes - task.completedBytes,
-                                            task.speedBytesPerSecond);
-                if (!eta.empty())
-                    meta += tr("pipensx/downloads/cell_eta", eta);
-            }
+            if (auto eta = taskEtaSeconds(task, now_ms()))
+                meta += tr("pipensx/downloads/cell_eta",
+                           formatEtaSeconds(*eta));
         } else if (task.status == DownloadStatus::Queued)
             meta += tr("pipensx/downloads/cell_waiting");
         else if (task.status == DownloadStatus::Error && !task.error.empty())

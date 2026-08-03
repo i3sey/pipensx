@@ -270,6 +270,51 @@ void testStreamInstallCommitsPackage() {
     assert(stat(committed.c_str(), &st) == 0);
 }
 
+void testPartialStreamFailureRetriesWithoutPacerDeadlock() {
+    const std::string root = "/tmp/pipensx-torbox-stream-failure-test";
+    system(("rm -rf " + root).c_str());
+    mkdir(root.c_str(), 0755);
+
+    std::vector<uint8_t> nca(2 * 1024 * 1024, 0x5a);
+    std::vector<uint8_t> nsp =
+        makePfs0({{"00112233445566778899aabbccddeeff.nca", nca}});
+    std::string content(nsp.begin(), nsp.end());
+    int attempts = 0;
+    RangeFetcher fetcher = [&content, &attempts](
+        const std::string&, uint64_t,
+        const std::function<bool(const uint8_t*, size_t)>& sink,
+        const std::function<bool()>&, std::string& error) {
+        ++attempts;
+        const size_t partial = content.size() / 2;
+        if (!sink(reinterpret_cast<const uint8_t*>(content.data()), partial))
+            return false;
+        error = "intentional partial failure";
+        return false;
+    };
+    std::vector<std::pair<std::string, std::string>> script = {
+        {"mylist", infoReadyJson("Example/game.nsp", content.size())},
+        {"requestdl", "{\"success\":true,\"data\":\"https://x/first\"}"},
+        {"requestdl", "{\"success\":true,\"data\":\"https://x/second\"}"},
+    };
+    TorboxProvider provider("k", scriptedTransport(&script));
+    DebridTransfer transfer(provider, fetcher);
+    DebridTaskSpec spec;
+    spec.taskId = "aabbccddaabbccddaabbccddaabbccddaabbccdd";
+    spec.debridId = "42";
+    spec.dataPath = root;
+    spec.workingRoot = root;
+    spec.mode = TransferMode::StreamInstall;
+
+    std::string debridId;
+    std::string error;
+    DebridRunResult result = transfer.run(
+        spec, [] { return false; }, [](const DebridProgress&) {}, debridId,
+        error);
+    assert(result == DebridRunResult::Failed);
+    assert(attempts == 2);
+    assert(error == "intentional partial failure");
+}
+
 void testSelectionPathsPicksOneFile() {
     const std::string root = "/tmp/pipensx-torbox-selection-test";
     system(("rm -rf " + root).c_str());
@@ -413,6 +458,7 @@ int main() {
     testResumeUsesOnDiskOffset();
     testStopRequestedReturnsStopped();
     testStreamInstallCommitsPackage();
+    testPartialStreamFailureRetriesWithoutPacerDeadlock();
     testSelectionPathsPicksOneFile();
     testSelectionPathsNoMatchReturnsFailed();
     testMagnetFileFallback();

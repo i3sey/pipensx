@@ -236,6 +236,8 @@ int main() {
         std::string body = responseBody(resp);
         assert(body.find(torrentHash) != std::string::npos);
         assert(body.find("package.nsp") != std::string::npos);
+        assert(body.find("\"installSpeedBps\":0") != std::string::npos);
+        assert(body.find("\"etaSeconds\":0") != std::string::npos);
 
         resp = request(port, "POST", "/api/add/torrent?mode=download",
                        gTorrentBytes);

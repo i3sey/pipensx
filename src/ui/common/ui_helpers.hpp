@@ -247,12 +247,6 @@ inline std::string formatSpeed(uint64_t bytes) {
     return buffer;
 }
 
-inline uint64_t emaUpdate(uint64_t previous, uint64_t sample) {
-    if (sample >= previous)
-        return previous + (sample - previous) * 3 / 10;
-    return previous - (previous - sample) * 3 / 10;
-}
-
 inline float progressOf(const DownloadTask& task) {
     if (!task.totalBytes)
         return 0.0f;
@@ -271,13 +265,9 @@ inline int percentOf(float progress) {
     return static_cast<int>(std::clamp(progress, 0.0f, 1.0f) * 100.0f);
 }
 
-inline std::string formatEta(uint64_t remainingBytes, uint64_t speedBytesPerSecond) {
-    if (!remainingBytes || !speedBytesPerSecond)
+inline std::string formatEtaSeconds(uint64_t seconds) {
+    if (!seconds)
         return {};
-
-    uint64_t seconds = remainingBytes / speedBytesPerSecond;
-    if (remainingBytes % speedBytesPerSecond)
-        ++seconds;
     if (seconds < 60)
         return tr("pipensx/downloads/eta_seconds", seconds);
 

@@ -65,6 +65,7 @@ BATCH_INSTALL_TEST_TARGET = tests/test_batch_install
 RAM_BUDGET_TEST_TARGET = tests/test_stream_ram_budget
 BUDGET_ARBITER_TEST_TARGET = tests/test_budget_arbiter
 REQUEST_GATE_TEST_TARGET = tests/test_request_gate
+INSTALL_PACER_TEST_TARGET = tests/test_install_pacer
 JOURNAL_TEST_TARGET = tests/test_install_journal
 WEB_SEED_TEST_TARGET = tests/test_web_seed
 MSE_TEST_TARGET = tests/test_mse
@@ -132,6 +133,9 @@ src/app/stream_budget_arbiter.o: src/app/stream_budget_arbiter.cpp
 src/app/request_gate.o: src/app/request_gate.cpp
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
+src/app/install_pacer.o: src/app/install_pacer.cpp
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
 src/install/%.o: src/install/%.cpp
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
@@ -142,6 +146,7 @@ $(MANAGER_TEST_TARGET): tests/test_manager.o src/app/download_manager.o \
 		src/app/web_seed_source.o \
 		src/app/stream_ram_budget.o src/app/stream_budget_arbiter.o \
 		src/app/request_gate.o \
+		src/app/install_pacer.o \
 		src/app/debrid_transfer.o src/app/torbox_client.o \
 		src/app/torbox_provider.o src/app/torrserver_provider.o \
 		src/install/package_stream.o src/install/install_journal.o \
@@ -195,6 +200,7 @@ $(WEB_SERVER_TEST_TARGET): tests/test_web_server.cpp \
 		src/app/download_manager.o src/app/web_seed_source.o \
 		src/app/stream_ram_budget.o src/app/stream_budget_arbiter.o \
 		src/app/request_gate.o \
+		src/app/install_pacer.o \
 		src/app/debrid_transfer.o src/app/torbox_client.o \
 		src/app/torbox_provider.o src/app/torrserver_provider.o \
 		src/install/package_stream.o src/install/install_journal.o \
@@ -231,6 +237,7 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 		$(INSTALL_SPACE_TEST_TARGET) $(BATCH_INSTALL_TEST_TARGET) \
 		$(RAM_BUDGET_TEST_TARGET) $(BUDGET_ARBITER_TEST_TARGET) \
 		$(REQUEST_GATE_TEST_TARGET) \
+		$(INSTALL_PACER_TEST_TARGET) \
 		$(JOURNAL_TEST_TARGET) $(WEB_SEED_TEST_TARGET) \
 		$(FAVORITES_TEST_TARGET) \
 		$(MSE_TEST_TARGET) $(DHT_CACHE_TEST_TARGET) \
@@ -255,6 +262,7 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 	./$(RAM_BUDGET_TEST_TARGET)
 	./$(BUDGET_ARBITER_TEST_TARGET)
 	./$(REQUEST_GATE_TEST_TARGET)
+	./$(INSTALL_PACER_TEST_TARGET)
 	./$(JOURNAL_TEST_TARGET)
 	./$(WEB_SEED_TEST_TARGET)
 	./$(FAVORITES_TEST_TARGET)
@@ -301,6 +309,7 @@ $(BATCH_INSTALL_TEST_TARGET): tests/test_batch_install.cpp \
 		src/app/download_manager.o src/app/web_seed_source.o \
 		src/app/stream_ram_budget.o src/app/stream_budget_arbiter.o \
 		src/app/request_gate.o src/app/debrid_transfer.o \
+		src/app/install_pacer.o \
 		src/app/torbox_client.o src/app/torbox_provider.o \
 		src/app/torrserver_provider.o \
 		src/install/package_stream.o src/install/install_journal.o \
@@ -320,6 +329,10 @@ $(BUDGET_ARBITER_TEST_TARGET): tests/test_budget_arbiter.cpp \
 $(REQUEST_GATE_TEST_TARGET): tests/test_request_gate.cpp \
 		src/app/request_gate.cpp
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
+
+$(INSTALL_PACER_TEST_TARGET): tests/test_install_pacer.cpp \
+		src/app/install_pacer.cpp
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ -pthread
 
 $(JOURNAL_TEST_TARGET): tests/test_install_journal.cpp \
 		src/install/install_journal.o src/core/bencode.o
@@ -365,6 +378,8 @@ $(TORBOX_PAIRING_TEST_TARGET): tests/test_torbox_pairing.cpp \
 
 $(DEBRID_TRANSFER_TEST_TARGET): tests/test_debrid_transfer.cpp \
 		src/app/debrid_transfer.o src/app/torbox_client.o \
+		src/app/install_pacer.o \
+		src/app/stream_ram_budget.o \
 		src/app/torbox_provider.o \
 		src/install/package_stream.o src/install/install_backend_pc.o \
 		src/core/util.o
@@ -398,6 +413,7 @@ tools/webserver: tools/web_server_main.cpp \
 		src/app/download_manager.o src/app/web_seed_source.o \
 		src/app/stream_ram_budget.o src/app/stream_budget_arbiter.o \
 		src/app/request_gate.o \
+		src/app/install_pacer.o \
 		src/app/debrid_transfer.o src/app/torbox_client.o \
 		src/app/torbox_provider.o src/app/torrserver_provider.o \
 		src/install/package_stream.o src/install/install_journal.o \
@@ -410,6 +426,7 @@ clean:
 	rm -f $(OBJS) $(UTP_OBJS) src/app/download_manager.o \
 		src/app/web_seed_source.o src/app/stream_ram_budget.o \
 		src/app/stream_budget_arbiter.o src/app/request_gate.o \
+		src/app/install_pacer.o \
 		src/app/torbox_client.o src/app/torbox_pairing_server.o \
 		src/app/debrid_transfer.o src/app/torrserver_provider.o \
 		src/app/torbox_provider.o \
@@ -426,6 +443,7 @@ clean:
 		$(INSTALL_SPACE_TEST_TARGET) $(BATCH_INSTALL_TEST_TARGET) \
 		$(RAM_BUDGET_TEST_TARGET) $(BUDGET_ARBITER_TEST_TARGET) \
 		$(REQUEST_GATE_TEST_TARGET) \
+		$(INSTALL_PACER_TEST_TARGET) \
 		$(JOURNAL_TEST_TARGET) $(FAVORITES_TEST_TARGET) \
 		$(MSE_TEST_TARGET) $(DHT_SHARED_TEST_TARGET) \
 		$(BUG_REPORT_TEST_TARGET) \

@@ -48,12 +48,15 @@ function fmtBytes(n) {
   return (v >= 100 || i === 0 ? Math.round(v) : v.toFixed(1)) + " " + units[i];
 }
 function fmtSpeed(bps) { return bps > 0 ? fmtBytes(bps) + "/s" : "—"; }
-function fmtEta(task) {
-  if (!task.speedBps || task.totalBytes <= task.completedBytes) return "";
-  const s = Math.round((task.totalBytes - task.completedBytes) / task.speedBps);
-  if (s < 90) return s + "s";
-  if (s < 5400) return Math.round(s / 60) + "m";
-  return Math.round(s / 3600) + "h";
+function fmtEta(seconds) {
+  if (!seconds) return "";
+  const s = Number(seconds);
+  if (s < 60) return s + "s";
+  const minutes = Math.floor(s / 60);
+  if (minutes < 60) return minutes + "m " + (s % 60) + "s";
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return hours + "h " + (minutes % 60) + "m";
+  return Math.floor(hours / 24) + "d " + (hours % 24) + "h";
 }
 function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g,
@@ -278,10 +281,11 @@ function taskCard(t) {
     : (t.status === "Installed" || t.status === "Completed") ? "ok" : "";
 
   const meta = [];
-  if (active) meta.push(fmtSpeed(t.speedBps));
+  if (t.status === "Downloading") meta.push(fmtSpeed(t.speedBps));
+  if (t.status === "Installing") meta.push(fmtSpeed(t.installSpeedBps));
   if (t.totalBytes) meta.push(`${fmtBytes(t.completedBytes)} / ${fmtBytes(t.totalBytes)}`);
-  const eta = fmtEta(t);
-  if (eta && t.status === "Downloading") meta.push("ETA " + eta);
+  const eta = fmtEta(t.etaSeconds);
+  if (eta) meta.push("ETA " + eta);
   if (active) meta.push(`${t.peers} peers`);
   if (t.mode === "install" && t.packageCount)
     meta.push(`pkg ${t.packagesInstalled}/${t.packageCount}`);

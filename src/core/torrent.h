@@ -41,6 +41,7 @@ typedef struct {
     uint64_t completed_bytes;
     uint64_t total_bytes;
     uint64_t speed_bps;   /* bytes/sec, updated ~1/sec */
+    uint64_t last_payload_ms; /* monotonic time of last accepted payload */
     uint32_t num_pieces_verified;
     int      verifying;   /* startup or final verification is in progress */
     int      complete;    /* 1 when all pieces verified */

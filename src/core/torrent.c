@@ -147,6 +147,7 @@ struct torrent {
     uint64_t speed_bytes; /* accumulated since last speed update */
     uint64_t speed_bps;
     uint64_t speed_time_ms;
+    uint64_t last_payload_ms;
     uint64_t last_health_ms;
     uint32_t expired_requests;
     /* Cached DHT routing-table counts. dht_shared_nodes() locks the shared
@@ -429,8 +430,11 @@ static void cb_block(void *ud, uint32_t idx, uint32_t off,
     t->downloaded   += len;
     t->speed_bytes  += len;
     uint32_t block = off / BLOCK_SIZE;
+    int already_had_block = piece_mgr_has_block(t->pm, idx, block);
     int duplicated = piece_mgr_block_request_count(t->pm, idx, block) > 1;
     int result = piece_mgr_got_block(t->pm, idx, off, data, len);
+    if (result >= 1 && !already_had_block)
+        t->last_payload_ms = now_ms();
     if (result >= 1 && duplicated)
         cancel_duplicate_requests(t, idx, off, len);
     if (started_us) {
@@ -492,6 +496,7 @@ int torrent_submit_web_piece(torrent_t *t, uint32_t piece,
 
     piece_mgr_mark_pending(t->pm, piece);
     int result = 1;
+    uint64_t received = 0;
     for (uint32_t off = 0; off < len; off += BLOCK_SIZE) {
         uint32_t block = off / BLOCK_SIZE;
         if (piece_mgr_has_block(t->pm, piece, block))
@@ -508,8 +513,11 @@ int torrent_submit_web_piece(torrent_t *t, uint32_t piece,
         }
         t->downloaded  += blen;
         t->speed_bytes += blen;
+        received += blen;
         result = r;
     }
+    if (received)
+        t->last_payload_ms = now_ms();
     return result;
 }
 
@@ -1947,6 +1955,7 @@ void torrent_stat(const torrent_t *t, torrent_stat_t *s) {
     s->total_bytes = (uint64_t)t->mi.total_length;
     s->completed_bytes = t->pm->completed_bytes;
     s->speed_bps  = t->speed_bps;
+    s->last_payload_ms = t->last_payload_ms;
     s->num_pieces_verified = t->startup_verifying
                            ? t->startup_verify_index
                            : t->final_verify_index;

@@ -1,4 +1,5 @@
 #include "download_manager.hpp"
+#include "install_pacer.hpp"
 #include "request_gate.hpp"
 #include "stream_budget_arbiter.hpp"
 #include "stream_ram_budget.hpp"
@@ -255,6 +256,7 @@ public:
           completedPackages_(completedPackages),
           initialCompletedPackages_(completedPackages),
           producerOrdinal_(completedPackages),
+          pacer_(64 * 1024 * 1024),
           progress_(std::move(progress)) {
         arbiter_ = &arbiter;
         bool useSelection = !fileSelection.empty();
@@ -336,6 +338,7 @@ public:
             }
             maxQueuedBytes_ = budget.maxQueuedBytes;
             maxBufferedBytes_ = budget.maxBufferedBytes;
+            pacer_.setMaximumBufferedBytes(maxBufferedBytes_);
             requestAheadBytes_ = budget.requestAheadBytes;
             lookaheadMin_ = budget.lookaheadMin;
             lookaheadMax_ = budget.lookaheadMax;
@@ -479,6 +482,7 @@ public:
         }
         maxQueuedBytes_ = budget.maxQueuedBytes;
         maxBufferedBytes_ = budget.maxBufferedBytes;
+        pacer_.setMaximumBufferedBytes(maxBufferedBytes_);
         requestAheadBytes_ = budget.requestAheadBytes;
         lookaheadMin_ = budget.lookaheadMin;
         lookaheadMax_ = budget.lookaheadMax;
@@ -596,6 +600,8 @@ private:
         // and the strict-order window bounds the overshoot.
         pendingBytes_ += chunk.data.size();
         pending_.emplace(key, std::move(chunk));
+        if (requestGate_.state() == pipensx::RequestGate::State::Free)
+            pacer_.observeSource(size, now_ms());
         requestGate_.onArrived(ordinal, offset + size);
         telemetrySinkBytes_ += size;
         telemetrySinkChunks_++;
@@ -603,6 +609,7 @@ private:
             telemetryHighBufferedBytes_, bufferedBytesLocked());
         enqueueReadyLocked();
         uint64_t now = now_ms();
+        pacer_.setBufferedBytes(pendingBytes_ + queuedBytes_);
         updateRequestGateLocked(now);
         maybeEmitTelemetryLocked(now, false);
         return true;
@@ -632,6 +639,7 @@ private:
             ? now - requestGateStateSinceMs_ : 0;
         requestGateState_ = state;
         requestGateStateSinceMs_ = now;
+        pacer_.setSourceMeasurementEnabled(state == GateState::Free, now);
         size_t buffered = bufferedBytesLocked();
         if (previous == GateState::Paused) {
             telemetryPausedMs_ += stateMs;
@@ -715,6 +723,10 @@ private:
         };
         callbacks.writeFile = [this](const uint8_t* bytes,
                                      size_t byteCount) {
+            if (!pacer_.waitForWrite(byteCount, [this] {
+                    return cancelRequested_.load();
+                }))
+                return false;
             bool ok = backend_->writeFile(bytes, byteCount);
             if (ok) {
                 if (progress_) {
@@ -789,7 +801,9 @@ private:
         }
         stream_ = std::move(stream);
         activeFileIndex_ = fileIndex;
+        activeOrdinal_.store(completedPackages_);
         currentPackage_ = file.path;
+        pacer_.beginPackage(journal.compressed);
         configs_[fileIndex].ready_bytes = journal.state.consumed;
         producerOffset_ = journal.state.consumed;
         journalConsumed_ = journal.state.consumed;
@@ -850,7 +864,9 @@ private:
                 return setError(backend_->error());
             }
             activeFileIndex_ = chunk.fileIndex;
+            activeOrdinal_.store(packageOrdinals_.at(chunk.fileIndex));
             currentPackage_ = file.path;
+            pacer_.beginPackage(isCompressedName(file.path));
             stream_ = std::make_unique<install::PackageStream>(
                 isCompressedName(file.path), makeCallbacks(), taskId_);
             if (progress_)
@@ -860,7 +876,15 @@ private:
         if (activeFileIndex_ != chunk.fileIndex ||
             chunk.fileOffset != stream_->consumed())
             return setError("Install worker received bytes out of order.");
+        {
+            std::lock_guard<std::mutex> lock(queueMutex_);
+            const uint32_t ordinal = packageOrdinals_.at(chunk.fileIndex);
+            pacer_.setBufferedBytes(pendingBytes_ + queuedBytes_);
+            pacer_.setSourceComplete(producerOrdinal_ > ordinal);
+        }
         if (!stream_->write(chunk.data.data(), chunk.data.size())) {
+            if (cancelRequested_)
+                return false;
             if (error().empty())
                 setError(stream_->error());
             log_msg("[install] stream error package='%s' offset=%lld: %s\n",
@@ -870,6 +894,8 @@ private:
             clearJournal();
             return false;
         }
+        pacer_.observeConsumed(stream_->consumed(), backend_->installedBytes(),
+                               now_ms());
         if (chunk.final) {
             if (cancelRequested_)
                 return false;
@@ -898,8 +924,10 @@ private:
                 return false;
             }
             ++completedPackages_;
+            pacer_.endPackage();
             stream_.reset();
             activeFileIndex_ = UINT32_MAX;
+            activeOrdinal_.store(UINT32_MAX);
             // The finished package's resume point is obsolete.
             clearJournal();
             if (progress_)
@@ -946,6 +974,7 @@ private:
                 queuedBytes_ -= chunk.data.size();
                 processingBytes_ = chunk.data.size();
                 processing_ = true;
+                pacer_.setBufferedBytes(pendingBytes_ + queuedBytes_);
             }
 
             uint64_t processStartedUs = telemetry_enabled() ? now_us() : 0;
@@ -971,6 +1000,7 @@ private:
                 } else {
                     enqueueReadyLocked();
                 }
+                pacer_.setBufferedBytes(pendingBytes_ + queuedBytes_);
                 uint64_t now = now_ms();
                 updateRequestGateLocked(now);
                 if (pending_.empty() && queue_.empty())
@@ -1090,6 +1120,8 @@ private:
             pending_.erase(item);
             queued = true;
             if (final) {
+                if (activeOrdinal_.load() == producerOrdinal_)
+                    pacer_.setSourceComplete(true);
                 producerOffset_ = 0;
                 ++producerOrdinal_;
             } else if (producerOffset_ >= static_cast<uint64_t>(file.length)) {
@@ -1177,6 +1209,7 @@ private:
     uint32_t initialCompletedPackages_ = 0;
     uint32_t packageCount_ = 0;
     uint32_t activeFileIndex_ = UINT32_MAX;
+    std::atomic<uint32_t> activeOrdinal_ {UINT32_MAX};
     std::string currentPackage_;
     mutable std::mutex queueMutex_;
     std::condition_variable queueReady_;
@@ -1207,6 +1240,7 @@ private:
     uint64_t lookaheadLastAdaptMs_ = 0;
     // Request gate state (PERF_PLAN 5.3 + 7.1); guarded by queueMutex_.
     pipensx::RequestGate requestGate_;
+    pipensx::InstallPacer pacer_;
     pipensx::RequestGate::State requestGateState_ =
         pipensx::RequestGate::State::Free;
     uint64_t requestGateStateSinceMs_ = 0;
@@ -1274,6 +1308,107 @@ TaskSource persistedSource(const std::string& value) {
 }
 
 } // namespace
+
+void updateTaskDownloadProgress(DownloadTask& task, uint64_t completedBytes,
+                                uint64_t progressAtMs) {
+    if (completedBytes < task.completedBytes) {
+        task.downloadProgressUpdatedAtMs = 0;
+    } else if (progressAtMs >= task.downloadProgressUpdatedAtMs) {
+        task.downloadProgressUpdatedAtMs = progressAtMs;
+    }
+    task.completedBytes = completedBytes;
+}
+
+void updateTaskInstallProgress(DownloadTask& task, uint64_t installedBytes,
+                               uint64_t installTotalBytes,
+                               DownloadStatus status, uint64_t nowMs) {
+    auto resetRate = [&task] {
+        task.installSpeedBytesPerSecond = 0;
+        task.installSpeedUpdatedAtMs = 0;
+        task.installRateBaseBytes = 0;
+        task.installRateBaseAtMs = 0;
+    };
+    const bool continuing = task.status == DownloadStatus::Installing &&
+                            status == DownloadStatus::Installing &&
+                            installTotalBytes > installedBytes &&
+                            installedBytes >= task.installedBytes;
+    if (!continuing)
+        resetRate();
+
+    task.status = status;
+    task.installedBytes = installedBytes;
+    task.installTotalBytes = installTotalBytes;
+
+    if (status != DownloadStatus::Installing || !installTotalBytes ||
+        installedBytes >= installTotalBytes) {
+        resetRate();
+        return;
+    }
+
+    if (!task.installRateBaseAtMs ||
+        installedBytes < task.installRateBaseBytes) {
+        task.installRateBaseBytes = installedBytes;
+        task.installRateBaseAtMs = nowMs;
+        return;
+    }
+
+    if (nowMs <= task.installRateBaseAtMs ||
+        nowMs - task.installRateBaseAtMs < kInstallRateWindowMs ||
+        installedBytes == task.installRateBaseBytes)
+        return;
+
+    const uint64_t elapsed = nowMs - task.installRateBaseAtMs;
+    const uint64_t sample =
+        (installedBytes - task.installRateBaseBytes) * 1000 / elapsed;
+    if (sample) {
+        if (task.installSpeedBytesPerSecond) {
+            const uint64_t previous = task.installSpeedBytesPerSecond;
+            task.installSpeedBytesPerSecond = sample >= previous
+                ? previous + (sample - previous) * 3 / 10
+                : previous - (previous - sample) * 3 / 10;
+        } else {
+            task.installSpeedBytesPerSecond = sample;
+        }
+        task.installSpeedUpdatedAtMs = nowMs;
+    }
+    task.installRateBaseBytes = installedBytes;
+    task.installRateBaseAtMs = nowMs;
+}
+
+uint64_t currentInstallSpeed(const DownloadTask& task, uint64_t nowMs) {
+    if (task.status != DownloadStatus::Installing ||
+        !task.installSpeedBytesPerSecond || !task.installSpeedUpdatedAtMs ||
+        nowMs < task.installSpeedUpdatedAtMs ||
+        nowMs - task.installSpeedUpdatedAtMs > kProgressRateStaleMs)
+        return 0;
+    return task.installSpeedBytesPerSecond;
+}
+
+std::optional<uint64_t> taskEtaSeconds(const DownloadTask& task,
+                                       uint64_t nowMs) {
+    uint64_t completed = 0;
+    uint64_t total = 0;
+    uint64_t speed = 0;
+    if (task.status == DownloadStatus::Downloading) {
+        completed = task.completedBytes;
+        total = task.totalBytes;
+        speed = task.speedBytesPerSecond;
+        if (!task.downloadProgressUpdatedAtMs ||
+            nowMs < task.downloadProgressUpdatedAtMs ||
+            nowMs - task.downloadProgressUpdatedAtMs > kProgressRateStaleMs)
+            return std::nullopt;
+    } else if (task.status == DownloadStatus::Installing) {
+        completed = task.installedBytes;
+        total = task.installTotalBytes;
+        speed = currentInstallSpeed(task, nowMs);
+    } else {
+        return std::nullopt;
+    }
+    if (!total || completed >= total || !speed)
+        return std::nullopt;
+    const uint64_t remaining = total - completed;
+    return remaining / speed + (remaining % speed != 0);
+}
 
 const char* statusName(DownloadStatus status) {
     switch (status) {
@@ -2190,16 +2325,15 @@ void DownloadManager::runDebridTask(const ClaimedTask& claim) {
             task->status == DownloadStatus::Paused)
             return;
         bool packageCommitted = p.packagesInstalled != task->packagesInstalled;
-        task->status = p.status;
-        task->completedBytes = p.completedBytes;
+        updateTaskDownloadProgress(*task, p.completedBytes, now_ms());
         if (p.totalBytes)
             task->totalBytes = p.totalBytes;
         task->speedBytesPerSecond = p.speedBytesPerSecond;
         task->fetchProgress = p.fetchProgress;
         task->packagesInstalled = p.packagesInstalled;
         task->currentPackage = p.currentPackage;
-        task->installedBytes = p.installedBytes;
-        task->installTotalBytes = p.installTotalBytes;
+        updateTaskInstallProgress(*task, p.installedBytes,
+                                  p.installTotalBytes, p.status, now_ms());
         // Only package boundaries hit the state file; the per-chunk progress
         // above is in-memory until then.
         if (packageCommitted) {
@@ -2338,9 +2472,8 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
                     completed != task->packagesInstalled;
                 task->packagesInstalled = completed;
                 task->currentPackage = package;
-                task->installedBytes = installed;
-                task->installTotalBytes = expected;
-                task->status = status;
+                updateTaskInstallProgress(*task, installed, expected, status,
+                                          now_ms());
                 if (packageCommitted) {
                     std::string ignored;
                     saveLocked(ignored);
@@ -2493,7 +2626,8 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
             DownloadTask* task = findLocked(activeId);
             if (!task)
                 break;
-            task->completedBytes = stat.completed_bytes;
+            updateTaskDownloadProgress(*task, stat.completed_bytes,
+                                       stat.last_payload_ms);
             task->totalBytes = stat.total_bytes;
             task->speedBytesPerSecond = stat.speed_bps;
             task->peers = stat.num_peers;
