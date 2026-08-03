@@ -261,11 +261,6 @@ public:
         if (checkOnEntry_ && !installed_->titles().empty())
             checkAllTitles();
 
-        registerAction(tr("pipensx/common/refresh"), brls::BUTTON_RB,
-                       [this](brls::View*) {
-            refresh();
-            return true;
-        });
         registerAction(tr("pipensx/installed/update_check_all"),
                        brls::BUTTON_LB, [this](brls::View*) {
             checkAllTitles();
@@ -539,33 +534,30 @@ private:
             reload();
             return;
         }
-        const std::vector<size_t> matches =
-            updateVersionMatches(preview, latestVersion);
-        if (matches.size() > 1) {
-            // Several packages carry the update version: let the user pick
-            // which one is actually the update (mods reusing the version tag
-            // of the release they patch can look identical on paper).
-            chooseUpdateFile(preview, path, std::move(initialPeers), matches);
-            return;
-        }
-        importUpdateTorrent(preview, path, std::move(initialPeers),
-                            selectUpdateFiles(preview, latestVersion));
+        // Every update offer lands in the chooser with the recommended
+        // packages preselected. The old shortcut — importing straight away
+        // when exactly one package carried the update's version — is gone:
+        // the user always gets to see (and tune) what an update would pull.
+        chooseUpdateFile(preview, path, std::move(initialPeers),
+                         selectUpdateFiles(preview, latestVersion));
     }
 
     // The tmp torrent stays alive until the choice lands; the chooser hands
     // the bootstrap peers straight back into the import, so a resolved
     // torrent never loses its only way to start where the tracker is
-    // unreachable. Both exits (pick and cancel) come back here, where the
-    // tmp torrent is owned.
+    // unreachable. Both exits (confirm and cancel) come back here, where the
+    // tmp torrent is owned. `actions` is the recommendation mask from
+    // selectUpdateFiles — the rows open with it preselected.
     void chooseUpdateFile(const TorrentPreview& preview,
                           const std::string& path,
                           std::vector<uint8_t> initialPeers,
-                          const std::vector<size_t>& matches) {
+                          std::vector<uint8_t> actions) {
         brls::Application::pushActivity(new UpdateFileChooserActivity(
-            preview, matches, std::move(initialPeers),
-            [this, preview, path](size_t index, std::vector<uint8_t> peers) {
+            preview, std::move(actions), std::move(initialPeers),
+            [this, preview, path](std::vector<uint8_t> mask,
+                                  std::vector<uint8_t> peers) {
                 importUpdateTorrent(preview, path, std::move(peers),
-                                    selectFiles(preview, {index}));
+                                    std::move(mask));
             },
             [this, path] {
                 ::unlink(path.c_str());

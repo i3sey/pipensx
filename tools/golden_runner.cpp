@@ -10,15 +10,15 @@
 //                 --screen catalog|shelf-scroll|shelf-header|detail|torrent-selection|
 //                          torrent-selection-scroll|downloads|downloads-back|frame|
 //                          hints-budget|installed|installed-populated|update-chooser|
-//                          settings|settings-debrid|help|
-//                          first-run|first-run-focus|debrid-link|
+//                          update-chooser-toggle|settings|settings-debrid|help|
+//                          first-run|first-run-focus|first-run-disclaimer|debrid-link|
 //                          about|bug-report|
 //                          bug-report-detail|bug-report-focus|sidebar-touch
 //                 [--frames N] [--sandbox <dir>]
 //
-// downloads-back, torrent-selection-scroll, hints-budget, bug-report-focus and
-// sidebar-touch are behaviour checks: they assert and exit non-zero instead of
-// producing a baseline.
+// downloads-back, torrent-selection-scroll, hints-budget, bug-report-focus,
+// sidebar-touch, update-chooser-toggle and first-run-disclaimer are behaviour
+// checks: they assert and exit non-zero instead of producing a baseline.
 //
 // Determinism notes:
 //   - run with LIBGL_ALWAYS_SOFTWARE=1 so Mesa llvmpipe rasterizes the same
@@ -371,6 +371,9 @@ int main(int argc, char** argv) {
     BugReportActivity* bugReportFocus = nullptr;
     FirstRunView* firstRunFocus = nullptr;
     brls::Activity* detailRailNav = nullptr;
+    UpdateFileChooserActivity* updateChooser = nullptr;
+    std::vector<uint8_t> updateChooserMask;
+    bool disclaimerOkFired = false;
     const std::string setupDiagnosticFixture =
         "cut-off secret body api_key=DO_NOT_SHOW\n"
         "[  13010] [diagnostic] schema=1 level=error stage=net "
@@ -468,26 +471,38 @@ int main(int argc, char** argv) {
         const size_t index = screen == "screenshot-viewer-preview" ? 1 : 0;
         activity = new ScreenshotViewerActivity(
             &metadata, {hires, lowres, hires}, index, "Fixture Game");
-    } else if (screen == "update-chooser") {
+    } else if (screen == "update-chooser" ||
+               screen == "update-chooser-toggle") {
         // The update-file chooser: a release with two packages carrying the
         // update's [vN] tag. Same-name candidates with a common deep prefix
         // are exactly the case the chooser exists for, so the fixture pins
         // one such pair — the rows must resolve by dimmed directory and
-        // right-aligned byte size, not by label length.
+        // right-aligned byte size, not by label length. Both carry the
+        // update's version, so the recommendation mask preselected both. The
+        // readme between them is not a package: it must never become a row,
+        // and toggling the second row must flip mask slot 2, not slot 1.
         pipensx::TorrentPreview preview;
         preview.name = "Pipen Odyssey [Multi]";
         preview.files = {
             {"Repack/Pipen Odyssey [v131072].nsp", 2361441976ULL, true,
              false, false},
+            {"Repack/Readme.txt", 4096ULL, false, false, false},
             {"Repack/Mods/Pipen Odyssey [v131072].nsp", 934155878ULL, true,
              false, false},
         };
         preview.fileCount = static_cast<uint32_t>(preview.files.size());
-        preview.totalBytes = 2361441976ULL + 934155878ULL;
+        preview.totalBytes = 2361441976ULL + 4096ULL + 934155878ULL;
         preview.packageCount = 2;
-        activity = new UpdateFileChooserActivity(
-            std::move(preview), {0, 1}, {},
-            [](size_t, std::vector<uint8_t>) {}, [] {});
+        const uint8_t install = static_cast<uint8_t>(pipensx::FileAction::Install);
+        const uint8_t skip = static_cast<uint8_t>(pipensx::FileAction::Skip);
+        std::vector<uint8_t> updateActions = {install, skip, install};
+        updateChooser = new UpdateFileChooserActivity(
+            std::move(preview), std::move(updateActions), {},
+            [&](std::vector<uint8_t> mask, std::vector<uint8_t>) {
+                updateChooserMask = std::move(mask);
+            },
+            [] {});
+        activity = updateChooser;
     } else if (screen == "torrent-selection" ||
                screen == "torrent-selection-scroll") {
         // More files than fit on screen: the recycler only recycles once the
@@ -712,12 +727,15 @@ int main(int argc, char** argv) {
         activity = new GoldenActivity(
             new HelpView(&manager, &catalog, &metadata, &installed));
     } else if (screen == "first-run" || screen == "first-run-focus") {
-        auto* view = new FirstRunView(
-            &settings, &manager,
-            SetupSummaryFixture{"192.168.50.42", setupDiagnosticFixture});
+        auto* view = new FirstRunView(&settings, &manager,
+                                      [](pipensx::DebridProviderKind, bool) {});
         activity = new GoldenActivity(view);
         if (screen == "first-run-focus")
             firstRunFocus = view;
+    } else if (screen == "first-run-disclaimer") {
+        // Host for the disclaimer dialog; the dialog is opened right after
+        // the activity is pushed below.
+        activity = new GoldenActivity(new brls::Box());
     } else if (screen == "debrid-link") {
         pipensx::AppSettingsData values = settings.get();
         values.debridProvider = pipensx::DebridProviderKind::TorBox;
@@ -775,6 +793,9 @@ int main(int argc, char** argv) {
     }
 
     brls::Application::pushActivity(activity);
+    if (screen == "first-run-disclaimer")
+        pipensx::ui::showCatalogDisclaimer(
+            &settings, [&disclaimerOkFired] { disclaimerOkFired = true; });
     for (int i = 0; i < frames; ++i) {
         if (i == 10 && focusAfterLayout)
             brls::Application::giveFocus(focusAfterLayout);
@@ -862,7 +883,37 @@ int main(int argc, char** argv) {
         auto* option = dynamic_cast<FirstRunOption*>(
             brls::Application::getCurrentFocus());
         if (!option)
-            return fail("first-run-focus did not start on the first option");
+            return fail("first-run-focus did not start on an option");
+        // B is locked until a method is picked: a real B press must be
+        // consumed by the view's hidden action, never dismiss the chooser.
+        if (!firstRunFocus->backLocked())
+            return fail("first-run-focus does not lock B before a choice");
+        // The frame's Back action must be replaced with a hidden no-op, or
+        // the hint bar would advertise a Back button the lock makes useless.
+        bool frameBackHidden = false;
+        for (brls::View* node = option->getParent(); node;
+             node = node->getParent()) {
+            if (auto* frame = dynamic_cast<brls::AppletFrame*>(node)) {
+                for (const auto& action : frame->getActions())
+                    if (action->getType() == brls::ACTION_GAMEPAD &&
+                        action->getButton() == brls::BUTTON_B)
+                        frameBackHidden = action->isHidden();
+                break;
+            }
+        }
+        if (!frameBackHidden)
+            return fail("first-run-focus still shows a Back hint");
+        brls::Activity* top =
+            brls::Application::getActivitiesStack().back();
+        const std::string beforeB = firstRunFocus->summaryState();
+        brls::Application::onControllerButtonPressed(brls::BUTTON_B, false);
+        for (int frame = 0; frame < 5; ++frame)
+            brls::Application::mainLoop();
+        const auto& stack = brls::Application::getActivitiesStack();
+        if (stack.empty() || stack.back() != top ||
+            firstRunFocus->summaryState() != beforeB ||
+            brls::Application::getCurrentFocus() != option)
+            return fail("first-run-focus B dismissed the chooser");
         std::vector<std::string> states{firstRunFocus->summaryState()};
         for (int i = 0; i < 2; ++i) {
             brls::View* next = option->getNextFocus(brls::FocusDirection::DOWN,
@@ -876,11 +927,180 @@ int main(int argc, char** argv) {
             states.push_back(firstRunFocus->summaryState());
         }
         if (states[0] == states[1] || states[1] == states[2] ||
+            states[0] == states[2] ||
             brls::Application::getCurrentFocus() != option)
             return fail("first-run-focus did not update the summary in place");
         if (!firstRunFocus->summaryFits())
             return fail("first-run-focus summary clips on the direct option");
         std::printf("golden_runner: first-run summary followed all options\n");
+        manager.shutdown();
+        std::fflush(nullptr);
+        _exit(0);
+    }
+
+    if (updateChooser && screen == "update-chooser-toggle") {
+        // The multi-select update chooser: rows open at the recommendation
+        // mask (packages only — the readme between them is not a row), A
+        // toggles a row, Continue returns the final mask — and with
+        // everything toggled off Continue must refuse to proceed. The mask
+        // stays parallel to preview.files, so toggling the second row flips
+        // slot 2, never the readme's slot 1.
+        if (!updateChooserMask.empty())
+            return fail("update-chooser-toggle onPick fired before Continue");
+        const auto& selection = updateChooser->selection();
+        const uint8_t install =
+            static_cast<uint8_t>(pipensx::FileAction::Install);
+        const uint8_t skip = static_cast<uint8_t>(pipensx::FileAction::Skip);
+        const auto wantMask = [&](uint8_t a, uint8_t b) {
+            return selection.size() == 3 && selection[0] == a &&
+                   selection[1] == skip && selection[2] == b;
+        };
+        if (!wantMask(install, install))
+            return fail("update-chooser-toggle ignored the recommendation mask");
+
+        brls::View* cell =
+            brls::Application::getCurrentFocus();
+        auto* row = dynamic_cast<TorrentSelectionCell*>(cell);
+        if (!row)
+            return fail("update-chooser-toggle did not focus a row");
+        brls::View* next =
+            row->getNextFocus(brls::FocusDirection::DOWN, row);
+        auto* row2 = dynamic_cast<TorrentSelectionCell*>(next);
+        if (!row2)
+            return fail("update-chooser-toggle could not reach the second row");
+
+        auto toggleRow = [](TorrentSelectionCell* target) {
+            brls::Action* toggle = nullptr;
+            for (const auto& action : target->getActions())
+                if (action->getType() == brls::ACTION_GAMEPAD &&
+                    action->getButton() == brls::BUTTON_A)
+                    toggle = action.get();
+            if (!toggle)
+                return false;
+            toggle->getActionListener()(target);
+            for (int frame = 0; frame < 5; ++frame)
+                brls::Application::mainLoop();
+            return true;
+        };
+        if (!toggleRow(row))
+            return fail("update-chooser-toggle row has no A toggle");
+        if (!wantMask(skip, install))
+            return fail("update-chooser-toggle did not flip the first row");
+        if (!toggleRow(row2))
+            return fail("update-chooser-toggle second row has no A toggle");
+        // The readme occupies mask slot 1; the second row is slot 2. If the
+        // row-to-index mapping was off by one, this assertion fails.
+        if (!wantMask(skip, skip))
+            return fail("update-chooser-toggle flipped the wrong mask slot");
+
+        // Everything off: Continue must refuse to confirm and return a mask.
+        brls::Button* confirm = nullptr;
+        std::function<void(brls::View*)> findConfirm =
+            [&](brls::View* node) {
+                if (confirm)
+                    return;
+                if (auto* button = dynamic_cast<brls::Button*>(node))
+                    if (button->getText() == tr("pipensx/common/continue"))
+                        confirm = button;
+                if (auto* box = dynamic_cast<brls::Box*>(node))
+                    for (brls::View* child : box->getChildren())
+                        findConfirm(child);
+            };
+        findConfirm(updateChooser->getContentView());
+        if (!confirm)
+            return fail("update-chooser-toggle has no Continue button");
+        brls::Action* continueAction = nullptr;
+        for (const auto& action : confirm->getActions())
+            if (action->getType() == brls::ACTION_GAMEPAD &&
+                action->getButton() == brls::BUTTON_A)
+                continueAction = action.get();
+        if (!continueAction)
+            return fail("update-chooser-toggle Continue has no A action");
+        continueAction->getActionListener()(confirm);
+        for (int frame = 0; frame < 5; ++frame)
+            brls::Application::mainLoop();
+        if (!updateChooserMask.empty())
+            return fail("update-chooser-toggle confirmed with nothing selected");
+
+        // One row back on: Continue confirms and hands the full mask back.
+        if (!toggleRow(row))
+            return fail("update-chooser-toggle could not re-select a row");
+        if (!wantMask(install, skip))
+            return fail("update-chooser-toggle re-selected the wrong row");
+        continueAction->getActionListener()(confirm);
+        for (int frame = 0; frame < 5; ++frame)
+            brls::Application::mainLoop();
+        if (updateChooserMask.size() != 3 ||
+            updateChooserMask[0] != install ||
+            updateChooserMask[1] != skip ||
+            updateChooserMask[2] != skip)
+            return fail("update-chooser-toggle returned the wrong mask");
+        std::printf("golden_runner: update chooser toggled and confirmed "
+                    "(mask=%u,%u,%u)\n", updateChooserMask[0],
+                    updateChooserMask[1], updateChooserMask[2]);
+        manager.shutdown();
+        std::fflush(nullptr);
+        _exit(0);
+    }
+
+    if (screen == "first-run-disclaimer") {
+        // The catalog disclaimer is non-cancelable: B must not dismiss it
+        // (and must not acknowledge it or continue the chain), and only OK
+        // persists the flag and fires the continuation that opens the
+        // provider link screen on a fresh first run.
+        if (settings.get().catalogDisclaimerAcknowledged)
+            return fail("first-run-disclaimer started with the flag set");
+        auto stack = brls::Application::getActivitiesStack();
+        if (stack.size() < 2)
+            return fail("first-run-disclaimer never opened over the host");
+        brls::Activity* dialogActivity = stack.back();
+        brls::Application::onControllerButtonPressed(brls::BUTTON_B, false);
+        for (int frame = 0; frame < 5; ++frame)
+            brls::Application::mainLoop();
+        if (brls::Application::getActivitiesStack().back() != dialogActivity)
+            return fail("first-run-disclaimer B dismissed the dialog");
+        if (settings.get().catalogDisclaimerAcknowledged)
+            return fail("first-run-disclaimer B acknowledged the dialog");
+        if (disclaimerOkFired)
+            return fail("first-run-disclaimer B continued the chain");
+
+        // Press OK: the flag persists and the continuation fires.
+        brls::Button* ok = nullptr;
+        std::function<void(brls::View*)> findOk = [&](brls::View* node) {
+            if (ok)
+                return;
+            if (auto* button = dynamic_cast<brls::Button*>(node))
+                if (button->getText() == tr("pipensx/common/ok"))
+                    ok = button;
+            if (auto* box = dynamic_cast<brls::Box*>(node))
+                for (brls::View* child : box->getChildren())
+                    findOk(child);
+        };
+        findOk(dialogActivity->getContentView());
+        if (!ok)
+            return fail("first-run-disclaimer has no OK button");
+        brls::Action* okAction = nullptr;
+        for (const auto& action : ok->getActions())
+            if (action->getType() == brls::ACTION_GAMEPAD &&
+                action->getButton() == brls::BUTTON_A)
+                okAction = action.get();
+        if (!okAction)
+            return fail("first-run-disclaimer OK has no A action");
+        okAction->getActionListener()(ok);
+        // buttonClick runs the callback only after the dismiss animation
+        // completes, so pump until the dialog is gone or we give up.
+        for (int frame = 0; frame < 180; ++frame) {
+            brls::Application::mainLoop();
+            if (brls::Application::getActivitiesStack().back() == activity)
+                break;
+        }
+        if (brls::Application::getActivitiesStack().back() != activity)
+            return fail("first-run-disclaimer OK never dismissed the dialog");
+        if (!settings.get().catalogDisclaimerAcknowledged)
+            return fail("first-run-disclaimer OK did not persist the flag");
+        if (!disclaimerOkFired)
+            return fail("first-run-disclaimer OK did not continue the chain");
+        std::printf("golden_runner: disclaimer blocks B and continues on OK\n");
         manager.shutdown();
         std::fflush(nullptr);
         _exit(0);

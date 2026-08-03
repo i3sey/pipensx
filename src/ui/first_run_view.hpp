@@ -1,22 +1,252 @@
 #pragma once
 
 #include <functional>
-#include <optional>
 #include <string>
 #include <utility>
 
 #include <borealis.hpp>
 
+extern "C" {
+#include "core/util.h"
+}
 #include "app/app_settings.hpp"
-#include "app/bug_report.hpp"
 #include "app/download_manager.hpp"
-#include "ui/common/setup_summary_panel.hpp"
 #include "ui/common/ui_helpers.hpp"
 #include "ui/debrid_ui.hpp"
 #include "ui/i18n.hpp"
 #include "ui/theme.hpp"
 
 namespace pipensx::ui {
+
+// One arrow of the mode diagram: a horizontal line with an arrowhead on its
+// right edge and a caption label below the line. The chips it connects are
+// real views on either side; this view draws only the connector between them.
+class ModeDiagramArrow : public brls::Box {
+public:
+    explicit ModeDiagramArrow(const std::string& caption)
+        : brls::Box(brls::Axis::COLUMN) {
+        setFocusable(false);
+        setGrow(1);
+        // The chips take 3x100 of the panel's ~480; a plain grow would leave
+        // each arrow ~90px — which is exactly the caption's minimum width.
+        // Below that, "своя сеть" wraps letter-by-letter (no spaces to break
+        // on), so pin the floor.
+        setMinWidth(90);
+        setAlignItems(brls::AlignItems::CENTER);
+
+        auto* pad = new brls::Box();
+        pad->setGrow(1);
+        addView(pad);
+
+        caption_ = new brls::Label();
+        caption_->setFontSize(theme::kFontCaption);
+        caption_->setTextColor(theme::textTertiary());
+        caption_->setText(caption);
+        addView(caption_);
+
+        // Fixed floor under the caption: the top spacer grows instead, so the
+        // arrow line (drawn at the vertical centre) always lands just above
+        // the caption, whatever the panel width is.
+        auto* bottom = new brls::Box();
+        bottom->setHeight(28);
+        addView(bottom);
+    }
+
+    void setCaption(const std::string& text) { caption_->setText(text); }
+
+    void draw(NVGcontext* vg, float x, float y, float width, float height,
+              brls::Style style, brls::FrameContext* ctx) override {
+        const float cy = y + height / 2.0f;
+        const float right = x + width - 2.0f;
+        nvgSave(vg);
+        nvgLineCap(vg, NVG_ROUND);
+        nvgBeginPath(vg);
+        nvgMoveTo(vg, x + 2.0f, cy);
+        nvgLineTo(vg, right, cy);
+        nvgStrokeColor(vg, theme::textSecondary());
+        nvgStrokeWidth(vg, 2.0f);
+        nvgStroke(vg);
+        nvgBeginPath(vg);
+        nvgMoveTo(vg, right - 6.0f, cy - 4.0f);
+        nvgLineTo(vg, right, cy);
+        nvgLineTo(vg, right - 6.0f, cy + 4.0f);
+        nvgStroke(vg);
+        nvgRestore(vg);
+        // The caption is a real child view; Box::draw paints the children,
+        // which this override must not swallow.
+        brls::Box::draw(vg, x, y, width, height, style, ctx);
+    }
+
+private:
+    brls::Label* caption_ = nullptr;
+};
+
+// How a mode gets files onto the console: a console chip, an optional server
+// chip (TorrServer or TorBox) and the swarm chip, joined by arrows. The
+// Direct mode hides the server, so the diagram collapses to a single hop.
+class ModeDiagram : public brls::Box {
+public:
+    enum class Kind { TorrServer, TorBox, Direct };
+
+    ModeDiagram() : brls::Box(brls::Axis::ROW) {
+        setFocusable(false);
+        setHeight(96);
+        setAlignItems(brls::AlignItems::CENTER);
+
+        makeChip(tr("pipensx/first_run/diagram_console"));
+        serverHop_ = new ModeDiagramArrow(tr("pipensx/first_run/diagram_lan"));
+        addView(serverHop_);
+        serverChip_ = makeChip(tr("pipensx/first_run/diagram_torrserver"),
+                               &serverLabel_);
+        swarmHop_ =
+            new ModeDiagramArrow(tr("pipensx/first_run/diagram_internet"));
+        addView(swarmHop_);
+        makeChip(tr("pipensx/first_run/diagram_swarm"));
+        setKind(Kind::TorrServer);
+    }
+
+    void setKind(Kind kind) {
+        kind_ = kind;
+        const bool direct = kind == Kind::Direct;
+        const brls::Visibility visible = direct ? brls::Visibility::GONE
+                                                : brls::Visibility::VISIBLE;
+        serverChip_->setVisibility(visible);
+        serverHop_->setVisibility(visible);
+        switch (kind) {
+            case Kind::TorrServer:
+                serverLabel_->setText(
+                    tr("pipensx/first_run/diagram_torrserver"));
+                serverHop_->setCaption(tr("pipensx/first_run/diagram_lan"));
+                swarmHop_->setCaption(
+                    tr("pipensx/first_run/diagram_internet"));
+                break;
+            case Kind::TorBox:
+                serverLabel_->setText(tr("pipensx/first_run/diagram_torbox"));
+                serverHop_->setCaption(
+                    tr("pipensx/first_run/diagram_internet"));
+                swarmHop_->setCaption(
+                    tr("pipensx/first_run/diagram_internet"));
+                break;
+            case Kind::Direct:
+                swarmHop_->setCaption(tr("pipensx/first_run/diagram_torrent"));
+                break;
+        }
+    }
+
+    Kind kind() const { return kind_; }
+
+private:
+    // Fixed-width rounded chip with a centred label; returns the chip (for
+    // GONE visibility) and optionally fills `label` so setKind can rename the
+    // server chip in place. 100px leaves room for the arrows (see
+    // ModeDiagramArrow) while still fitting "TorrServer".
+    brls::Box* makeChip(const std::string& text, brls::Label** label = nullptr) {
+        auto* chip = new brls::Box();
+        chip->setFocusable(false);
+        chip->setWidth(100);
+        chip->setHeight(44);
+        chip->setCornerRadius(theme::kRadiusMedium);
+        chip->setBackgroundColor(theme::surface());
+        chip->setBorderColor(theme::track());
+        chip->setBorderThickness(1.0f);
+        chip->setAlignItems(brls::AlignItems::CENTER);
+        chip->setJustifyContent(brls::JustifyContent::CENTER);
+
+        auto* chipLabel = new brls::Label();
+        chipLabel->setFontSize(theme::kFontCaption);
+        chipLabel->setTextColor(theme::textPrimary());
+        chipLabel->setText(text);
+        chip->addView(chipLabel);
+        addView(chip);
+        if (label)
+            *label = chipLabel;
+        return chip;
+    }
+
+    Kind kind_ = Kind::TorrServer;
+    brls::Box* serverChip_ = nullptr;
+    brls::Label* serverLabel_ = nullptr;
+    ModeDiagramArrow* serverHop_ = nullptr;
+    ModeDiagramArrow* swarmHop_ = nullptr;
+};
+
+// Right-hand panel of the first-run chooser: the picked method's name, a
+// diagram of how it moves bytes, and three short paragraphs (how, who sees
+// the console, setup). Replaces the generic SetupSummaryPanel, which keeps
+// serving the provider link screen.
+class ModeSummaryPanel : public brls::Box {
+public:
+    ModeSummaryPanel() : brls::Box(brls::Axis::COLUMN) {
+        setFocusable(false);
+        setBackgroundColor(theme::panel());
+        setBorderColor(theme::track());
+        setBorderThickness(1.0f);
+        setCornerRadius(theme::kRadiusLarge);
+        setPadding(24, 24, 24, 24);
+
+        auto* heading = new brls::Label();
+        heading->setText(tr("pipensx/setup_summary/selected"));
+        heading->setFontSize(theme::kFontCaption);
+        heading->setTextColor(theme::textTertiary());
+        heading->setMarginBottom(8);
+        addView(heading);
+
+        name_ = new brls::Label();
+        name_->setFontSize(theme::kFontBody);
+        name_->setTextColor(theme::accent());
+        name_->setSingleLine(false);
+        name_->setMarginBottom(12);
+        addView(name_);
+
+        diagram_ = new ModeDiagram();
+        diagram_->setMarginBottom(16);
+        addView(diagram_);
+
+        for (int i = 0; i < 3; ++i) {
+            auto* paragraph = new brls::Label();
+            paragraph->setFontSize(theme::kFontSmall);
+            paragraph->setTextColor(theme::textSecondary());
+            paragraph->setSingleLine(false);
+            if (i > 0)
+                paragraph->setMarginTop(12);
+            addView(paragraph);
+            paragraphs_[i] = paragraph;
+        }
+    }
+
+    void setMode(ModeDiagram::Kind kind, const std::string& name,
+                 const std::string& how, const std::string& peer,
+                 const std::string& setup) {
+        diagram_->setKind(kind);
+        name_->setText(name);
+        paragraphs_[0]->setText(how);
+        paragraphs_[1]->setText(peer);
+        paragraphs_[2]->setText(setup);
+    }
+
+    std::string renderedState() const {
+        std::string state = name_->getFullText();
+        for (brls::Label* paragraph : paragraphs_)
+            state += "|" + paragraph->getFullText();
+        return state;
+    }
+
+    bool contentFits() {
+        const brls::Rect panel = getFrame();
+        for (brls::View* child : getChildren()) {
+            const brls::Rect frame = child->getFrame();
+            if (frame.getMaxX() > panel.getMaxX() ||
+                frame.getMaxY() > panel.getMaxY())
+                return false;
+        }
+        return true;
+    }
+
+private:
+    brls::Label* name_ = nullptr;
+    ModeDiagram* diagram_ = nullptr;
+    brls::Label* paragraphs_[3] = {};
+};
 
 class FirstRunOption : public brls::Box {
 public:
@@ -56,9 +286,14 @@ private:
 
 class FirstRunView : public brls::Box {
 public:
+    // Fires once a method is saved; the caller continues the startup chain
+    // (catalog disclaimer, then the provider link screen for server modes).
+    using OnComplete = std::function<void(DebridProviderKind, bool)>;
+
     FirstRunView(AppSettings* settings, DownloadManager* manager,
-                 std::optional<SetupSummaryFixture> fixture = std::nullopt)
-        : brls::Box(brls::Axis::ROW), settings_(settings), manager_(manager) {
+                 OnComplete onComplete)
+        : brls::Box(brls::Axis::ROW), settings_(settings), manager_(manager),
+          onComplete_(std::move(onComplete)) {
         setPadding(24, 40, 24, 40);
 
         auto* left = new brls::Box(brls::Axis::COLUMN);
@@ -97,61 +332,81 @@ public:
         left->addView(note);
         addView(left);
 
-        summary_ = new SetupSummaryPanel();
+        summary_ = new ModeSummaryPanel();
         summary_->setGrow(1);
         addView(summary_);
 
-        const std::string ip = fixture
-            ? fixture->lanAddress
-            : brls::Application::getPlatform()->getIpAddress();
-        const bool online = !ip.empty() && ip != "0.0.0.0";
-        summary_->setConnection(
-            online ? tr("pipensx/setup_summary/network_available")
-                   : tr("pipensx/setup_summary/network_unavailable"),
-            online ? theme::success() : theme::warning());
-        summary_->setCheck(tr("pipensx/setup_summary/not_checked"),
-                           theme::textSecondary());
+        // B is locked until a method is picked: a first run must end in a
+        // choice, or the app would open with no download source at all. The
+        // action is hidden so it never rides the hint bar; it sits on this
+        // box, closer to the focused option than the frame's dismiss action.
+        registerAction("", brls::BUTTON_B, [](brls::View*) { return true; },
+                       /*hidden=*/true);
 
-        const std::string tail = fixture
-            ? fixture->diagnosticTail
-            : readApplicationLogTail(kBugReportMaxTailBytes);
-        const DiagnosticSummary diagnostics = summarizeDiagnostics(tail);
-        summary_->setDiagnostics(setupDiagnosticText(diagnostics),
-                                 setupDiagnosticColor(diagnostics));
         updateSelection(DebridProviderKind::TorrServer, false);
     }
 
-    static void push(AppSettings* settings, DownloadManager* manager) {
-        auto* frame = new brls::AppletFrame(new FirstRunView(settings, manager));
+    void willAppear(bool resetState) override {
+        brls::Box::willAppear(resetState);
+        // The frame's own B action ("Back", visible in the hint bar) is
+        // still registered on the AppletFrame. Replace it with a hidden
+        // no-op — registerAction with the same button overwrites — so the
+        // bar stops advertising a Back button the lock makes useless.
+        for (brls::View* node = getParent(); node; node = node->getParent()) {
+            if (auto* frame = dynamic_cast<brls::AppletFrame*>(node)) {
+                frame->registerAction("", brls::BUTTON_B,
+                                      [](brls::View*) { return true; },
+                                      /*hidden=*/true);
+                break;
+            }
+        }
+    }
+
+    static void push(AppSettings* settings, DownloadManager* manager,
+                     OnComplete onComplete) {
+        auto* frame = new brls::AppletFrame(
+            new FirstRunView(settings, manager, std::move(onComplete)));
         frame->setTitle(tr("pipensx/first_run/title"));
         brls::Application::pushActivity(new brls::Activity(frame));
     }
 
-    std::string summaryState() const {
-        return summary_->renderedState();
-    }
+    std::string summaryState() const { return summary_->renderedState(); }
 
-    bool summaryFits() {
-        return summary_->contentFits();
+    bool summaryFits() { return summary_->contentFits(); }
+
+    // Golden harness: B must be consumed by this view's hidden action.
+    bool backLocked() {
+        for (const auto& action : getActions())
+            if (action->getType() == brls::ACTION_GAMEPAD &&
+                action->getButton() == brls::BUTTON_B)
+                return true;
+        return false;
     }
 
 private:
     void updateSelection(DebridProviderKind provider, bool torrenting) {
-        if (torrenting)
-            summary_->setSelected(
-                tr("pipensx/first_run/direct_summary",
-                   tr("pipensx/first_run/direct_detail")),
-                theme::accent());
-        else if (provider == DebridProviderKind::TorrServer)
-            summary_->setSelected(
-                tr("pipensx/first_run/torrserver_summary",
-                   tr("pipensx/first_run/torrserver_detail")),
-                theme::accent());
-        else
-            summary_->setSelected(
-                tr("pipensx/first_run/torbox_summary",
-                   tr("pipensx/first_run/torbox_detail")),
-                theme::accent());
+        ModeDiagram::Kind kind;
+        std::string name, how, peer, setup;
+        if (torrenting) {
+            kind = ModeDiagram::Kind::Direct;
+            name = tr("pipensx/first_run/direct");
+            how = tr("pipensx/first_run/direct_how");
+            peer = tr("pipensx/first_run/direct_peer");
+            setup = tr("pipensx/first_run/direct_setup");
+        } else if (provider == DebridProviderKind::TorrServer) {
+            kind = ModeDiagram::Kind::TorrServer;
+            name = tr("pipensx/first_run/torrserver");
+            how = tr("pipensx/first_run/torrserver_how");
+            peer = tr("pipensx/first_run/torrserver_peer");
+            setup = tr("pipensx/first_run/torrserver_setup");
+        } else {
+            kind = ModeDiagram::Kind::TorBox;
+            name = tr("pipensx/first_run/torbox");
+            how = tr("pipensx/first_run/torbox_how");
+            peer = tr("pipensx/first_run/torbox_peer");
+            setup = tr("pipensx/first_run/torbox_setup");
+        }
+        summary_->setMode(kind, name, how, peer, setup);
     }
 
     void choose(DebridProviderKind provider, bool torrenting) {
@@ -165,25 +420,61 @@ private:
             return;
         }
         manager_->setTorrentingEnabled(torrenting);
-        AppSettings* settings = settings_;
-        DownloadManager* manager = manager_;
+        OnComplete onComplete = std::move(onComplete_);
         brls::Application::popActivity(brls::TransitionAnimation::FADE,
-            [settings, manager, provider, torrenting] {
-                if (!torrenting)
-                    DebridLinkView::push(settings, manager, provider);
+            [onComplete, provider, torrenting] {
+                onComplete(provider, torrenting);
             });
     }
 
     AppSettings* settings_;
     DownloadManager* manager_;
-    SetupSummaryPanel* summary_ = nullptr;
+    OnComplete onComplete_;
+    ModeSummaryPanel* summary_ = nullptr;
 };
 
-inline void showFirstRunChoice(AppSettings* settings,
-                               DownloadManager* manager) {
+inline void showFirstRunChoice(AppSettings* settings, DownloadManager* manager,
+                               FirstRunView::OnComplete onComplete) {
     if (!settings || settings->get().firstRunCompleted)
         return;
-    FirstRunView::push(settings, manager);
+    FirstRunView::push(settings, manager, std::move(onComplete));
+}
+
+// One-time catalog disclaimer. Non-cancelable on purpose: during the
+// first-run chain it guards the step after the method choice (the provider
+// link screen), so B must not be able to skip it — the choice is already
+// persisted by then, and a dismissed dialog would never show the link setup
+// again. `onOk` runs after the acknowledgement is saved.
+inline void showCatalogDisclaimer(AppSettings* settings,
+                                  std::function<void()> onOk) {
+    if (settings->get().catalogDisclaimerAcknowledged) {
+        onOk();
+        return;
+    }
+    auto* dialog = new brls::Dialog(tr("pipensx/disclaimer/catalog"));
+    // Narrow the stock 720px dialog frame for this short one-liner.
+    if (auto* frame = dialog->getView("brls/dialog/applet"))
+        frame->setWidth(520);
+    dialog->setCancelable(false);
+    dialog->addButton(tr("pipensx/common/ok"), [settings, onOk] {
+        pipensx::AppSettingsData values = settings->get();
+        if (!values.catalogDisclaimerAcknowledged) {
+            values.catalogDisclaimerAcknowledged = true;
+            std::string error;
+            if (!settings->update(values, error)) {
+                log_msg("[settings] disclaimer ack persist failed: %s\n",
+                        error.c_str());
+                // The flag did not survive: surface the failure and let the
+                // chain continue anyway — the dialog reappears next launch,
+                // which is the correct reminder for an unacknowledged
+                // disclaimer. A silent return would strand a first-run user
+                // who just picked a server mode.
+                brls::Application::notify(error);
+            }
+        }
+        onOk();
+    });
+    dialog->open();
 }
 
 }  // namespace pipensx::ui

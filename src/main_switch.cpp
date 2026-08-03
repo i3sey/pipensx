@@ -437,30 +437,29 @@ int main(int argc, char** argv) {
             });
         }
 
-        // First-run disclaimer: the catalog is a third-party RuTracker dump.
-        // Shown once on top of the app; acknowledging persists the flag so
-        // later launches skip it.
-        if (!settings.get().catalogDisclaimerAcknowledged) {
-            startupStage("catalog disclaimer");
-            auto* dialog = new brls::Dialog(
-                tr("pipensx/disclaimer/catalog"));
-            // Narrow the stock 720px dialog frame for this short one-liner.
-            if (auto* frame = dialog->getView("brls/dialog/applet"))
-                frame->setWidth(520);
-            dialog->addButton(tr("pipensx/common/ok"), [&settings, &manager] {
-                pipensx::AppSettingsData values = settings.get();
-                if (!values.catalogDisclaimerAcknowledged) {
-                    values.catalogDisclaimerAcknowledged = true;
-                    std::string error;
-                    if (!settings.update(values, error))
-                        log_msg("[settings] disclaimer ack persist failed: %s\n",
-                                error.c_str());
-                }
-                showFirstRunChoice(&settings, &manager);
-            });
-            dialog->open();
+        // First-run: the method choice gates the app, so it comes first on a
+        // fresh install — nothing (not even the catalog disclaimer) is shown
+        // before it, and B is locked on it until a method is picked. Once the
+        // choice is saved, the disclaimer follows (non-cancelable: it guards
+        // the provider link step), then — for the server modes — the link
+        // screen.
+        if (!settings.get().firstRunCompleted) {
+            startupStage("first-run method choice");
+            pipensx::ui::showFirstRunChoice(
+                &settings, &manager,
+                [&settings, &manager](
+                    pipensx::DebridProviderKind provider, bool torrenting) {
+                    pipensx::ui::showCatalogDisclaimer(
+                        &settings, [&settings, &manager, provider,
+                                    torrenting] {
+                            if (!torrenting)
+                                pipensx::ui::DebridLinkView::push(
+                                    &settings, &manager, provider);
+                        });
+                });
         } else {
-            showFirstRunChoice(&settings, &manager);
+            startupStage("catalog disclaimer");
+            pipensx::ui::showCatalogDisclaimer(&settings, [] {});
         }
 
         startupStage("first main loop");

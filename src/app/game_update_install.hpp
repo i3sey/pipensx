@@ -32,9 +32,9 @@ inline size_t utf8TruncateBoundary(const std::string& text, size_t maxBytes) {
 
 // Indices of the packages whose [vN] tag numerically equals latestVersion —
 // the update the metadata index points at (the generator derives
-// latestVersion from exactly those tags). Empty when no package matches; the
-// caller then falls back to selectUpdateFiles. When more than one package
-// matches, the caller asks the user which one to install.
+// latestVersion from exactly those tags). Empty when no package matches;
+// selectUpdateFiles then falls back to its own heuristics. The caller feeds
+// the recommendation into the update-file chooser, which always opens.
 std::vector<size_t> updateVersionMatches(const TorrentPreview& preview,
                                          const std::string& latestVersion);
 
@@ -56,6 +56,9 @@ std::vector<uint8_t> selectFiles(const TorrentPreview& preview,
 // marked, every package is selected as a fallback — the install backend
 // short-circuits content keys that are already installed, so the worst case
 // is re-downloading the bundle, never a corrupt install.
+//
+// This mask only preselects: the update-file chooser always opens and hands
+// the final, user-tuned mask back to the importer.
 std::vector<uint8_t> selectUpdateFiles(const TorrentPreview& preview,
                                        const std::string& latestVersion);
 
