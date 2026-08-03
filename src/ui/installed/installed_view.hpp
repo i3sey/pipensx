@@ -360,11 +360,23 @@ private:
     void chooseBundle(std::vector<GameMetadata> bundles, size_t start) {
         auto* dialog = new brls::Dialog(
             tr("pipensx/installed/update_choose_bundle"));
-        if (start < bundles.size())
-            dialog->addButton(bundleLabel(bundles[start]),
+        if (start < bundles.size()) {
+            const GameMetadata& candidate = bundles[start];
+            // Two bundles of the same title can share a version (different
+            // builds); a bare version would then make the buttons identical,
+            // so pin the short info-hash suffix onto each twin.
+            bool twin = false;
+            for (size_t i = 0; i < bundles.size(); ++i)
+                if (i != start &&
+                    bundles[i].latestVersion == candidate.latestVersion) {
+                    twin = true;
+                    break;
+                }
+            dialog->addButton(bundleLabel(candidate, twin),
                               [this, entry = bundles[start]] {
                 confirmUpdateInstall(entry);
             });
+        }
         const size_t remaining = bundles.size() - start - 1;
         if (remaining > 0)
             dialog->addButton(
@@ -377,17 +389,17 @@ private:
         dialog->open();
     }
 
-    static std::string bundleLabel(const GameMetadata& entry) {
-        std::string label = entry.name;
-        if (!entry.latestVersion.empty())
-            label += "  v" + entry.latestVersion;
-        // Dialog buttons hold one line; a 60-char cap keeps the label from
-        // overflowing the dialog width on long game names. The rollback to a
-        // code point boundary keeps a cut Cyrillic name from ending in a
-        // partial character.
-        constexpr size_t kMaxLabel = 60;
-        if (label.size() > kMaxLabel)
-            label.resize(utf8TruncateBoundary(label, kMaxLabel - 1));
+    // Dialog buttons hold one line and half the dialog width, so a full game
+    // name cannot fit reliably: the old byte-capped "name  vN" label still
+    // ran over into the neighbouring button, because Cyrillic and Latin
+    // letters have different widths and a byte cap has nothing to do with
+    // pixels. The dialog is already about one title, so the version alone
+    // identifies the candidate — and a short info-hash suffix tells two
+    // same-version bundles apart.
+    static std::string bundleLabel(const GameMetadata& entry, bool twin) {
+        std::string label = "v" + entry.latestVersion;
+        if (twin && entry.infoHash.size() >= 8)
+            label += " (" + entry.infoHash.substr(0, 8) + ")";
         return label;
     }
 

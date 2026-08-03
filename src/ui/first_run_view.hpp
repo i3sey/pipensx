@@ -231,18 +231,45 @@ public:
         return state;
     }
 
-    bool contentFits() {
-        const brls::Rect panel = getFrame();
-        for (brls::View* child : getChildren()) {
-            const brls::Rect frame = child->getFrame();
-            if (frame.getMaxX() > panel.getMaxX() ||
-                frame.getMaxY() > panel.getMaxY())
-                return false;
-        }
-        return true;
-    }
+    bool contentFits() { return overflowDetail().empty(); }
+
+    // First child whose frame escapes its parent's, as a "parent / child +
+    // frames" diagnostic for the golden harness. The diagram stretches to the
+    // panel's full width, so its own frame always fits — the fixed-width
+    // chips inside it are what actually stick out, which is why this must
+    // recurse into boxes. Frames are absolute (borealis getFrame), so every
+    // level compares like with like.
+    std::string overflowDetail() { return firstOverflow(this); }
 
 private:
+    static std::string firstOverflow(brls::Box* view) {
+        const brls::Rect parent = view->getFrame();
+        for (brls::View* child : view->getChildren()) {
+            const brls::Rect frame = child->getFrame();
+            if (frame.getMaxX() > parent.getMaxX() + 0.5f ||
+                frame.getMaxY() > parent.getMaxY() + 0.5f ||
+                frame.getMinX() < parent.getMinX() - 0.5f ||
+                frame.getMinY() < parent.getMinY() - 0.5f) {
+                char detail[192];
+                std::snprintf(
+                    detail, sizeof(detail),
+                    "%s escapes %s (%.0fx%.0f+%.0f+%.0f vs parent "
+                    "%.0fx%.0f+%.0f+%.0f)",
+                    child->describe().c_str(), view->describe().c_str(),
+                    frame.getWidth(), frame.getHeight(), frame.getMinX(),
+                    frame.getMinY(), parent.getWidth(), parent.getHeight(),
+                    parent.getMinX(), parent.getMinY());
+                return detail;
+            }
+            if (auto* box = dynamic_cast<brls::Box*>(child)) {
+                std::string nested = firstOverflow(box);
+                if (!nested.empty())
+                    return nested;
+            }
+        }
+        return std::string();
+    }
+
     brls::Label* name_ = nullptr;
     ModeDiagram* diagram_ = nullptr;
     brls::Label* paragraphs_[3] = {};
@@ -297,7 +324,7 @@ public:
         setPadding(24, 40, 24, 40);
 
         auto* left = new brls::Box(brls::Axis::COLUMN);
-        left->setWidthPercentage(54);
+        left->setWidthPercentage(48);
         left->setShrink(0);
         left->setMarginRight(24);
 
@@ -373,6 +400,9 @@ public:
     std::string summaryState() const { return summary_->renderedState(); }
 
     bool summaryFits() { return summary_->contentFits(); }
+
+    // Golden harness: why summaryFits() fails, if it does.
+    std::string summaryOverflow() { return summary_->overflowDetail(); }
 
     // Golden harness: B must be consumed by this view's hidden action.
     bool backLocked() {

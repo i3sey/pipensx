@@ -9,7 +9,8 @@
 //                 [--locale en-US|ru]
 //                 --screen catalog|shelf-scroll|shelf-header|detail|torrent-selection|
 //                          torrent-selection-scroll|downloads|downloads-back|frame|
-//                          hints-budget|installed|installed-populated|update-chooser|
+//                          hints-budget|installed|installed-populated|installed-bundles|
+//                          update-chooser|
 //                          update-chooser-toggle|settings|settings-debrid|help|
 //                          first-run|first-run-focus|first-run-disclaimer|debrid-link|
 //                          about|bug-report|
@@ -17,8 +18,9 @@
 //                 [--frames N] [--sandbox <dir>]
 //
 // downloads-back, torrent-selection-scroll, hints-budget, bug-report-focus,
-// sidebar-touch, update-chooser-toggle and first-run-disclaimer are behaviour
-// checks: they assert and exit non-zero instead of producing a baseline.
+// sidebar-touch, update-chooser-toggle, first-run-disclaimer and
+// installed-bundles are behaviour checks: they assert and exit non-zero
+// instead of producing a baseline.
 //
 // Determinism notes:
 //   - run with LIBGL_ALWAYS_SOFTWARE=1 so Mesa llvmpipe rasterizes the same
@@ -225,6 +227,76 @@ brls::Hints* findHints(brls::View* view) {
     return nullptr;
 }
 
+// Seed the four fixture rows and the planted update-check states the
+// installed golden screens pin. Shared by "installed-populated" (screenshot)
+// and "installed-bundles" (behaviour): without this the PC shim reports an
+// empty library and there is nothing to render or tap. The four rows cover
+// every chip state: update available, up to date, no source, error.
+void seedInstalledFixture(InstalledTitleService& installed) {
+    std::vector<InstalledTitle> fixtureTitles;
+    {
+        InstalledTitle t;
+        t.applicationId = 0x0100000000010000ULL;
+        t.titleId = "0100000000010000";
+        t.name = "Pipen Odyssey";
+        t.publisher = "Pipensx Fixtures";
+        t.version = "65536";
+        fixtureTitles.push_back(std::move(t));
+    }
+    {
+        InstalledTitle t;
+        t.applicationId = 0x0100000000020000ULL;
+        t.titleId = "0100000000020000";
+        t.name = "Kart Nova Deluxe";
+        t.publisher = "Pipensx Fixtures";
+        t.version = "65536";
+        fixtureTitles.push_back(std::move(t));
+    }
+    {
+        InstalledTitle t;
+        t.applicationId = 0x0100000000030000ULL;
+        t.titleId = "0100000000030000";
+        t.name = "Mystery Homebrew";
+        t.publisher = "Solo Dev";
+        t.version = "0";
+        fixtureTitles.push_back(std::move(t));
+    }
+    {
+        InstalledTitle t;
+        t.applicationId = 0x0100000000040000ULL;
+        t.titleId = "0100000000040000";
+        t.name = "Broken Versions";
+        t.publisher = "Pipensx Fixtures";
+        t.version = "1.0";
+        fixtureTitles.push_back(std::move(t));
+    }
+    installed.injectTitles(std::move(fixtureTitles));
+    // Seed the update-check results: generations 0 vs the live (>0)
+    // generation also pins the stale status text deterministically.
+    std::ofstream state("sdmc:/switch/pipensx/game-updates.json",
+                        std::ios::binary | std::ios::trunc);
+    state
+        << "{\"version\":1,\"installed_generation\":0,"
+           "\"metadata_refresh_ms\":0,\"last_checked_at\":1,"
+           "\"results\":["
+           "{\"title_id\":\"0100000000010000\",\"state\":"
+           "\"update_available\",\"current_version\":\"65536\","
+           "\"found_version\":\"131072\",\"error\":\"\","
+           "\"checked_at\":1},"
+           "{\"title_id\":\"0100000000020000\",\"state\":"
+           "\"up_to_date\",\"current_version\":\"65536\","
+           "\"found_version\":\"65536\",\"error\":\"\","
+           "\"checked_at\":1},"
+           "{\"title_id\":\"0100000000030000\",\"state\":"
+           "\"source_unknown\",\"current_version\":\"0\","
+           "\"found_version\":\"\",\"error\":\"\",\"checked_at\":1},"
+           "{\"title_id\":\"0100000000040000\",\"state\":"
+           "\"check_error\",\"current_version\":\"1.0\","
+           "\"found_version\":\"196608\",\"error\":\"not numeric\","
+           "\"checked_at\":1}"
+           "]}\n";
+}
+
 int fail(const char* message) {
     std::fprintf(stderr, "golden_runner: %s\n", message);
     return 1;
@@ -370,6 +442,7 @@ int main(int argc, char** argv) {
     CatalogView* collapsedCatalog = nullptr;
     BugReportActivity* bugReportFocus = nullptr;
     FirstRunView* firstRunFocus = nullptr;
+    InstalledView* installedBundles = nullptr;
     brls::Activity* detailRailNav = nullptr;
     UpdateFileChooserActivity* updateChooser = nullptr;
     std::vector<uint8_t> updateChooserMask;
@@ -634,77 +707,15 @@ int main(int argc, char** argv) {
         });
         tabs->attachStorageFooter(&manager);
         activity = new GoldenActivity(tabs, /*withExitAction=*/true);
-    } else if (screen == "installed" || screen == "installed-populated") {
-        if (screen == "installed-populated") {
-            // The PC shim reports an empty library; seed rows so the update
-            // chips and version subtitle are pinned. Four rows cover every
-            // chip state: update available, up to date, no source, error.
-            std::vector<InstalledTitle> fixtureTitles;
-            {
-                InstalledTitle t;
-                t.applicationId = 0x0100000000010000ULL;
-                t.titleId = "0100000000010000";
-                t.name = "Pipen Odyssey";
-                t.publisher = "Pipensx Fixtures";
-                t.version = "65536";
-                fixtureTitles.push_back(std::move(t));
-            }
-            {
-                InstalledTitle t;
-                t.applicationId = 0x0100000000020000ULL;
-                t.titleId = "0100000000020000";
-                t.name = "Kart Nova Deluxe";
-                t.publisher = "Pipensx Fixtures";
-                t.version = "65536";
-                fixtureTitles.push_back(std::move(t));
-            }
-            {
-                InstalledTitle t;
-                t.applicationId = 0x0100000000030000ULL;
-                t.titleId = "0100000000030000";
-                t.name = "Mystery Homebrew";
-                t.publisher = "Solo Dev";
-                t.version = "0";
-                fixtureTitles.push_back(std::move(t));
-            }
-            {
-                InstalledTitle t;
-                t.applicationId = 0x0100000000040000ULL;
-                t.titleId = "0100000000040000";
-                t.name = "Broken Versions";
-                t.publisher = "Pipensx Fixtures";
-                t.version = "1.0";
-                fixtureTitles.push_back(std::move(t));
-            }
-            installed.injectTitles(std::move(fixtureTitles));
-            // Seed the update-check results: generations 0 vs the live (>0)
-            // generation also pins the stale status text deterministically.
-            std::ofstream state("sdmc:/switch/pipensx/game-updates.json",
-                                std::ios::binary | std::ios::trunc);
-            state
-                << "{\"version\":1,\"installed_generation\":0,"
-                   "\"metadata_refresh_ms\":0,\"last_checked_at\":1,"
-                   "\"results\":["
-                   "{\"title_id\":\"0100000000010000\",\"state\":"
-                   "\"update_available\",\"current_version\":\"65536\","
-                   "\"found_version\":\"131072\",\"error\":\"\","
-                   "\"checked_at\":1},"
-                   "{\"title_id\":\"0100000000020000\",\"state\":"
-                   "\"up_to_date\",\"current_version\":\"65536\","
-                   "\"found_version\":\"65536\",\"error\":\"\","
-                   "\"checked_at\":1},"
-                   "{\"title_id\":\"0100000000030000\",\"state\":"
-                   "\"source_unknown\",\"current_version\":\"0\","
-                   "\"found_version\":\"\",\"error\":\"\",\"checked_at\":1},"
-                   "{\"title_id\":\"0100000000040000\",\"state\":"
-                   "\"check_error\",\"current_version\":\"1.0\","
-                   "\"found_version\":\"196608\",\"error\":\"not numeric\","
-                   "\"checked_at\":1}"
-                   "]}\n";
-        }
-        activity = new GoldenActivity(
-            new InstalledView(&installed, &manager, &metadata, &settings,
-                              &catalog, false));
+    } else if (screen == "installed" || screen == "installed-populated" ||
+               screen == "installed-bundles") {
+        if (screen == "installed-populated" || screen == "installed-bundles")
+            seedInstalledFixture(installed);
+        auto* view = new InstalledView(&installed, &manager, &metadata,
+                                       &settings, &catalog, false);
+        activity = new GoldenActivity(view);
+        if (screen == "installed-bundles")
+            installedBundles = view;
     } else if (screen == "settings") {
         activity = new GoldenActivity(new SettingsView(
             &settings, &manager, &catalog, &metadata, &installed, nullptr,
@@ -914,7 +925,20 @@ int main(int argc, char** argv) {
             firstRunFocus->summaryState() != beforeB ||
             brls::Application::getCurrentFocus() != option)
             return fail("first-run-focus B dismissed the chooser");
+        // Every mode's diagram must fit the panel. TorrServer is the widest
+        // (three fixed-width chips, two arrows), Direct the narrowest — the
+        // old end-of-loop check only ever looked at Direct, which is exactly
+        // the mode that hides the server chip and always fits.
+        auto checkFits = [&]() {
+            if (firstRunFocus->summaryFits())
+                return 0;
+            std::fprintf(stderr, "golden_runner: %s\n",
+                         firstRunFocus->summaryOverflow().c_str());
+            return fail("first-run-focus summary clips on a mode");
+        };
         std::vector<std::string> states{firstRunFocus->summaryState()};
+        if (int rc = checkFits(); rc)
+            return rc;
         for (int i = 0; i < 2; ++i) {
             brls::View* next = option->getNextFocus(brls::FocusDirection::DOWN,
                                                     option);
@@ -925,14 +949,166 @@ int main(int argc, char** argv) {
             for (int frame = 0; frame < 5; ++frame)
                 brls::Application::mainLoop();
             states.push_back(firstRunFocus->summaryState());
+            if (int rc = checkFits(); rc)
+                return rc;
         }
         if (states[0] == states[1] || states[1] == states[2] ||
             states[0] == states[2] ||
             brls::Application::getCurrentFocus() != option)
             return fail("first-run-focus did not update the summary in place");
-        if (!firstRunFocus->summaryFits())
-            return fail("first-run-focus summary clips on the direct option");
         std::printf("golden_runner: first-run summary followed all options\n");
+        manager.shutdown();
+        std::fflush(nullptr);
+        _exit(0);
+    }
+
+    if (installedBundles) {
+        // The update-available row (Pipen Odyssey, two fixture bundles) opens
+        // the release-bundle chooser on A. The old "name  vN" button label
+        // overflowed into its neighbour on long titles, so the candidate is
+        // now labelled by version alone — this pins that the two buttons sit
+        // side by side without overlap, that paging reaches the second
+        // bundle, and that the last page ends in "later", not "more".
+        auto pump = [](int frames) {
+            for (int frame = 0; frame < frames; ++frame)
+                brls::Application::mainLoop();
+        };
+        brls::View* cell = nullptr;
+        std::function<void(brls::View*)> findCell = [&](brls::View* node) {
+            if (cell)
+                return;
+            if (dynamic_cast<pipensx::ui::InstalledCell*>(node))
+                cell = node;
+            if (auto* box = dynamic_cast<brls::Box*>(node))
+                for (brls::View* child : box->getChildren())
+                    findCell(child);
+        };
+        findCell(installedBundles);
+        if (!cell)
+            return fail("installed-bundles found no installed row");
+        brls::Application::giveFocus(cell);
+        pump(5);
+        brls::Action* installAction = nullptr;
+        for (const auto& action : cell->getActions())
+            if (action->getType() == brls::ACTION_GAMEPAD &&
+                action->getButton() == brls::BUTTON_A)
+                installAction = action.get();
+        if (!installAction)
+            return fail("installed-bundles row has no A action");
+        installAction->getActionListener()(cell);
+        brls::Activity* host = activity;
+        brls::Activity* page1 = nullptr;
+        for (int frame = 0; frame < 180 && !page1; ++frame) {
+            brls::Application::mainLoop();
+            if (brls::Application::getActivitiesStack().back() != host)
+                page1 = brls::Application::getActivitiesStack().back();
+        }
+        if (!page1)
+            return fail("installed-bundles A never opened the chooser");
+
+        brls::Button* candidate = nullptr;
+        brls::Button* more = nullptr;
+        brls::Button* later = nullptr;
+        const std::string moreLabel = tr("pipensx/installed/update_choose_more", 1);
+        const std::string laterLabel = tr("pipensx/common/later");
+        std::function<void(brls::View*)> findButtons = [&](brls::View* node) {
+            if (auto* button = dynamic_cast<brls::Button*>(node)) {
+                if (button->getText() == "v196608" ||
+                    button->getText() == "v131072")
+                    candidate = button;
+                else if (button->getText() == moreLabel)
+                    more = button;
+                else if (button->getText() == laterLabel)
+                    later = button;
+            }
+            if (auto* box = dynamic_cast<brls::Box*>(node))
+                for (brls::View* child : box->getChildren())
+                    findButtons(child);
+        };
+        findButtons(page1->getContentView());
+        if (!candidate || candidate->getText() != "v196608")
+            return fail("installed-bundles page 1 shows the wrong candidate");
+        if (!more)
+            return fail("installed-bundles page 1 is missing 'more'");
+        if (later)
+            return fail("installed-bundles page 1 must not show 'later'");
+        // The old bug overflowed the label *text* past its own button into
+        // the neighbour — the button boxes themselves never moved, so the
+        // overlap must be measured on the button's label child, not on the
+        // button frames.
+        auto labelFits = [](brls::Button* button) {
+            brls::Label* label = nullptr;
+            std::function<void(brls::View*)> findLabel = [&](brls::View* node) {
+                if (label)
+                    return;
+                if (dynamic_cast<brls::Label*>(node))
+                    label = dynamic_cast<brls::Label*>(node);
+                if (auto* box = dynamic_cast<brls::Box*>(node))
+                    for (brls::View* child : box->getChildren())
+                        findLabel(child);
+            };
+            findLabel(button);
+            if (!label)
+                return false;
+            const brls::Rect text = label->getFrame();
+            const brls::Rect box = button->getFrame();
+            return text.getMinX() >= box.getMinX() - 0.5f &&
+                   text.getMaxX() <= box.getMaxX() + 0.5f &&
+                   text.getMinY() >= box.getMinY() - 0.5f &&
+                   text.getMaxY() <= box.getMaxY() + 0.5f;
+        };
+        if (!labelFits(candidate) || !labelFits(more))
+            return fail("installed-bundles a button label overflows its box");
+        const brls::Rect candidateFrame = candidate->getFrame();
+        const brls::Rect moreFrame = more->getFrame();
+        if (candidateFrame.getMaxX() > moreFrame.getMinX() + 0.5f)
+            return fail("installed-bundles candidate overlaps the 'more' "
+                        "button");
+
+        // "More" pages to the second bundle: "v131072" plus "later".
+        brls::Action* moreAction = nullptr;
+        for (const auto& action : more->getActions())
+            if (action->getType() == brls::ACTION_GAMEPAD &&
+                action->getButton() == brls::BUTTON_A)
+                moreAction = action.get();
+        if (!moreAction)
+            return fail("installed-bundles 'more' has no A action");
+        moreAction->getActionListener()(more);
+        brls::Activity* page2 = nullptr;
+        for (int frame = 0; frame < 180 && !page2; ++frame) {
+            brls::Application::mainLoop();
+            if (brls::Application::getActivitiesStack().back() != page1)
+                page2 = brls::Application::getActivitiesStack().back();
+        }
+        if (!page2)
+            return fail("installed-bundles 'more' never opened page 2");
+        candidate = nullptr;
+        more = nullptr;
+        later = nullptr;
+        findButtons(page2->getContentView());
+        if (!candidate || candidate->getText() != "v131072")
+            return fail("installed-bundles page 2 shows the wrong candidate");
+        if (!later)
+            return fail("installed-bundles last page must show 'later'");
+        if (more)
+            return fail("installed-bundles last page must not show 'more'");
+
+        brls::Action* laterAction = nullptr;
+        for (const auto& action : later->getActions())
+            if (action->getType() == brls::ACTION_GAMEPAD &&
+                action->getButton() == brls::BUTTON_A)
+                laterAction = action.get();
+        if (!laterAction)
+            return fail("installed-bundles 'later' has no A action");
+        laterAction->getActionListener()(later);
+        for (int frame = 0; frame < 180; ++frame) {
+            brls::Application::mainLoop();
+            if (brls::Application::getActivitiesStack().back() == activity)
+                break;
+        }
+        if (brls::Application::getActivitiesStack().back() != activity)
+            return fail("installed-bundles 'later' never closed the dialog");
+        std::printf("golden_runner: bundle chooser pages and fits the dialog\n");
         manager.shutdown();
         std::fflush(nullptr);
         _exit(0);
