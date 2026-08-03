@@ -91,7 +91,7 @@ public:
             case NavIconType::Downloads: drawDownloads(vg, gx, gy, s); break;
             case NavIconType::Installed: drawInstalled(vg, gx, gy, s); break;
             case NavIconType::Settings:    drawSettings(vg, gx, gy, s); break;
-            case NavIconType::Help:        drawAbout(vg, gx, gy, s); break;
+            case NavIconType::Help:        drawPulse(vg, gx, gy, s); break;
             case NavIconType::About:       drawAbout(vg, gx, gy, s); break;
         }
     }
@@ -170,6 +170,18 @@ private:
         nvgBeginPath(vg);
         nvgMoveTo(vg, cx, gy + 11.0f);
         nvgLineTo(vg, cx, gy + 17.0f);
+        nvgStroke(vg);
+    }
+
+    // ECG pulse: a flat trace with one sharp spike — diagnostics.
+    static void drawPulse(NVGcontext* vg, float gx, float gy, float s) {
+        nvgBeginPath(vg);
+        nvgMoveTo(vg, gx + 2.0f, gy + 15.0f);
+        nvgLineTo(vg, gx + 9.0f, gy + 15.0f);
+        nvgLineTo(vg, gx + 11.0f, gy + 7.0f);
+        nvgLineTo(vg, gx + 13.0f, gy + 19.0f);
+        nvgLineTo(vg, gx + 15.0f, gy + 15.0f);
+        nvgLineTo(vg, gx + s - 2.0f, gy + 15.0f);
         nvgStroke(vg);
     }
 
