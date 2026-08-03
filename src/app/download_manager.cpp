@@ -1582,7 +1582,14 @@ bool DownloadManager::importTorrentActions(
     // so an all-zero trusted bitfield lets the engine skip hashing the
     // preallocated files. A re-import over kept data (same deterministic
     // dataPath) stays untrusted so the full scan reclaims existing pieces.
-    if (preview.pieceCount > 0 && directoryEmpty(dataPath))
+    // Skipped files break the shortcut: the trusted bitfield skips the
+    // startup scan that pre-marks their pieces done (storage_range_skipped),
+    // so the engine would download the whole torrent and discard everything
+    // but the selection.
+    bool hasSkipped = false;
+    for (const uint8_t action : task.fileSelection)
+        hasSkipped |= action == actionValue(FileAction::Skip);
+    if (preview.pieceCount > 0 && directoryEmpty(dataPath) && !hasSkipped)
         task.resumeBitfield.assign((preview.pieceCount + 7) / 8, 0);
     tasks_.push_back(std::move(task));
     taskId = preview.infoHash;

@@ -71,6 +71,32 @@ static std::string makeSelectiveTorrent(const std::string& directory) {
     return path;
 }
 
+// Two files, one piece each (piece length = file length): the skipped file's
+// piece is fully inside a STORAGE_FILE_SKIP range, so the startup scan can
+// pre-mark it done without downloading. Used to prove a skipped file is not
+// wanted.
+static std::string makeSelectiveScanTorrent(const std::string& directory) {
+    const std::string a = "AAAABBBB";
+    const std::string b = "CCCCDDDD";
+    uint8_t digesta[20], digestb[20];
+    sha1(reinterpret_cast<const uint8_t*>(a.data()), a.size(), digesta);
+    sha1(reinterpret_cast<const uint8_t*>(b.data()), b.size(), digestb);
+
+    std::string torrent = "d8:announce18:http://127.0.0.1:14:infod5:filesl";
+    torrent += "d6:lengthi8e4:pathl12:selected.binee";
+    torrent += "d6:lengthi8e4:pathl14:unselected.binee";
+    torrent += "e4:name14:selective-scan12:piece lengthi8e6:pieces40:";
+    torrent.append(reinterpret_cast<const char*>(digesta), 20);
+    torrent.append(reinterpret_cast<const char*>(digestb), 20);
+    torrent += "ee";
+
+    std::string path = directory + "/selective-scan.torrent";
+    std::ofstream output(path, std::ios::binary);
+    output.write(torrent.data(), static_cast<std::streamsize>(torrent.size()));
+    output.close();
+    return path;
+}
+
 static void copyFile(const std::string& source, const std::string& destination) {
     std::ifstream input(source, std::ios::binary);
     std::ofstream output(destination, std::ios::binary);
@@ -448,6 +474,7 @@ int main() {
     std::string v5Root = std::string(root) + "/v5-app";
     std::string fastResumeRoot = std::string(root) + "/fast-resume-app";
     std::string selectiveSource = makeSelectiveTorrent(root);
+    std::string selectiveScanSource = makeSelectiveScanTorrent(root);
 
     std::string taskId;
     std::string error;
@@ -529,6 +556,44 @@ int main() {
         assert(access((dataPath + "/unselected-b.bin").c_str(), F_OK) != 0);
         manager.shutdown();
         assert(manager.remove(selectiveTaskId, true, error));
+    }
+
+    // A skipped file must not be wanted. The trusted all-zero fast-resume
+    // bitfield would skip the startup scan that pre-marks skipped ranges'
+    // pieces done (storage_range_skipped), so the engine would download the
+    // whole torrent and discard everything but the selection. With the scan
+    // running, the skipped piece is done and only the selected piece stays
+    // wanted.
+    {
+        std::string scanRoot = std::string(root) + "/selective-scan-app";
+        DownloadManager manager(scanRoot, true);
+        manager.setTorrentingEnabled(true);
+        std::vector<uint8_t> actions{
+            static_cast<uint8_t>(FileAction::Download),
+            static_cast<uint8_t>(FileAction::Skip),
+        };
+        std::string scanTaskId;
+        assert(manager.importTorrentActions(
+            selectiveScanSource, actions, scanTaskId, error));
+        assert(manager.snapshot()[0].resumeBitfield.empty());
+        DownloadTask task;
+        bool downloading = false;
+        for (int i = 0; i < 500 && !downloading; ++i) {
+            task = manager.snapshot()[0];
+            downloading = task.status == DownloadStatus::Downloading;
+            if (!downloading)
+                usleep(10000);
+        }
+        assert(downloading);
+        assert(task.piecesTotal == 2);
+        // The skipped piece was pre-marked done by the startup scan; the
+        // selected piece is still wanted (no peers in this test).
+        assert(task.piecesDone == 1);
+        const std::string dataPath = task.dataPath + "/selective-scan";
+        assert(access((dataPath + "/selected.bin").c_str(), F_OK) == 0);
+        assert(access((dataPath + "/unselected.bin").c_str(), F_OK) != 0);
+        manager.shutdown();
+        assert(manager.remove(scanTaskId, true, error));
     }
 
     {
@@ -845,6 +910,7 @@ int main() {
     unlink(downloadOnlySource.c_str());
     unlink(readmeSource.c_str());
     unlink(selectiveSource.c_str());
+    unlink(selectiveScanSource.c_str());
     rmdir((queueRoot + "/torrents").c_str());
     rmdir((queueRoot + "/downloads").c_str());
     unlink((queueRoot + "/queue.bencode").c_str());
