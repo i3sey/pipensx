@@ -589,6 +589,10 @@ int main() {
         // The skipped piece was pre-marked done by the startup scan; the
         // selected piece is still wanted (no peers in this test).
         assert(task.piecesDone == 1);
+        // The wanted progress range excludes the skipped file: 8 of 16
+        // torrent bytes are wanted and none of them are downloaded yet.
+        assert(task.wantedTotalBytes == 8);
+        assert(task.wantedCompletedBytes == 0);
         const std::string dataPath = task.dataPath + "/selective-scan";
         assert(access((dataPath + "/selected.bin").c_str(), F_OK) == 0);
         assert(access((dataPath + "/unselected.bin").c_str(), F_OK) != 0);

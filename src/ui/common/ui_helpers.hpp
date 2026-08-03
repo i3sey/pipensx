@@ -248,10 +248,11 @@ inline std::string formatSpeed(uint64_t bytes) {
 }
 
 inline float progressOf(const DownloadTask& task) {
-    if (!task.totalBytes)
+    const auto wanted = downloadProgressBytes(task);
+    if (!wanted.second)
         return 0.0f;
-    return std::min(1.0f, static_cast<float>(task.completedBytes) /
-                              static_cast<float>(task.totalBytes));
+    return std::min(1.0f, static_cast<float>(wanted.first) /
+                              static_cast<float>(wanted.second));
 }
 
 inline float installProgressOf(const DownloadTask& task) {

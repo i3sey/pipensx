@@ -478,6 +478,7 @@ private:
                 return tr("pipensx/detail/status_fetching",
                           percentOf(static_cast<float>(task.fetchProgress)));
             case DownloadStatus::Checking:
+                return tr("pipensx/downloads/status_checking");
             case DownloadStatus::Downloading: {
                 return tr("pipensx/detail/status_downloading",
                           percentOf(progressOf(task)));
@@ -516,6 +517,9 @@ private:
     // phases track installed bytes, everything else tracks downloaded bytes.
     static float progressForButton(const DownloadTask& task) {
         switch (task.status) {
+            case DownloadStatus::Fetching:
+                return std::clamp(static_cast<float>(task.fetchProgress),
+                                  0.0f, 1.0f);
             case DownloadStatus::Installing:
             case DownloadStatus::Committing:
                 return installProgressOf(task);

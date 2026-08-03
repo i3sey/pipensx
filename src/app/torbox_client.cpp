@@ -125,6 +125,15 @@ bool readInfoObject(const Json& item, TorboxTorrentInfo& info,
     info.progress = (item.contains("progress") &&
                      item["progress"].is_number())
                         ? item["progress"].get<double>() : 0.0;
+    /* The API reports the percentage 0..100; normalize to the 0..1 fraction
+       the task/UI expect. The >1 guard keeps 0..1 responses (if the server
+       ever switches) working unchanged. */
+    if (info.progress > 1.0)
+        info.progress /= 100.0;
+    if (info.progress < 0.0)
+        info.progress = 0.0;
+    if (info.progress > 1.0)
+        info.progress = 1.0;
     info.state = (item.contains("download_state") &&
                   item["download_state"].is_string())
                      ? item["download_state"].get<std::string>() : "";

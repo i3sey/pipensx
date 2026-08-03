@@ -204,6 +204,11 @@ struct torrent {
     atomic_int      announce_stop;
     uint32_t startup_verify_index;
     int      startup_verifying;
+    /* Sum of piece lengths lying entirely in skipped storage ranges (SKIP
+       files, consumed SINK prefixes). Constant after startup; computed once
+       the startup scan (or fast-resume preset) has run, because the scan is
+       what pre-marks those pieces done. */
+    uint64_t skipped_bytes;
     /* Set when startup verification finished with every piece already valid
        on disk: the resume path then skips the final verification pass, which
        would re-read and re-hash the exact same bytes a second time. */
@@ -1346,6 +1351,22 @@ static void *upnp_worker(void *arg) {
 #endif
 
 /* ---- create ---- */
+
+/* Sum of piece lengths lying entirely in skipped storage ranges. Storage
+   configs are immutable for the torrent's life, so this is constant once the
+   startup scan (or fast-resume preset) has pre-marked skipped pieces done. */
+static void refresh_skipped_bytes(torrent_t *t) {
+    uint64_t skipped = 0;
+    const piece_mgr_t *pm = t->pm;
+    for (uint32_t idx = 0; idx < pm->num_pieces; idx++) {
+        int64_t plen = piece_len(pm, idx);
+        int64_t abs_off = (int64_t)idx * pm->mi->piece_length;
+        if (storage_range_skipped(pm->store, abs_off, (size_t)plen))
+            skipped += (uint64_t)plen;
+    }
+    t->skipped_bytes = skipped;
+}
+
 torrent_t *torrent_create_ex(const metainfo_t *mi,
                              uint16_t listen_port,
                              const char *outdir,
@@ -1405,6 +1426,8 @@ torrent_t *torrent_create_ex(const metainfo_t *mi,
                     t->pm->num_done, t->pm->num_pieces);
         }
     }
+
+    refresh_skipped_bytes(t);
 
     /* DHT: attach to the shared engine; the announce carries this
        torrent's TCP listen port even though the DHT UDP port is shared. */
@@ -1954,6 +1977,7 @@ void torrent_stat(const torrent_t *t, torrent_stat_t *s) {
     s->downloaded = t->downloaded;
     s->total_bytes = (uint64_t)t->mi.total_length;
     s->completed_bytes = t->pm->completed_bytes;
+    s->skipped_bytes = t->skipped_bytes;
     s->speed_bps  = t->speed_bps;
     s->last_payload_ms = t->last_payload_ms;
     s->num_pieces_verified = t->startup_verifying

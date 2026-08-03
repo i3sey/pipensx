@@ -238,6 +238,11 @@ int main() {
         assert(body.find("package.nsp") != std::string::npos);
         assert(body.find("\"installSpeedBps\":0") != std::string::npos);
         assert(body.find("\"etaSeconds\":0") != std::string::npos);
+        // Selection-aware progress fields ride along from the first snapshot:
+        // wanted fields fall back to the raw range until the engine reports.
+        assert(body.find("\"wantedTotalBytes\":12") != std::string::npos);
+        assert(body.find("\"wantedCompletedBytes\":0") != std::string::npos);
+        assert(body.find("\"fetchProgress\":0.0") != std::string::npos);
 
         resp = request(port, "POST", "/api/add/torrent?mode=download",
                        gTorrentBytes);

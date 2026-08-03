@@ -273,9 +273,24 @@ function notifyTransitions() {
 const activeStatuses = ["Downloading", "Installing", "Committing", "Checking", "Verifying"];
 
 function taskCard(t) {
-  const pct = t.totalBytes ? Math.min(100, 100 * t.completedBytes / t.totalBytes) : 0;
+  // Wanted (selection-aware) download range: the server sends it excluding
+  // skipped files, which are pre-marked done by the engine.
+  const wantedTotal = t.wantedTotalBytes || 0;
+  const wantedDone = wantedTotal
+    ? Math.min(t.wantedCompletedBytes || 0, wantedTotal) : 0;
+  const downloadPct = wantedTotal
+    ? Math.min(100, 100 * wantedDone / wantedTotal)
+    : (t.totalBytes ? Math.min(100, 100 * t.completedBytes / t.totalBytes) : 0);
   const installPct = t.installTotalBytes
     ? Math.min(100, 100 * t.installedBytes / t.installTotalBytes) : null;
+  const fetchPct = t.fetchProgress != null
+    ? Math.min(100, 100 * t.fetchProgress) : null;
+  // The bar tracks what the status is actually doing, like the Switch UI:
+  // the fetch fraction, the current package's install fraction, or the
+  // wanted download range.
+  const pct = t.status === "Fetching" && fetchPct !== null ? fetchPct
+    : (t.status === "Installing" || t.status === "Committing") && installPct !== null
+      ? installPct : downloadPct;
   const active = activeStatuses.includes(t.status);
   const barClass = t.status === "Error" ? "err"
     : (t.status === "Installed" || t.status === "Completed") ? "ok" : "";
@@ -283,14 +298,23 @@ function taskCard(t) {
   const meta = [];
   if (t.status === "Downloading") meta.push(fmtSpeed(t.speedBps));
   if (t.status === "Installing") meta.push(fmtSpeed(t.installSpeedBps));
-  if (t.totalBytes) meta.push(`${fmtBytes(t.completedBytes)} / ${fmtBytes(t.totalBytes)}`);
+  if (t.status === "Fetching" && fetchPct !== null)
+    meta.push(`fetch ${fetchPct.toFixed(0)}%`);
+  // The byte line pairs with the bar: install bytes while installing,
+  // wanted download bytes otherwise.
+  if (t.status === "Installing" || t.status === "Committing") {
+    if (t.installTotalBytes)
+      meta.push(`${fmtBytes(t.installedBytes)} / ${fmtBytes(t.installTotalBytes)}`);
+  } else if (wantedTotal) {
+    meta.push(`${fmtBytes(wantedDone)} / ${fmtBytes(wantedTotal)}`);
+  } else if (t.totalBytes) {
+    meta.push(`${fmtBytes(t.completedBytes)} / ${fmtBytes(t.totalBytes)}`);
+  }
   const eta = fmtEta(t.etaSeconds);
   if (eta) meta.push("ETA " + eta);
   if (active) meta.push(`${t.peers} peers`);
   if (t.mode === "install" && t.packageCount)
     meta.push(`pkg ${t.packagesInstalled}/${t.packageCount}`);
-  if (t.status === "Installing" && installPct !== null)
-    meta.push(`install ${installPct.toFixed(0)}%`);
 
   const btn = (label, cmd, cls = "") =>
     `<button class="btn ${cls}" data-task="${t.id}" data-cmd="${cmd}">${label}</button>`;

@@ -18,7 +18,7 @@ struct TorboxTorrentInfo {
     std::string hash;              // lowercase hex
     std::string name;
     uint64_t size = 0;
-    double progress = 0.0;         // 0..1 server-side fetch progress
+    double progress = 0.0;         // 0..1 fetch fraction (API % normalized)
     std::string state;             // raw download_state
     bool ready = false;            // download_finished && download_present
     std::vector<TorboxFile> files;

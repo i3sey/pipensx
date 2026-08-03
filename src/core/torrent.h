@@ -40,6 +40,11 @@ typedef struct {
     uint64_t downloaded;  /* bytes received during this session */
     uint64_t completed_bytes;
     uint64_t total_bytes;
+    /* Bytes never wanted: pieces over SKIP files (and the consumed prefix of
+       resumed SINK files) are pre-marked done at startup, so completed_bytes
+       already includes them. The UI progress denominators must subtract
+       skipped_bytes or a partial selection shows a pre-inflated percentage. */
+    uint64_t skipped_bytes;
     uint64_t speed_bps;   /* bytes/sec, updated ~1/sec */
     uint64_t last_payload_ms; /* monotonic time of last accepted payload */
     uint32_t num_pieces_verified;

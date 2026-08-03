@@ -248,6 +248,10 @@ std::string WebServer::buildStateJson() {
         j["error"] = t.error;
         j["totalBytes"] = t.totalBytes;
         j["completedBytes"] = t.completedBytes;
+        const auto wanted = downloadProgressBytes(t);
+        j["wantedTotalBytes"] = wanted.second;
+        j["wantedCompletedBytes"] = wanted.first;
+        j["fetchProgress"] = t.fetchProgress;
         j["speedBps"] = t.speedBytesPerSecond;
         j["peers"] = t.peers;
         j["dhtGood"] = t.dhtGood;

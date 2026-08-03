@@ -5,11 +5,12 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
-#include <memory>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 extern "C" {
@@ -78,6 +79,13 @@ struct DownloadTask {
     double fetchProgress = 0.0;
     uint64_t totalBytes = 0;
     uint64_t completedBytes = 0;
+    /* Progress denominators excluding skipped storage ranges (unselected
+       files, consumed resume prefixes): those pieces are pre-marked done by
+       the engine's startup scan, so completedBytes/totalBytes alone would
+       overstate progress. Transient — set by the torrent poll loop, zero
+       before the engine reports (fall back to total/completed then). */
+    uint64_t wantedTotalBytes = 0;
+    uint64_t wantedCompletedBytes = 0;
     uint64_t speedBytesPerSecond = 0;
     uint64_t downloadProgressUpdatedAtMs = 0;
     uint32_t peers = 0;
@@ -106,6 +114,19 @@ struct DownloadTask {
        hash scan. */
     std::vector<uint8_t> resumeBitfield;
 };
+
+// (done, total) download-progress byte pair. Falls back to the raw engine
+// numbers until the poll loop fills the wanted fields (queued task, debrid
+// source, or engine not yet reporting).
+inline std::pair<uint64_t, uint64_t> downloadProgressBytes(
+    const DownloadTask& task) {
+    if (task.wantedTotalBytes) {
+        const uint64_t done = task.wantedCompletedBytes > task.wantedTotalBytes
+            ? task.wantedTotalBytes : task.wantedCompletedBytes;
+        return {done, task.wantedTotalBytes};
+    }
+    return {task.completedBytes, task.totalBytes};
+}
 
 struct TorrentPreview {
     std::string name;

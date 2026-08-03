@@ -88,8 +88,9 @@ public:
                 ? installProgressOf(task) : progressOf(task);
         progress_->setProgress(progress);
 
-        std::string meta = formatBytes(task.completedBytes) + " / " +
-                           formatBytes(task.totalBytes);
+        const auto wanted = downloadProgressBytes(task);
+        std::string meta = formatBytes(wanted.first) + " / " +
+                           formatBytes(wanted.second);
         if (task.status == DownloadStatus::Installing ||
             task.status == DownloadStatus::Committing) {
             meta = tr("pipensx/downloads/cell_package",

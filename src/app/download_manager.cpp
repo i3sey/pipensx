@@ -1406,8 +1406,9 @@ std::optional<uint64_t> taskEtaSeconds(const DownloadTask& task,
     uint64_t total = 0;
     uint64_t speed = 0;
     if (task.status == DownloadStatus::Downloading) {
-        completed = task.completedBytes;
-        total = task.totalBytes;
+        const auto wanted = downloadProgressBytes(task);
+        completed = wanted.first;
+        total = wanted.second;
         speed = task.speedBytesPerSecond;
         if (!task.downloadProgressUpdatedAtMs ||
             nowMs < task.downloadProgressUpdatedAtMs ||
@@ -2654,6 +2655,12 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
             updateTaskDownloadProgress(*task, stat.completed_bytes,
                                        stat.last_payload_ms);
             task->totalBytes = stat.total_bytes;
+            const uint64_t skipped = stat.skipped_bytes > stat.total_bytes
+                ? stat.total_bytes : stat.skipped_bytes;
+            task->wantedTotalBytes = stat.total_bytes - skipped;
+            task->wantedCompletedBytes =
+                stat.completed_bytes > skipped
+                ? stat.completed_bytes - skipped : 0;
             task->speedBytesPerSecond = stat.speed_bps;
             task->peers = stat.num_peers;
             task->dhtGood = stat.dht_good;
@@ -2701,6 +2708,8 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
                     finished = true;
                 }
                 task->completedBytes = task->totalBytes;
+                task->wantedCompletedBytes = task->wantedTotalBytes
+                    ? task->wantedTotalBytes : task->totalBytes;
                 task->speedBytesPerSecond = 0;
                 log_msg("[manager] completed %s, destroying torrent\n",
                         activeId.c_str());

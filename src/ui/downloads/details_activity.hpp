@@ -210,10 +210,18 @@ private:
         float progress = installing ? installProgressOf(*task)
                                     : progressOf(*task);
         progressBar_->setProgress(progress);
+        // Installing phases: the bar and the byte line track the same
+        // per-package install numbers. Downloading/other: the byte line
+        // follows the wanted (selection-aware) range like the bar does.
+        const auto wanted = downloadProgressBytes(*task);
+        const uint64_t doneBytes =
+            installing ? task->installedBytes : wanted.first;
+        const uint64_t totalBytes =
+            installing ? task->installTotalBytes : wanted.second;
         setTextIfChanged(progress_, tr("pipensx/downloads/progress_line",
                                        percentOf(progress),
-                                       formatBytes(task->completedBytes),
-                                       formatBytes(task->totalBytes)));
+                                       formatBytes(doneBytes),
+                                       formatBytes(totalBytes)));
 
         const uint64_t now = now_ms();
         std::string eta;
