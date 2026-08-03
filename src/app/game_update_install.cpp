@@ -155,40 +155,4 @@ std::string updateMagnetFor(const std::string& infoHash,
            "&tr=http://bt.t-ru.org/ann?magnet";
 }
 
-namespace {
-
-// One-line file label keeping both ends of the path: deep directories
-// distinguish duplicate file names (a mod folder and the release root may
-// share one). The byte caps roll back to UTF-8 code point boundaries so a
-// truncated Cyrillic name never ends in a partial character.
-std::string fileChoiceLabel(const std::string& path) {
-    constexpr size_t kMax = 60;
-    if (path.size() <= kMax)
-        return path;
-    const size_t head = utf8TruncateBoundary(path, 18);
-    const size_t tailStart = utf8TruncateBoundary(path, path.size() - (kMax - 21));
-    return path.substr(0, head) + "..." + path.substr(tailStart);
-}
-
-} // namespace
-
-UpdateFileChoicePage updateFileChoicePage(const TorrentPreview& preview,
-                                          const std::vector<size_t>& matches,
-                                          size_t start,
-                                          std::vector<uint8_t> initialPeers) {
-    UpdateFileChoicePage page;
-    for (size_t i = start; i < matches.size() && page.files.size() < 2; ++i) {
-        UpdateFileChoicePage::FileButton button;
-        button.index = matches[i];
-        button.label = fileChoiceLabel(preview.files[button.index].path);
-        button.peers = initialPeers;
-        page.files.push_back(std::move(button));
-    }
-    page.nextStart = start + page.files.size();
-    page.remaining = matches.size() - page.nextStart;
-    if (page.remaining > 0)
-        page.morePeers = std::move(initialPeers);
-    return page;
-}
-
 } // namespace pipensx

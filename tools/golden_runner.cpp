@@ -9,7 +9,8 @@
 //                 [--locale en-US|ru]
 //                 --screen catalog|shelf-scroll|shelf-header|detail|torrent-selection|
 //                          torrent-selection-scroll|downloads|downloads-back|frame|
-//                          hints-budget|installed|settings|settings-debrid|help|
+//                          hints-budget|installed|installed-populated|update-chooser|
+//                          settings|settings-debrid|help|
 //                          first-run|first-run-focus|debrid-link|
 //                          about|bug-report|
 //                          bug-report-detail|bug-report-focus|sidebar-touch
@@ -467,6 +468,26 @@ int main(int argc, char** argv) {
         const size_t index = screen == "screenshot-viewer-preview" ? 1 : 0;
         activity = new ScreenshotViewerActivity(
             &metadata, {hires, lowres, hires}, index, "Fixture Game");
+    } else if (screen == "update-chooser") {
+        // The update-file chooser: a release with two packages carrying the
+        // update's [vN] tag. Same-name candidates with a common deep prefix
+        // are exactly the case the chooser exists for, so the fixture pins
+        // one such pair — the rows must resolve by dimmed directory and
+        // right-aligned byte size, not by label length.
+        pipensx::TorrentPreview preview;
+        preview.name = "Pipen Odyssey [Multi]";
+        preview.files = {
+            {"Repack/Pipen Odyssey [v131072].nsp", 2361441976ULL, true,
+             false, false},
+            {"Repack/Mods/Pipen Odyssey [v131072].nsp", 934155878ULL, true,
+             false, false},
+        };
+        preview.fileCount = static_cast<uint32_t>(preview.files.size());
+        preview.totalBytes = 2361441976ULL + 934155878ULL;
+        preview.packageCount = 2;
+        activity = new UpdateFileChooserActivity(
+            std::move(preview), {0, 1}, {},
+            [](size_t, std::vector<uint8_t>) {}, [] {});
     } else if (screen == "torrent-selection" ||
                screen == "torrent-selection-scroll") {
         // More files than fit on screen: the recycler only recycles once the

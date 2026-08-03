@@ -59,32 +59,6 @@ std::vector<uint8_t> selectFiles(const TorrentPreview& preview,
 std::vector<uint8_t> selectUpdateFiles(const TorrentPreview& preview,
                                        const std::string& latestVersion);
 
-// One page of the chooser shown when a release carries several packages with
-// the update's [vN] tag (brls::Dialog fits three buttons, so matches page
-// through two at a time). Every page carries up to two file buttons plus the
-// continuation for the "more" page.
-//
-// Every FileButton holds a full copy of `initialPeers`: the bootstrap peers
-// from the magnet resolve are the only way an import can start on networks
-// where the tracker is unreachable, so no page or button may consume the
-// list. `morePeers` hands the same list to the next page.
-struct UpdateFileChoicePage {
-    struct FileButton {
-        size_t index = 0;  // index into preview.files
-        std::string label;
-        std::vector<uint8_t> peers;  // full bootstrap peer list for this button
-    };
-    std::vector<FileButton> files;      // at most two entries
-    size_t nextStart = 0;               // matches index for the next page
-    size_t remaining = 0;               // matches beyond this page (0 = last)
-    std::vector<uint8_t> morePeers;     // peers for the "more" continuation
-};
-
-UpdateFileChoicePage updateFileChoicePage(const TorrentPreview& preview,
-                                          const std::vector<size_t>& matches,
-                                          size_t start,
-                                          std::vector<uint8_t> initialPeers);
-
 // Magnet used to resolve the update torrent for `infoHash`. Prefers the
 // catalog entry's trusted magnet (trackers plus the pre-resolved info dict);
 // falls back to a RuTracker magnet for the hash when the catalog does not

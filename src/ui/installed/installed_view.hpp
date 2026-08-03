@@ -18,6 +18,7 @@
 #include "ui/common/async_image.hpp"
 #include "ui/common/ui_helpers.hpp"
 #include "ui/i18n.hpp"
+#include "ui/installed/update_file_chooser.hpp"
 #include "ui/theme.hpp"
 
 namespace pipensx::ui {
@@ -97,6 +98,15 @@ public:
         currentState_ = state;
         currentFoundVersion_ = result ? result->foundVersion : std::string();
         updateSubtitle();
+        // The base click action is registered with a generic "OK" hint; A
+        // means something different per state, so the hint bar must say so.
+        // updateActionHint rewrites the text of the existing action (the
+        // click still routes through the tap handler), then repaints the bar.
+        updateActionHint(
+            brls::BUTTON_A,
+            state == GameUpdateState::UpdateAvailable
+                ? tr("pipensx/common/install")
+                : tr("pipensx/installed/action_check"));
         switch (state) {
         case GameUpdateState::UpdateAvailable:
             chip_->setText(tr("pipensx/installed/update_chip_available"));
@@ -124,14 +134,16 @@ public:
     }
 
 private:
-    // req #4: current version always, found version when an update is known.
+    // "Publisher · vX → vY": the version transition is the one fact this line
+    // exists for when an update is available, so it must never be pushed off
+    // the end. The 16-hex title ID was dropped — nothing on screen can act on
+    // it, and on long publishers it was the first thing to get clipped.
     void updateSubtitle() {
-        std::string subtitle = publisher_;
-        if (!subtitle.empty())
-            subtitle += "   ";
-        subtitle += titleId_;
+        std::string subtitle;
+        if (!publisher_.empty())
+            subtitle = publisher_ + " · ";
         if (!version_.empty()) {
-            subtitle += "  v" + version_;
+            subtitle += "v" + version_;
             if (currentState_ == GameUpdateState::UpdateAvailable &&
                 !currentFoundVersion_.empty())
                 subtitle += " → v" + currentFoundVersion_;
@@ -173,17 +185,11 @@ public:
     }
 
     int numberOfRows(brls::RecyclerFrame*, int) override {
-        return titles_.empty() ? 1 : static_cast<int>(titles_.size());
+        return static_cast<int>(titles_.size());
     }
 
     brls::RecyclerCell* cellForRow(brls::RecyclerFrame* recycler,
                                     brls::IndexPath index) override {
-        if (titles_.empty()) {
-            auto* cell = static_cast<TextMessageCell*>(
-                recycler->dequeueReusableCell("Message"));
-            cell->setMessage(tr("pipensx/installed/empty_cell"));
-            return cell;
-        }
         const InstalledTitle& title = titles_[static_cast<size_t>(index.row)];
         auto* cell = static_cast<InstalledCell*>(
             recycler->dequeueReusableCell("Installed"));
@@ -227,7 +233,6 @@ public:
         recycler_->setPadding(6, 32, 6, 32);
         recycler_->estimatedRowHeight = 92;
         recycler_->registerCell("Installed", [] { return new InstalledCell(); });
-        recycler_->registerCell("Message", [] { return new TextMessageCell(); });
         dataSource_ = new InstalledDataSource(metadata);
         recycler_->setDataSource(dataSource_);
         // Visibility toggles on the host, not the recycler: the host is the
@@ -343,9 +348,8 @@ private:
             confirmUpdateInstall(GameMetadata(*entries.front()));
             return;
         }
-        // brls::Dialog fits at most three buttons, so a title with several
-        // bundles pages through them: two bundle buttons + "Other bundles…",
-        // which opens the next page. Entries arrive newest-first.
+        // A title with several bundles pages through them one at a time —
+        // see chooseBundle. Entries arrive newest-first.
         std::vector<GameMetadata> bundles;
         bundles.reserve(entries.size());
         for (const GameMetadata* entry : entries)
@@ -353,20 +357,24 @@ private:
         chooseBundle(std::move(bundles), 0);
     }
 
+    // brls::Dialog's third button claims a full-width top slot, so paging
+    // two bundles at a time put the auxiliary "more" button above both
+    // candidates. One bundle per page keeps the hierarchy honest: candidate
+    // in the left half, "more"/"later" in the right. Entries arrive
+    // newest-first, so the first candidate is the newest release.
     void chooseBundle(std::vector<GameMetadata> bundles, size_t start) {
         auto* dialog = new brls::Dialog(
             tr("pipensx/installed/update_choose_bundle"));
-        size_t shown = 0;
-        for (size_t i = start; i < bundles.size() && shown < 2; ++i, ++shown)
-            dialog->addButton(bundleLabel(bundles[i]),
-                              [this, entry = bundles[i]] {
+        if (start < bundles.size())
+            dialog->addButton(bundleLabel(bundles[start]),
+                              [this, entry = bundles[start]] {
                 confirmUpdateInstall(entry);
             });
-        const size_t remaining = bundles.size() - start - shown;
+        const size_t remaining = bundles.size() - start - 1;
         if (remaining > 0)
             dialog->addButton(
                 tr("pipensx/installed/update_choose_more", remaining),
-                [this, bundles = std::move(bundles), start = start + shown] {
+                [this, bundles = std::move(bundles), start = start + 1] {
                     chooseBundle(std::move(bundles), start);
                 });
         else
@@ -410,6 +418,17 @@ private:
         updateInFlight_ = true;
         cancelled_->store(false);
         status_->setText(tr("pipensx/installed/update_resolving"));
+        // While the resolve is in flight no other action can start, so Y is
+        // the cancel: it flips the flag the resolver polls, and the
+        // completion path unlinks the tmp torrent and says so in a toast.
+        // Re-registering in a later beginUpdateInstall replaces the action;
+        // unregistering on completion removes the hint from the bar.
+        updateCancelAction_ = registerAction(
+            tr("pipensx/installed/update_cancel"), brls::BUTTON_Y,
+            [this](brls::View*) {
+                cancelled_->store(true);
+                return true;
+            });
         const std::string hash = entry.infoHash;
         const CatalogEntry* catalogEntry =
             catalog_ ? catalog_->findByInfoHash(hash) : nullptr;
@@ -462,18 +481,48 @@ private:
                     return;
                 }
                 updateInFlight_ = false;
+                if (updateCancelAction_ != ACTION_NONE) {
+                    unregisterAction(updateCancelAction_);
+                    updateCancelAction_ = ACTION_NONE;
+                }
                 if (!ok) {
                     ::unlink(tmp.c_str());
+                    reload();
+                    // A user cancel is not an error: the resolver reports it
+                    // as a failure, so distinguish it from a genuine one
+                    // before the diagnostic and the toast.
+                    if (cancelled_->load()) {
+                        brls::Application::notify(
+                            tr("pipensx/installed/update_cancelled"));
+                        return;
+                    }
                     diagnostic_error("game_updates", "resolve",
                                      "title error=%s", err.c_str());
-                    brls::Application::notify(err);
-                    reload();
+                    brls::Application::notify(resolveErrorToast(err));
                     return;
                 }
                 finishUpdateImport(tmp, std::move(initialPeers),
                                    latestVersion);
             });
         });
+    }
+
+    // The resolver's errors are English diagnostic strings; what the user
+    // sees must be localized. Classify by the failure modes it actually
+    // emits (magnet_resolver.cpp resolveToFile) and keep the raw string in
+    // the diagnostic log either way.
+    static std::string resolveErrorToast(const std::string& err) {
+        const auto has = [&err](const char* needle) {
+            return err.find(needle) != std::string::npos;
+        };
+        if (has("not registered anymore"))
+            return tr("pipensx/installed/update_error_unregistered");
+        if (has("no usable peers") || has("could not connect to any of them") ||
+            has("none returned"))
+            return tr("pipensx/installed/update_error_no_peers");
+        if (has("rejected"))
+            return tr("pipensx/installed/update_error_rejected");
+        return tr("pipensx/installed/update_error_failed");
     }
 
     void finishUpdateImport(const std::string& path,
@@ -483,7 +532,10 @@ private:
         std::string err;
         if (!manager_->previewTorrent(path, preview, err)) {
             ::unlink(path.c_str());
-            brls::Application::notify(err);
+            diagnostic_error("game_updates", "preview", "error=%s",
+                             err.c_str());
+            brls::Application::notify(
+                tr("pipensx/installed/update_error_preview"));
             reload();
             return;
         }
@@ -493,51 +545,32 @@ private:
             // Several packages carry the update version: let the user pick
             // which one is actually the update (mods reusing the version tag
             // of the release they patch can look identical on paper).
-            chooseUpdateFile(preview, path, std::move(initialPeers), matches,
-                             0);
+            chooseUpdateFile(preview, path, std::move(initialPeers), matches);
             return;
         }
         importUpdateTorrent(preview, path, std::move(initialPeers),
                             selectUpdateFiles(preview, latestVersion));
     }
 
-    // The tmp torrent stays alive until the choice lands; the chooser pages
-    // through matches two at a time (brls::Dialog fits three buttons).
+    // The tmp torrent stays alive until the choice lands; the chooser hands
+    // the bootstrap peers straight back into the import, so a resolved
+    // torrent never loses its only way to start where the tracker is
+    // unreachable. Both exits (pick and cancel) come back here, where the
+    // tmp torrent is owned.
     void chooseUpdateFile(const TorrentPreview& preview,
                           const std::string& path,
                           std::vector<uint8_t> initialPeers,
-                          const std::vector<size_t>& matches, size_t start) {
-        // Each button receives a full copy of the bootstrap peers; a page
-        // that moved them once would import the second file with no peers
-        // and never start on networks where the tracker is unreachable.
-        const UpdateFileChoicePage page = updateFileChoicePage(
-            preview, matches, start, std::move(initialPeers));
-        auto* dialog =
-            new brls::Dialog(tr("pipensx/installed/update_choose_file"));
-        // B would dismiss without a callback, leaking the tmp torrent; the
-        // "later"/"more" buttons are the legal exits on every page.
-        dialog->setCancelable(false);
-        for (const UpdateFileChoicePage::FileButton& button : page.files)
-            dialog->addButton(
-                button.label,
-                [this, preview, path, button]() mutable {
-                    importUpdateTorrent(preview, path,
-                                        std::move(button.peers),
-                                        selectFiles(preview, {button.index}));
-                });
-        if (page.remaining > 0)
-            dialog->addButton(
-                tr("pipensx/installed/update_more_files", page.remaining),
-                [this, preview, path, matches, page]() mutable {
-                    chooseUpdateFile(preview, path, std::move(page.morePeers),
-                                     matches, page.nextStart);
-                });
-        else
-            dialog->addButton(tr("pipensx/common/later"), [this, path] {
+                          const std::vector<size_t>& matches) {
+        brls::Application::pushActivity(new UpdateFileChooserActivity(
+            preview, matches, std::move(initialPeers),
+            [this, preview, path](size_t index, std::vector<uint8_t> peers) {
+                importUpdateTorrent(preview, path, std::move(peers),
+                                    selectFiles(preview, {index}));
+            },
+            [this, path] {
                 ::unlink(path.c_str());
                 reload();
-            });
-        dialog->open();
+            }));
     }
 
     void importUpdateTorrent(const TorrentPreview& preview,
@@ -563,7 +596,8 @@ private:
         } else {
             diagnostic_error("game_updates", "import", "error=%s",
                              err.c_str());
-            brls::Application::notify(err);
+            brls::Application::notify(
+                tr("pipensx/installed/update_error_import"));
         }
         ::unlink(path.c_str());
         reload();
@@ -635,6 +669,11 @@ private:
         size_t count = titles.size();
         dataSource_->setTitles(std::move(titles));
         recycler_->reloadData();
+        // reloadData re-renders the focused row, whose A hint may have
+        // changed state with it; neither setResult nor updateActionHint fires
+        // the hints event, so repaint the bar once here — not per cell on
+        // every draw (focus changes repaint it themselves).
+        brls::Application::getGlobalHintsUpdateEvent()->fire();
         const bool empty = count == 0;
         if (empty)
             ensureEmptyState()->setVisibility(brls::Visibility::VISIBLE);
@@ -698,6 +737,7 @@ private:
     bool checkOnEntry_ = true;
     bool refreshing_ = false;
     bool updateInFlight_ = false;
+    brls::ActionIdentifier updateCancelAction_ = ACTION_NONE;
 };
 
 }  // namespace pipensx::ui

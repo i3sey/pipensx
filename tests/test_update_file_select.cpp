@@ -204,91 +204,6 @@ void testUtf8TruncateBoundary() {
     assert(pipensx::utf8TruncateBoundary("", 0) == 0);
 }
 
-// The chooser regression: the second button of the page used to receive a
-// moved-from peer list. Every button of every page must get the full list —
-// on a network with a blocked tracker it is the only way the import starts.
-void testChooserPageHandsFullPeersToEveryButton() {
-    TorrentPreview preview;
-    preview.files = {package("Game Update [v131072].nsp"),
-                     package("Mods/Game Update [v131072].nsp")};
-    const std::vector<uint8_t> peers(42, 0xAB);  // 7 endpoints, 6 bytes each
-    const pipensx::UpdateFileChoicePage page =
-        pipensx::updateFileChoicePage(preview, {0, 1}, 0, peers);
-    assert(page.files.size() == 2);
-    assert(page.nextStart == 2);
-    assert(page.remaining == 0);
-    assert(page.morePeers.empty());
-    for (const pipensx::UpdateFileChoicePage::FileButton& button : page.files)
-        assert(button.peers == peers);
-}
-
-void testChooserPageCarriesPeersAcrossPages() {
-    TorrentPreview preview;
-    preview.files = {package("A [v131072].nsp"),
-                     package("B [v131072].nsp"),
-                     package("C [v131072].nsp")};
-    const std::vector<uint8_t> peers(6, 0xCD);
-    const pipensx::UpdateFileChoicePage first =
-        pipensx::updateFileChoicePage(preview, {0, 1, 2}, 0, peers);
-    assert(first.files.size() == 2);
-    assert(first.nextStart == 2);
-    assert(first.remaining == 1);
-    assert(first.morePeers == peers);  // next page still gets the full list
-    const pipensx::UpdateFileChoicePage second = pipensx::updateFileChoicePage(
-        preview, {0, 1, 2}, first.nextStart, first.morePeers);
-    assert(second.files.size() == 1);
-    assert(second.files[0].index == 2);
-    assert(second.remaining == 0);
-    assert(second.files[0].peers == peers);
-}
-
-bool validUtf8(const std::string& s) {
-    size_t i = 0;
-    while (i < s.size()) {
-        const unsigned char b = static_cast<unsigned char>(s[i]);
-        size_t need = 0;
-        if (b < 0x80) {
-            ++i;
-            continue;
-        }
-        if (b < 0xE0)
-            need = 1;
-        else if (b < 0xF0)
-            need = 2;
-        else if (b < 0xF8)
-            need = 3;
-        else
-            return false;
-        if (i + need >= s.size())
-            return false;
-        for (size_t k = 1; k <= need; ++k)
-            if ((static_cast<unsigned char>(s[i + k]) & 0xC0) != 0x80)
-                return false;
-        i += need + 1;
-    }
-    return true;
-}
-
-// Cyrillic labels past the byte cap: the middle truncation must stay on code
-// point boundaries, never emitting a partial character.
-void testChooserPageLabelsAreCodePointSafe() {
-    // "x" + 10 Cyrillic "ж" (2 bytes each) + a long suffix: both the head cut
-    // (18 bytes, landing mid-character) and the tail cut are exercised.
-    std::string name = "x";
-    for (int i = 0; i < 10; ++i)
-        name += "\xD0\xB6";
-    name += "/Some Mod Folder/Game Update [v131072].nsp";
-    TorrentPreview preview;
-    preview.files = {package(name)};
-    const pipensx::UpdateFileChoicePage page =
-        pipensx::updateFileChoicePage(preview, {0}, 0, {});
-    assert(page.files.size() == 1);
-    const std::string& label = page.files[0].label;
-    assert(label.size() <= 60);
-    assert(label.find("...") != std::string::npos);
-    assert(validUtf8(label));
-}
-
 } // namespace
 
 int main() {
@@ -306,9 +221,6 @@ int main() {
     testMagnetPrefersCatalogEntry();
     testMagnetFallsBackToRuTrackerMagnetWhenNoCatalogEntry();
     testUtf8TruncateBoundary();
-    testChooserPageHandsFullPeersToEveryButton();
-    testChooserPageCarriesPeersAcrossPages();
-    testChooserPageLabelsAreCodePointSafe();
     std::puts("update file selection tests passed");
     return 0;
 }
