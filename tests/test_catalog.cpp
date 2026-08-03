@@ -309,8 +309,60 @@ void testMetadataIndexPlayerFields() {
     assert(!items[3].hasModes && items[3].modes == 0);
 }
 
-void testPlayerFilterPredicate() {
-    GameMetadata igdb;
+void testFindByTitleIdBundles() {
+    const std::string root = "/tmp/pipensx-metadata-titleid-" +
+        std::to_string(static_cast<long long>(getpid()));
+    const std::string bundled = root + "/bundled.json";
+    mkdir(root.c_str(), 0755);
+    writeTextFile(
+        bundled,
+        "[{\"infoHash\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\","
+        "\"titleId\":\"0100230005A52000\",\"name\":\"Bundle A\","
+        "\"latestVersion\":\"131072\"},"
+        "{\"infoHash\":\"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\","
+        "\"titleId\":\"0100230005a52000\",\"name\":\"Bundle B\","
+        "\"latestVersion\":\"196608\"},"
+        "{\"infoHash\":\"CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC\","
+        "\"titleId\":\"0100230005A52000\",\"name\":\"No version\"},"
+        "{\"infoHash\":\"DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD\","
+        "\"titleId\":\"0100230005A53000\",\"name\":\"Other\"}]");
+
+    GameMetadataService metadata(root, bundled);
+    std::string error;
+    assert(metadata.load(error));
+
+    // Both versioned bundles resolve, case-insensitively, newest first.
+    std::vector<const GameMetadata*> entries;
+    assert(metadata.findByTitleId("0100230005a52000", entries));
+    assert(entries.size() == 2);
+    assert(entries[0]->infoHash == "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB");
+    assert(entries[0]->latestVersion == "196608");
+    assert(entries[1]->infoHash == "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+    assert(entries[1]->latestVersion == "131072");
+
+    // Entries without a latestVersion are not update candidates.
+    for (const GameMetadata* entry : entries)
+        assert(entry->name != "No version");
+
+    // Unknown title: false, nothing appended.
+    entries.clear();
+    assert(!metadata.findByTitleId("0100000000010000", entries));
+    assert(entries.empty());
+
+    // collectLatestVersions keeps its version-only contract, newest first.
+    std::vector<std::string> versions;
+    assert(metadata.collectLatestVersions("0100230005A52000", versions));
+    assert(versions.size() == 2);
+    assert(versions[0] == "196608" && versions[1] == "131072");
+
+    unlink(bundled.c_str());
+    rmdir((root + "/catalog/metadata").c_str());
+    rmdir((root + "/catalog/images").c_str());
+    rmdir((root + "/catalog").c_str());
+    rmdir(root.c_str());
+}
+
+void testPlayerFilterPredicate() {    GameMetadata igdb;
     igdb.players = 4;
     igdb.hasModes = true;
     igdb.modes = pipensx::kPlayerModeSplit | pipensx::kPlayerModeLan;
@@ -1365,6 +1417,7 @@ int main() {
     testTorrentConstruction();
     testMetadataIndexParsing();
     testMetadataIndexPlayerFields();
+    testFindByTitleIdBundles();
     testPlayerFilterPredicate();
     testMetadataSnapshotAcceptsVerifiedIndex();
     testMetadataSnapshotRejectsTamperedIndex();

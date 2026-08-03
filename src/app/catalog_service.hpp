@@ -77,6 +77,12 @@ public:
 
     const std::vector<CatalogEntry>& entries() const { return *entries_; }
 
+    // Linear scan for a catalog entry by info-hash (case-insensitive). Null
+    // when absent. Used by the game-update flow: the metadata index is
+    // catalog∩titledb, so the entry carries the magnet/info_dict for the hash
+    // the index alone cannot resolve.
+    const CatalogEntry* findByInfoHash(const std::string& infoHash) const;
+
     // Immutable shared snapshot of the live catalogue. Observers on other
     // threads (the web companion) hold this instead of a ~10 MB deep copy;
     // adopt() publishes a fresh vector, so a held snapshot stays valid and

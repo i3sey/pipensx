@@ -532,7 +532,7 @@ int main(int argc, char** argv) {
         tabs->addNavTab(tr("pipensx/nav/installed"), NavIconType::Installed,
                         [&] {
             return new InstalledView(&installed, &manager, &metadata,
-                                     &settings);
+                                     &settings, &catalog);
         });
         tabs->addNavTab(tr("pipensx/nav/settings"), NavIconType::Settings,
                         [&] {
@@ -665,7 +665,8 @@ int main(int argc, char** argv) {
                    "]}\n";
         }
         activity = new GoldenActivity(
-            new InstalledView(&installed, &manager, &metadata, &settings));
+            new InstalledView(&installed, &manager, &metadata, &settings,
+                              &catalog));
     } else if (screen == "settings") {
         activity = new GoldenActivity(new SettingsView(
             &settings, &manager, &catalog, &metadata, &installed, nullptr,

@@ -534,6 +534,25 @@ bool CatalogService::fetchLatest(std::vector<CatalogEntry>& parsed,
     return true;
 }
 
+const CatalogEntry* CatalogService::findByInfoHash(
+    const std::string& infoHash) const {
+    std::string needle = infoHash;
+    std::transform(needle.begin(), needle.end(), needle.begin(),
+                   [](unsigned char c) {
+                       return static_cast<char>(std::tolower(c));
+                   });
+    for (const CatalogEntry& entry : *entries_) {
+        std::string hash = entry.infoHash;
+        std::transform(hash.begin(), hash.end(), hash.begin(),
+                       [](unsigned char c) {
+                           return static_cast<char>(std::tolower(c));
+                       });
+        if (hash == needle)
+            return &entry;
+    }
+    return nullptr;
+}
+
 void CatalogService::adopt(std::vector<CatalogEntry> parsed) {
     // UI thread only: entries() is read unsynchronised by the render thread, so
     // this swap must never happen on the fetch worker (data race → UAF).

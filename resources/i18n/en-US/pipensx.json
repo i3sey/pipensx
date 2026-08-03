@@ -263,7 +263,14 @@
     "update_chip_latest": "Latest",
     "update_chip_not_checked": "Not checked",
     "update_chip_no_source": "No source",
-    "update_chip_error": "Error"
+    "update_chip_error": "Error",
+    "update_no_bundle": "No release bundle for this title in the index",
+    "update_choose_bundle": "Choose a release bundle",
+    "update_install_confirm": "Download update {1} for {0}?",
+    "update_download": "Download & install",
+    "update_resolving": "Resolving update torrent...",
+    "update_added": "Update added to downloads",
+    "update_choose_more": "Other bundles ({0})..."
   },
   "batch": {
     "frame_title": "Batch install",

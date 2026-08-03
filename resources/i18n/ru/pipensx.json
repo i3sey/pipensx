@@ -263,7 +263,14 @@
     "update_chip_latest": "Актуально",
     "update_chip_not_checked": "Не проверено",
     "update_chip_no_source": "Нет источника",
-    "update_chip_error": "Ошибка"
+    "update_chip_error": "Ошибка",
+    "update_no_bundle": "В индексе нет релиза для этой игры",
+    "update_choose_bundle": "Выберите релизный бандл",
+    "update_install_confirm": "Скачать обновление {1} для {0}?",
+    "update_download": "Скачать и установить",
+    "update_resolving": "Получение торрента обновления...",
+    "update_added": "Обновление добавлено в загрузки",
+    "update_choose_more": "Другие бандлы ({0})..."
   },
   "batch": {
     "frame_title": "Массовая установка",

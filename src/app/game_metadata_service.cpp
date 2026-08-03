@@ -740,7 +740,9 @@ void GameMetadataService::recomputePlayerSummary() {
 
 void GameMetadataService::rebuildTitleIdIndex() {
     std::unordered_map<std::string, std::vector<std::string>> next;
+    std::unordered_map<std::string, std::vector<std::string>> nextHashes;
     next.reserve(byHash_.size());
+    nextHashes.reserve(byHash_.size());
     for (const auto& entry : byHash_) {
         const GameMetadata& metadata = entry.second;
         if (metadata.latestVersion.empty())
@@ -751,8 +753,47 @@ void GameMetadataService::rebuildTitleIdIndex() {
                            return static_cast<char>(std::toupper(c));
                        });
         next[titleId].push_back(metadata.latestVersion);
+        nextHashes[titleId].push_back(metadata.infoHash);
     }
+    for (auto& entry : next)
+        std::sort(entry.second.begin(), entry.second.end(),
+                  [](const std::string& a, const std::string& b) {
+                      const uint64_t av = strtoull(a.c_str(), nullptr, 10);
+                      const uint64_t bv = strtoull(b.c_str(), nullptr, 10);
+                      if (av != bv)
+                          return av > bv;
+                      return a > b;
+                  });
     byTitleId_ = std::move(next);
+    byTitleIdHashes_ = std::move(nextHashes);
+}
+
+bool GameMetadataService::findByTitleId(
+    const std::string& titleId, std::vector<const GameMetadata*>& out) const {
+    std::string key = titleId;
+    std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) {
+        return static_cast<char>(std::toupper(c));
+    });
+    auto it = byTitleIdHashes_.find(key);
+    if (it == byTitleIdHashes_.end())
+        return false;
+    out.reserve(out.size() + it->second.size());
+    for (const std::string& hash : it->second) {
+        const GameMetadata* entry = findByInfoHash(hash);
+        if (entry)
+            out.push_back(entry);
+    }
+    // byHash_ iterates unordered, so pin a deterministic order: newest
+    // bundled update first, info-hash as the tie-break.
+    std::sort(out.begin(), out.end(), [](const GameMetadata* a,
+                                         const GameMetadata* b) {
+        const uint64_t av = strtoull(a->latestVersion.c_str(), nullptr, 10);
+        const uint64_t bv = strtoull(b->latestVersion.c_str(), nullptr, 10);
+        if (av != bv)
+            return av > bv;
+        return a->infoHash < b->infoHash;
+    });
+    return !out.empty();
 }
 
 bool GameMetadataService::collectLatestVersions(
@@ -770,6 +811,8 @@ bool GameMetadataService::collectLatestVersions(
 
 bool GameMetadataService::load(std::string& error) {
     byHash_.clear();
+    byTitleId_.clear();
+    byTitleIdHashes_.clear();
     manifest_ = {};
     recomputePlayerSummary();
 

@@ -111,6 +111,11 @@ public:
     bool fetchLatest(MetadataSnapshot& snapshot, std::string& error) const;
     void adopt(MetadataSnapshot snapshot);
     const GameMetadata* findByInfoHash(const std::string& infoHash) const;
+    // Appends every index entry matching titleId that carries a non-empty
+    // latestVersion (the same entry set collectLatestVersions folds). The
+    // caller chooses among bundles; returns false when the title has none.
+    bool findByTitleId(const std::string& titleId,
+                       std::vector<const GameMetadata*>& out) const;
     // IUpdateMetadataSource: candidate update versions for a title id.
     bool collectLatestVersions(const std::string& titleId,
                                std::vector<std::string>& out) const override;
@@ -188,8 +193,9 @@ private:
     // Refresh availableModes_/localPlayerCounts_ from byHash_. Called from
     // every place that reassigns it (load, adopt).
     void recomputePlayerSummary();
-    // Rebuild byTitleId_ (titleId → latestVersion strings) from byHash_.
-    // Called from every place that reassigns byHash_ (load, adopt).
+    // Rebuild byTitleId_ (titleId → latestVersion strings) and
+    // byTitleIdHashes_ (titleId → info hashes) from byHash_. Called from every
+    // place that reassigns byHash_ (load, adopt).
     void rebuildTitleIdIndex();
     bool loadCachedSnapshot(MetadataSnapshot& snapshot,
                             std::string& error) const;
@@ -223,6 +229,9 @@ private:
     // carries one. Built beside byHash_ (same UI-thread-only reassignment
     // rule) and consumed by collectLatestVersions().
     std::unordered_map<std::string, std::vector<std::string>> byTitleId_;
+    // titleId (upper-case hex) → info hashes of the same entry set as
+    // byTitleId_. Consumed by findByTitleId() for update downloads.
+    std::unordered_map<std::string, std::vector<std::string>> byTitleIdHashes_;
     MetadataManifest manifest_;
     uint8_t availableModes_ = 0;
     bool localPlayerCounts_ = false;
