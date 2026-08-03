@@ -18,9 +18,10 @@ build_switch/
 build-switch/
 build-golden/
 
-# LSP
+# LSP / code intelligence
 compile_commands.json
 .cache/
+.codegraph/
 
 # Log files
 *.log

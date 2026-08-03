@@ -27,6 +27,10 @@ platform-specific changes.
 - For UI, theme, Borealis-widget, or locale changes, load the `golden` skill
   from `.agents/skills/golden/`. Never re-baseline an unexplained diff. Run
   full `make golden` before considering a UI change done.
+- A task is not done until its checks pass: run `make -f Makefile.pc test` for
+  shared/core changes, `make golden` for UI changes, and the affected build
+  (`make switch` for Switch code, `make pc` for the portable CLI) — never only
+  the one you edited in.
 
 ## Switch code
 
@@ -34,6 +38,18 @@ Before changing a libnx call, PC shim, install backend, or code under
 `src/install`, `src/platform`, or `src/main_switch.cpp`, load the `libnx` skill
 from `.agents/skills/libnx/`. It documents header-first API checks, the shared
 PC-build patterns, and required dual-build verification.
+
+## Context budget — don't read
+
+- `pipensx.log` is a multi-thousand-line runtime log. Never read it whole;
+  grep it by tag (`[torrent]`, `[dht]`, `[status]`, ...) when you need it.
+- Do not open images, binaries, or build output: `resources/*.jpg|png`,
+  `tests/golden/*.png`, `tests/fixtures/golden/*.png`, `pipensx.nro`,
+  `build-golden/**`, `build-switch/**`, anything under `bug-reports/`.
+  Golden diffs are triaged by the numbers (AE, bbox, density) from the
+  `golden` skill — never by viewing the PNG.
+- Answer symbol/flow questions through CodeGraph (`codegraph explore` or the
+  `codegraph_explore` tool) before falling back to grep + Read loops.
 
 ## Conventions
 
