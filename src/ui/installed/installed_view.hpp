@@ -271,6 +271,9 @@ public:
     ~InstalledView() override {
         recheckTimer_.stop();
         alive_->store(false);
+        // Abort an in-flight magnet resolve: without this, tearing the tab
+        // down leaves the resolver hammering the network to completion.
+        cancelled_->store(true);
     }
 
 private:
@@ -357,7 +360,7 @@ private:
         for (size_t i = start; i < bundles.size() && shown < 2; ++i, ++shown)
             dialog->addButton(bundleLabel(bundles[i]),
                               [this, entry = bundles[i]] {
-                confirmUpdateInstall(std::move(entry));
+                confirmUpdateInstall(entry);
             });
         const size_t remaining = bundles.size() - start - shown;
         if (remaining > 0)
@@ -376,10 +379,12 @@ private:
         if (!entry.latestVersion.empty())
             label += "  v" + entry.latestVersion;
         // Dialog buttons hold one line; a 60-char cap keeps the label from
-        // overflowing the dialog width on long game names.
+        // overflowing the dialog width on long game names. The rollback to a
+        // code point boundary keeps a cut Cyrillic name from ending in a
+        // partial character.
         constexpr size_t kMaxLabel = 60;
         if (label.size() > kMaxLabel)
-            label.resize(kMaxLabel - 1);
+            label.resize(utf8TruncateBoundary(label, kMaxLabel - 1));
         return label;
     }
 
@@ -391,7 +396,7 @@ private:
             foundVersion));
         dialog->addButton(tr("pipensx/installed/update_download"),
                           [this, entry = std::move(entry)] {
-            beginUpdateInstall(std::move(entry));
+            beginUpdateInstall(entry);
         });
         dialog->addButton(tr("pipensx/common/later"), [] {});
         dialog->open();
@@ -502,42 +507,37 @@ private:
                           const std::string& path,
                           std::vector<uint8_t> initialPeers,
                           const std::vector<size_t>& matches, size_t start) {
+        // Each button receives a full copy of the bootstrap peers; a page
+        // that moved them once would import the second file with no peers
+        // and never start on networks where the tracker is unreachable.
+        const UpdateFileChoicePage page = updateFileChoicePage(
+            preview, matches, start, std::move(initialPeers));
         auto* dialog =
             new brls::Dialog(tr("pipensx/installed/update_choose_file"));
-        size_t shown = 0;
-        for (size_t i = start; i < matches.size() && shown < 2; ++i, ++shown) {
-            const size_t index = matches[i];
+        // B would dismiss without a callback, leaking the tmp torrent; the
+        // "later"/"more" buttons are the legal exits on every page.
+        dialog->setCancelable(false);
+        for (const UpdateFileChoicePage::FileButton& button : page.files)
             dialog->addButton(
-                fileChoiceLabel(preview.files[index].path),
-                [this, preview, path, index,
-                 initialPeers = std::move(initialPeers)]() mutable {
+                button.label,
+                [this, preview, path, button]() mutable {
                     importUpdateTorrent(preview, path,
-                                        std::move(initialPeers),
-                                        selectFiles(preview, {index}));
+                                        std::move(button.peers),
+                                        selectFiles(preview, {button.index}));
                 });
-        }
-        const size_t remaining = matches.size() - start - shown;
-        if (remaining > 0)
+        if (page.remaining > 0)
             dialog->addButton(
-                tr("pipensx/installed/update_more_files", remaining),
-                [this, preview, path, matches,
-                 initialPeers = std::move(initialPeers), start = start + shown]() mutable {
-                    chooseUpdateFile(preview, path, std::move(initialPeers),
-                                     matches, start);
+                tr("pipensx/installed/update_more_files", page.remaining),
+                [this, preview, path, matches, page]() mutable {
+                    chooseUpdateFile(preview, path, std::move(page.morePeers),
+                                     matches, page.nextStart);
                 });
         else
-            dialog->addButton(tr("pipensx/common/later"), [] {});
+            dialog->addButton(tr("pipensx/common/later"), [this, path] {
+                ::unlink(path.c_str());
+                reload();
+            });
         dialog->open();
-    }
-
-    static std::string fileChoiceLabel(const std::string& path) {
-        // Keep both ends of the path: deep directories distinguish duplicate
-        // file names (a mod folder and the release root may share one).
-        constexpr size_t kMax = 60;
-        if (path.size() <= kMax)
-            return path;
-        return path.substr(0, 18) + "..." +
-               path.substr(path.size() - (kMax - 21));
     }
 
     void importUpdateTorrent(const TorrentPreview& preview,

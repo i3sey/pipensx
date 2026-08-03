@@ -39,11 +39,12 @@ struct GameMetadata {
     std::string bannerUrl;
     std::vector<std::string> screenshots;
     std::vector<std::string> categories;
-    // Newest published version of the game's bundled update, in the same
-    // display form as the installed title's NACP display_version ("1.2.3",
-    // optional leading 'v'). Carried by the metadata index (titledb-derived);
-    // empty when the index does not emit it yet — the game-update check then
-    // reports "source unknown" for this title.
+    // Newest published version of the game's bundled update as a decimal
+    // title version ("131072") — the same unit carried by the [vN] tags in
+    // release file names and by the installed Patch content meta; the update
+    // check folds candidates numerically. Carried by the metadata index
+    // (titledb-derived); empty when the index does not emit it yet — the
+    // game-update check then reports "source unknown" for this title.
     std::string latestVersion;
     // eShop "No. of players": how many can play on one console. 0 = unknown.
     uint8_t players = 0;

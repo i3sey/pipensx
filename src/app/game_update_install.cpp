@@ -2,10 +2,29 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <cstdlib>
 
 namespace pipensx {
 namespace {
+
+// Strict decimal parse ("131072"); rejects signs, whitespace and overflow —
+// strtoull would happily turn "1.2.3" into 1 and match a [v1] package.
+bool parseDecimal(const std::string& text, uint64_t& out) {
+    if (text.empty())
+        return false;
+    uint64_t value = 0;
+    for (unsigned char c : text) {
+        if (c < '0' || c > '9')
+            return false;
+        const uint64_t digit = static_cast<uint64_t>(c - '0');
+        if (value > (UINT64_MAX - digit) / 10)
+            return false;
+        value = value * 10 + digit;
+    }
+    out = value;
+    return true;
+}
 
 // First "[vN]" numeric tag in a file name
 // ("Minecraft [0100D71004694800][v10092544].nsp" -> 10092544). Returns false
@@ -56,8 +75,8 @@ bool isUpdateFile(const std::string& path) {
 std::vector<size_t> updateVersionMatches(const TorrentPreview& preview,
                                          const std::string& latestVersion) {
     std::vector<size_t> matches;
-    const uint64_t wanted = strtoull(latestVersion.c_str(), nullptr, 10);
-    if (wanted == 0)
+    uint64_t wanted = 0;
+    if (!parseDecimal(latestVersion, wanted) || wanted == 0)
         return matches;
     for (size_t i = 0; i < preview.files.size(); ++i) {
         uint64_t tag = 0;
@@ -134,6 +153,42 @@ std::string updateMagnetFor(const std::string& infoHash,
     // mirror (resolveToFile bakes all mirrors into the announce list).
     return "magnet:?xt=urn:btih:" + infoHash +
            "&tr=http://bt.t-ru.org/ann?magnet";
+}
+
+namespace {
+
+// One-line file label keeping both ends of the path: deep directories
+// distinguish duplicate file names (a mod folder and the release root may
+// share one). The byte caps roll back to UTF-8 code point boundaries so a
+// truncated Cyrillic name never ends in a partial character.
+std::string fileChoiceLabel(const std::string& path) {
+    constexpr size_t kMax = 60;
+    if (path.size() <= kMax)
+        return path;
+    const size_t head = utf8TruncateBoundary(path, 18);
+    const size_t tailStart = utf8TruncateBoundary(path, path.size() - (kMax - 21));
+    return path.substr(0, head) + "..." + path.substr(tailStart);
+}
+
+} // namespace
+
+UpdateFileChoicePage updateFileChoicePage(const TorrentPreview& preview,
+                                          const std::vector<size_t>& matches,
+                                          size_t start,
+                                          std::vector<uint8_t> initialPeers) {
+    UpdateFileChoicePage page;
+    for (size_t i = start; i < matches.size() && page.files.size() < 2; ++i) {
+        UpdateFileChoicePage::FileButton button;
+        button.index = matches[i];
+        button.label = fileChoiceLabel(preview.files[button.index].path);
+        button.peers = initialPeers;
+        page.files.push_back(std::move(button));
+    }
+    page.nextStart = start + page.files.size();
+    page.remaining = matches.size() - page.nextStart;
+    if (page.remaining > 0)
+        page.morePeers = std::move(initialPeers);
+    return page;
 }
 
 } // namespace pipensx

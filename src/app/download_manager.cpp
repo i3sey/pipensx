@@ -116,6 +116,22 @@ bool directoryEmpty(const std::string& path) {
     return empty;
 }
 
+// Remove stray resolve temp files left by a cancelled update-file chooser:
+// brls::Dialog dismisses with B without invoking any callback, so the unlink
+// on the "later" button is skipped. Startup-only — no resolve can be in
+// flight while the manager is being constructed.
+void sweepTempTorrents(const std::string& root, const char* prefix) {
+    DIR* dir = opendir(root.c_str());
+    if (!dir)
+        return;
+    const size_t prefixLen = std::strlen(prefix);
+    while (struct dirent* entry = readdir(dir)) {
+        if (std::strncmp(entry->d_name, prefix, prefixLen) == 0)
+            ::unlink((root + "/" + entry->d_name).c_str());
+    }
+    closedir(dir);
+}
+
 bool copyFile(const std::string& source, const std::string& destination) {
     std::ifstream input(source, std::ios::binary);
     if (!input)
@@ -1436,6 +1452,8 @@ DownloadManager::DownloadManager(std::string rootPath, bool startWorker)
     makeDirectories(rootPath_);
     makeDirectories(torrentRoot_);
     makeDirectories(downloadRoot_);
+    // B-dismissed update-file choosers leave orphaned resolve temp files.
+    sweepTempTorrents(rootPath_, "_update_tmp_");
     load();
     if (startWorker) {
         workerStarted_ = true;
