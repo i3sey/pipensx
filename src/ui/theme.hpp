@@ -88,6 +88,11 @@ inline const Token kTokens[] = {
     // the one place a "paper"/"ink" pair is fixed across both themes.
     {"pipensx/qr_paper", nvgRGB(255, 255, 255), nvgRGB(255, 255, 255)},
     {"pipensx/qr_ink", nvgRGB(0, 0, 0), nvgRGB(0, 0, 0)},
+
+    // OLED burn-in saver: pure black backdrop + a barely-visible marker that
+    // drifts so static chrome never sits on the same pixels for hours.
+    {"pipensx/burn_in_backdrop", nvgRGB(0, 0, 0), nvgRGB(0, 0, 0)},
+    {"pipensx/burn_in_marker", nvgRGB(18, 18, 18), nvgRGB(18, 18, 18)},
 };
 
 // Indices into kTokens — keep in the same order as the table above.
@@ -98,6 +103,7 @@ enum class Tok : size_t {
     MeterTrack, MeterUsed, MeterBorder,
     GraphBg, GraphGrid,
     QrPaper, QrInk,
+    BurnInBackdrop, BurnInMarker,
 };
 
 // Call once after brls::Application::init() and before any view is
@@ -136,5 +142,7 @@ inline NVGcolor graphBg() { return color(Tok::GraphBg); }
 inline NVGcolor graphGrid() { return color(Tok::GraphGrid); }
 inline NVGcolor qrPaper() { return color(Tok::QrPaper); }
 inline NVGcolor qrInk() { return color(Tok::QrInk); }
+inline NVGcolor burnInBackdrop() { return color(Tok::BurnInBackdrop); }
+inline NVGcolor burnInMarker() { return color(Tok::BurnInMarker); }
 
 } // namespace pipensx::ui::theme
