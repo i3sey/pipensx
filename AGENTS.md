@@ -59,9 +59,11 @@ PC-build patterns, and required dual-build verification.
   names the relevant vendored component.
 - Use clangd for C/C++ navigation when available. Regenerate compile databases
   after changing source lists or flags:
-  ```sh
-  make -f Makefile.pc clean && bear -- make -f Makefile.pc test
-  cmake -S . -B build-golden -DPIPENSX_GOLDEN=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-  ```
+```sh
+ make -f Makefile.pc clean && bear -- make -f Makefile.pc test
+ cmake -S . -B build-golden -DPIPENSX_GOLDEN=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+ ```
+ PC objects and test binaries go under `build-pc/` (never next to `src/` /
+ `tests/` sources).
 - Branch from `main`; merge with `--ff-only`. CI requires `make test`, gitleaks,
   and golden checks.

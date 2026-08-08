@@ -32,6 +32,79 @@ jobs:
       - name: Run PC tests
         run: make test
 
+      - name: Confirm PC objects stay out of the source tree
+        run: |
+          if find src tests vendor/libutp vendor/dht -name '*.o' | grep -q .; then
+            echo "Object files leaked next to sources:" >&2
+            find src tests vendor/libutp vendor/dht -name '*.o' >&2
+            exit 1
+          fi
+          test -d build-pc
+
+  sanitizers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang python3 libcurl4-openssl-dev libssl-dev \
+            libzstd-dev zlib1g-dev
+
+      - name: PC tests under ASan+UBSan
+        run: make -f Makefile.pc clean && make -f Makefile.pc test SANITIZE=1 -j2
+
+      - name: libFuzzer smoke on bencode and metainfo
+        run: make -f Makefile.pc fuzz-smoke
+
+  switch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    container:
+      image: devkitpro/devkita64:latest
+    env:
+      DEVKITPRO: /opt/devkitpro
+      # Same constraint as switch-release.yml: parallel TUs thrash on 7GB runners.
+      CMAKE_BUILD_PARALLEL_LEVEL: "1"
+    steps:
+      - name: Install git (container has no VCS by default)
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git ca-certificates
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Install Switch portlibs
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if dkp-pacman -Sy --noconfirm --needed \
+                switch-dev switch-curl switch-mbedtls switch-zlib switch-miniupnpc; then
+              exit 0
+            fi
+            echo "dkp-pacman attempt ${attempt} failed, retrying..." >&2
+            sleep $((attempt * 10))
+          done
+          exit 1
+
+      - name: Build pipensx.nro
+        run: make switch
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pipensx-nro-ci
+          path: build-switch/pipensx.nro
+          if-no-files-found: error
+          retention-days: 7
+
   secrets:
     runs-on: ubuntu-latest
     timeout-minutes: 10
