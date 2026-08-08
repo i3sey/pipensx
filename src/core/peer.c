@@ -328,7 +328,8 @@ static int process_handshake(peer_t *p, const peer_ctx_t *ctx) {
     return 1; /* keep processing */
 }
 
-/* Returns the removed request's requested_ms, or 0 if it was not found. */
+/* Returns the removed request's requested_ms, or 0 if it was not found.
+   Used by cancel: length is already known from the cancel call site. */
 static uint64_t remove_pipeline(peer_t *p, int piece, int offset) {
     for (int i = 0; i < p->pipeline_len; i++) {
         if (p->pipeline[i].index == piece && p->pipeline[i].offset == offset) {
@@ -337,6 +338,24 @@ static uint64_t remove_pipeline(peer_t *p, int piece, int offset) {
                     (p->pipeline_len - i - 1) * sizeof(block_req_t));
             p->pipeline_len--;
             return requested_ms;
+        }
+    }
+    return 0;
+}
+
+/* Exact pipeline admission for MSG_PIECE: index, offset, and length must
+   match an outstanding request. Removes the entry only on a full match. */
+static int take_pipeline_request(peer_t *p, int piece, int offset, int length,
+                                 uint64_t *requested_ms) {
+    for (int i = 0; i < p->pipeline_len; i++) {
+        if (p->pipeline[i].index == piece &&
+            p->pipeline[i].offset == offset &&
+            p->pipeline[i].length == length) {
+            *requested_ms = p->pipeline[i].requested_ms;
+            memmove(&p->pipeline[i], &p->pipeline[i+1],
+                    (p->pipeline_len - i - 1) * sizeof(block_req_t));
+            p->pipeline_len--;
+            return 1;
         }
     }
     return 0;
@@ -434,12 +453,21 @@ static int process_message(peer_t *p, const peer_ctx_t *ctx,
             uint32_t off = ((uint32_t)payload[4]<<24)|((uint32_t)payload[5]<<16)|
                            ((uint32_t)payload[6]<<8 )| (uint32_t)payload[7];
             uint32_t blen = plen - 8;
-            uint64_t requested_ms = remove_pipeline(p, (int)idx, (int)off);
+            uint64_t requested_ms = 0;
+            /* Only an exact outstanding request reaches accounting and storage.
+               Unsolicited or wrong-length PIECE must not allocate piece buffers. */
+            if (!take_pipeline_request(p, (int)idx, (int)off, (int)blen,
+                                       &requested_ms)) {
+                if (++p->unsolicited_piece_strikes >= MAX_UNSOLICITED_PIECES) {
+                    log_msg("[peer] too many unsolicited PIECE frames\n");
+                    return -1;
+                }
+                break;
+            }
             p->downloaded += blen;
             p->telemetry_piece_bytes += blen;
             p->last_piece_ms = now_ms();
-            /* Latency sample only for blocks we actually asked this peer for
-               (expired/cancelled requests return 0). Clamped to >= 1 ms so a
+            /* Latency sample for the matched request. Clamped to >= 1 ms so a
                populated EMA is distinguishable from "no sample yet". */
             if (requested_ms && requested_ms <= p->last_piece_ms) {
                 uint32_t latency = (uint32_t)(p->last_piece_ms - requested_ms);

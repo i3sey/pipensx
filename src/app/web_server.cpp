@@ -223,7 +223,7 @@ bool WebServer::sameOrigin(const HttpRequest& req) {
 
 bool WebServer::authorized(const HttpRequest& req) const {
     std::lock_guard<std::mutex> lock(configMutex_);
-    if (pin_.empty()) return true;
+    if (pin_.empty()) return false;
     // Header only: a PIN in the query string lands in browser history and
     // logs, and would let a plain cross-site link carry it.
     std::string provided = req.header("x-pipensx-pin");
@@ -365,7 +365,7 @@ HttpResponse WebServer::routeApi(const HttpRequest& req) {
             j["version"] = version_;
             {
                 std::lock_guard<std::mutex> lock(configMutex_);
-                j["authRequired"] = !pin_.empty();
+                j["authRequired"] = true;  // mutations always require a PIN
             }
             j["maxTorrentBytes"] = 2 * 1024 * 1024;
             return HttpResponse::text(200, dumpJson(j));

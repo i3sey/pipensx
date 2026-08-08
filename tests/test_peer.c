@@ -57,7 +57,6 @@ static void capture_expired(void *user, const block_req_t *request) {
 static void capture_block(void *user, uint32_t index, uint32_t offset,
                           const uint8_t *data, uint32_t length) {
     block_capture_t *capture = (block_capture_t*)user;
-    assert(index == (uint32_t)capture->count);
     assert(offset == 0);
     assert(length == 8192);
     assert(data[0] == (uint8_t)index);
@@ -310,12 +309,16 @@ static void test_recv_drains_socket_until_would_block(void) {
     peer_ctx_t context;
     memset(&context, 0, sizeof(context));
     context.num_pieces = 8;
+    for (uint32_t index = 0; index < 8; ++index)
+        peer.pipeline[peer.pipeline_len++] =
+            (block_req_t){(int)index, 0, BLOCK_SIZE, 1};
 
     block_capture_t capture = {0};
     assert(peer_recv(&peer, &context, capture_block, NULL, NULL, &capture) == 0);
     assert(capture.count == 8);
     assert(capture.bytes == 8 * BLOCK_SIZE);
     assert(peer.rbuf_len == 0);
+    assert(peer.pipeline_len == 0);
 
     close(sockets[0]);
     close(sockets[1]);
@@ -351,6 +354,9 @@ static void test_recv_reassembles_message_split_across_reads(void) {
     peer_ctx_t context;
     memset(&context, 0, sizeof(context));
     context.num_pieces = 8;
+    peer.pipeline[0] = (block_req_t){0, 0, BLOCK_SIZE, 1};
+    peer.pipeline[1] = (block_req_t){1, 0, BLOCK_SIZE, 1};
+    peer.pipeline_len = 2;
 
     block_capture_t capture = {0};
 
@@ -369,13 +375,14 @@ static void test_recv_reassembles_message_split_across_reads(void) {
     assert(capture.count == 2);
     assert(capture.bytes == 2 * BLOCK_SIZE);
     assert(peer.rbuf_len == 0);              /* fully drained → cursor reset */
+    assert(peer.pipeline_len == 0);
 
     close(sockets[0]);
     close(sockets[1]);
 }
 
 /* A received block must fold its request->piece round trip into the peer's
-   latency EMA (PERF_PLAN 5.1); unsolicited blocks must not contribute. */
+   latency EMA (PERF_PLAN 5.1); unsolicited / wrong-length blocks are dropped. */
 static void test_piece_receipt_samples_block_latency(void) {
     int sockets[2];
     assert(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
@@ -392,21 +399,33 @@ static void test_piece_receipt_samples_block_latency(void) {
     memset(&context, 0, sizeof(context));
     context.num_pieces = 8;
 
-    /* Unsolicited block (empty pipeline): no latency sample. */
+    /* Unsolicited block (empty pipeline): dropped, no callback, no latency. */
     fill_piece(message, 0);
     send_all(sockets[1], message, sizeof(message));
     block_capture_t capture = {0};
     assert(peer_recv(&peer, &context, capture_block, NULL, NULL, &capture) == 0);
-    assert(capture.count == 1);
+    assert(capture.count == 0);
+    assert(peer.block_lat_ema_ms == 0);
+    assert(peer.unsolicited_piece_strikes == 1);
+    assert(peer.downloaded == 0);
+
+    /* Matching index/offset but wrong length: still rejected. */
+    peer.pipeline_len = 1;
+    peer.pipeline[0] = (block_req_t){1, 0, 16384, now_ms() - 400};
+    fill_piece(message, 1); /* 8192-byte payload */
+    send_all(sockets[1], message, sizeof(message));
+    assert(peer_recv(&peer, &context, capture_block, NULL, NULL, &capture) == 0);
+    assert(capture.count == 0);
+    assert(peer.pipeline_len == 1);
+    assert(peer.unsolicited_piece_strikes == 2);
     assert(peer.block_lat_ema_ms == 0);
 
     /* Requested ~400 ms ago: first sample seeds the EMA directly. */
-    peer.pipeline_len = 1;
     peer.pipeline[0] = (block_req_t){1, 0, 8192, now_ms() - 400};
     fill_piece(message, 1);
     send_all(sockets[1], message, sizeof(message));
     assert(peer_recv(&peer, &context, capture_block, NULL, NULL, &capture) == 0);
-    assert(capture.count == 2);
+    assert(capture.count == 1);
     assert(peer.pipeline_len == 0);
     assert(peer.block_lat_ema_ms >= 400 && peer.block_lat_ema_ms < 2000);
 
@@ -417,7 +436,7 @@ static void test_piece_receipt_samples_block_latency(void) {
     fill_piece(message, 2);
     send_all(sockets[1], message, sizeof(message));
     assert(peer_recv(&peer, &context, capture_block, NULL, NULL, &capture) == 0);
-    assert(capture.count == 3);
+    assert(capture.count == 2);
     assert(peer.block_lat_ema_ms > first_ema);
     assert(peer.block_lat_ema_ms < 4000);
 
