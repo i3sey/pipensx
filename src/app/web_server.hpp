@@ -46,7 +46,7 @@ public:
     uint16_t boundPort() const { return http_.boundPort(); }
 
     // Thread-safe setters, called from the UI thread on settings changes.
-    // PIN: empty disables auth; otherwise required on mutating endpoints.
+    // PIN: required on mutating endpoints; empty fails closed.
     void setPin(std::string pin);
     void setStreamSelection(StreamSelection selection);
 

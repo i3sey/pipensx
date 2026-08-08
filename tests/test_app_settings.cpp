@@ -56,6 +56,11 @@ void testMissingFileUsesSafeDefaults() {
     assert(values.torrserverUrl.empty());
     assert(values.debridProvider == DebridProviderKind::TorBox);
     assert(!values.firstRunCompleted);
+    // Fresh install gets a random companion PIN so mutations are never open.
+    assert(values.webServerPin.size() == 6);
+    assert(pipensx::isValidWebPin(values.webServerPin));
+    assert(!values.webServerPin.empty());
+    assert(access(SettingsPath, F_OK) == 0);
 }
 
 void testUpdatePersistsEveryPublicSetting() {
@@ -160,12 +165,13 @@ void testLegacyTelemetryFlagMigratesOnce() {
     std::string error;
     assert(settings.load(error));
     assert(settings.get().extendedTelemetry);
+    assert(!settings.get().webServerPin.empty());
     assert(access(SettingsPath, F_OK) == 0);
     assert(access(LegacyPath, F_OK) != 0);
 }
 
-// A hand-edited PIN that is not 4-8 digits silently degrades to "no PIN"
-// rather than locking the user out of their own companion page.
+// A hand-edited PIN that is not 4-8 digits is replaced with a generated PIN
+// rather than leaving the companion open on the LAN.
 void testInvalidWebPinIsCleared() {
     cleanup();
     {
@@ -175,7 +181,8 @@ void testInvalidWebPinIsCleared() {
     AppSettings settings(SettingsPath, LegacyPath);
     std::string error;
     assert(settings.load(error));
-    assert(settings.get().webServerPin.empty());
+    assert(settings.get().webServerPin.size() == 6);
+    assert(pipensx::isValidWebPin(settings.get().webServerPin));
     assert(settings.get().webServerEnabled);
 
     assert(pipensx::isValidWebPin(""));
@@ -184,6 +191,25 @@ void testInvalidWebPinIsCleared() {
     assert(!pipensx::isValidWebPin("123"));
     assert(!pipensx::isValidWebPin("123456789"));
     assert(!pipensx::isValidWebPin("12a4"));
+
+    const std::string generated = pipensx::generateWebPin();
+    assert(generated.size() == 6);
+    assert(pipensx::isValidWebPin(generated));
+}
+
+// Clearing the PIN via update() regenerates one instead of storing empty.
+void testUpdateEmptyPinRegenerates() {
+    cleanup();
+    AppSettings settings(SettingsPath, LegacyPath);
+    std::string error;
+    assert(settings.load(error));
+    AppSettingsData values = settings.get();
+    const std::string previous = values.webServerPin;
+    values.webServerPin.clear();
+    assert(settings.update(values, error));
+    assert(settings.get().webServerPin.size() == 6);
+    assert(pipensx::isValidWebPin(settings.get().webServerPin));
+    (void)previous;
 }
 
 // A hand-edited count outside [1,4] degrades to the nearest supported value
@@ -355,6 +381,7 @@ int main() {
     testUnknownLanguageIsRejected();
     testLegacyTelemetryFlagMigratesOnce();
     testInvalidWebPinIsCleared();
+    testUpdateEmptyPinRegenerates();
     testMaxActiveDownloadsClamped();
     testVersionOneResetsActiveDownloads();
     testFutureVersionIsRejected();

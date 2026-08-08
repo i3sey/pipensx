@@ -43,8 +43,11 @@ struct AppSettingsData {
     // First-run disclaimer: catalog comes from a third party. Shown once.
     bool catalogDisclaimerAcknowledged = false;
     // Web companion LAN server (plain HTTP, port 8080). The PIN gates
-    // mutating endpoints; empty = no auth, otherwise 4-8 digits (enforced at
-    // parse time so a hand-edited settings.json cannot smuggle odd values).
+    // mutating endpoints (fail-closed when empty). A missing or invalid PIN
+    // is replaced with a random 6-digit value on load/update so a fresh
+    // install is never open on the LAN. Digits only, 4-8 long when set by
+    // the user (enforced at parse time so a hand-edited settings.json
+    // cannot smuggle odd values).
     bool webServerEnabled = true;
     std::string webServerPin;
     // How many torrents download at once. The default 1 is the serial
@@ -86,8 +89,11 @@ inline constexpr const char* kLanguageValues[] = {"auto", "en-US", "ru"};
 
 bool isSupportedLanguage(const std::string& value);
 
-// True for a valid web PIN: empty (auth off) or 4-8 ASCII digits.
+// True for a valid web PIN: empty (caller will auto-generate) or 4-8 ASCII digits.
 bool isValidWebPin(const std::string& value);
+
+// Random 6-digit numeric PIN for the LAN companion.
+std::string generateWebPin();
 
 // Empty (direct) or scheme://host[:port] with scheme one of http, https,
 // socks4, socks5, socks5h. curl accepts far more than that; this is the

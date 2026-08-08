@@ -5,6 +5,7 @@
 #include <borealis/extern/nlohmann/json.hpp>
 
 #include <cerrno>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <sstream>
@@ -12,12 +13,23 @@
 #include <unistd.h>
 #include <utility>
 
-#include <borealis/extern/nlohmann/json.hpp>
+extern "C" {
+#include "../core/util.h"
+}
 
 namespace pipensx {
 namespace {
 
 using Json = nlohmann::json;
+
+// Fill an empty PIN with a random 6-digit value. Returns true when a new PIN
+// was written into `values` (caller should persist).
+bool ensureWebPin(AppSettingsData& values) {
+    if (!values.webServerPin.empty())
+        return false;
+    values.webServerPin = generateWebPin();
+    return true;
+}
 
 const char* catalogFilterName(CatalogFilter value) {
     return value == CatalogFilter::Games ? "games" : "all";
@@ -250,6 +262,17 @@ bool isValidWebPin(const std::string& value) {
     return true;
 }
 
+std::string generateWebPin() {
+    uint8_t bytes[4];
+    rand_bytes(bytes, sizeof(bytes));
+    uint32_t value = (uint32_t)bytes[0] | ((uint32_t)bytes[1] << 8) |
+                     ((uint32_t)bytes[2] << 16) | ((uint32_t)bytes[3] << 24);
+    value %= 1000000u;
+    char pin[7];
+    std::snprintf(pin, sizeof(pin), "%06u", value);
+    return pin;
+}
+
 bool isValidProxyUrl(const std::string& value) {
     if (value.empty())
         return true;
@@ -347,10 +370,17 @@ bool AppSettings::load(std::string& error) {
             access(legacyTelemetryPath_.c_str(), F_OK) == 0) {
             AppSettingsData migrated;
             migrated.extendedTelemetry = true;
+            ensureWebPin(migrated);
             if (!write(migrated, error))
                 return false;
             values_ = migrated;
             unlink(legacyTelemetryPath_.c_str());
+        } else {
+            AppSettingsData fresh;
+            ensureWebPin(fresh);
+            if (!write(fresh, error))
+                return false;
+            values_ = fresh;
         }
         ++generation_;
         return true;
@@ -365,6 +395,10 @@ bool AppSettings::load(std::string& error) {
     AppSettingsData parsed;
     if (!parseSettings(buffer.str(), parsed, error))
         return false;
+    if (ensureWebPin(parsed)) {
+        if (!write(parsed, error))
+            return false;
+    }
     values_ = parsed;
     ++generation_;
     return true;
@@ -403,9 +437,15 @@ bool AppSettings::write(const AppSettingsData& values,
 }
 
 bool AppSettings::update(const AppSettingsData& values, std::string& error) {
-    if (!write(values, error))
+    AppSettingsData next = values;
+    if (!isValidWebPin(next.webServerPin)) {
+        error = "Web companion PIN must be 4-8 digits.";
         return false;
-    values_ = values;
+    }
+    ensureWebPin(next);
+    if (!write(next, error))
+        return false;
+    values_ = next;
     ++generation_;
     return true;
 }

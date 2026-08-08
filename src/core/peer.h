@@ -6,6 +6,8 @@
 
 #define MAX_PIPELINE   256     /* one 4 MiB piece in flight per peer */
 #define MAX_PEERS     96
+/* Disconnect after this many unsolicited / wrong-length PIECE frames. */
+#define MAX_UNSOLICITED_PIECES 8
 #define BT_HANDSHAKE_LEN 68
 #define PEER_BUF_SIZE (4 + 1 + (1<<14) + 9)  /* enough for one piece msg */
 #define PEER_RECV_BUFFER_SIZE ((256 * 1024) + 4) /* max payload + length */
@@ -114,6 +116,10 @@ typedef struct peer {
     uint32_t block_lat_ema_ms;
     uint64_t telemetry_piece_bytes;
     uint32_t timeout_strikes;
+    /* PIECE frames that did not match an outstanding request (index, offset,
+       length). Excess disconnects the peer so a malicious sender cannot keep
+       probing without cost. */
+    uint32_t unsolicited_piece_strikes;
     /* Last time any of this peer's requests expired; gates the
        window-binding growth in sample_peer_rates. */
     uint64_t last_expiry_ms;

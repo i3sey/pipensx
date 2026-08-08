@@ -291,7 +291,8 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 	# network. Running it here keeps that from hiding the other 25.
 	./$(MANAGER_TEST_TARGET)
 
-$(SETTINGS_TEST_TARGET): tests/test_app_settings.cpp src/app/app_settings.cpp
+$(SETTINGS_TEST_TARGET): tests/test_app_settings.cpp src/app/app_settings.cpp \
+		src/core/util.o
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
 
 $(UPDATE_TEST_TARGET): tests/test_update_service.cpp src/app/update_service.cpp \
