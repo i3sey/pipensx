@@ -102,12 +102,12 @@ int torrent_submit_web_piece(torrent_t *t, uint32_t piece,
 /*
  * Snapshot the have-bitfield for fast-resume persistence. Torrent-thread
  * only. Flushes any in-flight background piece verification first, so a
- * verified piece is never dropped at pause/teardown. Returns the required
- * byte count when out is NULL, the bytes copied otherwise. Returns 0 while
- * startup verification is still running — the bitfield is incomplete then
- * and MUST NOT be persisted (arming it would mark unscanned-but-valid
- * pieces as absent). Note the storage layer never fsyncs, so a "clean"
- * snapshot still trusts the OS cache to reach disk.
+ * verified piece is never dropped at pause/teardown, then fflush()es disk
+ * storage so a same-session pause/resume does not race stdio buffers.
+ * Returns the required byte count when out is NULL, the bytes copied
+ * otherwise. Returns 0 while startup verification is still running — the
+ * bitfield is incomplete then and MUST NOT be persisted (arming it would
+ * skip the scan that reclaims unscanned-but-valid pieces on disk).
  */
 uint32_t torrent_copy_have_bitfield(torrent_t *t, uint8_t *out,
                                     uint32_t out_len);

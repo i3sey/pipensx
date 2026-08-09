@@ -753,6 +753,83 @@ int main() {
         assert(manager.remove(frId, true, error));
     }
 
+    // Pause must keep the progress bar across an app restart. v5 only
+    // persisted resume-bf; the UI reads completed/wanted bytes, so a paused
+    // task used to reopen at 0% even when the bitfield was intact.
+    {
+        std::string progressRoot = std::string(root) + "/progress-app";
+        {
+            DownloadManager createDirs(progressRoot, false);
+        }
+        pipensx::TorrentPreview preview;
+        assert(DownloadManager::previewTorrent(source, preview, error));
+        makeDir(progressRoot + "/torrents");
+        makeDir(progressRoot + "/downloads");
+        std::string metainfoPath =
+            progressRoot + "/torrents/" + preview.infoHash + ".torrent";
+        std::string dataPath = progressRoot + "/downloads/package.nsp-" +
+                               preview.infoHash.substr(0, 8);
+        copyFile(source, metainfoPath);
+        makeDir(dataPath);
+
+        auto bint = [](uint64_t value) {
+            return "i" + std::to_string(value) + "e";
+        };
+        std::string bitfield(1, '\x80');
+        std::string queue = "d5:tasksl";
+        queue += "d";
+        queue += "9:completed" + bint(7);
+        queue += "4:data" + bstr(dataPath);
+        queue += "9:debrid-id" + bstr("");
+        queue += "5:error" + bstr("");
+        queue += "2:id" + bstr(preview.infoHash);
+        queue += "8:metainfo" + bstr(metainfoPath);
+        queue += "4:mode" + bstr("download");
+        queue += "4:name" + bstr(preview.name);
+        queue += "13:package-count" + bint(0);
+        queue += "13:packages-done" + bint(0);
+        queue += "11:pieces-done" + bint(1);
+        queue += "12:pieces-total" + bint(1);
+        queue += "8:provider" + bstr("torbox");
+        queue += "9:resume-bf" + bstr(bitfield);
+        queue += "9:selection" + bstr(std::string(1, '\1'));
+        queue += "6:source" + bstr("torrent");
+        queue += "6:status" + bstr("paused");
+        queue += "5:total" + bint(12);
+        queue += "16:wanted-completed" + bint(7);
+        queue += "12:wanted-total" + bint(12);
+        queue += "e";
+        queue += "e7:versioni6ee";
+        std::ofstream output(progressRoot + "/queue.bencode",
+                             std::ios::binary | std::ios::trunc);
+        output << queue;
+        output.close();
+
+        DownloadManager manager(progressRoot, false);
+        auto tasks = manager.snapshot();
+        assert(tasks.size() == 1);
+        assert(tasks[0].status == DownloadStatus::Paused);
+        assert(tasks[0].completedBytes == 7);
+        assert(tasks[0].wantedCompletedBytes == 7);
+        assert(tasks[0].wantedTotalBytes == 12);
+        assert(tasks[0].piecesDone == 1);
+        assert(tasks[0].piecesTotal == 1);
+        assert((tasks[0].resumeBitfield == std::vector<uint8_t>{0x80}));
+        const auto progress = pipensx::downloadProgressBytes(tasks[0]);
+        assert(progress.first == 7 && progress.second == 12);
+
+        // Round-trip through save so a later manager keeps the same bar.
+        assert(manager.save(error));
+        {
+            DownloadManager reloaded(progressRoot, false);
+            auto again = reloaded.snapshot()[0];
+            assert(again.completedBytes == 7);
+            assert(again.wantedCompletedBytes == 7);
+            assert(again.wantedTotalBytes == 12);
+        }
+        assert(manager.remove(tasks[0].id, true, error));
+    }
+
     // moveToFront: the worker claims the first Queued entry in list order, so
     // promoting a task is a reorder of tasks_, not a priority flag.
     {

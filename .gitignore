@@ -17,6 +17,7 @@
 build_switch/
 build-switch/
 build-golden/
+build-pc/
 
 # LSP / code intelligence
 compile_commands.json

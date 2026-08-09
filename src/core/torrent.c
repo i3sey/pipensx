@@ -1954,6 +1954,11 @@ uint32_t torrent_copy_have_bitfield(torrent_t *t, uint8_t *out,
     piece_mgr_hash_flush(t->pm);
     if (t->startup_verifying)
         return 0;
+    /* Best-effort durability for the pieces the bitfield claims we have.
+       Not an fsync — enough that a pause+resume in the same session does not
+       rediscover missing bytes that were still sitting in stdio buffers. */
+    if (t->store)
+        storage_flush(t->store);
     uint32_t need = (t->pm->num_pieces + 7) / 8;
     if (!out)
         return need;

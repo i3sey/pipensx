@@ -32,6 +32,7 @@ extern "C" {
 
 #include "app/mod_index_service.hpp"
 #include "ui/catalog/catalog_view.hpp"
+#include "ui/common/burn_in_saver.hpp"
 #include "ui/common/ui_helpers.hpp"
 #include "ui/common/web_qr.hpp"
 #include "ui/first_run_view.hpp"
@@ -464,6 +465,8 @@ int main(int argc, char** argv) {
 
         startupStage("first main loop");
         bool firstFrame = true;
+        uint64_t lastInputMs = now_ms();
+        bool burnInSaverOpen = false;
         while (true) {
             bool activeTransfer = manager.hasActiveTransfer();
             performance.setActive(activeTransfer);
@@ -472,6 +475,34 @@ int main(int argc, char** argv) {
                                : GameMetadataService::ImageNetwork::Full);
             if (!brls::Application::mainLoop())
                 break;
+
+            // OLED burn-in guard: after five minutes without a button/touch,
+            // cover the UI with a drifting black saver. Any input resets the
+            // idle clock; dismissing the saver is handled by its actions.
+            brls::ControllerState pad {};
+            std::vector<brls::RawTouchState> touches;
+            auto* input = brls::Application::getPlatform()->getInputManager();
+            input->updateUnifiedControllerState(&pad);
+            input->updateTouchStates(&touches);
+            bool touched = false;
+            for (const auto& touch : touches) {
+                if (touch.pressed) {
+                    touched = true;
+                    break;
+                }
+            }
+            if (pipensx::ui::controllerHasButtonDown(pad) || touched) {
+                lastInputMs = now_ms();
+                burnInSaverOpen = false;
+            } else if (!burnInSaverOpen &&
+                       now_ms() - lastInputMs >= pipensx::ui::kBurnInIdleMs) {
+                brls::Application::pushActivity(
+                    new pipensx::ui::BurnInSaverActivity(),
+                    brls::TransitionAnimation::NONE);
+                burnInSaverOpen = true;
+                lastInputMs = now_ms();
+            }
+
             if (firstFrame) {
                 startupStage("main loop running");
                 if (updatePendingConfirmation) {
