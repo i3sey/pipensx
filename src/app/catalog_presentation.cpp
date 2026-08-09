@@ -84,7 +84,8 @@ CatalogPresentation resolveCatalogPresentation(
     CatalogPresentation result;
     result.title = metadata && !metadata->name.empty()
         ? metadata->name : entry.title;
-    result.titleId = metadata ? metadata->titleId : std::string();
+    result.titleId = metadata && !metadata->titleId.empty()
+        ? metadata->titleId : entry.titleId;
     if (metadata && !metadata->iconUrl.empty()) {
         result.iconUrl = metadata->iconUrl;
         result.iconPreserveAspect = false;
@@ -116,6 +117,8 @@ CatalogPresentation resolveCatalogPresentation(
         ? metadata->releaseDate : entry.year;
     result.genre = metadata && !metadata->categories.empty()
         ? join(metadata->categories) : entry.genre;
+    result.performance = entry.performance;
+    result.multiplayer = entry.multiplayer;
     result.screenshots = mergeScreenshotUrls(metadata, entry, 6);
     return result;
 }
@@ -123,6 +126,8 @@ CatalogPresentation resolveCatalogPresentation(
 bool catalogEntryIsGame(const CatalogEntry& entry,
                         const GameMetadata* metadata) {
     if (metadata && looksLikeTitleId(metadata->titleId))
+        return true;
+    if (looksLikeTitleId(entry.titleId))
         return true;
     const std::string title = lowerAscii(entry.title);
     if (hasNroMarker(title))

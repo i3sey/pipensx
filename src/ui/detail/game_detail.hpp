@@ -384,6 +384,10 @@ private:
                    presentation_.releaseDate);
         addFactRow(table, tr("pipensx/detail/fact_genre"), presentation_.genre);
         addFactRow(table, tr("pipensx/detail/fact_players"), playersFact_);
+        addFactRow(table, tr("pipensx/detail/fact_multiplayer"),
+                   presentation_.multiplayer);
+        addFactRow(table, tr("pipensx/detail/fact_performance"),
+                   presentation_.performance);
         addFactRow(table, tr("pipensx/detail/fact_size"),
                    entry_.size ? formatBytes(entry_.size)
                                : tr("pipensx/common/unknown"));

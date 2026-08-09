@@ -834,12 +834,12 @@ private:
                 stateBadges.emplace_back();
             const GameMetadata* meta =
                 metadata_ ? metadata_->findByInfoHash(entry.infoHash) : nullptr;
-            if (it == added.end() && meta && installed_ &&
-                installed_->contains(meta->titleId))
-                stateBadges.back() = tr("pipensx/catalog/badge_installed");
             CatalogPresentation presentation =
                 resolveCatalogPresentation(entry, meta,
                                            catalogTextPreference());
+            if (it == added.end() && !presentation.titleId.empty() &&
+                installed_ && installed_->contains(presentation.titleId))
+                stateBadges.back() = tr("pipensx/catalog/badge_installed");
             gameNames.push_back(std::move(presentation.title));
             iconUrls.push_back(std::move(presentation.iconUrl));
             iconPreserveAspect.push_back(
@@ -848,8 +848,11 @@ private:
             selectable.push_back(canSelect ? 1 : 0);
             // In-memory lookup only: the ModCD table is fetched with the
             // catalogue, never from a card path.
-            hasMods.push_back(mods_ && meta && mods_->has(meta->titleId) ? 1
-                                                                        : 0);
+            hasMods.push_back(
+                mods_ && !presentation.titleId.empty() &&
+                        mods_->has(presentation.titleId)
+                    ? 1
+                    : 0);
             favorite.push_back(favorites_ && favorites_->contains(hash) ? 1
                                                                        : 0);
             metas.push_back(meta);
@@ -884,14 +887,16 @@ private:
                               popularFallback ? "fallback" : "peers");
             }
 
-            // Dedup key: titleId when known (collapses re-releases of the
-            // same title), info-hash otherwise.
+            // Dedup key: titleId when known (metadata or catalogue field),
+            // info-hash otherwise.
             auto keyOf = [&](int index) {
-                const GameMetadata* meta = metas[static_cast<size_t>(index)];
-                return meta && !meta->titleId.empty()
-                    ? "t:" + meta->titleId
-                    : "h:" + lowerAscii(
-                          visible[static_cast<size_t>(index)].infoHash);
+                const size_t i = static_cast<size_t>(index);
+                const GameMetadata* meta = metas[i];
+                if (meta && !meta->titleId.empty())
+                    return std::string("t:") + meta->titleId;
+                if (!visible[i].titleId.empty())
+                    return std::string("t:") + visible[i].titleId;
+                return "h:" + lowerAscii(visible[i].infoHash);
             };
             std::unordered_set<std::string> used;
 

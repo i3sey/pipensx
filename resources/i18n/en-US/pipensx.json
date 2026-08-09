@@ -132,6 +132,8 @@
     "fact_release": "Release",
     "fact_genre": "Genre",
     "fact_players": "Players",
+    "fact_multiplayer": "Multiplayer",
+    "fact_performance": "Performance",
     "players_up_to": "up to {}",
     "players_single": "1 player",
     "fact_size": "Size",

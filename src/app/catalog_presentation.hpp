@@ -20,6 +20,8 @@ struct CatalogPresentation {
     std::string publisher;
     std::string releaseDate;
     std::string genre;
+    std::string performance;
+    std::string multiplayer;
     std::vector<std::string> screenshots;
 };
 

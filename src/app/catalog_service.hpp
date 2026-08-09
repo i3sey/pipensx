@@ -35,6 +35,12 @@ struct CatalogEntry {
     std::string developer;
     std::string publisher;
     std::string description;
+    /* Langegen fields added after the first switch_games dump: Nintendo
+       title id when known, CFW/firmware note, and a free-text multiplayer
+       summary (Russian scrape text — not structured player modes). */
+    std::string titleId;
+    std::string performance;
+    std::string multiplayer;
     /* Pre-resolved bencoded info dictionary (RF_ACCESS_PLAN П2.1), decoded
        from the catalog's base64 "info_dict" and SHA-1-verified against the
        magnet hash at parse time. Empty when the catalog carries none. */

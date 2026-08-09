@@ -23,7 +23,8 @@ extern "C" {
 namespace pipensx {
 namespace {
 
-constexpr size_t kMaxCatalogBytes = 16 * 1024 * 1024;
+// Live Langegen switch_games.json is ~27 MiB (2026-08); leave headroom.
+constexpr size_t kMaxCatalogBytes = 48 * 1024 * 1024;
 constexpr size_t kMaxCatalogEntries = 20000;
 constexpr size_t kMaxInfoDictBytes = 8 * 1024 * 1024;
 
@@ -419,6 +420,13 @@ bool CatalogService::parseJson(const std::string& json,
         entry.description = readString(item, "description", 4096);
         if (entry.description.rfind(": ", 0) == 0)
             entry.description.erase(0, 2);
+        entry.titleId = readString(item, "title_id", 16);
+        std::transform(entry.titleId.begin(), entry.titleId.end(),
+                       entry.titleId.begin(), [](unsigned char c) {
+                           return static_cast<char>(std::toupper(c));
+                       });
+        entry.performance = readString(item, "performance", 256);
+        entry.multiplayer = readString(item, "multiplayer", 128);
         entry.forumId = static_cast<uint32_t>(readUnsigned(item, "forum_id"));
         entry.trackerId =
             static_cast<uint32_t>(readUnsigned(item, "tracker_id"));

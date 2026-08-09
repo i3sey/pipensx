@@ -132,6 +132,8 @@
     "fact_release": "Выпуск",
     "fact_genre": "Жанр",
     "fact_players": "Игроки",
+    "fact_multiplayer": "Мультиплеер",
+    "fact_performance": "Производительность",
     "players_up_to": "до {}",
     "players_single": "1 игрок",
     "fact_size": "Размер",

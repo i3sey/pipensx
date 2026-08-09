@@ -822,6 +822,9 @@ void testCatalogPresentationFallsBackFieldByField() {
     entry.publisher = "Langegen publisher";
     entry.year = "2026";
     entry.genre = "Langegen genre";
+    entry.titleId = "0100CATA00000000";
+    entry.performance = "Да";
+    entry.multiplayer = "до 2 игроков";
     entry.screenshots = {"https://example/catalog.jpg"};
 
     CatalogPresentation resolved =
@@ -836,16 +839,21 @@ void testCatalogPresentationFallsBackFieldByField() {
     assert(resolved.publisher == "Langegen publisher");
     assert(resolved.releaseDate == "2026");
     assert(resolved.genre == "Action, Party");
+    assert(resolved.performance == "Да");
+    assert(resolved.multiplayer == "до 2 игроков");
     assert(resolved.screenshots.size() == 2);
 
     CatalogPresentation fallback =
         resolveCatalogPresentation(entry, nullptr);
     assert(fallback.title == "Langegen title");
+    assert(fallback.titleId == "0100CATA00000000");
     assert(fallback.iconUrl == "https://example/cover.jpg");
     assert(fallback.iconPreserveAspect);
     assert(fallback.coverUrl == "https://example/cover.jpg");
     assert(fallback.description == "Langegen description");
     assert(fallback.genre == "Langegen genre");
+    assert(fallback.performance == "Да");
+    assert(fallback.multiplayer == "до 2 игроков");
     assert(fallback.screenshots.size() == 1);
 }
 
@@ -1333,6 +1341,9 @@ void testLangegenSchemaParsing() {
         "\"genre\":\"3D Platformer\","
         "\"developer\":\"Sonic Team\","
         "\"publisher\":\"SEGA\","
+        "\"title_id\":\"01005ea01c0fc000\","
+        "\"performance\":\"Да (на 18.1.0)\","
+        "\"multiplayer\":\"нет\","
         "\"cover\":\"https://example.invalid/cover.png\","
         "\"screenshots\":[\"https://example.invalid/s1.jpg\"],"
         "\"description\":\"A port.\""
@@ -1351,6 +1362,9 @@ void testLangegenSchemaParsing() {
     assert(e.genre == "3D Platformer");
     assert(e.developer == "Sonic Team");
     assert(e.publisher == "SEGA");
+    assert(e.titleId == "01005EA01C0FC000");
+    assert(e.performance == "Да (на 18.1.0)");
+    assert(e.multiplayer == "нет");
     assert(e.posterUrl == "https://example.invalid/cover.png");
     assert(e.screenshots.size() == 1);
     assert(e.description == "A port.");
