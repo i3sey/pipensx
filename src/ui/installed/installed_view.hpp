@@ -449,8 +449,9 @@ private:
         auto alive = alive_;
         auto cancelled = cancelled_;
         const std::string latestVersion = entry.latestVersion;
+        const std::string titleId = entry.titleId;
         brls::async([this, alive, cancelled, magnet, tmp,
-                     infoDict = std::move(infoDict), latestVersion] {
+                     infoDict = std::move(infoDict), latestVersion, titleId] {
             std::string err;
             MagnetResolver resolver;
             auto progress = [this, alive](const pipensx::MagnetProgress& p) {
@@ -482,7 +483,7 @@ private:
                 infoDict.empty() ? nullptr : &infoDict);
             brls::sync([this, alive, ok, err = std::move(err), tmp,
                         initialPeers = std::move(initialPeers),
-                        latestVersion]() mutable {
+                        latestVersion, titleId]() mutable {
                 if (!alive->load()) {
                     ::unlink(tmp.c_str());
                     return;
@@ -509,7 +510,7 @@ private:
                     return;
                 }
                 finishUpdateImport(tmp, std::move(initialPeers),
-                                   latestVersion);
+                                   latestVersion, titleId);
             });
         });
     }
@@ -534,7 +535,8 @@ private:
 
     void finishUpdateImport(const std::string& path,
                             std::vector<uint8_t> initialPeers,
-                            const std::string& latestVersion) {
+                            const std::string& latestVersion,
+                            const std::string& titleId) {
         TorrentPreview preview;
         std::string err;
         if (!manager_->previewTorrent(path, preview, err)) {
@@ -551,7 +553,7 @@ private:
         // when exactly one package carried the update's version — is gone:
         // the user always gets to see (and tune) what an update would pull.
         chooseUpdateFile(preview, path, std::move(initialPeers),
-                         selectUpdateFiles(preview, latestVersion));
+                         selectUpdateFiles(preview, latestVersion, titleId));
     }
 
     // The tmp torrent stays alive until the choice lands; the chooser hands
@@ -564,16 +566,22 @@ private:
                           const std::string& path,
                           std::vector<uint8_t> initialPeers,
                           std::vector<uint8_t> actions) {
+        auto alive = alive_;
         brls::Application::pushActivity(new UpdateFileChooserActivity(
             preview, std::move(actions), std::move(initialPeers),
-            [this, preview, path](std::vector<uint8_t> mask,
-                                  std::vector<uint8_t> peers) {
+            [this, alive, preview, path](std::vector<uint8_t> mask,
+                                         std::vector<uint8_t> peers) {
+                if (!alive->load()) {
+                    ::unlink(path.c_str());
+                    return;
+                }
                 importUpdateTorrent(preview, path, std::move(peers),
                                     std::move(mask));
             },
-            [this, path] {
+            [this, alive, path] {
                 ::unlink(path.c_str());
-                reload();
+                if (alive->load())
+                    reload();
             }));
     }
 
@@ -612,15 +620,16 @@ private:
     void pollUpdateRecheck() {
         if (pendingRecheckTaskId_.empty())
             return;
-        const DownloadTask* task = nullptr;
+        bool found = false;
+        DownloadStatus status = DownloadStatus::Queued;
         for (const DownloadTask& candidate : manager_->snapshot()) {
             if (catalogLower(candidate.id) == pendingRecheckTaskId_) {
-                task = &candidate;
+                found = true;
+                status = candidate.status;
                 break;
             }
         }
-        const bool settled = !task || isTerminalStatus(task->status);
-        if (!settled)
+        if (!updateRecheckSettled(found, status))
             return;
         // Another stream install still running: the installed scan would
         // race it (same reason RB refresh refuses), keep polling.
@@ -629,18 +638,6 @@ private:
         recheckTimer_.stop();
         pendingRecheckTaskId_.clear();
         recheckAfterInstall();
-    }
-
-    static bool isTerminalStatus(DownloadStatus status) {
-        switch (status) {
-        case DownloadStatus::Installed:
-        case DownloadStatus::Completed:
-        case DownloadStatus::Error:
-        case DownloadStatus::Removing:
-            return true;
-        default:
-            return false;
-        }
     }
 
     // Refresh the installed list, then re-check every title. Mirrors

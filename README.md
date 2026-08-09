@@ -36,6 +36,8 @@ DOWNLOAD LATEST - [pipensx.nro](https://github.com/i3sey/pipensx/releases/latest
 - offline magnet resolution when the catalog provides a verified info dictionary
 - download-only mode and sequential NSP/NSZ installation while pieces arrive
 - Application, Patch, and AddOnContent packages with installed-version checks
+- optional debrid fetch via TorBox or a self-hosted TorrServer (no Real-Debrid)
+- optional HTTPS/SOCKS proxy for catalog, artwork, and debrid HTTPS traffic
 - download diagnostics, speed history, peer state, and extended telemetry
 
 The public build intentionally starts without a bundled catalog or game

@@ -303,6 +303,7 @@ RangeFetcher curlRangeFetcher() {
                          static_cast<curl_off_t>(offset));
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
         curlPinScheme(curl, url);
+        curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
         curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
         curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
         curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 60L);

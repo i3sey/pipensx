@@ -142,7 +142,10 @@ bool InstalledTitleService::refresh(std::string& error) {
     // base application meta is always v0). Read once per storage; a title
     // with no patch installed has version 0. The list call is single-shot
     // (no offset), so probe the total first, then fetch the full set.
+    // Any open/list failure makes the map incomplete — leave version empty
+    // (CheckError) rather than inventing "0" and offering a false update.
     std::unordered_map<uint64_t, uint32_t> patchVersions;
+    bool patchMetaComplete = true;
     {
         constexpr s32 MaxPatches = 8192;
         const NcmStorageId storages[] = {NcmStorageId_BuiltInUser,
@@ -156,6 +159,7 @@ bool InstalledTitleService::refresh(std::string& error) {
                 diagnostic_error("installed", "ncm_open",
                                  "result=0x%08x", openRc);
 #endif
+                patchMetaComplete = false;
                 continue;
             }
             s32 total = 0;
@@ -168,12 +172,13 @@ bool InstalledTitleService::refresh(std::string& error) {
                 ncmContentMetaDatabaseClose(&database);
                 diagnostic_error("installed", "ncm_list",
                                  "result=0x%08x", rc);
+                patchMetaComplete = false;
                 continue;
             }
             if (total > MaxPatches) {
-                total = MaxPatches;
                 diagnostic_error("installed", "ncm_truncate",
                                  "count=%d", total);
+                total = MaxPatches;
             }
             std::vector<NcmContentMetaKey> keys(
                 static_cast<size_t>(total));
@@ -190,6 +195,7 @@ bool InstalledTitleService::refresh(std::string& error) {
                 } else {
                     diagnostic_error("installed", "ncm_list",
                                      "result=0x%08x", rc);
+                    patchMetaComplete = false;
                 }
             }
             ncmContentMetaDatabaseClose(&database);
@@ -206,11 +212,8 @@ bool InstalledTitleService::refresh(std::string& error) {
         title.name = title.titleId;
         title.iconPath = iconRoot_ + "/" + title.titleId + ".jpg";
 
-        const auto patch = patchVersions.find(record.application_id ^ 0x800);
-        title.version =
-            patch == patchVersions.end()
-                ? "0"
-                : std::to_string(patch->second);
+        title.version = installedPatchVersionString(
+            record.application_id, patchVersions, patchMetaComplete);
 
         std::memset(control.get(), 0, sizeof(*control));
         u64 actualSize = 0;

@@ -70,10 +70,13 @@ struct AppSettingsData {
     std::string torrserverUrl;
     DebridProviderKind debridProvider = DebridProviderKind::TorBox;
     bool firstRunCompleted = false;
-    // Outbound proxy for every HTTPS call the app makes (catalog, artwork,
-    // updates, debrid). Empty = direct. Peer traffic does NOT go through it:
-    // the torrent engine speaks raw TCP/uTP, not curl. Validated at parse
-    // time so a hand-edited settings.json cannot smuggle an odd scheme.
+    // Outbound proxy for HTTPS calls the app makes (catalog, artwork,
+    // updates, hosted debrid). Empty = direct. Peer traffic does NOT go
+    // through it: the torrent engine speaks raw TCP/uTP, not curl. Applied
+    // via ALL_PROXY, so plain-HTTP LAN TorrServer requests would also be
+    // proxied — leave this empty when using a LAN TorrServer, or point at a
+    // proxy that can reach that host. Validated at parse time so a
+    // hand-edited settings.json cannot smuggle an odd scheme.
     std::string proxyUrl;
 
     bool operator==(const AppSettingsData& other) const;

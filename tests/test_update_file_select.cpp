@@ -27,9 +27,10 @@ TorrentPreview::File plain(const std::string& path) {
 
 void expectActions(const TorrentPreview& preview,
                    const std::string& latestVersion,
-                   const std::vector<uint8_t>& expected) {
+                   const std::vector<uint8_t>& expected,
+                   const std::string& titleId = {}) {
     const std::vector<uint8_t> actions =
-        pipensx::selectUpdateFiles(preview, latestVersion);
+        pipensx::selectUpdateFiles(preview, latestVersion, titleId);
     assert(actions.size() == expected.size());
     for (size_t i = 0; i < expected.size(); ++i)
         assert(actions[i] == expected[i]);
@@ -138,16 +139,40 @@ void testMarkerFallbackWithoutTags() {
     });
 }
 
-void testFallsBackToAllPackagesWhenNothingMatches() {
+void testFallsBackToAllSkipWhenNothingMatches() {
     TorrentPreview preview;
     preview.files = {package("Game [v0].nsp"),
                      package("Game DLC 1.nsp"),
                      plain("readme.txt")};
     expectActions(preview, "131072", {
-        static_cast<uint8_t>(FileAction::Install),
-        static_cast<uint8_t>(FileAction::Install),
+        static_cast<uint8_t>(FileAction::Skip),
+        static_cast<uint8_t>(FileAction::Skip),
         static_cast<uint8_t>(FileAction::Skip),
     });
+}
+
+void testSameVersionDifferentTitleIdUsesTitleId() {
+    TorrentPreview preview;
+    preview.files = {
+        package("Game [0100AAAA00000000][v131072].nsp"),
+        package("Mods/Other [0100BBBB00000000][v131072].nsp"),
+        plain("readme.txt")};
+    expectActions(preview, "131072", {
+        static_cast<uint8_t>(FileAction::Install),
+        static_cast<uint8_t>(FileAction::Skip),
+        static_cast<uint8_t>(FileAction::Skip),
+    }, "0100AAAA00000000");
+}
+
+void testUpdateRecheckSettled() {
+    using pipensx::DownloadStatus;
+    assert(pipensx::updateRecheckSettled(false, DownloadStatus::Downloading));
+    assert(!pipensx::updateRecheckSettled(true, DownloadStatus::Downloading));
+    assert(!pipensx::updateRecheckSettled(true, DownloadStatus::Installing));
+    assert(pipensx::updateRecheckSettled(true, DownloadStatus::Installed));
+    assert(pipensx::updateRecheckSettled(true, DownloadStatus::Completed));
+    assert(pipensx::updateRecheckSettled(true, DownloadStatus::Error));
+    assert(pipensx::updateRecheckSettled(true, DownloadStatus::Removing));
 }
 
 void testEmptyPreviewYieldsEmptyActions() {
@@ -215,7 +240,9 @@ int main() {
     testNonDecimalVersionNeverMatches();
     testUnknownVersionPrefersHighestTag();
     testMarkerFallbackWithoutTags();
-    testFallsBackToAllPackagesWhenNothingMatches();
+    testFallsBackToAllSkipWhenNothingMatches();
+    testSameVersionDifferentTitleIdUsesTitleId();
+    testUpdateRecheckSettled();
     testEmptyPreviewYieldsEmptyActions();
     testSelectFilesInstallsExactlyThePicks();
     testMagnetPrefersCatalogEntry();

@@ -367,8 +367,11 @@ void testProxySettingReachesEnvironment() {
     applyProxySetting("socks5://192.168.1.2:10808");
     const char* value = std::getenv("ALL_PROXY");
     assert(value && std::string(value) == "socks5://192.168.1.2:10808");
+    const char* noProxy = std::getenv("NO_PROXY");
+    assert(noProxy && std::string(noProxy).find("127.0.0.1") != std::string::npos);
     applyProxySetting("");
     assert(std::getenv("ALL_PROXY") == nullptr);
+    assert(std::getenv("NO_PROXY") == nullptr);
 }
 
 } // namespace

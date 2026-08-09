@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -47,5 +48,19 @@ private:
     std::unordered_set<std::string> titleIds_;
     uint64_t generation_ = 0;
 };
+
+// Maps an application id onto the Patch content-meta version string used by
+// game-update checks. Empty when the ncm scan was incomplete (CheckError);
+// "0" when the scan succeeded and no patch is installed.
+inline std::string installedPatchVersionString(
+    uint64_t applicationId,
+    const std::unordered_map<uint64_t, uint32_t>& patchVersions,
+    bool patchMetaComplete) {
+    if (!patchMetaComplete)
+        return {};
+    const auto patch = patchVersions.find(applicationId | 0x800ULL);
+    return patch == patchVersions.end() ? "0"
+                                        : std::to_string(patch->second);
+}
 
 } // namespace pipensx

@@ -1,5 +1,6 @@
 #include "torbox_provider.hpp"
 
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
 
@@ -34,9 +35,22 @@ bool TorboxProvider::fetchInfo(const std::string& id, DebridInfo& out,
     out.bytes = info.size;
     out.progress = info.progress;
     out.rawState = info.state;
-    out.phase = info.ready && !info.files.empty()
-                    ? DebridInfo::Phase::Ready
-                    : DebridInfo::Phase::Downloading;
+    // TorBox download_state values that mean the transfer is dead on their
+    // side — surface Failed so pollUntilReady stops instead of spinning.
+    auto failedState = [](std::string state) {
+        for (char& c : state)
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return state.find("failed") != std::string::npos ||
+               state.find("error") != std::string::npos ||
+               state.find("expired") != std::string::npos ||
+               state == "deleted";
+    };
+    if (info.ready && !info.files.empty())
+        out.phase = DebridInfo::Phase::Ready;
+    else if (failedState(info.state))
+        out.phase = DebridInfo::Phase::Failed;
+    else
+        out.phase = DebridInfo::Phase::Downloading;
     for (const auto& f : info.files) {
         DebridFile df;
         df.id = std::to_string(f.id);

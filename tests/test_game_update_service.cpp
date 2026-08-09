@@ -1,10 +1,12 @@
 #include "app/game_update_service.hpp"
+#include "app/installed_title_service.hpp"
 
 #include <cassert>
 #include <cstdio>
 #include <fstream>
 #include <map>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include <unistd.h>
 
@@ -96,6 +98,18 @@ void testNoInstalledVersionIsCheckError() {
     assert(result.currentVersion.empty());
     assert(result.foundVersion == "131072");
     reset();
+}
+
+void testInstalledPatchVersionString() {
+    std::unordered_map<uint64_t, uint32_t> patches;
+    const uint64_t app = 0x0100AAAA00000000ULL;
+    assert(pipensx::installedPatchVersionString(app, patches, false).empty());
+    assert(pipensx::installedPatchVersionString(app, patches, true) == "0");
+    patches[app | 0x800ULL] = 131072;
+    assert(pipensx::installedPatchVersionString(app, patches, true) ==
+           "131072");
+    // Incomplete scan must not invent "0" even when a partial map exists.
+    assert(pipensx::installedPatchVersionString(app, patches, false).empty());
 }
 
 void testUpdateAvailableAndUpToDate() {
@@ -285,6 +299,7 @@ int main() {
     testSourceUnknownWhenNoEntryOrEmptyVersion();
     testNullSourceReportsSourceUnknown();
     testNoInstalledVersionIsCheckError();
+    testInstalledPatchVersionString();
     testUpdateAvailableAndUpToDate();
     testNonNumericVersionsAreCheckError();
     testMaxAggregation();

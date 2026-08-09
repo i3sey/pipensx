@@ -24,10 +24,20 @@ size_t writeBody(char* data, size_t size, size_t count, void* user) {
 
 bool curlTransport(const TorboxHttpRequest& request,
                    TorboxHttpResponse& response, std::string& error) {
+    // requestdl authenticates via ?token= in the URL; never log that.
     std::string endpoint = request.url;
     size_t baseLen = std::strlen(kBaseUrl);
     if (endpoint.compare(0, baseLen, kBaseUrl) == 0)
         endpoint = endpoint.substr(baseLen);
+    size_t token = endpoint.find("token=");
+    if (token != std::string::npos) {
+        size_t value = token + 6;
+        size_t end = endpoint.find('&', value);
+        endpoint.replace(value,
+                         (end == std::string::npos ? endpoint.size() : end) -
+                             value,
+                         "***");
+    }
     log_msg("[torbox] %s %s\n", request.method.c_str(), endpoint.c_str());
     CURL* curl = curl_easy_init();
     if (!curl) {
@@ -60,6 +70,7 @@ bool curlTransport(const TorboxHttpRequest& request,
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "pipensx/0.4");
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curlPinHttpsOnly(curl);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeBody);

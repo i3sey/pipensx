@@ -8,6 +8,9 @@
 #define MAX_PEERS     96
 /* Disconnect after this many unsolicited / wrong-length PIECE frames. */
 #define MAX_UNSOLICITED_PIECES 8
+/* Remember recently expired/cancelled requests so their late PIECE frames
+   are dropped without a strike (hedge CANCEL and FIRST_BLOCK timeout). */
+#define RECENT_DROPPED_REQUESTS 16
 #define BT_HANDSHAKE_LEN 68
 #define PEER_BUF_SIZE (4 + 1 + (1<<14) + 9)  /* enough for one piece msg */
 #define PEER_RECV_BUFFER_SIZE ((256 * 1024) + 4) /* max payload + length */
@@ -91,6 +94,12 @@ typedef struct peer {
     /* Pending requests */
     block_req_t pipeline[MAX_PIPELINE];
     int         pipeline_len;
+
+    /* Ring of requests we retired ourselves (expire / CANCEL). A matching
+       late PIECE is discarded without counting toward unsolicited strikes. */
+    block_req_t recent_dropped[RECENT_DROPPED_REQUESTS];
+    int         recent_dropped_next;
+    int         recent_dropped_count;
 
     /* BEP10 extensions */
     int      ext_handshake_sent;

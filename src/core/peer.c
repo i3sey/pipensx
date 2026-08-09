@@ -286,6 +286,29 @@ int peer_request_block(peer_t *p, uint32_t piece, uint32_t offset, uint32_t len)
     return 1;
 }
 
+static void remember_dropped(peer_t *p, int index, int offset, int length) {
+    int slot = p->recent_dropped_next % RECENT_DROPPED_REQUESTS;
+    p->recent_dropped[slot].index = index;
+    p->recent_dropped[slot].offset = offset;
+    p->recent_dropped[slot].length = length;
+    p->recent_dropped[slot].requested_ms = 0;
+    p->recent_dropped_next++;
+    if (p->recent_dropped_count < RECENT_DROPPED_REQUESTS)
+        p->recent_dropped_count++;
+}
+
+static int was_recently_dropped(const peer_t *p, int index, int offset,
+                                int length) {
+    int n = p->recent_dropped_count;
+    for (int i = 0; i < n; i++) {
+        if (p->recent_dropped[i].index == index &&
+            p->recent_dropped[i].offset == offset &&
+            p->recent_dropped[i].length == length)
+            return 1;
+    }
+    return 0;
+}
+
 int peer_expire_requests(peer_t *p, uint64_t now, uint64_t timeout_ms,
                          void (*on_expired)(void*, const block_req_t*),
                          void *ud) {
@@ -295,6 +318,7 @@ int peer_expire_requests(peer_t *p, uint64_t now, uint64_t timeout_ms,
         block_req_t req = p->pipeline[i];
         if (req.requested_ms <= now &&
             now - req.requested_ms >= timeout_ms) {
+            remember_dropped(p, req.index, req.offset, req.length);
             if (on_expired)
                 on_expired(ud, &req);
             expired++;
@@ -384,6 +408,7 @@ int peer_cancel_block(peer_t *p, uint32_t piece, uint32_t offset,
     buf[11]= (len>> 8)&0xFF; buf[12]=(len    )&0xFF;
     if (!send_msg(p, buf, sizeof(buf)))
         return 0;
+    remember_dropped(p, (int)piece, (int)offset, (int)len);
     remove_pipeline(p, (int)piece, (int)offset);
     return 1;
 }
@@ -455,9 +480,13 @@ static int process_message(peer_t *p, const peer_ctx_t *ctx,
             uint32_t blen = plen - 8;
             uint64_t requested_ms = 0;
             /* Only an exact outstanding request reaches accounting and storage.
-               Unsolicited or wrong-length PIECE must not allocate piece buffers. */
+               Unsolicited or wrong-length PIECE must not allocate piece buffers.
+               Late answers to requests we expired or CANCEL'd ourselves are
+               dropped silently — striking those would blocklist honest peers. */
             if (!take_pipeline_request(p, (int)idx, (int)off, (int)blen,
                                        &requested_ms)) {
+                if (was_recently_dropped(p, (int)idx, (int)off, (int)blen))
+                    break;
                 if (++p->unsolicited_piece_strikes >= MAX_UNSOLICITED_PIECES) {
                     log_msg("[peer] too many unsolicited PIECE frames\n");
                     return -1;

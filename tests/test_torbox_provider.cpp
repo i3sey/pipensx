@@ -45,6 +45,24 @@ int main() {
     assert(info.files.size() == 1 && info.files[0].id == "7" &&
            info.files[0].path == "a.nsp");
     assert(p.selectFiles(id, {"7"}, err));
+
+    TorboxTransport failed =
+        [](const TorboxHttpRequest&, TorboxHttpResponse& res, std::string&) {
+            res.status = 200;
+            res.body =
+                "{\"success\":true,\"data\":{\"id\":9,\"name\":\"X\","
+                "\"size\":1,\"progress\":0.0,"
+                "\"download_state\":\"failed\","
+                "\"download_finished\":false,\"download_present\":false,"
+                "\"files\":[]}}";
+            return true;
+        };
+    TorboxProvider failProvider("key", failed);
+    DebridInfo dead;
+    assert(failProvider.fetchInfo("9", dead, err));
+    assert(dead.phase == DebridInfo::Phase::Failed);
+    assert(dead.rawState == "failed");
+
     std::puts("torbox provider ok");
     return 0;
 }

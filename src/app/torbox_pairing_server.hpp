@@ -14,6 +14,10 @@ namespace pipensx {
 // instead of typed on the console keyboard. Its own HttpServer on its own
 // port: the web companion is a separate opt-in feature that may be off, and
 // this listener has to die with the pairing screen either way.
+//
+// Trust model: while the pairing screen is open, any host that can reach the
+// console on this port may POST a key/URL (no PIN). Bound to a short window
+// and a one-shot accept; do not leave the screen idle on an untrusted LAN.
 // What the phone form tells the user to paste. TorBox hands out an API key;
 // a TorrServer is identified by its address, so the caller overrides it.
 inline constexpr const char* kTorboxPairingHint =

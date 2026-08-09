@@ -70,10 +70,29 @@ bool isUpdateFile(const std::string& path) {
     return false;
 }
 
+// Release names put the 16-hex title id next to [vN]. Empty titleId skips
+// the check so older call sites / tests keep matching on version alone.
+bool pathHasTitleId(const std::string& path, const std::string& titleId) {
+    if (titleId.empty())
+        return true;
+    std::string lowerPath = path;
+    std::string lowerId = titleId;
+    std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(),
+                   [](unsigned char c) {
+                       return static_cast<char>(std::tolower(c));
+                   });
+    std::transform(lowerId.begin(), lowerId.end(), lowerId.begin(),
+                   [](unsigned char c) {
+                       return static_cast<char>(std::tolower(c));
+                   });
+    return lowerPath.find(lowerId) != std::string::npos;
+}
+
 } // namespace
 
 std::vector<size_t> updateVersionMatches(const TorrentPreview& preview,
-                                         const std::string& latestVersion) {
+                                         const std::string& latestVersion,
+                                         const std::string& titleId) {
     std::vector<size_t> matches;
     uint64_t wanted = 0;
     if (!parseDecimal(latestVersion, wanted) || wanted == 0)
@@ -81,6 +100,7 @@ std::vector<size_t> updateVersionMatches(const TorrentPreview& preview,
     for (size_t i = 0; i < preview.files.size(); ++i) {
         uint64_t tag = 0;
         if (preview.files[i].package &&
+            pathHasTitleId(preview.files[i].path, titleId) &&
             fileVersionTag(preview.files[i].path, tag) && tag == wanted)
             matches.push_back(i);
     }
@@ -99,15 +119,18 @@ std::vector<uint8_t> selectFiles(const TorrentPreview& preview,
 }
 
 std::vector<uint8_t> selectUpdateFiles(const TorrentPreview& preview,
-                                       const std::string& latestVersion) {
+                                       const std::string& latestVersion,
+                                       const std::string& titleId) {
     const std::vector<size_t> matches =
-        updateVersionMatches(preview, latestVersion);
+        updateVersionMatches(preview, latestVersion, titleId);
     if (!matches.empty())
         return selectFiles(preview, matches);
 
     std::vector<size_t> marked;
     for (size_t i = 0; i < preview.files.size(); ++i) {
-        if (preview.files[i].package && isUpdateFile(preview.files[i].path))
+        if (preview.files[i].package &&
+            pathHasTitleId(preview.files[i].path, titleId) &&
+            isUpdateFile(preview.files[i].path))
             marked.push_back(i);
     }
     if (!marked.empty()) {
@@ -134,14 +157,9 @@ std::vector<uint8_t> selectUpdateFiles(const TorrentPreview& preview,
         return selectFiles(preview, best.empty() ? marked : best);
     }
 
-    // Nothing marked: install every package. Already-installed content keys
-    // short-circuit at commit, so the worst case is re-downloading.
-    std::vector<size_t> all;
-    for (size_t i = 0; i < preview.files.size(); ++i) {
-        if (preview.files[i].package)
-            all.push_back(i);
-    }
-    return selectFiles(preview, all);
+    // Nothing identifiable: leave everything Skip so the chooser opens with
+    // no preselection (Continue stays disabled until the user picks).
+    return selectFiles(preview, {});
 }
 
 std::string updateMagnetFor(const std::string& infoHash,

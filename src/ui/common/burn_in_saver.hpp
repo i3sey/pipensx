@@ -11,7 +11,9 @@ namespace pipensx::ui {
 
 // Full-screen OLED burn-in guard: pure black plus one slowly drifting dim
 // marker so static UI chrome (sidebars, progress bars) does not sit on the
-// same pixels for hours. Any controller button or touch dismisses it.
+// same pixels for hours. Dismissal is owned by main_switch's idle loop —
+// any controller button or touch there pops this activity — so D-pad and
+// touch work the same as face buttons without racing double-pops.
 class BurnInSaverView : public brls::Box {
 public:
     BurnInSaverView() {
@@ -39,46 +41,6 @@ public:
 class BurnInSaverActivity : public brls::Activity {
 public:
     brls::View* createContentView() override { return new BurnInSaverView(); }
-
-    void onContentAvailable() override {
-        // Register on the content view so any face button / stick click pops.
-        getContentView()->registerAction(
-            "Dismiss", brls::BUTTON_A, [this](brls::View*) {
-                brls::Application::popActivity(brls::TransitionAnimation::NONE);
-                return true;
-            },
-            true);
-        getContentView()->registerAction(
-            "Dismiss", brls::BUTTON_B, [this](brls::View*) {
-                brls::Application::popActivity(brls::TransitionAnimation::NONE);
-                return true;
-            },
-            true);
-        getContentView()->registerAction(
-            "Dismiss", brls::BUTTON_X, [this](brls::View*) {
-                brls::Application::popActivity(brls::TransitionAnimation::NONE);
-                return true;
-            },
-            true);
-        getContentView()->registerAction(
-            "Dismiss", brls::BUTTON_Y, [this](brls::View*) {
-                brls::Application::popActivity(brls::TransitionAnimation::NONE);
-                return true;
-            },
-            true);
-        getContentView()->registerAction(
-            "Dismiss", brls::BUTTON_START, [this](brls::View*) {
-                brls::Application::popActivity(brls::TransitionAnimation::NONE);
-                return true;
-            },
-            true);
-        getContentView()->registerAction(
-            "Dismiss", brls::BUTTON_BACK, [this](brls::View*) {
-                brls::Application::popActivity(brls::TransitionAnimation::NONE);
-                return true;
-            },
-            true);
-    }
 };
 
 inline bool controllerHasButtonDown(const brls::ControllerState& state) {
@@ -87,6 +49,12 @@ inline bool controllerHasButtonDown(const brls::ControllerState& state) {
             return true;
     }
     return false;
+}
+
+inline bool burnInSaverIsTop() {
+    const auto stack = brls::Application::getActivitiesStack();
+    return !stack.empty() &&
+           dynamic_cast<BurnInSaverActivity*>(stack.back()) != nullptr;
 }
 
 // Five minutes of no button/touch input — long enough for a download screen

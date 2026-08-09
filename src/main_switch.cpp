@@ -466,7 +466,6 @@ int main(int argc, char** argv) {
         startupStage("first main loop");
         bool firstFrame = true;
         uint64_t lastInputMs = now_ms();
-        bool burnInSaverOpen = false;
         while (true) {
             bool activeTransfer = manager.hasActiveTransfer();
             performance.setActive(activeTransfer);
@@ -477,8 +476,10 @@ int main(int argc, char** argv) {
                 break;
 
             // OLED burn-in guard: after five minutes without a button/touch,
-            // cover the UI with a drifting black saver. Any input resets the
-            // idle clock; dismissing the saver is handled by its actions.
+            // cover the UI with a drifting black saver. Any input dismisses it
+            // (including D-pad and touch) and resets the idle clock. Open state
+            // is derived from the activity stack so a dismiss cannot desync a
+            // bool and stack another saver on the next idle period.
             brls::ControllerState pad {};
             std::vector<brls::RawTouchState> touches;
             auto* input = brls::Application::getPlatform()->getInputManager();
@@ -491,15 +492,17 @@ int main(int argc, char** argv) {
                     break;
                 }
             }
+            const bool saverOpen = pipensx::ui::burnInSaverIsTop();
             if (pipensx::ui::controllerHasButtonDown(pad) || touched) {
                 lastInputMs = now_ms();
-                burnInSaverOpen = false;
-            } else if (!burnInSaverOpen &&
+                if (saverOpen)
+                    brls::Application::popActivity(
+                        brls::TransitionAnimation::NONE);
+            } else if (!saverOpen &&
                        now_ms() - lastInputMs >= pipensx::ui::kBurnInIdleMs) {
                 brls::Application::pushActivity(
                     new pipensx::ui::BurnInSaverActivity(),
                     brls::TransitionAnimation::NONE);
-                burnInSaverOpen = true;
                 lastInputMs = now_ms();
             }
 
