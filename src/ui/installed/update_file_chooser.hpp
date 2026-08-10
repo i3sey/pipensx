@@ -142,6 +142,11 @@ public:
     // Golden harness: the current per-file mask the rows show.
     const std::vector<uint8_t>& selection() const { return actions_; }
 
+    // Golden harness: toggle by package-row index. Prefer this over pressing A
+    // on a TorrentSelectionCell* — reloadData() recycles cells, so a pointer
+    // taken before a toggle is not safe to click afterwards.
+    void toggleRowForTest(size_t row) { toggle(row); }
+
 private:
     void toggle(size_t row) {
         if (finished_)

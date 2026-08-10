@@ -1230,34 +1230,21 @@ int main(int argc, char** argv) {
 
         brls::View* cell =
             brls::Application::getCurrentFocus();
-        auto* row = dynamic_cast<TorrentSelectionCell*>(cell);
-        if (!row)
+        if (!dynamic_cast<TorrentSelectionCell*>(cell))
             return fail("update-chooser-toggle did not focus a row");
-        brls::View* next =
-            row->getNextFocus(brls::FocusDirection::DOWN, row);
-        auto* row2 = dynamic_cast<TorrentSelectionCell*>(next);
-        if (!row2)
-            return fail("update-chooser-toggle could not reach the second row");
 
-        auto toggleRow = [](TorrentSelectionCell* target) {
-            brls::Action* toggle = nullptr;
-            for (const auto& action : target->getActions())
-                if (action->getType() == brls::ACTION_GAMEPAD &&
-                    action->getButton() == brls::BUTTON_A)
-                    toggle = action.get();
-            if (!toggle)
-                return false;
-            toggle->getActionListener()(target);
-            for (int frame = 0; frame < 5; ++frame)
-                brls::Application::mainLoop();
-            return true;
-        };
-        if (!toggleRow(row))
-            return fail("update-chooser-toggle row has no A toggle");
+        // Toggle by package-row index — not by pressing A on a cell pointer.
+        // UpdateFileChooserActivity::toggle calls reloadData(), which recycles
+        // cells; a TorrentSelectionCell* taken before a toggle can land on the
+        // wrong index path afterwards (observed as flipping mask slot 0 twice).
+        updateChooser->toggleRowForTest(0);
+        for (int frame = 0; frame < 5; ++frame)
+            brls::Application::mainLoop();
         if (!wantMask(skip, install))
             return fail("update-chooser-toggle did not flip the first row");
-        if (!toggleRow(row2))
-            return fail("update-chooser-toggle second row has no A toggle");
+        updateChooser->toggleRowForTest(1);
+        for (int frame = 0; frame < 5; ++frame)
+            brls::Application::mainLoop();
         // The readme occupies mask slot 1; the second row is slot 2. If the
         // row-to-index mapping was off by one, this assertion fails.
         if (!wantMask(skip, skip))
@@ -1293,10 +1280,37 @@ int main(int argc, char** argv) {
             return fail("update-chooser-toggle confirmed with nothing selected");
 
         // One row back on: Continue confirms and hands the full mask back.
-        if (!toggleRow(row))
-            return fail("update-chooser-toggle could not re-select a row");
+        updateChooser->toggleRowForTest(0);
+        for (int frame = 0; frame < 5; ++frame)
+            brls::Application::mainLoop();
         if (!wantMask(install, skip))
             return fail("update-chooser-toggle re-selected the wrong row");
+        // Footer CTA is the install label once a row is selected — re-find
+        // the live primary button (anything that is not Cancel).
+        confirm = nullptr;
+        std::function<void(brls::View*)> findPrimary =
+            [&](brls::View* node) {
+                if (confirm)
+                    return;
+                if (auto* button = dynamic_cast<brls::Button*>(node)) {
+                    const std::string& label = button->getText();
+                    if (label != tr("pipensx/common/cancel") && !label.empty())
+                        confirm = button;
+                }
+                if (auto* box = dynamic_cast<brls::Box*>(node))
+                    for (brls::View* child : box->getChildren())
+                        findPrimary(child);
+            };
+        findPrimary(updateChooser->getContentView());
+        if (!confirm)
+            return fail("update-chooser-toggle lost Continue after re-select");
+        continueAction = nullptr;
+        for (const auto& action : confirm->getActions())
+            if (action->getType() == brls::ACTION_GAMEPAD &&
+                action->getButton() == brls::BUTTON_A)
+                continueAction = action.get();
+        if (!continueAction)
+            return fail("update-chooser-toggle Continue has no A action");
         continueAction->getActionListener()(confirm);
         for (int frame = 0; frame < 5; ++frame)
             brls::Application::mainLoop();
