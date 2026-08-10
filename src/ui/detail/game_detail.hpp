@@ -21,6 +21,7 @@
 #include "app/installed_title_service.hpp"
 #include "app/magnet_resolver.hpp"
 #include "app/mod_index_service.hpp"
+#include "app/switch_deploy.hpp"
 #include "app/nx_file_types.hpp"
 #include "ui/catalog/catalog_helpers.hpp"
 #include "ui/common/async_image.hpp"
@@ -87,12 +88,14 @@ public:
                        DownloadManager* manager, GameMetadataService* metadata,
                        InstalledTitleService* installed, AppSettings* settings,
                        ModIndexService* mods,
-                       FailureCallback onFailure, ChangeCallback onChange,
-                       CloseCallback onClose = nullptr,
-                       FavoritesService* favorites = nullptr)
+                        FailureCallback onFailure, ChangeCallback onChange,
+                        CloseCallback onClose = nullptr,
+                        FavoritesService* favorites = nullptr,
+                        SwitchDeployService* deploy = nullptr)
         : entry_(std::move(entry)), lastFailure_(std::move(lastFailure)),
           manager_(manager), metadata_(metadata), installed_(installed),
           settings_(settings), mods_(mods), favorites_(favorites),
+          deploy_(deploy),
           onFailure_(std::move(onFailure)), onChange_(std::move(onChange)),
           onClose_(std::move(onClose)),
           alive_(std::make_shared<std::atomic<bool>>(true)),
@@ -648,7 +651,7 @@ private:
             else
                 // O5: tapping the live status button opens the download details.
                 brls::Application::pushActivity(
-                    new DetailsActivity(task->id, manager_));
+                    new DetailsActivity(task->id, manager_, deploy_));
             return;
         }
         // One-tap install: resolve, then queue silently (picker only on Select files).
@@ -661,7 +664,7 @@ private:
         const DownloadTask* task = currentTask();
         if (task) {
             brls::Application::pushActivity(
-                new DetailsActivity(task->id, manager_));
+                new DetailsActivity(task->id, manager_, deploy_));
             return;
         }
         // Select files: always open the per-file picker after resolve.
@@ -1006,6 +1009,7 @@ private:
     AppSettings* settings_;
     ModIndexService* mods_ = nullptr;
     FavoritesService* favorites_ = nullptr;
+    SwitchDeployService* deploy_ = nullptr;
     std::string titleId_;
     std::string playersFact_;
     std::string operationMessage_;

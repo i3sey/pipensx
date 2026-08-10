@@ -131,6 +131,7 @@ inline std::pair<uint64_t, uint64_t> downloadProgressBytes(
 struct TorrentPreview {
     std::string name;
     std::string infoHash;
+    bool multi = false;
     uint64_t totalBytes = 0;
     uint32_t fileCount = 0;
     uint32_t trackerCount = 0;
@@ -161,6 +162,29 @@ struct DebridImport {
 
 class DownloadManager {
 public:
+    class ExternalDeployLease {
+    public:
+        ExternalDeployLease() = default;
+        ExternalDeployLease(ExternalDeployLease&& other) noexcept;
+        ExternalDeployLease& operator=(ExternalDeployLease&& other) noexcept;
+        ~ExternalDeployLease();
+
+        ExternalDeployLease(const ExternalDeployLease&) = delete;
+        ExternalDeployLease& operator=(const ExternalDeployLease&) = delete;
+
+        const DownloadTask& task() const { return task_; }
+        explicit operator bool() const { return owner_ != nullptr; }
+
+    private:
+        friend class DownloadManager;
+        ExternalDeployLease(DownloadManager* owner, DownloadTask task)
+            : owner_(owner), task_(std::move(task)) {}
+        void release();
+
+        DownloadManager* owner_ = nullptr;
+        DownloadTask task_;
+    };
+
     explicit DownloadManager(std::string rootPath, bool startWorker = true);
     ~DownloadManager();
 
@@ -225,6 +249,11 @@ public:
     // Existence check without the full deep copy snapshot() makes.
     bool hasTask(const std::string& id) const;
     std::vector<DownloadTask> snapshot() const;
+    std::optional<DownloadTask> snapshot(const std::string& id) const;
+    std::optional<ExternalDeployLease> beginExternalDeploy(
+        const std::string& taskId, std::string& error);
+    bool externalDeployActive() const;
+    std::string externalDeployTaskId() const;
     bool save(std::string& error) const;
     void shutdown();
 
@@ -273,6 +302,8 @@ private:
     bool saveLocked(std::string& error) const;
     DownloadTask* findLocked(const std::string& id);
     const DownloadTask* findLocked(const std::string& id) const;
+    void endExternalDeploy(const std::string& taskId);
+    bool externallyLeasedLocked(const std::string& taskId) const;
     bool removeLocked(const std::string& id, bool deleteData,
                       std::string& error);
     // Fires a detached thread, so it must not touch *this: the manager can be
@@ -306,6 +337,7 @@ private:
     // Single install token: only one stream-install task may write to NCM
     // at a time; download-only tasks pass token-blocked stream tasks.
     bool installTokenHeld_ = false;   // guarded by mutex_
+    std::string externalDeployTaskId_; // guarded by mutex_
     uint32_t slotBitmap_ = 0;         // guarded by mutex_
     std::atomic<bool> stopping_{false};
     std::atomic<install::InstallStorageTarget> installTarget_{

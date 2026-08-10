@@ -132,6 +132,10 @@ void testDownloadOnlyFullRun() {
     spec.dataPath = data;
     spec.workingRoot = root;
     spec.mode = TransferMode::DownloadOnly;
+    std::vector<DebridTaskSpec::ResolvedFile> resolvedFiles;
+    spec.filesResolved = [&resolvedFiles](
+                             const std::vector<DebridTaskSpec::ResolvedFile>&
+                                 files) { resolvedFiles = files; };
 
     std::string debridId;
     std::string error;
@@ -143,6 +147,11 @@ void testDownloadOnlyFullRun() {
     assert(debridId == "42");
     assert(last.status == DownloadStatus::Completed);
     assert(last.completedBytes == content.size());
+    assert(resolvedFiles.size() == 1);
+    assert(resolvedFiles[0].path == "file.bin");
+    assert(resolvedFiles[0].localPath == "file.bin");
+    assert(resolvedFiles[0].action ==
+           static_cast<uint8_t>(FileAction::Download));
 
     std::ifstream check(data + "/file.bin", std::ios::binary);
     std::string written((std::istreambuf_iterator<char>(check)),

@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -186,6 +187,25 @@ public:
         }
     }
 
+    void selectPortFiles(const TorrentPreview& preview,
+                         const std::string& root) {
+        auto lower = [](std::string value) {
+            for (char& ch : value)
+                if (ch >= 'A' && ch <= 'Z')
+                    ch = static_cast<char>(ch - 'A' + 'a');
+            return value;
+        };
+        const std::string prefix = lower(root) + "/";
+        for (size_t i = 0; i < entries_.size() && i < preview.files.size(); ++i) {
+            const std::string logical = preview.multi
+                ? preview.name + "/" + preview.files[i].path
+                : preview.files[i].path;
+            entries_[i].action = lower(logical).rfind(prefix, 0) == 0 &&
+                    !entries_[i].package && !entries_[i].cartridge
+                ? FileAction::Download : FileAction::Skip;
+        }
+    }
+
     size_t selectedCount() const {
         size_t count = 0;
         for (const auto& entry : entries_)
@@ -303,6 +323,16 @@ public:
         meter_->setMarginBottom(10);
         content->addView(meter_);
 
+        portRoot_ = candidatePortRoot();
+        if (!portRoot_.empty()) {
+            portHint_ = new brls::Label();
+            portHint_->setFontSize(theme::kFontCaption);
+            portHint_->setTextColor(theme::accent());
+            portHint_->setMarginBottom(8);
+            portHint_->setText(tr("pipensx/torrent/port_detected"));
+            content->addView(portHint_);
+        }
+
         recycler_ = new brls::RecyclerFrame();
         recycler_->setGrow(1);
         recycler_->setPadding(6, 0, 6, 0);
@@ -343,6 +373,23 @@ public:
             return true;
         });
         row->addView(clearAll_);
+
+        if (!portRoot_.empty()) {
+            selectPort_ = new brls::Button();
+            selectPort_->setStyle(&brls::BUTTONSTYLE_DEFAULT);
+            selectPort_->setFontSize(16);
+            selectPort_->setHeight(46);
+            selectPort_->setMarginLeft(10);
+            selectPort_->setGrow(1);
+            selectPort_->setText(tr("pipensx/torrent/select_port"));
+            selectPort_->registerClickAction([this](brls::View*) {
+                dataSource_->selectPortFiles(preview_, portRoot_);
+                recycler_->reloadData();
+                refreshSummary();
+                return true;
+            });
+            row->addView(selectPort_);
+        }
 
         buttons->addView(row);
 
@@ -397,6 +444,40 @@ public:
     }
 
 private:
+    std::string candidatePortRoot() const {
+        auto lower = [](std::string value) {
+            for (char& ch : value)
+                if (ch >= 'A' && ch <= 'Z')
+                    ch = static_cast<char>(ch - 'A' + 'a');
+            return value;
+        };
+        std::set<std::string> roots;
+        for (const TorrentPreview::File& file : preview_.files) {
+            const std::string logical = preview_.multi
+                ? preview_.name + "/" + file.path : file.path;
+            const std::string folded = lower(logical);
+            if (folded.size() < 4 ||
+                folded.compare(folded.size() - 4, 4, ".nro") != 0)
+                continue;
+            size_t start = 0;
+            while (start < logical.size()) {
+                const size_t slash = logical.find('/', start);
+                const std::string component = logical.substr(
+                    start, slash == std::string::npos ? std::string::npos
+                                                       : slash - start);
+                if (lower(component) == "switch") {
+                    roots.insert(lower(
+                        logical.substr(0, start + component.size())));
+                    break;
+                }
+                if (slash == std::string::npos)
+                    break;
+                start = slash + 1;
+            }
+        }
+        return roots.size() == 1 ? *roots.begin() : std::string();
+    }
+
     // One "<glyph> Label" pair of the icon key. Same glyphs the rows draw, so
     // the key can never drift from what is actually on screen.
     static void addLegendEntry(brls::Box* row, ActionIconKind kind,
@@ -575,6 +656,9 @@ private:
     brls::Button* selectAll_ = nullptr;
     brls::Button* clearAll_ = nullptr;
     brls::Button* installSelected_ = nullptr;
+    brls::Button* selectPort_ = nullptr;
+    brls::Label* portHint_ = nullptr;
+    std::string portRoot_;
     bool finished_ = false;
 };
 

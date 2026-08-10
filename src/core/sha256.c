@@ -2,13 +2,6 @@
 
 #include <string.h>
 
-typedef struct {
-    uint8_t data[64];
-    uint32_t state[8];
-    uint64_t bit_len;
-    size_t data_len;
-} sha256_ctx_t;
-
 static const uint32_t k[64] = {
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
     0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
@@ -85,7 +78,7 @@ static void transform(sha256_ctx_t *ctx, const uint8_t block[64]) {
     ctx->state[7] += h;
 }
 
-static void init(sha256_ctx_t *ctx) {
+void sha256_init(sha256_ctx_t *ctx) {
     memset(ctx, 0, sizeof(*ctx));
     ctx->state[0] = 0x6a09e667;
     ctx->state[1] = 0xbb67ae85;
@@ -97,7 +90,8 @@ static void init(sha256_ctx_t *ctx) {
     ctx->state[7] = 0x5be0cd19;
 }
 
-static void update(sha256_ctx_t *ctx, const uint8_t *data, size_t len) {
+void sha256_update(sha256_ctx_t *ctx, const void *input, size_t len) {
+    const uint8_t *data = (const uint8_t *)input;
     for (size_t i = 0; i < len; ++i) {
         ctx->data[ctx->data_len++] = data[i];
         if (ctx->data_len == sizeof(ctx->data)) {
@@ -108,7 +102,7 @@ static void update(sha256_ctx_t *ctx, const uint8_t *data, size_t len) {
     }
 }
 
-static void final(sha256_ctx_t *ctx, uint8_t digest[32]) {
+void sha256_final(sha256_ctx_t *ctx, uint8_t digest[32]) {
     size_t i = ctx->data_len;
     ctx->data[i++] = 0x80;
     if (i > 56) {
@@ -133,7 +127,7 @@ static void final(sha256_ctx_t *ctx, uint8_t digest[32]) {
 
 void sha256(const void *data, size_t len, uint8_t digest[32]) {
     sha256_ctx_t ctx;
-    init(&ctx);
-    update(&ctx, (const uint8_t *)data, len);
-    final(&ctx, digest);
+    sha256_init(&ctx);
+    sha256_update(&ctx, data, len);
+    sha256_final(&ctx, digest);
 }

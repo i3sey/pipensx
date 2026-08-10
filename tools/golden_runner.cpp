@@ -62,6 +62,7 @@
 #include "ui/detail/screenshot_viewer.hpp"
 #include "ui/detail/torrent_selection.hpp"
 #include "ui/downloads/downloads_view.hpp"
+#include "ui/downloads/task_files_activity.hpp"
 #include "ui/first_run_view.hpp"
 #include "ui/i18n.hpp"
 #include "ui/installed/installed_view.hpp"
@@ -435,6 +436,7 @@ int main(int argc, char** argv) {
     bool sidebarTouch = false;
     int torrentSelectionRows = 0;
     bool torrentSelectionScroll = false;
+    bool portSelectionOk = true;
     bool settingsDebrid = false;
     bool hintsBudget = false;
     CatalogView* hintsCatalog = nullptr;
@@ -583,6 +585,7 @@ int main(int argc, char** argv) {
         // whole class of cull/navigation bugs this screen guards.
         pipensx::TorrentPreview preview;
         preview.name = "Mixed release";
+        preview.multi = true;
         preview.files = {
             {"game.nsp", 1073741824ULL, true, false, false},
             {"bonus/readme.txt", 1048576ULL, false, false, false},
@@ -595,7 +598,7 @@ int main(int argc, char** argv) {
             {"bonus/wallpapers/1080p.zip", 20971520ULL, false, false, false},
             {"bonus/wallpapers/4k.zip", 83886080ULL, false, false, false},
             {"extras/cartridge.xci", 402653184ULL, false, false, true},
-            {"extras/notes.txt", 4096ULL, false, false, false},
+            {"switch/MyPort/MyPort.nro", 7340032ULL, false, false, false},
             {"patch/patch-01.nsp", 167772160ULL, true, false, false},
             {"patch/patch-02.nsp", 100663296ULL, true, false, false},
         };
@@ -609,6 +612,26 @@ int main(int argc, char** argv) {
         }
         torrentSelectionRows = static_cast<int>(preview.files.size());
         torrentSelectionScroll = screen == "torrent-selection-scroll";
+        if (torrentSelectionScroll) {
+            TorrentSelectionDataSource selection(nullptr);
+            std::vector<TorrentSelectionEntry> entries;
+            entries.reserve(preview.files.size());
+            for (const auto& file : preview.files) {
+                entries.push_back({file.path, file.length, file.package,
+                                   file.compressed, file.cartridge,
+                                   file.package ? pipensx::FileAction::Install
+                                                : pipensx::FileAction::Download});
+            }
+            selection.setEntries(std::move(entries));
+            selection.selectPortFiles(preview, preview.name + "/switch");
+            const std::vector<uint8_t> actions = selection.fileActions();
+            for (size_t i = 0; i < actions.size(); ++i) {
+                const auto expected = i == 11 ? pipensx::FileAction::Download
+                                              : pipensx::FileAction::Skip;
+                if (actions[i] != static_cast<uint8_t>(expected))
+                    portSelectionOk = false;
+            }
+        }
         // PackagesOnly rather than the settings default, so the baseline shows
         // all three row states: packages Install, everything else Skip, and
         // a Download row appears as soon as anything is toggled.
@@ -619,6 +642,56 @@ int main(int argc, char** argv) {
     } else if (screen == "downloads") {
         activity = new GoldenActivity(
             new MainView(&manager, &metadata, &settings));
+    } else if (screen == "download-files") {
+        pipensx::TaskFileInventory inventory;
+        inventory.taskId = "golden-port";
+        inventory.rootPath = "SD:/switch/pipensx/downloads/Port-release";
+        inventory.settled = true;
+        inventory.presentBytes = 1288490188ULL;
+        auto add = [&](const std::string& path, uint64_t size,
+                       pipensx::TaskFileState state) {
+            pipensx::TaskFileInfo file;
+            file.logicalPath = path;
+            file.localPath = path;
+            file.size = size;
+            file.state = state;
+            inventory.files.push_back(std::move(file));
+        };
+        add("Release/switch/MyPort/MyPort.nro", 7340032,
+            pipensx::TaskFileState::Present);
+        add("Release/switch/MyPort/data/game.pak", 1280000000ULL,
+            pipensx::TaskFileState::Present);
+        add("Release/readme.txt", 4096,
+            pipensx::TaskFileState::Skipped);
+        add("Release/base.nsp", 4294967296ULL,
+            pipensx::TaskFileState::Installed);
+        activity = new TaskFilesActivity(std::move(inventory));
+    } else if (screen == "deploy-preview") {
+        pipensx::SwitchDeployInspection inspection;
+        inspection.problem = pipensx::SwitchDeployProblem::Conflict;
+        inspection.detail = "/switch/MyPort/config.ini";
+        inspection.plan.taskId = "golden-port";
+        inspection.plan.bytesToCopy = 1280000000ULL;
+        inspection.plan.identicalFiles = 1;
+        inspection.plan.ignoredFiles = 2;
+        auto add = [&](const std::string& source,
+                       const std::string& destination, uint64_t size,
+                       pipensx::SwitchDeployEntryState state) {
+            pipensx::SwitchDeployEntry entry;
+            entry.sourceRelativePath = source;
+            entry.destinationRelativePath = destination;
+            entry.size = size;
+            entry.state = state;
+            inspection.plan.files.push_back(std::move(entry));
+        };
+        add("Release/switch/MyPort/data/game.pak", "MyPort/data/game.pak",
+            1280000000ULL, pipensx::SwitchDeployEntryState::Missing);
+        add("Release/switch/MyPort/MyPort.nro", "MyPort/MyPort.nro", 7340032,
+            pipensx::SwitchDeployEntryState::ExistingIdentical);
+        add("Release/switch/MyPort/config.ini", "MyPort/config.ini", 2048,
+            pipensx::SwitchDeployEntryState::ExistingConflict);
+        activity = new SwitchDeployPreviewActivity(std::move(inspection),
+                                                   nullptr);
     } else if (screen == "downloads-back") {
         downloadsBackFrame = new MainFrame();
         auto* downloadsView = new MainView(&manager, &metadata, &settings);
@@ -1481,6 +1554,8 @@ int main(int argc, char** argv) {
     // and back up, one row per step, pumping frames in between so the
     // recycling loop (which runs in draw) gets to react to each move.
     if (torrentSelectionScroll) {
+        if (!portSelectionOk)
+            return fail("port selection retained files outside switch/");
         // Centered scrolling is animated, and the recycling loop only runs in
         // draw(), so each move needs enough frames for the scroll to settle
         // before the next one — otherwise the test measures the animation

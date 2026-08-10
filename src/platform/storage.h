@@ -38,6 +38,10 @@ storage_t *storage_open(const metainfo_t *mi, const char *outdir);
 storage_t *storage_open_ex(const metainfo_t *mi, const char *outdir,
                            const storage_file_config_t *configs);
 
+/* Locate an existing on-disk torrent file, including the long-path fallback. */
+int storage_locate_file_path(const metainfo_t *mi, const char *outdir,
+                             uint32_t file_index, char *out, size_t out_size);
+
 /*
  * Write data at the absolute torrent byte offset.
  * Returns 1 on success, 0 on error.

@@ -92,6 +92,8 @@ TORBOX_PAIRING_TEST_TARGET = $(BUILD_DIR)/tests/test_torbox_pairing
 DEBRID_TRANSFER_TEST_TARGET = $(BUILD_DIR)/tests/test_debrid_transfer
 TB_PROVIDER_TEST_TARGET = $(BUILD_DIR)/tests/test_torbox_provider
 TS_PROVIDER_TEST_TARGET = $(BUILD_DIR)/tests/test_torrserver_provider
+TASK_FILES_TEST_TARGET = $(BUILD_DIR)/tests/test_task_files
+SWITCH_DEPLOY_TEST_TARGET = $(BUILD_DIR)/tests/test_switch_deploy
 TEST_SRCS = \
     tests/test_piece.c       \
     src/core/sha1.c          \
@@ -143,6 +145,14 @@ $(BUILD_DIR)/src/app/download_manager.o: src/app/download_manager.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
+$(BUILD_DIR)/src/app/task_files.o: src/app/task_files.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+$(BUILD_DIR)/src/app/switch_deploy.o: src/app/switch_deploy.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
 $(BUILD_DIR)/src/app/web_seed_source.o: src/app/web_seed_source.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
@@ -172,6 +182,7 @@ $(BUILD_DIR)/tests/test_manager.o: tests/test_manager.cpp
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
 $(MANAGER_TEST_TARGET): $(BUILD_DIR)/tests/test_manager.o $(BUILD_DIR)/src/app/download_manager.o \
+		$(BUILD_DIR)/src/app/task_files.o \
 		$(BUILD_DIR)/src/app/web_seed_source.o \
 		$(BUILD_DIR)/src/app/stream_ram_budget.o $(BUILD_DIR)/src/app/stream_budget_arbiter.o \
 		$(BUILD_DIR)/src/app/request_gate.o \
@@ -239,7 +250,8 @@ $(HTTP_TEST_TARGET): tests/test_http_server.cpp $(BUILD_DIR)/src/app/http_server
 $(WEB_SERVER_TEST_TARGET): tests/test_web_server.cpp \
 		$(BUILD_DIR)/src/app/web_server.o $(BUILD_DIR)/src/app/web_add_queue.o $(BUILD_DIR)/src/app/http_server.o \
 		$(BUILD_DIR)/src/app/magnet_resolver.o src/app/install_space.cpp \
-		$(BUILD_DIR)/src/app/download_manager.o $(BUILD_DIR)/src/app/web_seed_source.o \
+		$(BUILD_DIR)/src/app/download_manager.o $(BUILD_DIR)/src/app/task_files.o \
+		$(BUILD_DIR)/src/app/web_seed_source.o \
 		$(BUILD_DIR)/src/app/stream_ram_budget.o $(BUILD_DIR)/src/app/stream_budget_arbiter.o \
 		$(BUILD_DIR)/src/app/request_gate.o \
 		$(BUILD_DIR)/src/app/install_pacer.o \
@@ -294,7 +306,8 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 		$(PROBE_REPORT_TEST_TARGET) \
 		$(TORBOX_CLIENT_TEST_TARGET) $(TORBOX_PAIRING_TEST_TARGET) \
 		$(DEBRID_TRANSFER_TEST_TARGET) \
-		$(TB_PROVIDER_TEST_TARGET) $(TS_PROVIDER_TEST_TARGET)
+		$(TB_PROVIDER_TEST_TARGET) $(TS_PROVIDER_TEST_TARGET) \
+		$(TASK_FILES_TEST_TARGET) $(SWITCH_DEPLOY_TEST_TARGET)
 	./$(TEST_TARGET)
 	./$(PACKAGE_TEST_TARGET)
 	./$(CATALOG_TEST_TARGET)
@@ -327,6 +340,8 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 	./$(DEBRID_TRANSFER_TEST_TARGET)
 	./$(TB_PROVIDER_TEST_TARGET)
 	./$(TS_PROVIDER_TEST_TARGET)
+	./$(TASK_FILES_TEST_TARGET)
+	./$(SWITCH_DEPLOY_TEST_TARGET)
 	python3 tests/test_bug_report_decode.py
 	python3 tests/test_telemetry_analyzer.py
 	python3 scripts/check_i18n.py
@@ -372,7 +387,8 @@ $(FAVORITES_TEST_TARGET): tests/test_favorites.cpp \
 
 $(BATCH_INSTALL_TEST_TARGET): tests/test_batch_install.cpp \
 		src/app/catalog_batch_installer.cpp src/app/install_space.cpp \
-		$(BUILD_DIR)/src/app/download_manager.o $(BUILD_DIR)/src/app/web_seed_source.o \
+		$(BUILD_DIR)/src/app/download_manager.o $(BUILD_DIR)/src/app/task_files.o \
+		$(BUILD_DIR)/src/app/web_seed_source.o \
 		$(BUILD_DIR)/src/app/stream_ram_budget.o $(BUILD_DIR)/src/app/stream_budget_arbiter.o \
 		$(BUILD_DIR)/src/app/request_gate.o $(BUILD_DIR)/src/app/debrid_transfer.o \
 		$(BUILD_DIR)/src/app/install_pacer.o \
@@ -467,6 +483,27 @@ $(DEBRID_TRANSFER_TEST_TARGET): tests/test_debrid_transfer.cpp \
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) $(INSTALL_LDFLAGS) -pthread
 
+$(TASK_FILES_TEST_TARGET): tests/test_task_files.cpp \
+		$(BUILD_DIR)/src/app/task_files.o $(BUILD_DIR)/src/core/bencode.o \
+		$(BUILD_DIR)/src/core/metainfo.o $(BUILD_DIR)/src/core/sha1.o \
+		$(BUILD_DIR)/src/core/util.o $(BUILD_DIR)/src/platform/storage.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
+
+$(SWITCH_DEPLOY_TEST_TARGET): tests/test_switch_deploy.cpp \
+		$(BUILD_DIR)/src/app/switch_deploy.o $(BUILD_DIR)/src/app/task_files.o \
+		$(BUILD_DIR)/src/app/download_manager.o src/app/install_space.cpp \
+		$(BUILD_DIR)/src/app/web_seed_source.o \
+		$(BUILD_DIR)/src/app/stream_ram_budget.o $(BUILD_DIR)/src/app/stream_budget_arbiter.o \
+		$(BUILD_DIR)/src/app/request_gate.o $(BUILD_DIR)/src/app/install_pacer.o \
+		$(BUILD_DIR)/src/app/debrid_transfer.o $(BUILD_DIR)/src/app/torbox_client.o \
+		$(BUILD_DIR)/src/app/torbox_provider.o $(BUILD_DIR)/src/app/torrserver_provider.o \
+		$(BUILD_DIR)/src/install/package_stream.o $(BUILD_DIR)/src/install/install_journal.o \
+		$(BUILD_DIR)/src/install/install_backend_pc.o \
+		$(filter-out $(BUILD_DIR)/src/main_pc.o,$(OBJS)) $(UTP_OBJS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) $(INSTALL_LDFLAGS) -pthread
+
 $(TELEMETRY_TEST_TARGET): tests/test_telemetry.c src/core/util.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
@@ -495,7 +532,8 @@ $(BUILD_DIR)/tools/webserver: tools/web_server_main.cpp \
 		$(BUILD_DIR)/src/app/snapshot_zstd.o \
 		$(BUILD_DIR)/src/app/mod_index_service.o $(BUILD_DIR)/src/app/game_metadata_service.o \
 		$(BUILD_DIR)/src/app/magnet_resolver.o src/app/install_space.cpp \
-		$(BUILD_DIR)/src/app/download_manager.o $(BUILD_DIR)/src/app/web_seed_source.o \
+		$(BUILD_DIR)/src/app/download_manager.o $(BUILD_DIR)/src/app/task_files.o \
+		$(BUILD_DIR)/src/app/web_seed_source.o \
 		$(BUILD_DIR)/src/app/stream_ram_budget.o $(BUILD_DIR)/src/app/stream_budget_arbiter.o \
 		$(BUILD_DIR)/src/app/request_gate.o \
 		$(BUILD_DIR)/src/app/install_pacer.o \

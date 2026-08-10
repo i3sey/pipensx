@@ -490,6 +490,27 @@ Step pollUntilReady(RunContext& ctx) {
         if (info.phase == DebridInfo::Phase::Ready && !info.files.empty()) {
             if (ctx.filesSelected)
                 ctx.selectedLinks = info.links;
+            if (ctx.spec.filesResolved) {
+                std::vector<DebridTaskSpec::ResolvedFile> resolved;
+                resolved.reserve(info.files.size());
+                for (size_t i = 0; i < info.files.size(); ++i) {
+                    bool pathOk = true;
+                    DebridTaskSpec::ResolvedFile file;
+                    file.path = sanitizeRelative(info.files[i].path, info.name,
+                                                 pathOk);
+                    file.localPath = file.path;
+                    file.bytes = info.files[i].bytes;
+                    file.action = !selected(ctx.spec, i, info.files[i])
+                        ? static_cast<uint8_t>(FileAction::Skip)
+                        : installs(ctx.spec, i, info.files[i])
+                            ? static_cast<uint8_t>(FileAction::Install)
+                            : static_cast<uint8_t>(FileAction::Download);
+                    if (!pathOk)
+                        file.path = info.files[i].path;
+                    resolved.push_back(std::move(file));
+                }
+                ctx.spec.filesResolved(resolved);
+            }
             return Step::Ok;
         }
 

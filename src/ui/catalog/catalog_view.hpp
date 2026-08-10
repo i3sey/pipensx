@@ -14,6 +14,7 @@
 #include "app/catalog_presentation.hpp"
 #include "app/catalog_refresh.hpp"
 #include "app/catalog_service.hpp"
+#include "app/switch_deploy.hpp"
 #include "app/download_manager.hpp"
 #include "app/favorites_service.hpp"
 #include "app/game_metadata_service.hpp"
@@ -211,12 +212,13 @@ public:
     CatalogView(DownloadManager* manager, CatalogService* catalog,
                 GameMetadataService* metadata,
                 InstalledTitleService* installed, AppSettings* settings,
-                std::function<void()> openDownloads,
-                ModIndexService* mods = nullptr,
-                FavoritesService* favorites = nullptr)
+                 std::function<void()> openDownloads,
+                 ModIndexService* mods = nullptr,
+                 FavoritesService* favorites = nullptr,
+                 SwitchDeployService* deploy = nullptr)
         : brls::Box(brls::Axis::COLUMN), manager_(manager), catalog_(catalog),
           metadata_(metadata), installed_(installed), settings_(settings),
-          mods_(mods), favorites_(favorites),
+          mods_(mods), favorites_(favorites), deploy_(deploy),
           openDownloads_(std::move(openDownloads)),
           alive_(std::make_shared<std::atomic<bool>>(true)),
           cancelled_(std::make_shared<std::atomic<bool>>(false)) {
@@ -506,7 +508,7 @@ public:
             std::move(entry), std::move(lastFailure), manager_, metadata_,
             installed_, settings_, mods_,
             std::move(onFailure), std::move(onChange), std::move(onClose),
-            favorites_));
+            favorites_, deploy_));
     }
 
 private:
@@ -1732,6 +1734,7 @@ private:
     AppSettings* settings_;
     ModIndexService* mods_;
     FavoritesService* favorites_;
+    SwitchDeployService* deploy_;
     std::function<void()> openDownloads_;
     brls::RecyclerFrame* recycler_;
     brls::Box* recyclerHost_ = nullptr;

@@ -3,7 +3,8 @@
 
 namespace pipensx::ui {
 
-void DownloadDataSource::setTasks(std::vector<DownloadTask> tasks) {
+void DownloadDataSource::setTasks(std::vector<DownloadTask> tasks,
+                                  std::string activeDeployTask) {
     sections_.clear();
     // std::string, not const char*: the titles are now resolved per-locale at
     // call time rather than being string literals with static storage.
@@ -35,9 +36,16 @@ void DownloadDataSource::setTasks(std::vector<DownloadTask> tasks) {
     for (const auto& group : groups) {
         Section section;
         section.title = group.title;
-        for (const auto& task : tasks)
-            if (group.matches(task.status))
+        for (const auto& task : tasks) {
+            const bool deploying = task.id == activeDeployTask;
+            const bool activeGroup = group.matches(DownloadStatus::Checking);
+            const bool completedGroup = group.matches(DownloadStatus::Completed);
+            if ((deploying && activeGroup) ||
+                (!deploying && group.matches(task.status)) ||
+                (deploying && !activeGroup && !completedGroup &&
+                 group.matches(task.status)))
                 section.tasks.push_back(task);
+        }
         if (!section.tasks.empty())
             sections_.push_back(std::move(section));
     }
@@ -95,7 +103,8 @@ brls::RecyclerCell* DownloadDataSource::cellForRow(
         return recycler->dequeueReusableCell("Message");
     auto* cell = static_cast<DownloadCell*>(
         recycler->dequeueReusableCell("Download"));
-    cell->setTask(section.tasks[index.row], owner_->metadataService());
+    cell->setTask(section.tasks[index.row], owner_->metadataService(),
+                  &owner_->deploySnapshot());
     return cell;
 }
 

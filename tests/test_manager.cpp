@@ -1,4 +1,5 @@
 #include "../src/app/download_manager.hpp"
+#include "../src/app/task_files.hpp"
 
 extern "C" {
 #include "../src/core/sha1.h"
@@ -496,6 +497,11 @@ int main() {
         assert(tasks[0].status == DownloadStatus::Queued);
         assert(tasks[0].mode == TransferMode::StreamInstall);
         assert(tasks[0].packageCount == 1);
+        pipensx::TaskFileManifest manifest;
+        assert(pipensx::loadTaskFileManifest(appRoot, taskId, manifest, error));
+        assert(manifest.files.size() == 1);
+        assert(manifest.files[0].action ==
+               pipensx::TaskFileAction::Install);
         // Fresh import into an empty data directory arms an all-zero trusted
         // bitfield (12-byte payload = 1 piece = 1 byte).
         assert(tasks[0].resumeBitfield == std::vector<uint8_t>(1, 0));
@@ -697,6 +703,17 @@ int main() {
         assert(tasks.size() == 1);
         assert(tasks[0].status == DownloadStatus::Completed);
         assert((tasks[0].resumeBitfield == std::vector<uint8_t>{0x80}));
+        auto one = manager.snapshot(tasks[0].id);
+        assert(one && one->id == tasks[0].id);
+        auto lease = manager.beginExternalDeploy(tasks[0].id, error);
+        assert(lease);
+        assert(manager.externalDeployActive());
+        assert(manager.externalDeployTaskId() == tasks[0].id);
+        assert(!manager.verify(tasks[0].id));
+        assert(!manager.remove(tasks[0].id, true, error));
+        assert(error == "Task files are being copied to /switch.");
+        lease.reset();
+        assert(!manager.externalDeployActive());
         assert(manager.verify(tasks[0].id));
         assert(manager.snapshot()[0].resumeBitfield.empty());
         {

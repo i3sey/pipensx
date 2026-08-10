@@ -35,6 +35,8 @@ DOWNLOAD LATEST - [pipensx.nro](https://github.com/i3sey/pipensx/releases/latest
   [`Langegen/switch-games`](https://github.com/Langegen/switch-games) source
 - offline magnet resolution when the catalog provides a verified info dictionary
 - download-only mode and sequential NSP/NSZ installation while pieces arrive
+- downloaded-file inventory and safe, previewed copying of recognized
+  homebrew-port `switch/` layouts into `SD:/switch/`
 - Application, Patch, and AddOnContent packages with installed-version checks
 - optional debrid fetch via TorBox or a self-hosted TorrServer (no Real-Debrid)
 - optional HTTPS/SOCKS proxy for catalog, artwork, and debrid HTTPS traffic
@@ -88,6 +90,8 @@ Runtime data is stored below `SD:/switch/pipensx/`, including:
 queue.bencode
 torrents/
 downloads/
+task-files/
+deployments/
 dht_nodes.bin
 catalog/catalog.json
 catalog/metadata/
@@ -111,11 +115,12 @@ available, otherwise through BitTorrent extension-protocol peers. Received
 metadata is checked against the magnet info hash before entering the normal
 torrent preview and queue flow.
 
-Only one torrent downloads at a time. Existing files are verified before a task
-starts or resumes. Interrupted packages restart from their beginning; packages
-committed before the interruption remain installed and are skipped. Runtime
-behavior such as sleep/wake and long installs must ultimately be validated on
-physical Switch hardware.
+One to four downloads may run concurrently, while stream installation remains
+serialized. Existing files are verified before a task starts or resumes.
+Interrupted package streams resume from their last persisted safe point;
+packages committed before the interruption remain installed and are skipped.
+Runtime behavior such as sleep/wake, long installs, and `/switch` file copying
+must ultimately be validated on physical Switch hardware.
 
 ## Contributing and security
 

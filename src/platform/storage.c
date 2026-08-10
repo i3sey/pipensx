@@ -87,6 +87,26 @@ static int build_fallback_path(char *fullpath, size_t size, const char *outdir,
     return (len >= 0 && (size_t)len < size);
 }
 
+int storage_locate_file_path(const metainfo_t *mi, const char *outdir,
+                             uint32_t file_index, char *out, size_t out_size) {
+    if (!mi || !outdir || !out || out_size == 0 ||
+        file_index >= mi->num_files)
+        return 0;
+    const mi_file_t *file = &mi->files[file_index];
+    char candidate[512];
+    if (build_original_path(candidate, sizeof(candidate), mi, outdir, file) &&
+        access(candidate, F_OK) == 0) {
+        int len = snprintf(out, out_size, "%s", candidate);
+        return len >= 0 && (size_t)len < out_size;
+    }
+    if (build_fallback_path(candidate, sizeof(candidate), outdir, file_index,
+                            file) && access(candidate, F_OK) == 0) {
+        int len = snprintf(out, out_size, "%s", candidate);
+        return len >= 0 && (size_t)len < out_size;
+    }
+    return 0;
+}
+
 static int open_disk_file(struct file_handle *fh) {
     fh->fp = fopen(fh->path, "r+b");
     if (fh->fp)
