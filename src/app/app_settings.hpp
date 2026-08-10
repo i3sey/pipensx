@@ -33,6 +33,11 @@ struct AppSettingsData {
     CatalogFilter catalogFilter = CatalogFilter::Games;
     bool refreshCatalogOnLaunch = false;
     uint64_t lastCatalogRefreshMs = 0;
+    // Wall-clock seconds of the last successful catalogue download. 0 = never
+    // refreshed on this console (a bundled dump does not count). Used by the
+    // freshness badge and the "not today" auto-refresh — distinct from
+    // lastCatalogRefreshMs, which is monotonic now_ms() for the daily gate.
+    uint64_t lastCatalogRefreshWallSec = 0;
     uint64_t lastMetadataRefreshMs = 0;
     uint64_t lastModsRefreshMs = 0;
     StreamSelection streamSelection = StreamSelection::AllFiles;
@@ -116,6 +121,10 @@ void applyProxySetting(const std::string& proxyUrl);
 // against it. Include that header where you need clampMaxActiveDownloads.
 
 bool dailyRefreshDue(uint64_t nowMs, uint64_t lastRefreshMs);
+
+// True when `epochSec` falls on the local calendar day of `time(nullptr)`.
+// epochSec <= 0 is never "today" (unknown / never refreshed).
+bool isLocalToday(int64_t epochSec);
 
 class AppSettings {
 public:

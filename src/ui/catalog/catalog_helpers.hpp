@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <ctime>
 #include <string>
 #include <vector>
 
@@ -136,6 +137,24 @@ inline std::string shortDescription(const std::string& value) {
     if (value.size() <= 900)
         return value;
     return value.substr(0, 900) + "...";
+}
+
+inline std::string formatEpochDateUtc(int64_t epochSec) {
+    if (epochSec <= 0)
+        return {};
+    const time_t raw = static_cast<time_t>(epochSec);
+    std::tm tm {};
+#if defined(_WIN32)
+    if (gmtime_s(&tm, &raw) != 0)
+        return {};
+#else
+    if (!gmtime_r(&raw, &tm))
+        return {};
+#endif
+    char buf[16];
+    if (strftime(buf, sizeof(buf), "%Y-%m-%d", &tm) == 0)
+        return {};
+    return buf;
 }
 
 // Append a freshly created async image to a box (banner / screenshot on the

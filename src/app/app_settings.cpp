@@ -7,6 +7,7 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <fstream>
 #include <sstream>
 #include <sys/stat.h>
@@ -112,6 +113,8 @@ bool parseSettings(const std::string& text, AppSettingsData& values,
                   values.refreshCatalogOnLaunch, error) ||
         !readUnsigned(root, "last_catalog_refresh_ms",
                       values.lastCatalogRefreshMs, error) ||
+        !readUnsigned(root, "last_catalog_refresh_wall_sec",
+                      values.lastCatalogRefreshWallSec, error) ||
         !readUnsigned(root, "last_metadata_refresh_ms",
                       values.lastMetadataRefreshMs, error) ||
         !readUnsigned(root, "last_mods_refresh_ms",
@@ -218,6 +221,7 @@ std::string serializeSettings(const AppSettingsData& values) {
     root["catalog_filter"] = catalogFilterName(values.catalogFilter);
     root["refresh_catalog_on_launch"] = values.refreshCatalogOnLaunch;
     root["last_catalog_refresh_ms"] = values.lastCatalogRefreshMs;
+    root["last_catalog_refresh_wall_sec"] = values.lastCatalogRefreshWallSec;
     root["last_metadata_refresh_ms"] = values.lastMetadataRefreshMs;
     root["last_mods_refresh_ms"] = values.lastModsRefreshMs;
     root["stream_selection"] = streamSelectionName(values.streamSelection);
@@ -334,6 +338,7 @@ bool AppSettingsData::operator==(const AppSettingsData& other) const {
            catalogFilter == other.catalogFilter &&
            refreshCatalogOnLaunch == other.refreshCatalogOnLaunch &&
            lastCatalogRefreshMs == other.lastCatalogRefreshMs &&
+           lastCatalogRefreshWallSec == other.lastCatalogRefreshWallSec &&
            lastMetadataRefreshMs == other.lastMetadataRefreshMs &&
            lastModsRefreshMs == other.lastModsRefreshMs &&
            streamSelection == other.streamSelection &&
@@ -358,6 +363,23 @@ bool dailyRefreshDue(uint64_t nowMs, uint64_t lastRefreshMs) {
     constexpr uint64_t kDayMs = 24ULL * 60ULL * 60ULL * 1000ULL;
     return lastRefreshMs == 0 || nowMs < lastRefreshMs ||
            nowMs - lastRefreshMs >= kDayMs;
+}
+
+bool isLocalToday(int64_t epochSec) {
+    if (epochSec <= 0)
+        return false;
+    const time_t now = time(nullptr);
+    const time_t then = static_cast<time_t>(epochSec);
+    std::tm nowTm {};
+    std::tm thenTm {};
+#if defined(_WIN32)
+    if (localtime_s(&nowTm, &now) != 0 || localtime_s(&thenTm, &then) != 0)
+        return false;
+#else
+    if (!localtime_r(&now, &nowTm) || !localtime_r(&then, &thenTm))
+        return false;
+#endif
+    return nowTm.tm_year == thenTm.tm_year && nowTm.tm_yday == thenTm.tm_yday;
 }
 
 AppSettings::AppSettings(std::string path, std::string legacyTelemetryPath)

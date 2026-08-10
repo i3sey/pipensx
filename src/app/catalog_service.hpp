@@ -112,6 +112,10 @@ public:
     const std::string& sourceLabel() const { return sourceLabel_; }
     const std::string& rootPath() const { return rootPath_; }
 
+    // Wall-clock seconds for when the live snapshot was written or loaded
+    // (cache/bundled mtime, or refresh time after adopt). 0 when empty.
+    int64_t snapshotEpochSec() const { return snapshotEpochSec_; }
+
     static bool parseJson(const std::string& json,
                           std::vector<CatalogEntry>& entries,
                           std::string& error);
@@ -133,6 +137,7 @@ private:
     std::shared_ptr<const std::vector<CatalogEntry>> entries_ =
         std::make_shared<const std::vector<CatalogEntry>>();
     std::string sourceLabel_;
+    int64_t snapshotEpochSec_ = 0;
     std::function<void(std::shared_ptr<const std::vector<CatalogEntry>>)>
         onAdopt_;
 };

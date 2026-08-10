@@ -73,6 +73,8 @@
 #include "ui/settings/settings_view.hpp"
 #include "ui/theme.hpp"
 
+#include <ctime>
+
 extern "C" {
 #include "core/util.h"
 }
@@ -381,12 +383,31 @@ int main(int argc, char** argv) {
     std::string error;
     AppSettings settings(SettingsPath, TelemetryFlagPath);
     settings.load(error);
+    // Keep metadata/mods dailyRefreshDue satisfied so CatalogView does not
+    // open a live fetch against the offline golden fixtures. Stamp the wall
+    // clock too: the freshness badge treats 0 as "never refreshed".
+    {
+        pipensx::AppSettingsData values = settings.get();
+        const uint64_t now = now_ms();
+        values.lastCatalogRefreshMs = now;
+        values.lastCatalogRefreshWallSec =
+            static_cast<uint64_t>(time(nullptr));
+        values.lastMetadataRefreshMs = now;
+        values.lastModsRefreshMs = now;
+        std::string stampError;
+        settings.update(values, stampError);
+    }
 
     CatalogService catalog("sdmc:/switch/pipensx",
                            (fixtures / "catalog.json").string());
     if (!catalog.load(error))
         std::fprintf(stderr, "golden_runner: catalog fixture: %s\n",
                      error.c_str());
+    // load() stamps snapshotEpochSec from the fixture file mtime (often old).
+    // Re-adopt so auto-refresh sees "today" and stays offline.
+    if (!catalog.entries().empty())
+        catalog.adopt(
+            std::vector<pipensx::CatalogEntry>(catalog.entries()));
 
     GameMetadataService metadata(
         "sdmc:/switch/pipensx",

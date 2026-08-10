@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <ctime>
 #include <functional>
 #include <iterator>
 #include <memory>
@@ -363,8 +364,11 @@ private:
     void recordRefreshTime(bool catalog, bool metadata, bool mods = false) {
         AppSettingsData values = settings_->get();
         const uint64_t now = now_ms();
-        if (catalog)
+        if (catalog) {
             values.lastCatalogRefreshMs = now;
+            values.lastCatalogRefreshWallSec =
+                static_cast<uint64_t>(time(nullptr));
+        }
         if (metadata)
             values.lastMetadataRefreshMs = now;
         if (mods)

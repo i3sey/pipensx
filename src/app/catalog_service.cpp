@@ -13,6 +13,7 @@ extern "C" {
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <curl/curl.h>
 #include <fstream>
 #include <borealis/extern/nlohmann/json.hpp>
@@ -495,6 +496,12 @@ bool CatalogService::loadFile(const std::string& path,
     entries_ = std::make_shared<const std::vector<CatalogEntry>>(
         std::move(parsed));
     sourceLabel_ = label;
+    struct stat st {};
+    // Wall-clock only: now_sec() is monotonic (boot-relative), useless for
+    // "was this snapshot taken today?" checks in the UI.
+    snapshotEpochSec_ = (stat(path.c_str(), &st) == 0 && st.st_mtime > 0)
+                            ? static_cast<int64_t>(st.st_mtime)
+                            : static_cast<int64_t>(time(nullptr));
     log_msg("[catalog] loaded %zu entries from %s\n", entries_->size(),
             path.c_str());
     return true;
@@ -516,6 +523,7 @@ bool CatalogService::load(std::string& error) {
     // sees an empty list and starts the trusted live refresh in the background.
     entries_ = std::make_shared<const std::vector<CatalogEntry>>();
     sourceLabel_.clear();
+    snapshotEpochSec_ = 0;
     error.clear();
     return true;
 }
@@ -581,6 +589,7 @@ void CatalogService::adopt(std::vector<CatalogEntry> parsed) {
     entries_ = std::make_shared<const std::vector<CatalogEntry>>(
         std::move(parsed));
     sourceLabel_ = "Langegen switch-games";
+    snapshotEpochSec_ = static_cast<int64_t>(time(nullptr));
     log_msg("[catalog] refreshed %zu entries from %s\n", entries_->size(),
             sourceLabel_.c_str());
     if (onAdopt_)

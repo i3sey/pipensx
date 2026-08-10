@@ -1418,6 +1418,7 @@ void testBundledLangegenSnapshotLoadsWithoutNetwork() {
         std::string error;
         assert(catalog.load(error));
         assert(catalog.entries().size() > 1000);
+        assert(catalog.snapshotEpochSec() > 0);
 
         bool hasInlineArtwork = false;
         bool hasInlineDescription = false;
