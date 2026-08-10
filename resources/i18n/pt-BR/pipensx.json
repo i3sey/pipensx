@@ -170,7 +170,7 @@
     "no_installable": "Nenhum arquivo de jogo instalável. Use Selecionar arquivos para baixar.",
     "installing_extras_skipped_hint": "Instalando arquivos do jogo. Arquivos extras ignorados — use Selecionar arquivos para incluí-los.",
     "installing_extras_skipped": "Instalando arquivos do jogo. Arquivos extras ignorados.",
-    "added_installing": "Adicionado. Instalando no SD...",
+    "added_installing": "Adicionado. Instalando em {}...",
     "already_in_downloads": "Já está em downloads.",
     "status_fetching": "Obtendo {}%",
     "install_contract": "Instalar = apenas NSP/NSZ · extras ignorados"
@@ -194,7 +194,7 @@
     "no_files": "Nenhum arquivo encontrado neste torrent.",
     "select_one_file": "Selecione pelo menos um arquivo.",
     "no_space": "Espaço livre insuficiente no SD.",
-    "added_installing": "Adicionado. Instalando no SD...",
+    "added_installing": "Adicionado. Instalando em {}...",
     "added": "Adicionado aos downloads.",
     "port_detected": "Layout de port homebrew detectado. Após o download, o pipensx oferecerá Copiar para /switch.",
     "select_port": "Selecionar arquivos do port",
