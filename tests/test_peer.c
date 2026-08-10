@@ -73,6 +73,17 @@ static void send_all(int fd, const uint8_t *data, size_t length) {
     }
 }
 
+/* Stack-allocated peers in these tests never go through peer_destroy, but
+   peer_recv heap-allocates rbuf on first use — free it explicitly. */
+static void peer_fini(peer_t *p) {
+    free(p->rbuf);
+    p->rbuf = NULL;
+    free(p->bitfield);
+    p->bitfield = NULL;
+    free(p->pex_buf);
+    p->pex_buf = NULL;
+}
+
 /* Build one MSG_PIECE frame (index, offset 0, 8192-byte block of `index`)
    into a caller buffer of 4 + 1 + 8 + 8192 bytes. */
 static void fill_piece(uint8_t *message, uint32_t index) {
@@ -274,7 +285,7 @@ static void test_handshake_applies_large_receive_buffer(void) {
                       &optionSize) == 0);
     assert(receiveBufferSize >= NET_TCP_RECEIVE_BUFFER_SIZE);
 
-    free(peer.rbuf);
+    peer_fini(&peer);
     close(sockets[0]);
     close(sockets[1]);
 }
@@ -320,6 +331,7 @@ static void test_recv_drains_socket_until_would_block(void) {
     assert(peer.rbuf_len == 0);
     assert(peer.pipeline_len == 0);
 
+    peer_fini(&peer);
     close(sockets[0]);
     close(sockets[1]);
 }
@@ -377,6 +389,7 @@ static void test_recv_reassembles_message_split_across_reads(void) {
     assert(peer.rbuf_len == 0);              /* fully drained → cursor reset */
     assert(peer.pipeline_len == 0);
 
+    peer_fini(&peer);
     close(sockets[0]);
     close(sockets[1]);
 }
@@ -440,6 +453,7 @@ static void test_piece_receipt_samples_block_latency(void) {
     assert(peer.block_lat_ema_ms > first_ema);
     assert(peer.block_lat_ema_ms < 4000);
 
+    peer_fini(&peer);
     close(sockets[0]);
     close(sockets[1]);
 }
@@ -476,6 +490,7 @@ static void test_late_piece_after_expire_is_not_a_strike(void) {
     assert(capture.count == 0);
     assert(peer.unsolicited_piece_strikes == 0);
 
+    peer_fini(&peer);
     close(sockets[0]);
     close(sockets[1]);
 }
@@ -510,6 +525,7 @@ static void test_late_piece_after_cancel_is_not_a_strike(void) {
     assert(capture.count == 0);
     assert(peer.unsolicited_piece_strikes == 0);
 
+    peer_fini(&peer);
     close(sockets[0]);
     close(sockets[1]);
 }
