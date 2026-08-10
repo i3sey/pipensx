@@ -1,14 +1,17 @@
 #pragma once
 
 #include "download_manager.hpp"
+#include "port_archive.hpp"
 #include "task_files.hpp"
 
 #include <array>
 #include <atomic>
 #include <cstdint>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 namespace pipensx {
@@ -23,6 +26,7 @@ enum class SwitchDeployProblem {
     MissingSource,
     Conflict,
     NoSpace,
+    NoRam,
     Busy,
     Io,
 };
@@ -44,10 +48,22 @@ struct SwitchDeployEntry {
     bool nro = false;
 };
 
+struct SwitchDeployArchive {
+    std::string sourcePath;
+    std::string sourceRelativePath;
+    uint64_t size = 0;
+    uint64_t unpackBytes = 0;
+    uint64_t maxSolidBlockBytes = 0;
+    size_t switchFiles = 0;
+    bool extractable = true;
+    std::string detail;
+};
+
 struct SwitchDeployPlan {
     std::string taskId;
     std::string targetRoot;
     std::vector<SwitchDeployEntry> files;
+    std::vector<SwitchDeployArchive> archives;
     uint64_t totalBytes = 0;
     uint64_t bytesToCopy = 0;
     uint64_t freeBytes = 0;
@@ -69,6 +85,7 @@ enum class SwitchDeployPhase {
     Idle,
     Preparing,
     Copying,
+    Extracting,
     Completed,
     Failed,
     Cancelled,
@@ -89,7 +106,8 @@ struct SwitchDeploySnapshot {
 
     bool active() const {
         return phase == SwitchDeployPhase::Preparing ||
-               phase == SwitchDeployPhase::Copying;
+               phase == SwitchDeployPhase::Copying ||
+               phase == SwitchDeployPhase::Extracting;
     }
 };
 
@@ -110,14 +128,27 @@ public:
     SwitchDeployInspection inspect(const std::string& taskId) const;
     bool inventory(const std::string& taskId, TaskFileInventory& inventory,
                    std::string& error) const;
-    bool start(const std::string& taskId, std::string& error);
+    bool start(const std::string& taskId, std::string& error,
+               bool includeArchives = true);
     void cancel();
     void shutdown();
     SwitchDeploySnapshot snapshot() const;
     SwitchDeployReceiptState receiptState(const std::string& taskId) const;
+    // Background scan for stream-install ports ready to copy. Never starts a
+    // copy — takePendingDeployOffer() hands the inspected plan to the UI prompt.
+    struct PendingOffer {
+        std::string taskId;
+        SwitchDeployInspection inspection;
+    };
+    void scheduleDeployOfferPoll();
+    std::optional<PendingOffer> takePendingDeployOffer();
+    void dismissDeployOffer(const std::string& taskId);
 
 private:
-    void run(DownloadManager::ExternalDeployLease lease);
+    void pollDeployOffers();
+    bool considerDeployOffer(const std::string& taskId);
+    void run(DownloadManager::ExternalDeployLease lease,
+             bool includeArchives);
     void finish(SwitchDeployPhase phase, SwitchDeployProblem problem,
                 std::string detail);
     void cleanupInterruptedJob();
@@ -128,7 +159,12 @@ private:
     mutable std::mutex mutex_;
     SwitchDeploySnapshot snapshot_;
     std::thread worker_;
+    std::thread pollWorker_;
     std::atomic<bool> cancelled_{false};
+    std::atomic<bool> pollInFlight_{false};
+    std::mutex offerMutex_;
+    std::unordered_set<std::string> offerHandled_;
+    std::optional<PendingOffer> pendingOffer_;
 };
 
 } // namespace pipensx

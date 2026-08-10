@@ -1,6 +1,8 @@
 #include "switch_deploy.hpp"
 
 #include "install_space.hpp"
+#include "nx_file_types.hpp"
+#include "port_archive.hpp"
 
 extern "C" {
 #include "../core/bencode.h"
@@ -16,6 +18,7 @@ extern "C" {
 #include <fstream>
 #include <map>
 #include <set>
+#include <unordered_set>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -460,14 +463,57 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
             }
         }
     }
-    if (roots.empty()) {
+    for (const TaskFileInfo& file : result.inventory.files) {
+        if (file.action != TaskFileAction::Download || file.package ||
+            file.cartridge || file.state != TaskFileState::Present ||
+            !isPortArchiveName(file.logicalPath) ||
+            !sourceFileSafe(result.inventory, file))
+            continue;
+        SwitchDeployArchive archive;
+        archive.sourcePath = file.absolutePath;
+        archive.sourceRelativePath = file.logicalPath;
+        archive.size = file.size;
+        PortArchiveProbe probe;
+        if (probePortArchive(file.absolutePath, probe)) {
+            archive.unpackBytes = probe.unpackBytes;
+            archive.maxSolidBlockBytes = probe.maxSolidBlockBytes;
+            archive.switchFiles = probe.switchFiles;
+            archive.extractable = true;
+        } else {
+            archive.extractable = false;
+            archive.detail = probe.error;
+        }
+        result.plan.archives.push_back(std::move(archive));
+        result.plan.totalBytes += file.size;
+        if (result.plan.archives.back().extractable) {
+            const uint64_t need = result.plan.archives.back().unpackBytes
+                ? result.plan.archives.back().unpackBytes
+                : file.size;
+            result.plan.bytesToCopy += need;
+        }
+    }
+    if (roots.empty() && result.plan.archives.empty()) {
         setProblem(result, SwitchDeployProblem::LayoutNotFound,
                    "A switch directory with a valid NRO was not found.");
         return result;
     }
-    if (roots.size() != 1) {
+    if (roots.size() > 1) {
         setProblem(result, SwitchDeployProblem::AmbiguousLayout,
                    "More than one switch directory contains an NRO.");
+        return result;
+    }
+    if (roots.empty()) {
+        const StorageSpaceSnapshot storage = queryStorageSpace(targetRoot);
+        if (!storage.available) {
+            setProblem(result, SwitchDeployProblem::Io, storage.error);
+            return result;
+        }
+        result.plan.freeBytes = storage.freeBytes;
+        if (result.plan.bytesToCopy > storage.freeBytes) {
+            setProblem(result, SwitchDeployProblem::NoSpace,
+                       "There is not enough free space on the SD card.");
+            return result;
+        }
         return result;
     }
     const std::string selectedRoot = *roots.begin();
@@ -487,7 +533,8 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
             }
         }
         if (switchIndex == parts.size()) {
-            if (file.action == TaskFileAction::Download)
+            if (file.action == TaskFileAction::Download &&
+                !isPortArchiveName(file.logicalPath))
                 ++result.plan.ignoredFiles;
             continue;
         }
@@ -589,7 +636,7 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
         }
         result.plan.files.push_back(std::move(entry));
     }
-    if (result.plan.files.empty()) {
+    if (result.plan.files.empty() && result.plan.archives.empty()) {
         setProblem(result, SwitchDeployProblem::LayoutNotFound,
                    "The switch directory has no downloadable files.");
         return result;
@@ -634,10 +681,19 @@ SwitchDeployInspection SwitchDeployService::inspect(
         result.detail = "Download task not found.";
         return result;
     }
-    if (task->mode != TransferMode::DownloadOnly) {
+    if (!taskReadyForSwitchDeploy(*task)) {
         SwitchDeployInspection result;
         result.problem = SwitchDeployProblem::NotReady;
-        result.detail = "Only ordinary downloads can be copied to /switch.";
+        if (task->mode == TransferMode::StreamInstall &&
+            task->status != DownloadStatus::Completed &&
+            task->status != DownloadStatus::Installed) {
+            result.detail =
+                "Finish the download and installation before copying files "
+                "to /switch.";
+        } else {
+            result.detail =
+                "Finish the download before copying files to /switch.";
+        }
         return result;
     }
     TaskFileInventory inventory;
@@ -663,7 +719,8 @@ bool SwitchDeployService::inventory(const std::string& taskId,
 }
 
 bool SwitchDeployService::start(const std::string& taskId,
-                                std::string& error) {
+                                std::string& error,
+                                bool includeArchives) {
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (snapshot_.active()) {
@@ -684,13 +741,17 @@ bool SwitchDeployService::start(const std::string& taskId,
         snapshot_.taskId = taskId;
         ++snapshot_.generation;
     }
-    worker_ = std::thread([this, lease = std::move(*lease)]() mutable {
-        run(std::move(lease));
+    worker_ = std::thread([this, lease = std::move(*lease),
+                           includeArchives]() mutable {
+        run(std::move(lease), includeArchives);
     });
+    log_msg("[deploy] worker started %s archives=%d\n", taskId.c_str(),
+            includeArchives ? 1 : 0);
     return true;
 }
 
-void SwitchDeployService::run(DownloadManager::ExternalDeployLease lease) {
+void SwitchDeployService::run(DownloadManager::ExternalDeployLease lease,
+                              bool includeArchives) {
     TaskFileInventory inventory;
     std::string error;
     if (!buildTaskFileInventory(appRoot_, lease.task(), inventory, error)) {
@@ -706,16 +767,59 @@ void SwitchDeployService::run(DownloadManager::ExternalDeployLease lease) {
         return;
     }
     SwitchDeployPlan plan = std::move(inspection.plan);
+    std::string completionDetail;
+    if (!includeArchives) {
+        for (const SwitchDeployArchive& archive : plan.archives) {
+            if (!archive.extractable)
+                continue;
+            const uint64_t need =
+                archive.unpackBytes ? archive.unpackBytes : archive.size;
+            if (need <= plan.bytesToCopy)
+                plan.bytesToCopy -= need;
+            if (archive.size <= plan.totalBytes)
+                plan.totalBytes -= archive.size;
+        }
+        plan.archives.clear();
+    } else {
+        std::string skipped;
+        for (auto it = plan.archives.begin(); it != plan.archives.end();) {
+            if (it->extractable) {
+                ++it;
+                continue;
+            }
+            if (!skipped.empty())
+                skipped += ", ";
+            skipped += it->sourceRelativePath;
+            if (!it->detail.empty())
+                skipped += " (" + it->detail + ")";
+            it = plan.archives.erase(it);
+        }
+        if (!skipped.empty()) {
+            completionDetail = "Skipped archive(s): " + skipped;
+            std::lock_guard<std::mutex> lock(mutex_);
+            snapshot_.detail = completionDetail;
+            ++snapshot_.generation;
+        }
+    }
+    if (plan.files.empty() && plan.archives.empty()) {
+        finish(SwitchDeployPhase::Completed, SwitchDeployProblem::None,
+               std::move(completionDetail));
+        return;
+    }
     std::stable_sort(plan.files.begin(), plan.files.end(),
                      [](const SwitchDeployEntry& a,
                         const SwitchDeployEntry& b) {
                          return a.nro < b.nro;
                      });
+    const size_t copyFiles = plan.files.size() - plan.identicalFiles;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        snapshot_.phase = SwitchDeployPhase::Copying;
+        snapshot_.phase = copyFiles ? SwitchDeployPhase::Copying
+                                    : (plan.archives.empty()
+                                           ? SwitchDeployPhase::Copying
+                                           : SwitchDeployPhase::Extracting);
         snapshot_.totalBytes = plan.bytesToCopy;
-        snapshot_.totalFiles = plan.files.size() - plan.identicalFiles;
+        snapshot_.totalFiles = copyFiles + plan.archives.size();
         snapshot_.identicalFiles = plan.identicalFiles;
         ++snapshot_.generation;
     }
@@ -728,6 +832,7 @@ void SwitchDeployService::run(DownloadManager::ExternalDeployLease lease) {
         }
         {
             std::lock_guard<std::mutex> lock(mutex_);
+            snapshot_.phase = SwitchDeployPhase::Copying;
             snapshot_.currentPath = entry.destinationRelativePath;
             ++snapshot_.generation;
         }
@@ -750,24 +855,88 @@ void SwitchDeployService::run(DownloadManager::ExternalDeployLease lease) {
         ++snapshot_.filesCopied;
         ++snapshot_.generation;
     }
+    for (const SwitchDeployArchive& archive : plan.archives) {
+        if (cancelled_.load(std::memory_order_relaxed)) {
+            finish(SwitchDeployPhase::Cancelled, SwitchDeployProblem::None, {});
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            snapshot_.phase = SwitchDeployPhase::Extracting;
+            snapshot_.currentPath = archive.sourceRelativePath;
+            ++snapshot_.generation;
+        }
+        log_msg("[deploy] extracting %s solid=%llu unpack=%llu files=%zu\n",
+                archive.sourceRelativePath.c_str(),
+                static_cast<unsigned long long>(archive.maxSolidBlockBytes),
+                static_cast<unsigned long long>(archive.unpackBytes),
+                archive.switchFiles);
+        auto progress = [this](uint64_t bytes) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            snapshot_.bytesCopied += bytes;
+            ++snapshot_.generation;
+        };
+        auto current = [this](const std::string& path) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            snapshot_.currentPath = path;
+            ++snapshot_.generation;
+        };
+        if (!extractPortArchive(archive.sourcePath, targetRoot_, cancelled_,
+                                progress, current, error)) {
+            if (cancelled_.load(std::memory_order_relaxed))
+                finish(SwitchDeployPhase::Cancelled,
+                       SwitchDeployProblem::None, {});
+            else {
+                const SwitchDeployProblem problem =
+                    error.find("Not enough free RAM") != std::string::npos
+                        ? SwitchDeployProblem::NoRam
+                        : SwitchDeployProblem::Io;
+                finish(SwitchDeployPhase::Failed, problem, std::move(error));
+            }
+            return;
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        ++snapshot_.filesCopied;
+        ++snapshot_.generation;
+    }
     if (!saveReceipt(appRoot_, plan)) {
         finish(SwitchDeployPhase::Completed, SwitchDeployProblem::Io,
                "Files were copied, but the deployment receipt was not saved.");
         return;
     }
-    finish(SwitchDeployPhase::Completed, SwitchDeployProblem::None, {});
+    finish(SwitchDeployPhase::Completed, SwitchDeployProblem::None,
+           std::move(completionDetail));
 }
 
 void SwitchDeployService::finish(SwitchDeployPhase phase,
                                  SwitchDeployProblem problem,
                                  std::string detail) {
+    std::string taskId;
+    std::string loggedDetail;
     std::remove(jobPath(appRoot_).c_str());
-    std::lock_guard<std::mutex> lock(mutex_);
-    snapshot_.phase = phase;
-    snapshot_.problem = problem;
-    snapshot_.detail = std::move(detail);
-    snapshot_.currentPath.clear();
-    ++snapshot_.generation;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        taskId = snapshot_.taskId;
+        snapshot_.phase = phase;
+        snapshot_.problem = problem;
+        snapshot_.detail = std::move(detail);
+        snapshot_.currentPath.clear();
+        ++snapshot_.generation;
+        loggedDetail = snapshot_.detail;
+    }
+    const char* phaseName = phase == SwitchDeployPhase::Completed
+        ? "completed"
+        : phase == SwitchDeployPhase::Cancelled
+              ? "cancelled"
+              : phase == SwitchDeployPhase::Failed ? "failed" : "idle";
+    log_msg("[deploy] %s %s problem=%d %s\n", phaseName, taskId.c_str(),
+            static_cast<int>(problem), loggedDetail.c_str());
+    if (!taskId.empty()) {
+        std::lock_guard<std::mutex> lock(offerMutex_);
+        if (pendingOffer_ && pendingOffer_->taskId == taskId)
+            pendingOffer_.reset();
+        offerHandled_.insert(std::move(taskId));
+    }
 }
 
 void SwitchDeployService::cancel() {
@@ -776,6 +945,8 @@ void SwitchDeployService::cancel() {
 
 void SwitchDeployService::shutdown() {
     cancel();
+    if (pollWorker_.joinable())
+        pollWorker_.join();
     if (worker_.joinable())
         worker_.join();
 }
@@ -805,6 +976,80 @@ SwitchDeployReceiptState SwitchDeployService::receiptState(
     }
     return SwitchDeployReceiptState::Valid;
 }
+
+    bool SwitchDeployService::considerDeployOffer(const std::string& taskId) {
+        {
+            std::lock_guard<std::mutex> lock(offerMutex_);
+            if (offerHandled_.count(taskId) || pendingOffer_)
+                return false;
+        }
+        const std::optional<DownloadTask> task = manager_.snapshot(taskId);
+        if (!task || task->mode != TransferMode::StreamInstall ||
+            !taskReadyForSwitchDeploy(*task))
+            return false;
+        if (receiptState(taskId) == SwitchDeployReceiptState::Valid) {
+            std::lock_guard<std::mutex> lock(offerMutex_);
+            offerHandled_.insert(taskId);
+            return false;
+        }
+        SwitchDeployInspection inspection = inspect(taskId);
+        if (!inspection.canStart())
+            return false;
+        uint64_t looseBytes = 0;
+        for (const SwitchDeployEntry& entry : inspection.plan.files) {
+            if (entry.state == SwitchDeployEntryState::Missing)
+                looseBytes += entry.size;
+        }
+        if (looseBytes == 0 && inspection.plan.archives.empty())
+            return false;
+        {
+            std::lock_guard<std::mutex> lock(offerMutex_);
+            if (offerHandled_.count(taskId) || pendingOffer_)
+                return false;
+            pendingOffer_ = PendingOffer{taskId, std::move(inspection)};
+        }
+        log_msg("[deploy] offer ready %s\n", taskId.c_str());
+        return true;
+    }
+
+void SwitchDeployService::scheduleDeployOfferPoll() {
+    if (pollInFlight_.exchange(true))
+        return;
+    if (pollWorker_.joinable())
+        pollWorker_.join();
+    pollWorker_ = std::thread([this]() {
+        pollDeployOffers();
+        pollInFlight_.store(false);
+    });
+}
+
+void SwitchDeployService::pollDeployOffers() {
+    if (snapshot().active())
+        return;
+    for (const DownloadTask& task : manager_.snapshot()) {
+        if (task.mode != TransferMode::StreamInstall ||
+            !taskReadyForSwitchDeploy(task))
+            continue;
+        if (considerDeployOffer(task.id))
+            return;
+    }
+}
+
+    std::optional<SwitchDeployService::PendingOffer>
+    SwitchDeployService::takePendingDeployOffer() {
+        std::lock_guard<std::mutex> lock(offerMutex_);
+        std::optional<PendingOffer> offer = std::move(pendingOffer_);
+        pendingOffer_.reset();
+        return offer;
+    }
+
+    void SwitchDeployService::dismissDeployOffer(const std::string& taskId) {
+        std::lock_guard<std::mutex> lock(offerMutex_);
+        offerHandled_.insert(taskId);
+        if (pendingOffer_ && pendingOffer_->taskId == taskId)
+            pendingOffer_.reset();
+        log_msg("[deploy] offer dismissed %s\n", taskId.c_str());
+    }
 
 void SwitchDeployService::cleanupInterruptedJob() {
     std::string blob;

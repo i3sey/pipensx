@@ -40,6 +40,7 @@ extern "C" {
 #include "ui/i18n.hpp"
 #include "ui/main_frame.hpp"
 #include "ui/downloads/downloads_view.hpp"
+#include "ui/downloads/task_files_activity.hpp"
 #include "ui/installed/installed_view.hpp"
 #include "ui/settings/about_view.hpp"
 #include "ui/settings/help_view.hpp"
@@ -486,8 +487,10 @@ int main(int argc, char** argv) {
         startupStage("first main loop");
         bool firstFrame = true;
         uint64_t lastInputMs = now_ms();
+        uint64_t lastDeployOfferPollMs = now_ms();
         pipensx::SwitchDeployPhase lastDeployPhase =
             pipensx::SwitchDeployPhase::Idle;
+        bool deployOfferDialogOpen = false;
         while (true) {
             const pipensx::SwitchDeploySnapshot deployState = deploy.snapshot();
             bool activeTransfer = manager.hasActiveTransfer() ||
@@ -513,7 +516,78 @@ int main(int argc, char** argv) {
                 else if (deployState.phase ==
                          pipensx::SwitchDeployPhase::Cancelled)
                     brls::Application::notify(tr("pipensx/deploy/cancelled"));
+                else if (deployState.phase ==
+                         pipensx::SwitchDeployPhase::Preparing)
+                    brls::Application::notify(tr("pipensx/deploy/phase_preparing"));
+                else if (deployState.phase ==
+                         pipensx::SwitchDeployPhase::Copying)
+                    brls::Application::notify(tr("pipensx/deploy/phase_copying"));
+                else if (deployState.phase ==
+                         pipensx::SwitchDeployPhase::Extracting)
+                    brls::Application::notify(
+                        tr("pipensx/deploy/phase_extracting"));
                 lastDeployPhase = deployState.phase;
+            }
+
+            const uint64_t frameNowMs = now_ms();
+            if (frameNowMs - lastDeployOfferPollMs >= 10000 &&
+                !activeTransfer && !deployState.active() &&
+                !deployOfferDialogOpen) {
+                lastDeployOfferPollMs = frameNowMs;
+                deploy.scheduleDeployOfferPoll();
+            }
+            if (!deployOfferDialogOpen) {
+                auto offer = deploy.takePendingDeployOffer();
+                if (offer) {
+                    deployOfferDialogOpen = true;
+                    const std::string offerId = offer->taskId;
+                    const auto task = manager.snapshot(offerId);
+                    const std::string name =
+                        task ? task->name : offerId.substr(0, 8);
+                    auto* dialog = new brls::Dialog(
+                        tr("pipensx/deploy/offer_question", name));
+                    dialog->addButton(
+                        tr("pipensx/deploy/copy"),
+                        [&deploy, offerId,
+                         inspection = std::move(offer->inspection),
+                         &deployOfferDialogOpen]() mutable {
+                            deployOfferDialogOpen = false;
+                            deploy.dismissDeployOffer(offerId);
+                            // Dialog is still alive until this callback
+                            // returns. Re-home focus onto the root activity so
+                            // pushActivity does not onFocusLost a view that is
+                            // about to be deleted with the dialog.
+                            const auto stack =
+                                brls::Application::getActivitiesStack();
+                            if (!stack.empty())
+                                brls::Application::giveFocus(
+                                    stack.back()->getContentView());
+                            if (!inspection.canStart() &&
+                                inspection.problem !=
+                                    pipensx::SwitchDeployProblem::Conflict &&
+                                inspection.problem !=
+                                    pipensx::SwitchDeployProblem::NoSpace &&
+                                inspection.problem !=
+                                    pipensx::SwitchDeployProblem::NoRam) {
+                                brls::Application::notify(
+                                    inspection.detail.empty()
+                                        ? tr("pipensx/deploy/failed")
+                                        : inspection.detail);
+                                return;
+                            }
+                            brls::Application::pushActivity(
+                                new pipensx::ui::SwitchDeployPreviewActivity(
+                                    std::move(inspection), &deploy),
+                                brls::TransitionAnimation::NONE);
+                        });
+                    dialog->addButton(
+                        tr("pipensx/common/later"),
+                        [&deploy, offerId, &deployOfferDialogOpen] {
+                            deployOfferDialogOpen = false;
+                            deploy.dismissDeployOffer(offerId);
+                        });
+                    dialog->open();
+                }
             }
 
             // OLED burn-in guard: after five minutes without a button/touch,
@@ -549,6 +623,7 @@ int main(int argc, char** argv) {
 
             if (firstFrame) {
                 startupStage("main loop running");
+                deploy.scheduleDeployOfferPoll();
                 if (updatePendingConfirmation) {
                     std::string error;
                     if (!launchUpdater.confirmInstalled(error))

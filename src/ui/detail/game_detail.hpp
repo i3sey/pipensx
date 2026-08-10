@@ -228,6 +228,14 @@ private:
         });
         left->addView(primary_);
 
+        installContract_ = new brls::Label();
+        installContract_->setFontSize(theme::kFontCaption);
+        installContract_->setTextColor(theme::textTertiary());
+        installContract_->setMarginTop(6);
+        installContract_->setSingleLine(false);
+        installContract_->setText(tr("pipensx/detail/install_contract"));
+        left->addView(installContract_);
+
         // File selection and the wishlist toggle share one row: a fourth full-width
         // button does not fit the column budget, and a square star needs no
         // translation (Russian "В избранном" would not fit it anyway).
@@ -239,7 +247,7 @@ private:
         secondary_->setFontSize(theme::kFontSmall);
         secondary_->setGrow(1);
         secondary_->setHeight(56);
-        secondary_->setText(tr("pipensx/common/select_files"));
+        secondary_->setText(tr("pipensx/common/choose_files"));
         secondary_->registerClickAction([this](brls::View*) {
             onSecondary();
             return true;
@@ -267,7 +275,9 @@ private:
         // How much of the card this release eats. Seeded from the catalog size
         // and refined to the exact figure once the torrent metadata resolves.
         sizeMeter_ = new StorageMeter();
-        sizeMeter_->setHeader(tr("pipensx/detail/install_size"));
+        sizeMeter_->setHeader(storageMeterHeader(
+            settings_ ? installTargetFor(settings_->get().installLocation)
+                      : manager_->installTarget()));
         sizeMeter_->setMarginTop(20);
         left->addView(sizeMeter_);
 
@@ -546,8 +556,12 @@ private:
     void refreshSizeMeter() {
         if (!sizeMeter_)
             return;
+        const auto target = settings_
+            ? installTargetFor(settings_->get().installLocation)
+            : manager_->installTarget();
+        sizeMeter_->setHeader(storageMeterHeader(target));
         const pipensx::StorageSpaceSnapshot storage =
-            pipensx::queryStorageSpace(manager_->rootPath());
+            pipensx::queryInstallStorageSpace(target, manager_->rootPath());
         if (!storage.available) {
             sizeMeter_->setUnavailable();
             return;
@@ -621,14 +635,18 @@ private:
             primary_->setState(brls::ButtonState::ENABLED);
             setTextIfChanged(secondary_, tr("pipensx/detail/view_download"));
             secondary_->setState(brls::ButtonState::ENABLED);
+            if (installContract_)
+                installContract_->setVisibility(brls::Visibility::GONE);
             if (task->status == DownloadStatus::Error && !task->error.empty())
                 setTextIfChanged(statusLabel_, task->error);
         } else {
             setTextIfChanged(primary_, tr("pipensx/common/install"));
             primary_->setProgress(-1.0f);
             primary_->setState(brls::ButtonState::ENABLED);
-            setTextIfChanged(secondary_, tr("pipensx/common/select_files"));
+            setTextIfChanged(secondary_, tr("pipensx/common/choose_files"));
             secondary_->setState(brls::ButtonState::ENABLED);
+            if (installContract_)
+                installContract_->setVisibility(brls::Visibility::VISIBLE);
             if (!operationMessage_.empty())
                 setTextIfChanged(statusLabel_, operationMessage_);
             else if (installed_ && installed_->contains(titleId_))
@@ -936,14 +954,16 @@ private:
             return;
         }
 
-        // One-tap path. No installable packages -> nothing to silently install.
+        // One-tap path. No installable packages -> open the picker in download
+        // mode so the user is not left at a dead end.
         if (preview.packageCount == 0) {
             operationMessage_ = preview.cartridgeCount > 0
                 ? tr("pipensx/detail/cartridge_only")
                 : tr("pipensx/detail/no_installable");
             refreshButtons();
             brls::Application::notify(operationMessage_);
-            ::unlink(path.c_str());
+            openSelection(path, std::move(preview), std::move(initialPeers),
+                          TransferMode::DownloadOnly);
             return;
         }
 
@@ -960,6 +980,9 @@ private:
 
         std::string id;
         std::string err;
+        const std::string destination = installDestinationLabel(
+            settings_ ? installTargetFor(settings_->get().installLocation)
+                      : manager_->installTarget());
         if (manager_->importTorrent(path, TransferMode::StreamInstall, mask,
                                     id, err, initialPeers)) {
             log_msg("[catalog] imported torrent %s\n", id.c_str());
@@ -969,7 +992,10 @@ private:
                 brls::Application::notify(
                     tr("pipensx/detail/installing_extras_skipped"));
             } else {
-                statusLabel_->setText(tr("pipensx/detail/added_installing"));
+                statusLabel_->setText(
+                    tr("pipensx/detail/added_installing", destination));
+                brls::Application::notify(
+                    tr("pipensx/detail/added_installing", destination));
             }
             if (onChange_)
                 onChange_();
@@ -992,11 +1018,12 @@ private:
 
     void openSelection(const std::string& path,
                        pipensx::TorrentPreview preview,
-                       std::vector<uint8_t> initialPeers) {
+                       std::vector<uint8_t> initialPeers,
+                       TransferMode preferred = TransferMode::StreamInstall) {
         StreamSelection selection = settings_
             ? settings_->get().streamSelection : StreamSelection::AllFiles;
         brls::Application::pushActivity(new TorrentSelectionActivity(
-            manager_, path, std::move(preview), TransferMode::StreamInstall,
+            manager_, path, std::move(preview), preferred,
             selection, std::move(initialPeers)));
     }
 
@@ -1020,6 +1047,7 @@ private:
     std::shared_ptr<std::atomic<bool>> cancelled_;
     brls::AppletFrame* frame_ = nullptr;
     InstallButton* primary_ = nullptr;
+    brls::Label* installContract_ = nullptr;
     brls::Button* secondary_ = nullptr;
     brls::Button* favorite_ = nullptr;
     StorageMeter* sizeMeter_ = nullptr;

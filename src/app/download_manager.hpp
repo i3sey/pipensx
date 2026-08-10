@@ -245,6 +245,10 @@ public:
         installTarget_.store(target, std::memory_order_relaxed);
     }
 
+    install::InstallStorageTarget installTarget() const {
+        return installTarget_.load(std::memory_order_relaxed);
+    }
+
     bool hasActiveTransfer() const;
     // Existence check without the full deep copy snapshot() makes.
     bool hasTask(const std::string& id) const;

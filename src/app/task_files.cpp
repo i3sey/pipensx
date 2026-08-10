@@ -198,6 +198,14 @@ std::string escapedBytes(const std::string& value) {
 
 } // namespace
 
+bool taskReadyForSwitchDeploy(const DownloadTask& task) {
+    if (task.status != DownloadStatus::Completed &&
+        task.status != DownloadStatus::Installed)
+        return false;
+    return task.mode == TransferMode::DownloadOnly ||
+           task.mode == TransferMode::StreamInstall;
+}
+
 bool taskFilePathIsSafe(const std::string& path) {
     if (path.empty() || path.size() >= kMaxPathBytes || path.front() == '/' ||
         path.front() == '\\' || path.back() == '/')

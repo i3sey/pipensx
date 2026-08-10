@@ -139,6 +139,26 @@ public:
                 manager_->resume(taskId);
                 startRefreshing(true);
             });
+        if (!leased && (task.status == DownloadStatus::Completed ||
+                        task.status == DownloadStatus::Installed) &&
+            deploy_ && taskReadyForSwitchDeploy(task)) {
+            add(tr("pipensx/deploy/copy"), [this, taskId] {
+                if (!deploy_)
+                    return;
+                SwitchDeployInspection inspection = deploy_->inspect(taskId);
+                if (inspection.problem != SwitchDeployProblem::None &&
+                    inspection.problem != SwitchDeployProblem::Conflict &&
+                    inspection.problem != SwitchDeployProblem::NoSpace &&
+                    inspection.problem != SwitchDeployProblem::NoRam) {
+                    brls::Application::notify(deployProblemText(
+                        inspection.problem, inspection.detail));
+                    return;
+                }
+                brls::Application::pushActivity(
+                    new SwitchDeployPreviewActivity(std::move(inspection),
+                                                    deploy_));
+            });
+        }
         if (!leased && task.status == DownloadStatus::Completed)
             add(tr("pipensx/common/verify"), [this, taskId] {
                 manager_->verify(taskId);
@@ -303,6 +323,18 @@ private:
         }
         brls::View* focused = brls::Application::getCurrentFocus();
         bool ownsFocus = containsFocus(focused);
+        // Overlay (deploy offer dialog, details, …) pushed our cell onto
+        // focusStack. reloadData() would free it and crash on dismiss/Accept.
+        if (activityStackHasOverlay() && !ownsFocus) {
+            tasks_ = std::move(next);
+            deploySnapshot_ = deployState;
+            deployGeneration_ = deployState.generation;
+            activeDeployTask_ = activeDeployTask;
+            settingsGeneration_ = settingsGeneration;
+            initialized_ = true;
+            dataSource_->setTasks(tasks_, activeDeployTask);
+            return;
+        }
         auto* focusedCell = ownsFocus
             ? dynamic_cast<brls::RecyclerCell*>(focused)
             : nullptr;

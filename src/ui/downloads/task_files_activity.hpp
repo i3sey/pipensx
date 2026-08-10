@@ -48,6 +48,8 @@ inline std::string deployProblemText(SwitchDeployProblem problem,
             key = "pipensx/deploy/problem_conflict"; break;
         case SwitchDeployProblem::NoSpace:
             key = "pipensx/deploy/problem_space"; break;
+        case SwitchDeployProblem::NoRam:
+            key = "pipensx/deploy/problem_ram"; break;
         case SwitchDeployProblem::Busy:
             key = "pipensx/deploy/problem_busy"; break;
         case SwitchDeployProblem::Io:
@@ -167,7 +169,7 @@ public:
         });
         dataSource_ = new TaskFilesDataSource(this);
         recycler_->setDataSource(dataSource_);
-        content->addView(recycler_);
+        content->addView(recyclerHost(recycler_));
         frame_ = new brls::AppletFrame(content);
         frame_->setTitle(tr("pipensx/files/title"));
     }
@@ -296,22 +298,16 @@ inline void TaskFilesDataSource::didSelectRowAt(
         owner_->showFile(static_cast<size_t>(index.row));
 }
 
-class DeployPreviewCell : public brls::RecyclerCell {
+class DeployPreviewRow : public brls::Box {
 public:
-    DeployPreviewCell() {
+    DeployPreviewRow() {
         setFocusable(true);
-        setHeight(94);
-        setPadding(10, 20, 10, 20);
+        setHeight(64);
+        setPadding(8, 8, 8, 8);
         setAxis(brls::Axis::COLUMN);
-        source_ = new brls::Label();
-        source_->setSingleLine(true);
-        source_->setFontSize(16);
-        source_->setTextColor(theme::textSecondary());
-        addView(source_);
         destination_ = new brls::Label();
         destination_->setSingleLine(true);
         destination_->setFontSize(18);
-        destination_->setMarginTop(3);
         addView(destination_);
         state_ = new brls::Label();
         state_->setSingleLine(true);
@@ -321,7 +317,6 @@ public:
     }
 
     void setEntry(const SwitchDeployEntry& entry) {
-        source_->setText(entry.sourceRelativePath);
         destination_->setText("/switch/" + entry.destinationRelativePath);
         const char* key = entry.state == SwitchDeployEntryState::Missing
             ? "pipensx/deploy/state_copy"
@@ -335,27 +330,8 @@ public:
     }
 
 private:
-    brls::Label* source_;
     brls::Label* destination_;
     brls::Label* state_;
-};
-
-class DeployPreviewDataSource : public brls::RecyclerDataSource {
-public:
-    explicit DeployPreviewDataSource(const SwitchDeployPlan* plan)
-        : plan_(plan) {}
-    int numberOfRows(brls::RecyclerFrame*, int) override {
-        return static_cast<int>(plan_->files.size());
-    }
-    brls::RecyclerCell* cellForRow(brls::RecyclerFrame* recycler,
-                                    brls::IndexPath index) override {
-        auto* cell = static_cast<DeployPreviewCell*>(
-            recycler->dequeueReusableCell("Mapping"));
-        cell->setEntry(plan_->files[index.row]);
-        return cell;
-    }
-private:
-    const SwitchDeployPlan* plan_;
 };
 
 class SwitchDeployPreviewActivity : public brls::Activity {
@@ -365,15 +341,59 @@ public:
         : inspection_(std::move(inspection)), deploy_(deploy) {
         auto* content = new brls::Box(brls::Axis::COLUMN);
         content->setPadding(12, 32, 12, 32);
+        uint64_t looseCopyBytes = 0;
+        for (const SwitchDeployEntry& entry : inspection_.plan.files) {
+            if (entry.state == SwitchDeployEntryState::Missing)
+                looseCopyBytes += entry.size;
+        }
         auto* summary = new brls::Label();
         summary->setFontSize(theme::kFontBody);
-        summary->setMarginBottom(8);
+        summary->setMarginBottom(6);
         summary->setText(tr("pipensx/deploy/summary",
                             inspection_.plan.files.size(),
-                            formatBytes(inspection_.plan.bytesToCopy),
+                            formatBytes(looseCopyBytes),
                             inspection_.plan.identicalFiles,
+                            inspection_.plan.conflictFiles,
                             inspection_.plan.ignoredFiles));
         content->addView(summary);
+        if (!inspection_.plan.archives.empty()) {
+            auto* archives = new brls::Label();
+            archives->setFontSize(theme::kFontSmall);
+            archives->setMarginBottom(6);
+            archives->setSingleLine(false);
+            uint64_t archiveBytes = 0;
+            std::string names;
+            size_t ready = 0;
+            size_t blocked = 0;
+            for (const auto& a : inspection_.plan.archives) {
+                if (!names.empty())
+                    names += "\n";
+                const size_t slash = a.sourceRelativePath.find_last_of("/\\");
+                names += slash == std::string::npos
+                    ? a.sourceRelativePath
+                    : a.sourceRelativePath.substr(slash + 1);
+                if (a.switchFiles != 0)
+                    names += " · " + tr("pipensx/deploy/archive_files",
+                                        a.switchFiles);
+                if (a.extractable) {
+                    ++ready;
+                    const uint64_t need =
+                        a.unpackBytes ? a.unpackBytes : a.size;
+                    archiveBytes += need;
+                    names += " · " + formatBytes(need);
+                } else {
+                    ++blocked;
+                    names += " · " + (a.detail.empty()
+                                         ? tr("pipensx/deploy/archive_unreadable")
+                                         : a.detail);
+                }
+            }
+            archives->setTextColor(blocked ? theme::error() : theme::accent());
+            archives->setText(tr("pipensx/deploy/archives", ready,
+                                 formatBytes(archiveBytes)) +
+                              "\n" + names);
+            content->addView(archives);
+        }
         auto* warning = new brls::Label();
         warning->setFontSize(theme::kFontSmall);
         warning->setTextColor(inspection_.problem == SwitchDeployProblem::None
@@ -384,19 +404,41 @@ public:
         warning->setMarginBottom(8);
         content->addView(warning);
 
-        auto* recycler = new brls::RecyclerFrame();
-        recycler->setGrow(1);
-        recycler->estimatedRowHeight = 94;
-        recycler->registerCell("Mapping", [] {
-            return new DeployPreviewCell();
-        });
-        recycler->setDataSource(new DeployPreviewDataSource(&inspection_.plan));
-        content->addView(recycler);
+        // Compact rows (no grow-1 recycler): a grow recycler shoved the primary
+        // button to the footer with a dead gap when only a couple of NROs exist.
+        auto* list = new brls::Box(brls::Axis::COLUMN);
+        for (const SwitchDeployEntry& entry : inspection_.plan.files) {
+            auto* row = new DeployPreviewRow();
+            row->setEntry(entry);
+            list->addView(row);
+        }
+        constexpr size_t kDeployPreviewScrollAfter = 6;
+        if (inspection_.plan.files.size() > kDeployPreviewScrollAfter) {
+            auto* scroll = new brls::ScrollingFrame();
+            scroll->setHeight(
+                static_cast<float>(kDeployPreviewScrollAfter) * 64.0f);
+            scroll->setContentView(list);
+            content->addView(scroll);
+        } else {
+            content->addView(list);
+        }
 
         auto* copy = new brls::Button();
         copy->setHeight(52);
+        copy->setMarginTop(16);
         copy->setStyle(&brls::BUTTONSTYLE_PRIMARY);
-        copy->setText(tr("pipensx/deploy/copy"));
+        if (!inspection_.canStart()) {
+            if (inspection_.problem == SwitchDeployProblem::Conflict)
+                copy->setText(tr("pipensx/deploy/copy_blocked_conflict"));
+            else if (inspection_.problem == SwitchDeployProblem::NoSpace)
+                copy->setText(tr("pipensx/deploy/copy_blocked_space"));
+            else if (inspection_.problem == SwitchDeployProblem::NoRam)
+                copy->setText(tr("pipensx/deploy/copy_blocked_ram"));
+            else
+                copy->setText(tr("pipensx/deploy/copy"));
+        } else {
+            copy->setText(tr("pipensx/deploy/copy"));
+        }
         copy->setState(inspection_.canStart() && deploy_
                            ? brls::ButtonState::ENABLED
                            : brls::ButtonState::DISABLED);
@@ -412,10 +454,15 @@ public:
                     {}));
                 return true;
             }
-            brls::Application::popActivity();
+            brls::Application::popActivity(brls::TransitionAnimation::NONE);
+            const auto stack = brls::Application::getActivitiesStack();
+            if (!stack.empty())
+                brls::Application::giveFocus(stack.back()->getContentView());
             return true;
         });
         content->addView(copy);
+        content->setDefaultFocusedIndex(
+            static_cast<int>(content->getChildren().size()) - 1);
         frame_ = new brls::AppletFrame(content);
         frame_->setTitle(tr("pipensx/deploy/preview_title"));
     }

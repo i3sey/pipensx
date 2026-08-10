@@ -572,7 +572,7 @@ int main(int argc, char** argv) {
         const uint8_t skip = static_cast<uint8_t>(pipensx::FileAction::Skip);
         std::vector<uint8_t> updateActions = {install, skip, install};
         updateChooser = new UpdateFileChooserActivity(
-            std::move(preview), std::move(updateActions), {},
+            nullptr, std::move(preview), std::move(updateActions), {},
             [&](std::vector<uint8_t> mask, std::vector<uint8_t>) {
                 updateChooserMask = std::move(mask);
             },

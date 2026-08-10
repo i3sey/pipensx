@@ -713,6 +713,11 @@ private:
                 break;
             }
         }
+        // Same focusStack UAF as downloads: don't free cells while a dialog
+        // (e.g. deploy offer) is on top of the activity stack.
+        if (activityStackHasOverlay() && !focusInCatalog)
+            return;
+
         std::string focusHash;
         int focusShelf = -1;
         if (focusInCatalog) {

@@ -568,7 +568,7 @@ private:
                           std::vector<uint8_t> actions) {
         auto alive = alive_;
         brls::Application::pushActivity(new UpdateFileChooserActivity(
-            preview, std::move(actions), std::move(initialPeers),
+            manager_, preview, std::move(actions), std::move(initialPeers),
             [this, alive, preview, path](std::vector<uint8_t> mask,
                                          std::vector<uint8_t> peers) {
                 if (!alive->load()) {

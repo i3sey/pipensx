@@ -32,6 +32,20 @@ inline pipensx::install::InstallStorageTarget installTargetFor(InstallLocation v
                : pipensx::install::InstallStorageTarget::SdCard;
 }
 
+inline std::string installDestinationLabel(
+    pipensx::install::InstallStorageTarget target) {
+    return target == pipensx::install::InstallStorageTarget::Nand
+               ? tr("pipensx/settings/install_nand")
+               : tr("pipensx/settings/install_sd");
+}
+
+inline std::string storageMeterHeader(
+    pipensx::install::InstallStorageTarget target) {
+    return target == pipensx::install::InstallStorageTarget::Nand
+               ? tr("pipensx/settings/install_nand")
+               : tr("pipensx/torrent/sd_card");
+}
+
 inline std::atomic<uint32_t> gCatalogTempSerial{0};
 inline constexpr const char* TelemetryFlagPath =
     "sdmc:/switch/pipensx/throughput_telemetry.enabled";
@@ -176,6 +190,13 @@ inline brls::Box* recyclerHost(brls::RecyclerFrame* recycler) {
     return host;
 }
 
+// Dialog / preview / details sit on the activity stack above the root tab.
+// Reloading a recycler while an overlay owns focus frees cells that Borealis
+// still keeps on focusStack — dismiss then UAF in giveFocus/onFocusLost.
+inline bool activityStackHasOverlay() {
+    return brls::Application::getActivitiesStack().size() > 1;
+}
+
 // The cells currently on screen — enough to repaint a row in place instead of
 // paying a full reloadData(), which recycles every cell, snaps the scroll to 0
 // and re-homes focus.
@@ -208,8 +229,12 @@ std::vector<Cell*> visibleCells(brls::RecyclerFrame* recycler) {
 // re-layout plus a nanovg text re-measure — so compare first and skip the
 // no-op sets.
 inline void setTextIfChanged(brls::Label* label, const std::string& text) {
-    if (label && label->getFullText() != text)
+    if (!label)
+        return;
+    if (label->getFullText() != text)
         label->setText(text);
+    label->setVisibility(text.empty() ? brls::Visibility::GONE
+                                      : brls::Visibility::VISIBLE);
 }
 
 inline void setTextIfChanged(brls::Button* button, const std::string& text) {

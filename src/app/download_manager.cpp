@@ -1,5 +1,4 @@
 #include "download_manager.hpp"
-#include "install_pacer.hpp"
 #include "task_files.hpp"
 #include "request_gate.hpp"
 #include "stream_budget_arbiter.hpp"
@@ -943,8 +942,7 @@ DownloadManager::beginExternalDeploy(const std::string& taskId,
         error = "Download task not found.";
         return std::nullopt;
     }
-    if (task->status != DownloadStatus::Completed ||
-        task->mode != TransferMode::DownloadOnly) {
+    if (!taskReadyForSwitchDeploy(*task)) {
         error = "Finish the download before copying files to /switch.";
         return std::nullopt;
     }

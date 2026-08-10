@@ -1,4 +1,6 @@
 #include "../src/app/install_space.hpp"
+#include "../src/app/nx_file_types.hpp"
+#include "../src/app/port_archive.hpp"
 #include "../src/app/switch_deploy.hpp"
 
 #include <cassert>
@@ -7,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <thread>
 
 namespace fs = std::filesystem;
@@ -59,6 +62,17 @@ void writeCompletedQueue(const std::string& root, const std::string& taskId,
 } // namespace
 
 int main() {
+    assert(isPortArchiveName("switch.7z"));
+    assert(isPortArchiveName("path/to/switch.7z"));
+    assert(isPortArchiveName("SWITCH.ZIP"));
+    assert(!isPortArchiveName("myswitch.7z"));
+    assert(!isPortArchiveName("switch.rar"));
+
+    assert(portArchiveSolidFitsRam(0, 0));
+    assert(portArchiveSolidFitsRam(100, kPortArchiveSolidRamReserveBytes + 100));
+    assert(!portArchiveSolidFitsRam(100, kPortArchiveSolidRamReserveBytes + 99));
+    assert(!portArchiveSolidFitsRam(1, kPortArchiveSolidRamReserveBytes));
+
     const std::string root = "/tmp/pipensx-switch-deploy";
     const std::string target = root + "/sd/switch";
     const std::string data = root + "/downloads/task";
@@ -248,15 +262,65 @@ int main() {
     }
 
     const std::string streamRoot = root + "/stream";
+    const std::string streamData = streamRoot + "/downloads/task";
+    const std::string streamTarget = streamRoot + "/sd/switch";
     const std::string streamId = "abcdefabcdefabcdefabcdefabcdefabcdefabcd";
-    writeCompletedQueue(streamRoot, streamId, data, nro.size(), "install",
-                        "installed");
+    fs::create_directories(streamTarget);
+    writeFile(streamData + "/Release/switch/MyPort/MyPort.nro", nro);
+    writeFile(streamData + "/Release/switch/MyPort/data.bin", asset);
+    writeFile(streamData + "/Release/switch/MyPort/update.nsp", package);
+    writeFile(streamData + "/Release/README.txt", external);
+    writeCompletedQueue(streamRoot, streamId, streamData,
+                        nro.size() + asset.size() + package.size() +
+                            external.size(),
+                        "install", "installed");
+    TaskFileManifest streamManifest = manifest;
+    streamManifest.taskId = streamId;
+    assert(saveTaskFileManifest(streamRoot, streamManifest, error));
     DownloadManager streamManager(streamRoot, false);
-    SwitchDeployService streamDeploy(streamManager, streamRoot,
-                                     streamRoot + "/sd/switch");
-    assert(streamDeploy.inspect(streamId).problem ==
-           SwitchDeployProblem::NotReady);
-    assert(!streamManager.beginExternalDeploy(streamId, error));
+    SwitchDeployService streamDeploy(streamManager, streamRoot, streamTarget);
+    SwitchDeployInspection streamInspection = streamDeploy.inspect(streamId);
+    assert(streamInspection.canStart());
+    assert(streamInspection.plan.files.size() == 2);
+    assert(streamManager.beginExternalDeploy(streamId, error));
+
+    const std::string autoRoot = root + "/auto";
+    const std::string autoData = autoRoot + "/downloads/task";
+    const std::string autoTarget = autoRoot + "/sd/switch";
+    const std::string autoId = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    fs::create_directories(autoTarget);
+    writeFile(autoData + "/Release/switch/MyPort/MyPort.nro", nro);
+    writeFile(autoData + "/Release/switch/MyPort/data.bin", asset);
+    writeFile(autoData + "/Release/switch/MyPort/update.nsp", package);
+    writeFile(autoData + "/Release/README.txt", external);
+    writeCompletedQueue(autoRoot, autoId, autoData,
+                        nro.size() + asset.size() + package.size() +
+                            external.size(),
+                        "install", "installed");
+    TaskFileManifest autoManifest = manifest;
+    autoManifest.taskId = autoId;
+    assert(saveTaskFileManifest(autoRoot, autoManifest, error));
+    DownloadManager autoManager(autoRoot, false);
+    SwitchDeployService autoDeploy(autoManager, autoRoot, autoTarget);
+    autoDeploy.scheduleDeployOfferPoll();
+    std::optional<SwitchDeployService::PendingOffer> offered;
+    for (int i = 0; i < 500 && !offered; ++i) {
+        offered = autoDeploy.takePendingDeployOffer();
+        if (!offered)
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    assert(offered);
+    assert(offered->taskId == autoId);
+    assert(offered->inspection.canStart());
+    autoDeploy.dismissDeployOffer(autoId);
+    assert(!autoDeploy.takePendingDeployOffer());
+    // Copy only after explicit confirmation (user accepted the prompt).
+    assert(autoDeploy.start(autoId, error, false));
+    for (int i = 0; i < 500 && autoDeploy.snapshot().active(); ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    assert(autoDeploy.snapshot().phase == SwitchDeployPhase::Completed);
+    assert(autoDeploy.receiptState(autoId) == SwitchDeployReceiptState::Valid);
+    autoDeploy.shutdown();
 
     setStorageSpaceOverride(nullptr);
     fs::remove_all(root);

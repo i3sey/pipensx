@@ -73,6 +73,8 @@ bool buildTaskFileInventory(const std::string& appRoot,
                             TaskFileInventory& inventory,
                             std::string& error);
 
+bool taskReadyForSwitchDeploy(const DownloadTask& task);
+
 bool taskFilePathIsSafe(const std::string& path);
 bool taskFilePathIsValidUtf8(const std::string& path);
 bool taskFilePathIsFatCompatible(const std::string& path);

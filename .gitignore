@@ -23,6 +23,7 @@ build-pc/
 compile_commands.json
 .cache/
 .codegraph/
+.codewhale/
 
 # Log files
 *.log

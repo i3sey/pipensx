@@ -39,30 +39,6 @@ public:
         auto* content = new brls::Box(brls::Axis::COLUMN);
         content->setPadding(24, 34, 24, 34);
 
-        addSection(content, tr("pipensx/settings/section_downloads"));
-        installLocation_ = new brls::SelectorCell();
-        installLocation_->init(tr("pipensx/settings/install_location"),
-            {tr("pipensx/settings/install_sd"),
-             tr("pipensx/settings/install_nand")},
-            settings_->get().installLocation == InstallLocation::SystemMemory
-                ? 1 : 0,
-            [this](int selected) {
-                AppSettingsData values = settings_->get();
-                InstallLocation previous = values.installLocation;
-                values.installLocation = selected == 1
-                    ? InstallLocation::SystemMemory
-                    : InstallLocation::SdCard;
-                if (!persist(values, "install_location")) {
-                    installLocation_->setSelection(
-                        previous == InstallLocation::SystemMemory ? 1 : 0,
-                        true);
-                    return;
-                }
-                manager_->setInstallTarget(
-                    installTargetFor(values.installLocation));
-            });
-        content->addView(installLocation_);
-
         addSection(content, tr("pipensx/settings/section_network"));
         proxy_ = actionCell(tr("pipensx/settings/proxy"), "",
             [this] { editProxy(); });
@@ -173,9 +149,6 @@ private:
     // Re-sync the cells this page owns after a reset restores defaults.
     void applyOwnValues() {
         const AppSettingsData& values = settings_->get();
-        installLocation_->setSelection(
-            values.installLocation == InstallLocation::SystemMemory ? 1 : 0,
-            true);
         manager_->setInstallTarget(installTargetFor(values.installLocation));
         extendedTelemetry_->setOn(values.extendedTelemetry, false);
         telemetry_set_enabled(values.extendedTelemetry ? 1 : 0);
@@ -248,7 +221,6 @@ private:
     InstalledTitleService* installed_;
     std::function<void()> onReset_;
     brls::AppletFrame* frame_ = nullptr;
-    brls::SelectorCell* installLocation_ = nullptr;
     brls::BooleanCell* extendedTelemetry_ = nullptr;
     brls::DetailCell* proxy_ = nullptr;
 };

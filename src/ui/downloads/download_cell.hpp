@@ -123,14 +123,25 @@ public:
             meta += "   " + task.error;
         if (deploy && deploy->taskId == task.id) {
             if (deploy->active()) {
-                setTextIfChanged(status_, tr("pipensx/deploy/copying"));
+                const char* phaseKey =
+                    deploy->phase == SwitchDeployPhase::Preparing
+                        ? "pipensx/deploy/phase_preparing"
+                        : deploy->phase == SwitchDeployPhase::Extracting
+                              ? "pipensx/deploy/phase_extracting"
+                              : "pipensx/deploy/phase_copying";
+                setTextIfChanged(status_, tr(phaseKey));
                 status_->setTextColor(theme::accent());
                 progress_->setProgress(deploy->totalBytes
                     ? static_cast<float>(deploy->bytesCopied) /
                           static_cast<float>(deploy->totalBytes)
                     : 0.0f);
-                meta = tr("pipensx/deploy/cell_progress", deploy->filesCopied,
-                          deploy->totalFiles, formatBytes(deploy->bytesCopied),
+                meta = tr("pipensx/deploy/cell_progress",
+                          percentOf(deploy->totalBytes
+                                        ? static_cast<float>(deploy->bytesCopied) /
+                                              static_cast<float>(deploy->totalBytes)
+                                        : 0.0f),
+                          deploy->filesCopied, deploy->totalFiles,
+                          formatBytes(deploy->bytesCopied),
                           formatBytes(deploy->totalBytes));
                 if (!deploy->currentPath.empty())
                     meta += "   " + deploy->currentPath;

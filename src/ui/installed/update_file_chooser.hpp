@@ -9,6 +9,8 @@
 #include <borealis.hpp>
 
 #include "app/download_manager.hpp"
+#include "app/install_space.hpp"
+#include "ui/common/storage_meter.hpp"
 #include "ui/common/ui_helpers.hpp"
 #include "ui/detail/torrent_selection.hpp"
 #include "ui/i18n.hpp"
@@ -45,11 +47,12 @@ public:
     // the user backs out. The caller owns the tmp torrent and unlinks it in
     // both callbacks.
     UpdateFileChooserActivity(
-        pipensx::TorrentPreview preview, std::vector<uint8_t> actions,
-        std::vector<uint8_t> initialPeers,
+        DownloadManager* manager, pipensx::TorrentPreview preview,
+        std::vector<uint8_t> actions, std::vector<uint8_t> initialPeers,
         std::function<void(std::vector<uint8_t>, std::vector<uint8_t>)> onPick,
         std::function<void()> onCancel)
-        : preview_(std::move(preview)), actions_(std::move(actions)),
+        : manager_(manager), preview_(std::move(preview)),
+          actions_(std::move(actions)),
           initialPeers_(std::move(initialPeers)), onPick_(std::move(onPick)),
           onCancel_(std::move(onCancel)) {
         auto* content = new brls::Box(brls::Axis::COLUMN);
@@ -62,6 +65,14 @@ public:
         title_->setFontSize(26);
         title_->setText(tr("pipensx/installed/update_choose_file"));
         content->addView(title_);
+
+        meter_ = new StorageMeter();
+        meter_->setHeader(storageMeterHeader(
+            manager_ ? manager_->installTarget()
+                     : pipensx::install::InstallStorageTarget::SdCard));
+        meter_->setLegendVisible(true);
+        meter_->setMarginBottom(10);
+        content->addView(meter_);
 
         recycler_ = new brls::RecyclerFrame();
         recycler_->setGrow(1);
@@ -177,12 +188,46 @@ private:
     }
 
     void updateConfirm() {
+        size_t installs = 0;
         for (const uint8_t action : actions_)
-            if (action == static_cast<uint8_t>(FileAction::Install)) {
-                confirm_->setState(brls::ButtonState::ENABLED);
-                return;
-            }
-        confirm_->setState(brls::ButtonState::DISABLED);
+            if (action == static_cast<uint8_t>(FileAction::Install))
+                ++installs;
+        const auto estimate = pipensx::estimateInstallSpace(
+            preview_, actions_, TransferMode::StreamInstall);
+        const auto downloadStorage = manager_
+            ? pipensx::queryStorageSpace(manager_->rootPath())
+            : StorageSpaceSnapshot{};
+        const auto packageStorage = manager_
+            ? pipensx::queryInstallStorageSpace(manager_->installTarget(),
+                                                 manager_->rootPath())
+            : StorageSpaceSnapshot{};
+        const auto check = pipensx::assessTransferSpace(
+            estimate, downloadStorage, packageStorage);
+        const auto target = manager_ ? manager_->installTarget()
+            : pipensx::install::InstallStorageTarget::SdCard;
+        meter_->setHeader(storageMeterHeader(target));
+        if (packageStorage.available)
+            meter_->setEstimate(
+                packageStorage.totalBytes, packageStorage.freeBytes,
+                estimate.packageBytes,
+                check.status == InstallSpaceCheckStatus::Insufficient,
+                estimate.certainty == SpaceEstimateCertainty::CompressedUnknown);
+        else
+            meter_->setUnavailable();
+        if (installs == 0) {
+            confirm_->setText(tr("pipensx/common/continue"));
+            confirm_->setState(brls::ButtonState::DISABLED);
+            return;
+        }
+        confirm_->setText(tr(
+            "pipensx/torrent/cta_install", installs,
+            installDestinationLabel(target),
+            formatBytes(estimate.requiredBytes)));
+        confirm_->setState(
+            estimate.overflow ||
+                    check.status == InstallSpaceCheckStatus::Insufficient
+                ? brls::ButtonState::DISABLED
+                : brls::ButtonState::ENABLED);
     }
 
     // Rows are the torrent's package files only; A on a row toggles it
@@ -257,6 +302,7 @@ private:
         std::vector<size_t> fileIndex_;
     };
 
+    DownloadManager* manager_ = nullptr;
     pipensx::TorrentPreview preview_;
     std::vector<uint8_t> actions_;
     std::vector<uint8_t> initialPeers_;
@@ -264,6 +310,7 @@ private:
     std::function<void()> onCancel_;
     brls::AppletFrame* frame_ = nullptr;
     brls::Label* title_ = nullptr;
+    StorageMeter* meter_ = nullptr;
     brls::RecyclerFrame* recycler_ = nullptr;
     ChooserDataSource* dataSource_ = nullptr;
     brls::Button* confirm_ = nullptr;
