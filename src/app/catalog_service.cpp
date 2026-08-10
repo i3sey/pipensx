@@ -427,6 +427,8 @@ bool CatalogService::parseJson(const std::string& json,
                        });
         entry.performance = readString(item, "performance", 256);
         entry.multiplayer = readString(item, "multiplayer", 128);
+        entry.interfaceLang = readString(item, "interface_lang", 256);
+        entry.voiceLang = readString(item, "voice_lang", 256);
         entry.forumId = static_cast<uint32_t>(readUnsigned(item, "forum_id"));
         entry.trackerId =
             static_cast<uint32_t>(readUnsigned(item, "tracker_id"));

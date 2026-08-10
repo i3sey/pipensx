@@ -399,6 +399,12 @@ private:
         addFactRow(table, tr("pipensx/detail/fact_players"), playersFact_);
         addFactRow(table, tr("pipensx/detail/fact_multiplayer"),
                    presentation_.multiplayer);
+        if (preferCatalogNativeText()) {
+            addFactRow(table, tr("pipensx/detail/fact_interface_lang"),
+                       entry_.interfaceLang);
+            addFactRow(table, tr("pipensx/detail/fact_voice_lang"),
+                       entry_.voiceLang);
+        }
         addFactRow(table, tr("pipensx/detail/fact_performance"),
                    presentation_.performance);
         addFactRow(table, tr("pipensx/detail/fact_size"),

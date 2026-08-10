@@ -135,6 +135,8 @@
     "fact_genre": "Genre",
     "fact_players": "Players",
     "fact_multiplayer": "Multiplayer",
+    "fact_interface_lang": "Interface language",
+    "fact_voice_lang": "Voice",
     "fact_performance": "Performance",
     "players_up_to": "up to {}",
     "players_single": "1 player",
