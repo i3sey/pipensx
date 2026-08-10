@@ -3,6 +3,7 @@
 #include "app/download_manager.hpp"
 #include "app/game_metadata_service.hpp"
 #include "app/installed_title_service.hpp"
+#include "app/switch_deploy.hpp"
 #include "app/update_service.hpp"
 #include "app/web_server.hpp"
 #include "platform/switch_crashlog.h"
@@ -39,6 +40,7 @@ extern "C" {
 #include "ui/i18n.hpp"
 #include "ui/main_frame.hpp"
 #include "ui/downloads/downloads_view.hpp"
+#include "ui/downloads/task_files_activity.hpp"
 #include "ui/installed/installed_view.hpp"
 #include "ui/settings/about_view.hpp"
 #include "ui/settings/help_view.hpp"
@@ -48,6 +50,7 @@ extern "C" {
 using pipensx::AppSettings;
 using pipensx::CatalogService;
 using pipensx::DownloadManager;
+using pipensx::SwitchDeployService;
 using pipensx::GameMetadataService;
 using pipensx::InstalledTitleService;
 using pipensx::FavoritesService;
@@ -94,22 +97,24 @@ public:
                  GameMetadataService* metadata,
                  InstalledTitleService* installed, AppSettings* settings,
                  UpdateService* updater, ModIndexService* mods,
-                 FavoritesService* favorites, WebServer* webServer)
+                 FavoritesService* favorites, WebServer* webServer,
+                 SwitchDeployService* deploy)
         : manager_(manager), catalog_(catalog), metadata_(metadata),
           installed_(installed), settings_(settings), updater_(updater),
-          mods_(mods), favorites_(favorites), webServer_(webServer) {
+          mods_(mods), favorites_(favorites), webServer_(webServer),
+          deploy_(deploy) {
         auto* tabs = new pipensx::ui::MainFrame();
         using pipensx::ui::NavIconType;
         tabs->addNavTab(tr("pipensx/nav/catalog"), NavIconType::Catalog,
                         [manager, catalog, metadata, installed,
-                         settings, mods, favorites, tabs] {
+                         settings, mods, favorites, deploy, tabs] {
             return new CatalogView(manager, catalog, metadata, installed,
                                    settings, [tabs] { tabs->focusTab(1); },
-                                   mods, favorites);
+                                   mods, favorites, deploy);
         });
         tabs->addNavTab(tr("pipensx/nav/downloads"), NavIconType::Downloads,
-                        [manager, metadata, settings] {
-            return new MainView(manager, metadata, settings);
+                        [manager, metadata, settings, deploy] {
+            return new MainView(manager, metadata, settings, deploy);
         });
         tabs->addNavTab(tr("pipensx/nav/installed"), NavIconType::Installed,
                         [installed, manager, metadata, settings, catalog] {
@@ -146,6 +151,18 @@ public:
         registerAction(tr("pipensx/app/exit"), brls::BUTTON_START,
             [this](brls::View*) {
                 startupStage("quit requested by Plus");
+                if (deploy_ && deploy_->snapshot().active()) {
+                    auto* dialog = new brls::Dialog(
+                        tr("pipensx/deploy/exit_question"));
+                    dialog->addButton(tr("pipensx/common/cancel"), [] {});
+                    dialog->addButton(tr("pipensx/deploy/cancel_and_exit"),
+                                      [this] {
+                        deploy_->cancel();
+                        brls::Application::quit();
+                    });
+                    dialog->open();
+                    return true;
+                }
                 brls::Application::quit();
                 return true;
             }, /*hidden=*/true);
@@ -178,6 +195,7 @@ private:
     ModIndexService* mods_;
     FavoritesService* favorites_;
     WebServer* webServer_;
+    SwitchDeployService* deploy_;
     brls::AppletFrame* frame_;
 };
 
@@ -355,6 +373,8 @@ int main(int argc, char** argv) {
         SwitchPerformanceController performance;
         dht_engine_set_cache_path("sdmc:/switch/pipensx/dht.cache");
         DownloadManager manager("sdmc:/switch/pipensx");
+        SwitchDeployService deploy(manager, "sdmc:/switch/pipensx",
+                                   "sdmc:/switch");
         manager.setInstallTarget(
             installTargetFor(settings.get().installLocation));
         manager.setMaxActiveDownloads(settings.get().maxActiveDownloads);
@@ -394,8 +414,9 @@ int main(int argc, char** argv) {
 
         startupStage("MainActivity construction");
         auto* activity = new MainActivity(&manager, &catalog, &metadata,
-                                          &installed, &settings, &updater,
-                                          &mods, &favorites, &webServer);
+                                           &installed, &settings, &updater,
+                                           &mods, &favorites, &webServer,
+                                           &deploy);
 
         startupStage("push MainActivity");
         brls::Application::pushActivity(activity);
@@ -468,14 +489,108 @@ int main(int argc, char** argv) {
         startupStage("first main loop");
         bool firstFrame = true;
         uint64_t lastInputMs = now_ms();
+        uint64_t lastDeployOfferPollMs = now_ms();
+        pipensx::SwitchDeployPhase lastDeployPhase =
+            pipensx::SwitchDeployPhase::Idle;
+        bool deployOfferDialogOpen = false;
         while (true) {
-            bool activeTransfer = manager.hasActiveTransfer();
+            const pipensx::SwitchDeploySnapshot deployState = deploy.snapshot();
+            bool activeTransfer = manager.hasActiveTransfer() ||
+                                  deployState.active();
             performance.setActive(activeTransfer);
             metadata.setImageNetwork(
                 activeTransfer ? GameMetadataService::ImageNetwork::Throttled
                                : GameMetadataService::ImageNetwork::Full);
             if (!brls::Application::mainLoop())
                 break;
+            if (deployState.phase != lastDeployPhase) {
+                if (deployState.phase == pipensx::SwitchDeployPhase::Completed)
+                    brls::Application::notify(deployState.detail.empty()
+                        ? tr("pipensx/deploy/completed")
+                        : tr("pipensx/deploy/completed_warning",
+                             deployState.detail));
+                else if (deployState.phase ==
+                         pipensx::SwitchDeployPhase::Failed)
+                    brls::Application::notify(
+                        tr("pipensx/deploy/failed") +
+                        (deployState.detail.empty()
+                             ? std::string() : " " + deployState.detail));
+                else if (deployState.phase ==
+                         pipensx::SwitchDeployPhase::Cancelled)
+                    brls::Application::notify(tr("pipensx/deploy/cancelled"));
+                else if (deployState.phase ==
+                         pipensx::SwitchDeployPhase::Preparing)
+                    brls::Application::notify(tr("pipensx/deploy/phase_preparing"));
+                else if (deployState.phase ==
+                         pipensx::SwitchDeployPhase::Copying)
+                    brls::Application::notify(tr("pipensx/deploy/phase_copying"));
+                else if (deployState.phase ==
+                         pipensx::SwitchDeployPhase::Extracting)
+                    brls::Application::notify(
+                        tr("pipensx/deploy/phase_extracting"));
+                lastDeployPhase = deployState.phase;
+            }
+
+            const uint64_t frameNowMs = now_ms();
+            if (frameNowMs - lastDeployOfferPollMs >= 10000 &&
+                !activeTransfer && !deployState.active() &&
+                !deployOfferDialogOpen) {
+                lastDeployOfferPollMs = frameNowMs;
+                deploy.scheduleDeployOfferPoll();
+            }
+            if (!deployOfferDialogOpen) {
+                auto offer = deploy.takePendingDeployOffer();
+                if (offer) {
+                    deployOfferDialogOpen = true;
+                    const std::string offerId = offer->taskId;
+                    const auto task = manager.snapshot(offerId);
+                    const std::string name =
+                        task ? task->name : offerId.substr(0, 8);
+                    auto* dialog = new brls::Dialog(
+                        tr("pipensx/deploy/offer_question", name));
+                    dialog->addButton(
+                        tr("pipensx/deploy/copy"),
+                        [&deploy, offerId,
+                         inspection = std::move(offer->inspection),
+                         &deployOfferDialogOpen]() mutable {
+                            deployOfferDialogOpen = false;
+                            deploy.dismissDeployOffer(offerId);
+                            // Dialog is still alive until this callback
+                            // returns. Re-home focus onto the root activity so
+                            // pushActivity does not onFocusLost a view that is
+                            // about to be deleted with the dialog.
+                            const auto stack =
+                                brls::Application::getActivitiesStack();
+                            if (!stack.empty())
+                                brls::Application::giveFocus(
+                                    stack.back()->getContentView());
+                            if (!inspection.canStart() &&
+                                inspection.problem !=
+                                    pipensx::SwitchDeployProblem::Conflict &&
+                                inspection.problem !=
+                                    pipensx::SwitchDeployProblem::NoSpace &&
+                                inspection.problem !=
+                                    pipensx::SwitchDeployProblem::NoRam) {
+                                brls::Application::notify(
+                                    inspection.detail.empty()
+                                        ? tr("pipensx/deploy/failed")
+                                        : inspection.detail);
+                                return;
+                            }
+                            brls::Application::pushActivity(
+                                new pipensx::ui::SwitchDeployPreviewActivity(
+                                    std::move(inspection), &deploy),
+                                brls::TransitionAnimation::NONE);
+                        });
+                    dialog->addButton(
+                        tr("pipensx/common/later"),
+                        [&deploy, offerId, &deployOfferDialogOpen] {
+                            deployOfferDialogOpen = false;
+                            deploy.dismissDeployOffer(offerId);
+                        });
+                    dialog->open();
+                }
+            }
 
             // OLED burn-in guard: after five minutes without a button/touch,
             // cover the UI with a drifting black saver. Any input dismisses it
@@ -510,6 +625,7 @@ int main(int argc, char** argv) {
 
             if (firstFrame) {
                 startupStage("main loop running");
+                deploy.scheduleDeployOfferPoll();
                 if (updatePendingConfirmation) {
                     std::string error;
                     if (!launchUpdater.confirmInstalled(error))
@@ -530,6 +646,7 @@ int main(int argc, char** argv) {
         // stack frame — join before anything here is torn down.
         if (installedScanner.thread.joinable())
             installedScanner.thread.join();
+        deploy.shutdown();
         // The web server goes first: its threads call into manager, so they
         // must be joined before the manager dies.
         webServer.shutdown();

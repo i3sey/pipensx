@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <ctime>
 #include <functional>
 #include <iterator>
 #include <memory>
@@ -138,6 +139,30 @@ public:
                     webServer_->setStreamSelection(values.streamSelection);
             });
         content->addView(streamSelection_);
+
+        installLocation_ = new brls::SelectorCell();
+        installLocation_->init(tr("pipensx/settings/install_location"),
+            {tr("pipensx/settings/install_sd"),
+             tr("pipensx/settings/install_nand")},
+            settings_->get().installLocation == InstallLocation::SystemMemory
+                ? 1 : 0,
+            [this](int selected) {
+                AppSettingsData values = settings_->get();
+                InstallLocation previous = values.installLocation;
+                values.installLocation = selected == 1
+                    ? InstallLocation::SystemMemory
+                    : InstallLocation::SdCard;
+                if (!persist(values, "install_location")) {
+                    installLocation_->setSelection(
+                        previous == InstallLocation::SystemMemory ? 1 : 0,
+                        true);
+                    return;
+                }
+                if (manager_)
+                    manager_->setInstallTarget(
+                        installTargetFor(values.installLocation));
+            });
+        content->addView(installLocation_);
 
         maxActiveDownloads_ = new brls::SelectorCell();
         maxActiveDownloads_->init(tr("pipensx/settings/max_active_downloads"),
@@ -340,8 +365,11 @@ private:
     void recordRefreshTime(bool catalog, bool metadata, bool mods = false) {
         AppSettingsData values = settings_->get();
         const uint64_t now = now_ms();
-        if (catalog)
+        if (catalog) {
             values.lastCatalogRefreshMs = now;
+            values.lastCatalogRefreshWallSec =
+                static_cast<uint64_t>(time(nullptr));
+        }
         if (metadata)
             values.lastMetadataRefreshMs = now;
         if (mods)
@@ -640,6 +668,14 @@ private:
         streamSelection_->setSelection(
             values.streamSelection == StreamSelection::PackagesOnly ? 1 : 0,
             true);
+        installLocation_->setSelection(
+            values.installLocation == InstallLocation::SystemMemory ? 1 : 0,
+            true);
+        if (manager_)
+            manager_->setInstallTarget(
+                installTargetFor(values.installLocation));
+        maxActiveDownloads_->setSelection(
+            static_cast<int>(values.maxActiveDownloads) - 1, true);
         showCompleted_->setOn(values.showCompletedDownloads, false);
         checkForUpdates_->setOn(values.checkForUpdatesOnLaunch, false);
         webToggle_->setOn(values.webServerEnabled, false);
@@ -669,6 +705,7 @@ private:
     brls::BooleanCell* checkForUpdates_ = nullptr;
     brls::DetailCell* updateAction_ = nullptr;
     brls::SelectorCell* streamSelection_ = nullptr;
+    brls::SelectorCell* installLocation_ = nullptr;
     brls::SelectorCell* maxActiveDownloads_ = nullptr;
     brls::BooleanCell* showCompleted_ = nullptr;
     brls::BooleanCell* webToggle_ = nullptr;

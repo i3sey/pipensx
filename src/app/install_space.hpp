@@ -6,6 +6,7 @@
 
 #include "app_settings.hpp"
 #include "download_manager.hpp"
+#include "install/install_backend.hpp"
 
 namespace pipensx {
 
@@ -58,6 +59,14 @@ InstallSpaceCheck assessInstallSpace(
     const InstallSpaceEstimate& estimate,
     const StorageSpaceSnapshot& storage);
 
+// Gate downloadBytes against downloadStorage and packageBytes against
+// packageStorage (NAND vs SD when install location differs). Either pool can be
+// unavailable without failing the other when that pool needs 0 bytes.
+InstallSpaceCheck assessTransferSpace(
+    const InstallSpaceEstimate& estimate,
+    const StorageSpaceSnapshot& downloadStorage,
+    const StorageSpaceSnapshot& packageStorage);
+
 // Coarse guard for the catalog's "fits on SD" filter. The catalog size is the
 // download size, not the install size (NSZ packages expand on commit), hence
 // "fits" rather than a promise. True when the storage figure is unavailable or
@@ -67,9 +76,14 @@ bool catalogEntryFitsFreeSpace(uint64_t entrySizeBytes,
 
 StorageSpaceSnapshot queryStorageSpace(const std::string& path);
 
-// Test seam: makes queryStorageSpace return a fixed snapshot instead of hitting
-// nsGetStorageSize/statvfs, so the golden screenshot runner renders the storage
-// meters deterministically. Pass nullptr to restore the real query.
+// Free space for stream-install commits. On Switch this is nsGetStorageSize for
+// SD or BuiltInUser; on PC it falls back to fallbackPath (same as download root).
+StorageSpaceSnapshot queryInstallStorageSpace(
+    install::InstallStorageTarget target, const std::string& fallbackPath);
+
+// Test seam: makes queryStorageSpace / queryInstallStorageSpace return a fixed
+// snapshot instead of hitting nsGetStorageSize/statvfs, so the golden screenshot
+// runner renders the storage meters deterministically. Pass nullptr to restore.
 void setStorageSpaceOverride(const StorageSpaceSnapshot* snapshot);
 
 } // namespace pipensx

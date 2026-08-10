@@ -1,5 +1,5 @@
 #include "download_manager.hpp"
-#include "install_pacer.hpp"
+#include "task_files.hpp"
 #include "request_gate.hpp"
 #include "stream_budget_arbiter.hpp"
 #include "stream_ram_budget.hpp"
@@ -441,6 +441,33 @@ DownloadManager::~DownloadManager() {
     shutdown();
 }
 
+DownloadManager::ExternalDeployLease::ExternalDeployLease(
+    ExternalDeployLease&& other) noexcept
+    : owner_(other.owner_), task_(std::move(other.task_)) {
+    other.owner_ = nullptr;
+}
+
+DownloadManager::ExternalDeployLease&
+DownloadManager::ExternalDeployLease::operator=(
+    ExternalDeployLease&& other) noexcept {
+    if (this != &other) {
+        release();
+        owner_ = other.owner_;
+        task_ = std::move(other.task_);
+        other.owner_ = nullptr;
+    }
+    return *this;
+}
+
+DownloadManager::ExternalDeployLease::~ExternalDeployLease() { release(); }
+
+void DownloadManager::ExternalDeployLease::release() {
+    if (!owner_)
+        return;
+    owner_->endExternalDeploy(task_.id);
+    owner_ = nullptr;
+}
+
 bool DownloadManager::previewTorrent(const std::string& path,
                                      TorrentPreview& preview,
                                      std::string& error) {
@@ -453,6 +480,7 @@ bool DownloadManager::previewTorrent(const std::string& path,
     hex20(hash, metainfo.info_hash);
     preview.name = metainfo.name;
     preview.infoHash = hash;
+    preview.multi = metainfo.is_multi != 0;
     preview.totalBytes = static_cast<uint64_t>(metainfo.total_length);
     preview.fileCount = metainfo.num_files;
     preview.trackerCount = metainfo.num_trackers;
@@ -594,6 +622,14 @@ bool DownloadManager::importTorrentActions(
         removeTree(dataPath);
         return false;
     }
+    std::string manifestError;
+    if (!saveTaskFileManifest(
+            rootPath_, makeTaskFileManifest(taskId, preview,
+                                            tasks_.back().fileSelection),
+            manifestError)) {
+        diagnostic_error("task_files", "save", "task=%s error=%s",
+                         taskId.c_str(), manifestError.c_str());
+    }
     condition_.notify_all();
     return true;
 }
@@ -665,6 +701,29 @@ bool DownloadManager::importDebrid(const DebridImport& import,
         removeTree(dataPath);
         return false;
     }
+    if (!tasks_.back().metainfoPath.empty()) {
+        TorrentPreview preview;
+        std::string previewError;
+        if (previewTorrent(tasks_.back().metainfoPath, preview, previewError)) {
+            std::vector<uint8_t> actions = tasks_.back().fileSelection;
+            if (actions.empty()) {
+                actions.reserve(preview.files.size());
+                for (const TorrentPreview::File& file : preview.files) {
+                    actions.push_back(static_cast<uint8_t>(
+                        import.mode == TransferMode::StreamInstall &&
+                                file.package
+                            ? FileAction::Install : FileAction::Download));
+                }
+            }
+            std::string manifestError;
+            if (!saveTaskFileManifest(
+                    rootPath_, makeTaskFileManifest(taskId, preview, actions),
+                    manifestError)) {
+                diagnostic_error("task_files", "save", "task=%s error=%s",
+                                 taskId.c_str(), manifestError.c_str());
+            }
+        }
+    }
     condition_.notify_all();
     return true;
 }
@@ -723,6 +782,8 @@ bool DownloadManager::torrentingEnabled() const {
 
 bool DownloadManager::pause(const std::string& taskId) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (externallyLeasedLocked(taskId))
+        return false;
     DownloadTask* task = findLocked(taskId);
     if (!task)
         return false;
@@ -744,6 +805,8 @@ bool DownloadManager::pause(const std::string& taskId) {
 
 bool DownloadManager::resume(const std::string& taskId) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (externallyLeasedLocked(taskId))
+        return false;
     DownloadTask* task = findLocked(taskId);
     if (!task || (task->status != DownloadStatus::Paused &&
                   task->status != DownloadStatus::Error))
@@ -762,6 +825,8 @@ bool DownloadManager::retry(const std::string& taskId) {
 
 bool DownloadManager::verify(const std::string& taskId) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (externallyLeasedLocked(taskId))
+        return false;
     DownloadTask* task = findLocked(taskId);
     if (!task || task->status != DownloadStatus::Completed)
         return false;
@@ -783,6 +848,10 @@ bool DownloadManager::verify(const std::string& taskId) {
 bool DownloadManager::moveToFront(const std::string& taskId,
                                   std::string& error) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (externallyLeasedLocked(taskId)) {
+        error = "Task files are being copied to /switch.";
+        return false;
+    }
     auto target = std::find_if(tasks_.begin(), tasks_.end(),
                                [&taskId](const DownloadTask& task) {
         return task.id == taskId;
@@ -810,6 +879,10 @@ bool DownloadManager::moveToFront(const std::string& taskId,
 bool DownloadManager::remove(const std::string& taskId, bool deleteData,
                              std::string& error) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (externallyLeasedLocked(taskId)) {
+        error = "Task files are being copied to /switch.";
+        return false;
+    }
     DownloadTask* task = findLocked(taskId);
     if (!task) {
         error = "Download task not found.";
@@ -839,6 +912,58 @@ bool DownloadManager::remove(const std::string& taskId, bool deleteData,
 std::vector<DownloadTask> DownloadManager::snapshot() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return tasks_;
+}
+
+std::optional<DownloadTask> DownloadManager::snapshot(
+    const std::string& id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const DownloadTask* task = findLocked(id);
+    return task ? std::optional<DownloadTask>(*task) : std::nullopt;
+}
+
+std::optional<DownloadManager::ExternalDeployLease>
+DownloadManager::beginExternalDeploy(const std::string& taskId,
+                                     std::string& error) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (stopping_) {
+        error = "The download manager is shutting down.";
+        return std::nullopt;
+    }
+    if (!externalDeployTaskId_.empty()) {
+        error = "Another /switch copy is already active.";
+        return std::nullopt;
+    }
+    if (installTokenHeld_) {
+        error = "A package installation is active.";
+        return std::nullopt;
+    }
+    DownloadTask* task = findLocked(taskId);
+    if (!task) {
+        error = "Download task not found.";
+        return std::nullopt;
+    }
+    if (!taskReadyForSwitchDeploy(*task)) {
+        error = "Finish the download before copying files to /switch.";
+        return std::nullopt;
+    }
+    for (const auto& runner : runners_) {
+        if (runner && runner->taskId == taskId) {
+            error = "The download is still closing its files.";
+            return std::nullopt;
+        }
+    }
+    externalDeployTaskId_ = taskId;
+    return ExternalDeployLease(this, *task);
+}
+
+bool DownloadManager::externalDeployActive() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return !externalDeployTaskId_.empty();
+}
+
+std::string DownloadManager::externalDeployTaskId() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return externalDeployTaskId_;
 }
 
 bool DownloadManager::hasTask(const std::string& id) const {
@@ -1098,6 +1223,18 @@ const DownloadTask* DownloadManager::findLocked(const std::string& id) const {
     return nullptr;
 }
 
+bool DownloadManager::externallyLeasedLocked(const std::string& taskId) const {
+    return externalDeployTaskId_ == taskId;
+}
+
+void DownloadManager::endExternalDeploy(const std::string& taskId) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (externalDeployTaskId_ != taskId)
+        return;
+    externalDeployTaskId_.clear();
+    condition_.notify_all();
+}
+
 bool DownloadManager::removeLocked(const std::string& id, bool deleteData,
                                    std::string& error) {
     for (auto it = tasks_.begin(); it != tasks_.end(); ++it) {
@@ -1124,6 +1261,7 @@ bool DownloadManager::removeLocked(const std::string& id, bool deleteData,
         if (!it->metainfoPath.empty())
             unlink(it->metainfoPath.c_str());
         install::removeInstallJournal(installJournalPath(rootPath_, it->id));
+        removeTaskFileManifest(rootPath_, it->id);
         tasks_.erase(it);
         return saveLocked(error);
     }
@@ -1140,7 +1278,8 @@ bool taskClaimableUnderInstallToken(const DownloadTask& task,
 
 DownloadTask* DownloadManager::claimableLocked() {
     for (DownloadTask& task : tasks_) {
-        if (!taskClaimableUnderInstallToken(task, installTokenHeld_))
+        if (!taskClaimableUnderInstallToken(
+                task, installTokenHeld_ || !externalDeployTaskId_.empty()))
             continue;
         // A just-paused task can be resumed to Queued while its runner is
         // still tearing down. Claiming it again would start a second engine
@@ -1321,6 +1460,33 @@ void DownloadManager::runDebridTask(const ClaimedTask& claim) {
     spec.mode = claim.mode;
     spec.fileSelection = claim.fileSelection;
     spec.packagesInstalled = claim.packagesInstalled;
+    spec.filesResolved = [this, id = activeId](
+                             const std::vector<DebridTaskSpec::ResolvedFile>&
+                                 resolved) {
+        TaskFileManifest manifest;
+        manifest.taskId = id;
+        manifest.files.reserve(resolved.size());
+        for (const DebridTaskSpec::ResolvedFile& source : resolved) {
+            TaskFileRecord file;
+            file.logicalPath = source.path;
+            file.localPath = source.localPath;
+            file.size = source.bytes;
+            file.action = source.action <=
+                                  static_cast<uint8_t>(TaskFileAction::Install)
+                ? static_cast<TaskFileAction>(source.action)
+                : TaskFileAction::Skip;
+            file.package = isPackageName(source.path);
+            file.compressed = isCompressedName(source.path);
+            file.cartridge = isCartridgeName(source.path);
+            manifest.files.push_back(std::move(file));
+        }
+        std::string manifestError;
+        if (!saveTaskFileManifest(rootPath_, manifest, manifestError)) {
+            diagnostic_error("task_files", "save_debrid",
+                             "task=%s error=%s", id.c_str(),
+                             manifestError.c_str());
+        }
+    };
 
     // The provider takes a magnet, not our .torrent, and it names files its
     // own way — so the selection travels as (basename, size) pairs rather

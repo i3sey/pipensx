@@ -102,16 +102,47 @@ InstallSpaceEstimate estimateInstallSpace(
 InstallSpaceCheck assessInstallSpace(
     const InstallSpaceEstimate& estimate,
     const StorageSpaceSnapshot& storage) {
+    return assessTransferSpace(estimate, storage, storage);
+}
+
+InstallSpaceCheck assessTransferSpace(
+    const InstallSpaceEstimate& estimate,
+    const StorageSpaceSnapshot& downloadStorage,
+    const StorageSpaceSnapshot& packageStorage) {
     InstallSpaceCheck result;
-    if (!storage.available)
-        return result;
-    if (estimate.overflow || estimate.requiredBytes > storage.freeBytes) {
+    if (estimate.overflow) {
         result.status = InstallSpaceCheckStatus::Insufficient;
-        result.shortfallBytes = estimate.overflow
-            ? std::numeric_limits<uint64_t>::max()
-            : estimate.requiredBytes - storage.freeBytes;
+        result.shortfallBytes = std::numeric_limits<uint64_t>::max();
         return result;
     }
+    uint64_t shortfall = 0;
+    bool checked = false;
+    auto checkPool = [&](uint64_t need, const StorageSpaceSnapshot& storage) {
+        if (need == 0)
+            return;
+        if (!storage.available)
+            return;
+        checked = true;
+        if (need > storage.freeBytes)
+            shortfall = std::max(shortfall, need - storage.freeBytes);
+    };
+    checkPool(estimate.downloadBytes, downloadStorage);
+    checkPool(estimate.packageBytes, packageStorage);
+    if (!checked &&
+        ((estimate.downloadBytes > 0 && !downloadStorage.available) ||
+         (estimate.packageBytes > 0 && !packageStorage.available)))
+        return result;
+    if (shortfall > 0) {
+        result.status = InstallSpaceCheckStatus::Insufficient;
+        result.shortfallBytes = shortfall;
+        return result;
+    }
+    if (!checked && estimate.requiredBytes == 0) {
+        result.status = InstallSpaceCheckStatus::Enough;
+        return result;
+    }
+    if (!checked)
+        return result;
     result.status = InstallSpaceCheckStatus::Enough;
     return result;
 }
@@ -136,26 +167,39 @@ void setStorageSpaceOverride(const StorageSpaceSnapshot* snapshot) {
 }
 
 StorageSpaceSnapshot queryStorageSpace(const std::string& path) {
+    return queryInstallStorageSpace(install::InstallStorageTarget::SdCard,
+                                    path);
+}
+
+StorageSpaceSnapshot queryInstallStorageSpace(
+    install::InstallStorageTarget target, const std::string& fallbackPath) {
     if (gStorageOverrideSet)
         return gStorageOverride;
     StorageSpaceSnapshot result;
 #ifdef __SWITCH__
-    (void)path;
+    (void)fallbackPath;
     s64 total = 0;
     s64 free = 0;
-    Result rc = nsGetStorageSize(NcmStorageId_SdCard, &total, &free);
+    const NcmStorageId storageId = target == install::InstallStorageTarget::Nand
+        ? NcmStorageId_BuiltInUser
+        : NcmStorageId_SdCard;
+    Result rc = nsGetStorageSize(storageId, &total, &free);
     if (R_FAILED(rc) || total < 0 || free < 0) {
         char buffer[96];
         std::snprintf(buffer, sizeof(buffer),
-                      "Unable to query SD storage (0x%08x).", rc);
+                      target == install::InstallStorageTarget::Nand
+                          ? "Unable to query system memory (0x%08x)."
+                          : "Unable to query SD storage (0x%08x).",
+                      rc);
         result.error = buffer;
         return result;
     }
     result.totalBytes = static_cast<uint64_t>(total);
     result.freeBytes = static_cast<uint64_t>(free);
 #else
+    (void)target;
     struct statvfs info {};
-    if (statvfs(path.c_str(), &info) != 0) {
+    if (statvfs(fallbackPath.c_str(), &info) != 0) {
         result.error = std::string("Unable to query storage: ") +
                        std::strerror(errno);
         return result;

@@ -44,6 +44,13 @@ struct DebridTaskSpec {
     std::vector<uint8_t> fileSelection;
     std::vector<std::pair<std::string, uint64_t>> selectionPaths;
     uint32_t packagesInstalled = 0;
+    struct ResolvedFile {
+        std::string path;
+        std::string localPath;
+        uint64_t bytes = 0;
+        uint8_t action = 0;
+    };
+    std::function<void(const std::vector<ResolvedFile>&)> filesResolved;
 };
 
 using RangeFetcher = std::function<bool(

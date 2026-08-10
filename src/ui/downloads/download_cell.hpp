@@ -6,6 +6,7 @@
 #include <borealis.hpp>
 
 #include "app/download_manager.hpp"
+#include "app/switch_deploy.hpp"
 #include "ui/common/async_image.hpp"
 #include "ui/common/progress_bar.hpp"
 #include "ui/common/ui_helpers.hpp"
@@ -76,7 +77,8 @@ public:
         addView(right);
     }
 
-    void setTask(const DownloadTask& task, GameMetadataService* service) {
+    void setTask(const DownloadTask& task, GameMetadataService* service,
+                 const SwitchDeploySnapshot* deploy = nullptr) {
         setTextIfChanged(title_, task.name);
         setTextIfChanged(placeholder_, placeholderLetter(task.name));
         setTextIfChanged(status_, taskStatusText(task));
@@ -113,9 +115,48 @@ public:
                 meta += tr("pipensx/downloads/cell_eta",
                            formatEtaSeconds(*eta));
         } else if (task.status == DownloadStatus::Queued)
-            meta += tr("pipensx/downloads/cell_waiting");
+            meta += deploy && deploy->active() &&
+                            task.mode == TransferMode::StreamInstall
+                ? tr("pipensx/deploy/waiting_stream")
+                : tr("pipensx/downloads/cell_waiting");
         else if (task.status == DownloadStatus::Error && !task.error.empty())
             meta += "   " + task.error;
+        if (deploy && deploy->taskId == task.id) {
+            if (deploy->active()) {
+                const char* phaseKey =
+                    deploy->phase == SwitchDeployPhase::Preparing
+                        ? "pipensx/deploy/phase_preparing"
+                        : deploy->phase == SwitchDeployPhase::Extracting
+                              ? "pipensx/deploy/phase_extracting"
+                              : "pipensx/deploy/phase_copying";
+                setTextIfChanged(status_, tr(phaseKey));
+                status_->setTextColor(theme::accent());
+                progress_->setProgress(deploy->totalBytes
+                    ? static_cast<float>(deploy->bytesCopied) /
+                          static_cast<float>(deploy->totalBytes)
+                    : 0.0f);
+                meta = tr("pipensx/deploy/cell_progress",
+                          percentOf(deploy->totalBytes
+                                        ? static_cast<float>(deploy->bytesCopied) /
+                                              static_cast<float>(deploy->totalBytes)
+                                        : 0.0f),
+                          deploy->filesCopied, deploy->totalFiles,
+                          formatBytes(deploy->bytesCopied),
+                          formatBytes(deploy->totalBytes));
+                if (!deploy->currentPath.empty())
+                    meta += "   " + deploy->currentPath;
+            } else if (deploy->phase == SwitchDeployPhase::Completed) {
+                setTextIfChanged(status_, tr("pipensx/deploy/completed"));
+                status_->setTextColor(theme::success());
+            } else if (deploy->phase == SwitchDeployPhase::Failed) {
+                setTextIfChanged(status_, tr("pipensx/deploy/failed"));
+                status_->setTextColor(theme::error());
+                if (!deploy->detail.empty())
+                    meta = deploy->detail;
+            } else if (deploy->phase == SwitchDeployPhase::Cancelled) {
+                setTextIfChanged(status_, tr("pipensx/deploy/cancelled"));
+            }
+        }
         setTextIfChanged(meta_, meta);
 
         std::string iconUrl;

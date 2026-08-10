@@ -13,6 +13,8 @@
     "peer_count": 42,
     "metadata_ok": true,
     "health": "ok",
+    "interface_lang": "Русский, Английский [RUS / ENG]",
+    "voice_lang": "английская",
     "screenshots": [
       "https://example.invalid/pipen-odyssey/s1.jpg",
       "https://example.invalid/pipen-odyssey/s2.jpg"

@@ -73,10 +73,11 @@ jobs:
       # Same constraint as switch-release.yml: parallel TUs thrash on 7GB runners.
       CMAKE_BUILD_PARALLEL_LEVEL: "1"
     steps:
-      - name: Install git (container has no VCS by default)
+      - name: Install git and zstd (container has neither by default)
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends git ca-certificates
+          # zstd: build_switch.sh compresses the bundled catalog snapshots.
+          apt-get install -y --no-install-recommends git ca-certificates zstd
 
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:

@@ -35,4 +35,18 @@ inline bool isCompressedName(const std::string& name) {
     return hasFileExtension(name, ".nsz");
 }
 
+// Port payload archive sitting next to NSP forwarders: switch.7z / switch.zip.
+// "switch.7z" is 9 chars — do not gate on length or it is silently dropped.
+inline bool isPortArchiveName(const std::string& path) {
+    const size_t slash = path.find_last_of("/\\");
+    const std::string base =
+        slash == std::string::npos ? path : path.substr(slash + 1);
+    std::string lower = base;
+    for (char& ch : lower)
+        if (ch >= 'A' && ch <= 'Z')
+            ch = static_cast<char>(ch - 'A' + 'a');
+    return lower == "switch.7z" || lower == "switch.zip";
+}
+
 } // namespace pipensx
+

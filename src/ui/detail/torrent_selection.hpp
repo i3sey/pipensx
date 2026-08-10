@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -10,6 +11,7 @@
 
 #include "app/download_manager.hpp"
 #include "app/install_space.hpp"
+#include "app/nx_file_types.hpp"
 #include "ui/common/action_icon.hpp"
 #include "ui/common/storage_meter.hpp"
 #include "ui/common/ui_helpers.hpp"
@@ -186,6 +188,43 @@ public:
         }
     }
 
+    void selectPackagesOnly() {
+        for (auto& entry : entries_) {
+            entry.action = entry.package ? FileAction::Install
+                                        : FileAction::Skip;
+        }
+    }
+
+    void selectDownloadAll() {
+        for (auto& entry : entries_)
+            entry.action = FileAction::Download;
+    }
+
+    void selectPortFiles(const TorrentPreview& preview,
+                         const std::string& root) {
+        auto lower = [](std::string value) {
+            for (char& ch : value)
+                if (ch >= 'A' && ch <= 'Z')
+                    ch = static_cast<char>(ch - 'A' + 'a');
+            return value;
+        };
+        const std::string prefix = root.empty() ? std::string()
+                                                : lower(root) + "/";
+        for (size_t i = 0; i < entries_.size() && i < preview.files.size(); ++i) {
+            const std::string logical = preview.multi
+                ? preview.name + "/" + preview.files[i].path
+                : preview.files[i].path;
+            const std::string folded = lower(logical);
+            const bool underRoot =
+                !prefix.empty() && folded.rfind(prefix, 0) == 0 &&
+                !entries_[i].package && !entries_[i].cartridge;
+            const bool portArchive = isPortArchiveName(logical) &&
+                !entries_[i].package && !entries_[i].cartridge;
+            entries_[i].action = underRoot || portArchive
+                ? FileAction::Download : FileAction::Skip;
+        }
+    }
+
     size_t selectedCount() const {
         size_t count = 0;
         for (const auto& entry : entries_)
@@ -260,8 +299,8 @@ public:
           preview_(std::move(preview)), preferred_(preferred),
           initialSelection_(initialSelection),
           initialPeers_(std::move(initialPeers)),
-          debridImport_(std::move(debridImport)), abandon_(std::move(abandon)),
-          storage_(pipensx::queryStorageSpace(manager->rootPath())) {
+          debridImport_(std::move(debridImport)), abandon_(std::move(abandon)) {
+        refreshStorageSnapshots();
         auto* content = new brls::Box(brls::Axis::COLUMN);
         content->setGrow(1);
         content->setPadding(18, 38, 18, 34);
@@ -298,10 +337,21 @@ public:
         content->addView(summaryRow);
 
         meter_ = new StorageMeter();
-        meter_->setHeader(tr("pipensx/torrent/sd_card"));
+        meter_->setHeader(storageMeterHeader(manager_->installTarget()));
         meter_->setLegendVisible(true);
         meter_->setMarginBottom(10);
         content->addView(meter_);
+
+        portRoot_ = candidatePortRoot();
+        const bool portLayout = !portRoot_.empty() || hasPortArchive();
+        if (portLayout) {
+            portHint_ = new brls::Label();
+            portHint_->setFontSize(theme::kFontCaption);
+            portHint_->setTextColor(theme::accent());
+            portHint_->setMarginBottom(8);
+            portHint_->setText(tr("pipensx/torrent/port_detected"));
+            content->addView(portHint_);
+        }
 
         recycler_ = new brls::RecyclerFrame();
         recycler_->setGrow(1);
@@ -319,23 +369,36 @@ public:
         auto* row = new brls::Box(brls::Axis::ROW);
         row->setMarginBottom(8);
 
-        selectAll_ = new brls::Button();
-        selectAll_->setStyle(&brls::BUTTONSTYLE_DEFAULT);
-        selectAll_->setFontSize(18);
-        selectAll_->setHeight(46);
-        selectAll_->setMarginRight(10);
-        selectAll_->setGrow(1);
-        selectAll_->setText(tr("pipensx/common/select_all"));
-        selectAll_->registerClickAction([this](brls::View*) {
-            setAllSelected(true);
+        selectPackages_ = new brls::Button();
+        selectPackages_->setStyle(&brls::BUTTONSTYLE_DEFAULT);
+        selectPackages_->setFontSize(16);
+        selectPackages_->setHeight(46);
+        selectPackages_->setMarginRight(10);
+        selectPackages_->setGrow(1);
+        selectPackages_->setText(tr("pipensx/torrent/preset_packages"));
+        selectPackages_->registerClickAction([this](brls::View*) {
+            applyPreset([this] { dataSource_->selectPackagesOnly(); });
             return true;
         });
-        row->addView(selectAll_);
+        row->addView(selectPackages_);
+
+        selectDownloadAll_ = new brls::Button();
+        selectDownloadAll_->setStyle(&brls::BUTTONSTYLE_DEFAULT);
+        selectDownloadAll_->setFontSize(16);
+        selectDownloadAll_->setHeight(46);
+        selectDownloadAll_->setGrow(1);
+        selectDownloadAll_->setText(tr("pipensx/torrent/preset_download_all"));
+        selectDownloadAll_->registerClickAction([this](brls::View*) {
+            applyPreset([this] { dataSource_->selectDownloadAll(); });
+            return true;
+        });
+        row->addView(selectDownloadAll_);
 
         clearAll_ = new brls::Button();
         clearAll_->setStyle(&brls::BUTTONSTYLE_DEFAULT);
-        clearAll_->setFontSize(18);
+        clearAll_->setFontSize(16);
         clearAll_->setHeight(46);
+        clearAll_->setMarginLeft(10);
         clearAll_->setGrow(1);
         clearAll_->setText(tr("pipensx/common/clear"));
         clearAll_->registerClickAction([this](brls::View*) {
@@ -343,6 +406,23 @@ public:
             return true;
         });
         row->addView(clearAll_);
+
+        if (portLayout) {
+            selectPort_ = new brls::Button();
+            selectPort_->setStyle(&brls::BUTTONSTYLE_DEFAULT);
+            selectPort_->setFontSize(16);
+            selectPort_->setHeight(46);
+            selectPort_->setMarginLeft(10);
+            selectPort_->setGrow(1);
+            selectPort_->setText(tr("pipensx/torrent/select_port"));
+            selectPort_->registerClickAction([this](brls::View*) {
+                applyPreset([this] {
+                    dataSource_->selectPortFiles(preview_, portRoot_);
+                });
+                return true;
+            });
+            row->addView(selectPort_);
+        }
 
         buttons->addView(row);
 
@@ -379,9 +459,9 @@ public:
     }
 
     void onContentAvailable() override {
-        registerAction(tr("pipensx/common/select_all"), brls::BUTTON_X,
+        registerAction(tr("pipensx/torrent/preset_packages"), brls::BUTTON_X,
                        [this](brls::View*) {
-            setAllSelected(true);
+            applyPreset([this] { dataSource_->selectPackagesOnly(); });
             return true;
         });
         registerAction(tr("pipensx/common/clear"), brls::BUTTON_Y,
@@ -397,6 +477,52 @@ public:
     }
 
 private:
+    std::string candidatePortRoot() const {
+        auto lower = [](std::string value) {
+            for (char& ch : value)
+                if (ch >= 'A' && ch <= 'Z')
+                    ch = static_cast<char>(ch - 'A' + 'a');
+            return value;
+        };
+        std::set<std::string> roots;
+        for (const TorrentPreview::File& file : preview_.files) {
+            const std::string logical = preview_.multi
+                ? preview_.name + "/" + file.path : file.path;
+            const std::string folded = lower(logical);
+            if (folded.size() < 4 ||
+                folded.compare(folded.size() - 4, 4, ".nro") != 0)
+                continue;
+            size_t start = 0;
+            while (start < logical.size()) {
+                const size_t slash = logical.find('/', start);
+                const std::string component = logical.substr(
+                    start, slash == std::string::npos ? std::string::npos
+                                                       : slash - start);
+                if (lower(component) == "switch") {
+                    roots.insert(lower(
+                        logical.substr(0, start + component.size())));
+                    break;
+                }
+                if (slash == std::string::npos)
+                    break;
+                start = slash + 1;
+            }
+        }
+        if (roots.size() == 1)
+            return *roots.begin();
+        return {};
+    }
+
+    bool hasPortArchive() const {
+        for (const TorrentPreview::File& file : preview_.files) {
+            const std::string logical = preview_.multi
+                ? preview_.name + "/" + file.path : file.path;
+            if (isPortArchiveName(logical))
+                return true;
+        }
+        return false;
+    }
+
     // One "<glyph> Label" pair of the icon key. Same glyphs the rows draw, so
     // the key can never drift from what is actually on screen.
     static void addLegendEntry(brls::Box* row, ActionIconKind kind,
@@ -438,6 +564,12 @@ private:
         recycler_->reloadData();
     }
 
+    void applyPreset(const std::function<void()>& mutate) {
+        mutate();
+        recycler_->reloadData();
+        refreshSummary();
+    }
+
     void setAllSelected(bool selected) {
         dataSource_->setAll(selected);
         for (auto* cell : visibleCells<TorrentSelectionCell>(recycler_))
@@ -462,6 +594,13 @@ private:
             cell->setEmpty();
     }
 
+    void refreshStorageSnapshots() {
+        downloadStorage_ =
+            pipensx::queryStorageSpace(manager_->rootPath());
+        packageStorage_ = pipensx::queryInstallStorageSpace(
+            manager_->installTarget(), manager_->rootPath());
+    }
+
     void refreshSummary() {
         size_t selected = dataSource_->selectedCount();
         size_t installs = dataSource_->installCount();
@@ -472,7 +611,8 @@ private:
             : TransferMode::DownloadOnly;
         const auto estimate = pipensx::estimateInstallSpace(preview_, actions,
                                                             mode);
-        const auto check = pipensx::assessInstallSpace(estimate, storage_);
+        const auto check = pipensx::assessTransferSpace(
+            estimate, downloadStorage_, packageStorage_);
         // The meter caption right below already prints the byte totals, so the
         // summary stays on counts.
         std::string text = tr("pipensx/torrent/summary", selected,
@@ -486,13 +626,33 @@ private:
         }
         summary_->setText(text);
 
-        if (storage_.available)
+        const auto meterTarget = installs > 0 ? manager_->installTarget()
+            : pipensx::install::InstallStorageTarget::SdCard;
+        const StorageSpaceSnapshot& meterStorage =
+            installs > 0 ? packageStorage_ : downloadStorage_;
+        meter_->setHeader(storageMeterHeader(meterTarget));
+        if (meterStorage.available)
             meter_->setEstimate(
-                storage_.totalBytes, storage_.freeBytes, estimate.requiredBytes,
+                meterStorage.totalBytes, meterStorage.freeBytes,
+                installs > 0 ? estimate.packageBytes : estimate.downloadBytes,
                 check.status == InstallSpaceCheckStatus::Insufficient,
                 estimate.certainty == SpaceEstimateCertainty::CompressedUnknown);
         else
             meter_->setUnavailable();
+
+        const std::string destination =
+            installDestinationLabel(manager_->installTarget());
+        if (selected == 0) {
+            installSelected_->setText(tr("pipensx/common/continue"));
+        } else if (installs > 0) {
+            installSelected_->setText(tr(
+                "pipensx/torrent/cta_install", installs, destination,
+                formatBytes(estimate.requiredBytes)));
+        } else {
+            installSelected_->setText(tr(
+                "pipensx/torrent/cta_download", downloads,
+                formatBytes(estimate.requiredBytes)));
+        }
         installSelected_->setState(selected == 0 || estimate.overflow ||
                                     check.status ==
                                         InstallSpaceCheckStatus::Insufficient
@@ -520,9 +680,10 @@ private:
         // Authoritative gate: the cached snapshot may be stale if a background
         // download ate into the card while this screen was open, so re-query
         // and keep the fresh reading for the meter.
-        storage_ = pipensx::queryStorageSpace(manager_->rootPath());
-        if (pipensx::assessInstallSpace(estimate, storage_).status ==
-            InstallSpaceCheckStatus::Insufficient) {
+        refreshStorageSnapshots();
+        if (pipensx::assessTransferSpace(estimate, downloadStorage_,
+                                         packageStorage_)
+                .status == InstallSpaceCheckStatus::Insufficient) {
             refreshSummary();
             brls::Application::notify(tr("pipensx/torrent/no_space"));
             return;
@@ -548,8 +709,10 @@ private:
         if (!path_.empty())
             ::unlink(path_.c_str());
         finished_ = true;
+        const std::string destination =
+            installDestinationLabel(manager_->installTarget());
         brls::Application::notify(mode == TransferMode::StreamInstall
-            ? tr("pipensx/torrent/added_installing")
+            ? tr("pipensx/torrent/added_installing", destination)
             : tr("pipensx/torrent/added"));
         brls::Application::popActivity();
     }
@@ -565,16 +728,21 @@ private:
     // Queried once at construction instead of once per A press: on Switch this
     // is an nsGetStorageSize IPC. confirmSelection() re-queries before it
     // commits, so a stale reading can never let an oversized install through.
-    StorageSpaceSnapshot storage_;
+    StorageSpaceSnapshot downloadStorage_;
+    StorageSpaceSnapshot packageStorage_;
     brls::AppletFrame* frame_ = nullptr;
     brls::Label* title_ = nullptr;
     brls::Label* summary_ = nullptr;
     StorageMeter* meter_ = nullptr;
+    brls::Label* portHint_ = nullptr;
     brls::RecyclerFrame* recycler_ = nullptr;
     TorrentSelectionDataSource* dataSource_ = nullptr;
-    brls::Button* selectAll_ = nullptr;
+    brls::Button* selectPackages_ = nullptr;
+    brls::Button* selectDownloadAll_ = nullptr;
     brls::Button* clearAll_ = nullptr;
     brls::Button* installSelected_ = nullptr;
+    brls::Button* selectPort_ = nullptr;
+    std::string portRoot_;
     bool finished_ = false;
 };
 

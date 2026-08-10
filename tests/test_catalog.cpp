@@ -1344,6 +1344,8 @@ void testLangegenSchemaParsing() {
         "\"title_id\":\"01005ea01c0fc000\","
         "\"performance\":\"Да (на 18.1.0)\","
         "\"multiplayer\":\"нет\","
+        "\"interface_lang\":\"Русский, Английский [RUS / ENG / Multi 6]\","
+        "\"voice_lang\":\"английская\","
         "\"cover\":\"https://example.invalid/cover.png\","
         "\"screenshots\":[\"https://example.invalid/s1.jpg\"],"
         "\"description\":\"A port.\""
@@ -1365,9 +1367,46 @@ void testLangegenSchemaParsing() {
     assert(e.titleId == "01005EA01C0FC000");
     assert(e.performance == "Да (на 18.1.0)");
     assert(e.multiplayer == "нет");
+    assert(e.interfaceLang ==
+           "Русский, Английский [RUS / ENG / Multi 6]");
+    assert(e.voiceLang == "английская");
     assert(e.posterUrl == "https://example.invalid/cover.png");
     assert(e.screenshots.size() == 1);
     assert(e.description == "A port.");
+}
+
+// interface_lang / voice_lang: absent keys → empty; over-limit → truncated.
+void testLangegenLanguageFields() {
+    const char* missing =
+        "[{"
+        "\"title\":\"No langs\","
+        "\"magnet\":\"magnet:?xt=urn:btih:"
+        "8B8016FD97F08E2CC46E3B104B72EC758173C3C9&tr="
+        "http%3A%2F%2Fbt.t-ru.org%2Fann%3Fmagnet\""
+        "}]";
+    std::vector<CatalogEntry> entries;
+    std::string error;
+    assert(CatalogService::parseJson(missing, entries, error));
+    assert(entries.size() == 1);
+    assert(entries[0].interfaceLang.empty());
+    assert(entries[0].voiceLang.empty());
+
+    const std::string longValue(300, 'x');
+    const std::string oversized =
+        "[{"
+        "\"title\":\"Truncated langs\","
+        "\"magnet\":\"magnet:?xt=urn:btih:"
+        "AABBCCDDEEFF00112233445566778899AABBCCDD&tr="
+        "http%3A%2F%2Fbt.t-ru.org%2Fann%3Fmagnet\","
+        "\"interface_lang\":\"" + longValue + "\","
+        "\"voice_lang\":\"" + longValue + "\""
+        "}]";
+    assert(CatalogService::parseJson(oversized, entries, error));
+    assert(entries.size() == 1);
+    assert(entries[0].interfaceLang.size() == 256);
+    assert(entries[0].voiceLang.size() == 256);
+    assert(entries[0].interfaceLang == std::string(256, 'x'));
+    assert(entries[0].voiceLang == std::string(256, 'x'));
 }
 
 void testBundledLangegenSnapshotLoadsWithoutNetwork() {
@@ -1379,6 +1418,7 @@ void testBundledLangegenSnapshotLoadsWithoutNetwork() {
         std::string error;
         assert(catalog.load(error));
         assert(catalog.entries().size() > 1000);
+        assert(catalog.snapshotEpochSec() > 0);
 
         bool hasInlineArtwork = false;
         bool hasInlineDescription = false;
@@ -1423,6 +1463,7 @@ int main() {
     testTrustedSourceAllowlist();
     testCatalogParsing();
     testLangegenSchemaParsing();
+    testLangegenLanguageFields();
     testBundledLangegenSnapshotLoadsWithoutNetwork();
     testBundledMetadataSnapshotLoadsWithoutNetwork();
     testCatalogV2HealthParsing();

@@ -62,6 +62,7 @@
 #include "ui/detail/screenshot_viewer.hpp"
 #include "ui/detail/torrent_selection.hpp"
 #include "ui/downloads/downloads_view.hpp"
+#include "ui/downloads/task_files_activity.hpp"
 #include "ui/first_run_view.hpp"
 #include "ui/i18n.hpp"
 #include "ui/installed/installed_view.hpp"
@@ -71,6 +72,8 @@
 #include "ui/settings/help_view.hpp"
 #include "ui/settings/settings_view.hpp"
 #include "ui/theme.hpp"
+
+#include <ctime>
 
 extern "C" {
 #include "core/util.h"
@@ -380,12 +383,31 @@ int main(int argc, char** argv) {
     std::string error;
     AppSettings settings(SettingsPath, TelemetryFlagPath);
     settings.load(error);
+    // Keep metadata/mods dailyRefreshDue satisfied so CatalogView does not
+    // open a live fetch against the offline golden fixtures. Stamp the wall
+    // clock too: the freshness badge treats 0 as "never refreshed".
+    {
+        pipensx::AppSettingsData values = settings.get();
+        const uint64_t now = now_ms();
+        values.lastCatalogRefreshMs = now;
+        values.lastCatalogRefreshWallSec =
+            static_cast<uint64_t>(time(nullptr));
+        values.lastMetadataRefreshMs = now;
+        values.lastModsRefreshMs = now;
+        std::string stampError;
+        settings.update(values, stampError);
+    }
 
     CatalogService catalog("sdmc:/switch/pipensx",
                            (fixtures / "catalog.json").string());
     if (!catalog.load(error))
         std::fprintf(stderr, "golden_runner: catalog fixture: %s\n",
                      error.c_str());
+    // load() stamps snapshotEpochSec from the fixture file mtime (often old).
+    // Re-adopt so auto-refresh sees "today" and stays offline.
+    if (!catalog.entries().empty())
+        catalog.adopt(
+            std::vector<pipensx::CatalogEntry>(catalog.entries()));
 
     GameMetadataService metadata(
         "sdmc:/switch/pipensx",
@@ -435,6 +457,7 @@ int main(int argc, char** argv) {
     bool sidebarTouch = false;
     int torrentSelectionRows = 0;
     bool torrentSelectionScroll = false;
+    bool portSelectionOk = true;
     bool settingsDebrid = false;
     bool hintsBudget = false;
     CatalogView* hintsCatalog = nullptr;
@@ -570,7 +593,7 @@ int main(int argc, char** argv) {
         const uint8_t skip = static_cast<uint8_t>(pipensx::FileAction::Skip);
         std::vector<uint8_t> updateActions = {install, skip, install};
         updateChooser = new UpdateFileChooserActivity(
-            std::move(preview), std::move(updateActions), {},
+            nullptr, std::move(preview), std::move(updateActions), {},
             [&](std::vector<uint8_t> mask, std::vector<uint8_t>) {
                 updateChooserMask = std::move(mask);
             },
@@ -583,6 +606,7 @@ int main(int argc, char** argv) {
         // whole class of cull/navigation bugs this screen guards.
         pipensx::TorrentPreview preview;
         preview.name = "Mixed release";
+        preview.multi = true;
         preview.files = {
             {"game.nsp", 1073741824ULL, true, false, false},
             {"bonus/readme.txt", 1048576ULL, false, false, false},
@@ -595,7 +619,7 @@ int main(int argc, char** argv) {
             {"bonus/wallpapers/1080p.zip", 20971520ULL, false, false, false},
             {"bonus/wallpapers/4k.zip", 83886080ULL, false, false, false},
             {"extras/cartridge.xci", 402653184ULL, false, false, true},
-            {"extras/notes.txt", 4096ULL, false, false, false},
+            {"switch/MyPort/MyPort.nro", 7340032ULL, false, false, false},
             {"patch/patch-01.nsp", 167772160ULL, true, false, false},
             {"patch/patch-02.nsp", 100663296ULL, true, false, false},
         };
@@ -609,6 +633,26 @@ int main(int argc, char** argv) {
         }
         torrentSelectionRows = static_cast<int>(preview.files.size());
         torrentSelectionScroll = screen == "torrent-selection-scroll";
+        if (torrentSelectionScroll) {
+            TorrentSelectionDataSource selection(nullptr);
+            std::vector<TorrentSelectionEntry> entries;
+            entries.reserve(preview.files.size());
+            for (const auto& file : preview.files) {
+                entries.push_back({file.path, file.length, file.package,
+                                   file.compressed, file.cartridge,
+                                   file.package ? pipensx::FileAction::Install
+                                                : pipensx::FileAction::Download});
+            }
+            selection.setEntries(std::move(entries));
+            selection.selectPortFiles(preview, preview.name + "/switch");
+            const std::vector<uint8_t> actions = selection.fileActions();
+            for (size_t i = 0; i < actions.size(); ++i) {
+                const auto expected = i == 11 ? pipensx::FileAction::Download
+                                              : pipensx::FileAction::Skip;
+                if (actions[i] != static_cast<uint8_t>(expected))
+                    portSelectionOk = false;
+            }
+        }
         // PackagesOnly rather than the settings default, so the baseline shows
         // all three row states: packages Install, everything else Skip, and
         // a Download row appears as soon as anything is toggled.
@@ -619,6 +663,56 @@ int main(int argc, char** argv) {
     } else if (screen == "downloads") {
         activity = new GoldenActivity(
             new MainView(&manager, &metadata, &settings));
+    } else if (screen == "download-files") {
+        pipensx::TaskFileInventory inventory;
+        inventory.taskId = "golden-port";
+        inventory.rootPath = "SD:/switch/pipensx/downloads/Port-release";
+        inventory.settled = true;
+        inventory.presentBytes = 1288490188ULL;
+        auto add = [&](const std::string& path, uint64_t size,
+                       pipensx::TaskFileState state) {
+            pipensx::TaskFileInfo file;
+            file.logicalPath = path;
+            file.localPath = path;
+            file.size = size;
+            file.state = state;
+            inventory.files.push_back(std::move(file));
+        };
+        add("Release/switch/MyPort/MyPort.nro", 7340032,
+            pipensx::TaskFileState::Present);
+        add("Release/switch/MyPort/data/game.pak", 1280000000ULL,
+            pipensx::TaskFileState::Present);
+        add("Release/readme.txt", 4096,
+            pipensx::TaskFileState::Skipped);
+        add("Release/base.nsp", 4294967296ULL,
+            pipensx::TaskFileState::Installed);
+        activity = new TaskFilesActivity(std::move(inventory));
+    } else if (screen == "deploy-preview") {
+        pipensx::SwitchDeployInspection inspection;
+        inspection.problem = pipensx::SwitchDeployProblem::Conflict;
+        inspection.detail = "/switch/MyPort/config.ini";
+        inspection.plan.taskId = "golden-port";
+        inspection.plan.bytesToCopy = 1280000000ULL;
+        inspection.plan.identicalFiles = 1;
+        inspection.plan.ignoredFiles = 2;
+        auto add = [&](const std::string& source,
+                       const std::string& destination, uint64_t size,
+                       pipensx::SwitchDeployEntryState state) {
+            pipensx::SwitchDeployEntry entry;
+            entry.sourceRelativePath = source;
+            entry.destinationRelativePath = destination;
+            entry.size = size;
+            entry.state = state;
+            inspection.plan.files.push_back(std::move(entry));
+        };
+        add("Release/switch/MyPort/data/game.pak", "MyPort/data/game.pak",
+            1280000000ULL, pipensx::SwitchDeployEntryState::Missing);
+        add("Release/switch/MyPort/MyPort.nro", "MyPort/MyPort.nro", 7340032,
+            pipensx::SwitchDeployEntryState::ExistingIdentical);
+        add("Release/switch/MyPort/config.ini", "MyPort/config.ini", 2048,
+            pipensx::SwitchDeployEntryState::ExistingConflict);
+        activity = new SwitchDeployPreviewActivity(std::move(inspection),
+                                                   nullptr);
     } else if (screen == "downloads-back") {
         downloadsBackFrame = new MainFrame();
         auto* downloadsView = new MainView(&manager, &metadata, &settings);
@@ -1136,34 +1230,21 @@ int main(int argc, char** argv) {
 
         brls::View* cell =
             brls::Application::getCurrentFocus();
-        auto* row = dynamic_cast<TorrentSelectionCell*>(cell);
-        if (!row)
+        if (!dynamic_cast<TorrentSelectionCell*>(cell))
             return fail("update-chooser-toggle did not focus a row");
-        brls::View* next =
-            row->getNextFocus(brls::FocusDirection::DOWN, row);
-        auto* row2 = dynamic_cast<TorrentSelectionCell*>(next);
-        if (!row2)
-            return fail("update-chooser-toggle could not reach the second row");
 
-        auto toggleRow = [](TorrentSelectionCell* target) {
-            brls::Action* toggle = nullptr;
-            for (const auto& action : target->getActions())
-                if (action->getType() == brls::ACTION_GAMEPAD &&
-                    action->getButton() == brls::BUTTON_A)
-                    toggle = action.get();
-            if (!toggle)
-                return false;
-            toggle->getActionListener()(target);
-            for (int frame = 0; frame < 5; ++frame)
-                brls::Application::mainLoop();
-            return true;
-        };
-        if (!toggleRow(row))
-            return fail("update-chooser-toggle row has no A toggle");
+        // Toggle by package-row index — not by pressing A on a cell pointer.
+        // UpdateFileChooserActivity::toggle calls reloadData(), which recycles
+        // cells; a TorrentSelectionCell* taken before a toggle can land on the
+        // wrong index path afterwards (observed as flipping mask slot 0 twice).
+        updateChooser->toggleRowForTest(0);
+        for (int frame = 0; frame < 5; ++frame)
+            brls::Application::mainLoop();
         if (!wantMask(skip, install))
             return fail("update-chooser-toggle did not flip the first row");
-        if (!toggleRow(row2))
-            return fail("update-chooser-toggle second row has no A toggle");
+        updateChooser->toggleRowForTest(1);
+        for (int frame = 0; frame < 5; ++frame)
+            brls::Application::mainLoop();
         // The readme occupies mask slot 1; the second row is slot 2. If the
         // row-to-index mapping was off by one, this assertion fails.
         if (!wantMask(skip, skip))
@@ -1199,10 +1280,37 @@ int main(int argc, char** argv) {
             return fail("update-chooser-toggle confirmed with nothing selected");
 
         // One row back on: Continue confirms and hands the full mask back.
-        if (!toggleRow(row))
-            return fail("update-chooser-toggle could not re-select a row");
+        updateChooser->toggleRowForTest(0);
+        for (int frame = 0; frame < 5; ++frame)
+            brls::Application::mainLoop();
         if (!wantMask(install, skip))
             return fail("update-chooser-toggle re-selected the wrong row");
+        // Footer CTA is the install label once a row is selected — re-find
+        // the live primary button (anything that is not Cancel).
+        confirm = nullptr;
+        std::function<void(brls::View*)> findPrimary =
+            [&](brls::View* node) {
+                if (confirm)
+                    return;
+                if (auto* button = dynamic_cast<brls::Button*>(node)) {
+                    const std::string& label = button->getText();
+                    if (label != tr("pipensx/common/cancel") && !label.empty())
+                        confirm = button;
+                }
+                if (auto* box = dynamic_cast<brls::Box*>(node))
+                    for (brls::View* child : box->getChildren())
+                        findPrimary(child);
+            };
+        findPrimary(updateChooser->getContentView());
+        if (!confirm)
+            return fail("update-chooser-toggle lost Continue after re-select");
+        continueAction = nullptr;
+        for (const auto& action : confirm->getActions())
+            if (action->getType() == brls::ACTION_GAMEPAD &&
+                action->getButton() == brls::BUTTON_A)
+                continueAction = action.get();
+        if (!continueAction)
+            return fail("update-chooser-toggle Continue has no A action");
         continueAction->getActionListener()(confirm);
         for (int frame = 0; frame < 5; ++frame)
             brls::Application::mainLoop();
@@ -1481,6 +1589,8 @@ int main(int argc, char** argv) {
     // and back up, one row per step, pumping frames in between so the
     // recycling loop (which runs in draw) gets to react to each move.
     if (torrentSelectionScroll) {
+        if (!portSelectionOk)
+            return fail("port selection retained files outside switch/");
         // Centered scrolling is animated, and the recycling loop only runs in
         // draw(), so each move needs enough frames for the scroll to settle
         // before the next one — otherwise the test measures the animation

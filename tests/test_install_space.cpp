@@ -86,6 +86,26 @@ int main() {
         assert(check.shortfallBytes == 100);
     }
 
+    {
+        InstallSpaceEstimate estimate;
+        estimate.downloadBytes = 500;
+        estimate.packageBytes = 1000;
+        estimate.requiredBytes = 1500;
+        StorageSpaceSnapshot sd;
+        sd.available = true;
+        sd.freeBytes = 2000;
+        StorageSpaceSnapshot nand;
+        nand.available = true;
+        nand.freeBytes = 800;
+        InstallSpaceCheck check = assessTransferSpace(estimate, sd, nand);
+        assert(check.status == InstallSpaceCheckStatus::Insufficient);
+        assert(check.shortfallBytes == 200);
+
+        nand.freeBytes = 1000;
+        check = assessTransferSpace(estimate, sd, nand);
+        assert(check.status == InstallSpaceCheckStatus::Enough);
+    }
+
     // catalogEntryFitsFreeSpace: the catalog "fits on SD" filter must never
     // hide an entry it cannot judge.
     {

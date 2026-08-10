@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Cross-implementation check: decode chunks the C++ builder emits.
 
-The C++ test binary (tests/test_bug_report) dumps a real multi-chunk report to
-a temp directory; scripts/decode_report.py must reconstruct exactly the tail the
-builder encoded. This is what proves the on-device encoder and the host decoder
-agree on the wire format. Runs from `make -f Makefile.pc test`.
+The C++ test binary (build-pc/tests/test_bug_report) dumps a real multi-chunk
+report to a temp directory; scripts/decode_report.py must reconstruct exactly
+the tail the builder encoded. This is what proves the on-device encoder and the
+host decoder agree on the wire format. Runs from `make -f Makefile.pc test`.
 """
 
 import importlib.util
@@ -14,7 +14,7 @@ import sys
 import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-BINARY = ROOT / "tests" / "test_bug_report"
+BINARY = ROOT / "build-pc" / "tests" / "test_bug_report"
 
 spec = importlib.util.spec_from_file_location(
     "decode_report", ROOT / "scripts" / "decode_report.py"
