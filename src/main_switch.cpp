@@ -382,6 +382,7 @@ int main(int argc, char** argv) {
         manager.setMaxActiveDownloads(settings.get().maxActiveDownloads);
         manager.setTorboxApiKey(settings.get().torboxApiKey);
         manager.setTorrserverUrl(settings.get().torrserverUrl);
+        manager.setRealdebridApiKey(settings.get().realdebridApiKey);
         manager.setTorrentingEnabled(settings.get().torrentingEnabled);
         metadata.setImageNetwork(
             manager.hasActiveTransfer()

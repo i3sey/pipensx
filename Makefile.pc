@@ -92,6 +92,8 @@ TORBOX_PAIRING_TEST_TARGET = $(BUILD_DIR)/tests/test_torbox_pairing
 DEBRID_TRANSFER_TEST_TARGET = $(BUILD_DIR)/tests/test_debrid_transfer
 TB_PROVIDER_TEST_TARGET = $(BUILD_DIR)/tests/test_torbox_provider
 TS_PROVIDER_TEST_TARGET = $(BUILD_DIR)/tests/test_torrserver_provider
+RD_CLIENT_TEST_TARGET = $(BUILD_DIR)/tests/test_realdebrid_client
+RD_PROVIDER_TEST_TARGET = $(BUILD_DIR)/tests/test_realdebrid_provider
 TASK_FILES_TEST_TARGET = $(BUILD_DIR)/tests/test_task_files
 SWITCH_DEPLOY_TEST_TARGET = $(BUILD_DIR)/tests/test_switch_deploy
 PORT_ARCHIVE_TEST_TARGET = $(BUILD_DIR)/tests/test_port_archive
@@ -131,6 +133,14 @@ $(BUILD_DIR)/src/app/torbox_provider.o: src/app/torbox_provider.cpp
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
 $(BUILD_DIR)/src/app/torrserver_provider.o: src/app/torrserver_provider.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+$(BUILD_DIR)/src/app/realdebrid_client.o: src/app/realdebrid_client.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+$(BUILD_DIR)/src/app/realdebrid_provider.o: src/app/realdebrid_provider.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
@@ -203,6 +213,7 @@ $(MANAGER_TEST_TARGET): $(BUILD_DIR)/tests/test_manager.o $(BUILD_DIR)/src/app/d
 		$(BUILD_DIR)/src/app/install_pacer.o \
 		$(BUILD_DIR)/src/app/debrid_transfer.o $(BUILD_DIR)/src/app/torbox_client.o \
 		$(BUILD_DIR)/src/app/torbox_provider.o $(BUILD_DIR)/src/app/torrserver_provider.o \
+		$(BUILD_DIR)/src/app/realdebrid_client.o $(BUILD_DIR)/src/app/realdebrid_provider.o \
 		$(BUILD_DIR)/src/install/package_stream.o $(BUILD_DIR)/src/install/install_journal.o \
 		$(BUILD_DIR)/src/install/install_backend_pc.o \
 		$(filter-out $(BUILD_DIR)/src/main_pc.o,$(OBJS)) $(UTP_OBJS)
@@ -271,6 +282,7 @@ $(WEB_SERVER_TEST_TARGET): tests/test_web_server.cpp \
 		$(BUILD_DIR)/src/app/install_pacer.o \
 		$(BUILD_DIR)/src/app/debrid_transfer.o $(BUILD_DIR)/src/app/torbox_client.o \
 		$(BUILD_DIR)/src/app/torbox_provider.o $(BUILD_DIR)/src/app/torrserver_provider.o \
+		$(BUILD_DIR)/src/app/realdebrid_client.o $(BUILD_DIR)/src/app/realdebrid_provider.o \
 		$(BUILD_DIR)/src/install/package_stream.o $(BUILD_DIR)/src/install/install_journal.o \
 		$(BUILD_DIR)/src/install/install_backend_pc.o \
 		$(filter-out $(BUILD_DIR)/src/main_pc.o,$(OBJS)) $(UTP_OBJS)
@@ -355,6 +367,8 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 	./$(DEBRID_TRANSFER_TEST_TARGET)
 	./$(TB_PROVIDER_TEST_TARGET)
 	./$(TS_PROVIDER_TEST_TARGET)
+	./$(RD_CLIENT_TEST_TARGET)
+	./$(RD_PROVIDER_TEST_TARGET)
 	./$(TASK_FILES_TEST_TARGET)
 	./$(SWITCH_DEPLOY_TEST_TARGET)
 	./$(PORT_ARCHIVE_TEST_TARGET)
@@ -483,6 +497,16 @@ $(TS_PROVIDER_TEST_TARGET): tests/test_torrserver_provider.cpp \
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
 
+$(RD_CLIENT_TEST_TARGET): tests/test_realdebrid_client.cpp \
+		$(BUILD_DIR)/src/app/realdebrid_client.o $(BUILD_DIR)/src/core/util.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
+
+$(RD_PROVIDER_TEST_TARGET): tests/test_realdebrid_provider.cpp \
+		$(BUILD_DIR)/src/app/realdebrid_provider.o $(BUILD_DIR)/src/app/realdebrid_client.o $(BUILD_DIR)/src/core/util.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
+
 $(TORBOX_PAIRING_TEST_TARGET): tests/test_torbox_pairing.cpp \
 		$(BUILD_DIR)/src/app/torbox_pairing_server.o $(BUILD_DIR)/src/app/http_server.o \
 		$(BUILD_DIR)/src/core/net.o $(BUILD_DIR)/src/core/util.o
@@ -515,6 +539,7 @@ $(SWITCH_DEPLOY_TEST_TARGET): tests/test_switch_deploy.cpp \
 		$(BUILD_DIR)/src/app/request_gate.o $(BUILD_DIR)/src/app/install_pacer.o \
 		$(BUILD_DIR)/src/app/debrid_transfer.o $(BUILD_DIR)/src/app/torbox_client.o \
 		$(BUILD_DIR)/src/app/torbox_provider.o $(BUILD_DIR)/src/app/torrserver_provider.o \
+		$(BUILD_DIR)/src/app/realdebrid_client.o $(BUILD_DIR)/src/app/realdebrid_provider.o \
 		$(BUILD_DIR)/src/install/package_stream.o $(BUILD_DIR)/src/install/install_journal.o \
 		$(BUILD_DIR)/src/install/install_backend_pc.o \
 		$(filter-out $(BUILD_DIR)/src/main_pc.o,$(OBJS)) $(UTP_OBJS)
@@ -564,6 +589,7 @@ $(BUILD_DIR)/tools/webserver: tools/web_server_main.cpp \
 		$(BUILD_DIR)/src/app/install_pacer.o \
 		$(BUILD_DIR)/src/app/debrid_transfer.o $(BUILD_DIR)/src/app/torbox_client.o \
 		$(BUILD_DIR)/src/app/torbox_provider.o $(BUILD_DIR)/src/app/torrserver_provider.o \
+		$(BUILD_DIR)/src/app/realdebrid_client.o $(BUILD_DIR)/src/app/realdebrid_provider.o \
 		$(BUILD_DIR)/src/install/package_stream.o $(BUILD_DIR)/src/install/install_journal.o \
 		$(BUILD_DIR)/src/install/install_backend_pc.o \
 		$(filter-out $(BUILD_DIR)/src/main_pc.o,$(OBJS)) $(UTP_OBJS)

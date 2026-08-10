@@ -86,7 +86,7 @@ private:
 // Direct mode hides the server, so the diagram collapses to a single hop.
 class ModeDiagram : public brls::Box {
 public:
-    enum class Kind { TorrServer, TorBox, Direct };
+    enum class Kind { TorrServer, TorBox, RealDebrid, Direct };
 
     ModeDiagram() : brls::Box(brls::Axis::ROW) {
         setFocusable(false);
@@ -121,7 +121,11 @@ public:
                     tr("pipensx/first_run/diagram_internet"));
                 break;
             case Kind::TorBox:
-                serverLabel_->setText(tr("pipensx/first_run/diagram_torbox"));
+            case Kind::RealDebrid:
+                serverLabel_->setText(
+                    kind == Kind::RealDebrid
+                        ? tr("pipensx/first_run/diagram_realdebrid")
+                        : tr("pipensx/first_run/diagram_torbox"));
                 serverHop_->setCaption(
                     tr("pipensx/first_run/diagram_internet"));
                 swarmHop_->setCaption(
@@ -341,6 +345,10 @@ public:
             [this] { choose(DebridProviderKind::TorrServer, false); },
             [this] { updateSelection(DebridProviderKind::TorrServer, false); }));
         left->addView(new FirstRunOption(
+            tr("pipensx/first_run/realdebrid"),
+            [this] { choose(DebridProviderKind::RealDebrid, false); },
+            [this] { updateSelection(DebridProviderKind::RealDebrid, false); }));
+        left->addView(new FirstRunOption(
             tr("pipensx/first_run/torbox"),
             [this] { choose(DebridProviderKind::TorBox, false); },
             [this] { updateSelection(DebridProviderKind::TorBox, false); }));
@@ -348,7 +356,7 @@ public:
             tr("pipensx/first_run/direct"),
             [this] { choose(DebridProviderKind::TorBox, true); },
             [this] { updateSelection(DebridProviderKind::TorBox, true); }));
-        left->setDefaultFocusedIndex(1);
+        left->setDefaultFocusedIndex(0);
 
         auto* note = new brls::Label();
         note->setText(tr("pipensx/first_run/note"));
@@ -429,6 +437,12 @@ private:
             how = tr("pipensx/first_run/torrserver_how");
             peer = tr("pipensx/first_run/torrserver_peer");
             setup = tr("pipensx/first_run/torrserver_setup");
+        } else if (provider == DebridProviderKind::RealDebrid) {
+            kind = ModeDiagram::Kind::RealDebrid;
+            name = tr("pipensx/first_run/realdebrid");
+            how = tr("pipensx/first_run/realdebrid_how");
+            peer = tr("pipensx/first_run/realdebrid_peer");
+            setup = tr("pipensx/first_run/realdebrid_setup");
         } else {
             kind = ModeDiagram::Kind::TorBox;
             name = tr("pipensx/first_run/torbox");

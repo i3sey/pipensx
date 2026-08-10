@@ -73,6 +73,7 @@ struct AppSettingsData {
     std::string torboxApiKey;
     // Base URL of the TorrServer instance, e.g. "http://192.168.1.10:8090".
     std::string torrserverUrl;
+    std::string realdebridApiKey;
     DebridProviderKind debridProvider = DebridProviderKind::TorBox;
     bool firstRunCompleted = false;
     // Outbound proxy for HTTPS calls the app makes (catalog, artwork,
