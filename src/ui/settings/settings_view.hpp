@@ -207,18 +207,23 @@ public:
 
         debridProvider_ = new brls::SelectorCell();
         debridProvider_->init(tr("pipensx/settings/debrid_provider"),
-            {"TorBox", "TorrServer"},
-            settings_->get().debridProvider == DebridProviderKind::TorrServer
-                ? 1 : 0,
+            {"TorBox", "TorrServer", "Real-Debrid"},
+            settings_->get().debridProvider == DebridProviderKind::TorBox
+                ? 0
+                : settings_->get().debridProvider == DebridProviderKind::RealDebrid
+                ? 2 : 1,
             [this](int selected) {
                 AppSettingsData values = settings_->get();
                 const DebridProviderKind previous = values.debridProvider;
                 values.debridProvider = selected == 1
                     ? DebridProviderKind::TorrServer
+                    : selected == 2
+                    ? DebridProviderKind::RealDebrid
                     : DebridProviderKind::TorBox;
                 if (!persist(values, "debrid_provider"))
                     debridProvider_->setSelection(
-                        previous == DebridProviderKind::TorrServer ? 1 : 0,
+                        previous == DebridProviderKind::TorrServer ? 1
+                        : previous == DebridProviderKind::RealDebrid ? 2 : 0,
                         true);
                 refreshDebridLinkDetail();
             });
@@ -683,11 +688,13 @@ private:
         updateWebCells();
         torrenting_->setOn(values.torrentingEnabled, false);
         debridProvider_->setSelection(
-            values.debridProvider == DebridProviderKind::TorrServer ? 1 : 0,
+            values.debridProvider == DebridProviderKind::TorrServer ? 1
+            : values.debridProvider == DebridProviderKind::RealDebrid ? 2 : 0,
             true);
         manager_->setTorrentingEnabled(values.torrentingEnabled);
         manager_->setTorboxApiKey(values.torboxApiKey);
         manager_->setTorrserverUrl(values.torrserverUrl);
+        manager_->setRealdebridApiKey(values.realdebridApiKey);
         refreshDebridLinkDetail();
     }
 

@@ -134,7 +134,9 @@ bool parseSettings(const std::string& text, AppSettingsData& values,
         !readString(root, "web_server_pin", values.webServerPin, error) ||
         !readBool(root, "torrenting_enabled", values.torrentingEnabled,
                   error) ||
-        !readString(root, "torbox_api_key", values.torboxApiKey, error)) {
+        !readString(root, "torbox_api_key", values.torboxApiKey, error) ||
+        !readString(root, "realdebrid_api_key", values.realdebridApiKey,
+                     error)) {
         return false;
     }
     uint64_t maxActive = values.maxActiveDownloads;
@@ -161,10 +163,12 @@ bool parseSettings(const std::string& text, AppSettingsData& values,
         std::string provider = "torbox";
         if (!readString(root, "debrid_provider", provider, error))
             return false;
-        // "realdebrid" was a provider we no longer ship; it lands on the
-        // default rather than on a kind that cannot fetch anything.
+        // Neither "realdebrid" nor any other unknown value should land on a
+        // kind that cannot fetch anything — default to TorBox.
         values.debridProvider = provider == "torrserver"
             ? DebridProviderKind::TorrServer
+            : provider == "realdebrid"
+            ? DebridProviderKind::RealDebrid
             : DebridProviderKind::TorBox;
     }
     if (root.contains("first_run_completed")) {
@@ -236,9 +240,13 @@ std::string serializeSettings(const AppSettingsData& values) {
     root["torrenting_enabled"] = values.torrentingEnabled;
     root["torbox_api_key"] = values.torboxApiKey;
     root["torrserver_url"] = values.torrserverUrl;
+    root["realdebrid_api_key"] = values.realdebridApiKey;
     root["debrid_provider"] =
         values.debridProvider == DebridProviderKind::TorrServer
-            ? "torrserver" : "torbox";
+            ? "torrserver"
+            : values.debridProvider == DebridProviderKind::RealDebrid
+            ? "realdebrid"
+            : "torbox";
     root["first_run_completed"] = values.firstRunCompleted;
     root["proxy_url"] = values.proxyUrl;
     return root.dump(2) + "\n";

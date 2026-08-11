@@ -15,6 +15,7 @@
 #include "app/torbox_pairing_server.hpp"
 #include "app/torbox_provider.hpp"
 #include "app/torrserver_provider.hpp"
+#include "app/realdebrid_provider.hpp"
 #include "ui/common/qr_view.hpp"
 #include "ui/common/setup_summary_panel.hpp"
 #include "ui/common/ui_helpers.hpp"
@@ -24,19 +25,28 @@
 namespace pipensx::ui {
 
 inline const std::string& activeDebridKey(const AppSettingsData& values) {
-    return values.debridProvider == DebridProviderKind::TorrServer
-        ? values.torrserverUrl : values.torboxApiKey;
+    if (values.debridProvider == DebridProviderKind::TorrServer)
+        return values.torrserverUrl;
+    if (values.debridProvider == DebridProviderKind::RealDebrid)
+        return values.realdebridApiKey;
+    return values.torboxApiKey;
 }
 
 inline std::unique_ptr<DebridProvider> makeDebridProvider(
     DebridProviderKind kind, const std::string& key) {
     if (kind == DebridProviderKind::TorrServer)
         return std::unique_ptr<DebridProvider>(new TorrserverProvider(key));
+    if (kind == DebridProviderKind::RealDebrid)
+        return std::unique_ptr<DebridProvider>(new RealdebridProvider(key));
     return std::unique_ptr<DebridProvider>(new TorboxProvider(key));
 }
 
 inline const char* debridProviderName(DebridProviderKind kind) {
-    return kind == DebridProviderKind::TorrServer ? "TorrServer" : "TorBox";
+    if (kind == DebridProviderKind::TorrServer)
+        return "TorrServer";
+    if (kind == DebridProviderKind::RealDebrid)
+        return "Real-Debrid";
+    return "TorBox";
 }
 
 inline std::string debridPairingUrl(const std::string& ip) {
@@ -95,6 +105,9 @@ public:
                 provider == DebridProviderKind::TorrServer
                     ? "Paste the address of your TorrServer, for example "
                       "http://192.168.1.10:8090."
+                    : provider == DebridProviderKind::RealDebrid
+                    ? "Paste your Real-Debrid API token. Find it at "
+                      "real-debrid.com/apitoken."
                     : kTorboxPairingHint);
             std::string error;
             pairingAvailable = server_->start(error);
@@ -195,8 +208,11 @@ private:
     }
 
     const std::string& activeKey() const {
-        return provider_ == DebridProviderKind::TorrServer
-            ? settings_->get().torrserverUrl : settings_->get().torboxApiKey;
+        if (provider_ == DebridProviderKind::TorrServer)
+            return settings_->get().torrserverUrl;
+        if (provider_ == DebridProviderKind::RealDebrid)
+            return settings_->get().realdebridApiKey;
+        return settings_->get().torboxApiKey;
     }
 
     void refresh() {
@@ -269,6 +285,8 @@ private:
         AppSettingsData values = settings_->get();
         if (provider_ == DebridProviderKind::TorrServer)
             values.torrserverUrl = key;
+        else if (provider_ == DebridProviderKind::RealDebrid)
+            values.realdebridApiKey = key;
         else
             values.torboxApiKey = key;
         std::string error;
@@ -278,6 +296,8 @@ private:
         }
         if (provider_ == DebridProviderKind::TorrServer)
             manager_->setTorrserverUrl(key);
+        else if (provider_ == DebridProviderKind::RealDebrid)
+            manager_->setRealdebridApiKey(key);
         else
             manager_->setTorboxApiKey(key);
         if (!key.empty())

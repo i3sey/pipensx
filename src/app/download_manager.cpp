@@ -6,6 +6,7 @@
 #include "web_seed_source.hpp"
 #include "torbox_provider.hpp"
 #include "torrserver_provider.hpp"
+#include "realdebrid_provider.hpp"
 #include "debrid_transfer.hpp"
 #include "package_coordinator.hpp"
 #include "nx_file_types.hpp"
@@ -738,15 +739,25 @@ void DownloadManager::setTorrserverUrl(const std::string& url) {
     torrserverUrl_ = url;
 }
 
+void DownloadManager::setRealdebridApiKey(const std::string& key) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    realdebridApiKey_ = key;
+}
+
 std::string DownloadManager::apiKeyFor(DebridProviderKind provider) const {
-    return provider == DebridProviderKind::TorrServer
-               ? torrserverUrl_ : torboxApiKey_;
+    if (provider == DebridProviderKind::TorrServer)
+        return torrserverUrl_;
+    if (provider == DebridProviderKind::RealDebrid)
+        return realdebridApiKey_;
+    return torboxApiKey_;
 }
 
 std::unique_ptr<DebridProvider> DownloadManager::makeProvider(
     DebridProviderKind provider, const std::string& key) {
     if (provider == DebridProviderKind::TorrServer)
         return std::make_unique<TorrserverProvider>(key);
+    if (provider == DebridProviderKind::RealDebrid)
+        return std::make_unique<RealdebridProvider>(key);
     return std::make_unique<TorboxProvider>(key);
 }
 
@@ -1025,7 +1036,10 @@ bool DownloadManager::saveLocked(std::string& error) const {
         state << "12:pieces-total" << bint(task.piecesTotal);
         state << "8:provider" << bstr(
             task.debridProvider == DebridProviderKind::TorrServer
-                ? "torrserver" : "torbox");
+                ? "torrserver"
+                : task.debridProvider == DebridProviderKind::RealDebrid
+                ? "realdebrid"
+                : "torbox");
         if (!task.resumeBitfield.empty())
             state << "9:resume-bf"
                   << bstr(std::string(task.resumeBitfield.begin(),
@@ -1163,6 +1177,8 @@ void DownloadManager::load() {
                 task.debridProvider =
                     provider == "torrserver"
                         ? DebridProviderKind::TorrServer
+                        : provider == "realdebrid"
+                        ? DebridProviderKind::RealDebrid
                         : DebridProviderKind::TorBox;
             if (dictionaryString(item, "debrid-id", debridId))
                 task.debridId = debridId;
@@ -1443,6 +1459,8 @@ void DownloadManager::runDebridTask(const ClaimedTask& claim) {
             task->error =
                 claim.debridProvider == DebridProviderKind::TorrServer
                     ? "TorrServer address missing — set it in Settings."
+                    : claim.debridProvider == DebridProviderKind::RealDebrid
+                    ? "Real-Debrid key missing — link your account in Settings."
                     : "TorBox key missing — link your account in Settings.";
             std::string ignored;
             saveLocked(ignored);
