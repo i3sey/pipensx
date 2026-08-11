@@ -79,6 +79,7 @@ BUDGET_ARBITER_TEST_TARGET = $(BUILD_DIR)/tests/test_budget_arbiter
 REQUEST_GATE_TEST_TARGET = $(BUILD_DIR)/tests/test_request_gate
 INSTALL_PACER_TEST_TARGET = $(BUILD_DIR)/tests/test_install_pacer
 JOURNAL_TEST_TARGET = $(BUILD_DIR)/tests/test_install_journal
+PACKAGE_COORDINATOR_TEST_TARGET = $(BUILD_DIR)/tests/test_package_coordinator
 WEB_SEED_TEST_TARGET = $(BUILD_DIR)/tests/test_web_seed
 MSE_TEST_TARGET = $(BUILD_DIR)/tests/test_mse
 DHT_CACHE_TEST_TARGET = $(BUILD_DIR)/tests/test_dht_cache
@@ -224,7 +225,7 @@ $(PACKAGE_TEST_TARGET): tests/test_package_stream.cpp \
 		$(BUILD_DIR)/src/install/package_stream.o $(BUILD_DIR)/src/install/install_backend_pc.o \
 		$(BUILD_DIR)/src/core/util.o
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(INSTALL_LDFLAGS) -pthread
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $(filter-out src/app/package_coordinator.hpp,$^) $(INSTALL_LDFLAGS) -pthread
 
 
 $(BUILD_DIR)/src/app/catalog_service.o: src/app/catalog_service.cpp
@@ -323,7 +324,8 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 		$(RAM_BUDGET_TEST_TARGET) $(BUDGET_ARBITER_TEST_TARGET) \
 		$(REQUEST_GATE_TEST_TARGET) \
 		$(INSTALL_PACER_TEST_TARGET) \
-		$(JOURNAL_TEST_TARGET) $(WEB_SEED_TEST_TARGET) \
+		$(JOURNAL_TEST_TARGET) $(PACKAGE_COORDINATOR_TEST_TARGET) \
+		$(WEB_SEED_TEST_TARGET) \
 		$(FAVORITES_TEST_TARGET) \
 		$(MSE_TEST_TARGET) $(DHT_CACHE_TEST_TARGET) \
 		$(DHT_SHARED_TEST_TARGET) \
@@ -354,6 +356,7 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 	./$(REQUEST_GATE_TEST_TARGET)
 	./$(INSTALL_PACER_TEST_TARGET)
 	./$(JOURNAL_TEST_TARGET)
+	./$(PACKAGE_COORDINATOR_TEST_TARGET)
 	./$(WEB_SEED_TEST_TARGET)
 	./$(FAVORITES_TEST_TARGET)
 	./$(MSE_TEST_TARGET)
@@ -457,6 +460,18 @@ $(JOURNAL_TEST_TARGET): tests/test_install_journal.cpp \
 		$(BUILD_DIR)/src/install/install_journal.o $(BUILD_DIR)/src/core/bencode.o
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
+
+$(PACKAGE_COORDINATOR_TEST_TARGET): tests/test_package_coordinator.cpp \
+		$(BUILD_DIR)/src/app/stream_ram_budget.o $(BUILD_DIR)/src/app/stream_budget_arbiter.o \
+		$(BUILD_DIR)/src/app/request_gate.o $(BUILD_DIR)/src/app/install_pacer.o \
+		$(BUILD_DIR)/src/install/package_stream.o $(BUILD_DIR)/src/install/install_journal.o \
+		$(BUILD_DIR)/src/install/install_backend_pc.o $(BUILD_DIR)/src/core/bencode.o \
+		$(BUILD_DIR)/src/core/metainfo.o $(BUILD_DIR)/src/core/sha1.o \
+		$(BUILD_DIR)/src/core/util.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $(filter-out src/app/package_coordinator.hpp,$^) $(INSTALL_LDFLAGS) -pthread
+
+$(PACKAGE_COORDINATOR_TEST_TARGET): src/app/package_coordinator.hpp
 
 $(WEB_SEED_TEST_TARGET): tests/test_web_seed.cpp $(BUILD_DIR)/src/app/web_seed_source.o \
 		$(BUILD_DIR)/src/core/util.o

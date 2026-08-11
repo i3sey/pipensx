@@ -188,7 +188,8 @@ public:
         // F-B: an interruption with a journaled safe point keeps the partial
         // install on disk for a later resume; anything else rolls back and
         // drops the journal.
-        if (journalValid_ && !abandonResume_ && error().empty()) {
+        if (journalValid_ && !abandonResume_ &&
+            (error().empty() || recoverableError_.load())) {
             backend_->suspendPackage();
             return;
         }
@@ -199,6 +200,14 @@ public:
 
     // The task is going away: never keep partial data or the journal.
     void abandonResume() { abandonResume_ = true; }
+
+    // The package stream is intact, but the transfer source failed (peer loss,
+    // timeout, disconnect). Keep the journal/placeholder safe point so retry
+    // resumes instead of re-streaming the package from byte zero.
+    void markRecoverableError(const std::string& message) {
+        std::lock_guard<std::mutex> lock(queueMutex_);
+        setErrorLocked(message, true);
+    }
 
     const std::vector<storage_file_config_t>& configs() const {
         return configs_;
@@ -395,7 +404,7 @@ private:
 
         PendingKey key {ordinal, offset};
         if (pending_.find(key) != pending_.end())
-            return setErrorLocked("Duplicate package stream chunk.");
+            return setErrorLocked("Duplicate package stream chunk.", false);
         // Never wait for buffer space here (PERF_PLAN 5.3): this runs inside
         // the torrent thread's piece callback, so blocking would stall the
         // whole event loop. Chunks already in flight are always accepted —
@@ -747,12 +756,16 @@ private:
 
     bool setError(const std::string& message) {
         std::lock_guard<std::mutex> lock(queueMutex_);
-        return setErrorLocked(message);
+        return setErrorLocked(message, false);
     }
 
-    bool setErrorLocked(const std::string& message) {
+    bool setErrorLocked(const std::string& message, bool recoverable) {
+        if (!recoverable)
+            recoverableError_.store(false);
         if (error_.empty()) {
             error_ = message.empty() ? "Installation pipeline failed." : message;
+            if (recoverable)
+                recoverableError_.store(true);
             log_msg("[install] pipeline error: %s\n", error_.c_str());
         }
         accepting_ = false;
@@ -933,7 +946,7 @@ private:
                 producerOffset_ = 0;
                 ++producerOrdinal_;
             } else if (producerOffset_ >= static_cast<uint64_t>(file.length)) {
-                setErrorLocked("Package stream missed final chunk.");
+                setErrorLocked("Package stream missed final chunk.", false);
                 break;
             }
         }
@@ -1007,6 +1020,7 @@ private:
     uint64_t journalConsumed_ = 0;
     bool journalValid_ = false;
     bool abandonResume_ = false;
+    std::atomic<bool> recoverableError_{false};
     bool streamInstall_ = false;
     std::vector<storage_file_config_t> configs_;
     std::vector<uint32_t> pieceOrder_;
