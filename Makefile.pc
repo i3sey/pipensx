@@ -65,6 +65,7 @@ PACKAGE_TEST_TARGET = $(BUILD_DIR)/tests/test_package_stream
 CATALOG_TEST_TARGET = $(BUILD_DIR)/tests/test_catalog
 TELEMETRY_TEST_TARGET = $(BUILD_DIR)/tests/test_telemetry
 PEER_TEST_TARGET = $(BUILD_DIR)/tests/test_peer
+TRACKER_TEST_TARGET = $(BUILD_DIR)/tests/test_tracker
 TORRENT_TEST_TARGET = $(BUILD_DIR)/tests/test_torrent
 SETTINGS_TEST_TARGET = $(BUILD_DIR)/tests/test_app_settings
 FAVORITES_TEST_TARGET = $(BUILD_DIR)/tests/test_favorites
@@ -316,7 +317,8 @@ $(PROBE_REPORT_TEST_TARGET): tests/test_probe_report.c src/probe/probe_report.c
 test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 		$(CATALOG_TEST_TARGET) \
 		$(TELEMETRY_TEST_TARGET) $(PEER_TEST_TARGET) \
-		$(TORRENT_TEST_TARGET) $(SETTINGS_TEST_TARGET) $(UPDATE_TEST_TARGET) \
+		$(TRACKER_TEST_TARGET) $(TORRENT_TEST_TARGET) \
+		$(SETTINGS_TEST_TARGET) $(UPDATE_TEST_TARGET) \
 		$(GAME_UPDATE_TEST_TARGET) \
 		$(UPDATE_FILE_SELECT_TEST_TARGET) \
 		$(UPDATE_TRANSACTION_TEST_TARGET) \
@@ -343,6 +345,7 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 	./$(CATALOG_TEST_TARGET)
 	./$(TELEMETRY_TEST_TARGET)
 	./$(PEER_TEST_TARGET)
+	./$(TRACKER_TEST_TARGET)
 	./$(TORRENT_TEST_TARGET)
 	./$(SETTINGS_TEST_TARGET)
 	./$(UPDATE_TEST_TARGET)
@@ -572,6 +575,12 @@ $(PEER_TEST_TARGET): tests/test_peer.c src/core/peer.c src/core/net.c \
 		$(UTP_OBJS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -lstdc++ -Wl,--wrap=setsockopt
+
+$(TRACKER_TEST_TARGET): tests/test_tracker.c src/core/tracker.c \
+		src/core/bencode.c src/core/util.c src/core/net.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Isrc -o $@ $(filter-out src/core/tracker.c,$^) \
+		$(LDFLAGS)
 
 # torrent.c is a real prerequisite (the test #includes it as source) but must
 # not be passed to the compiler a second time — hence the filter-out in $^.
