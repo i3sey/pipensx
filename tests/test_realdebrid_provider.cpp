@@ -12,6 +12,8 @@ int main() {
     auto script =
         std::make_shared<std::vector<std::pair<std::string, std::string>>>(
             std::vector<std::pair<std::string, std::string>>{
+                {"/user",
+                 "{\"id\":12345,\"username\":\"test\"}"},
                 {"/torrents/addMagnet",
                  "{\"id\":\"abc123\"}"},
                 {"/torrents/info/abc123",
@@ -21,6 +23,13 @@ int main() {
                  "\"files\":[{\"id\":\"1\",\"path\":\"game.nsp\","
                  "\"bytes\":900000,\"selected\":1}],"
                  "\"links\":[\"https://rd.to/dl/x\"]}"},
+                {"/torrents/selectFiles/abc123",
+                 ""},
+                {"/unrestrict/link",
+                 "{\"id\":\"unrestrict123\",\"download\":"
+                 "\"https://rd.dl1.real-debrid.com/dl/x/game.nsp\"}"},
+                {"/torrents/delete/abc123",
+                 ""},
             });
     RdTransport t = [script](const RdHttpRequest& r,
                               RdHttpResponse& res, std::string&) {
@@ -62,6 +71,12 @@ int main() {
                     "{\"id\":\"err\",\"filename\":\"bad\",\"bytes\":0,"
                     "\"progress\":0,\"status\":\"error\","
                     "\"files\":[],\"links\":[]}";
+            } else if (r.url.find("/torrents/addMagnet") != std::string::npos) {
+                res.status = 200;
+                res.body = "{\"id\":\"err\"}";
+            } else if (r.url.find("/user") != std::string::npos) {
+                res.status = 200;
+                res.body = "{\"id\":12345}";
             } else {
                 res.status = 200;
                 res.body = "{}";
@@ -84,6 +99,12 @@ int main() {
                     "\"progress\":0,\"status\":\"waiting_files_selection\","
                     "\"files\":[{\"id\":\"1\",\"path\":\"f\",\"bytes\":100}],"
                     "\"links\":[]}";
+            } else if (r.url.find("/torrents/addMagnet") != std::string::npos) {
+                res.status = 200;
+                res.body = "{\"id\":\"sel\"}";
+            } else if (r.url.find("/user") != std::string::npos) {
+                res.status = 200;
+                res.body = "{\"id\":12345}";
             } else {
                 res.status = 200;
                 res.body = "{}";
@@ -105,6 +126,12 @@ int main() {
                     "{\"id\":\"dl\",\"filename\":\"Game\",\"bytes\":100,"
                     "\"progress\":42,\"status\":\"downloading\","
                     "\"files\":[],\"links\":[]}";
+            } else if (r.url.find("/torrents/addMagnet") != std::string::npos) {
+                res.status = 200;
+                res.body = "{\"id\":\"dl\"}";
+            } else if (r.url.find("/user") != std::string::npos) {
+                res.status = 200;
+                res.body = "{\"id\":12345}";
             } else {
                 res.status = 200;
                 res.body = "{}";

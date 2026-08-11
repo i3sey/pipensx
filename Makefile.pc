@@ -333,6 +333,7 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 		$(TORBOX_CLIENT_TEST_TARGET) $(TORBOX_PAIRING_TEST_TARGET) \
 		$(DEBRID_TRANSFER_TEST_TARGET) \
 		$(TB_PROVIDER_TEST_TARGET) $(TS_PROVIDER_TEST_TARGET) \
+		$(RD_CLIENT_TEST_TARGET) $(RD_PROVIDER_TEST_TARGET) \
 		$(TASK_FILES_TEST_TARGET) $(SWITCH_DEPLOY_TEST_TARGET) \
 		$(PORT_ARCHIVE_TEST_TARGET)
 	./$(TEST_TARGET)
@@ -424,6 +425,7 @@ $(BATCH_INSTALL_TEST_TARGET): tests/test_batch_install.cpp \
 		$(BUILD_DIR)/src/app/install_pacer.o \
 		$(BUILD_DIR)/src/app/torbox_client.o $(BUILD_DIR)/src/app/torbox_provider.o \
 		$(BUILD_DIR)/src/app/torrserver_provider.o \
+		$(BUILD_DIR)/src/app/realdebrid_client.o $(BUILD_DIR)/src/app/realdebrid_provider.o \
 		$(BUILD_DIR)/src/install/package_stream.o $(BUILD_DIR)/src/install/install_journal.o \
 		$(BUILD_DIR)/src/install/install_backend_pc.o \
 		$(filter-out $(BUILD_DIR)/src/main_pc.o,$(OBJS)) $(UTP_OBJS)
