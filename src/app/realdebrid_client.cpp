@@ -338,9 +338,9 @@ bool RdClient::selectFiles(const std::string& torrentId,
     }
     RdHttpRequest request;
     request.method = "POST";
-    request.url = std::string(kBaseUrl) + "/torrents/selectFiles/" + torrentId +
-        "?files=" + files;
+    request.url = std::string(kBaseUrl) + "/torrents/selectFiles/" + torrentId;
     request.apiKey = apiKey_;
+    request.body = "files=" + files;
     RdHttpResponse response;
     if (!transport_(request, response, error))
         return false;
