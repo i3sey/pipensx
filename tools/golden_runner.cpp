@@ -17,8 +17,8 @@
 //                          bug-report-detail|bug-report-focus|sidebar-touch
 //                 [--frames N] [--sandbox <dir>]
 //
-// downloads-back, torrent-selection-scroll, hints-budget, bug-report-focus,
-// sidebar-touch, update-chooser-toggle, first-run-disclaimer and
+// downloads-back, downloads-removing, torrent-selection-scroll, hints-budget,
+// bug-report-focus, sidebar-touch, update-chooser-toggle, first-run-disclaimer and
 // installed-bundles are behaviour checks: they assert and exit non-zero
 // instead of producing a baseline.
 //
@@ -720,6 +720,24 @@ int main(int argc, char** argv) {
             tr("pipensx/nav/downloads"), NavIconType::Downloads,
             [downloadsView] { return downloadsView; });
         activity = new GoldenActivity(downloadsBackFrame);
+    } else if (screen == "downloads-removing") {
+        pipensx::DownloadTask removing;
+        removing.id = "removing-fixture";
+        removing.name = "Large package cleanup";
+        removing.status = pipensx::DownloadStatus::Removing;
+
+        DownloadDataSource source(nullptr);
+        source.setTasks({removing});
+        const pipensx::DownloadTask* row =
+            source.taskAt(brls::IndexPath(0, 0));
+        if (source.numberOfSections(nullptr) != 1 ||
+            source.numberOfRows(nullptr, 0) != 1 || !row ||
+            row->status != pipensx::DownloadStatus::Removing)
+            return fail("downloads-removing row is not visible");
+        std::printf("golden_runner: downloads-removing row visible\n");
+        manager.shutdown();
+        std::fflush(nullptr);
+        _exit(0);
     } else if (screen == "frame") {
         // Whole shell, same wiring as src/main_switch.cpp: covers the sidebar
         // and the storage footer docked at its bottom.

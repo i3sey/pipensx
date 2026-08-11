@@ -17,7 +17,8 @@ void DownloadDataSource::setTasks(std::vector<DownloadTask> tasks,
                    s == DownloadStatus::Downloading ||
                    s == DownloadStatus::Installing ||
                    s == DownloadStatus::Committing ||
-                   s == DownloadStatus::Verifying;
+                   s == DownloadStatus::Verifying ||
+                   s == DownloadStatus::Removing;
         }},
         {tr("pipensx/downloads/section_queue"), [](DownloadStatus s) {
             return s == DownloadStatus::Queued;
