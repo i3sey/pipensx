@@ -185,11 +185,12 @@ struct torrent {
     uint64_t last_tracker_ms;
     uint64_t last_connect_ms;
 
-    /* Async tracker announce: tracker_announce() blocks up to 5 s per tracker,
-       so it runs on a worker thread instead of freezing the event loop. The
-       loop launches a run (announce_start), keeps servicing peers, and drains
-       results on a later tick (announce_collect). async_ok is 0 only if the
-       mutex failed to init, in which case announces fall back to synchronous. */
+    /* Async tracker announce: tracker_announce() blocks on tracker/network
+       timeouts, so it runs on a worker thread instead of freezing the event
+       loop. The loop launches a run (announce_start), keeps servicing peers,
+       and drains results on a later tick (announce_collect). async_ok is 0
+       only if the mutex failed to init, in which case announces fall back to
+       synchronous. */
     pthread_t       announce_thread;
     pthread_mutex_t announce_mutex;
     int             async_ok;
@@ -199,6 +200,8 @@ struct torrent {
     uint8_t         announce_compact[200*6];
     int64_t         announce_downloaded;
     int64_t         announce_left;
+    int             announce_started_event;
+    int             tracker_started_event_sent;
     /* Set by torrent_destroy before it joins the announce thread, read by
        that thread between trackers and from curl's progress callback. */
     atomic_int      announce_stop;
@@ -1264,9 +1267,10 @@ static void *announce_worker(void *arg) {
     /* mi/peer_id/listen_port are immutable for the torrent's life;
        downloaded/left were snapshotted before the thread was launched. */
     uint8_t compact[200*6];
-    uint32_t n = tracker_announce(&t->mi, t->peer_id, t->listen_port,
-                                  t->announce_downloaded, t->announce_left,
-                                  compact, 200, announce_cancelled, t);
+    uint32_t n = tracker_announce_with_event(
+        &t->mi, t->peer_id, t->listen_port, t->announce_downloaded,
+        t->announce_left, compact, 200, t->announce_started_event,
+        announce_cancelled, t);
     pthread_mutex_lock(&t->announce_mutex);
     memcpy(t->announce_compact, compact, (size_t)n*6);
     t->announce_count = n;
@@ -1282,6 +1286,8 @@ static void announce_start(torrent_t *t, int64_t downloaded, int64_t left) {
         return;
     t->announce_downloaded = downloaded;
     t->announce_left       = left;
+    t->announce_started_event = !t->tracker_started_event_sent;
+    t->tracker_started_event_sent = 1;
     if (t->async_ok) {
         t->announce_done  = 0;
         t->announce_count = 0;
@@ -1292,9 +1298,9 @@ static void announce_start(torrent_t *t, int64_t downloaded, int64_t left) {
         log_msg("[torrent] announce thread spawn failed, running inline\n");
     }
     uint8_t compact[200*6];
-    uint32_t n = tracker_announce(&t->mi, t->peer_id, t->listen_port,
-                                  downloaded, left, compact, 200,
-                                  announce_cancelled, t);
+    uint32_t n = tracker_announce_with_event(
+        &t->mi, t->peer_id, t->listen_port, downloaded, left, compact, 200,
+        t->announce_started_event, announce_cancelled, t);
     announce_push_results(t, compact, n);
     log_msg("[torrent] announce (sync): %u peers\n", n);
 }
