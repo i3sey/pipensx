@@ -5,6 +5,9 @@
 
 #include <curl/curl.h>
 
+#include <cstring>
+#include <cstdint>
+
 extern "C" {
 #include "../core/util.h"
 }
@@ -110,6 +113,22 @@ bool parseJson(const std::string& text, Json& root, std::string& error) {
     return true;
 }
 
+bool readStringField(const Json& obj, const char* key, std::string& value) {
+    if (obj.contains(key) && obj[key].is_string()) {
+        value = obj[key].get<std::string>();
+        return true;
+    }
+    return false;
+}
+
+bool readNumberField(const Json& obj, const char* key, uint64_t& value) {
+    if (obj.contains(key) && obj[key].is_number()) {
+        value = obj[key].get<uint64_t>();
+        return true;
+    }
+    return false;
+}
+
 bool checkAuthError(const std::string& body, long status,
                     std::string& error) {
     if (status == 401 || status == 403) {
@@ -125,8 +144,11 @@ bool checkAuthError(const std::string& body, long status,
             if (root.is_object() && root.contains("error") &&
                 root["error"].is_string())
                 detail = root["error"].get<std::string>();
-            else if (root.is_object() && root.contains("error_code"))
-                detail = std::to_string(root["error_code"].get<int>());
+            else if (root.is_object()) {
+                uint64_t code = 0;
+                if (readNumberField(root, "error_code", code))
+                    detail = std::to_string(code);
+            }
             error = detail.empty()
                 ? "Real-Debrid request failed (HTTP " +
                   std::to_string(status) + ")."
@@ -135,22 +157,6 @@ bool checkAuthError(const std::string& body, long status,
         return false;
     }
     return true;
-}
-
-bool readStringField(const Json& obj, const char* key, std::string& value) {
-    if (obj.contains(key) && obj[key].is_string()) {
-        value = obj[key].get<std::string>();
-        return true;
-    }
-    return false;
-}
-
-bool readNumberField(const Json& obj, const char* key, uint64_t& value) {
-    if (obj.contains(key) && obj[key].is_number()) {
-        value = obj[key].get<uint64_t>();
-        return true;
-    }
-    return false;
 }
 
 } // namespace
@@ -178,11 +184,14 @@ bool RdClient::parseAddMagnetResponse(const std::string& json,
     Json root;
     if (!parseJson(json, root, error))
         return false;
-    if (!root.is_object() || !root.contains("id")) {
+    if (!root.is_object()) {
         error = "Real-Debrid did not return a torrent id.";
         return false;
     }
-    torrentId = root["id"].get<std::string>();
+    if (!readStringField(root, "id", torrentId)) {
+        error = "Real-Debrid did not return a torrent id.";
+        return false;
+    }
     return true;
 }
 
@@ -197,12 +206,15 @@ bool RdClient::parseInfo(const std::string& json, RdTorrentInfo& info,
     Json root;
     if (!parseJson(json, root, error))
         return false;
-    if (!root.is_object() || !root.contains("id")) {
+    if (!root.is_object()) {
         error = "Real-Debrid returned an invalid torrent entry.";
         return false;
     }
     info = RdTorrentInfo{};
-    info.id = root["id"].get<std::string>();
+    if (!readStringField(root, "id", info.id)) {
+        error = "Real-Debrid returned an invalid torrent entry.";
+        return false;
+    }
     readStringField(root, "hash", info.hash);
     readStringField(root, "filename", info.filename);
     readNumberField(root, "bytes", info.bytes);

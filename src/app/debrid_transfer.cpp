@@ -472,8 +472,14 @@ Step pollUntilReady(RunContext& ctx) {
             return Step::Failed;
         }
 
+        if (!ctx.filesSelected && !info.links.empty())
+            ctx.selectedLinks = info.links;
+        // Select files only while the service is actually waiting for a
+        // selection. Resuming a torrent that is already downloading or
+        // downloaded must not re-select: Real-Debrid restarts the server-side
+        // torrent on POST /torrents/selectFiles, wasting a full re-download.
         if (!ctx.filesSelected &&
-            info.phase >= DebridInfo::Phase::AwaitingSelection &&
+            info.phase == DebridInfo::Phase::AwaitingSelection &&
             !info.files.empty()) {
             std::vector<std::string> selectedIds;
             for (size_t i = 0; i < info.files.size(); ++i) {

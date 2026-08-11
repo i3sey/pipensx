@@ -74,6 +74,9 @@ void testParseAddMagnetResponse() {
     assert(id == "abc123def456");
     assert(!RdClient::parseAddMagnetResponse(kAuthFail, id, error));
     assert(!error.empty());
+    // A non-string id must fail cleanly, not throw a json type_error.
+    assert(!RdClient::parseAddMagnetResponse("{\"id\":12345}", id, error));
+    assert(!error.empty());
     assert(!RdClient::parseAddMagnetResponse("{not json", id, error));
     assert(!error.empty());
 }
@@ -121,6 +124,11 @@ void testParseInfo() {
     assert(info.status == "dead");
 
     assert(!RdClient::parseInfo("{not json", info, error));
+    assert(!error.empty());
+
+    // A non-string id must fail cleanly, not throw a json type_error.
+    assert(!RdClient::parseInfo("{\"id\":123,\"filename\":\"x\"}",
+                                info, error));
     assert(!error.empty());
 }
 

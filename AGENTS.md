@@ -41,7 +41,7 @@ platform-specific changes.
 
 Three download sources: TorBox (cloud), TorrServer (self-hosted LAN), and
 Real-Debrid (cloud). Each implements `DebridProvider` (`src/app/debrid_provider.hpp`),
-a pure-virtual interface with six required methods.
+a pure-virtual interface with eight required methods: `validate`, `createFromMagnet`, `createFromFile`, `fetchInfo`, `selectFiles`, `resolveDownloadUrl`, `remove`, and `name`.
 
 ### Adding a new provider
 
@@ -83,7 +83,8 @@ round-trip — `mutex_` may be held.
   rule in `parseSettings()`. The old field comment `"realdebrid" was a provider we
   no longer ship` was written before Real-Debrid was added — do not cargo-cult it.
 - **Download state** (`src/app/download_manager.cpp`): `saveLocked` writes
-  `versioni6e`. The `load()` function gates optional fields behind
+  version 6 (bencode `7:versioni6e`). The `load()` function gates optional
+  fields behind
   `version.ival >= N`. Adding a new persisted task field requires bumping to 7,
   adding a `version.ival >= 7` load gate, and writing the new key to `saveLocked`.
 
