@@ -80,6 +80,7 @@ REQUEST_GATE_TEST_TARGET = $(BUILD_DIR)/tests/test_request_gate
 INSTALL_PACER_TEST_TARGET = $(BUILD_DIR)/tests/test_install_pacer
 JOURNAL_TEST_TARGET = $(BUILD_DIR)/tests/test_install_journal
 WEB_SEED_TEST_TARGET = $(BUILD_DIR)/tests/test_web_seed
+WEB_SEED_BACKOFF_TEST_TARGET = $(BUILD_DIR)/tests/test_web_seed_backoff
 MSE_TEST_TARGET = $(BUILD_DIR)/tests/test_mse
 DHT_CACHE_TEST_TARGET = $(BUILD_DIR)/tests/test_dht_cache
 DHT_SHARED_TEST_TARGET = $(BUILD_DIR)/tests/test_dht_shared
@@ -324,6 +325,7 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 		$(REQUEST_GATE_TEST_TARGET) \
 		$(INSTALL_PACER_TEST_TARGET) \
 		$(JOURNAL_TEST_TARGET) $(WEB_SEED_TEST_TARGET) \
+		$(WEB_SEED_BACKOFF_TEST_TARGET) \
 		$(FAVORITES_TEST_TARGET) \
 		$(MSE_TEST_TARGET) $(DHT_CACHE_TEST_TARGET) \
 		$(DHT_SHARED_TEST_TARGET) \
@@ -355,6 +357,7 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 	./$(INSTALL_PACER_TEST_TARGET)
 	./$(JOURNAL_TEST_TARGET)
 	./$(WEB_SEED_TEST_TARGET)
+	./$(WEB_SEED_BACKOFF_TEST_TARGET)
 	./$(FAVORITES_TEST_TARGET)
 	./$(MSE_TEST_TARGET)
 	./$(DHT_CACHE_TEST_TARGET)
@@ -459,6 +462,11 @@ $(JOURNAL_TEST_TARGET): tests/test_install_journal.cpp \
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
 
 $(WEB_SEED_TEST_TARGET): tests/test_web_seed.cpp $(BUILD_DIR)/src/app/web_seed_source.o \
+		$(BUILD_DIR)/src/core/util.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -pthread
+
+$(WEB_SEED_BACKOFF_TEST_TARGET): tests/test_web_seed_backoff.cpp $(BUILD_DIR)/src/app/web_seed_source.o \
 		$(BUILD_DIR)/src/core/util.o
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -pthread
