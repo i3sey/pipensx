@@ -112,6 +112,20 @@ void testInstalledPatchVersionString() {
     assert(pipensx::installedPatchVersionString(app, patches, false).empty());
 }
 
+void testTitleIdParsing() {
+    uint64_t value = 0;
+    assert(pipensx::InstalledTitleService::parseTitleId(
+        "0100AAAA00000800", value));
+    assert(value == 0x0100AAAA00000800ULL);
+    assert(pipensx::InstalledTitleService::parseTitleId(
+        "0100aaaa00000800", value));
+    assert(value == 0x0100AAAA00000800ULL);
+    assert(!pipensx::InstalledTitleService::parseTitleId(
+        "0100AAAA0000080", value));
+    assert(!pipensx::InstalledTitleService::parseTitleId(
+        "0100AAAA0000080Z", value));
+}
+
 void testUpdateAvailableAndUpToDate() {
     FakeSource source;
     source.set("0100000000000001", {"131072"});
@@ -300,6 +314,7 @@ int main() {
     testNullSourceReportsSourceUnknown();
     testNoInstalledVersionIsCheckError();
     testInstalledPatchVersionString();
+    testTitleIdParsing();
     testUpdateAvailableAndUpToDate();
     testNonNumericVersionsAreCheckError();
     testMaxAggregation();
