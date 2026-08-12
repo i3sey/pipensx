@@ -524,7 +524,8 @@
     "proxy_detail": "socks5://192.168.1.2:10808 — déjalo vacío para conexión directa",
     "proxy_invalid": "Usa scheme://host:port con http, https, socks4, socks5 o socks5h.",
     "proxy_note": "Enruta catálogo, carátulas, actualizaciones y descargas del servidor a través de un proxy en tu red. El tráfico punto a punto no lo usa.",
-    "language_es": "Español"
+    "language_es": "Español",
+    "language_zh": "简体中文"
   },
   "about": {
     "version": "Versión {}",
