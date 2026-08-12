@@ -914,8 +914,14 @@ private:
                     import.fileSelection.reserve(info.files.size());
                     for (const DebridFile& file : info.files) {
                         const bool package = isPackageName(file.path);
-                        import.fileSelection.push_back(static_cast<uint8_t>(
-                            package ? FileAction::Install : FileAction::Skip));
+                        FileAction action = FileAction::Skip;
+                        if (package)
+                            action = FileAction::Install;
+                        else if (!isCartridgeName(file.path) &&
+                                 isPortPayloadName(file.path))
+                            action = FileAction::Download;
+                        import.fileSelection.push_back(
+                            static_cast<uint8_t>(action));
                         import.packageCount += package ? 1 : 0;
                     }
                 }
@@ -950,16 +956,12 @@ private:
         }
 
         // Metadata is in: swap the catalog-declared size on the meter for the
-        // real one. Mirrors the one-tap selection (install the packages, skip
-        // the extras); a release with no packages is sized as a plain download.
-        std::vector<uint8_t> actions;
-        actions.reserve(preview.files.size());
-        for (const auto& file : preview.files) {
-            FileAction action = preview.packageCount == 0
-                ? FileAction::Download
-                : (file.package ? FileAction::Install : FileAction::Skip);
-            actions.push_back(static_cast<uint8_t>(action));
-        }
+        // real one. Mirrors the one-tap selection: install packages, keep port
+        // payloads downloadable, and skip unrelated extras.
+        std::vector<uint8_t> actions = pipensx::defaultInstallSelection(
+            preview, TransferMode::StreamInstall,
+            preview.packageCount == 0 ? StreamSelection::AllFiles
+                                      : StreamSelection::PackagesOnly);
         const auto sized = pipensx::estimateInstallSpace(
             preview, actions, TransferMode::StreamInstall);
         if (!preview.files.empty() && !sized.overflow) {
@@ -988,15 +990,18 @@ private:
             return;
         }
 
-        // Packages present. Install them silently. On a mixed release (anything
-        // that is not an install package) auto-select packages only; on a clean
-        // package-only release an empty mask means "all files".
+        // Packages present. Install them silently and include known homebrew
+        // port payloads so Copy to /switch can run after the download settles.
         uint32_t extras = preview.fileCount - preview.packageCount;
-        std::vector<uint8_t> mask;
-        if (extras > 0) {
-            mask.reserve(preview.files.size());
-            for (const auto& file : preview.files)
-                mask.push_back(file.package ? 1 : 0);
+        std::vector<uint8_t> mask = pipensx::defaultInstallSelection(
+            preview, TransferMode::StreamInstall,
+            extras > 0 ? StreamSelection::PackagesOnly
+                       : StreamSelection::AllFiles);
+        bool skippedExtras = false;
+        for (size_t i = 0; i < preview.files.size() && i < mask.size(); ++i) {
+            skippedExtras = skippedExtras ||
+                (!preview.files[i].package &&
+                 mask[i] == static_cast<uint8_t>(FileAction::Skip));
         }
 
         std::string id;
@@ -1007,7 +1012,7 @@ private:
         if (manager_->importTorrent(path, TransferMode::StreamInstall, mask,
                                     id, err, initialPeers)) {
             log_msg("[catalog] imported torrent %s\n", id.c_str());
-            if (extras > 0) {
+            if (skippedExtras) {
                 statusLabel_->setText(
                     tr("pipensx/detail/installing_extras_skipped_hint"));
                 brls::Application::notify(

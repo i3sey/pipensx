@@ -1,5 +1,7 @@
 #include "install_space.hpp"
 
+#include "nx_file_types.hpp"
+
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
@@ -38,9 +40,11 @@ std::vector<uint8_t> defaultInstallSelection(
     mask.reserve(preview.files.size());
     bool allSelected = true;
     for (const TorrentPreview::File& file : preview.files) {
-        const uint8_t action = file.package
-            ? static_cast<uint8_t>(FileAction::Install)
-            : static_cast<uint8_t>(FileAction::Skip);
+        uint8_t action = static_cast<uint8_t>(FileAction::Skip);
+        if (file.package)
+            action = static_cast<uint8_t>(FileAction::Install);
+        else if (!file.cartridge && isPortPayloadName(file.path))
+            action = static_cast<uint8_t>(FileAction::Download);
         mask.push_back(action);
         allSelected = allSelected &&
                       action != static_cast<uint8_t>(FileAction::Skip);

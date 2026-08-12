@@ -113,11 +113,6 @@ bool validNro(const std::string& path) {
     return ok && magic == kNroMagic;
 }
 
-bool hasNroExtension(const std::string& path) {
-    const std::string lower = lowerAscii(path);
-    return lower.size() >= 4 && lower.compare(lower.size() - 4, 4, ".nro") == 0;
-}
-
 bool destinationParentsSafe(const std::string& root,
                             const std::string& relative) {
     struct stat rootStat {};
