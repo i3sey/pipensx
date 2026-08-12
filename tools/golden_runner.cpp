@@ -9,7 +9,8 @@
 //                 [--locale en-US|ru]
 //                 --screen catalog|shelf-scroll|shelf-header|detail|torrent-selection|
 //                          torrent-selection-scroll|downloads|downloads-back|frame|
-//                          hints-budget|installed|installed-populated|installed-bundles|
+//                          hints-budget|installed|installed-populated|updates|
+//                          installed-bundles|
 //                          update-chooser|
 //                          update-chooser-toggle|settings|settings-debrid|help|
 //                          first-run|first-run-focus|first-run-disclaimer|debrid-link|
@@ -757,6 +758,12 @@ int main(int argc, char** argv) {
             return new InstalledView(&installed, &manager, &metadata,
                                      &settings, &catalog, false);
         });
+        tabs->addNavTab(tr("pipensx/nav/updates"), NavIconType::Updates,
+                        [&] {
+            return new InstalledView(&installed, &manager, &metadata,
+                                     &settings, &catalog, false,
+                                     InstalledView::Mode::Updates);
+        });
         tabs->addNavTab(tr("pipensx/nav/settings"), NavIconType::Settings,
                         [&] {
             return new SettingsView(&settings, &manager, &catalog, &metadata,
@@ -820,11 +827,16 @@ int main(int argc, char** argv) {
         tabs->attachStorageFooter(&manager);
         activity = new GoldenActivity(tabs, /*withExitAction=*/true);
     } else if (screen == "installed" || screen == "installed-populated" ||
+               screen == "updates" ||
                screen == "installed-bundles") {
-        if (screen == "installed-populated" || screen == "installed-bundles")
+        if (screen == "installed-populated" || screen == "updates" ||
+            screen == "installed-bundles")
             seedInstalledFixture(installed);
         auto* view = new InstalledView(&installed, &manager, &metadata,
-                                       &settings, &catalog, false);
+                                       &settings, &catalog, false,
+                                       screen == "updates"
+                                           ? InstalledView::Mode::Updates
+                                           : InstalledView::Mode::Library);
         activity = new GoldenActivity(view);
         if (screen == "installed-bundles")
             installedBundles = view;

@@ -127,6 +127,12 @@ public:
             return new InstalledView(installed, manager, metadata, settings,
                                      catalog);
         });
+        tabs->addNavTab(tr("pipensx/nav/updates"), NavIconType::Updates,
+                        [installed, manager, metadata, settings, catalog] {
+            return new InstalledView(installed, manager, metadata, settings,
+                                     catalog, true,
+                                     InstalledView::Mode::Updates);
+        });
         tabs->addNavTab(tr("pipensx/nav/settings"), NavIconType::Settings,
                         [settings, manager, catalog, metadata,
                          installed, updater, mods, webServer] {

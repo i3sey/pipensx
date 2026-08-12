@@ -63,8 +63,23 @@ std::vector<uint8_t> selectFiles(const TorrentPreview& preview,
 // This mask only preselects: the update-file chooser always opens and hands
 // the final, user-tuned mask back to the importer.
 std::vector<uint8_t> selectUpdateFiles(const TorrentPreview& preview,
-                                       const std::string& latestVersion,
-                                       const std::string& titleId = {});
+                                        const std::string& latestVersion,
+                                        const std::string& titleId = {});
+
+// Conservative one-tap install mask for catalog releases. It only trusts title
+// ids that are explicit in file names: base/update packages for the selected
+// game are installed, DLC is installed only when it maps to the selected base
+// title and is not already present, and unknown packages stay skipped so the
+// chooser remains the safe escape hatch.
+std::vector<uint8_t> selectSmartInstallFiles(
+    const TorrentPreview& preview,
+    const std::string& titleId,
+    const std::vector<std::string>& installedTitleIds = {},
+    const std::vector<std::string>& installedDlcIds = {});
+
+bool parseNxTitleId(const std::string& titleId, uint64_t& value);
+std::string formatNxTitleId(uint64_t value);
+std::string normalizeNxBaseTitleId(const std::string& titleId);
 
 // Settled when the tracked task is gone or in a terminal download status —
 // used by InstalledView's post-install re-check tick (and tested directly so

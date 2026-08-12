@@ -11,6 +11,7 @@
     "catalog": "Catalogue",
     "downloads": "Téléchargements",
     "installed": "Installés",
+    "updates": "Mises à jour",
     "settings": "Paramètres",
     "help": "Aide",
     "about": "À propos"
@@ -368,6 +369,11 @@
     "update_choose_more": "Autres paquets ({0})...",
     "update_choose_file": "Choisir les fichiers de mise à jour",
     "update_nothing_selected": "Sélectionnez au moins un fichier."
+  },
+  "updates": {
+    "empty_title": "Aucune mise à jour trouvée",
+    "empty_body": "Appuyez sur L pour vérifier les jeux installés dans l'index du catalogue.",
+    "count": "{} mises à jour disponibles"
   },
   "batch": {
     "frame_title": "Installation par lots",

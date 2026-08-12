@@ -11,6 +11,7 @@
     "catalog": "Catalog",
     "downloads": "Downloads",
     "installed": "Installed",
+    "updates": "Updates",
     "settings": "Settings",
     "help": "Help",
     "about": "About"
@@ -368,6 +369,11 @@
     "update_choose_more": "Other bundles ({0})...",
     "update_choose_file": "Choose the update files",
     "update_nothing_selected": "Select at least one file."
+  },
+  "updates": {
+    "empty_title": "No updates found",
+    "empty_body": "Press L to check installed games against the catalog index.",
+    "count": "{} updates available"
   },
   "batch": {
     "frame_title": "Batch install",

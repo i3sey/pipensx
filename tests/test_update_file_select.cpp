@@ -36,6 +36,18 @@ void expectActions(const TorrentPreview& preview,
         assert(actions[i] == expected[i]);
 }
 
+void expectSmartActions(const TorrentPreview& preview,
+                        const std::string& titleId,
+                        const std::vector<uint8_t>& expected,
+                        const std::vector<std::string>& installedTitleIds = {},
+                        const std::vector<std::string>& installedDlcIds = {}) {
+    const std::vector<uint8_t> actions = pipensx::selectSmartInstallFiles(
+        preview, titleId, installedTitleIds, installedDlcIds);
+    assert(actions.size() == expected.size());
+    for (size_t i = 0; i < expected.size(); ++i)
+        assert(actions[i] == expected[i]);
+}
+
 void testExactVersionTagIsTheUpdate() {
     TorrentPreview preview;
     preview.files = {package("Game [0100AAAA00B00000].nsp"),
@@ -164,6 +176,48 @@ void testSameVersionDifferentTitleIdUsesTitleId() {
     }, "0100AAAA00000000");
 }
 
+void testSmartInstallIncludesApplicableDlc() {
+    TorrentPreview preview;
+    preview.files = {
+        package("Game [0100AAAA00000000][v0].nsp"),
+        package("Game Update [0100AAAA00000800][v131072].nsp"),
+        package("Game DLC 1 [0100AAAA00001001].nsp"),
+        package("Other Game DLC [0100BBBB00001001].nsp"),
+        plain("readme.txt")};
+    expectSmartActions(preview, "0100AAAA00000000", {
+        static_cast<uint8_t>(FileAction::Install),
+        static_cast<uint8_t>(FileAction::Install),
+        static_cast<uint8_t>(FileAction::Install),
+        static_cast<uint8_t>(FileAction::Skip),
+        static_cast<uint8_t>(FileAction::Skip),
+    });
+}
+
+void testSmartInstallSkipsBaseWhenInstalledButKeepsDlc() {
+    TorrentPreview preview;
+    preview.files = {
+        package("Game [0100AAAA00000000][v0].nsp"),
+        package("Game Update [0100AAAA00000800][v131072].nsp"),
+        package("Game DLC 1 [0100AAAA00001001].nsp"),
+        package("Game DLC 2 [0100AAAA00001002].nsp")};
+    expectSmartActions(preview, "0100AAAA00000000", {
+        static_cast<uint8_t>(FileAction::Skip),
+        static_cast<uint8_t>(FileAction::Install),
+        static_cast<uint8_t>(FileAction::Install),
+        static_cast<uint8_t>(FileAction::Skip),
+    }, {"0100AAAA00000000"}, {"0100AAAA00001002"});
+}
+
+void testSmartInstallLeavesUnknownPackagesSkipped() {
+    TorrentPreview preview;
+    preview.files = {package("Game DLC 1.nsp"),
+                     package("Game [0100AAAA00000000][v0].nsp")};
+    expectSmartActions(preview, "0100AAAA00000000", {
+        static_cast<uint8_t>(FileAction::Skip),
+        static_cast<uint8_t>(FileAction::Install),
+    });
+}
+
 void testUpdateRecheckSettled() {
     using pipensx::DownloadStatus;
     assert(pipensx::updateRecheckSettled(false, DownloadStatus::Downloading));
@@ -242,6 +296,9 @@ int main() {
     testMarkerFallbackWithoutTags();
     testFallsBackToAllSkipWhenNothingMatches();
     testSameVersionDifferentTitleIdUsesTitleId();
+    testSmartInstallIncludesApplicableDlc();
+    testSmartInstallSkipsBaseWhenInstalledButKeepsDlc();
+    testSmartInstallLeavesUnknownPackagesSkipped();
     testUpdateRecheckSettled();
     testEmptyPreviewYieldsEmptyActions();
     testSelectFilesInstallsExactlyThePicks();

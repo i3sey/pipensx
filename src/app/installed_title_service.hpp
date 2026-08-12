@@ -31,8 +31,10 @@ public:
     bool uninstall(const std::string& titleId, std::string& error,
                    std::string& refreshError);
     bool contains(const std::string& titleId) const;
+    bool containsDlc(const std::string& titleId) const;
 
     std::vector<InstalledTitle> titles() const;
+    std::vector<std::string> dlcTitleIds() const;
     uint64_t generation() const;
     const std::string& rootPath() const { return rootPath_; }
     // Golden-runner seam: the PC shim reports an empty library, but the
@@ -69,6 +71,7 @@ private:
     mutable std::mutex mutex_;
     std::vector<InstalledTitle> titles_;
     std::unordered_set<std::string> titleIds_;
+    std::unordered_set<std::string> dlcTitleIds_;
     uint64_t generation_ = 0;
 };
 

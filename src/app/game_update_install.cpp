@@ -4,6 +4,8 @@
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
+#include <cstdio>
+#include <unordered_set>
 
 namespace pipensx {
 namespace {
@@ -88,7 +90,66 @@ bool pathHasTitleId(const std::string& path, const std::string& titleId) {
     return lowerPath.find(lowerId) != std::string::npos;
 }
 
+std::vector<std::string> titleIdsInPath(const std::string& path) {
+    std::vector<std::string> ids;
+    for (size_t i = 0; i + 16 <= path.size(); ++i) {
+        std::string candidate = path.substr(i, 16);
+        uint64_t parsed = 0;
+        if (parseNxTitleId(candidate, parsed)) {
+            ids.push_back(formatNxTitleId(parsed));
+            i += 15;
+        }
+    }
+    return ids;
+}
+
+std::unordered_set<std::string> normalizedSet(
+    const std::vector<std::string>& values) {
+    std::unordered_set<std::string> out;
+    out.reserve(values.size());
+    for (const std::string& value : values) {
+        uint64_t parsed = 0;
+        if (parseNxTitleId(value, parsed))
+            out.insert(formatNxTitleId(parsed));
+    }
+    return out;
+}
+
 } // namespace
+
+bool parseNxTitleId(const std::string& titleId, uint64_t& value) {
+    if (titleId.size() != 16)
+        return false;
+    uint64_t parsed = 0;
+    for (char c : titleId) {
+        int digit = -1;
+        if (c >= '0' && c <= '9')
+            digit = c - '0';
+        else if (c >= 'a' && c <= 'f')
+            digit = c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F')
+            digit = c - 'A' + 10;
+        if (digit < 0)
+            return false;
+        parsed = (parsed << 4) | static_cast<uint64_t>(digit);
+    }
+    value = parsed;
+    return true;
+}
+
+std::string formatNxTitleId(uint64_t value) {
+    char text[17];
+    std::snprintf(text, sizeof(text), "%016llX",
+                  static_cast<unsigned long long>(value));
+    return text;
+}
+
+std::string normalizeNxBaseTitleId(const std::string& titleId) {
+    uint64_t parsed = 0;
+    if (!parseNxTitleId(titleId, parsed))
+        return {};
+    return formatNxTitleId(parsed & ~0x1FFFULL);
+}
 
 std::vector<size_t> updateVersionMatches(const TorrentPreview& preview,
                                          const std::string& latestVersion,
@@ -160,6 +221,55 @@ std::vector<uint8_t> selectUpdateFiles(const TorrentPreview& preview,
     // Nothing identifiable: leave everything Skip so the chooser opens with
     // no preselection (Continue stays disabled until the user picks).
     return selectFiles(preview, {});
+}
+
+std::vector<uint8_t> selectSmartInstallFiles(
+    const TorrentPreview& preview,
+    const std::string& titleId,
+    const std::vector<std::string>& installedTitleIds,
+    const std::vector<std::string>& installedDlcIds) {
+    std::vector<uint8_t> actions(
+        preview.files.size(), static_cast<uint8_t>(FileAction::Skip));
+    const std::string wantedBase = normalizeNxBaseTitleId(titleId);
+    if (wantedBase.empty())
+        return actions;
+    const std::unordered_set<std::string> installedTitles =
+        normalizedSet(installedTitleIds);
+    const std::unordered_set<std::string> installedDlc =
+        normalizedSet(installedDlcIds);
+
+    for (size_t i = 0; i < preview.files.size(); ++i) {
+        const TorrentPreview::File& file = preview.files[i];
+        if (!file.package)
+            continue;
+        bool install = false;
+        for (const std::string& id : titleIdsInPath(file.path)) {
+            const std::string candidateBase = normalizeNxBaseTitleId(id);
+            if (candidateBase != wantedBase)
+                continue;
+            uint64_t parsed = 0;
+            parseNxTitleId(id, parsed);
+            const uint64_t low = parsed & 0x1FFFULL;
+            const bool dlc = low >= 0x1000ULL;
+            const bool basePackage = low == 0;
+            const bool update = low == 0x800ULL;
+            if (dlc && installedDlc.count(id) == 0) {
+                install = true;
+                break;
+            }
+            if (update) {
+                install = true;
+                break;
+            }
+            if (basePackage && installedTitles.count(wantedBase) == 0) {
+                install = true;
+                break;
+            }
+        }
+        if (install)
+            actions[i] = static_cast<uint8_t>(FileAction::Install);
+    }
+    return actions;
 }
 
 std::string updateMagnetFor(const std::string& infoHash,

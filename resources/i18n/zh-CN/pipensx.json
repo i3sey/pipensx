@@ -11,6 +11,7 @@
     "catalog": "目录",
     "downloads": "下载",
     "installed": "已安装",
+    "updates": "更新",
     "settings": "设置",
     "help": "帮助",
     "about": "关于"
@@ -341,6 +342,10 @@
     "refreshing": "正在刷新已安装应用…",
     "update_check_all": "检查全部更新",
     "action_check": "检查",
+    "uninstall_action": "卸载",
+    "uninstall_confirm": "从此主机卸载 {0}？保存数据会保留。",
+    "uninstalling": "正在卸载 {0}…",
+    "uninstall_done": "应用已卸载。",
     "update_stale": "更新结果已过时 — 按 L 重新检查",
     "update_chip_available": "有更新",
     "update_chip_latest": "已是最新",
@@ -364,6 +369,11 @@
     "update_choose_more": "其他捆绑包（{0}）…",
     "update_choose_file": "选择更新文件",
     "update_nothing_selected": "请至少选择一个文件。"
+  },
+  "updates": {
+    "empty_title": "未找到更新",
+    "empty_body": "按 L 根据目录索引检查已安装游戏。",
+    "count": "{} 个可用更新"
   },
   "batch": {
     "frame_title": "批量安装",

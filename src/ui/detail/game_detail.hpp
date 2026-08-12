@@ -12,6 +12,7 @@
 
 #include "app/app_settings.hpp"
 #include "app/catalog_presentation.hpp"
+#include "app/game_update_install.hpp"
 #include "ui/i18n.hpp"
 #include "app/catalog_service.hpp"
 #include "app/download_manager.hpp"
@@ -911,18 +912,48 @@ private:
                     return;
                 }
                 if (mode == TransferMode::StreamInstall && !info.files.empty()) {
-                    import.fileSelection.reserve(info.files.size());
+                    TorrentPreview preview;
+                    preview.name = import.name;
+                    preview.totalBytes = import.totalBytes;
+                    preview.fileCount = static_cast<uint32_t>(info.files.size());
                     for (const DebridFile& file : info.files) {
                         const bool package = isPackageName(file.path);
-                        FileAction action = FileAction::Skip;
-                        if (package)
-                            action = FileAction::Install;
-                        else if (!isCartridgeName(file.path) &&
-                                 isPortPayloadName(file.path))
+                        preview.files.push_back({file.path, file.bytes, package,
+                                                 isCompressedName(file.path),
+                                                 isCartridgeName(file.path)});
+                        preview.packageCount += package ? 1 : 0;
+                        preview.cartridgeCount += isCartridgeName(file.path) ? 1 : 0;
+                    }
+                    import.fileSelection = selectSmartInstallFiles(
+                        preview, titleId_, installedTitleIds(),
+                        installedDlcIds());
+                    import.packageCount = 0;
+                    for (size_t i = 0; i < info.files.size(); ++i) {
+                        const DebridFile& file = info.files[i];
+                        FileAction action = static_cast<FileAction>(
+                            import.fileSelection[i]);
+                        if (action == FileAction::Skip &&
+                            !isCartridgeName(file.path) &&
+                            isPortPayloadName(file.path))
                             action = FileAction::Download;
-                        import.fileSelection.push_back(
-                            static_cast<uint8_t>(action));
-                        import.packageCount += package ? 1 : 0;
+                        if (action == FileAction::Install)
+                            ++import.packageCount;
+                        import.fileSelection[i] = static_cast<uint8_t>(action);
+                    }
+                    if (import.packageCount == 0) {
+                        import.fileSelection.clear();
+                        for (const DebridFile& file : info.files) {
+                            const bool package = isPackageName(file.path);
+                            FileAction action = FileAction::Skip;
+                            if (package)
+                                action = FileAction::Install;
+                            else if (!isCartridgeName(file.path) &&
+                                     isPortPayloadName(file.path))
+                                action = FileAction::Download;
+                            import.fileSelection.push_back(
+                                static_cast<uint8_t>(action));
+                            import.packageCount += package ? 1 : 0;
+                        }
                     }
                 }
                 std::string id;
@@ -997,6 +1028,25 @@ private:
             preview, TransferMode::StreamInstall,
             extras > 0 ? StreamSelection::PackagesOnly
                        : StreamSelection::AllFiles);
+        std::vector<uint8_t> smartMask = selectSmartInstallFiles(
+            preview, titleId_, installedTitleIds(), installedDlcIds());
+        bool smartPickedPackage = false;
+        for (uint8_t action : smartMask) {
+            if (action == static_cast<uint8_t>(FileAction::Install)) {
+                smartPickedPackage = true;
+                break;
+            }
+        }
+        if (smartPickedPackage) {
+            for (size_t i = 0; i < preview.files.size() && i < smartMask.size();
+                 ++i) {
+                if (smartMask[i] == static_cast<uint8_t>(FileAction::Skip) &&
+                    !preview.files[i].package && !preview.files[i].cartridge &&
+                    isPortPayloadName(preview.files[i].path))
+                    smartMask[i] = static_cast<uint8_t>(FileAction::Download);
+            }
+            mask = std::move(smartMask);
+        }
         bool skippedExtras = false;
         for (size_t i = 0; i < preview.files.size() && i < mask.size(); ++i) {
             skippedExtras = skippedExtras ||
@@ -1051,6 +1101,21 @@ private:
         brls::Application::pushActivity(new TorrentSelectionActivity(
             manager_, path, std::move(preview), preferred,
             selection, std::move(initialPeers)));
+    }
+
+    std::vector<std::string> installedTitleIds() const {
+        std::vector<std::string> ids;
+        if (!installed_)
+            return ids;
+        const std::vector<InstalledTitle> titles = installed_->titles();
+        ids.reserve(titles.size());
+        for (const InstalledTitle& title : titles)
+            ids.push_back(title.titleId);
+        return ids;
+    }
+
+    std::vector<std::string> installedDlcIds() const {
+        return installed_ ? installed_->dlcTitleIds() : std::vector<std::string>();
     }
 
     CatalogEntry entry_;

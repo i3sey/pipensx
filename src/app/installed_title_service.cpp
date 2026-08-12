@@ -132,9 +132,19 @@ bool InstalledTitleService::contains(const std::string& titleId) const {
     return !titleId.empty() && titleIds_.count(upperAscii(titleId)) != 0;
 }
 
+bool InstalledTitleService::containsDlc(const std::string& titleId) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return !titleId.empty() && dlcTitleIds_.count(upperAscii(titleId)) != 0;
+}
+
 std::vector<InstalledTitle> InstalledTitleService::titles() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return titles_;
+}
+
+std::vector<std::string> InstalledTitleService::dlcTitleIds() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return {dlcTitleIds_.begin(), dlcTitleIds_.end()};
 }
 
 uint64_t InstalledTitleService::generation() const {
@@ -150,6 +160,7 @@ void InstalledTitleService::injectTitles(std::vector<InstalledTitle> titles) {
         ids.insert(upperAscii(title.titleId));
     titles_ = std::move(titles);
     titleIds_ = std::move(ids);
+    dlcTitleIds_.clear();
     ++generation_;
 }
 
@@ -186,9 +197,11 @@ bool InstalledTitleService::refresh(std::string& error) {
     // Any open/list failure makes the map incomplete — leave version empty
     // (CheckError) rather than inventing "0" and offering a false update.
     std::unordered_map<uint64_t, uint32_t> patchVersions;
+    std::unordered_set<std::string> dlcIds;
     bool patchMetaComplete = true;
     {
         constexpr s32 MaxPatches = 8192;
+        constexpr s32 MaxDlc = 32768;
         const NcmStorageId storages[] = {NcmStorageId_BuiltInUser,
                                          NcmStorageId_SdCard};
         for (NcmStorageId storage : storages) {
@@ -237,6 +250,40 @@ bool InstalledTitleService::refresh(std::string& error) {
                     diagnostic_error("installed", "ncm_list",
                                      "result=0x%08x", rc);
                     patchMetaComplete = false;
+                }
+            }
+
+            total = 0;
+            written = 0;
+            rc = ncmContentMetaDatabaseList(
+                &database, &total, &written, nullptr, 0,
+                NcmContentMetaType_AddOnContent, 0, 0,
+                0xFFFFFFFFFFFFFFFFULL, NcmContentInstallType_Unknown);
+            if (R_FAILED(rc)) {
+                diagnostic_error("installed", "ncm_dlc_list",
+                                 "result=0x%08x", rc);
+            } else {
+                if (total > MaxDlc) {
+                    diagnostic_error("installed", "ncm_dlc_truncate",
+                                     "count=%d", total);
+                    total = MaxDlc;
+                }
+                std::vector<NcmContentMetaKey> dlcKeys(
+                    static_cast<size_t>(total));
+                if (!dlcKeys.empty()) {
+                    rc = ncmContentMetaDatabaseList(
+                        &database, &total, &written, dlcKeys.data(),
+                        static_cast<s32>(dlcKeys.size()),
+                        NcmContentMetaType_AddOnContent, 0, 0,
+                        0xFFFFFFFFFFFFFFFFULL, NcmContentInstallType_Unknown);
+                    if (R_SUCCEEDED(rc)) {
+                        for (s32 index = 0; index < written; ++index)
+                            dlcIds.insert(formatTitleId(
+                                dlcKeys[static_cast<size_t>(index)].id));
+                    } else {
+                        diagnostic_error("installed", "ncm_dlc_list",
+                                         "result=0x%08x", rc);
+                    }
                 }
             }
             ncmContentMetaDatabaseClose(&database);
@@ -299,6 +346,7 @@ bool InstalledTitleService::refresh(std::string& error) {
         std::lock_guard<std::mutex> lock(mutex_);
         titles_ = std::move(next);
         titleIds_ = std::move(ids);
+        dlcTitleIds_ = std::move(dlcIds);
         ++generation_;
     }
     log_msg("[installed] loaded %zu applications\n", count);
