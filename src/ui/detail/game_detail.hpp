@@ -17,6 +17,7 @@
 #include "app/catalog_service.hpp"
 #include "app/download_manager.hpp"
 #include "app/favorites_service.hpp"
+#include "app/game_update_install.hpp"
 #include "app/game_metadata_service.hpp"
 #include "app/install_space.hpp"
 #include "app/installed_title_service.hpp"
@@ -237,7 +238,7 @@ private:
         installContract_->setTextColor(theme::textTertiary());
         installContract_->setMarginTop(6);
         installContract_->setSingleLine(false);
-        installContract_->setText(tr("pipensx/detail/install_contract"));
+        installContract_->setText(tr("pipensx/detail/smart_install_contract"));
         left->addView(installContract_);
 
         // File selection and the wishlist toggle share one row: a fourth full-width
@@ -393,6 +394,14 @@ private:
     void buildFactsTable(brls::Box* right) {
         auto* table = new brls::Box(brls::Axis::COLUMN);
         table->setMarginTop(8);
+        addFactRow(table, tr("pipensx/detail/fact_install_state"),
+                   installed_ && installed_->contains(titleId_)
+                       ? tr("pipensx/detail/install_state_installed")
+                       : tr("pipensx/detail/install_state_not_installed"));
+        addFactRow(table, tr("pipensx/detail/fact_installed_version"),
+                   formatTitleVersion(installedVersionForTitle()));
+        addFactRow(table, tr("pipensx/detail/fact_available_version"),
+                   formatTitleVersion(latestVersionForEntry()));
         addFactRow(table, tr("pipensx/detail/fact_developer"),
                    presentation_.developer);
         addFactRow(table, tr("pipensx/detail/fact_publisher"),
@@ -665,16 +674,25 @@ private:
             setTextIfChanged(primary_, tr("pipensx/common/install"));
             primary_->setProgress(-1.0f);
             primary_->setState(brls::ButtonState::ENABLED);
-            setTextIfChanged(secondary_, tr("pipensx/common/choose_files"));
+            setTextIfChanged(secondary_, tr("pipensx/detail/install_options"));
             secondary_->setState(brls::ButtonState::ENABLED);
             if (installContract_)
                 installContract_->setVisibility(brls::Visibility::VISIBLE);
             if (!operationMessage_.empty())
                 setTextIfChanged(statusLabel_, operationMessage_);
-            else if (installed_ && installed_->contains(titleId_))
-                setTextIfChanged(statusLabel_,
-                                 tr("pipensx/detail/installed_hint"));
-            else
+            else if (installed_ && installed_->contains(titleId_)) {
+                const std::string latestXyz =
+                    formatTitleVersion(latestVersionForEntry());
+                if (!latestXyz.empty() &&
+                    titleVersionIsNewer(latestVersionForEntry(),
+                                        installedVersionForTitle()))
+                    setTextIfChanged(
+                        statusLabel_,
+                        tr("pipensx/detail/update_available_hint", latestXyz));
+                else
+                    setTextIfChanged(statusLabel_,
+                                     tr("pipensx/detail/installed_hint"));
+            } else
                 setTextIfChanged(statusLabel_,
                                  tr("pipensx/detail/install_hint"));
         }
@@ -707,7 +725,7 @@ private:
                 new DetailsActivity(task->id, manager_, deploy_));
             return;
         }
-        // Select files: always open the per-file picker after resolve.
+        // Install options: always open the per-file picker after resolve.
         startInstall(true);
     }
 
@@ -924,36 +942,24 @@ private:
                         preview.packageCount += package ? 1 : 0;
                         preview.cartridgeCount += isCartridgeName(file.path) ? 1 : 0;
                     }
-                    import.fileSelection = selectSmartInstallFiles(
-                        preview, titleId_, installedTitleIds(),
-                        installedDlcIds());
+                    import.fileSelection = smartInstallMask(preview);
                     import.packageCount = 0;
-                    for (size_t i = 0; i < info.files.size(); ++i) {
-                        const DebridFile& file = info.files[i];
-                        FileAction action = static_cast<FileAction>(
-                            import.fileSelection[i]);
-                        if (action == FileAction::Skip &&
-                            !isCartridgeName(file.path) &&
-                            isPortPayloadName(file.path))
-                            action = FileAction::Download;
-                        if (action == FileAction::Install)
+                    for (uint8_t action : import.fileSelection) {
+                        if (action == static_cast<uint8_t>(FileAction::Install))
                             ++import.packageCount;
-                        import.fileSelection[i] = static_cast<uint8_t>(action);
                     }
                     if (import.packageCount == 0) {
-                        import.fileSelection.clear();
-                        for (const DebridFile& file : info.files) {
-                            const bool package = isPackageName(file.path);
-                            FileAction action = FileAction::Skip;
-                            if (package)
-                                action = FileAction::Install;
-                            else if (!isCartridgeName(file.path) &&
-                                     isPortPayloadName(file.path))
-                                action = FileAction::Download;
-                            import.fileSelection.push_back(
-                                static_cast<uint8_t>(action));
-                            import.packageCount += package ? 1 : 0;
-                        }
+                        operationMessage_ = tr("pipensx/detail/smart_open_options");
+                        refreshButtons();
+                        brls::Application::notify(operationMessage_);
+                        brls::Application::pushActivity(new TorrentSelectionActivity(
+                            manager_, "", std::move(preview),
+                            TransferMode::StreamInstall,
+                            settings_->get().streamSelection, {}, import,
+                            [providerKind, key, debridId] {
+                                removeDebridTransferAsync(providerKind, key, debridId);
+                            }));
+                        return;
                     }
                 }
                 std::string id;
@@ -986,13 +992,7 @@ private:
             return;
         }
 
-        // Metadata is in: swap the catalog-declared size on the meter for the
-        // real one. Mirrors the one-tap selection: install packages, keep port
-        // payloads downloadable, and skip unrelated extras.
-        std::vector<uint8_t> actions = pipensx::defaultInstallSelection(
-            preview, TransferMode::StreamInstall,
-            preview.packageCount == 0 ? StreamSelection::AllFiles
-                                      : StreamSelection::PackagesOnly);
+        std::vector<uint8_t> actions = smartInstallMask(preview);
         const auto sized = pipensx::estimateInstallSpace(
             preview, actions, TransferMode::StreamInstall);
         if (!preview.files.empty() && !sized.overflow) {
@@ -1021,37 +1021,23 @@ private:
             return;
         }
 
-        // Packages present. Install them silently and include known homebrew
-        // port payloads so Copy to /switch can run after the download settles.
-        uint32_t extras = preview.fileCount - preview.packageCount;
-        std::vector<uint8_t> mask = pipensx::defaultInstallSelection(
-            preview, TransferMode::StreamInstall,
-            extras > 0 ? StreamSelection::PackagesOnly
-                       : StreamSelection::AllFiles);
-        std::vector<uint8_t> smartMask = selectSmartInstallFiles(
-            preview, titleId_, installedTitleIds(), installedDlcIds());
-        bool smartPickedPackage = false;
-        for (uint8_t action : smartMask) {
+        const bool titleInstalled = installed_ && installed_->contains(titleId_);
+        std::vector<uint8_t> mask = smartInstallMask(preview);
+        bool hasInstall = false;
+        for (uint8_t action : mask) {
             if (action == static_cast<uint8_t>(FileAction::Install)) {
-                smartPickedPackage = true;
+                hasInstall = true;
                 break;
             }
         }
-        if (smartPickedPackage) {
-            for (size_t i = 0; i < preview.files.size() && i < smartMask.size();
-                 ++i) {
-                if (smartMask[i] == static_cast<uint8_t>(FileAction::Skip) &&
-                    !preview.files[i].package && !preview.files[i].cartridge &&
-                    isPortPayloadName(preview.files[i].path))
-                    smartMask[i] = static_cast<uint8_t>(FileAction::Download);
-            }
-            mask = std::move(smartMask);
-        }
-        bool skippedExtras = false;
-        for (size_t i = 0; i < preview.files.size() && i < mask.size(); ++i) {
-            skippedExtras = skippedExtras ||
-                (!preview.files[i].package &&
-                 mask[i] == static_cast<uint8_t>(FileAction::Skip));
+        if (!hasInstall) {
+            operationMessage_ = titleInstalled
+                ? tr("pipensx/detail/smart_open_options")
+                : tr("pipensx/detail/no_installable");
+            refreshButtons();
+            brls::Application::notify(operationMessage_);
+            openSelection(path, std::move(preview), std::move(initialPeers));
+            return;
         }
 
         std::string id;
@@ -1059,19 +1045,18 @@ private:
         const std::string destination = installDestinationLabel(
             settings_ ? installTargetFor(settings_->get().installLocation)
                       : manager_->installTarget());
-        if (manager_->importTorrent(path, TransferMode::StreamInstall, mask,
-                                    id, err, initialPeers)) {
+        if (manager_->importTorrentActions(path, mask, id, err, initialPeers)) {
             log_msg("[catalog] imported torrent %s\n", id.c_str());
-            if (skippedExtras) {
+            if (titleInstalled) {
                 statusLabel_->setText(
-                    tr("pipensx/detail/installing_extras_skipped_hint"));
+                    tr("pipensx/detail/smart_installing_update", destination));
                 brls::Application::notify(
-                    tr("pipensx/detail/installing_extras_skipped"));
+                    tr("pipensx/detail/smart_installing_update", destination));
             } else {
                 statusLabel_->setText(
-                    tr("pipensx/detail/added_installing", destination));
+                    tr("pipensx/detail/smart_installing_base", destination));
                 brls::Application::notify(
-                    tr("pipensx/detail/added_installing", destination));
+                    tr("pipensx/detail/smart_installing_base", destination));
             }
             if (onChange_)
                 onChange_();
@@ -1103,19 +1088,32 @@ private:
             selection, std::move(initialPeers)));
     }
 
-    std::vector<std::string> installedTitleIds() const {
-        std::vector<std::string> ids;
-        if (!installed_)
-            return ids;
-        const std::vector<InstalledTitle> titles = installed_->titles();
-        ids.reserve(titles.size());
-        for (const InstalledTitle& title : titles)
-            ids.push_back(title.titleId);
-        return ids;
+    std::string installedVersionForTitle() const {
+        if (!installed_ || !installed_->contains(titleId_))
+            return {};
+        for (const InstalledTitle& title : installed_->titles()) {
+            if (catalogLower(title.titleId) == catalogLower(titleId_))
+                return title.version;
+        }
+        return {};
+    }
+
+    std::string latestVersionForEntry() const {
+        const GameMetadata* metadata = metadata_->findByInfoHash(entry_.infoHash);
+        return metadata ? metadata->latestVersion : std::string();
     }
 
     std::vector<std::string> installedDlcIds() const {
         return installed_ ? installed_->dlcTitleIds() : std::vector<std::string>();
+    }
+
+    std::vector<uint8_t> smartInstallMask(
+        const TorrentPreview& preview) const {
+        const bool titleInstalled = installed_ && installed_->contains(titleId_);
+        return selectSmartInstallFiles(preview, titleInstalled,
+                                       installedVersionForTitle(),
+                                       latestVersionForEntry(), titleId_,
+                                       installedDlcIds());
     }
 
     CatalogEntry entry_;

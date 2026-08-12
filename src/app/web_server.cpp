@@ -194,6 +194,13 @@ void WebServer::setStreamSelection(StreamSelection selection) {
     streamSelection_ = selection;
 }
 
+void WebServer::setSettingsHandlers(SettingsGetter getter,
+                                    SettingsPatcher patcher) {
+    std::lock_guard<std::mutex> lock(configMutex_);
+    settingsGetter_ = std::move(getter);
+    settingsPatcher_ = std::move(patcher);
+}
+
 void WebServer::updateCatalog(
     std::shared_ptr<const std::vector<CatalogEntry>> entries) {
     if (!entries)
@@ -394,6 +401,16 @@ HttpResponse WebServer::routeApi(const HttpRequest& req) {
             j["available"] = snap.available;
             return HttpResponse::text(200, dumpJson(j));
         }
+        if (parts[0] == "settings" && parts.size() == 1)
+            return handleGetSettings(req);
+        return jsonError(404, "not found");
+    }
+
+    if (req.method == "PATCH") {
+        if (!sameOrigin(req)) return jsonError(403, "cross-origin");
+        if (!authorized(req)) return jsonError(401, "pin");
+        if (parts[0] == "settings" && parts.size() == 1)
+            return handlePatchSettings(req);
         return jsonError(404, "not found");
     }
 
@@ -416,6 +433,43 @@ HttpResponse WebServer::routeApi(const HttpRequest& req) {
         if (parts[1] == "torrent") return handleAddTorrent(req);
     }
     return jsonError(404, "not found");
+}
+
+HttpResponse WebServer::handleGetSettings(const HttpRequest& req) {
+    if (!sameOrigin(req)) return jsonError(403, "cross-origin");
+    if (!authorized(req)) return jsonError(401, "pin");
+    SettingsGetter getter;
+    {
+        std::lock_guard<std::mutex> lock(configMutex_);
+        getter = settingsGetter_;
+    }
+    if (!getter) return jsonError(501, "settings unavailable");
+    std::string json;
+    std::string error;
+    if (!getter(json, error))
+        return jsonError(error == "timed out" ? 503 : 500,
+                         error.empty() ? "settings unavailable" : error);
+    return HttpResponse::text(200, json);
+}
+
+HttpResponse WebServer::handlePatchSettings(const HttpRequest& req) {
+    SettingsPatcher patcher;
+    {
+        std::lock_guard<std::mutex> lock(configMutex_);
+        patcher = settingsPatcher_;
+    }
+    if (!patcher) return jsonError(501, "settings unavailable");
+    std::string json;
+    std::string error;
+    if (!patcher(req.body, error, json)) {
+        int status = 400;
+        if (error == "timed out")
+            status = 503;
+        else if (error.find("Unable to") != std::string::npos)
+            status = 500;
+        return jsonError(status, error.empty() ? "rejected" : error);
+    }
+    return HttpResponse::text(200, json);
 }
 
 HttpResponse WebServer::handleCatalog(const HttpRequest& req) {

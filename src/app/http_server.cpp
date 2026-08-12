@@ -151,7 +151,8 @@ long httpParseHeaders(const std::string& data, size_t headerCap,
         return -1;
     }
     out.version = version;
-    if (out.method != "GET" && out.method != "POST" && out.method != "HEAD") {
+    if (out.method != "GET" && out.method != "POST" && out.method != "PATCH" &&
+        out.method != "HEAD") {
         errStatus = 405;
         return -1;
     }
@@ -337,7 +338,7 @@ void HttpServer::handleReadable(Conn& c) {
             }
             std::string cl = c.req.header("content-length");
             if (cl.empty()) {
-                if (c.req.method == "POST") {
+                if (c.req.method == "POST" || c.req.method == "PATCH") {
                     respond(c, HttpResponse::text(
                                    411, "{\"error\":\"length required\"}"));
                     c.closeAfter = true;

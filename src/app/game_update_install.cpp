@@ -90,32 +90,38 @@ bool pathHasTitleId(const std::string& path, const std::string& titleId) {
     return lowerPath.find(lowerId) != std::string::npos;
 }
 
-std::vector<std::string> titleIdsInPath(const std::string& path) {
-    std::vector<std::string> ids;
-    for (size_t i = 0; i + 16 <= path.size(); ++i) {
-        std::string candidate = path.substr(i, 16);
-        uint64_t parsed = 0;
-        if (parseNxTitleId(candidate, parsed)) {
-            ids.push_back(formatNxTitleId(parsed));
-            i += 15;
-        }
-    }
-    return ids;
+bool isBasePackageFile(const TorrentPreview::File& file,
+                       const std::string& titleId) {
+    if (!file.package || !pathHasTitleId(file.path, titleId) ||
+        isUpdateFile(file.path))
+        return false;
+    uint64_t tag = 0;
+    return !fileVersionTag(file.path, tag) || tag == 0;
 }
 
-std::unordered_set<std::string> normalizedSet(
-    const std::vector<std::string>& values) {
-    std::unordered_set<std::string> out;
-    out.reserve(values.size());
-    for (const std::string& value : values) {
-        uint64_t parsed = 0;
-        if (parseNxTitleId(value, parsed))
-            out.insert(formatNxTitleId(parsed));
-    }
-    return out;
+bool isLikelyModPackage(const std::string& path) {
+    std::string lower = path;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c) {
+                       return static_cast<char>(std::tolower(c));
+                   });
+    return lower.find("mod") != std::string::npos ||
+           lower.find("exefs") != std::string::npos ||
+           lower.find("romfs") != std::string::npos;
 }
 
-} // namespace
+std::vector<size_t> smartUpdateMatches(const TorrentPreview& preview,
+                                       const std::string& latestVersion,
+                                       const std::string& titleId) {
+    std::vector<size_t> matches = updateVersionMatches(preview, latestVersion,
+                                                       titleId);
+    matches.erase(std::remove_if(matches.begin(), matches.end(),
+        [&preview](size_t i) {
+            return i >= preview.files.size() ||
+                   isLikelyModPackage(preview.files[i].path);
+        }), matches.end());
+    return matches;
+}
 
 bool parseNxTitleId(const std::string& titleId, uint64_t& value) {
     if (titleId.size() != 16)
@@ -144,12 +150,43 @@ std::string formatNxTitleId(uint64_t value) {
     return text;
 }
 
+// Base application id of a title id: updates set bit 11 (…800) and DLC
+// increments the low 12 bits, so masking them off maps every variant onto the
+// base title. Empty when the id is not 16 hex characters.
 std::string normalizeNxBaseTitleId(const std::string& titleId) {
     uint64_t parsed = 0;
     if (!parseNxTitleId(titleId, parsed))
         return {};
     return formatNxTitleId(parsed & ~0x1FFFULL);
 }
+
+// Every 16-hex title id embedded in a file path, uppercased.
+std::vector<std::string> titleIdsInPath(const std::string& path) {
+    std::vector<std::string> ids;
+    for (size_t i = 0; i + 16 <= path.size(); ++i) {
+        std::string candidate = path.substr(i, 16);
+        uint64_t parsed = 0;
+        if (parseNxTitleId(candidate, parsed)) {
+            ids.push_back(formatNxTitleId(parsed));
+            i += 15;
+        }
+    }
+    return ids;
+}
+
+std::unordered_set<std::string> normalizedSet(
+    const std::vector<std::string>& values) {
+    std::unordered_set<std::string> out;
+    out.reserve(values.size());
+    for (const std::string& value : values) {
+        uint64_t parsed = 0;
+        if (parseNxTitleId(value, parsed))
+            out.insert(formatNxTitleId(parsed));
+    }
+    return out;
+}
+
+} // namespace
 
 std::vector<size_t> updateVersionMatches(const TorrentPreview& preview,
                                          const std::string& latestVersion,
@@ -225,50 +262,65 @@ std::vector<uint8_t> selectUpdateFiles(const TorrentPreview& preview,
 
 std::vector<uint8_t> selectSmartInstallFiles(
     const TorrentPreview& preview,
+    bool titleInstalled,
+    const std::string& installedVersion,
+    const std::string& latestVersion,
     const std::string& titleId,
-    const std::vector<std::string>& installedTitleIds,
     const std::vector<std::string>& installedDlcIds) {
+    if (preview.files.empty())
+        return {};
+
     std::vector<uint8_t> actions(
         preview.files.size(), static_cast<uint8_t>(FileAction::Skip));
-    const std::string wantedBase = normalizeNxBaseTitleId(titleId);
-    if (wantedBase.empty())
-        return actions;
-    const std::unordered_set<std::string> installedTitles =
-        normalizedSet(installedTitleIds);
-    const std::unordered_set<std::string> installedDlc =
-        normalizedSet(installedDlcIds);
 
-    for (size_t i = 0; i < preview.files.size(); ++i) {
-        const TorrentPreview::File& file = preview.files[i];
-        if (!file.package)
-            continue;
-        bool install = false;
-        for (const std::string& id : titleIdsInPath(file.path)) {
-            const std::string candidateBase = normalizeNxBaseTitleId(id);
-            if (candidateBase != wantedBase)
+    // Base + exact update (the smart-install behaviour from #28).
+    if (titleInstalled) {
+        uint64_t installed = 0;
+        uint64_t latest = 0;
+        if (parseDecimal(installedVersion, installed) &&
+            parseDecimal(latestVersion, latest) && latest > installed) {
+            const std::vector<size_t> updates =
+                smartUpdateMatches(preview, latestVersion, titleId);
+            for (const size_t i : updates)
+                if (i < actions.size())
+                    actions[i] = static_cast<uint8_t>(FileAction::Install);
+        }
+    } else {
+        for (size_t i = 0; i < preview.files.size(); ++i)
+            if (isBasePackageFile(preview.files[i], titleId))
+                actions[i] = static_cast<uint8_t>(FileAction::Install);
+        const std::vector<size_t> updates =
+            smartUpdateMatches(preview, latestVersion, titleId);
+        for (const size_t i : updates)
+            if (i < actions.size())
+                actions[i] = static_cast<uint8_t>(FileAction::Install);
+    }
+
+    // Smart DLC (#29): AddOnContent packages for the selected title that are
+    // not already installed. A DLC title id sets bit 12 (…1000) and carries its
+    // index in the low 12 bits, so it normalises onto the base title.
+    const std::string wantedBase = normalizeNxBaseTitleId(titleId);
+    if (!wantedBase.empty()) {
+        const std::unordered_set<std::string> installedDlc =
+            normalizedSet(installedDlcIds);
+        for (size_t i = 0; i < preview.files.size(); ++i) {
+            if (!preview.files[i].package ||
+                actions[i] == static_cast<uint8_t>(FileAction::Install))
                 continue;
-            uint64_t parsed = 0;
-            parseNxTitleId(id, parsed);
-            const uint64_t low = parsed & 0x1FFFULL;
-            const bool dlc = low >= 0x1000ULL;
-            const bool basePackage = low == 0;
-            const bool update = low == 0x800ULL;
-            if (dlc && installedDlc.count(id) == 0) {
-                install = true;
-                break;
-            }
-            if (update) {
-                install = true;
-                break;
-            }
-            if (basePackage && installedTitles.count(wantedBase) == 0) {
-                install = true;
-                break;
+            for (const std::string& id : titleIdsInPath(preview.files[i].path)) {
+                if (normalizeNxBaseTitleId(id) != wantedBase)
+                    continue;
+                uint64_t parsed = 0;
+                parseNxTitleId(id, parsed);
+                if ((parsed & 0x1FFFULL) >= 0x1000ULL &&
+                    installedDlc.count(id) == 0) {
+                    actions[i] = static_cast<uint8_t>(FileAction::Install);
+                    break;
+                }
             }
         }
-        if (install)
-            actions[i] = static_cast<uint8_t>(FileAction::Install);
     }
+
     return actions;
 }
 

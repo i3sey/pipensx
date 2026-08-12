@@ -1,4 +1,5 @@
 #include "app/app_settings.hpp"
+#include "app/companion_settings.hpp"
 #include "app/download_manager.hpp"  // clampMaxActiveDownloads
 
 #include <cassert>
@@ -21,6 +22,8 @@ using pipensx::isValidProxyUrl;
 using pipensx::isValidCatalogSourceUrl;
 using pipensx::effectiveCatalogSourceUrl;
 using pipensx::applyProxySetting;
+using pipensx::applyCompanionSettingsPatch;
+using pipensx::companionSettingsJson;
 
 namespace {
 
@@ -31,6 +34,36 @@ void cleanup() {
     unlink(SettingsPath);
     unlink("/tmp/pipensx-settings-test.json.tmp");
     unlink(LegacyPath);
+}
+
+void testCompanionSettingsPatchWhitelist() {
+    AppSettingsData values;
+    values.torboxApiKey = "keep-me";
+    values.maxActiveDownloads = 1;
+    std::string error;
+    assert(!applyCompanionSettingsPatch(values, "not-json", error));
+    error.clear();
+    assert(!applyCompanionSettingsPatch(values, "{\"language\":\"ru\"}", error));
+    assert(error.find("unknown") != std::string::npos);
+    error.clear();
+    assert(applyCompanionSettingsPatch(
+        values,
+        "{\"maxActiveDownloads\":4,\"torboxApiKey\":\"new-key\","
+        "\"catalogFilter\":\"all\",\"refreshCatalogOnLaunch\":true}",
+        error));
+    assert(values.maxActiveDownloads == 4);
+    assert(values.torboxApiKey == "new-key");
+    assert(values.catalogFilter == CatalogFilter::All);
+    assert(values.refreshCatalogOnLaunch);
+    error.clear();
+    assert(applyCompanionSettingsPatch(values, "{\"torboxApiKey\":\"\"}", error));
+    assert(values.torboxApiKey.empty());
+    error.clear();
+    assert(!applyCompanionSettingsPatch(
+        values, "{\"proxyUrl\":\"ftp://nope\"}", error));
+    std::string json = companionSettingsJson(values);
+    assert(json.find("torboxApiKey") == std::string::npos);
+    assert(json.find("\"torboxConfigured\":false") != std::string::npos);
 }
 
 void testMissingFileUsesSafeDefaults() {
@@ -422,6 +455,7 @@ void testProxySettingReachesEnvironment() {
 } // namespace
 
 int main() {
+    testCompanionSettingsPatchWhitelist();
     testMissingFileUsesSafeDefaults();
     testUpdatePersistsEveryPublicSetting();
     testOldSettingsJsonDefaultsRefreshTimes();

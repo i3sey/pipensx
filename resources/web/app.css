@@ -204,6 +204,24 @@ main { max-width: 960px; margin: 0 auto; padding: 10px 14px; }
 .mode-row { display: flex; gap: 18px; margin: 12px 2px; font-size: 14px; color: var(--text-2); }
 .mode-row input { accent-color: var(--accent); margin-right: 5px; }
 
+.field {
+  display: flex; flex-direction: column; gap: 6px;
+  margin: 12px 0; font-size: 13px; color: var(--text-2); font-weight: 600;
+}
+.field.check { flex-direction: row; align-items: center; font-weight: 500; }
+.field.check input { accent-color: var(--accent); margin-right: 8px; }
+.field input, .field select {
+  width: 100%;
+  background: var(--panel-2);
+  border: 1px solid var(--track);
+  border-radius: var(--radius-s);
+  color: var(--text);
+  font: inherit;
+  font-weight: 500;
+  padding: 10px 12px;
+}
+#settings-save { margin: 4px 0 20px; width: 100%; }
+
 /* ---- modal / toast ---- */
 dialog {
   margin: auto;

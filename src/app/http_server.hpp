@@ -25,7 +25,7 @@ namespace pipensx {
 // only valid from the tick callback / handler, i.e. the server thread).
 
 struct HttpRequest {
-    std::string method;                          // "GET", "POST", "HEAD"
+    std::string method;                          // "GET", "POST", "PATCH", "HEAD"
     std::string path;                            // decoded, without query
     std::string query;                           // raw query string ("" if none)
     std::string version;                         // "HTTP/1.1"

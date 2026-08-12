@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -50,6 +51,16 @@ public:
     void setPin(std::string pin);
     void setStreamSelection(StreamSelection selection);
 
+    // Companion settings. AppSettings is UI-thread-only — never pass it in.
+    // Getter/patcher run on the HTTP thread; Switch wiring hops to the UI
+    // thread. Getter: fill json. Patcher: persist, apply runtime, fill json.
+    // Both return false on failure (error is a message for the client).
+    using SettingsGetter =
+        std::function<bool(std::string& json, std::string& error)>;
+    using SettingsPatcher = std::function<bool(
+        const std::string& body, std::string& error, std::string& json)>;
+    void setSettingsHandlers(SettingsGetter getter, SettingsPatcher patcher);
+
     // UI-thread callers (startup + after every CatalogService::adopt()):
     // copies the entries so the server thread never touches CatalogService.
     // Takes a shared immutable snapshot (see CatalogService::sharedEntries)
@@ -67,6 +78,8 @@ private:
     HttpResponse handleAddCatalog(const HttpRequest& req);
     HttpResponse handleAddTorrent(const HttpRequest& req);
     HttpResponse handleCatalog(const HttpRequest& req);
+    HttpResponse handleGetSettings(const HttpRequest& req);
+    HttpResponse handlePatchSettings(const HttpRequest& req);
     bool authorized(const HttpRequest& req) const;
     // False when the request names an origin other than the host it reached.
     static bool sameOrigin(const HttpRequest& req);
@@ -82,6 +95,8 @@ private:
     mutable std::mutex configMutex_;
     std::string pin_;
     StreamSelection streamSelection_ = StreamSelection::AllFiles;
+    SettingsGetter settingsGetter_;
+    SettingsPatcher settingsPatcher_;
 
     std::mutex catalogMutex_;
     // Shared immutable snapshot published by CatalogService — never null.

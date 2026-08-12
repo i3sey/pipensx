@@ -89,4 +89,43 @@ inline std::string installedPatchVersionString(
                                         : std::to_string(patch->second);
 }
 
+// Nintendo title version as eShop x.y.z: (major<<16)|(minor<<8)|micro.
+// Empty or non-decimal input yields an empty string so the caller can hide
+// the row. "0" is a real version (base game, no patch) and formats as 0.0.0.
+inline bool parseTitleVersionDecimal(const std::string& text, uint64_t& out) {
+    if (text.empty())
+        return false;
+    uint64_t value = 0;
+    for (unsigned char c : text) {
+        if (c < '0' || c > '9')
+            return false;
+        const uint64_t digit = static_cast<uint64_t>(c - '0');
+        if (value > (UINT64_MAX - digit) / 10)
+            return false;
+        value = value * 10 + digit;
+    }
+    out = value;
+    return true;
+}
+
+inline std::string formatTitleVersion(const std::string& decimal) {
+    uint64_t value = 0;
+    if (!parseTitleVersionDecimal(decimal, value))
+        return {};
+    const unsigned major = static_cast<unsigned>(value >> 16);
+    const unsigned minor = static_cast<unsigned>((value >> 8) & 0xff);
+    const unsigned micro = static_cast<unsigned>(value & 0xff);
+    return std::to_string(major) + "." + std::to_string(minor) + "." +
+           std::to_string(micro);
+}
+
+inline bool titleVersionIsNewer(const std::string& latest,
+                                const std::string& installed) {
+    uint64_t latestValue = 0;
+    uint64_t installedValue = 0;
+    return parseTitleVersionDecimal(latest, latestValue) &&
+           parseTitleVersionDecimal(installed, installedValue) &&
+           latestValue > installedValue;
+}
+
 } // namespace pipensx

@@ -83,7 +83,7 @@ function openModal(html) {
 }
 
 /* ---------- tabs ---------- */
-const tabs = ["downloads", "catalog", "add"];
+const tabs = ["downloads", "catalog", "add", "settings"];
 function currentTab() {
   const h = location.hash.replace("#", "");
   return tabs.includes(h) ? h : "downloads";
@@ -96,6 +96,7 @@ function showTab() {
       .classList.toggle("active", t === active);
   }
   if (active === "catalog") loadCatalog();
+  if (active === "settings") loadSettings();
 }
 window.addEventListener("hashchange", showTab);
 
@@ -564,6 +565,69 @@ $("torrent-btn").addEventListener("click", async () => {
     }
   } finally {
     $("torrent-btn").disabled = false;
+  }
+});
+
+/* ---------- settings ---------- */
+let settingsLoaded = false;
+let secretFlags = { torbox: false, realdebrid: false };
+
+async function loadSettings() {
+  const resp = await api("/api/settings");
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => ({}));
+    toast(body.error || "failed to load settings", true);
+    return;
+  }
+  const s = await resp.json();
+  $("set-max-active").value = String(s.maxActiveDownloads || 1);
+  $("set-stream").value = s.streamSelection || "allFiles";
+  $("set-install").value = s.installLocation || "sdCard";
+  $("set-debrid").value = s.debridProvider || "torbox";
+  $("set-torrserver").value = s.torrserverUrl || "";
+  $("set-proxy").value = s.proxyUrl || "";
+  $("set-catalog-url").value = s.catalogSourceUrl || "";
+  $("set-catalog-filter").value = s.catalogFilter || "games";
+  $("set-catalog-refresh").checked = !!s.refreshCatalogOnLaunch;
+  secretFlags.torbox = !!s.torboxConfigured;
+  secretFlags.realdebrid = !!s.realdebridConfigured;
+  $("set-torbox").value = "";
+  $("set-realdebrid").value = "";
+  $("set-torbox").placeholder = secretFlags.torbox ? "configured" : "";
+  $("set-realdebrid").placeholder = secretFlags.realdebrid ? "configured" : "";
+  settingsLoaded = true;
+}
+
+$("settings-save").addEventListener("click", async () => {
+  if (!settingsLoaded) return toast("Settings have not loaded yet", true);
+  const patch = {
+    maxActiveDownloads: Number($("set-max-active").value),
+    streamSelection: $("set-stream").value,
+    installLocation: $("set-install").value,
+    debridProvider: $("set-debrid").value,
+    torrserverUrl: $("set-torrserver").value.trim(),
+    proxyUrl: $("set-proxy").value.trim(),
+    catalogSourceUrl: $("set-catalog-url").value.trim(),
+    catalogFilter: $("set-catalog-filter").value,
+    refreshCatalogOnLaunch: $("set-catalog-refresh").checked,
+  };
+  const torbox = $("set-torbox").value;
+  const realdebrid = $("set-realdebrid").value;
+  if (torbox) patch.torboxApiKey = torbox;
+  if (realdebrid) patch.realdebridApiKey = realdebrid;
+  $("settings-save").disabled = true;
+  try {
+    const resp = await api("/api/settings", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok) return toast(body.error || "save failed", true);
+    toast("Settings saved");
+    await loadSettings();
+  } finally {
+    $("settings-save").disabled = false;
   }
 });
 

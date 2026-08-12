@@ -1,5 +1,6 @@
 #include "app/app_settings.hpp"
 #include "app/catalog_service.hpp"
+#include "app/companion_settings.hpp"
 #include "app/download_manager.hpp"
 #include "app/game_metadata_service.hpp"
 #include "app/installed_title_service.hpp"
@@ -19,10 +20,14 @@ extern "C" {
 #include <switch.h>
 #include <switch-ipcext.h>
 
+#include <chrono>
+#include <condition_variable>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
+#include <functional>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -63,6 +68,22 @@ using pipensx::WebServer;
 using namespace pipensx::ui;
 
 namespace {
+
+constexpr auto kCompanionSettingsTimeout = std::chrono::seconds(5);
+
+bool runOnUiThread(const std::function<void()>& fn) {
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool done = false;
+    brls::sync([&] {
+        fn();
+        std::lock_guard<std::mutex> lock(mutex);
+        done = true;
+        cv.notify_one();
+    });
+    std::unique_lock<std::mutex> lock(mutex);
+    return cv.wait_for(lock, kCompanionSettingsTimeout, [&] { return done; });
+}
 
 constexpr const char* BundledCatalogPath =
     "romfs:/catalog/switch_games.json.zst";
@@ -405,6 +426,41 @@ int main(int argc, char** argv) {
         WebServer webServer(manager, "romfs:/web", PIPENSX_VERSION);
         webServer.setPin(settings.get().webServerPin);
         webServer.setStreamSelection(settings.get().streamSelection);
+        webServer.setSettingsHandlers(
+            [&settings](std::string& json, std::string& error) {
+                bool ok = false;
+                if (!runOnUiThread([&] {
+                        json = pipensx::companionSettingsJson(settings.get());
+                        ok = true;
+                    })) {
+                    error = "timed out";
+                    return false;
+                }
+                return ok;
+            },
+            [&settings, &manager, &webServer](const std::string& body,
+                                              std::string& error,
+                                              std::string& json) {
+                bool ok = false;
+                if (!runOnUiThread([&] {
+                        pipensx::AppSettingsData next = settings.get();
+                        if (!pipensx::applyCompanionSettingsPatch(next, body,
+                                                                  error))
+                            return;
+                        if (!settings.update(next, error))
+                            return;
+                        pipensx::applyCompanionSettingsRuntime(settings.get(),
+                                                               manager);
+                        webServer.setStreamSelection(
+                            settings.get().streamSelection);
+                        json = pipensx::companionSettingsJson(settings.get());
+                        ok = true;
+                    })) {
+                    error = "timed out";
+                    return false;
+                }
+                return ok;
+            });
         webServer.updateCatalog(catalog.sharedEntries());
         // Every later adopt() (launch refresh, settings refresh, catalog tab)
         // lands on the UI thread, so this callback keeps the companion's

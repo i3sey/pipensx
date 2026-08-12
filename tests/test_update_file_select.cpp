@@ -36,13 +36,15 @@ void expectActions(const TorrentPreview& preview,
         assert(actions[i] == expected[i]);
 }
 
-void expectSmartActions(const TorrentPreview& preview,
+void expectSmartActions(const TorrentPreview& preview, bool titleInstalled,
+                        const std::string& installedVersion,
+                        const std::string& latestVersion,
                         const std::string& titleId,
                         const std::vector<uint8_t>& expected,
-                        const std::vector<std::string>& installedTitleIds = {},
                         const std::vector<std::string>& installedDlcIds = {}) {
     const std::vector<uint8_t> actions = pipensx::selectSmartInstallFiles(
-        preview, titleId, installedTitleIds, installedDlcIds);
+        preview, titleInstalled, installedVersion, latestVersion, titleId,
+        installedDlcIds);
     assert(actions.size() == expected.size());
     for (size_t i = 0; i < expected.size(); ++i)
         assert(actions[i] == expected[i]);
@@ -180,11 +182,11 @@ void testSmartInstallIncludesApplicableDlc() {
     TorrentPreview preview;
     preview.files = {
         package("Game [0100AAAA00000000][v0].nsp"),
-        package("Game Update [0100AAAA00000800][v131072].nsp"),
+        package("Game Update [0100AAAA00000000][v131072].nsp"),
         package("Game DLC 1 [0100AAAA00001001].nsp"),
         package("Other Game DLC [0100BBBB00001001].nsp"),
         plain("readme.txt")};
-    expectSmartActions(preview, "0100AAAA00000000", {
+    expectSmartActions(preview, false, "", "131072", "0100AAAA00000000", {
         static_cast<uint8_t>(FileAction::Install),
         static_cast<uint8_t>(FileAction::Install),
         static_cast<uint8_t>(FileAction::Install),
@@ -197,22 +199,22 @@ void testSmartInstallSkipsBaseWhenInstalledButKeepsDlc() {
     TorrentPreview preview;
     preview.files = {
         package("Game [0100AAAA00000000][v0].nsp"),
-        package("Game Update [0100AAAA00000800][v131072].nsp"),
+        package("Game Update [0100AAAA00000000][v131072].nsp"),
         package("Game DLC 1 [0100AAAA00001001].nsp"),
         package("Game DLC 2 [0100AAAA00001002].nsp")};
-    expectSmartActions(preview, "0100AAAA00000000", {
+    expectSmartActions(preview, true, "131072", "131072", "0100AAAA00000000", {
+        static_cast<uint8_t>(FileAction::Skip),
         static_cast<uint8_t>(FileAction::Skip),
         static_cast<uint8_t>(FileAction::Install),
-        static_cast<uint8_t>(FileAction::Install),
         static_cast<uint8_t>(FileAction::Skip),
-    }, {"0100AAAA00000000"}, {"0100AAAA00001002"});
+    }, {"0100AAAA00001002"});
 }
 
 void testSmartInstallLeavesUnknownPackagesSkipped() {
     TorrentPreview preview;
     preview.files = {package("Game DLC 1.nsp"),
                      package("Game [0100AAAA00000000][v0].nsp")};
-    expectSmartActions(preview, "0100AAAA00000000", {
+    expectSmartActions(preview, false, "", "", "0100AAAA00000000", {
         static_cast<uint8_t>(FileAction::Skip),
         static_cast<uint8_t>(FileAction::Install),
     });
@@ -245,6 +247,84 @@ void testSelectFilesInstallsExactlyThePicks() {
     assert(actions[0] == static_cast<uint8_t>(FileAction::Skip));
     assert(actions[1] == static_cast<uint8_t>(FileAction::Install));
     assert(actions[2] == static_cast<uint8_t>(FileAction::Skip));
+}
+
+void testSmartInstallMissingTitleInstallsPackagesOnly() {
+    TorrentPreview preview;
+    preview.files = {package("Game [0100AAAA00000000][v0].nsp"),
+                     package("Game Update [0100AAAA00000000][v131072].nsp"),
+                     plain("readme.txt")};
+    const std::vector<uint8_t> actions = pipensx::selectSmartInstallFiles(
+        preview, false, "", "131072", "0100AAAA00000000");
+    assert(actions.size() == 3);
+    assert(actions[0] == static_cast<uint8_t>(FileAction::Install));
+    assert(actions[1] == static_cast<uint8_t>(FileAction::Install));
+    assert(actions[2] == static_cast<uint8_t>(FileAction::Skip));
+}
+
+void testSmartInstallMissingTitleSkipsDlcPackages() {
+    TorrentPreview preview;
+    preview.files = {package("Game [0100AAAA00000000][v0].nsp"),
+                     package("Game Update [0100AAAA00000000][v131072].nsp"),
+                     package("DLC [0100AAAA00000001][v131072].nsp")};
+    const std::vector<uint8_t> actions = pipensx::selectSmartInstallFiles(
+        preview, false, "", "131072", "0100AAAA00000000");
+    assert(actions.size() == 3);
+    assert(actions[0] == static_cast<uint8_t>(FileAction::Install));
+    assert(actions[1] == static_cast<uint8_t>(FileAction::Install));
+    assert(actions[2] == static_cast<uint8_t>(FileAction::Skip));
+}
+
+void testSmartInstallSkipsSameTitleMods() {
+    TorrentPreview preview;
+    preview.files = {package("Game [0100AAAA00000000][v0].nsp"),
+                     package("Game Update [0100AAAA00000000][v131072].nsp"),
+                     package("Mods/Cheat [0100AAAA00000000][v131072].nsp")};
+    const std::vector<uint8_t> actions = pipensx::selectSmartInstallFiles(
+        preview, false, "", "131072", "0100AAAA00000000");
+    assert(actions.size() == 3);
+    assert(actions[0] == static_cast<uint8_t>(FileAction::Install));
+    assert(actions[1] == static_cast<uint8_t>(FileAction::Install));
+    assert(actions[2] == static_cast<uint8_t>(FileAction::Skip));
+}
+
+void testSmartInstallInstalledTitleInstallsOnlyNewerUpdate() {
+    TorrentPreview preview;
+    preview.files = {package("Game [0100AAAA00000000][v0].nsp"),
+                     package("Game Update [0100AAAA00000000][v131072].nsp"),
+                     package("DLC [0100AAAA00000001][v131072].nsp")};
+    const std::vector<uint8_t> actions = pipensx::selectSmartInstallFiles(
+        preview, true, "65536", "131072", "0100AAAA00000000");
+    assert(actions.size() == 3);
+    assert(actions[0] == static_cast<uint8_t>(FileAction::Skip));
+    assert(actions[1] == static_cast<uint8_t>(FileAction::Install));
+    assert(actions[2] == static_cast<uint8_t>(FileAction::Skip));
+}
+
+void testSmartInstallInstalledTitleSkipsSameOrUnknownVersion() {
+    TorrentPreview preview;
+    preview.files = {package("Game [0100AAAA00000000][v0].nsp"),
+                     package("Game Update [0100AAAA00000000][v131072].nsp")};
+    const std::vector<uint8_t> same = pipensx::selectSmartInstallFiles(
+        preview, true, "131072", "131072", "0100AAAA00000000");
+    const std::vector<uint8_t> unknown = pipensx::selectSmartInstallFiles(
+        preview, true, "", "131072", "0100AAAA00000000");
+    assert(same.size() == 2 && unknown.size() == 2);
+    assert(same[0] == static_cast<uint8_t>(FileAction::Skip));
+    assert(same[1] == static_cast<uint8_t>(FileAction::Skip));
+    assert(unknown[0] == static_cast<uint8_t>(FileAction::Skip));
+    assert(unknown[1] == static_cast<uint8_t>(FileAction::Skip));
+}
+
+void testSmartInstallInstalledTitleDoesNotUseHeuristicFallback() {
+    TorrentPreview preview;
+    preview.files = {package("Game [0100AAAA00000000][v0].nsp"),
+                     package("Game Update [0100AAAA00000000][v131073].nsp")};
+    const std::vector<uint8_t> actions = pipensx::selectSmartInstallFiles(
+        preview, true, "65536", "131072", "0100AAAA00000000");
+    assert(actions.size() == 2);
+    assert(actions[0] == static_cast<uint8_t>(FileAction::Skip));
+    assert(actions[1] == static_cast<uint8_t>(FileAction::Skip));
 }
 
 void testMagnetPrefersCatalogEntry() {
@@ -302,6 +382,12 @@ int main() {
     testUpdateRecheckSettled();
     testEmptyPreviewYieldsEmptyActions();
     testSelectFilesInstallsExactlyThePicks();
+    testSmartInstallMissingTitleInstallsPackagesOnly();
+    testSmartInstallMissingTitleSkipsDlcPackages();
+    testSmartInstallSkipsSameTitleMods();
+    testSmartInstallInstalledTitleInstallsOnlyNewerUpdate();
+    testSmartInstallInstalledTitleSkipsSameOrUnknownVersion();
+    testSmartInstallInstalledTitleDoesNotUseHeuristicFallback();
     testMagnetPrefersCatalogEntry();
     testMagnetFallsBackToRuTrackerMagnetWhenNoCatalogEntry();
     testUtf8TruncateBoundary();
