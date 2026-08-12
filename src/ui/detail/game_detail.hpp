@@ -25,6 +25,7 @@
 #include "app/nx_file_types.hpp"
 #include "ui/catalog/catalog_helpers.hpp"
 #include "ui/common/async_image.hpp"
+#include "ui/common/busy_pulse.hpp"
 #include "ui/common/storage_meter.hpp"
 #include "ui/common/ui_helpers.hpp"
 #include "ui/detail/screenshot_viewer.hpp"
@@ -123,6 +124,8 @@ public:
         alive_->store(false);
         cancelled_->store(true);
         timer_.stop();
+        stopBusyPulse(primary_);
+        stopBusyPulse(statusLabel_);
         if (onChange_)
             onChange_();  // refresh the row badge on the way back
         // O12: deferred a frame — the activity is mid-teardown here and
@@ -578,8 +581,18 @@ private:
                                     sizeExact_);
     }
 
-    // Reflect live task state on the buttons. Skipped while resolving so the
-    // inline progress text isn't clobbered.
+    // Pulse Install + status while magnet/debrid resolve is in flight (#19).
+    void setBusy(bool busy) {
+        busy_ = busy;
+        if (busy) {
+            startBusyPulse(primary_);
+            startBusyPulse(statusLabel_);
+        } else {
+            stopBusyPulse(primary_);
+            stopBusyPulse(statusLabel_);
+        }
+    }
+
     // Star/unstar this game. The cap is reported in the user's words; any
     // other failure is a write error worth showing verbatim.
     void onFavorite() {
@@ -619,6 +632,8 @@ private:
                                     : &brls::BUTTONSTYLE_DEFAULT);
     }
 
+    // Reflect live task state on the buttons. Skipped while resolving so the
+    // inline progress text isn't clobbered.
     void refreshButtons() {
         refreshFavoriteButton();
         if (busy_)
@@ -705,7 +720,7 @@ private:
             startDebridInstall(TransferMode::StreamInstall, forcePicker);
             return;
         }
-        busy_ = true;
+        setBusy(true);
         operationMessage_.clear();
         cancelled_->store(false);
         primary_->setState(brls::ButtonState::DISABLED);
@@ -771,7 +786,7 @@ private:
                     ::unlink(tmp.c_str());
                     return;
                 }
-                busy_ = false;
+                setBusy(false);
                 std::string hash = catalogLower(entry_.infoHash);
                 if (!ok) {
                     std::string reason = classifyResolveFailure(err);
@@ -795,7 +810,7 @@ private:
     void startDebridInstall(TransferMode mode, bool forcePicker = false) {
         if (busy_ || !ensureDebridLinked(settings_, manager_))
             return;
-        busy_ = true;
+        setBusy(true);
         cancelled_->store(false);
         primary_->setState(brls::ButtonState::DISABLED);
         secondary_->setState(brls::ButtonState::DISABLED);
@@ -847,12 +862,12 @@ private:
                     if (!debridId.empty())
                         removeDebridTransferAsync(providerKind, key, debridId);
                     if (alive->load()) {
-                        busy_ = false;
+                        setBusy(false);
                         refreshButtons();
                     }
                     return;
                 }
-                busy_ = false;
+                setBusy(false);
                 if (!ok) {
                     if (!debridId.empty())
                         removeDebridTransferAsync(providerKind, key, debridId);

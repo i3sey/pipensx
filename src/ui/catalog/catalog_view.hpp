@@ -26,6 +26,7 @@
 #include "ui/catalog/catalog_grid.hpp"
 #include "ui/catalog/catalog_helpers.hpp"
 #include "ui/i18n.hpp"
+#include "ui/common/busy_pulse.hpp"
 #include "ui/common/message_cells.hpp"
 #include "ui/common/ui_helpers.hpp"
 #include "ui/detail/game_detail.hpp"
@@ -262,6 +263,17 @@ public:
         freshnessSpacer->setGrow(1.0f);
         freshnessSpacer->setFocusable(false);
         freshnessRow_->addView(freshnessSpacer);
+        // Pulsing dot while a refresh/batch resolve is in flight — text alone
+        // reads as a frozen badge for multi-second waits (#19).
+        busyDot_ = new brls::Label();
+        busyDot_->setText("●");
+        busyDot_->setFontSize(theme::kFontCaption);
+        busyDot_->setTextColor(theme::warning());
+        busyDot_->setMarginRight(6);
+        busyDot_->setFocusable(false);
+        busyDot_->setShrink(0.0f);
+        busyDot_->setVisibility(brls::Visibility::GONE);
+        freshnessRow_->addView(busyDot_);
         freshness_ = new brls::Label();
         freshness_->setFontSize(theme::kFontCaption);
         freshness_->setSingleLine(true);
@@ -457,6 +469,7 @@ public:
         alive_->store(false);
         cancelled_->store(true);
         timer_.stop();
+        stopBusyPulse(busyDot_);
     }
 
     void openSearchKeyboard() {
@@ -1464,6 +1477,15 @@ private:
     void setBusy(bool busy) {
         busy_ = busy;
         registerSortAction(busy);
+        if (busyDot_) {
+            if (busy) {
+                busyDot_->setVisibility(brls::Visibility::VISIBLE);
+                startBusyPulse(busyDot_);
+            } else {
+                stopBusyPulse(busyDot_);
+                busyDot_->setVisibility(brls::Visibility::GONE);
+            }
+        }
         updateFreshnessLabel();
         // Neither registerAction nor updateActionHint fires this, so without it
         // the bar keeps the stale hint until some unrelated focus change
@@ -1817,6 +1839,7 @@ private:
     CatalogDataSource* dataSource_;
     brls::Box* header_ = nullptr;
     brls::Box* freshnessRow_ = nullptr;
+    brls::Label* busyDot_ = nullptr;
     brls::Label* freshness_ = nullptr;
     SearchIconButton* searchField_ = nullptr;
     brls::Button* clearSearch_ = nullptr;
