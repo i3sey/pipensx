@@ -174,6 +174,11 @@ static inline Result nsGetApplicationControlData(
     return 0x236; /* generic libnx-style failure */
 }
 
+static inline Result nsDeleteApplicationCompletely(u64 application_id) {
+    (void)application_id;
+    return 0x236; /* no installed applications exist on PC */
+}
+
 static inline Result nacpGetLanguageEntry(NacpStruct* nacp,
                                           NacpLanguageEntry** out) {
     (void)nacp;

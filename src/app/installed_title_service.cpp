@@ -86,6 +86,47 @@ std::string InstalledTitleService::formatTitleId(uint64_t applicationId) {
     return text;
 }
 
+bool InstalledTitleService::uninstall(const std::string& titleId,
+                                      std::string& error) {
+    std::string refreshError;
+    if (!uninstall(titleId, error, refreshError))
+        return false;
+    if (!refreshError.empty()) {
+        error = std::move(refreshError);
+        return false;
+    }
+    return true;
+}
+
+bool InstalledTitleService::uninstall(const std::string& titleId,
+                                      std::string& error,
+                                      std::string& refreshError) {
+    error.clear();
+    refreshError.clear();
+    uint64_t applicationId = 0;
+    if (!parseTitleId(titleId, applicationId)) {
+        error = "Invalid title id.";
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> refreshLock(refreshMutex_);
+        const Result rc = nsDeleteApplicationCompletely(applicationId);
+        if (R_FAILED(rc)) {
+            error = resultText("Unable to uninstall application", rc);
+            diagnostic_error("installed", titleId.c_str(),
+                             "event=uninstall result=0x%08x", rc);
+            return false;
+        }
+    }
+    log_msg("[installed] uninstalled %s\n", titleId.c_str());
+    telemetry_log("installed", titleId.c_str(), "event=uninstall");
+    if (!refresh(refreshError))
+        diagnostic_error("installed", titleId.c_str(),
+                         "event=uninstall_refresh error=%s",
+                         refreshError.c_str());
+    return true;
+}
+
 bool InstalledTitleService::contains(const std::string& titleId) const {
     std::lock_guard<std::mutex> lock(mutex_);
     return !titleId.empty() && titleIds_.count(upperAscii(titleId)) != 0;

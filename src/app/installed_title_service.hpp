@@ -27,6 +27,9 @@ public:
     explicit InstalledTitleService(std::string rootPath);
 
     bool refresh(std::string& error);
+    bool uninstall(const std::string& titleId, std::string& error);
+    bool uninstall(const std::string& titleId, std::string& error,
+                   std::string& refreshError);
     bool contains(const std::string& titleId) const;
 
     std::vector<InstalledTitle> titles() const;
@@ -38,6 +41,26 @@ public:
     void injectTitles(std::vector<InstalledTitle> titles);
 
     static std::string formatTitleId(uint64_t applicationId);
+    static bool parseTitleId(const std::string& titleId,
+                             uint64_t& applicationId) {
+        if (titleId.size() != 16)
+            return false;
+        uint64_t value = 0;
+        for (char c : titleId) {
+            int digit = -1;
+            if (c >= '0' && c <= '9')
+                digit = c - '0';
+            else if (c >= 'a' && c <= 'f')
+                digit = c - 'a' + 10;
+            else if (c >= 'A' && c <= 'F')
+                digit = c - 'A' + 10;
+            if (digit < 0)
+                return false;
+            value = (value << 4) | static_cast<uint64_t>(digit);
+        }
+        applicationId = value;
+        return true;
+    }
 
 private:
     std::string rootPath_;
