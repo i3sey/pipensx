@@ -393,6 +393,14 @@ private:
     void buildFactsTable(brls::Box* right) {
         auto* table = new brls::Box(brls::Axis::COLUMN);
         table->setMarginTop(8);
+        addFactRow(table, tr("pipensx/detail/fact_install_state"),
+                   installed_ && installed_->contains(titleId_)
+                       ? tr("pipensx/detail/install_state_installed")
+                       : tr("pipensx/detail/install_state_not_installed"));
+        addFactRow(table, tr("pipensx/detail/fact_installed_version"),
+                   formatTitleVersion(installedVersionForTitle()));
+        addFactRow(table, tr("pipensx/detail/fact_available_version"),
+                   formatTitleVersion(latestVersionForEntry()));
         addFactRow(table, tr("pipensx/detail/fact_developer"),
                    presentation_.developer);
         addFactRow(table, tr("pipensx/detail/fact_publisher"),
@@ -671,10 +679,19 @@ private:
                 installContract_->setVisibility(brls::Visibility::VISIBLE);
             if (!operationMessage_.empty())
                 setTextIfChanged(statusLabel_, operationMessage_);
-            else if (installed_ && installed_->contains(titleId_))
-                setTextIfChanged(statusLabel_,
-                                 tr("pipensx/detail/installed_hint"));
-            else
+            else if (installed_ && installed_->contains(titleId_)) {
+                const std::string latestXyz =
+                    formatTitleVersion(latestVersionForEntry());
+                if (!latestXyz.empty() &&
+                    titleVersionIsNewer(latestVersionForEntry(),
+                                        installedVersionForTitle()))
+                    setTextIfChanged(
+                        statusLabel_,
+                        tr("pipensx/detail/update_available_hint", latestXyz));
+                else
+                    setTextIfChanged(statusLabel_,
+                                     tr("pipensx/detail/installed_hint"));
+            } else
                 setTextIfChanged(statusLabel_,
                                  tr("pipensx/detail/install_hint"));
         }

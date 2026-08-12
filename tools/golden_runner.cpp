@@ -539,6 +539,7 @@ int main(int argc, char** argv) {
         const auto& entries = catalog.entries();
         if (entries.empty())
             return fail("detail screen needs a non-empty catalog fixture");
+        seedInstalledFixture(installed);
         activity = new GameDetailActivity(
             entries.front(), "", &manager, &metadata, &installed, &settings,
             &mods, [](const std::string&, const std::string&) {}, [] {},

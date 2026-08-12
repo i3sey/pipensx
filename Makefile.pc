@@ -327,6 +327,10 @@ $(BUILD_DIR)/tests/test_update_transaction: tests/test_update_transaction.c \
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Isrc -o $@ $^ -Wl,--wrap=rename
 
+$(BUILD_DIR)/tests/test_title_version: tests/test_title_version.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
+
 $(BUILD_DIR)/tests/test_install_space: tests/test_install_space.cpp \
 		src/app/install_space.cpp
 	@mkdir -p $(dir $@)
