@@ -10,6 +10,7 @@ extern "C" {
 }
 
 namespace pipensx {
+
 namespace {
 
 struct RangeBuffer {
@@ -48,10 +49,18 @@ void ensureCurlGlobal() {
 WebSeedSource::WebSeedSource(const std::string& baseUrl, const std::string& name,
                              uint64_t pieceLength, uint64_t totalLength,
                              uint32_t numPieces, unsigned threads)
+    : WebSeedSource(baseUrl, name, pieceLength, totalLength, numPieces, threads,
+                    BackoffPolicy{}) {}
+
+WebSeedSource::WebSeedSource(const std::string& baseUrl, const std::string& name,
+                             uint64_t pieceLength, uint64_t totalLength,
+                             uint32_t numPieces, unsigned threads,
+                             BackoffPolicy backoffPolicy)
     : url_(resolveUrl(baseUrl, name)),
       pieceLength_(pieceLength),
       totalLength_(totalLength),
-      numPieces_(numPieces) {
+      numPieces_(numPieces),
+      backoffPolicy_(backoffPolicy) {
     ensureCurlGlobal();
     if (threads < 1)
         threads = 1;
@@ -79,8 +88,28 @@ uint64_t WebSeedSource::pieceLen(uint32_t piece) const {
 
 bool WebSeedSource::enqueue(uint32_t piece) {
     std::lock_guard<std::mutex> lock(mutex_);
+
+    if (dead_) {
+        auto now = std::chrono::steady_clock::now();
+        if (now < deadUntil_)
+            return false;
+        dead_ = false;
+        consecutiveFailures_ = 0;
+        backoff_.clear();
+        log_msg("[webseed] source %s revived after dead timeout\n",
+                url_.c_str());
+    }
+
+    auto it = backoff_.find(piece);
+    if (it != backoff_.end()) {
+        auto now = std::chrono::steady_clock::now();
+        if (now < it->second.retryAfter)
+            return false;
+    }
+
     if (!assigned_.insert(piece).second)
         return false;
+
     pending_.push_back(piece);
     cv_.notify_one();
     return true;
@@ -101,6 +130,52 @@ bool WebSeedSource::popCompleted(Completed& out) {
     return true;
 }
 
+bool WebSeedSource::isDead() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!dead_)
+        return false;
+    return std::chrono::steady_clock::now() < deadUntil_;
+}
+
+void WebSeedSource::recordFailure(uint32_t piece) {
+    auto now = std::chrono::steady_clock::now();
+    int attempts = 1;
+    auto it = backoff_.find(piece);
+    if (it != backoff_.end())
+        attempts = it->second.attempts + 1;
+
+    int delaySec = backoffPolicy_.baseBackoffSec;
+    for (int i = 1; i < attempts && delaySec < backoffPolicy_.maxBackoffSec;
+         ++i)
+        delaySec *= 2;
+    if (delaySec > backoffPolicy_.maxBackoffSec)
+        delaySec = backoffPolicy_.maxBackoffSec;
+
+    backoff_[piece] = {
+        now + std::chrono::seconds(delaySec), attempts};
+
+    consecutiveFailures_++;
+    if (consecutiveFailures_ >= backoffPolicy_.maxConsecutiveFailures) {
+        dead_ = true;
+        deadUntil_ = now + std::chrono::seconds(backoffPolicy_.deadReviveSec);
+        for (uint32_t pending : pending_)
+            assigned_.erase(pending);
+        pending_.clear();
+        log_msg("[webseed] source %s marked dead (%d consecutive failures)\n",
+                url_.c_str(), consecutiveFailures_);
+    }
+}
+
+void WebSeedSource::recordSuccess(uint32_t piece) {
+    consecutiveFailures_ = 0;
+    backoff_.erase(piece);
+    if (dead_) {
+        dead_ = false;
+        log_msg("[webseed] source %s revived after successful piece\n",
+                url_.c_str());
+    }
+}
+
 void WebSeedSource::workerMain() {
     for (;;) {
         uint32_t piece;
@@ -116,8 +191,14 @@ void WebSeedSource::workerMain() {
         Completed done;
         done.piece = piece;
         done.ok = fetchPiece(piece, done.data);
-        std::lock_guard<std::mutex> lock(mutex_);
-        completed_.push_back(std::move(done));
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!done.ok)
+                recordFailure(piece);
+            else
+                recordSuccess(piece);
+            completed_.push_back(std::move(done));
+        }
     }
 }
 
