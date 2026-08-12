@@ -29,6 +29,9 @@ jobs:
             build-essential python3 libcurl4-openssl-dev libssl-dev \
             libzstd-dev zlib1g-dev
 
+      - name: Check Makefile.pc ↔ CMakeLists source lists
+        run: python3 scripts/check_source_lists.py
+
       - name: Run PC tests
         run: make test
 

@@ -146,7 +146,6 @@ set(CORE_SOURCES
     src/core/peer.c
     src/core/piece.c
     src/core/tracker.c
-    src/core/mse.c
     src/core/dht.c
     src/core/torrent.c
     src/platform/storage.c
