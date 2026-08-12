@@ -1,0 +1,44 @@
+# Build and generated
+build-*/
+build_switch/
+*.o
+*.d
+*.elf
+*.nro
+*.nacp
+*.map
+*.lst
+compile_commands.json
+.cache/
+.codegraph/
+.codewhale/
+.opencode/
+.tmp/
+dht.cache
+
+# Logs and crash dumps
+*.log
+bug-reports/
+
+# Pixels and binaries — triage goldens by AE/bbox, do not read PNGs
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.gif
+
+# Catalog dumps (tens of MB). Un-ignore when editing catalog parsers.
+resources/catalog/*.json
+
+# Historical notes, not source of truth
+docs/plans/
+
+# Third-party trees. libnx-ext and borealis (minus nested extern) stay searchable.
+vendor/zstd/
+vendor/glm/
+vendor/lzma/
+vendor/dht/
+vendor/libutp/
+vendor/qrcodegen/
+vendor/borealis/library/lib/extern/
+vendor/borealis/android-project/
