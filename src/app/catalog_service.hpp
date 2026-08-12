@@ -68,6 +68,9 @@ struct CatalogEntry {
     }
 };
 
+// Built-in Langegen switch_games.json URL used when catalogSourceUrl is empty.
+std::string defaultCatalogSourceUrl();
+
 class CatalogService {
 public:
     explicit CatalogService(std::string rootPath,
@@ -79,11 +82,13 @@ public:
     // parse it, and persist the on-disk cache. Fills `parsed` on success and
     // never touches entries_, so it may run on a worker thread. The caller
     // adopts the parsed batch on the UI thread via adopt().
-    bool fetchLatest(std::vector<CatalogEntry>& parsed, std::string& error);
+    bool fetchLatest(std::vector<CatalogEntry>& parsed, std::string& error,
+                     const std::string& sourceUrl);
     // UI-thread only: adopt a freshly fetched batch as the live catalogue.
     // entries() is read unsynchronised by the render thread every frame, so
     // entries_ may only be reassigned here — never from a fetch worker.
-    void adopt(std::vector<CatalogEntry> parsed);
+    void adopt(std::vector<CatalogEntry> parsed,
+               const std::string& sourceUrl = {});
 
     const std::vector<CatalogEntry>& entries() const { return *entries_; }
 
@@ -120,9 +125,11 @@ public:
                           std::vector<CatalogEntry>& entries,
                           std::string& error);
 
-    // True when `url` is on the trusted-host allowlist for catalog bytes.
-    // Every network source is gated on this before a byte is fetched.
-    static bool isTrustedSource(const std::string& url);
+    // True when `url` is allowed to serve catalog bytes for `sourceUrl`.
+    // Built-in Langegen keeps the historical repo-prefix allowlist; a custom
+    // source trusts only redirects within the source file's directory.
+    static bool isTrustedSource(const std::string& url,
+                                const std::string& sourceUrl);
 
 private:
     bool loadFile(const std::string& path, const std::string& label,
