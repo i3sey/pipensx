@@ -37,4 +37,24 @@ inline void curlPinScheme(CURL* curl, const std::string& url) {
 #endif
 }
 
+// Peer verify stays on. On Switch, also import the bundled roots in
+// romfs:/ssl/cacert.pem (libnx curl uses sslContextImportServerPki — additive
+// to the system store). On PC, leave the OpenSSL system store alone: CAINFO
+// would replace it.
+inline void curlApplyTrustedSsl(CURL* curl) {
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+#ifdef __SWITCH__
+    curl_easy_setopt(curl, CURLOPT_CAINFO, "romfs:/ssl/cacert.pem");
+#endif
+}
+
+// True for curl/OpenSSL peer-verify failure strings we surface with a
+// "check console clock" hint after CAINFO still did not help.
+inline bool isSslCertificateErrorMessage(const std::string& error) {
+    return error.find("SSL peer certificate") != std::string::npos ||
+           error.find("SSL certificate problem") != std::string::npos ||
+           error.find("certificate verify failed") != std::string::npos;
+}
+
 } // namespace pipensx

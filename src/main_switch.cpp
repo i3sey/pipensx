@@ -90,6 +90,8 @@ const std::string& borealisLocaleFor(const std::string& language) {
         return brls::LOCALE_PT_BR;
     if (language == "fr")
         return brls::LOCALE_FR;
+    if (language == "es")
+        return brls::LOCALE_ES;
     return brls::LOCALE_AUTO;
 }
 

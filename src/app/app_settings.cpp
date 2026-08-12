@@ -180,6 +180,11 @@ bool parseSettings(const std::string& text, AppSettingsData& values,
         return false;
     if (!isValidProxyUrl(values.proxyUrl))
         values.proxyUrl.clear();
+    if (!readString(root, "catalog_source_url", values.catalogSourceUrl,
+                    error))
+        return false;
+    if (!isValidCatalogSourceUrl(values.catalogSourceUrl))
+        values.catalogSourceUrl.clear();
     // v2 -> v3: debrid arrived and the struct default flipped torrenting off,
     // but a pre-v3 file was written by a build where torrenting was the only
     // way to download anything. Migrate it back on rather than silently
@@ -249,6 +254,7 @@ std::string serializeSettings(const AppSettingsData& values) {
             : "torbox";
     root["first_run_completed"] = values.firstRunCompleted;
     root["proxy_url"] = values.proxyUrl;
+    root["catalog_source_url"] = values.catalogSourceUrl;
     return root.dump(2) + "\n";
 }
 
@@ -283,6 +289,28 @@ std::string generateWebPin() {
     char pin[7];
     std::snprintf(pin, sizeof(pin), "%06u", value);
     return pin;
+}
+
+bool isValidCatalogSourceUrl(const std::string& value) {
+    if (value.empty())
+        return true;
+    if (value.size() > 512)
+        return false;
+    if (value.compare(0, 8, "https://") != 0)
+        return false;
+    if (value.find('@') != std::string::npos)
+        return false;
+    const size_t path = value.find('/', 8);
+    if (path == std::string::npos || path + 1 >= value.size())
+        return false;
+    return true;
+}
+
+std::string effectiveCatalogSourceUrl(const std::string& custom) {
+    if (!custom.empty())
+        return custom;
+    return "https://raw.githubusercontent.com/Langegen/switch-games/"
+           "refs/heads/main/switch_games.json";
 }
 
 bool isValidProxyUrl(const std::string& value) {
@@ -344,6 +372,7 @@ void applyProxySetting(const std::string& proxyUrl) {
 bool AppSettingsData::operator==(const AppSettingsData& other) const {
     return language == other.language &&
            catalogFilter == other.catalogFilter &&
+           catalogSourceUrl == other.catalogSourceUrl &&
            refreshCatalogOnLaunch == other.refreshCatalogOnLaunch &&
            lastCatalogRefreshMs == other.lastCatalogRefreshMs &&
            lastCatalogRefreshWallSec == other.lastCatalogRefreshWallSec &&

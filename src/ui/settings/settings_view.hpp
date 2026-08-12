@@ -50,7 +50,8 @@ public:
              tr("pipensx/settings/language_en"),
              tr("pipensx/settings/language_ru"),
              tr("pipensx/settings/language_pt_br"),
-             tr("pipensx/settings/language_fr")},
+             tr("pipensx/settings/language_fr"),
+             tr("pipensx/settings/language_es")},
             languageIndex(settings_->get().language),
             [this](int selected) {
                 AppSettingsData values = settings_->get();
@@ -112,6 +113,11 @@ public:
                     refreshCatalog_->setOn(previous, false);
             });
         content->addView(refreshCatalog_);
+
+        catalogSource_ = actionCell(tr("pipensx/settings/catalog_source"), "",
+            [this] { editCatalogSource(); });
+        content->addView(catalogSource_);
+        refreshCatalogSourceDetail();
 
         content->addView(actionCell(tr("pipensx/settings/update_now"),
             tr("pipensx/settings/update_now_detail"),
@@ -403,13 +409,15 @@ private:
         brls::Application::notify(tr("pipensx/catalog/updating_catalog"));
         auto alive = alive_;
         CatalogService* catalog = catalog_;
-        brls::async([this, alive, catalog, onDone = std::move(onDone)]()
-                        mutable {
+        const std::string catalogSourceUrl =
+            effectiveCatalogSourceUrl(settings_->get().catalogSourceUrl);
+        brls::async([this, alive, catalog, catalogSourceUrl,
+                     onDone = std::move(onDone)]() mutable {
             std::vector<CatalogEntry> entries;
             std::string error;
-            bool ok = catalog->fetchLatest(entries, error);
+            bool ok = catalog->fetchLatest(entries, error, catalogSourceUrl);
             brls::sync([this, alive, ok, entries = std::move(entries),
-                        error = std::move(error),
+                        error = std::move(error), catalogSourceUrl,
                         onDone = std::move(onDone)]() mutable {
                 if (!alive->load())
                     return;
@@ -420,7 +428,7 @@ private:
                     brls::Application::notify(error);
                     return;
                 }
-                catalog_->adopt(std::move(entries));
+                catalog_->adopt(std::move(entries), catalogSourceUrl);
                 recordRefreshTime(true, false);
                 brls::Application::notify(
                     tr("pipensx/catalog/updated_catalog",
@@ -649,6 +657,31 @@ private:
         manager_->setTorrentingEnabled(enabled);
     }
 
+    void refreshCatalogSourceDetail() {
+        const std::string& url = settings_->get().catalogSourceUrl;
+        catalogSource_->setDetailText(
+            url.empty() ? tr("pipensx/settings/catalog_source_default") : url);
+    }
+
+    void editCatalogSource() {
+        brls::Application::getImeManager()->openForText(
+            [this](std::string text) {
+                if (!pipensx::isValidCatalogSourceUrl(text)) {
+                    brls::Application::notify(
+                        tr("pipensx/settings/catalog_source_invalid"));
+                    return;
+                }
+                AppSettingsData values = settings_->get();
+                values.catalogSourceUrl = text;
+                if (!persist(values, "catalog_source_url"))
+                    return;
+                refreshCatalogSourceDetail();
+            },
+            tr("pipensx/settings/catalog_source"),
+            tr("pipensx/settings/catalog_source_detail"), 512,
+            settings_->get().catalogSourceUrl, brls::KEYBOARD_DISABLE_NONE);
+    }
+
     void refreshDebridLinkDetail() {
         if (!debridLink_)
             return;
@@ -671,6 +704,7 @@ private:
         catalogFilter_->setSelection(
             values.catalogFilter == CatalogFilter::Games ? 1 : 0, true);
         refreshCatalog_->setOn(values.refreshCatalogOnLaunch, false);
+        refreshCatalogSourceDetail();
         streamSelection_->setSelection(
             values.streamSelection == StreamSelection::PackagesOnly ? 1 : 0,
             true);
@@ -710,6 +744,7 @@ private:
     brls::SelectorCell* language_ = nullptr;
     brls::SelectorCell* catalogFilter_ = nullptr;
     brls::BooleanCell* refreshCatalog_ = nullptr;
+    brls::DetailCell* catalogSource_ = nullptr;
     brls::BooleanCell* checkForUpdates_ = nullptr;
     brls::DetailCell* updateAction_ = nullptr;
     brls::SelectorCell* streamSelection_ = nullptr;

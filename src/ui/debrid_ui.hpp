@@ -4,13 +4,13 @@
 #include <memory>
 #include <optional>
 #include <string>
-#include <thread>
 #include <utility>
 
 #include <borealis.hpp>
 
 #include "app/app_settings.hpp"
 #include "app/bug_report.hpp"
+#include "app/curl_https.hpp"
 #include "app/download_manager.hpp"
 #include "app/torbox_pairing_server.hpp"
 #include "app/torbox_provider.hpp"
@@ -47,6 +47,19 @@ inline const char* debridProviderName(DebridProviderKind kind) {
     if (kind == DebridProviderKind::RealDebrid)
         return "Real-Debrid";
     return "TorBox";
+}
+
+// User-facing validate failure: SSL cert problems get an explicit clock hint
+// (CAINFO may still fail when the console date is wrong).
+inline std::string formatDebridValidateError(const std::string& error) {
+    if (isSslCertificateErrorMessage(error))
+        return tr("pipensx/debrid/ssl_cert_hint");
+    if (error.empty())
+        return tr("pipensx/debrid/rejected");
+    constexpr size_t kMax = 160;
+    if (error.size() <= kMax)
+        return error;
+    return error.substr(0, kMax - 1) + "…";
 }
 
 inline std::string debridPairingUrl(const std::string& ip) {
@@ -100,7 +113,10 @@ public:
             server_ = std::make_unique<TorboxPairingServer>(
                 kTorboxPairingPort,
                 [provider](const std::string& key, std::string& error) {
-                    return makeDebridProvider(provider, key)->validate(error);
+                    if (makeDebridProvider(provider, key)->validate(error))
+                        return true;
+                    error = formatDebridValidateError(error);
+                    return false;
                 },
                 provider == DebridProviderKind::TorrServer
                     ? "Paste the address of your TorrServer, for example "
@@ -261,21 +277,29 @@ private:
         summary_->setCheck(tr("pipensx/debrid/validating"), theme::accent());
         auto alive = alive_;
         const DebridProviderKind provider = provider_;
-        std::thread([this, alive, provider, key] {
+        brls::async([this, alive, provider, key] {
             std::string error;
-            const bool ok = makeDebridProvider(provider, key)->validate(error);
-            brls::sync([this, alive, ok, key] {
+            bool ok = false;
+            try {
+                ok = makeDebridProvider(provider, key)->validate(error);
+            } catch (const std::exception& e) {
+                error = e.what();
+            } catch (...) {
+                error = "Validation failed.";
+            }
+            if (!ok)
+                error = formatDebridValidateError(error);
+            brls::sync([this, alive, ok, key, error = std::move(error)] {
                 if (!alive->load())
                     return;
                 if (ok) {
                     setCheckSuccess();
                     saveKey(key);
                 } else {
-                    summary_->setCheck(tr("pipensx/debrid/rejected"),
-                                       theme::error());
+                    summary_->setCheck(error, theme::error());
                 }
             });
-        }).detach();
+        });
     }
 
     bool saveKey(const std::string& typed) {

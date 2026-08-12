@@ -31,6 +31,10 @@ struct AppSettingsData {
     // change only takes effect on the next launch.
     std::string language = "auto";
     CatalogFilter catalogFilter = CatalogFilter::Games;
+    // HTTPS URL to a switch_games.json-compatible catalog. Empty = built-in
+    // Langegen source. Validated at parse time; a hand-edited settings.json
+    // cannot smuggle a non-HTTPS or credential-bearing URL.
+    std::string catalogSourceUrl;
     bool refreshCatalogOnLaunch = false;
     uint64_t lastCatalogRefreshMs = 0;
     // Wall-clock seconds of the last successful catalogue download. 0 = never
@@ -95,7 +99,7 @@ struct AppSettingsData {
 // selector lists them. Anything else is rejected at parse time, so a hand-edited
 // settings.json cannot leave the app pointing at a locale we do not ship.
 inline constexpr const char* kLanguageValues[] = {
-    "auto", "en-US", "ru", "pt-BR", "fr"};
+    "auto", "en-US", "ru", "pt-BR", "fr", "es"};
 
 bool isSupportedLanguage(const std::string& value);
 
@@ -110,6 +114,13 @@ std::string generateWebPin();
 // subset worth supporting on a console, and rejecting the rest early beats
 // every request failing with a curl error nobody can read.
 bool isValidProxyUrl(const std::string& value);
+
+// Empty (built-in Langegen) or https:// with a non-empty host and path, no
+// userinfo, max 512 chars — same rules enforced at parse and in the UI.
+bool isValidCatalogSourceUrl(const std::string& value);
+
+// User override or the built-in Langegen switch_games.json URL.
+std::string effectiveCatalogSourceUrl(const std::string& custom);
 
 // Points libcurl at the proxy for every handle the app creates, including
 // ones already constructed — curl re-reads the environment per transfer, so

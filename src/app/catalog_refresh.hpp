@@ -32,6 +32,7 @@ struct CatalogRefreshAdoption {
 // optional (null on builds/tests without a mod index).
 CatalogRefreshAdoption adoptCatalogRefresh(
     CatalogService& catalog, GameMetadataService& metadata,
-    CatalogRefreshBatch batch, ModIndexService* mods = nullptr);
+    CatalogRefreshBatch batch, ModIndexService* mods = nullptr,
+    const std::string& catalogSourceUrl = {});
 
 } // namespace pipensx
