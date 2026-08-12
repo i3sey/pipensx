@@ -85,7 +85,7 @@ jobs:
           persist-credentials: false
 
       - name: Cache devkitPro pacman databases
-        uses: actions/cache@1bd1e32a3bdc45312c1d9d17a3a12a4a6b5c8b69 # v4.2.0
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: /var/lib/pacman/sync
           key: dkp-pacman-sync-v1
