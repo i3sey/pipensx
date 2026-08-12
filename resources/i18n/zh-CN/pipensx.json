@@ -170,10 +170,15 @@
     "no_installable": "没有可安装的游戏文件 — 正在打开文件选择器以下载。",
     "installing_extras_skipped_hint": "正在安装游戏文件。额外文件已跳过 — 使用“选择文件”将其包含。",
     "installing_extras_skipped": "正在安装游戏文件。额外文件已跳过。",
+    "smart_open_options": "智能安装需要确认。正在打开安装选项。",
+    "smart_installing_base": "已添加。正在智能安装到 {}…",
+    "smart_installing_update": "已添加。正在智能安装更新到 {}…",
+    "install_options": "安装选项",
     "added_installing": "已添加。正在安装到 {}…",
     "already_in_downloads": "已在下载列表中。",
     "status_fetching": "获取中 {}%",
-    "install_contract": "安装 = 仅 NSP/NSZ · 额外文件已跳过"
+    "install_contract": "安装 = 仅 NSP/NSZ · 额外文件已跳过",
+    "smart_install_contract": "智能安装：本体/更新 · 选项用于手动控制"
   },
   "torrent": {
     "title": "选择种子文件",
