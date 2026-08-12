@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
+#include <vector>
 
 namespace pipensx {
 namespace {
@@ -88,6 +89,39 @@ bool pathHasTitleId(const std::string& path, const std::string& titleId) {
     return lowerPath.find(lowerId) != std::string::npos;
 }
 
+bool isBasePackageFile(const TorrentPreview::File& file,
+                       const std::string& titleId) {
+    if (!file.package || !pathHasTitleId(file.path, titleId) ||
+        isUpdateFile(file.path))
+        return false;
+    uint64_t tag = 0;
+    return !fileVersionTag(file.path, tag) || tag == 0;
+}
+
+bool isLikelyModPackage(const std::string& path) {
+    std::string lower = path;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c) {
+                       return static_cast<char>(std::tolower(c));
+                   });
+    return lower.find("mod") != std::string::npos ||
+           lower.find("exefs") != std::string::npos ||
+           lower.find("romfs") != std::string::npos;
+}
+
+std::vector<size_t> smartUpdateMatches(const TorrentPreview& preview,
+                                       const std::string& latestVersion,
+                                       const std::string& titleId) {
+    std::vector<size_t> matches = updateVersionMatches(preview, latestVersion,
+                                                       titleId);
+    matches.erase(std::remove_if(matches.begin(), matches.end(),
+        [&preview](size_t i) {
+            return i >= preview.files.size() ||
+                   isLikelyModPackage(preview.files[i].path);
+        }), matches.end());
+    return matches;
+}
+
 } // namespace
 
 std::vector<size_t> updateVersionMatches(const TorrentPreview& preview,
@@ -160,6 +194,37 @@ std::vector<uint8_t> selectUpdateFiles(const TorrentPreview& preview,
     // Nothing identifiable: leave everything Skip so the chooser opens with
     // no preselection (Continue stays disabled until the user picks).
     return selectFiles(preview, {});
+}
+
+std::vector<uint8_t> selectSmartInstallFiles(
+    const TorrentPreview& preview,
+    bool titleInstalled,
+    const std::string& installedVersion,
+    const std::string& latestVersion,
+    const std::string& titleId) {
+    if (preview.files.empty())
+        return {};
+
+    if (titleInstalled) {
+        uint64_t installed = 0;
+        uint64_t latest = 0;
+        if (!parseDecimal(installedVersion, installed) ||
+            !parseDecimal(latestVersion, latest) || latest <= installed)
+            return selectFiles(preview, {});
+        return selectFiles(preview, smartUpdateMatches(preview, latestVersion,
+                                                       titleId));
+    }
+
+    std::vector<size_t> packages;
+    for (size_t i = 0; i < preview.files.size(); ++i) {
+        if (isBasePackageFile(preview.files[i], titleId))
+            packages.push_back(i);
+    }
+    const std::vector<size_t> updates = smartUpdateMatches(preview,
+                                                           latestVersion,
+                                                           titleId);
+    packages.insert(packages.end(), updates.begin(), updates.end());
+    return selectFiles(preview, packages);
 }
 
 std::string updateMagnetFor(const std::string& infoHash,

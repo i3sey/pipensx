@@ -170,10 +170,15 @@
     "no_installable": "Aucun fichier de jeu installable — ouverture du sélecteur pour télécharger.",
     "installing_extras_skipped_hint": "Installation des fichiers du jeu. Fichiers supplémentaires ignorés — utilisez Choisir les fichiers pour les inclure.",
     "installing_extras_skipped": "Installation des fichiers du jeu. Fichiers supplémentaires ignorés.",
+    "smart_open_options": "L'installation intelligente demande confirmation. Ouverture des options.",
+    "smart_installing_base": "Ajouté. Installation intelligente vers {}...",
+    "smart_installing_update": "Ajouté. Installation intelligente de la mise à jour vers {}...",
+    "install_options": "Options d'installation",
     "added_installing": "Ajouté. Installation vers {}...",
     "already_in_downloads": "Déjà dans les téléchargements.",
     "status_fetching": "Récupération {}%",
-    "install_contract": "Installer = NSP/NSZ uniquement · extras ignorés"
+    "install_contract": "Installer = NSP/NSZ uniquement · extras ignorés",
+    "smart_install_contract": "Installation intelligente : base/update · options pour contrôle manuel"
   },
   "torrent": {
     "title": "Choisir les fichiers du torrent",

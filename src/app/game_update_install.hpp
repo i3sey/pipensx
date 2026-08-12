@@ -63,8 +63,21 @@ std::vector<uint8_t> selectFiles(const TorrentPreview& preview,
 // This mask only preselects: the update-file chooser always opens and hands
 // the final, user-tuned mask back to the importer.
 std::vector<uint8_t> selectUpdateFiles(const TorrentPreview& preview,
-                                       const std::string& latestVersion,
-                                       const std::string& titleId = {});
+                                        const std::string& latestVersion,
+                                        const std::string& titleId = {});
+
+// Builds the default one-tap install mask for a catalog release. When the base
+// title is not installed, base packages for that title and an exact bundled
+// update are selected while DLC/mod/extra packages are skipped. When the title
+// is already installed and the catalog exposes a newer update version, only an
+// exact update package is selected. If the intended base/update packages cannot
+// be identified safely, the caller should fall back to the manual chooser.
+std::vector<uint8_t> selectSmartInstallFiles(
+    const TorrentPreview& preview,
+    bool titleInstalled,
+    const std::string& installedVersion,
+    const std::string& latestVersion,
+    const std::string& titleId = {});
 
 // Settled when the tracked task is gone or in a terminal download status —
 // used by InstalledView's post-install re-check tick (and tested directly so
