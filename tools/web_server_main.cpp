@@ -8,7 +8,9 @@
 // Default root is ./web-test-root (created); --catalog loads a Langegen
 // switch_games.json (or any CatalogService-parsable file) into /api/catalog.
 
+#include "app/app_settings.hpp"
 #include "app/catalog_service.hpp"
+#include "app/companion_settings.hpp"
 #include "app/web_server.hpp"
 
 #include <curl/curl.h>
@@ -50,11 +52,31 @@ int main(int argc, char** argv) {
 
     mkdir(root.c_str(), 0755);
     DownloadManager manager(root);
-    // Manual browser-testing harness: no settings file to read the choice
-    // from, and exercising the companion's add flow needs transfers to run.
+    AppSettings settings(root + "/settings.json");
+    std::string settingsError;
+    settings.load(settingsError);
     manager.setTorrentingEnabled(true);
     WebServer server(manager, "resources/web", "dev");
     if (!pin.empty()) server.setPin(pin);
+    server.setStreamSelection(settings.get().streamSelection);
+    server.setSettingsHandlers(
+        [&settings](std::string& json, std::string& error) {
+            (void)error;
+            json = companionSettingsJson(settings.get());
+            return true;
+        },
+        [&settings, &manager, &server](const std::string& body,
+                                       std::string& error, std::string& json) {
+            AppSettingsData next = settings.get();
+            if (!applyCompanionSettingsPatch(next, body, error))
+                return false;
+            if (!settings.update(next, error))
+                return false;
+            applyCompanionSettingsRuntime(settings.get(), manager);
+            server.setStreamSelection(settings.get().streamSelection);
+            json = companionSettingsJson(settings.get());
+            return true;
+        });
 
     if (!catalogPath.empty()) {
         std::ifstream in(catalogPath, std::ios::binary);

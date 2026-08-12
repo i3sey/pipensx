@@ -20,6 +20,7 @@
   <a href="#downloads" data-tab="downloads" class="tab">Downloads</a>
   <a href="#catalog" data-tab="catalog" class="tab">Catalog</a>
   <a href="#add" data-tab="add" class="tab">Add</a>
+  <a href="#settings" data-tab="settings" class="tab">Settings</a>
 </nav>
 
 <main>
@@ -68,6 +69,73 @@
       </div>
       <button id="torrent-btn" class="btn btn-primary">Upload torrent</button>
     </div>
+  </section>
+
+  <section id="view-settings" class="view" hidden>
+    <div class="card form-card">
+      <h2>Downloads</h2>
+      <label class="field">Concurrent downloads
+        <select id="set-max-active">
+          <option value="1">1</option>
+          <option value="2">2</option>
+          <option value="3">3</option>
+          <option value="4">4</option>
+        </select>
+      </label>
+      <label class="field">Stream selection
+        <select id="set-stream">
+          <option value="allFiles">All files</option>
+          <option value="packagesOnly">Packages only</option>
+        </select>
+      </label>
+      <label class="field">Install location
+        <select id="set-install">
+          <option value="sdCard">SD Card</option>
+          <option value="systemMemory">System Memory</option>
+        </select>
+      </label>
+    </div>
+    <div class="card form-card">
+      <h2>Debrid</h2>
+      <label class="field">Provider
+        <select id="set-debrid">
+          <option value="torbox">TorBox</option>
+          <option value="torrserver">TorrServer</option>
+          <option value="realdebrid">Real-Debrid</option>
+        </select>
+      </label>
+      <label class="field">TorBox API key
+        <input id="set-torbox" type="password" autocomplete="off" placeholder="">
+      </label>
+      <label class="field">Real-Debrid API token
+        <input id="set-realdebrid" type="password" autocomplete="off" placeholder="">
+      </label>
+      <label class="field">TorrServer URL
+        <input id="set-torrserver" type="url" placeholder="http://192.168.1.10:8090">
+      </label>
+    </div>
+    <div class="card form-card">
+      <h2>Network</h2>
+      <label class="field">Proxy URL
+        <input id="set-proxy" type="url" placeholder="socks5://host:1080">
+      </label>
+    </div>
+    <div class="card form-card">
+      <h2>Catalog</h2>
+      <label class="field">Catalog source URL
+        <input id="set-catalog-url" type="url" placeholder="https://…/switch_games.json">
+      </label>
+      <label class="field">Catalog filter
+        <select id="set-catalog-filter">
+          <option value="all">All</option>
+          <option value="games">Games</option>
+        </select>
+      </label>
+      <label class="field check">
+        <input id="set-catalog-refresh" type="checkbox"> Refresh catalog on launch
+      </label>
+    </div>
+    <button id="settings-save" class="btn btn-primary">Save settings</button>
   </section>
 </main>
 

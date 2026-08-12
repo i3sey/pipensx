@@ -117,6 +117,11 @@ void testParser() {
     assert(httpParseHeaders("DELETE / HTTP/1.1\r\n\r\n", 8192, r, err) == -1 &&
            err == 405);
     err = 0;
+    assert(httpParseHeaders("PATCH /api/settings HTTP/1.1\r\n\r\n", 8192, r,
+                            err) > 0);
+    assert(r.method == "PATCH");
+    assert(r.path == "/api/settings");
+    err = 0;
     assert(httpParseHeaders("GET / SPDY/3\r\n\r\n", 8192, r, err) == -1 &&
            err == 400);
     printf("parser ok\n");

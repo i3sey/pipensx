@@ -181,6 +181,7 @@ set(APP_SERVICE_SOURCES
     src/app/http_server.cpp
     src/app/web_add_queue.cpp
     src/app/web_server.cpp
+    src/app/companion_settings.cpp
     src/app/bug_report.cpp
     src/app/torbox_client.cpp
     src/app/torbox_pairing_server.cpp

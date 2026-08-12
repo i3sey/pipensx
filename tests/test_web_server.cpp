@@ -4,6 +4,8 @@
 // fake resolver, catalog gzip/ETag and the static whitelist.
 
 #include "app/web_server.hpp"
+#include "app/app_settings.hpp"
+#include "app/companion_settings.hpp"
 
 extern "C" {
 #include "core/sha1.h"
@@ -67,7 +69,7 @@ std::string request(uint16_t port, const std::string& method,
     int fd = clientConnect(port);
     std::string req = method + " " + target + " HTTP/1.1\r\n" + extraHeaders +
                       "Connection: close\r\n";
-    if (method == "POST")
+    if (method == "POST" || method == "PATCH")
         req += "Content-Length: " + std::to_string(body.size()) + "\r\n";
     req += "\r\n" + body;
     size_t off = 0;
@@ -159,6 +161,29 @@ int main() {
         return out.good();
     };
     WebServer server(manager, webRoot, "test-1.0", fakeResolver);
+    AppSettings companionSettings(rootStr + "/settings.json");
+    std::string settingsError;
+    assert(companionSettings.load(settingsError));
+    server.setSettingsHandlers(
+        [&companionSettings](std::string& json, std::string& error) {
+            (void)error;
+            json = companionSettingsJson(companionSettings.get());
+            return true;
+        },
+        [&companionSettings, &manager, &server](const std::string& body,
+                                                std::string& error,
+                                                std::string& json) {
+            AppSettingsData next = companionSettings.get();
+            if (!applyCompanionSettingsPatch(next, body, error))
+                return false;
+            if (!companionSettings.update(next, error))
+                return false;
+            applyCompanionSettingsRuntime(companionSettings.get(), manager);
+            server.setStreamSelection(
+                companionSettings.get().streamSelection);
+            json = companionSettingsJson(companionSettings.get());
+            return true;
+        });
     assert(server.start(0));
     uint16_t port = server.boundPort();
     const std::string pinHeader = "X-Pipensx-Pin: 1234\r\n";
@@ -380,6 +405,50 @@ int main() {
         assert(resp.find("200 OK") != std::string::npos);
         json = gunzip(responseBody(resp));
         assert(json.find("Half cyrillic") != std::string::npos);
+    }
+
+    // Companion settings: PIN + same-origin, whitelist, secrets stay flags
+    {
+        std::string resp = request(port, "GET", "/api/settings");
+        assert(resp.find("401") != std::string::npos);
+
+        resp = request(port, "GET", "/api/settings", "", pinHeader);
+        assert(resp.find("200 OK") != std::string::npos);
+        std::string body = responseBody(resp);
+        assert(body.find("torboxApiKey") == std::string::npos);
+        assert(body.find("realdebridApiKey") == std::string::npos);
+        assert(body.find("\"torboxConfigured\":false") != std::string::npos);
+        assert(body.find("webServerPin") == std::string::npos);
+
+        const std::string host = "Host: 192.168.1.50:8080\r\n";
+        resp = request(port, "PATCH", "/api/settings",
+                       "{\"maxActiveDownloads\":2}",
+                       host + "Origin: http://evil.example\r\n" + pinHeader);
+        assert(resp.find("403") != std::string::npos);
+
+        resp = request(port, "PATCH", "/api/settings",
+                       "{\"language\":\"ru\"}", pinHeader);
+        assert(resp.find("400") != std::string::npos);
+
+        resp = request(port, "PATCH", "/api/settings",
+                       "{\"maxActiveDownloads\":3,\"torboxApiKey\":\"tb-secret\","
+                       "\"streamSelection\":\"packagesOnly\"}",
+                       pinHeader);
+        assert(resp.find("200 OK") != std::string::npos);
+        body = responseBody(resp);
+        assert(body.find("\"maxActiveDownloads\":3") != std::string::npos);
+        assert(body.find("\"torboxConfigured\":true") != std::string::npos);
+        assert(body.find("tb-secret") == std::string::npos);
+        assert(body.find("packagesOnly") != std::string::npos);
+        assert(companionSettings.get().torboxApiKey == "tb-secret");
+        assert(companionSettings.get().maxActiveDownloads == 3);
+
+        resp = request(port, "PATCH", "/api/settings",
+                       "{\"torboxApiKey\":\"\"}", pinHeader);
+        assert(resp.find("200 OK") != std::string::npos);
+        assert(responseBody(resp).find("\"torboxConfigured\":false") !=
+               std::string::npos);
+        assert(companionSettings.get().torboxApiKey.empty());
     }
 
     server.shutdown();
