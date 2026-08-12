@@ -105,10 +105,11 @@ safely stopping the active task before exit.
 
 ## Catalog and network behavior
 
-The application fetches `switch_games.json` over HTTPS from an exact
-repository-prefix allowlist. Redirects or look-alike hosts are rejected before
-catalog bytes are parsed. A failed refresh leaves the last valid SD-card cache
-active.
+The application fetches `switch_games.json` over HTTPS from the built-in
+Langegen source by default. Settings let you point at any other HTTPS URL
+that serves the same JSON shape. Redirects are limited to the source file's
+directory; look-alike hosts are rejected before catalog bytes are parsed. A
+failed refresh leaves the last valid SD-card cache active.
 
 Catalog magnets are resolved from a pre-verified info dictionary when one is
 available, otherwise through BitTorrent extension-protocol peers. Received

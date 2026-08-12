@@ -33,6 +33,7 @@ using pipensx::CatalogHealth;
 using pipensx::CatalogPresentation;
 using pipensx::CatalogRefreshBatch;
 using pipensx::CatalogService;
+using pipensx::defaultCatalogSourceUrl;
 using pipensx::catalogEntryIsGame;
 using pipensx::catalogEntryHasMatchedTitle;
 using pipensx::catalogEntryMatchesPlayerFilter;
@@ -1296,19 +1297,33 @@ void runLiveResolutionIfRequested() {
 // Langegen switch-games repo on GitHub's raw host is accepted; look-alike
 // hosts, wrong repos, plain HTTP and path-prefix tricks are rejected.
 void testTrustedSourceAllowlist() {
+    const std::string kDefault = defaultCatalogSourceUrl();
     assert(CatalogService::isTrustedSource(
         "https://raw.githubusercontent.com/Langegen/switch-games/"
-        "refs/heads/main/switch_games.json"));
+        "refs/heads/main/switch_games.json",
+        kDefault));
 
     assert(!CatalogService::isTrustedSource(
-        "http://raw.githubusercontent.com/Langegen/switch-games/main/x.json"));
+        "http://raw.githubusercontent.com/Langegen/switch-games/main/x.json",
+        kDefault));
     assert(!CatalogService::isTrustedSource(
-        "https://raw.githubusercontent.com/evil/switch-games/main/x.json"));
+        "https://raw.githubusercontent.com/evil/switch-games/main/x.json",
+        kDefault));
     assert(!CatalogService::isTrustedSource(
-        "https://github.com/bqio/switch-dumps/releases/download/v1/catalog.json"));
+        "https://github.com/bqio/switch-dumps/releases/download/v1/catalog.json",
+        kDefault));
     assert(!CatalogService::isTrustedSource(
-        "https://raw.githubusercontent.com.evil.example/Langegen/switch-games/x"));
-    assert(!CatalogService::isTrustedSource(""));
+        "https://raw.githubusercontent.com.evil.example/Langegen/switch-games/x",
+        kDefault));
+    assert(!CatalogService::isTrustedSource("", kDefault));
+
+    const std::string kCustom =
+        "https://cdn.example.com/repo/catalog.json";
+    assert(CatalogService::isTrustedSource(
+        "https://cdn.example.com/repo/other.json", kCustom));
+    assert(!CatalogService::isTrustedSource(
+        "https://evil.example.com/repo/catalog.json", kCustom));
+
     assert(GameMetadataService::isTrustedSource(
         "https://raw.githubusercontent.com/i3sey/pipensx-metadata/"
         "data/manifest.json"));

@@ -1688,9 +1688,12 @@ private:
         CatalogService* catalog = catalog_;
         GameMetadataService* metadata = metadata_;
         ModIndexService* mods = mods_;
+        const std::string catalogSourceUrl =
+            effectiveCatalogSourceUrl(settings_->get().catalogSourceUrl);
         uint64_t startedMs = now_ms();
         brls::async([this, alive, catalog, metadata, mods, startedMs,
-                     fetchCatalog, fetchMetadata, fetchMods, heavy, notify] {
+                     fetchCatalog, fetchMetadata, fetchMods, heavy, notify,
+                     catalogSourceUrl] {
             CatalogRefreshBatch batch;
             std::thread metadataFetch;
             std::thread modsFetch;
@@ -1708,7 +1711,7 @@ private:
             }
             if (fetchCatalog) {
                 batch.catalogOk = catalog->fetchLatest(
-                    batch.catalogEntries, batch.catalogError);
+                    batch.catalogEntries, batch.catalogError, catalogSourceUrl);
             }
             if (metadataFetch.joinable())
                 metadataFetch.join();
@@ -1736,7 +1739,8 @@ private:
                               batch.mods.items.size());
             }
             brls::sync([this, alive, batch = std::move(batch), fetchCatalog,
-                        fetchMetadata, fetchMods, heavy, notify]() mutable {
+                        fetchMetadata, fetchMods, heavy, notify,
+                        catalogSourceUrl]() mutable {
                 if (!alive->load())
                     return;
                 if (heavy) {
@@ -1767,10 +1771,11 @@ private:
                 }
                 if (metadata_) {
                     adoptCatalogRefresh(*catalog_, *metadata_, std::move(batch),
-                                        mods_);
+                                        mods_, catalogSourceUrl);
                 } else {
                     if (catalogOk)
-                        catalog_->adopt(std::move(batch.catalogEntries));
+                        catalog_->adopt(std::move(batch.catalogEntries),
+                                        catalogSourceUrl);
                     if (modsOk && mods_)
                         mods_->adopt(std::move(batch.mods));
                 }

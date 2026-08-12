@@ -65,6 +65,7 @@ PACKAGE_TEST_TARGET = $(BUILD_DIR)/tests/test_package_stream
 CATALOG_TEST_TARGET = $(BUILD_DIR)/tests/test_catalog
 TELEMETRY_TEST_TARGET = $(BUILD_DIR)/tests/test_telemetry
 PEER_TEST_TARGET = $(BUILD_DIR)/tests/test_peer
+TRACKER_TEST_TARGET = $(BUILD_DIR)/tests/test_tracker
 TORRENT_TEST_TARGET = $(BUILD_DIR)/tests/test_torrent
 SETTINGS_TEST_TARGET = $(BUILD_DIR)/tests/test_app_settings
 FAVORITES_TEST_TARGET = $(BUILD_DIR)/tests/test_favorites
@@ -79,6 +80,7 @@ BUDGET_ARBITER_TEST_TARGET = $(BUILD_DIR)/tests/test_budget_arbiter
 REQUEST_GATE_TEST_TARGET = $(BUILD_DIR)/tests/test_request_gate
 INSTALL_PACER_TEST_TARGET = $(BUILD_DIR)/tests/test_install_pacer
 JOURNAL_TEST_TARGET = $(BUILD_DIR)/tests/test_install_journal
+PACKAGE_COORDINATOR_TEST_TARGET = $(BUILD_DIR)/tests/test_package_coordinator
 WEB_SEED_TEST_TARGET = $(BUILD_DIR)/tests/test_web_seed
 WEB_SEED_BACKOFF_TEST_TARGET = $(BUILD_DIR)/tests/test_web_seed_backoff
 MSE_TEST_TARGET = $(BUILD_DIR)/tests/test_mse
@@ -90,6 +92,7 @@ WEB_SERVER_TEST_TARGET = $(BUILD_DIR)/tests/test_web_server
 PROBE_REPORT_TEST_TARGET = $(BUILD_DIR)/tests/test_probe_report
 TORBOX_CLIENT_TEST_TARGET = $(BUILD_DIR)/tests/test_torbox_client
 TORBOX_PAIRING_TEST_TARGET = $(BUILD_DIR)/tests/test_torbox_pairing
+SSL_CACERT_TEST_TARGET = $(BUILD_DIR)/tests/test_ssl_cacert
 DEBRID_TRANSFER_TEST_TARGET = $(BUILD_DIR)/tests/test_debrid_transfer
 TB_PROVIDER_TEST_TARGET = $(BUILD_DIR)/tests/test_torbox_provider
 TS_PROVIDER_TEST_TARGET = $(BUILD_DIR)/tests/test_torrserver_provider
@@ -225,7 +228,7 @@ $(PACKAGE_TEST_TARGET): tests/test_package_stream.cpp \
 		$(BUILD_DIR)/src/install/package_stream.o $(BUILD_DIR)/src/install/install_backend_pc.o \
 		$(BUILD_DIR)/src/core/util.o
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(INSTALL_LDFLAGS) -pthread
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $(filter-out src/app/package_coordinator.hpp,$^) $(INSTALL_LDFLAGS) -pthread
 
 
 $(BUILD_DIR)/src/app/catalog_service.o: src/app/catalog_service.cpp
@@ -316,7 +319,8 @@ $(PROBE_REPORT_TEST_TARGET): tests/test_probe_report.c src/probe/probe_report.c
 test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 		$(CATALOG_TEST_TARGET) \
 		$(TELEMETRY_TEST_TARGET) $(PEER_TEST_TARGET) \
-		$(TORRENT_TEST_TARGET) $(SETTINGS_TEST_TARGET) $(UPDATE_TEST_TARGET) \
+		$(TRACKER_TEST_TARGET) $(TORRENT_TEST_TARGET) \
+		$(SETTINGS_TEST_TARGET) $(UPDATE_TEST_TARGET) \
 		$(GAME_UPDATE_TEST_TARGET) \
 		$(UPDATE_FILE_SELECT_TEST_TARGET) \
 		$(UPDATE_TRANSACTION_TEST_TARGET) \
@@ -324,7 +328,8 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 		$(RAM_BUDGET_TEST_TARGET) $(BUDGET_ARBITER_TEST_TARGET) \
 		$(REQUEST_GATE_TEST_TARGET) \
 		$(INSTALL_PACER_TEST_TARGET) \
-		$(JOURNAL_TEST_TARGET) $(WEB_SEED_TEST_TARGET) \
+		$(JOURNAL_TEST_TARGET) $(PACKAGE_COORDINATOR_TEST_TARGET) \
+		$(WEB_SEED_TEST_TARGET) \
 		$(WEB_SEED_BACKOFF_TEST_TARGET) \
 		$(FAVORITES_TEST_TARGET) \
 		$(MSE_TEST_TARGET) $(DHT_CACHE_TEST_TARGET) \
@@ -333,6 +338,7 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 		$(HTTP_TEST_TARGET) $(WEB_SERVER_TEST_TARGET) \
 		$(PROBE_REPORT_TEST_TARGET) \
 		$(TORBOX_CLIENT_TEST_TARGET) $(TORBOX_PAIRING_TEST_TARGET) \
+		$(SSL_CACERT_TEST_TARGET) \
 		$(DEBRID_TRANSFER_TEST_TARGET) \
 		$(TB_PROVIDER_TEST_TARGET) $(TS_PROVIDER_TEST_TARGET) \
 		$(RD_CLIENT_TEST_TARGET) $(RD_PROVIDER_TEST_TARGET) \
@@ -343,6 +349,7 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 	./$(CATALOG_TEST_TARGET)
 	./$(TELEMETRY_TEST_TARGET)
 	./$(PEER_TEST_TARGET)
+	./$(TRACKER_TEST_TARGET)
 	./$(TORRENT_TEST_TARGET)
 	./$(SETTINGS_TEST_TARGET)
 	./$(UPDATE_TEST_TARGET)
@@ -356,6 +363,7 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 	./$(REQUEST_GATE_TEST_TARGET)
 	./$(INSTALL_PACER_TEST_TARGET)
 	./$(JOURNAL_TEST_TARGET)
+	./$(PACKAGE_COORDINATOR_TEST_TARGET)
 	./$(WEB_SEED_TEST_TARGET)
 	./$(WEB_SEED_BACKOFF_TEST_TARGET)
 	./$(FAVORITES_TEST_TARGET)
@@ -368,6 +376,7 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 	./$(PROBE_REPORT_TEST_TARGET)
 	./$(TORBOX_CLIENT_TEST_TARGET)
 	./$(TORBOX_PAIRING_TEST_TARGET)
+	./$(SSL_CACERT_TEST_TARGET)
 	./$(DEBRID_TRANSFER_TEST_TARGET)
 	./$(TB_PROVIDER_TEST_TARGET)
 	./$(TS_PROVIDER_TEST_TARGET)
@@ -461,6 +470,18 @@ $(JOURNAL_TEST_TARGET): tests/test_install_journal.cpp \
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
 
+$(PACKAGE_COORDINATOR_TEST_TARGET): tests/test_package_coordinator.cpp \
+		$(BUILD_DIR)/src/app/stream_ram_budget.o $(BUILD_DIR)/src/app/stream_budget_arbiter.o \
+		$(BUILD_DIR)/src/app/request_gate.o $(BUILD_DIR)/src/app/install_pacer.o \
+		$(BUILD_DIR)/src/install/package_stream.o $(BUILD_DIR)/src/install/install_journal.o \
+		$(BUILD_DIR)/src/install/install_backend_pc.o $(BUILD_DIR)/src/core/bencode.o \
+		$(BUILD_DIR)/src/core/metainfo.o $(BUILD_DIR)/src/core/sha1.o \
+		$(BUILD_DIR)/src/core/util.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $(filter-out src/app/package_coordinator.hpp,$^) $(INSTALL_LDFLAGS) -pthread
+
+$(PACKAGE_COORDINATOR_TEST_TARGET): src/app/package_coordinator.hpp
+
 $(WEB_SEED_TEST_TARGET): tests/test_web_seed.cpp $(BUILD_DIR)/src/app/web_seed_source.o \
 		$(BUILD_DIR)/src/core/util.o
 	@mkdir -p $(dir $@)
@@ -523,6 +544,10 @@ $(TORBOX_PAIRING_TEST_TARGET): tests/test_torbox_pairing.cpp \
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -pthread
 
+$(SSL_CACERT_TEST_TARGET): tests/test_ssl_cacert.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $< $(LDFLAGS)
+
 $(DEBRID_TRANSFER_TEST_TARGET): tests/test_debrid_transfer.cpp \
 		$(BUILD_DIR)/src/app/debrid_transfer.o $(BUILD_DIR)/src/app/torbox_client.o \
 		$(BUILD_DIR)/src/app/install_pacer.o \
@@ -573,6 +598,12 @@ $(PEER_TEST_TARGET): tests/test_peer.c src/core/peer.c src/core/net.c \
 		$(UTP_OBJS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -lstdc++ -Wl,--wrap=setsockopt
+
+$(TRACKER_TEST_TARGET): tests/test_tracker.c src/core/tracker.c \
+		src/core/bencode.c src/core/util.c src/core/net.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Isrc -o $@ $(filter-out src/core/tracker.c,$^) \
+		$(LDFLAGS)
 
 # torrent.c is a real prerequisite (the test #includes it as source) but must
 # not be passed to the compiler a second time — hence the filter-out in $^.

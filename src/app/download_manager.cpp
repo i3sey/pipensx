@@ -1883,6 +1883,8 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
                 task->status = DownloadStatus::Error;
                 task->error = !installError.empty()
                     ? installError : torrent_last_error(torrent);
+                if (coordinator && installError.empty())
+                    coordinator->markRecoverableError(task->error);
                 task->speedBytesPerSecond = 0;
             }
         }
