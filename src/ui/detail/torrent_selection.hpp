@@ -552,6 +552,10 @@ private:
             entry.cartridge = file.cartridge;
             if (preferred_ == TransferMode::StreamInstall && file.package) {
                 entry.action = FileAction::Install;
+            } else if (preferred_ == TransferMode::StreamInstall &&
+                       initialSelection_ == StreamSelection::PackagesOnly &&
+                       !file.cartridge && isPortPayloadName(file.path)) {
+                entry.action = FileAction::Download;
             } else if (initialSelection_ == StreamSelection::AllFiles ||
                        preferred_ != TransferMode::StreamInstall) {
                 entry.action = FileAction::Download;

@@ -48,5 +48,39 @@ inline bool isPortArchiveName(const std::string& path) {
     return lower == "switch.7z" || lower == "switch.zip";
 }
 
-} // namespace pipensx
+inline bool hasNroExtension(const std::string& path) {
+    return hasFileExtension(path, ".nro");
+}
 
+inline bool isSwitchPathComponent(const std::string& value) {
+    const char expected[] = "switch";
+    if (value.size() != 6)
+        return false;
+    for (size_t i = 0; i < 6; ++i)
+        if (static_cast<char>(std::tolower(
+                static_cast<unsigned char>(value[i]))) != expected[i])
+            return false;
+    return true;
+}
+
+inline bool pathContainsSwitchComponent(const std::string& path) {
+    size_t start = 0;
+    while (start < path.size()) {
+        const size_t slash = path.find_first_of("/\\", start);
+        const std::string component = path.substr(
+            start, slash == std::string::npos ? std::string::npos
+                                               : slash - start);
+        if (isSwitchPathComponent(component))
+            return true;
+        if (slash == std::string::npos)
+            break;
+        start = slash + 1;
+    }
+    return false;
+}
+
+inline bool isPortPayloadName(const std::string& path) {
+    return isPortArchiveName(path) || pathContainsSwitchComponent(path);
+}
+
+} // namespace pipensx
