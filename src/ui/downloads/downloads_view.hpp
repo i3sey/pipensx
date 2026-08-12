@@ -185,7 +185,7 @@ public:
                     startRefreshing(true);
                 });
         }
-        if (!leased)
+        if (!leased && task.status != DownloadStatus::Removing)
             add(tr("pipensx/common/remove"),
                     [this, taskId] { openRemoveDialog(taskId); });
 
