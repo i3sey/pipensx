@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -193,6 +194,7 @@ public:
 
     ~DebridLinkView() override {
         alive_->store(false);
+        validationGeneration_->fetch_add(1);
         stopPairing();
     }
 
@@ -270,14 +272,17 @@ private:
         std::string key = first == std::string::npos
             ? std::string() : text.substr(first, last - first + 1);
         if (key.empty()) {
+            validationGeneration_->fetch_add(1);
             summary_->setCheck(tr("pipensx/debrid/no_key"),
                                theme::textSecondary());
             return;
         }
         summary_->setCheck(tr("pipensx/debrid/validating"), theme::accent());
         auto alive = alive_;
+        auto generation = validationGeneration_;
+        const uint64_t attempt = generation->fetch_add(1) + 1;
         const DebridProviderKind provider = provider_;
-        brls::async([this, alive, provider, key] {
+        brls::async([this, alive, generation, attempt, provider, key] {
             std::string error;
             bool ok = false;
             try {
@@ -289,8 +294,9 @@ private:
             }
             if (!ok)
                 error = formatDebridValidateError(error);
-            brls::sync([this, alive, ok, key, error = std::move(error)] {
-                if (!alive->load())
+            brls::sync([this, alive, generation, attempt, ok, key,
+                        error = std::move(error)] {
+                if (!alive->load() || generation->load() != attempt)
                     return;
                 if (ok) {
                     setCheckSuccess();
@@ -303,6 +309,8 @@ private:
     }
 
     bool saveKey(const std::string& typed) {
+        if (typed.empty())
+            validationGeneration_->fetch_add(1);
         const std::string key =
             provider_ == DebridProviderKind::TorrServer
                 ? TorrserverProvider::normalizeBaseUrl(typed) : typed;
@@ -318,12 +326,16 @@ private:
             brls::Application::notify(error);
             return false;
         }
-        if (provider_ == DebridProviderKind::TorrServer)
-            manager_->setTorrserverUrl(key);
-        else if (provider_ == DebridProviderKind::RealDebrid)
-            manager_->setRealdebridApiKey(key);
-        else
-            manager_->setTorboxApiKey(key);
+        if (provider_ == DebridProviderKind::TorrServer) {
+            if (manager_)
+                manager_->setTorrserverUrl(key);
+        } else if (provider_ == DebridProviderKind::RealDebrid) {
+            if (manager_)
+                manager_->setRealdebridApiKey(key);
+        } else {
+            if (manager_)
+                manager_->setTorboxApiKey(key);
+        }
         if (!key.empty())
             stopPairing();
         brls::Application::notify(key.empty()
@@ -337,6 +349,8 @@ private:
     DownloadManager* manager_;
     DebridProviderKind provider_;
     std::shared_ptr<std::atomic<bool>> alive_;
+    std::shared_ptr<std::atomic<uint64_t>> validationGeneration_ =
+        std::make_shared<std::atomic<uint64_t>>(0);
     std::unique_ptr<TorboxPairingServer> server_;
     brls::RepeatingTimer timer_;
     SetupSummaryPanel* summary_ = nullptr;
