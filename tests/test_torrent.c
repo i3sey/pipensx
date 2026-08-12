@@ -440,6 +440,19 @@ static void test_initial_peers_keep_verified_order(void) {
     assert(ip == laterIp && port == laterPort && no_mse == 0 && use_utp == 1);
 }
 
+static void test_started_event_only_on_first_announce(void) {
+    torrent_t torrent = {0};
+
+    /* No trackers keeps this lifecycle test local and network-free. */
+    announce_start(&torrent, 0, 1);
+    assert(torrent.announce_started_event == 1);
+    assert(torrent.tracker_started_event_sent == 1);
+
+    announce_start(&torrent, 0, 1);
+    assert(torrent.announce_started_event == 0);
+    assert(torrent.tracker_started_event_sent == 1);
+}
+
 int main(void) {
     test_ema_update();
     test_last_piece_age_marks_missing_sample();
@@ -451,6 +464,7 @@ int main(void) {
     test_copy_have_bitfield_guards();
     test_blocklist_cooldown_and_wrap();
     test_initial_peers_keep_verified_order();
+    test_started_event_only_on_first_announce();
     test_bencode_rejects_deep_nesting();
     test_metainfo_path_join_bounds();
     test_metainfo_rejects_bad_numbers();
