@@ -232,13 +232,8 @@ void testServer() {
     {
         int a = clientConnect(port);
         int b = clientConnect(port);
-        // ensure both are accepted before the third knocks
-        std::string carry;
-        sendAll(a, "GET /none HTTP/1.1\r\n\r\n");
-        readResponse(a, carry);
-        carry.clear();
-        sendAll(b, "GET /none HTTP/1.1\r\n\r\n");
-        readResponse(b, carry);
+        // Hold both slots open. Finishing a request above frees a connection
+        // before the third client connects and turns this into a timing race.
         int c = clientConnect(port);
         std::string resp = readUntil(c, "\r\n\r\n");
         assert(resp.find("503") != std::string::npos);

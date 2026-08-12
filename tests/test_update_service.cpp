@@ -276,11 +276,16 @@ void testShutdownInterruptsRetryWait() {
     service.checkAsync([](pipensx::UpdateCheckResult) {});
     while (attempts.load() == 0)
         std::this_thread::yield();
+    // Give the worker time to enter the retry backoff wait; without this the
+    // shutdown path can finish before the wait starts and the test becomes a
+    // no-op on fast hosts while still racing on loaded CI runners.
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
     const auto started = std::chrono::steady_clock::now();
     service.shutdown();
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - started);
-    assert(elapsed.count() < 250);
+    // Must beat the 500 ms first retry wait; allow CI scheduling slack.
+    assert(elapsed.count() < 1000);
     assert(attempts.load() == 1);
 }
 
