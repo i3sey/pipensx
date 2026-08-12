@@ -596,6 +596,7 @@
     "no_key": "Nada informado.",
     "validating": "Verificando…",
     "rejected": "Não foi possível confirmar isso.",
+    "ssl_cert_hint": "Não foi possível verificar o certificado do servidor. Confira se a data e a hora do console estão corretas e tente de novo.",
     "linked_notify": "Fonte de download configurada.",
     "unlinked_notify": "Fonte de download limpa.",
     "needs_account": "A fonte de download ainda não está configurada. Configurar agora?",

@@ -455,6 +455,12 @@ file(COPY
     ${CMAKE_CURRENT_SOURCE_DIR}/resources/icon.png
     DESTINATION ${ROMFS_DIR}
 )
+# TorBox (and other GTS/Cloudflare) HTTPS: switch-curl/libnx imports these
+# roots via CURLOPT_CAINFO. See src/app/curl_https.hpp curlApplyTrustedSsl.
+file(COPY
+    ${CMAKE_CURRENT_SOURCE_DIR}/resources/ssl
+    DESTINATION ${ROMFS_DIR}
+)
 # Never reuse catalog data left in an existing build directory. Public builds
 # ship both the Langegen torrent catalog and the metadata index snapshots for
 # offline first launch.

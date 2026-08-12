@@ -89,6 +89,7 @@ WEB_SERVER_TEST_TARGET = $(BUILD_DIR)/tests/test_web_server
 PROBE_REPORT_TEST_TARGET = $(BUILD_DIR)/tests/test_probe_report
 TORBOX_CLIENT_TEST_TARGET = $(BUILD_DIR)/tests/test_torbox_client
 TORBOX_PAIRING_TEST_TARGET = $(BUILD_DIR)/tests/test_torbox_pairing
+SSL_CACERT_TEST_TARGET = $(BUILD_DIR)/tests/test_ssl_cacert
 DEBRID_TRANSFER_TEST_TARGET = $(BUILD_DIR)/tests/test_debrid_transfer
 TB_PROVIDER_TEST_TARGET = $(BUILD_DIR)/tests/test_torbox_provider
 TS_PROVIDER_TEST_TARGET = $(BUILD_DIR)/tests/test_torrserver_provider
@@ -331,6 +332,7 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 		$(HTTP_TEST_TARGET) $(WEB_SERVER_TEST_TARGET) \
 		$(PROBE_REPORT_TEST_TARGET) \
 		$(TORBOX_CLIENT_TEST_TARGET) $(TORBOX_PAIRING_TEST_TARGET) \
+		$(SSL_CACERT_TEST_TARGET) \
 		$(DEBRID_TRANSFER_TEST_TARGET) \
 		$(TB_PROVIDER_TEST_TARGET) $(TS_PROVIDER_TEST_TARGET) \
 		$(RD_CLIENT_TEST_TARGET) $(RD_PROVIDER_TEST_TARGET) \
@@ -365,6 +367,7 @@ test: $(TEST_TARGET) $(MANAGER_TEST_TARGET) $(PACKAGE_TEST_TARGET) \
 	./$(PROBE_REPORT_TEST_TARGET)
 	./$(TORBOX_CLIENT_TEST_TARGET)
 	./$(TORBOX_PAIRING_TEST_TARGET)
+	./$(SSL_CACERT_TEST_TARGET)
 	./$(DEBRID_TRANSFER_TEST_TARGET)
 	./$(TB_PROVIDER_TEST_TARGET)
 	./$(TS_PROVIDER_TEST_TARGET)
@@ -514,6 +517,10 @@ $(TORBOX_PAIRING_TEST_TARGET): tests/test_torbox_pairing.cpp \
 		$(BUILD_DIR)/src/core/net.o $(BUILD_DIR)/src/core/util.o
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -pthread
+
+$(SSL_CACERT_TEST_TARGET): tests/test_ssl_cacert.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $< $(LDFLAGS)
 
 $(DEBRID_TRANSFER_TEST_TARGET): tests/test_debrid_transfer.cpp \
 		$(BUILD_DIR)/src/app/debrid_transfer.o $(BUILD_DIR)/src/app/torbox_client.o \

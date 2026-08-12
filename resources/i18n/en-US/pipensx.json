@@ -596,6 +596,7 @@
     "no_key": "Nothing entered.",
     "validating": "Checking…",
     "rejected": "Could not confirm that.",
+    "ssl_cert_hint": "Could not verify the server certificate. Check that the console date and time are correct, then try again.",
     "linked_notify": "Download source set up.",
     "unlinked_notify": "Download source cleared.",
     "needs_account": "The download source is not set up yet. Do it now?",

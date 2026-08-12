@@ -596,6 +596,7 @@
     "no_key": "Rien saisi.",
     "validating": "Vérification…",
     "rejected": "Impossible de confirmer.",
+    "ssl_cert_hint": "Impossible de vérifier le certificat du serveur. Vérifiez que la date et l'heure de la console sont correctes, puis réessayez.",
     "linked_notify": "Source de téléchargement configurée.",
     "unlinked_notify": "Source de téléchargement effacée.",
     "needs_account": "La source de téléchargement n'est pas encore configurée. Le faire maintenant ?",
