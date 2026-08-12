@@ -1,0 +1,150 @@
+name: switch-release
+
+# Manual button: builds build-switch/pipensx.nro inside the official
+# devkitPro container, then publishes it as a draft GitHub release for
+# review before it goes public.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag (e.g. v0.3.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    container:
+      image: devkitpro/devkita64:latest
+    env:
+      DEVKITPRO: /opt/devkitpro
+      # ubuntu-latest is 2-core/7GB; even 2 concurrent heavy TUs from this
+      # template-heavy C++ tree (borealis/nanovg) exceed available RAM and
+      # thrash forever instead of OOM-killing. Serial compile is slower but
+      # actually finishes.
+      CMAKE_BUILD_PARALLEL_LEVEL: "1"
+    steps:
+      - name: Install git (container has no VCS by default)
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git ca-certificates curl zstd zip
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Cache devkitPro pacman databases
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: /var/lib/pacman/sync
+          key: dkp-pacman-sync-v1
+          restore-keys: dkp-pacman-sync-
+
+      - name: Install Switch portlibs
+        run: scripts/install_switch_portlibs.sh
+
+      - name: Refresh bundled catalog snapshots
+        # Every public build ships an offline first-launch snapshot of the
+        # Langegen torrent catalog and the pipensx-metadata index (see
+        # resources/catalog/*.json, CMakeLists.txt PIPENSX_CATALOG_SNAPSHOT /
+        # PIPENSX_METADATA_INDEX). Pull the latest of each into the checkout
+        # right before building so releases don't ship stale data committed
+        # weeks ago. Never fails the build: a bad download or a response that
+        # doesn't parse as JSON just falls back to the checked-in snapshot.
+        # POSIX sh, no bashisms: the devkitPro container has no bash, so
+        # GitHub runs this step under `sh -e` and `set -o pipefail` / `[[ ]]`
+        # abort it before the build even starts.
+        run: |
+          set -u
+
+          fetch() {
+            url="$1"
+            dest="$2"
+            tmp="$(mktemp)"
+            fetched=0
+            for attempt in 1 2 3; do
+              if curl -fsSL --max-time 60 -o "${tmp}" "${url}"; then
+                fetched=1
+                break
+              fi
+              echo "fetch ${url} attempt ${attempt} failed, retrying..." >&2
+              sleep $((attempt * 5))
+            done
+            if [ "${fetched}" -ne 1 ]; then
+              echo "Giving up on ${url}, keeping bundled ${dest}" >&2
+              rm -f "${tmp}"
+              return 0
+            fi
+            if [ "$(head -c1 "${tmp}")" != "[" ] || [ "$(wc -c < "${tmp}")" -lt 100000 ]; then
+              echo "Response from ${url} doesn't look like a catalog snapshot, keeping bundled ${dest}" >&2
+              rm -f "${tmp}"
+              return 0
+            fi
+            mv "${tmp}" "${dest}"
+            echo "Refreshed ${dest} ($(wc -c < "${dest}") bytes)"
+          }
+
+          fetch "https://raw.githubusercontent.com/Langegen/switch-games/refs/heads/main/switch_games.json" \
+            resources/catalog/switch_games.json
+          fetch "https://github.com/i3sey/pipensx-metadata/releases/latest/download/game_metadata_index.json" \
+            resources/catalog/game_metadata_index.json
+
+      - name: Build pipensx.nro
+        env:
+          PIPENSX_VERSION: ${{ inputs.version }}
+        run: |
+          PIPENSX_VERSION="${PIPENSX_VERSION#v}" make switch
+          sha256sum build-switch/pipensx.nro > build-switch/pipensx.nro.sha256
+
+      - name: Pack the SD-card archive
+        # Unzips straight onto the card root: hbmenu lists switch/<name>/<name>.nro,
+        # and the app creates sdmc:/switch/pipensx itself on first launch, so the
+        # NRO is the only file that belongs in here. The name is deliberately
+        # fixed across releases — the version is the release's job, and a stable
+        # asset name is what a "latest download" link can point at.
+        run: |
+          set -u
+          mkdir -p sdcard/switch/pipensx
+          cp build-switch/pipensx.nro sdcard/switch/pipensx/pipensx.nro
+          cd sdcard
+          zip -r -q ../build-switch/SDOut.zip switch
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pipensx-nro
+          path: |
+            build-switch/pipensx.nro
+            build-switch/pipensx.nro.sha256
+            build-switch/SDOut.zip
+          if-no-files-found: error
+
+  draft-release:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: pipensx-nro
+          path: dist
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ inputs.version }}" \
+            dist/pipensx.nro \
+            dist/pipensx.nro.sha256 \
+            dist/SDOut.zip \
+            --repo "${{ github.repository }}" \
+            --title "${{ inputs.version }}" \
+            --draft \
+            --generate-notes

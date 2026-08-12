@@ -1,0 +1,572 @@
+# pipensx PC build (Linux/macOS)
+# Public shortcut: make pc (or directly: make -f Makefile.pc)
+# Requires: gcc, libcurl (apt: libcurl4-openssl-dev)
+
+# All objects and linked binaries land here — never next to sources.
+BUILD_DIR ?= build-pc
+
+CC      = gcc
+CXX     = g++
+TARGET  = $(BUILD_DIR)/pipensx
+CFLAGS  = -O2 -Wall -Wextra -std=c11 \
+           -D_GNU_SOURCE -pthread \
+           -Ivendor/libutp \
+           $(shell pkg-config --cflags libcurl)
+# _GLIBCXX_ASSERTIONS turns an out-of-range vector/string index into an abort
+# instead of a silent read of whatever is next in the heap. The test suite is
+# the only place we get that for free — keep it on here.
+CXXFLAGS = -O2 -Wall -Wextra -std=c++17 -D_GLIBCXX_ASSERTIONS \
+            -D_GNU_SOURCE -pthread \
+            -Ivendor/borealis/library/include \
+            -Ivendor/libutp \
+            $(shell pkg-config --cflags libcurl)
+LDFLAGS = $(shell pkg-config --libs libcurl) -lm -lcrypto
+INSTALL_LDFLAGS = -lzstd -lcrypto
+
+# Opt-in: make -f Makefile.pc test SANITIZE=1
+ifeq ($(SANITIZE),1)
+CFLAGS   += -fsanitize=address,undefined -fno-omit-frame-pointer
+CXXFLAGS += -fsanitize=address,undefined -fno-omit-frame-pointer
+LDFLAGS  += -fsanitize=address,undefined
+endif
+
+# Vendored libutp (μTP/BEP-29): C++ with an extern "C" API. Built with its own
+# flags (upstream requires -fpermissive -fno-exceptions -fno-rtti; POSIX picks
+# the BSD-sockets paths). Linked into every target that pulls peer.o/torrent.o;
+# those link with gcc, so they add -lstdc++ explicitly.
+UTP_DIR      = vendor/libutp
+UTP_OBJS     = $(addprefix $(BUILD_DIR)/$(UTP_DIR)/, \
+               utp_internal.o utp_utils.o utp_hash.o utp_callbacks.o \
+               utp_api.o utp_packedsockaddr.o)
+UTP_CXXFLAGS = -O2 -std=c++17 -DPOSIX -DNDEBUG -Ivendor/libutp \
+               -fpermissive -fno-exceptions -fno-rtti -Wno-sign-compare
+
+# Shared with CMakeLists.txt CORE_SOURCES (minus Switch-only bits).
+# scripts/check_source_lists.py cross-checks the two.
+CORE_SOURCES = \
+    src/core/sha1.c       \
+    src/core/sha256.c     \
+    src/core/mse.c        \
+    src/core/bencode.c    \
+    src/core/metainfo.c   \
+    src/core/util.c       \
+    src/core/net.c        \
+    src/core/peer.c       \
+    src/core/piece.c      \
+    src/core/tracker.c    \
+    src/core/dht.c        \
+    src/core/torrent.c    \
+    src/platform/storage.c \
+    vendor/dht/dht.c
+
+SRCS = $(CORE_SOURCES) src/main_pc.c
+
+OBJS = $(addprefix $(BUILD_DIR)/,$(SRCS:.c=.o))
+# Native tests discovered by filename. Build rules below still spell out
+# link deps; forgetting a run line is impossible — `test` runs every bin.
+TEST_SOURCES := $(wildcard tests/test_*.c tests/test_*.cpp)
+TEST_BINS := $(sort $(patsubst tests/%,$(BUILD_DIR)/tests/%,$(basename $(TEST_SOURCES))))
+# DHT against live routers — always last so a bad network cannot hide others.
+TEST_BINS_EARLY := $(filter-out $(BUILD_DIR)/tests/test_manager,$(TEST_BINS))
+
+TEST_SRCS = \
+    tests/test_piece.c       \
+    src/core/sha1.c          \
+    src/core/bencode.c       \
+    src/core/metainfo.c      \
+    src/core/util.c          \
+    src/core/piece.c         \
+    src/platform/storage.c
+
+all: $(TARGET)
+
+$(TARGET): $(OBJS) $(UTP_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lstdc++
+
+$(BUILD_DIR)/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+$(BUILD_DIR)/$(UTP_DIR)/%.o: $(UTP_DIR)/%.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(UTP_CXXFLAGS) -c -o $@ $<
+
+$(BUILD_DIR)/tests/test_piece: $(TEST_SRCS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+$(BUILD_DIR)/src/app/torbox_client.o: src/app/torbox_client.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+$(BUILD_DIR)/src/app/torbox_provider.o: src/app/torbox_provider.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+$(BUILD_DIR)/src/app/torrserver_provider.o: src/app/torrserver_provider.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+$(BUILD_DIR)/src/app/realdebrid_client.o: src/app/realdebrid_client.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+$(BUILD_DIR)/src/app/realdebrid_provider.o: src/app/realdebrid_provider.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+$(BUILD_DIR)/src/app/debrid_transfer.o: src/app/debrid_transfer.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+$(BUILD_DIR)/src/app/torbox_pairing_server.o: src/app/torbox_pairing_server.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+$(BUILD_DIR)/src/app/download_manager.o: src/app/download_manager.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+$(BUILD_DIR)/src/app/task_files.o: src/app/task_files.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+$(BUILD_DIR)/src/app/switch_deploy.o: src/app/switch_deploy.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
+
+$(BUILD_DIR)/src/app/port_archive.o: src/app/port_archive.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -Ivendor/lzma -c -o $@ $<
+
+LZMA_SRCS = 7zAlloc.c 7zArcIn.c 7zBuf.c 7zBuf2.c 7zCrc.c 7zCrcOpt.c 7zDec.c \
+	7zFile.c 7zStream.c Bcj2.c Bra.c Bra86.c BraIA64.c CpuArch.c Delta.c \
+	LzmaDec.c Lzma2Dec.c Ppmd7.c Ppmd7Dec.c
+LZMA_OBJS = $(addprefix $(BUILD_DIR)/vendor/lzma/,$(LZMA_SRCS:.c=.o))
+
+$(BUILD_DIR)/vendor/lzma/%.o: vendor/lzma/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -DZ7_EXTRACT_ONLY -DZ7_PPMD_SUPPORT -Ivendor/lzma -c -o $@ $<
+
+$(BUILD_DIR)/src/app/web_seed_source.o: src/app/web_seed_source.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+$(BUILD_DIR)/src/app/stream_ram_budget.o: src/app/stream_ram_budget.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+$(BUILD_DIR)/src/app/stream_budget_arbiter.o: src/app/stream_budget_arbiter.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+$(BUILD_DIR)/src/app/request_gate.o: src/app/request_gate.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+$(BUILD_DIR)/src/app/install_pacer.o: src/app/install_pacer.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+$(BUILD_DIR)/src/install/%.o: src/install/%.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+$(BUILD_DIR)/tests/test_manager.o: tests/test_manager.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+$(BUILD_DIR)/tests/test_manager: $(BUILD_DIR)/tests/test_manager.o $(BUILD_DIR)/src/app/download_manager.o \
+		$(BUILD_DIR)/src/app/task_files.o \
+		$(BUILD_DIR)/src/app/web_seed_source.o \
+		$(BUILD_DIR)/src/app/stream_ram_budget.o $(BUILD_DIR)/src/app/stream_budget_arbiter.o \
+		$(BUILD_DIR)/src/app/request_gate.o \
+		$(BUILD_DIR)/src/app/install_pacer.o \
+		$(BUILD_DIR)/src/app/debrid_transfer.o $(BUILD_DIR)/src/app/torbox_client.o \
+		$(BUILD_DIR)/src/app/torbox_provider.o $(BUILD_DIR)/src/app/torrserver_provider.o \
+		$(BUILD_DIR)/src/app/realdebrid_client.o $(BUILD_DIR)/src/app/realdebrid_provider.o \
+		$(BUILD_DIR)/src/install/package_stream.o $(BUILD_DIR)/src/install/install_journal.o \
+		$(BUILD_DIR)/src/install/install_backend_pc.o \
+		$(filter-out $(BUILD_DIR)/src/main_pc.o,$(OBJS)) $(UTP_OBJS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS) $(INSTALL_LDFLAGS) -pthread
+
+$(BUILD_DIR)/tests/test_package_stream: tests/test_package_stream.cpp \
+		$(BUILD_DIR)/src/install/package_stream.o $(BUILD_DIR)/src/install/install_backend_pc.o \
+		$(BUILD_DIR)/src/core/util.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $(filter-out src/app/package_coordinator.hpp,$^) $(INSTALL_LDFLAGS) -pthread
+
+
+$(BUILD_DIR)/src/app/catalog_service.o: src/app/catalog_service.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
+
+$(BUILD_DIR)/src/app/snapshot_zstd.o: src/app/snapshot_zstd.cpp src/app/snapshot_zstd.hpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
+
+$(BUILD_DIR)/src/app/catalog_refresh.o: src/app/catalog_refresh.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
+
+$(BUILD_DIR)/src/app/magnet_resolver.o: src/app/magnet_resolver.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
+
+$(BUILD_DIR)/src/app/game_metadata_service.o: src/app/game_metadata_service.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
+
+$(BUILD_DIR)/src/app/catalog_presentation.o: src/app/catalog_presentation.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
+
+$(BUILD_DIR)/src/app/mod_index_service.o: src/app/mod_index_service.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
+
+$(BUILD_DIR)/src/app/http_server.o: src/app/http_server.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
+
+$(BUILD_DIR)/src/app/web_server.o: src/app/web_server.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
+
+$(BUILD_DIR)/src/app/web_add_queue.o: src/app/web_add_queue.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
+
+$(BUILD_DIR)/tests/test_http_server: tests/test_http_server.cpp $(BUILD_DIR)/src/app/http_server.o \
+		$(BUILD_DIR)/src/core/net.o $(BUILD_DIR)/src/core/util.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ -pthread
+
+$(BUILD_DIR)/tests/test_web_server: tests/test_web_server.cpp \
+		$(BUILD_DIR)/src/app/web_server.o $(BUILD_DIR)/src/app/web_add_queue.o $(BUILD_DIR)/src/app/http_server.o \
+		$(BUILD_DIR)/src/app/magnet_resolver.o src/app/install_space.cpp \
+		$(BUILD_DIR)/src/app/download_manager.o $(BUILD_DIR)/src/app/task_files.o \
+		$(BUILD_DIR)/src/app/web_seed_source.o \
+		$(BUILD_DIR)/src/app/stream_ram_budget.o $(BUILD_DIR)/src/app/stream_budget_arbiter.o \
+		$(BUILD_DIR)/src/app/request_gate.o \
+		$(BUILD_DIR)/src/app/install_pacer.o \
+		$(BUILD_DIR)/src/app/debrid_transfer.o $(BUILD_DIR)/src/app/torbox_client.o \
+		$(BUILD_DIR)/src/app/torbox_provider.o $(BUILD_DIR)/src/app/torrserver_provider.o \
+		$(BUILD_DIR)/src/app/realdebrid_client.o $(BUILD_DIR)/src/app/realdebrid_provider.o \
+		$(BUILD_DIR)/src/install/package_stream.o $(BUILD_DIR)/src/install/install_journal.o \
+		$(BUILD_DIR)/src/install/install_backend_pc.o \
+		$(filter-out $(BUILD_DIR)/src/main_pc.o,$(OBJS)) $(UTP_OBJS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) \
+		$(INSTALL_LDFLAGS) -lz -pthread
+
+$(BUILD_DIR)/tests/test_catalog: tests/test_catalog.cpp \
+		$(BUILD_DIR)/src/app/catalog_service.o $(BUILD_DIR)/src/app/catalog_refresh.o \
+		$(BUILD_DIR)/src/app/catalog_presentation.o \
+		$(BUILD_DIR)/src/app/snapshot_zstd.o \
+		$(BUILD_DIR)/src/app/mod_index_service.o \
+		$(BUILD_DIR)/src/app/game_metadata_service.o \
+		$(BUILD_DIR)/src/app/magnet_resolver.o \
+		$(BUILD_DIR)/src/core/tracker.o $(BUILD_DIR)/src/core/net.o \
+		$(BUILD_DIR)/src/core/dht.o $(BUILD_DIR)/vendor/dht/dht.o \
+		$(BUILD_DIR)/src/core/bencode.o $(BUILD_DIR)/src/core/metainfo.o $(BUILD_DIR)/src/core/sha1.o $(BUILD_DIR)/src/core/sha256.o \
+		$(BUILD_DIR)/src/core/mse.o \
+		$(BUILD_DIR)/src/core/util.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -lzstd
+
+# The sysmodule probe's telemetry (sample ring, event log, ini parser) is plain
+# C with no libnx, so the PC build covers it. The rest of src/probe is Switch
+# services and only builds under CMake.
+$(BUILD_DIR)/tests/test_probe_report: tests/test_probe_report.c src/probe/probe_report.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -o $@ $^
+
+test: $(TEST_BINS)
+	python3 scripts/check_source_lists.py
+	@set -e; for t in $(TEST_BINS_EARLY); do echo "== $$t"; ./$$t; done
+	python3 tests/test_bug_report_decode.py
+	python3 tests/test_telemetry_analyzer.py
+	python3 scripts/check_i18n.py
+	# last: bootstraps DHT against live routers, so it fails on a bad
+	# network. Running it here keeps that from hiding the other tests.
+	./$(BUILD_DIR)/tests/test_manager
+
+
+$(BUILD_DIR)/tests/test_app_settings: tests/test_app_settings.cpp src/app/app_settings.cpp \
+		$(BUILD_DIR)/src/core/util.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
+
+$(BUILD_DIR)/tests/test_update_service: tests/test_update_service.cpp src/app/update_service.cpp \
+		$(BUILD_DIR)/src/app/update_transaction.o src/core/sha256.c
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -Wl,--wrap=rename
+
+$(BUILD_DIR)/tests/test_game_update_service: tests/test_game_update_service.cpp \
+		src/app/game_update_service.cpp src/app/update_service.cpp \
+		$(BUILD_DIR)/src/app/update_transaction.o src/core/sha256.c $(BUILD_DIR)/src/core/util.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
+
+$(BUILD_DIR)/tests/test_update_file_select: tests/test_update_file_select.cpp \
+		src/app/game_update_install.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
+
+$(BUILD_DIR)/tests/test_update_transaction: tests/test_update_transaction.c \
+		src/app/update_transaction.c src/core/sha256.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Isrc -o $@ $^ -Wl,--wrap=rename
+
+$(BUILD_DIR)/tests/test_install_space: tests/test_install_space.cpp \
+		src/app/install_space.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
+
+$(BUILD_DIR)/tests/test_favorites: tests/test_favorites.cpp \
+		src/app/favorites_service.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
+
+$(BUILD_DIR)/tests/test_batch_install: tests/test_batch_install.cpp \
+		src/app/catalog_batch_installer.cpp src/app/install_space.cpp \
+		$(BUILD_DIR)/src/app/download_manager.o $(BUILD_DIR)/src/app/task_files.o \
+		$(BUILD_DIR)/src/app/web_seed_source.o \
+		$(BUILD_DIR)/src/app/stream_ram_budget.o $(BUILD_DIR)/src/app/stream_budget_arbiter.o \
+		$(BUILD_DIR)/src/app/request_gate.o $(BUILD_DIR)/src/app/debrid_transfer.o \
+		$(BUILD_DIR)/src/app/install_pacer.o \
+		$(BUILD_DIR)/src/app/torbox_client.o $(BUILD_DIR)/src/app/torbox_provider.o \
+		$(BUILD_DIR)/src/app/torrserver_provider.o \
+		$(BUILD_DIR)/src/app/realdebrid_client.o $(BUILD_DIR)/src/app/realdebrid_provider.o \
+		$(BUILD_DIR)/src/install/package_stream.o $(BUILD_DIR)/src/install/install_journal.o \
+		$(BUILD_DIR)/src/install/install_backend_pc.o \
+		$(filter-out $(BUILD_DIR)/src/main_pc.o,$(OBJS)) $(UTP_OBJS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) \
+		$(INSTALL_LDFLAGS) -pthread
+
+$(BUILD_DIR)/tests/test_stream_ram_budget: tests/test_stream_ram_budget.cpp \
+		src/app/stream_ram_budget.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
+
+$(BUILD_DIR)/tests/test_budget_arbiter: tests/test_budget_arbiter.cpp \
+		src/app/stream_budget_arbiter.cpp src/app/stream_ram_budget.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
+
+$(BUILD_DIR)/tests/test_request_gate: tests/test_request_gate.cpp \
+		src/app/request_gate.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
+
+$(BUILD_DIR)/tests/test_install_pacer: tests/test_install_pacer.cpp \
+		src/app/install_pacer.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ -pthread
+
+$(BUILD_DIR)/tests/test_install_journal: tests/test_install_journal.cpp \
+		$(BUILD_DIR)/src/install/install_journal.o $(BUILD_DIR)/src/core/bencode.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
+
+$(BUILD_DIR)/tests/test_package_coordinator: tests/test_package_coordinator.cpp \
+		$(BUILD_DIR)/src/app/stream_ram_budget.o $(BUILD_DIR)/src/app/stream_budget_arbiter.o \
+		$(BUILD_DIR)/src/app/request_gate.o $(BUILD_DIR)/src/app/install_pacer.o \
+		$(BUILD_DIR)/src/install/package_stream.o $(BUILD_DIR)/src/install/install_journal.o \
+		$(BUILD_DIR)/src/install/install_backend_pc.o $(BUILD_DIR)/src/core/bencode.o \
+		$(BUILD_DIR)/src/core/metainfo.o $(BUILD_DIR)/src/core/sha1.o \
+		$(BUILD_DIR)/src/core/util.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $(filter-out src/app/package_coordinator.hpp,$^) $(INSTALL_LDFLAGS) -pthread
+
+$(BUILD_DIR)/tests/test_package_coordinator: src/app/package_coordinator.hpp
+
+$(BUILD_DIR)/tests/test_web_seed: tests/test_web_seed.cpp $(BUILD_DIR)/src/app/web_seed_source.o \
+		$(BUILD_DIR)/src/core/util.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -pthread
+
+$(BUILD_DIR)/tests/test_web_seed_backoff: tests/test_web_seed_backoff.cpp $(BUILD_DIR)/src/app/web_seed_source.o \
+		$(BUILD_DIR)/src/core/util.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -pthread
+
+$(BUILD_DIR)/tests/test_mse: tests/test_mse.c src/core/mse.c src/core/sha1.c \
+	src/core/util.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -lcrypto
+
+$(BUILD_DIR)/tests/test_dht_cache: tests/test_dht_cache.c src/core/dht.c \
+		vendor/dht/dht.c src/core/net.c src/core/sha1.c src/core/util.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
+
+# dht.c is a real prerequisite (the test #includes it as source) but must
+# not be passed to the compiler a second time — hence the filter-out in $^.
+$(BUILD_DIR)/tests/test_dht_shared: tests/test_dht_shared.c src/core/dht.c \
+		vendor/dht/dht.c src/core/net.c src/core/sha1.c src/core/util.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Isrc -o $@ $(filter-out src/core/dht.c,$^) $(LDFLAGS)
+
+$(BUILD_DIR)/tests/test_bug_report: tests/test_bug_report.cpp src/app/bug_report.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ -lz
+
+$(BUILD_DIR)/tests/test_torbox_client: tests/test_torbox_client.cpp \
+		$(BUILD_DIR)/src/app/torbox_client.o $(BUILD_DIR)/src/core/util.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
+
+$(BUILD_DIR)/tests/test_torbox_provider: tests/test_torbox_provider.cpp \
+		$(BUILD_DIR)/src/app/torbox_provider.o $(BUILD_DIR)/src/app/torbox_client.o $(BUILD_DIR)/src/core/util.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
+
+$(BUILD_DIR)/tests/test_torrserver_provider: tests/test_torrserver_provider.cpp \
+		$(BUILD_DIR)/src/app/torrserver_provider.o $(BUILD_DIR)/src/core/util.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
+
+$(BUILD_DIR)/tests/test_realdebrid_client: tests/test_realdebrid_client.cpp \
+		$(BUILD_DIR)/src/app/realdebrid_client.o $(BUILD_DIR)/src/core/util.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
+
+$(BUILD_DIR)/tests/test_realdebrid_provider: tests/test_realdebrid_provider.cpp \
+		$(BUILD_DIR)/src/app/realdebrid_provider.o $(BUILD_DIR)/src/app/realdebrid_client.o $(BUILD_DIR)/src/core/util.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
+
+$(BUILD_DIR)/tests/test_torbox_pairing: tests/test_torbox_pairing.cpp \
+		$(BUILD_DIR)/src/app/torbox_pairing_server.o $(BUILD_DIR)/src/app/http_server.o \
+		$(BUILD_DIR)/src/core/net.o $(BUILD_DIR)/src/core/util.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -pthread
+
+$(BUILD_DIR)/tests/test_ssl_cacert: tests/test_ssl_cacert.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $< $(LDFLAGS)
+
+$(BUILD_DIR)/tests/test_debrid_transfer: tests/test_debrid_transfer.cpp \
+		$(BUILD_DIR)/src/app/debrid_transfer.o $(BUILD_DIR)/src/app/torbox_client.o \
+		$(BUILD_DIR)/src/app/install_pacer.o \
+		$(BUILD_DIR)/src/app/stream_ram_budget.o \
+		$(BUILD_DIR)/src/app/torbox_provider.o \
+		$(BUILD_DIR)/src/install/package_stream.o $(BUILD_DIR)/src/install/install_backend_pc.o \
+		$(BUILD_DIR)/src/core/util.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) $(INSTALL_LDFLAGS) -pthread
+
+$(BUILD_DIR)/tests/test_task_files: tests/test_task_files.cpp \
+		$(BUILD_DIR)/src/app/task_files.o $(BUILD_DIR)/src/core/bencode.o \
+		$(BUILD_DIR)/src/core/metainfo.o $(BUILD_DIR)/src/core/sha1.o \
+		$(BUILD_DIR)/src/core/util.o $(BUILD_DIR)/src/platform/storage.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
+
+$(BUILD_DIR)/tests/test_switch_deploy: tests/test_switch_deploy.cpp \
+		$(BUILD_DIR)/src/app/switch_deploy.o $(BUILD_DIR)/src/app/task_files.o \
+		$(BUILD_DIR)/src/app/port_archive.o $(LZMA_OBJS) \
+		$(BUILD_DIR)/src/app/download_manager.o src/app/install_space.cpp \
+		$(BUILD_DIR)/src/app/web_seed_source.o \
+		$(BUILD_DIR)/src/app/stream_ram_budget.o $(BUILD_DIR)/src/app/stream_budget_arbiter.o \
+		$(BUILD_DIR)/src/app/request_gate.o $(BUILD_DIR)/src/app/install_pacer.o \
+		$(BUILD_DIR)/src/app/debrid_transfer.o $(BUILD_DIR)/src/app/torbox_client.o \
+		$(BUILD_DIR)/src/app/torbox_provider.o $(BUILD_DIR)/src/app/torrserver_provider.o \
+		$(BUILD_DIR)/src/app/realdebrid_client.o $(BUILD_DIR)/src/app/realdebrid_provider.o \
+		$(BUILD_DIR)/src/install/package_stream.o $(BUILD_DIR)/src/install/install_journal.o \
+		$(BUILD_DIR)/src/install/install_backend_pc.o \
+		$(filter-out $(BUILD_DIR)/src/main_pc.o,$(OBJS)) $(UTP_OBJS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) $(INSTALL_LDFLAGS) -lz -pthread
+
+$(BUILD_DIR)/tests/test_port_archive: tests/test_port_archive.cpp \
+		$(BUILD_DIR)/src/app/port_archive.o $(BUILD_DIR)/src/app/task_files.o \
+		$(LZMA_OBJS) $(BUILD_DIR)/src/core/bencode.o $(BUILD_DIR)/src/core/metainfo.o \
+		$(BUILD_DIR)/src/core/sha1.o $(BUILD_DIR)/src/core/util.o \
+		$(BUILD_DIR)/src/platform/storage.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -lz
+
+$(BUILD_DIR)/tests/test_telemetry: tests/test_telemetry.c src/core/util.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
+
+$(BUILD_DIR)/tests/test_peer: tests/test_peer.c src/core/peer.c src/core/net.c \
+		src/core/bencode.c src/core/util.c src/core/mse.c src/core/sha1.c \
+		$(UTP_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -lstdc++ -Wl,--wrap=setsockopt
+
+$(BUILD_DIR)/tests/test_tracker: tests/test_tracker.c src/core/tracker.c \
+		src/core/bencode.c src/core/util.c src/core/net.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Isrc -o $@ $(filter-out src/core/tracker.c,$^) \
+		$(LDFLAGS)
+
+# torrent.c is a real prerequisite (the test #includes it as source) but must
+# not be passed to the compiler a second time — hence the filter-out in $^.
+$(BUILD_DIR)/tests/test_torrent: tests/test_torrent.c src/core/torrent.c \
+		$(filter-out $(BUILD_DIR)/src/core/torrent.o $(BUILD_DIR)/src/main_pc.o,$(OBJS)) $(UTP_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Isrc -o $@ $(filter-out src/core/torrent.c,$^) \
+		$(LDFLAGS) -lstdc++
+
+# Manual browser testing for the web companion (not part of all/test):
+#   make -f Makefile.pc webserver && ./build-pc/tools/webserver
+webserver: $(BUILD_DIR)/tools/webserver
+
+$(BUILD_DIR)/tools/webserver: tools/web_server_main.cpp \
+		$(BUILD_DIR)/src/app/web_server.o $(BUILD_DIR)/src/app/web_add_queue.o $(BUILD_DIR)/src/app/http_server.o \
+		$(BUILD_DIR)/src/app/catalog_service.o $(BUILD_DIR)/src/app/catalog_refresh.o \
+		$(BUILD_DIR)/src/app/snapshot_zstd.o \
+		$(BUILD_DIR)/src/app/mod_index_service.o $(BUILD_DIR)/src/app/game_metadata_service.o \
+		$(BUILD_DIR)/src/app/magnet_resolver.o src/app/install_space.cpp \
+		$(BUILD_DIR)/src/app/download_manager.o $(BUILD_DIR)/src/app/task_files.o \
+		$(BUILD_DIR)/src/app/web_seed_source.o \
+		$(BUILD_DIR)/src/app/stream_ram_budget.o $(BUILD_DIR)/src/app/stream_budget_arbiter.o \
+		$(BUILD_DIR)/src/app/request_gate.o \
+		$(BUILD_DIR)/src/app/install_pacer.o \
+		$(BUILD_DIR)/src/app/debrid_transfer.o $(BUILD_DIR)/src/app/torbox_client.o \
+		$(BUILD_DIR)/src/app/torbox_provider.o $(BUILD_DIR)/src/app/torrserver_provider.o \
+		$(BUILD_DIR)/src/app/realdebrid_client.o $(BUILD_DIR)/src/app/realdebrid_provider.o \
+		$(BUILD_DIR)/src/install/package_stream.o $(BUILD_DIR)/src/install/install_journal.o \
+		$(BUILD_DIR)/src/install/install_backend_pc.o \
+		$(filter-out $(BUILD_DIR)/src/main_pc.o,$(OBJS)) $(UTP_OBJS)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) \
+		$(INSTALL_LDFLAGS) -lz -pthread
+
+# Optional libFuzzer targets (clang required):
+#   make -f Makefile.pc fuzz-bencode fuzz-metainfo
+#   ./build-pc/fuzz/fuzz_bencode -runs=10000
+FUZZ_CC ?= clang
+FUZZ_CFLAGS = -O1 -g -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer \
+	-D_GNU_SOURCE -Ivendor/libutp
+
+$(BUILD_DIR)/fuzz/fuzz_bencode: fuzz/fuzz_bencode.c src/core/bencode.c
+	@mkdir -p $(dir $@)
+	$(FUZZ_CC) $(FUZZ_CFLAGS) -o $@ $^
+
+$(BUILD_DIR)/fuzz/fuzz_metainfo: fuzz/fuzz_metainfo.c \
+		src/core/metainfo.c src/core/bencode.c src/core/sha1.c src/core/util.c
+	@mkdir -p $(dir $@)
+	$(FUZZ_CC) $(FUZZ_CFLAGS) -o $@ $^
+
+fuzz-bencode: $(BUILD_DIR)/fuzz/fuzz_bencode
+fuzz-metainfo: $(BUILD_DIR)/fuzz/fuzz_metainfo
+
+# Short smoke: enough to prove the harness links and rejects junk.
+fuzz-smoke: fuzz-bencode fuzz-metainfo
+	./$(BUILD_DIR)/fuzz/fuzz_bencode -runs=1000 -max_len=4096
+	./$(BUILD_DIR)/fuzz/fuzz_metainfo -runs=1000 -max_len=65536
+
+clean:
+	rm -rf $(BUILD_DIR)
+	# Leftover in-tree objects from older Makefile.pc revisions.
+	find src tests vendor/libutp vendor/dht -name '*.o' -delete 2>/dev/null || true
+
+.PHONY: all test clean fuzz-bencode fuzz-metainfo fuzz-smoke

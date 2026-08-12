@@ -1,0 +1,46 @@
+# Build artifacts
+/pipensx
+/tools/webserver
+/tests/test_*
+!/tests/test_*.c
+!/tests/test_*.cpp
+!/tests/test_*.py
+*.elf
+*.nro
+*.nacp
+*.map
+*.lst
+*.o
+*.d
+
+# Build directories
+build_switch/
+build-switch/
+build-golden/
+build-pc/
+
+# LSP / code intelligence
+compile_commands.json
+.cache/
+.codegraph/
+.codewhale/
+.opencode/
+
+# Log files
+*.log
+
+# Local scratch / working directories
+.tmp/
+/rutracker-*.xml.xz
+/resources/catalog/
+!/resources/catalog/
+!/resources/catalog/switch_games.json
+!/resources/catalog/game_metadata_index.json
+
+# Python bytecode
+__pycache__/
+*.pyc
+bug-reports
+
+# Runtime artifact of tests/test_manager
+/dht.cache

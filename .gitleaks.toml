@@ -1,0 +1,11 @@
+[extend]
+useDefault = true
+
+# The debrid settings test needs a key-shaped string to prove round-tripping.
+# It is a fixture, not a credential; scoped to that one file and that one value
+# so a real key pasted anywhere still trips the scan.
+[[allowlists]]
+description = "dummy debrid key in the settings test"
+condition = "AND"
+paths = ['''tests/test_app_settings\.cpp''']
+regexes = ['''0a1b2c3d-4e5f-6789-abcd-ef0123456789''']

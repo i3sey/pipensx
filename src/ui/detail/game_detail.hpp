@@ -1,0 +1,1084 @@
+#pragma once
+
+#include <algorithm>
+#include <chrono>
+#include <functional>
+#include <memory>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include <borealis.hpp>
+
+#include "app/app_settings.hpp"
+#include "app/catalog_presentation.hpp"
+#include "ui/i18n.hpp"
+#include "app/catalog_service.hpp"
+#include "app/download_manager.hpp"
+#include "app/favorites_service.hpp"
+#include "app/game_metadata_service.hpp"
+#include "app/install_space.hpp"
+#include "app/installed_title_service.hpp"
+#include "app/magnet_resolver.hpp"
+#include "app/mod_index_service.hpp"
+#include "app/switch_deploy.hpp"
+#include "app/nx_file_types.hpp"
+#include "ui/catalog/catalog_helpers.hpp"
+#include "ui/common/async_image.hpp"
+#include "ui/common/busy_pulse.hpp"
+#include "ui/common/storage_meter.hpp"
+#include "ui/common/ui_helpers.hpp"
+#include "ui/detail/screenshot_viewer.hpp"
+#include "ui/detail/torrent_selection.hpp"
+#include "ui/debrid_ui.hpp"
+#include "ui/downloads/details_activity.hpp"
+#include "ui/theme.hpp"
+
+namespace pipensx::ui {
+
+// ---------------------------------------------------------------------------
+// Install/status button (O5)
+// ---------------------------------------------------------------------------
+// The primary action button doubles as a live status surface: while a download
+// or install is running it keeps its vivid enabled look and dims the
+// not-yet-finished remainder (eShop-style progress fill) instead of greying
+// out. setProgress(<0) restores the plain button; >=1 leaves it fully filled.
+class InstallButton : public brls::Button {
+  public:
+    void setProgress(float progress) {
+        progress_ = progress < 0.0f ? -1.0f : std::min(1.0f, progress);
+    }
+
+    void draw(NVGcontext* vg, float x, float y, float width, float height,
+              brls::Style style, brls::FrameContext* ctx) override {
+        // Scrim the pending remainder before the label so the text stays crisp.
+        if (progress_ >= 0.0f && progress_ < 1.0f) {
+            float radius   = getCornerRadius();
+            float doneWidth = width * progress_;
+            nvgSave(vg);
+            nvgIntersectScissor(vg, x + doneWidth, y, width - doneWidth, height);
+            nvgBeginPath(vg);
+            nvgRoundedRect(vg, x, y, width, height, radius);
+            nvgFillColor(vg, theme::panel());
+            nvgFill(vg);
+            nvgRestore(vg);
+        }
+        brls::Button::draw(vg, x, y, width, height, style, ctx);
+    }
+
+  private:
+    float progress_ = -1.0f;
+};
+
+// ---------------------------------------------------------------------------
+// Full-screen game page (eShop-style detail + one-tap install)
+// ---------------------------------------------------------------------------
+
+class GameDetailActivity : public brls::Activity {
+public:
+    // hashLower + failure ("" clears) recorded back into the catalog; onChange
+    // asks the catalog list to re-badge.
+    using FailureCallback =
+        std::function<void(const std::string&, const std::string&)>;
+    using ChangeCallback = std::function<void()>;
+    // O12: fired (deferred one frame) when the page is torn down after the
+    // B-pop, so the catalog can re-seat scroll + focus on the opening card.
+    using CloseCallback = std::function<void()>;
+
+    GameDetailActivity(CatalogEntry entry, std::string lastFailure,
+                       DownloadManager* manager, GameMetadataService* metadata,
+                       InstalledTitleService* installed, AppSettings* settings,
+                       ModIndexService* mods,
+                        FailureCallback onFailure, ChangeCallback onChange,
+                        CloseCallback onClose = nullptr,
+                        FavoritesService* favorites = nullptr,
+                        SwitchDeployService* deploy = nullptr)
+        : entry_(std::move(entry)), lastFailure_(std::move(lastFailure)),
+          manager_(manager), metadata_(metadata), installed_(installed),
+          settings_(settings), mods_(mods), favorites_(favorites),
+          deploy_(deploy),
+          onFailure_(std::move(onFailure)), onChange_(std::move(onChange)),
+          onClose_(std::move(onClose)),
+          alive_(std::make_shared<std::atomic<bool>>(true)),
+          cancelled_(std::make_shared<std::atomic<bool>>(false)) {
+        const GameMetadata* found = metadata_->findByInfoHash(entry_.infoHash);
+        presentation_ = resolveCatalogPresentation(entry_, found,
+                                                   catalogTextPreference());
+        titleId_ = presentation_.titleId;
+        playersFact_ = playersFact(found);
+
+        // F3: eShop-style two-column page. Left column is fixed (cover +
+        // install button + size/status); the right column scrolls on its own.
+        auto* content = new brls::Box(brls::Axis::ROW);
+        content->setPadding(24, 40, 24, 40);
+        buildLeftColumn(content);
+        buildRightColumn(content);
+        installBytes_ = entry_.size;
+        refreshSizeMeter();
+
+        frame_ = new brls::AppletFrame(content);
+        frame_->setTitle(presentation_.title);
+    }
+
+    ~GameDetailActivity() override {
+        alive_->store(false);
+        cancelled_->store(true);
+        timer_.stop();
+        stopBusyPulse(primary_);
+        stopBusyPulse(statusLabel_);
+        if (onChange_)
+            onChange_();  // refresh the row badge on the way back
+        // O12: deferred a frame — the activity is mid-teardown here and
+        // popActivity() has already unwound the focus stack, so the catalog
+        // can safely take the focus back now.
+        if (onClose_)
+            brls::sync([onClose = std::move(onClose_)] { onClose(); });
+    }
+
+    brls::View* createContentView() override { return frame_; }
+
+    void onContentAvailable() override {
+        registerAction(tr("pipensx/common/cancel"), brls::BUTTON_Y,
+                       [this](brls::View*) {
+            if (busy_)
+                cancelled_->store(true);
+            return true;
+        });
+        // Same hotkey as the catalog grid, and the hint is what names the
+        // square ★ button above — this page has room for it where the catalog
+        // does not.
+        if (favorites_) {
+            registerAction(tr("pipensx/catalog/action_favorite"),
+                           brls::BUTTON_RT, [this](brls::View*) {
+                onFavorite();
+                return true;
+            });
+        }
+        refreshButtons();
+        timer_.setCallback([this] {
+            refreshButtons();
+            // nsGetStorageSize is a real syscall — re-read it every ~2s, not on
+            // every 500ms button tick. Same cadence as the sidebar footer.
+            if (++storageTick_ >= 4) {
+                storageTick_ = 0;
+                refreshSizeMeter();
+            }
+        });
+        timer_.start(500);
+        brls::Button* focus = primary_;
+        if (focus)
+            brls::Application::giveFocus(focus);
+    }
+
+private:
+    static constexpr float kLeftColumnWidth = 320.0f;
+    // coverUrl is the metadata banner for nearly every real entry, and an
+    // eShop banner is 16:9 — at 320 wide it already draws 180 tall under FIT,
+    // so anything past 200 was letterbox the column could not afford.
+    static constexpr float kCoverHeight = 200.0f;
+
+    // Left column: cover, full-width Install / Select files, size, status (F3).
+    //
+    // The column does not scroll, so its height is a hard budget: 720 minus the
+    // AppletFrame header (88) and footer (73) minus this page's 24px top/bottom
+    // padding leaves 511px. Everything below is sized to fit inside it with
+    // room to spare — overflow here lands on top of the storage meter and the
+    // bottom bar, because Yoga runs with web defaults and nothing clips it.
+    void buildLeftColumn(brls::Box* content) {
+        auto* left = new brls::Box(brls::Axis::COLUMN);
+        left->setWidth(kLeftColumnWidth);
+        left->setMarginRight(32);
+        // Backstop for the budget above: statusLabel_ carries torrent errors and
+        // resolve progress, both of which can wrap to an unpredictable number of
+        // lines. Same guarantee StorageMeter gives itself.
+        left->setClipsToBounds(true);
+
+        if (!presentation_.coverUrl.empty()) {
+            // The plate doubles as the placeholder tile until the art arrives
+            // (and stays visible as the letterbox behind a 16:9 banner), the
+            // same way the catalog card's cover box works.
+            auto* plate = new brls::Box();
+            plate->setWidth(kLeftColumnWidth);
+            plate->setHeight(kCoverHeight);
+            plate->setCornerRadius(theme::kRadiusLarge);
+            plate->setBackgroundColor(theme::surface());
+            auto* cover = new AsyncRgbaImage();
+            cover->setWidth(kLeftColumnWidth);
+            cover->setHeight(kCoverHeight);
+            cover->setPositionType(brls::PositionType::ABSOLUTE);
+            cover->setPositionTop(0);
+            cover->setPositionLeft(0);
+            cover->setCornerRadius(theme::kRadiusLarge);
+            cover->setScalingType(brls::ImageScalingType::FIT);
+            // FIT letterboxes; with clip on, borealis fills the whole view
+            // rect with the pattern and the margin samples clamped edge texels
+            // (stretched bands). Clip off draws only the fitted image rect.
+            cover->setClipsToBounds(false);
+            loadImageInto(cover, metadata_, presentation_.coverUrl);
+            plate->addView(cover);
+            left->addView(plate);
+        }
+
+        primary_ = new InstallButton();
+        primary_->setStyle(&brls::BUTTONSTYLE_PRIMARY);
+        primary_->setFontSize(theme::kFontBody);
+        primary_->setHeight(64);
+        primary_->setMarginTop(16);
+        primary_->setText(tr("pipensx/common/install"));
+        primary_->registerClickAction([this](brls::View*) {
+            onPrimary();
+            return true;
+        });
+        left->addView(primary_);
+
+        installContract_ = new brls::Label();
+        installContract_->setFontSize(theme::kFontCaption);
+        installContract_->setTextColor(theme::textTertiary());
+        installContract_->setMarginTop(6);
+        installContract_->setSingleLine(false);
+        installContract_->setText(tr("pipensx/detail/install_contract"));
+        left->addView(installContract_);
+
+        // File selection and the wishlist toggle share one row: a fourth full-width
+        // button does not fit the column budget, and a square star needs no
+        // translation (Russian "В избранном" would not fit it anyway).
+        auto* actions = new brls::Box(brls::Axis::ROW);
+        actions->setMarginTop(12);
+
+        secondary_ = new brls::Button();
+        secondary_->setStyle(&brls::BUTTONSTYLE_DEFAULT);
+        secondary_->setFontSize(theme::kFontSmall);
+        secondary_->setGrow(1);
+        secondary_->setHeight(56);
+        secondary_->setText(tr("pipensx/common/choose_files"));
+        secondary_->registerClickAction([this](brls::View*) {
+            onSecondary();
+            return true;
+        });
+        actions->addView(secondary_);
+
+        // Wishlist toggle: the same star the catalog grid puts on the card,
+        // reachable without hunting for the ZR hotkey.
+        if (favorites_) {
+            favorite_ = new brls::Button();
+            favorite_->setStyle(&brls::BUTTONSTYLE_DEFAULT);
+            favorite_->setFontSize(theme::kFontHeading);
+            favorite_->setWidth(56);
+            favorite_->setHeight(56);
+            favorite_->setMarginLeft(8);
+            favorite_->setText("★");
+            favorite_->registerClickAction([this](brls::View*) {
+                onFavorite();
+                return true;
+            });
+            actions->addView(favorite_);
+        }
+        left->addView(actions);
+
+        // How much of the card this release eats. Seeded from the catalog size
+        // and refined to the exact figure once the torrent metadata resolves.
+        sizeMeter_ = new StorageMeter();
+        sizeMeter_->setHeader(storageMeterHeader(
+            settings_ ? installTargetFor(settings_->get().installLocation)
+                      : manager_->installTarget()));
+        sizeMeter_->setMarginTop(20);
+        left->addView(sizeMeter_);
+
+        statusLabel_ = new brls::Label();
+        statusLabel_->setFontSize(theme::kFontCaption);
+        statusLabel_->setMarginTop(8);
+        statusLabel_->setTextColor(theme::accent());
+        statusLabel_->setText(tr("pipensx/detail/install_hint"));
+        left->addView(statusLabel_);
+
+        content->addView(left);
+    }
+
+    // Right column (scrolls): fact table, screenshots, description. The game
+    // title already lives in the AppletFrame header, so do not repeat it here.
+    void buildRightColumn(brls::Box* content) {
+        auto* right = new brls::Box(brls::Axis::COLUMN);
+        right->setPadding(0, 12, 24, 0);
+
+        buildFactsTable(right);
+
+        const std::vector<std::string>& screenshots = presentation_.screenshots;
+        if (!screenshots.empty()) {
+            auto* shots = new brls::Label();
+            shots->setFontSize(theme::kFontSmall);
+            shots->setMarginTop(24);
+            shots->setMarginBottom(8);
+            shots->setTextColor(theme::textSecondary());
+            shots->setText(tr("pipensx/detail/screenshots"));
+            right->addView(shots);
+
+            std::string viewerTitle = presentation_.title;
+            auto* rail = new brls::Box(brls::Axis::ROW);
+            rail->setHeight(180);
+            for (size_t i = 0; i < screenshots.size(); ++i) {
+                auto* image = new AsyncRgbaImage();
+                image->setWidth(300);
+                image->setHeight(170);
+                image->setMarginRight(12);
+                image->setCornerRadius(theme::kRadiusSmall);
+                image->setFocusable(true);
+                image->setScalingType(brls::ImageScalingType::FIT);
+                image->setClipsToBounds(false);  // no letterbox edge bands
+                // The rail is the only focusable thing in this column — the
+                // fact table and the description are plain Labels. So the
+                // upward walk finds nothing here, then hits content's ROW axis
+                // (which ignores UP) and dies at the frame: the rail reads as a
+                // dead end. Route UP to the primary action explicitly. DOWN is
+                // left to the normal walk, which reaches "show more" when the
+                // description has one; a dead end at a column's bottom is what
+                // anyone expects anyway.
+                image->setCustomNavigationRoute(brls::FocusDirection::UP,
+                                                primary_);
+                // O6: A opens the fullscreen pager at this shot.
+                image->registerClickAction(
+                    [this, screenshots, i, viewerTitle](brls::View*) {
+                        brls::Application::pushActivity(
+                            new ScreenshotViewerActivity(metadata_, screenshots,
+                                                         i, viewerTitle));
+                        return true;
+                    });
+                loadImageInto(image, metadata_, screenshots[i]);
+                rail->addView(image);
+            }
+            auto* gallery = new brls::HScrollingFrame();
+            gallery->setHeight(190);
+            gallery->setContentView(rail);
+            right->addView(gallery);
+        }
+
+        buildDescription(right);
+
+        std::string warn;
+        if (!lastFailure_.empty()) {
+            warn = tr("pipensx/detail/last_attempt", lastFailure_);
+        } else {
+            std::string health = badgeForCatalogHealth(entry_);
+            if (!health.empty() && health != tr("pipensx/health/fresh")) {
+                warn = tr("pipensx/detail/catalog_health", health);
+                if (!entry_.healthReason.empty())
+                    warn = tr("pipensx/detail/catalog_health_reason", health,
+                              entry_.healthReason);
+            }
+        }
+        if (!warn.empty()) {
+            auto* warning = new brls::Label();
+            warning->setFontSize(theme::kFontCaption);
+            warning->setMarginTop(16);
+            warning->setTextColor(theme::warning());
+            warning->setText(warn);
+            right->addView(warning);
+        }
+
+        // Raw catalog release title (moved off the list per F2).
+        auto* release = new brls::Label();
+        release->setFontSize(theme::kFontCaption);
+        release->setMarginTop(16);
+        release->setTextColor(theme::textTertiary());
+        release->setText(tr("pipensx/detail/release_line", entry_.title));
+        right->addView(release);
+
+        auto* scroll = new brls::ScrollingFrame();
+        scroll->setGrow(1);
+        scroll->setContentView(right);
+        content->addView(scroll);
+    }
+
+    // S4: facts as label/value rows instead of one glued string.
+    void buildFactsTable(brls::Box* right) {
+        auto* table = new brls::Box(brls::Axis::COLUMN);
+        table->setMarginTop(8);
+        addFactRow(table, tr("pipensx/detail/fact_developer"),
+                   presentation_.developer);
+        addFactRow(table, tr("pipensx/detail/fact_publisher"),
+                   presentation_.publisher);
+        addFactRow(table, tr("pipensx/detail/fact_release"),
+                   presentation_.releaseDate);
+        addFactRow(table, tr("pipensx/detail/fact_genre"), presentation_.genre);
+        addFactRow(table, tr("pipensx/detail/fact_players"), playersFact_);
+        addFactRow(table, tr("pipensx/detail/fact_multiplayer"),
+                   presentation_.multiplayer);
+        if (preferCatalogNativeText()) {
+            addFactRow(table, tr("pipensx/detail/fact_interface_lang"),
+                       entry_.interfaceLang);
+            addFactRow(table, tr("pipensx/detail/fact_voice_lang"),
+                       entry_.voiceLang);
+        }
+        addFactRow(table, tr("pipensx/detail/fact_performance"),
+                   presentation_.performance);
+        addFactRow(table, tr("pipensx/detail/fact_size"),
+                   entry_.size ? formatBytes(entry_.size)
+                               : tr("pipensx/common/unknown"));
+        addFactRow(table, tr("pipensx/detail/fact_title_id"), titleId_);
+        addFactRow(table, tr("pipensx/detail/fact_mods"), modsFact());
+        right->addView(table);
+    }
+
+    // ModCD carries mods for this title id (in-memory lookup — the table is
+    // fetched with the catalogue, never from this page). Empty = no row.
+    std::string modsFact() const {
+        if (!mods_ || titleId_.empty() || !mods_->has(titleId_))
+            return std::string();
+        const uint32_t count = mods_->modCount(titleId_);
+        if (count == 0)
+            return tr("pipensx/detail/mods_available");
+        return tr("pipensx/detail/mods_count", count);
+    }
+
+    void addFactRow(brls::Box* table, const std::string& name,
+                    const std::string& value) {
+        if (value.empty())
+            return;
+        auto* row = new brls::Box(brls::Axis::ROW);
+        row->setMarginTop(8);
+        auto* key = new brls::Label();
+        key->setFontSize(theme::kFontCaption);
+        key->setTextColor(theme::textTertiary());
+        key->setWidth(160);
+        key->setText(name);
+        row->addView(key);
+        auto* val = new brls::Label();
+        val->setFontSize(theme::kFontCaption);
+        val->setTextColor(theme::textSecondary());
+        val->setGrow(1);
+        val->setText(value);
+        row->addView(val);
+        table->addView(row);
+    }
+
+    // S5: reversible "Show more" instead of a hard cut.
+    void buildDescription(brls::Box* right) {
+        std::string text = presentation_.description;
+        if (text.empty()) {
+            auto* missing = new brls::Label();
+            missing->setFontSize(theme::kFontSmall);
+            missing->setMarginTop(24);
+            missing->setText(tr("pipensx/detail/no_description"));
+            right->addView(missing);
+            return;
+        }
+        auto* desc = new brls::Label();
+        desc->setFontSize(theme::kFontSmall);
+        desc->setMarginTop(24);
+        bool truncated = text.size() > 900;
+        desc->setText(truncated ? shortDescription(text) : text);
+        right->addView(desc);
+        if (truncated) {
+            auto* more = new brls::Button();
+            more->setStyle(&brls::BUTTONSTYLE_BORDERLESS);
+            more->setFontSize(theme::kFontSmall);
+            more->setTextColor(theme::accent());
+            more->setMarginTop(4);
+            more->setText(tr("pipensx/detail/show_more"));
+            more->registerClickAction([this, desc, more,
+                                       text = std::move(text)](brls::View*) {
+                desc->setText(text);
+                more->setVisibility(brls::Visibility::GONE);
+                if (primary_)
+                    brls::Application::giveFocus(primary_);
+                return true;
+            });
+            right->addView(more);
+        }
+    }
+
+    // Find the managed task for this game, if any.
+    const DownloadTask* currentTask() {
+        cache_ = manager_->snapshot();
+        std::string hash = catalogLower(entry_.infoHash);
+        for (const DownloadTask& task : cache_)
+            if (catalogLower(task.id) == hash)
+                return &task;
+        return nullptr;
+    }
+
+    static std::string installButtonLabel(const DownloadTask& task) {
+        switch (task.status) {
+            case DownloadStatus::Queued:
+                return tr("pipensx/detail/status_queued");
+            case DownloadStatus::Fetching:
+                return tr("pipensx/detail/status_fetching",
+                          percentOf(static_cast<float>(task.fetchProgress)));
+            case DownloadStatus::Checking:
+                return tr("pipensx/downloads/status_checking");
+            case DownloadStatus::Downloading: {
+                return tr("pipensx/detail/status_downloading",
+                          percentOf(progressOf(task)));
+            }
+            case DownloadStatus::Installing:
+            case DownloadStatus::Committing: {
+                return tr("pipensx/detail/status_installing",
+                          percentOf(installProgressOf(task)));
+            }
+            case DownloadStatus::Verifying:
+                return tr("pipensx/detail/status_verifying",
+                          percentOf(progressOf(task)));
+            case DownloadStatus::Paused: {
+                int pct = percentOf(progressOf(task));
+                return pct > 0
+                    ? tr("pipensx/detail/status_paused_percent", pct)
+                    : tr("pipensx/detail/status_paused");
+            }
+            case DownloadStatus::Completed:
+                return tr("pipensx/detail/status_downloaded");
+            case DownloadStatus::Installed:
+                return tr("pipensx/detail/status_installed");
+            case DownloadStatus::Error: {
+                int pct = percentOf(progressOf(task));
+                return pct > 0
+                    ? tr("pipensx/detail/status_error_percent", pct)
+                    : tr("pipensx/detail/status_error");
+            }
+            case DownloadStatus::Removing:
+                return tr("pipensx/detail/status_removing");
+        }
+        return tr("pipensx/common/install");
+    }
+
+    // Fill fraction the status button paints while a task is live: install
+    // phases track installed bytes, everything else tracks downloaded bytes.
+    static float progressForButton(const DownloadTask& task) {
+        switch (task.status) {
+            case DownloadStatus::Fetching:
+                return std::clamp(static_cast<float>(task.fetchProgress),
+                                  0.0f, 1.0f);
+            case DownloadStatus::Installing:
+            case DownloadStatus::Committing:
+                return installProgressOf(task);
+            case DownloadStatus::Completed:
+            case DownloadStatus::Installed:
+                return 1.0f;
+            case DownloadStatus::Queued:
+                return 0.0f;
+            default:
+                return progressOf(task);
+        }
+    }
+
+    // Repaint the install-size bar against the current free space. installBytes_
+    // starts as the catalog-declared size and becomes exact once the torrent
+    // metadata has been read (see finishImport).
+    void refreshSizeMeter() {
+        if (!sizeMeter_)
+            return;
+        const auto target = settings_
+            ? installTargetFor(settings_->get().installLocation)
+            : manager_->installTarget();
+        sizeMeter_->setHeader(storageMeterHeader(target));
+        const pipensx::StorageSpaceSnapshot storage =
+            pipensx::queryInstallStorageSpace(target, manager_->rootPath());
+        if (!storage.available) {
+            sizeMeter_->setUnavailable();
+            return;
+        }
+        sizeMeter_->setGameEstimate(storage.totalBytes, storage.freeBytes,
+                                    installBytes_,
+                                    installBytes_ > storage.freeBytes,
+                                    sizeExact_);
+    }
+
+    // Pulse Install + status while magnet/debrid resolve is in flight (#19).
+    void setBusy(bool busy) {
+        busy_ = busy;
+        if (busy) {
+            startBusyPulse(primary_);
+            startBusyPulse(statusLabel_);
+        } else {
+            stopBusyPulse(primary_);
+            stopBusyPulse(statusLabel_);
+        }
+    }
+
+    // Star/unstar this game. The cap is reported in the user's words; any
+    // other failure is a write error worth showing verbatim.
+    void onFavorite() {
+        if (!favorites_)
+            return;
+        const bool starred = favorites_->contains(entry_.infoHash);
+        if (!starred &&
+            favorites_->items().size() >= FavoritesService::kMaxFavorites) {
+            brls::Application::notify(
+                tr("pipensx/catalog/favorites_full",
+                   FavoritesService::kMaxFavorites));
+            return;
+        }
+        std::string error;
+        favorites_->toggle(entry_.infoHash, presentation_.title, error);
+        if (!error.empty()) {
+            brls::Application::notify(
+                tr("pipensx/catalog/favorites_failed", error));
+            return;
+        }
+        refreshFavoriteButton();
+        // The catalog rebuilds its grid (and the star badge) on this.
+        if (onChange_)
+            onChange_();
+    }
+
+    // The glyph never changes \u2014 an outline star (U+2606) is not exercised by
+    // any golden baseline, so there is no evidence the console shared font
+    // carries it. State rides on the fill instead, the same way the catalog
+    // header's \u2605 filter chip reads as on/off.
+    void refreshFavoriteButton() {
+        if (!favorite_)
+            return;
+        const bool starred = favorites_ &&
+                             favorites_->contains(entry_.infoHash);
+        favorite_->setStyle(starred ? &brls::BUTTONSTYLE_PRIMARY
+                                    : &brls::BUTTONSTYLE_DEFAULT);
+    }
+
+    // Reflect live task state on the buttons. Skipped while resolving so the
+    // inline progress text isn't clobbered.
+    void refreshButtons() {
+        refreshFavoriteButton();
+        if (busy_)
+            return;
+        const DownloadTask* task = currentTask();
+        if (task) {
+            operationMessage_.clear();
+            // O5: the button is the status surface — it stays vivid (enabled)
+            // and shows a progress fill instead of greying out. Paused/Error
+            // become an actionable "Resume".
+            bool actionable = task->status == DownloadStatus::Paused ||
+                              task->status == DownloadStatus::Error;
+            if (actionable) {
+                setTextIfChanged(primary_, tr("pipensx/common/resume"));
+                primary_->setProgress(-1.0f);
+            } else {
+                setTextIfChanged(primary_, installButtonLabel(*task));
+                primary_->setProgress(progressForButton(*task));
+            }
+            primary_->setState(brls::ButtonState::ENABLED);
+            setTextIfChanged(secondary_, tr("pipensx/detail/view_download"));
+            secondary_->setState(brls::ButtonState::ENABLED);
+            if (installContract_)
+                installContract_->setVisibility(brls::Visibility::GONE);
+            if (task->status == DownloadStatus::Error && !task->error.empty())
+                setTextIfChanged(statusLabel_, task->error);
+        } else {
+            setTextIfChanged(primary_, tr("pipensx/common/install"));
+            primary_->setProgress(-1.0f);
+            primary_->setState(brls::ButtonState::ENABLED);
+            setTextIfChanged(secondary_, tr("pipensx/common/choose_files"));
+            secondary_->setState(brls::ButtonState::ENABLED);
+            if (installContract_)
+                installContract_->setVisibility(brls::Visibility::VISIBLE);
+            if (!operationMessage_.empty())
+                setTextIfChanged(statusLabel_, operationMessage_);
+            else if (installed_ && installed_->contains(titleId_))
+                setTextIfChanged(statusLabel_,
+                                 tr("pipensx/detail/installed_hint"));
+            else
+                setTextIfChanged(statusLabel_,
+                                 tr("pipensx/detail/install_hint"));
+        }
+    }
+
+    void onPrimary() {
+        if (busy_)
+            return;
+        const DownloadTask* task = currentTask();
+        if (task) {
+            if (task->status == DownloadStatus::Paused ||
+                task->status == DownloadStatus::Error)
+                manager_->resume(task->id);
+            else
+                // O5: tapping the live status button opens the download details.
+                brls::Application::pushActivity(
+                    new DetailsActivity(task->id, manager_, deploy_));
+            return;
+        }
+        // One-tap install: resolve, then queue silently (picker only on Select files).
+        startInstall(false);
+    }
+
+    void onSecondary() {
+        if (busy_)
+            return;
+        const DownloadTask* task = currentTask();
+        if (task) {
+            brls::Application::pushActivity(
+                new DetailsActivity(task->id, manager_, deploy_));
+            return;
+        }
+        // Select files: always open the per-file picker after resolve.
+        startInstall(true);
+    }
+
+    // One-tap: resolve the magnet inline, then import immediately (no second
+    // dialog) unless forcePicker is set (the "Select files" path), which always
+    // opens the per-file selection screen after resolve.
+    void startInstall(bool forcePicker) {
+        if (busy_)
+            return;
+        if (debridModeActive(settings_)) {
+            startDebridInstall(TransferMode::StreamInstall, forcePicker);
+            return;
+        }
+        setBusy(true);
+        operationMessage_.clear();
+        cancelled_->store(false);
+        primary_->setState(brls::ButtonState::DISABLED);
+        secondary_->setState(brls::ButtonState::DISABLED);
+        primary_->setText(tr("pipensx/detail/resolving"));
+        statusLabel_->setText(tr("pipensx/detail/finding_peers") +
+                              tr("pipensx/detail/cancel_hint"));
+
+        auto alive = alive_;
+        auto cancelled = cancelled_;
+        uint32_t serial = gCatalogTempSerial.fetch_add(1);
+        std::string tmp = manager_->rootPath() + "/_catalog_tmp_" +
+                          catalogLower(entry_.infoHash) + "_" +
+                          std::to_string(serial) + ".torrent";
+        std::string magnet = entry_.magnetUri;
+        std::vector<uint8_t> infoDict = entry_.infoDict;
+        std::string telemetryTag = catalogLower(entry_.infoHash);
+        uint64_t startedMs = now_ms();
+        brls::async([this, alive, cancelled, magnet, infoDict, tmp,
+                     forcePicker, telemetryTag, startedMs] {
+            std::string err;
+            MagnetResolver resolver;
+            auto progress = [this, alive, last = std::string()](
+                                const pipensx::MagnetProgress& p) mutable {
+                std::string text;
+                switch (p.stage) {
+                    case pipensx::MagnetProgress::Stage::FindingPeers:
+                        text = tr("pipensx/detail/finding_peers");
+                        break;
+                    case pipensx::MagnetProgress::Stage::Connecting:
+                        text = tr("pipensx/detail/contacting_peer",
+                                  p.peerIndex, p.peerCount);
+                        break;
+                    case pipensx::MagnetProgress::Stage::FetchingMetadata:
+                        text = tr("pipensx/detail/fetching_metadata",
+                                  p.completedPieces, p.totalPieces);
+                        break;
+                    case pipensx::MagnetProgress::Stage::Validating:
+                        text = tr("pipensx/detail/validating");
+                        break;
+                }
+                if (text == last)
+                    return;
+                last = text;
+                brls::sync([this, alive, text] {
+                    if (alive->load() && busy_)
+                        statusLabel_->setText(text + tr("pipensx/detail/cancel_hint"));
+                });
+            };
+            std::vector<uint8_t> initialPeers;
+            bool ok = resolver.resolveToFile(
+                magnet, tmp, *cancelled, progress, err, &initialPeers,
+                infoDict.empty() ? nullptr : &infoDict);
+            telemetry_log("magnet", telemetryTag.c_str(),
+                          "event=resolve ok=%d cancelled=%d duration_ms=%llu "
+                          "verified_peers=%u",
+                          ok ? 1 : 0, cancelled->load() ? 1 : 0,
+                          (unsigned long long)(now_ms() - startedMs),
+                          static_cast<unsigned>(initialPeers.size() / 6));
+            brls::sync([this, alive, ok, err, tmp, forcePicker,
+                        initialPeers = std::move(initialPeers)]() mutable {
+                if (!alive->load()) {
+                    ::unlink(tmp.c_str());
+                    return;
+                }
+                setBusy(false);
+                std::string hash = catalogLower(entry_.infoHash);
+                if (!ok) {
+                    std::string reason = classifyResolveFailure(err);
+                    if (onFailure_)
+                        onFailure_(hash, reason);
+                    diagnostic_error("magnet", hash.c_str(), "error=%s",
+                                     err.c_str());
+                    operationMessage_ = reason;
+                    refreshButtons();
+                    brls::Application::notify(err);
+                    ::unlink(tmp.c_str());
+                    return;
+                }
+                if (onFailure_)
+                    onFailure_(hash, "");  // clear stale failure
+                finishImport(tmp, forcePicker, std::move(initialPeers));
+            });
+        });
+    }
+
+    void startDebridInstall(TransferMode mode, bool forcePicker = false) {
+        if (busy_ || !ensureDebridLinked(settings_, manager_))
+            return;
+        setBusy(true);
+        cancelled_->store(false);
+        primary_->setState(brls::ButtonState::DISABLED);
+        secondary_->setState(brls::ButtonState::DISABLED);
+        primary_->setText(tr("pipensx/debrid/submitting"));
+        statusLabel_->setText(tr("pipensx/debrid/sending_magnet"));
+
+        auto alive = alive_;
+        auto cancelled = cancelled_;
+        const AppSettingsData values = settings_->get();
+        const DebridProviderKind providerKind = values.debridProvider;
+        const std::string key = activeDebridKey(values);
+        const CatalogEntry entry = entry_;
+        brls::async([this, alive, cancelled, providerKind, key, entry, mode,
+                     forcePicker] {
+            auto provider = makeDebridProvider(providerKind, key);
+            std::string debridId;
+            std::string error;
+            DebridInfo info;
+            bool ok = provider->createFromMagnet(entry.magnetUri, debridId,
+                                                  error);
+            if (ok) {
+                const auto deadline = std::chrono::steady_clock::now() +
+                                      std::chrono::seconds(60);
+                do {
+                    std::string fetchError;
+                    if (!provider->fetchInfo(debridId, info, fetchError))
+                        error = std::move(fetchError);
+                    log_msg("[DEBUG-debrid-picker] poll id=%s files=%u\n",
+                            debridId.c_str(),
+                            static_cast<unsigned>(info.files.size()));
+                    if (!forcePicker || !info.files.empty())
+                        break;
+                    for (int i = 0; i < 8 && alive->load() &&
+                                         !cancelled->load(); ++i)
+                        std::this_thread::sleep_for(
+                            std::chrono::milliseconds(250));
+                } while (alive->load() && !cancelled->load() &&
+                         std::chrono::steady_clock::now() < deadline);
+                if (forcePicker && info.files.empty() && alive->load() &&
+                    !cancelled->load()) {
+                    ok = false;
+                    if (error.empty())
+                        error = "Unable to resolve torrent metadata.";
+                }
+            }
+            brls::sync([this, alive, cancelled, ok, error, debridId, info,
+                        entry, providerKind, key, mode, forcePicker] {
+                if (!alive->load() || cancelled->load()) {
+                    if (!debridId.empty())
+                        removeDebridTransferAsync(providerKind, key, debridId);
+                    if (alive->load()) {
+                        setBusy(false);
+                        refreshButtons();
+                    }
+                    return;
+                }
+                setBusy(false);
+                if (!ok) {
+                    if (!debridId.empty())
+                        removeDebridTransferAsync(providerKind, key, debridId);
+                    operationMessage_ = error.empty()
+                        ? tr("pipensx/debrid/magnet_rejected") : error;
+                    refreshButtons();
+                    brls::Application::notify(operationMessage_);
+                    return;
+                }
+                DebridImport import;
+                import.infoHash = catalogLower(entry.infoHash);
+                import.name = info.name.empty() ? entry.title : info.name;
+                import.totalBytes = info.bytes ? info.bytes : entry.size;
+                import.provider = providerKind;
+                import.debridId = debridId;
+                import.mode = mode;
+                if (forcePicker && !info.files.empty()) {
+                    TorrentPreview preview;
+                    preview.name = import.name;
+                    preview.totalBytes = import.totalBytes;
+                    preview.fileCount = static_cast<uint32_t>(info.files.size());
+                    for (const DebridFile& file : info.files) {
+                        const bool package = isPackageName(file.path);
+                        preview.files.push_back({file.path, file.bytes, package,
+                                                 isCompressedName(file.path),
+                                                 isCartridgeName(file.path)});
+                        preview.packageCount += package ? 1 : 0;
+                        preview.cartridgeCount += isCartridgeName(file.path) ? 1 : 0;
+                    }
+                    StreamSelection selection = settings_->get().streamSelection;
+                    log_msg("[DEBUG-debrid-picker] push id=%s files=%u\n",
+                            debridId.c_str(), preview.fileCount);
+                    brls::Application::pushActivity(new TorrentSelectionActivity(
+                        manager_, "", std::move(preview),
+                        TransferMode::StreamInstall, selection, {}, import,
+                        [providerKind, key, debridId] {
+                            removeDebridTransferAsync(providerKind, key, debridId);
+                        }));
+                    log_msg("[DEBUG-debrid-picker] push complete id=%s\n",
+                            debridId.c_str());
+                    return;
+                }
+                if (mode == TransferMode::StreamInstall && !info.files.empty()) {
+                    import.fileSelection.reserve(info.files.size());
+                    for (const DebridFile& file : info.files) {
+                        const bool package = isPackageName(file.path);
+                        import.fileSelection.push_back(static_cast<uint8_t>(
+                            package ? FileAction::Install : FileAction::Skip));
+                        import.packageCount += package ? 1 : 0;
+                    }
+                }
+                std::string id;
+                std::string importError;
+                if (!manager_->importDebrid(import, id, importError)) {
+                    removeDebridTransferAsync(providerKind, key, debridId);
+                    operationMessage_ = importError;
+                    brls::Application::notify(importError);
+                } else {
+                    statusLabel_->setText(tr("pipensx/debrid/queued"));
+                    if (onChange_)
+                        onChange_();
+                }
+                refreshButtons();
+            });
+        });
+    }
+
+    void finishImport(const std::string& path, bool forcePicker,
+                      std::vector<uint8_t> initialPeers) {
+        pipensx::TorrentPreview preview;
+        std::string error;
+        if (!DownloadManager::previewTorrent(path, preview, error)) {
+            diagnostic_error("catalog", "preview", "error=%s",
+                             error.c_str());
+            operationMessage_ = error;
+            refreshButtons();
+            brls::Application::notify(error);
+            ::unlink(path.c_str());
+            return;
+        }
+
+        // Metadata is in: swap the catalog-declared size on the meter for the
+        // real one. Mirrors the one-tap selection (install the packages, skip
+        // the extras); a release with no packages is sized as a plain download.
+        std::vector<uint8_t> actions;
+        actions.reserve(preview.files.size());
+        for (const auto& file : preview.files) {
+            FileAction action = preview.packageCount == 0
+                ? FileAction::Download
+                : (file.package ? FileAction::Install : FileAction::Skip);
+            actions.push_back(static_cast<uint8_t>(action));
+        }
+        const auto sized = pipensx::estimateInstallSpace(
+            preview, actions, TransferMode::StreamInstall);
+        if (!preview.files.empty() && !sized.overflow) {
+            installBytes_ = sized.requiredBytes;
+            sizeExact_ = true;
+            refreshSizeMeter();
+        }
+
+        // Picker path: the per-file picker owns the temp file and unlinks it
+        // on cancel. Each row chooses Skip, Download, or Install directly.
+        if (forcePicker) {
+            openSelection(path, std::move(preview), std::move(initialPeers));
+            return;
+        }
+
+        // One-tap path. No installable packages -> open the picker in download
+        // mode so the user is not left at a dead end.
+        if (preview.packageCount == 0) {
+            operationMessage_ = preview.cartridgeCount > 0
+                ? tr("pipensx/detail/cartridge_only")
+                : tr("pipensx/detail/no_installable");
+            refreshButtons();
+            brls::Application::notify(operationMessage_);
+            openSelection(path, std::move(preview), std::move(initialPeers),
+                          TransferMode::DownloadOnly);
+            return;
+        }
+
+        // Packages present. Install them silently. On a mixed release (anything
+        // that is not an install package) auto-select packages only; on a clean
+        // package-only release an empty mask means "all files".
+        uint32_t extras = preview.fileCount - preview.packageCount;
+        std::vector<uint8_t> mask;
+        if (extras > 0) {
+            mask.reserve(preview.files.size());
+            for (const auto& file : preview.files)
+                mask.push_back(file.package ? 1 : 0);
+        }
+
+        std::string id;
+        std::string err;
+        const std::string destination = installDestinationLabel(
+            settings_ ? installTargetFor(settings_->get().installLocation)
+                      : manager_->installTarget());
+        if (manager_->importTorrent(path, TransferMode::StreamInstall, mask,
+                                    id, err, initialPeers)) {
+            log_msg("[catalog] imported torrent %s\n", id.c_str());
+            if (extras > 0) {
+                statusLabel_->setText(
+                    tr("pipensx/detail/installing_extras_skipped_hint"));
+                brls::Application::notify(
+                    tr("pipensx/detail/installing_extras_skipped"));
+            } else {
+                statusLabel_->setText(
+                    tr("pipensx/detail/added_installing", destination));
+                brls::Application::notify(
+                    tr("pipensx/detail/added_installing", destination));
+            }
+            if (onChange_)
+                onChange_();
+        } else if (catalogLower(err).find("already in the download manager") !=
+                   std::string::npos) {
+            statusLabel_->setText(tr("pipensx/detail/already_in_downloads"));
+            if (onChange_)
+                onChange_();
+        } else {
+            log_msg("[catalog] import failed from '%s': %s\n",
+                    path.c_str(), err.c_str());
+            diagnostic_error("catalog", "import", "error=%s", err.c_str());
+            operationMessage_ = err;
+            refreshButtons();
+            brls::Application::notify(err);
+        }
+        ::unlink(path.c_str());
+        refreshButtons();
+    }
+
+    void openSelection(const std::string& path,
+                       pipensx::TorrentPreview preview,
+                       std::vector<uint8_t> initialPeers,
+                       TransferMode preferred = TransferMode::StreamInstall) {
+        StreamSelection selection = settings_
+            ? settings_->get().streamSelection : StreamSelection::AllFiles;
+        brls::Application::pushActivity(new TorrentSelectionActivity(
+            manager_, path, std::move(preview), preferred,
+            selection, std::move(initialPeers)));
+    }
+
+    CatalogEntry entry_;
+    CatalogPresentation presentation_;
+    std::string lastFailure_;
+    DownloadManager* manager_;
+    GameMetadataService* metadata_;
+    InstalledTitleService* installed_;
+    AppSettings* settings_;
+    ModIndexService* mods_ = nullptr;
+    FavoritesService* favorites_ = nullptr;
+    SwitchDeployService* deploy_ = nullptr;
+    std::string titleId_;
+    std::string playersFact_;
+    std::string operationMessage_;
+    FailureCallback onFailure_;
+    ChangeCallback onChange_;
+    CloseCallback onClose_;
+    std::shared_ptr<std::atomic<bool>> alive_;
+    std::shared_ptr<std::atomic<bool>> cancelled_;
+    brls::AppletFrame* frame_ = nullptr;
+    InstallButton* primary_ = nullptr;
+    brls::Label* installContract_ = nullptr;
+    brls::Button* secondary_ = nullptr;
+    brls::Button* favorite_ = nullptr;
+    StorageMeter* sizeMeter_ = nullptr;
+    brls::Label* statusLabel_ = nullptr;
+    uint64_t installBytes_ = 0;
+    bool sizeExact_ = false;
+    int storageTick_ = 0;
+    brls::RepeatingTimer timer_;
+    std::vector<DownloadTask> cache_;
+    bool busy_ = false;
+};
+
+}  // namespace pipensx::ui

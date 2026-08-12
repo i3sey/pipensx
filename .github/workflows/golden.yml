@@ -1,0 +1,63 @@
+name: golden
+
+# F4: golden-screenshot CI. Renders every screen in light/dark with the
+# PC (SDL2) build against the deterministic fixtures in
+# tests/fixtures/golden/, then compares with the references in
+# tests/golden/ (pixel budget, see scripts/golden.sh).
+#
+# Re-baseline: run `scripts/golden.sh update` locally (or grab the
+# golden-current artifact from a failed run) and commit tests/golden/.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: golden-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  golden:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build xorg-dev libgl1-mesa-dev libglu1-mesa-dev \
+            libsdl2-dev libcurl4-openssl-dev libssl-dev zlib1g-dev \
+            imagemagick xvfb
+
+      - name: Build golden_runner
+        run: |
+          cmake -S . -B build-golden -G Ninja \
+            -DPIPENSX_GOLDEN=ON -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-golden --target golden_runner
+
+      # No xvfb-run wrapper here: golden.sh starts its own virtual display
+      # (and pins SDL to x11, which the wrapper alone would not do). Wrapping
+      # it again just nests a second Xvfb. The xvfb package above is still
+      # required — the script needs xvfb-run on PATH.
+      - name: Compare against golden screenshots
+        run: scripts/golden.sh check
+
+      - name: Upload diffs and current renders
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: golden-current
+          path: |
+            build-golden/golden-out/*.png
+            build-golden/golden-out/*.log
+            build-golden/golden-out/diff/*.png
+          if-no-files-found: ignore

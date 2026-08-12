@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#101418">
+<title>pipensx</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon-192.png">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="brand-dot"></span>pipensx</div>
+  <div id="conn" class="conn" title="connection">●</div>
+</header>
+
+<nav class="tabs">
+  <a href="#downloads" data-tab="downloads" class="tab">Downloads</a>
+  <a href="#catalog" data-tab="catalog" class="tab">Catalog</a>
+  <a href="#add" data-tab="add" class="tab">Add</a>
+</nav>
+
+<main>
+  <section id="view-downloads" class="view">
+    <div id="storage" class="storage" hidden>
+      <div class="storage-bar"><div id="storage-fill" class="storage-fill"></div></div>
+      <div id="storage-text" class="storage-text"></div>
+    </div>
+    <div id="notify-row" class="notify-row">
+      <button id="alerts-btn" class="btn btn-ghost">🔔 Alerts: on</button>
+      <button id="notify-btn" class="btn btn-ghost" hidden>Enable notifications</button>
+    </div>
+    <div id="jobs"></div>
+    <div id="tasks"></div>
+    <div id="tasks-empty" class="empty" hidden>
+      <div class="empty-icon">⤓</div>
+      <p>No downloads yet.<br>Add a magnet link or pick something from the catalog.</p>
+    </div>
+  </section>
+
+  <section id="view-catalog" class="view" hidden>
+    <div class="search-row">
+      <input id="search" type="search" placeholder="Search 4000+ games…" autocomplete="off">
+    </div>
+    <div id="catalog-status" class="empty" hidden></div>
+    <div id="catalog-grid" class="grid"></div>
+    <div id="catalog-sentinel"></div>
+  </section>
+
+  <section id="view-add" class="view" hidden>
+    <div class="card form-card">
+      <h2>Magnet link</h2>
+      <textarea id="magnet-input" rows="3" placeholder="magnet:?xt=urn:btih:…"></textarea>
+      <div class="mode-row" id="magnet-mode">
+        <label><input type="radio" name="magnet-mode" value="install" checked> Install</label>
+        <label><input type="radio" name="magnet-mode" value="download"> Download only</label>
+      </div>
+      <button id="magnet-btn" class="btn btn-primary">Add magnet</button>
+    </div>
+    <div class="card form-card">
+      <h2>.torrent file</h2>
+      <input id="torrent-file" type="file" accept=".torrent,application/x-bittorrent">
+      <div class="mode-row" id="torrent-mode">
+        <label><input type="radio" name="torrent-mode" value="install" checked> Install</label>
+        <label><input type="radio" name="torrent-mode" value="download"> Download only</label>
+      </div>
+      <button id="torrent-btn" class="btn btn-primary">Upload torrent</button>
+    </div>
+  </section>
+</main>
+
+<dialog id="modal"></dialog>
+<div id="toast" class="toast" hidden></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

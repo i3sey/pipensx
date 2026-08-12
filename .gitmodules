@@ -1,0 +1,13 @@
+[submodule "vendor/borealis"]
+	path = vendor/borealis
+	url = https://github.com/i3sey/borealis.git
+	branch = moonlight_wiliwili
+[submodule "vendor/glm"]
+	path = vendor/glm
+	url = https://github.com/g-truc/glm.git
+[submodule "vendor/zstd"]
+	path = vendor/zstd
+	url = https://github.com/facebook/zstd.git
+[submodule "vendor/libnx-ext"]
+	path = vendor/libnx-ext
+	url = https://github.com/XorTroll/libnx-ext.git
