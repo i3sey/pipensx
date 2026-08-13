@@ -70,10 +70,12 @@ public:
         setAxis(brls::Axis::COLUMN);
         path_ = new brls::Label();
         path_->setSingleLine(true);
+        path_->setAutoAnimate(false);
         path_->setFontSize(18);
         addView(path_);
         meta_ = new brls::Label();
         meta_->setSingleLine(true);
+        meta_->setAutoAnimate(false);
         meta_->setFontSize(14);
         meta_->setMarginTop(4);
         meta_->setTextColor(theme::textTertiary());
@@ -87,6 +89,16 @@ public:
         path_->setTextColor(file.state == TaskFileState::Missing ||
                                     file.state == TaskFileState::Unsafe
                                 ? theme::error() : theme::textPrimary());
+    }
+
+    void onFocusGained() override {
+        brls::RecyclerCell::onFocusGained();
+        path_->setAnimated(true);
+    }
+
+    void onFocusLost() override {
+        brls::RecyclerCell::onFocusLost();
+        path_->setAnimated(false);
     }
 
 private:

@@ -55,10 +55,12 @@ public:
         top->setAlignItems(brls::AlignItems::CENTER);
         title_ = new brls::Label();
         title_->setSingleLine(true);
+        title_->setAutoAnimate(false);
         title_->setFontSize(22);
         title_->setGrow(1);
         status_ = new brls::Label();
         status_->setSingleLine(true);
+        status_->setAutoAnimate(false);
         status_->setFontSize(17);
         status_->setTextColor(theme::accent());
         top->addView(title_);
@@ -66,6 +68,7 @@ public:
 
         meta_ = new brls::Label();
         meta_->setSingleLine(true);
+        meta_->setAutoAnimate(false);
         meta_->setFontSize(16);
         meta_->setMarginTop(6);
         meta_->setMarginBottom(9);
@@ -166,6 +169,16 @@ public:
                 iconUrl = found->iconUrl;
         }
         setArtworkUrl(image_, service, iconUrl, currentIconUrl_, imageState_);
+    }
+
+    void onFocusGained() override {
+        brls::RecyclerCell::onFocusGained();
+        title_->setAnimated(true);
+    }
+
+    void onFocusLost() override {
+        brls::RecyclerCell::onFocusLost();
+        title_->setAnimated(false);
     }
 
 private:

@@ -45,6 +45,7 @@ public:
         setPadding(12, 24, 12, 24);
         label_ = new brls::Label();
         label_->setSingleLine(true);
+        label_->setAutoAnimate(false);
         label_->setFontSize(21);
         addView(label_);
     }
@@ -52,6 +53,14 @@ public:
         label_->setText(entry.directory
                             ? tr("pipensx/picker/folder", entry.name)
                                         : entry.name);
+    }
+    void onFocusGained() override {
+        brls::RecyclerCell::onFocusGained();
+        label_->setAnimated(true);
+    }
+    void onFocusLost() override {
+        brls::RecyclerCell::onFocusLost();
+        label_->setAnimated(false);
     }
 private:
     brls::Label* label_;
