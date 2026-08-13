@@ -365,6 +365,30 @@ std::optional<uint64_t> taskEtaSeconds(const DownloadTask& task,
 // The scheduler's claim rule, exposed for tests: a Queued task may start
 // unless it is a stream install while another one holds the install token.
 bool taskClaimableUnderInstallToken(const DownloadTask& task,
-                                    bool installTokenHeld);
+                                     bool installTokenHeld);
+
+// User-facing torrent health for an active download, derived from peer count
+// and current throughput. NotActive for anything that is not downloading.
+enum class TorrentHealth {
+    NotActive,
+    Poor,
+    Slow,
+    Excellent,
+};
+
+// Peer/throughput-derived health, kept inline so tests need no download
+// engine. NotActive for anything that is not downloading.
+inline TorrentHealth torrentHealth(const DownloadTask& task, uint64_t nowMs) {
+    (void)nowMs;
+    if (task.status != DownloadStatus::Downloading)
+        return TorrentHealth::NotActive;
+    const uint64_t speed = task.speedBytesPerSecond;
+    constexpr uint64_t kSlowThreshold = 512ull * 1024ull;
+    if (speed == 0)
+        return task.peers == 0 ? TorrentHealth::Poor : TorrentHealth::Slow;
+    if (speed < kSlowThreshold)
+        return TorrentHealth::Slow;
+    return TorrentHealth::Excellent;
+}
 
 } // namespace pipensx

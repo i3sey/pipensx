@@ -12,7 +12,7 @@
 //                          hints-budget|installed|installed-populated|installed-bundles|
 //                          update-chooser|
 //                          update-chooser-toggle|settings|settings-debrid|help|
-//                          first-run|first-run-focus|first-run-disclaimer|debrid-link|
+//                          network-health|first-run|first-run-focus|first-run-disclaimer|debrid-link|
 //                          about|bug-report|
 //                          bug-report-detail|bug-report-focus|sidebar-touch
 //                 [--frames N] [--sandbox <dir>]
@@ -68,6 +68,7 @@
 #include "ui/installed/installed_view.hpp"
 #include "ui/main_frame.hpp"
 #include "ui/settings/about_view.hpp"
+#include "ui/settings/network_health.hpp"
 #include "ui/settings/bug_report_view.hpp"
 #include "ui/settings/help_view.hpp"
 #include "ui/settings/settings_view.hpp"
@@ -847,6 +848,15 @@ int main(int argc, char** argv) {
             &settings, &manager, &catalog, &metadata, &installed, nullptr,
             &mods));
         settingsDebrid = true;
+    } else if (screen == "network-health") {
+        pipensx::AppSettingsData values = settings.get();
+        values.torboxApiKey = "golden-fixture-key";
+        values.torrserverUrl = "192.168.1.5:8090";
+        values.proxyUrl = "";
+        if (!settings.update(values, error))
+            return fail("network-health could not plant provider settings");
+        activity = new NetworkHealthActivity(&manager, &settings,
+                                             "192.168.1.5");
     } else if (screen == "help") {
         activity = new GoldenActivity(
             new HelpView(&manager, &catalog, &metadata, &installed));
