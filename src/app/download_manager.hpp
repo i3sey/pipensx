@@ -234,6 +234,12 @@ public:
     // still be passed by download-only tasks behind it.
     bool moveToFront(const std::string& taskId, std::string& error);
 
+    // Move a queued task one position up (earlier) or down (later) within the
+    // queue. Only queued tasks can move; a move past the edge of the queue is
+    // a no-op success. Returns false for an unknown id, a non-queued task, or
+    // when the task is leased for external deploy.
+    bool moveTask(const std::string& taskId, bool up, std::string& error);
+
     // How many torrents may download concurrently (clamped to
     // [kMinActiveDownloads, kMaxActiveDownloads]).
     // Shrinking takes effect as running tasks finish; nothing is preempted.
@@ -365,6 +371,25 @@ std::optional<uint64_t> taskEtaSeconds(const DownloadTask& task,
 // The scheduler's claim rule, exposed for tests: a Queued task may start
 // unless it is a stream install while another one holds the install token.
 bool taskClaimableUnderInstallToken(const DownloadTask& task,
-                                    bool installTokenHeld);
+                                     bool installTokenHeld);
+
+// Aggregate view of the queue for the Downloads summary header: counts per
+// status, total download/install throughput, and the bytes + ETA to drain the
+// outstanding work. etaSeconds is 0 when the throughput is unknown (zero).
+struct QueueSummary {
+    uint32_t downloading = 0;
+    uint32_t queued = 0;
+    uint32_t installing = 0;
+    uint32_t paused = 0;
+    uint32_t completed = 0;
+    uint32_t errors = 0;
+    uint64_t downloadSpeedBps = 0;
+    uint64_t installSpeedBps = 0;
+    uint64_t totalRemainingBytes = 0;
+    uint64_t etaSeconds = 0;
+};
+
+QueueSummary summarizeQueue(const std::vector<DownloadTask>& tasks,
+                            uint64_t nowMs);
 
 } // namespace pipensx
