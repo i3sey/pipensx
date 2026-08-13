@@ -26,6 +26,7 @@
 #include "ui/i18n.hpp"
 #include "ui/settings/advanced_settings.hpp"
 #include "ui/settings/settings_cells.hpp"
+#include "ui/settings/storage_manager.hpp"
 #include "ui/theme.hpp"
 
 namespace pipensx::ui {
@@ -284,6 +285,10 @@ public:
             tr("pipensx/settings/advanced_detail"),
             [this] { openAdvanced(); }));
 
+        content->addView(actionCell(tr("pipensx/settings/storage"),
+            tr("pipensx/settings/storage_detail"),
+            [this] { openStorage(); }));
+
         auto* scroll = new brls::ScrollingFrame();
         scroll->setGrow(1);
         scroll->setContentView(content);
@@ -364,6 +369,11 @@ private:
                 if (alive->load())
                     applyValues();
             }));
+    }
+
+    void openStorage() {
+        brls::Application::pushActivity(
+            new StorageManagerActivity(manager_, metadata_));
     }
 
     bool persist(const AppSettingsData& values, const char* tag) {

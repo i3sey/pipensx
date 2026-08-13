@@ -12,7 +12,7 @@
 //                          hints-budget|installed|installed-populated|installed-bundles|
 //                          update-chooser|
 //                          update-chooser-toggle|settings|settings-debrid|help|
-//                          first-run|first-run-focus|first-run-disclaimer|debrid-link|
+//                          storage|first-run|first-run-focus|first-run-disclaimer|debrid-link|
 //                          about|bug-report|
 //                          bug-report-detail|bug-report-focus|sidebar-touch
 //                 [--frames N] [--sandbox <dir>]
@@ -71,6 +71,7 @@
 #include "ui/settings/bug_report_view.hpp"
 #include "ui/settings/help_view.hpp"
 #include "ui/settings/settings_view.hpp"
+#include "ui/settings/storage_manager.hpp"
 #include "ui/theme.hpp"
 
 #include <ctime>
@@ -228,6 +229,28 @@ brls::Hints* findHints(brls::View* view) {
             return found;
     }
     return nullptr;
+}
+
+// Plant deterministic files in the pipensx-managed directories so the storage
+// breakdown golden screen renders the same bucket sizes on every machine.
+void seedStorageFixture(const std::string& rootPath) {
+    const std::string dirs[] = {"/downloads", "/torrents",
+                                "/catalog/images", "/catalog/metadata",
+                                "/installed-icons", "/install-temp"};
+    for (const std::string& dir : dirs) {
+        fs::create_directories(rootPath + dir);
+    }
+    auto write = [](const std::string& path, size_t size) {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        std::string data(size, 'x');
+        out.write(data.data(), static_cast<std::streamsize>(size));
+    };
+    write(rootPath + "/downloads/game.nsp", 100000);
+    write(rootPath + "/torrents/0123456789abcdef.torrent", 4096);
+    write(rootPath + "/catalog/images/cover.jpg", 2048);
+    write(rootPath + "/catalog/metadata/manifest.json", 512);
+    write(rootPath + "/installed-icons/icon.jpg", 1024);
+    write(rootPath + "/install-temp/job.nca", 8192);
 }
 
 // Seed the four fixture rows and the planted update-check states the
@@ -833,6 +856,9 @@ int main(int argc, char** argv) {
         activity = new GoldenActivity(new SettingsView(
             &settings, &manager, &catalog, &metadata, &installed, nullptr,
             &mods));
+    } else if (screen == "storage") {
+        seedStorageFixture(manager.rootPath());
+        activity = new StorageManagerActivity(&manager, &metadata);
     } else if (screen == "settings-debrid") {
         // The debrid section is well below the fold on the settings screen,
         // so it needs a shot of its own. A key is planted first: "linked" is

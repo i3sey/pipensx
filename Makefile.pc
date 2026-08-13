@@ -322,6 +322,11 @@ $(BUILD_DIR)/tests/test_update_file_select: tests/test_update_file_select.cpp \
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
 
+$(BUILD_DIR)/tests/test_storage_manager: tests/test_storage_manager.cpp \
+		src/app/storage_manager.cpp src/app/install_space.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
+
 $(BUILD_DIR)/tests/test_update_transaction: tests/test_update_transaction.c \
 		src/app/update_transaction.c src/core/sha256.c
 	@mkdir -p $(dir $@)
