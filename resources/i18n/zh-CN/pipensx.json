@@ -683,5 +683,10 @@
     "updated_h": "{0} 小时前更新",
     "updated_m": "{0} 分钟前更新",
     "never": "从未"
+  },
+  "notify": {
+    "download_completed": "{} 下载完成。",
+    "install_completed": "{} 已安装。",
+    "download_failed": "{} 下载失败。"
   }
 }

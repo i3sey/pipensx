@@ -683,5 +683,10 @@
     "updated_h": "Actualizado hace {0}h",
     "updated_m": "Actualizado hace {0}min",
     "never": "Nunca"
+  },
+  "notify": {
+    "download_completed": "Descarga de {} completada.",
+    "install_completed": "{} instalado.",
+    "download_failed": "La descarga de {} falló."
   }
 }

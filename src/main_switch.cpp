@@ -33,6 +33,8 @@ extern "C" {
 #include <string>
 #include <thread>
 #include <typeinfo>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -575,6 +577,13 @@ int main(int argc, char** argv) {
         pipensx::SwitchDeployPhase lastDeployPhase =
             pipensx::SwitchDeployPhase::Idle;
         bool deployOfferDialogOpen = false;
+        // Download/install lifecycle notifications (#33): the main loop is the
+        // only place that runs regardless of which screen is focused, so
+        // terminal status transitions are surfaced here as toasts instead of
+        // requiring the Downloads tab to stay open. The map only tracks tasks
+        // observed after startup, so pre-existing rows never re-notify.
+        std::unordered_map<std::string, pipensx::DownloadStatus> lastTaskStatus;
+        uint64_t lastDownloadScanMs = now_ms();
         while (true) {
             const pipensx::SwitchDeploySnapshot deployState = deploy.snapshot();
             bool activeTransfer = manager.hasActiveTransfer() ||
@@ -613,11 +622,46 @@ int main(int argc, char** argv) {
                 lastDeployPhase = deployState.phase;
             }
 
+            // Throttled scan of task statuses: notify once per terminal
+            // transition (download complete, install complete, download failed).
             const uint64_t frameNowMs = now_ms();
-            if (frameNowMs - lastDeployOfferPollMs >= 10000 &&
+            if (frameNowMs - lastDownloadScanMs >= 1000) {
+                lastDownloadScanMs = frameNowMs;
+                std::unordered_set<std::string> seen;
+                for (const pipensx::DownloadTask& task : manager.snapshot()) {
+                    seen.insert(task.id);
+                    auto previous = lastTaskStatus.find(task.id);
+                    if (previous == lastTaskStatus.end()) {
+                        lastTaskStatus[task.id] = task.status;
+                        continue;
+                    }
+                    if (previous->second == task.status)
+                        continue;
+                    lastTaskStatus[task.id] = task.status;
+                    if (task.status == pipensx::DownloadStatus::Completed)
+                        brls::Application::notify(
+                            tr("pipensx/notify/download_completed", task.name));
+                    else if (task.status == pipensx::DownloadStatus::Installed)
+                        brls::Application::notify(
+                            tr("pipensx/notify/install_completed", task.name));
+                    else if (task.status == pipensx::DownloadStatus::Error)
+                        brls::Application::notify(
+                            tr("pipensx/notify/download_failed", task.name));
+                }
+                for (auto it = lastTaskStatus.begin();
+                     it != lastTaskStatus.end();) {
+                    if (seen.count(it->first) == 0)
+                        it = lastTaskStatus.erase(it);
+                    else
+                        ++it;
+                }
+            }
+
+            const uint64_t deployPollNowMs = now_ms();
+            if (deployPollNowMs - lastDeployOfferPollMs >= 10000 &&
                 !activeTransfer && !deployState.active() &&
                 !deployOfferDialogOpen) {
-                lastDeployOfferPollMs = frameNowMs;
+                lastDeployOfferPollMs = deployPollNowMs;
                 deploy.scheduleDeployOfferPoll();
             }
             if (!deployOfferDialogOpen) {
