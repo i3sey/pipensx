@@ -1,6 +1,7 @@
 #pragma once
 
 #include <curl/curl.h>
+#include <sys/socket.h>
 
 #include <string>
 
@@ -18,6 +19,25 @@ inline void curlPinHttpsOnly(CURL* curl) {
     curl_easy_setopt(curl, CURLOPT_PROTOCOLS, CURLPROTO_HTTPS);
     curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS, CURLPROTO_HTTPS);
 #endif
+}
+
+// Borealis boots the Switch socket service with tiny default buffers;
+// a larger receive window is what keeps long HTTPS transfers off the
+// kilobytes-per-second floor. bsd:u silently clamps SO_RCVBUF at 256 KiB.
+inline int curlEnlargeReceiveBuffer(void*, curl_socket_t socket,
+                                    curlsocktype purpose) {
+    if (purpose == CURLSOCKTYPE_IPCXN) {
+        int size = 256 * 1024;
+        setsockopt(socket, SOL_SOCKET, SO_RCVBUF,
+                   reinterpret_cast<const char*>(&size), sizeof(size));
+    }
+    return CURL_SOCKOPT_OK;
+}
+
+inline void curlTuneDownloadSocket(CURL* curl) {
+    curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
+    curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, 256L * 1024L);
+    curl_easy_setopt(curl, CURLOPT_SOCKOPTFUNCTION, curlEnlargeReceiveBuffer);
 }
 
 // Same guarantee for a URL that may legitimately be plain HTTP — a TorrServer
