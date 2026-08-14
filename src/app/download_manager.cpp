@@ -975,7 +975,7 @@ bool DownloadManager::moveTask(const std::string& taskId, bool up,
 
 bool DownloadManager::remove(const std::string& taskId, bool deleteData,
                              std::string& error) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
     if (externallyLeasedLocked(taskId)) {
         error = "Task files are being copied to /switch.";
         return false;
@@ -1000,8 +1000,9 @@ bool DownloadManager::remove(const std::string& taskId, bool deleteData,
     std::string debridId = task->debridId;
     DebridProviderKind provider = task->debridProvider;
     std::string apiKey = apiKeyFor(provider);
-    if (!removeLocked(taskId, deleteData, error))
+    if (!removeLocked(lock, taskId, deleteData, error))
         return false;
+    lock.unlock();
     removeFromDebridAsync(provider, apiKey, debridId);
     return true;
 }
@@ -1014,7 +1015,7 @@ bool DownloadManager::clearCompleted(bool deleteData, std::string& error) {
     };
     std::vector<Cleanup> cleanups;
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock<std::mutex> lock(mutex_);
         std::vector<std::string> ids;
         for (const DownloadTask& task : tasks_) {
             if (externallyLeasedLocked(task.id))
@@ -1031,7 +1032,7 @@ bool DownloadManager::clearCompleted(bool deleteData, std::string& error) {
                 continue;
             Cleanup cleanup{task->debridProvider, apiKeyFor(task->debridProvider),
                             task->debridId};
-            if (!removeLocked(id, deleteData, error, false))
+            if (!removeLocked(lock, id, deleteData, error, false))
                 return false;
             cleanups.push_back(std::move(cleanup));
         }
@@ -1374,7 +1375,8 @@ void DownloadManager::endExternalDeploy(const std::string& taskId) {
     condition_.notify_all();
 }
 
-bool DownloadManager::removeLocked(const std::string& id, bool deleteData,
+bool DownloadManager::removeLocked(std::unique_lock<std::mutex>& lock,
+                                   const std::string& id, bool deleteData,
                                    std::string& error, bool persist) {
     for (auto it = tasks_.begin(); it != tasks_.end(); ++it) {
         if (it->id != id)
@@ -1389,13 +1391,31 @@ bool DownloadManager::removeLocked(const std::string& id, bool deleteData,
             saveLocked(ignored);
             return false;
         }
-        if (deleteData && !removeTree(it->dataPath)) {
-            error = "Unable to remove all downloaded data.";
-            it->status = DownloadStatus::Error;
-            it->error = error;
-            std::string ignored;
-            saveLocked(ignored);
-            return false;
+        // FAT32 unlink of a big torrent tree can take minutes. Holding
+        // mutex_ across it froze snapshot() and the UI until the console
+        // looked crashed.
+        if (deleteData) {
+            const std::string dataPath = it->dataPath;
+            lock.unlock();
+            const bool ok = removeTree(dataPath);
+            lock.lock();
+            it = tasks_.end();
+            for (auto again = tasks_.begin(); again != tasks_.end(); ++again) {
+                if (again->id == id) {
+                    it = again;
+                    break;
+                }
+            }
+            if (it == tasks_.end())
+                return true;
+            if (!ok) {
+                error = "Unable to remove all downloaded data.";
+                it->status = DownloadStatus::Error;
+                it->error = error;
+                std::string ignored;
+                saveLocked(ignored);
+                return false;
+            }
         }
         if (!it->metainfoPath.empty())
             unlink(it->metainfoPath.c_str());
@@ -1773,7 +1793,7 @@ void DownloadManager::runDebridTask(const ClaimedTask& claim) {
     std::string removeId;
     DebridProviderKind removeProvider = claim.debridProvider;
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock<std::mutex> lock(mutex_);
         DownloadTask* task = findLocked(activeId);
         if (!task)
             return;
@@ -1786,7 +1806,7 @@ void DownloadManager::runDebridTask(const ClaimedTask& claim) {
             removeId = task->debridId;
             removeProvider = task->debridProvider;
             std::string removeError;
-            removeLocked(activeId, deleteData, removeError);
+            removeLocked(lock, activeId, deleteData, removeError);
         } else {
             if (result == DebridRunResult::Failed) {
                 task->status = DownloadStatus::Error;
@@ -2132,12 +2152,12 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
     metainfo_free(&metainfo);
 
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock<std::mutex> lock(mutex_);
         DownloadTask* task = findLocked(activeId);
         if (task && task->status == DownloadStatus::Removing) {
             bool deleteData = task->error == "delete-data";
             std::string removeError;
-            removeLocked(activeId, deleteData, removeError);
+            removeLocked(lock, activeId, deleteData, removeError);
         } else if (task) {
             task->speedBytesPerSecond = 0;
             // Arm fast resume for an interrupted task (pause / error /

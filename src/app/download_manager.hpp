@@ -323,8 +323,8 @@ private:
     const DownloadTask* findLocked(const std::string& id) const;
     void endExternalDeploy(const std::string& taskId);
     bool externallyLeasedLocked(const std::string& taskId) const;
-    bool removeLocked(const std::string& id, bool deleteData,
-                      std::string& error, bool persist = true);
+    bool removeLocked(std::unique_lock<std::mutex>& lock, const std::string& id,
+                      bool deleteData, std::string& error, bool persist = true);
     // Fires a detached thread, so it must not touch *this: the manager can be
     // torn down while a provider call is still in flight.
     static void removeFromDebridAsync(DebridProviderKind provider,

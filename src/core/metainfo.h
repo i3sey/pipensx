@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 #define MAX_TRACKERS  32
-#define MAX_FILES     512
+#define MAX_FILES     4096
 #define MAX_NAME_LEN  256
 #define MAX_WEB_SEEDS 8
 

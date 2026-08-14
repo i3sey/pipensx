@@ -634,11 +634,21 @@ private:
                 brls::Application::popActivity();
         });
         dialog->addButton(tr("pipensx/downloads/remove_delete"), [this] {
-            std::string error;
-            if (!manager_->remove(taskId_, true, error))
-                brls::Application::notify(error);
-            else
-                brls::Application::popActivity();
+            auto alive = alive_;
+            DownloadManager* manager = manager_;
+            const std::string taskId = taskId_;
+            brls::async([alive, manager, taskId] {
+                std::string error;
+                const bool ok = manager->remove(taskId, true, error);
+                brls::sync([alive, ok, error] {
+                    if (!alive->load())
+                        return;
+                    if (!ok)
+                        brls::Application::notify(error);
+                    else
+                        brls::Application::popActivity();
+                });
+            });
         });
         dialog->addButton(tr("pipensx/common/cancel"), [] {});
         dialog->open();

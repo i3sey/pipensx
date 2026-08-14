@@ -1020,6 +1020,7 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
     std::atomic<uint32_t> reachedPeers{0}; // peers we got a TCP session to
     std::vector<uint8_t> metadata;
     std::vector<uint8_t> verifiedEndpoints;
+    std::string unsafeMetadata;
 
     /* Re-announce the RuTracker trackers for a fresh (rotated) peer set and
        merge any newcomers into `peers`; returns how many were added. Only ever
@@ -1049,7 +1050,8 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
     };
 
     int emptyReannounces = 0;
-    while (!cancelled && !resolved && now_ms() < deadline) {
+    while (!cancelled && !resolved && unsafeMetadata.empty() &&
+           now_ms() < deadline) {
         uint32_t roundEnd = peerCount;
         if (nextPeer >= roundEnd) {
             /* Every known peer was tried once without metadata. Rather than
@@ -1119,6 +1121,15 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
                                       probeError)) {
                         log_msg("[magnet] peer %u/%u metadata rejected: %s\n",
                                 peerIndex + 1, peerCount, probeError.c_str());
+                        /* Same info-hash → same dictionary. A parse/safety
+                           reject will never succeed from another peer. */
+                        if (probeError ==
+                            "Resolved metadata is not a supported safe torrent.") {
+                            std::lock_guard<std::mutex> lock(mutex);
+                            if (unsafeMetadata.empty())
+                                unsafeMetadata = probeError;
+                            stopWorkers.store(true);
+                        }
                         continue;
                     }
 
@@ -1146,6 +1157,10 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
         }
     }
     if (metadata.empty()) {
+        if (!unsafeMetadata.empty()) {
+            error = unsafeMetadata;
+            return false;
+        }
         /* Not one of them let us open a TCP session — that is a network
            blocking BitTorrent, not a stale catalog entry, and telling the two
            apart is the difference between "try again later" (useless here)

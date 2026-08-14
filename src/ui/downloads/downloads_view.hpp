@@ -262,11 +262,16 @@ public:
                 startRefreshing(true);
         });
         dialog->addButton(tr("pipensx/downloads/remove_delete"), [this, taskId] {
-            std::string error;
-            if (!manager_->remove(taskId, true, error))
-                brls::Application::notify(error);
-            else
-                startRefreshing(true);
+            DownloadManager* manager = manager_;
+            brls::async([manager, taskId] {
+                std::string error;
+                const bool ok = manager->remove(taskId, true, error);
+                brls::sync([ok, error] {
+                    if (!ok)
+                        brls::Application::notify(error);
+                });
+            });
+            startRefreshing(true);
         });
         dialog->addButton(tr("pipensx/common/cancel"), [] {});
         dialog->open();
