@@ -24,8 +24,7 @@ struct StorageBreakdown {
 };
 
 // Recursive size of a file or directory. Returns false (and leaves `out`
-// unchanged) when the path cannot be stat'd. A directory whose entries cannot
-// all be read still returns the bytes it could measure.
+// unchanged) when the path cannot be stat'd or any child cannot be measured.
 bool directorySize(const std::string& path, uint64_t& out);
 
 // Snapshot of every pipensx-managed directory under `rootPath`, plus the

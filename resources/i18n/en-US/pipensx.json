@@ -470,7 +470,8 @@
     "recoverable": "Recover {}",
     "clear_completed_confirm": "Clear completed downloads and free {}?",
     "confirm_recover": "Free {} by clearing these files?",
-    "cleared": "Cleaned up."
+    "cleared": "Cleaned up.",
+    "busy_transfer": "Can't clear temporary files while a transfer is running."
   },
   "settings": {
     "section_catalog": "Catalog",

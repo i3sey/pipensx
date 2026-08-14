@@ -470,7 +470,8 @@
     "recoverable": "Récupérer {}",
     "clear_completed_confirm": "Effacer les téléchargements terminés et libérer {} ?",
     "confirm_recover": "Libérer {} en effaçant ces fichiers ?",
-    "cleared": "Nettoyage terminé."
+    "cleared": "Nettoyage terminé.",
+    "busy_transfer": "Impossible d'effacer les fichiers temporaires pendant un transfert."
   },
   "settings": {
     "section_catalog": "Catalogue",

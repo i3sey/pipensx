@@ -470,7 +470,8 @@
     "recoverable": "Recuperar {}",
     "clear_completed_confirm": "¿Borrar descargas completadas y liberar {}?",
     "confirm_recover": "¿Liberar {} al borrar estos archivos?",
-    "cleared": "Limpieza completada."
+    "cleared": "Limpieza completada.",
+    "busy_transfer": "No se pueden borrar los archivos temporales durante una transferencia."
   },
   "settings": {
     "section_catalog": "Catálogo",

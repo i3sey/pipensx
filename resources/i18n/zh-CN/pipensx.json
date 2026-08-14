@@ -470,7 +470,8 @@
     "recoverable": "可释放 {}",
     "clear_completed_confirm": "清除已完成的下载并释放 {}？",
     "confirm_recover": "清除这些文件可释放 {}？",
-    "cleared": "清理完成。"
+    "cleared": "清理完成。",
+    "busy_transfer": "传输进行中，无法清除临时文件。"
   },
   "settings": {
     "section_catalog": "目录",

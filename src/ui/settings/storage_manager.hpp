@@ -38,7 +38,8 @@ public:
 
     void willAppear(bool resetState) override {
         brls::Activity::willAppear(resetState);
-        refresh();
+        refresh(/*wait=*/ !didFirstRefresh_);
+        didFirstRefresh_ = true;
     }
 
 private:
@@ -84,12 +85,42 @@ private:
         frame_->setTitle(tr("pipensx/storage/title"));
     }
 
-    // Re-reads the breakdown and repaints the meter, the per-directory rows and
-    // each action's recoverable-space detail. Runs on the UI thread only.
-    void refresh() {
-        if (!manager_)
-            return;
-        snapshot_ = scanStorageBreakdown(manager_->rootPath());
+    struct ScanPayload {
+        StorageBreakdown snapshot;
+        uint64_t completedBytes = 0;
+        uint64_t orphanBytes = 0;
+        bool hasFinished = false;
+    };
+
+    ScanPayload collectScan() const {
+        ScanPayload payload;
+        payload.snapshot = scanStorageBreakdown(manager_->rootPath());
+        std::vector<DownloadTask> tasks = manager_->snapshot();
+        std::vector<std::string> active;
+        active.reserve(tasks.size());
+        for (const DownloadTask& task : tasks) {
+            active.push_back(task.id);
+            if (task.status != DownloadStatus::Completed &&
+                task.status != DownloadStatus::Installed)
+                continue;
+            payload.hasFinished = true;
+            uint64_t size = 0;
+            if (directorySize(task.dataPath, size))
+                payload.completedBytes =
+                    size > UINT64_MAX - payload.completedBytes
+                        ? UINT64_MAX
+                        : payload.completedBytes + size;
+        }
+        payload.orphanBytes =
+            pipensx::orphanTorrentBytes(manager_->torrentRoot(), active);
+        return payload;
+    }
+
+    void applyScan(const ScanPayload& payload) {
+        snapshot_ = payload.snapshot;
+        completedBytes_ = payload.completedBytes;
+        orphanBytes_ = payload.orphanBytes;
+        hasFinished_ = payload.hasFinished;
 
         if (meter_) {
             if (snapshot_.available)
@@ -106,11 +137,40 @@ private:
             clearImages_->setDetailText(
                 recoverableDetail(snapshot_.imageCacheBytes));
         if (clearTorrents_)
-            clearTorrents_->setDetailText(
-                recoverableDetail(orphanTorrentBytes()));
+            clearTorrents_->setDetailText(recoverableDetail(orphanBytes_));
         if (clearTemporary_)
             clearTemporary_->setDetailText(
                 recoverableDetail(snapshot_.temporaryBytes));
+    }
+
+    // First paint is synchronous so golden (and the opening frame) see real
+    // numbers. Later refreshes walk the tree off the UI thread.
+    void refresh(bool wait = false) {
+        if (!manager_)
+            return;
+        if (wait) {
+            applyScan(collectScan());
+            return;
+        }
+        if (refreshInFlight_) {
+            refreshPending_ = true;
+            return;
+        }
+        refreshInFlight_ = true;
+        auto alive = alive_;
+        brls::async([this, alive] {
+            ScanPayload payload = collectScan();
+            brls::sync([this, alive, payload = std::move(payload)] {
+                if (!alive->load())
+                    return;
+                refreshInFlight_ = false;
+                applyScan(payload);
+                if (refreshPending_) {
+                    refreshPending_ = false;
+                    refresh(false);
+                }
+            });
+        });
     }
 
     void rebuildRows() {
@@ -155,46 +215,20 @@ private:
                           : tr("pipensx/storage/recoverable", formatBytes(bytes));
     }
 
-    // Sum of the on-disk bytes held by completed (finished but not yet
-    // removed) downloads — the target of "Clear completed downloads".
-    uint64_t completedDownloadsBytes() const {
-        uint64_t total = 0;
-        for (const DownloadTask& task : manager_->snapshot()) {
-            if (task.status != DownloadStatus::Completed)
-                continue;
-            uint64_t size = 0;
-            if (directorySize(task.dataPath, size))
-                total = size > UINT64_MAX - total ? UINT64_MAX : total + size;
-        }
-        return total;
-    }
-
     std::string completedDownloadsDetail() {
-        uint64_t bytes = completedDownloadsBytes();
-        if (bytes == 0)
+        if (!hasFinished_)
             return tr("pipensx/storage/nothing_to_recover");
-        return tr("pipensx/storage/recoverable", formatBytes(bytes));
-    }
-
-    // Size of `.torrent` files not backed by a live task.
-    uint64_t orphanTorrentBytes() const {
-        std::vector<DownloadTask> tasks = manager_->snapshot();
-        std::vector<std::string> active;
-        active.reserve(tasks.size());
-        for (const DownloadTask& task : tasks)
-            active.push_back(task.id);
-        return pipensx::orphanTorrentBytes(manager_->torrentRoot(), active);
+        return tr("pipensx/storage/recoverable", formatBytes(completedBytes_));
     }
 
     void confirmClearCompleted() {
-        const uint64_t bytes = completedDownloadsBytes();
-        if (bytes == 0) {
+        if (!hasFinished_) {
             brls::Application::notify(
                 tr("pipensx/storage/nothing_to_recover"));
             return;
         }
         confirm(tr("pipensx/storage/clear_completed_confirm",
-                   formatBytes(bytes)), [this] { clearCompleted(); });
+                   formatBytes(completedBytes_)), [this] { clearCompleted(); });
     }
 
     void confirmClearImages() {
@@ -202,10 +236,14 @@ private:
     }
 
     void confirmClearTorrents() {
-        confirmAction(orphanTorrentBytes(), [this] { clearTorrents(); });
+        confirmAction(orphanBytes_, [this] { clearTorrents(); });
     }
 
     void confirmClearTemporary() {
+        if (manager_->hasActiveTransfer()) {
+            brls::Application::notify(tr("pipensx/storage/busy_transfer"));
+            return;
+        }
         confirmAction(snapshot_.temporaryBytes, [this] { clearTemporary(); });
     }
 
@@ -228,16 +266,12 @@ private:
     }
 
     void clearCompleted() {
-        std::vector<DownloadTask> tasks = manager_->snapshot();
-        std::vector<std::string> ids;
-        for (const DownloadTask& task : tasks)
-            if (task.status == DownloadStatus::Completed)
-                ids.push_back(task.id);
-        for (const std::string& id : ids) {
-            std::string error;
-            if (!manager_->remove(id, true, error))
-                diagnostic_error("storage", id.c_str(), "error=%s",
-                                 error.c_str());
+        std::string error;
+        if (!manager_->clearCompleted(true, error)) {
+            diagnostic_error("storage", "completed", "error=%s", error.c_str());
+            if (!error.empty())
+                brls::Application::notify(error);
+            return;
         }
         brls::Application::notify(tr("pipensx/storage/cleared"));
         refresh();
@@ -274,6 +308,10 @@ private:
     }
 
     void clearTemporary() {
+        if (manager_->hasActiveTransfer()) {
+            brls::Application::notify(tr("pipensx/storage/busy_transfer"));
+            return;
+        }
         std::string error;
         uint64_t recovered = 0;
         if (!clearTemporaryFiles(manager_->rootPath(), error, recovered)) {
@@ -297,6 +335,12 @@ private:
     brls::DetailCell* clearTorrents_ = nullptr;
     brls::DetailCell* clearTemporary_ = nullptr;
     StorageBreakdown snapshot_;
+    uint64_t completedBytes_ = 0;
+    uint64_t orphanBytes_ = 0;
+    bool hasFinished_ = false;
+    bool didFirstRefresh_ = false;
+    bool refreshInFlight_ = false;
+    bool refreshPending_ = false;
 };
 
 } // namespace pipensx::ui
