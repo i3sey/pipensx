@@ -655,6 +655,7 @@
     "disabled": "已禁用",
     "dht_nodes": "{0} 好 / {1} 可疑节点",
     "dht_off": "关闭",
+    "dht_bootstrapping": "引导中",
     "peers_n": "{0} 个对等节点",
     "updated_h": "{0} 小时前更新",
     "updated_m": "{0} 分钟前更新",

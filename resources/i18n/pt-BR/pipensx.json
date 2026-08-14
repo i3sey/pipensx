@@ -655,6 +655,7 @@
     "disabled": "Desativado",
     "dht_nodes": "{0} bons / {1} duvidosos nós",
     "dht_off": "Desligado",
+    "dht_bootstrapping": "Inicializando",
     "peers_n": "{0} peers",
     "updated_h": "Atualizado há {0}h",
     "updated_m": "Atualizado há {0}min",

@@ -7,7 +7,16 @@ namespace {
 
 using pipensx::DownloadStatus;
 using pipensx::DownloadTask;
+using pipensx::TaskSource;
 using pipensx::TorrentHealth;
+using pipensx::kProgressRateStaleMs;
+
+DownloadTask downloading() {
+    DownloadTask t;
+    t.status = DownloadStatus::Downloading;
+    t.downloadProgressUpdatedAtMs = 1000;
+    return t;
+}
 
 void testNotActive() {
     DownloadTask t;
@@ -20,34 +29,52 @@ void testNotActive() {
 }
 
 void testPoor() {
-    DownloadTask t;
-    t.status = DownloadStatus::Downloading;
+    DownloadTask t = downloading();
     t.speedBytesPerSecond = 0;
     t.peers = 0;
-    assert(pipensx::torrentHealth(t, 0) == TorrentHealth::Poor);
+    assert(pipensx::torrentHealth(t, 1000) == TorrentHealth::Poor);
 }
 
 void testSlow() {
-    DownloadTask t;
-    t.status = DownloadStatus::Downloading;
-    // Connected but no data yet.
+    DownloadTask t = downloading();
     t.speedBytesPerSecond = 0;
     t.peers = 3;
-    assert(pipensx::torrentHealth(t, 0) == TorrentHealth::Slow);
-    // Flowing but under the 512 KB/s threshold.
+    assert(pipensx::torrentHealth(t, 1000) == TorrentHealth::Slow);
     t.speedBytesPerSecond = 256 * 1024;
     t.peers = 1;
-    assert(pipensx::torrentHealth(t, 0) == TorrentHealth::Slow);
+    assert(pipensx::torrentHealth(t, 1000) == TorrentHealth::Slow);
 }
 
 void testExcellent() {
-    DownloadTask t;
-    t.status = DownloadStatus::Downloading;
+    DownloadTask t = downloading();
     t.speedBytesPerSecond = 1024 * 1024;
     t.peers = 5;
-    assert(pipensx::torrentHealth(t, 0) == TorrentHealth::Excellent);
+    assert(pipensx::torrentHealth(t, 1000) == TorrentHealth::Excellent);
     t.speedBytesPerSecond = 512 * 1024;
-    assert(pipensx::torrentHealth(t, 0) == TorrentHealth::Excellent);
+    assert(pipensx::torrentHealth(t, 1000) == TorrentHealth::Excellent);
+}
+
+void testStaleTorrent() {
+    DownloadTask t = downloading();
+    t.speedBytesPerSecond = 1024 * 1024;
+    t.peers = 5;
+    assert(pipensx::torrentHealth(t, 1000 + kProgressRateStaleMs + 1) ==
+           TorrentHealth::Slow);
+    t.peers = 0;
+    assert(pipensx::torrentHealth(t, 1000 + kProgressRateStaleMs + 1) ==
+           TorrentHealth::Poor);
+}
+
+void testDebrid() {
+    DownloadTask t = downloading();
+    t.source = TaskSource::Debrid;
+    t.peers = 0;
+    t.speedBytesPerSecond = 1024 * 1024;
+    assert(pipensx::torrentHealth(t, 1000) == TorrentHealth::Excellent);
+    t.speedBytesPerSecond = 256 * 1024;
+    assert(pipensx::torrentHealth(t, 1000) == TorrentHealth::Slow);
+    assert(pipensx::torrentHealth(t, 1000 + kProgressRateStaleMs + 1) ==
+           TorrentHealth::Poor);
 }
 
 } // namespace
@@ -57,6 +84,8 @@ int main() {
     testPoor();
     testSlow();
     testExcellent();
+    testStaleTorrent();
+    testDebrid();
     std::puts("torrent health tests passed");
     return 0;
 }

@@ -655,6 +655,7 @@
     "disabled": "Désactivé",
     "dht_nodes": "{0} bons / {1} douteux nœuds",
     "dht_off": "Désactivé",
+    "dht_bootstrapping": "Amorçage",
     "peers_n": "{0} pairs",
     "updated_h": "Mis à jour il y a {0}h",
     "updated_m": "Mis à jour il y a {0}min",

@@ -655,6 +655,7 @@
     "disabled": "Disabled",
     "dht_nodes": "{0} good / {1} dubious nodes",
     "dht_off": "Off",
+    "dht_bootstrapping": "Bootstrapping",
     "peers_n": "{0} peers",
     "updated_h": "Updated {0}h ago",
     "updated_m": "Updated {0}m ago",

@@ -853,6 +853,8 @@ int main(int argc, char** argv) {
         values.torboxApiKey = "golden-fixture-key";
         values.torrserverUrl = "192.168.1.5:8090";
         values.proxyUrl = "";
+        values.lastCatalogRefreshWallSec =
+            static_cast<uint64_t>(time(nullptr)) - 3 * 3600;
         if (!settings.update(values, error))
             return fail("network-health could not plant provider settings");
         activity = new NetworkHealthActivity(&manager, &settings,

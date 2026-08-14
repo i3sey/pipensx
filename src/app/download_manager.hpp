@@ -367,8 +367,8 @@ std::optional<uint64_t> taskEtaSeconds(const DownloadTask& task,
 bool taskClaimableUnderInstallToken(const DownloadTask& task,
                                      bool installTokenHeld);
 
-// User-facing torrent health for an active download, derived from peer count
-// and current throughput. NotActive for anything that is not downloading.
+// User-facing download health for an active transfer. NotActive when the
+// task is not downloading. Stall uses the same 3s window as ETA.
 enum class TorrentHealth {
     NotActive,
     Poor,
@@ -376,17 +376,25 @@ enum class TorrentHealth {
     Excellent,
 };
 
-// Peer/throughput-derived health, kept inline so tests need no download
-// engine. NotActive for anything that is not downloading.
 inline TorrentHealth torrentHealth(const DownloadTask& task, uint64_t nowMs) {
-    (void)nowMs;
     if (task.status != DownloadStatus::Downloading)
         return TorrentHealth::NotActive;
-    const uint64_t speed = task.speedBytesPerSecond;
+    const bool stalled = !task.downloadProgressUpdatedAtMs ||
+                         nowMs < task.downloadProgressUpdatedAtMs ||
+                         nowMs - task.downloadProgressUpdatedAtMs >
+                             kProgressRateStaleMs;
     constexpr uint64_t kSlowThreshold = 512ull * 1024ull;
-    if (speed == 0)
-        return task.peers == 0 ? TorrentHealth::Poor : TorrentHealth::Slow;
-    if (speed < kSlowThreshold)
+    const uint64_t speed = task.speedBytesPerSecond;
+    if (task.source == TaskSource::Debrid) {
+        if (stalled)
+            return TorrentHealth::Poor;
+        if (speed < kSlowThreshold)
+            return TorrentHealth::Slow;
+        return TorrentHealth::Excellent;
+    }
+    if (task.peers == 0 && (stalled || speed == 0))
+        return TorrentHealth::Poor;
+    if (stalled || speed < kSlowThreshold)
         return TorrentHealth::Slow;
     return TorrentHealth::Excellent;
 }
