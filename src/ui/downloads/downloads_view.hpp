@@ -14,6 +14,7 @@
 #include "ui/common/message_cells.hpp"
 #include "ui/common/ui_helpers.hpp"
 #include "ui/i18n.hpp"
+#include "ui/theme.hpp"
 #include "ui/downloads/details_activity.hpp"
 #include "ui/downloads/download_cell.hpp"
 #include "ui/downloads/file_picker.hpp"
@@ -53,6 +54,16 @@ public:
              AppSettings* settings, SwitchDeployService* deploy = nullptr)
         : brls::Box(brls::Axis::COLUMN), manager_(manager), metadata_(metadata),
           settings_(settings), deploy_(deploy) {
+        summary_ = new brls::Label();
+        summary_->setFontSize(15);
+        summary_->setMarginTop(10);
+        summary_->setMarginBottom(4);
+        summary_->setMarginLeft(32);
+        summary_->setMarginRight(32);
+        summary_->setTextColor(theme::textTertiary());
+        summary_->setVisibility(brls::Visibility::GONE);
+        addView(summary_);
+
         recycler_ = new brls::RecyclerFrame();
         recycler_->setGrow(1);
         recycler_->setPadding(6, 32, 6, 32);
@@ -73,6 +84,16 @@ public:
         registerAction(tr("pipensx/downloads/import"), brls::BUTTON_X,
                        [this](brls::View*) {
             openFilePicker();
+            return true;
+        });
+        registerAction(tr("pipensx/downloads/pause_all"), brls::BUTTON_Y,
+                       [this](brls::View*) {
+            pauseResumeAll();
+            return true;
+        });
+        registerAction(tr("pipensx/downloads/clear_completed"), brls::BUTTON_LB,
+                       [this](brls::View*) {
+            clearCompleted();
             return true;
         });
         startRefreshing();
@@ -165,25 +186,52 @@ public:
                 startRefreshing(true);
             });
         // Queue reordering: only offered when it would change something —
-        // the task must be queued and not already the next one up.
+        // the task must be queued and not already at the relevant edge.
         if (task.status == DownloadStatus::Queued) {
-            std::string firstQueued;
-            for (const auto& candidate : manager_->snapshot()) {
-                if (candidate.status == DownloadStatus::Queued) {
-                    firstQueued = candidate.id;
+            std::vector<std::string> queuedIds;
+            for (const auto& candidate : manager_->snapshot())
+                if (candidate.status == DownloadStatus::Queued)
+                    queuedIds.push_back(candidate.id);
+            size_t pos = 0;
+            bool found = false;
+            for (size_t i = 0; i < queuedIds.size(); ++i)
+                if (queuedIds[i] == taskId) {
+                    pos = i;
+                    found = true;
                     break;
                 }
+            if (found) {
+                if (pos > 0)
+                    add(tr("pipensx/downloads/move_up"), [this, taskId] {
+                        std::string error;
+                        if (!manager_->moveTask(taskId, true, error) &&
+                            !error.empty()) {
+                            brls::Application::notify(tr(
+                                "pipensx/downloads/move_to_top_failed", error));
+                        }
+                        startRefreshing(true);
+                    });
+                if (pos + 1 < queuedIds.size())
+                    add(tr("pipensx/downloads/move_down"), [this, taskId] {
+                        std::string error;
+                        if (!manager_->moveTask(taskId, false, error) &&
+                            !error.empty()) {
+                            brls::Application::notify(tr(
+                                "pipensx/downloads/move_to_top_failed", error));
+                        }
+                        startRefreshing(true);
+                    });
+                if (pos != 0)
+                    add(tr("pipensx/downloads/move_to_top"), [this, taskId] {
+                        std::string error;
+                        if (!manager_->moveToFront(taskId, error) &&
+                            !error.empty()) {
+                            brls::Application::notify(tr(
+                                "pipensx/downloads/move_to_top_failed", error));
+                        }
+                        startRefreshing(true);
+                    });
             }
-            if (firstQueued != taskId)
-                add(tr("pipensx/downloads/move_to_top"), [this, taskId] {
-                    std::string error;
-                    if (!manager_->moveToFront(taskId, error) &&
-                        !error.empty()) {
-                        brls::Application::notify(
-                            tr("pipensx/downloads/move_to_top_failed", error));
-                    }
-                    startRefreshing(true);
-                });
         }
         if (!leased && task.status != DownloadStatus::Removing)
             add(tr("pipensx/common/remove"),
@@ -260,6 +308,90 @@ private:
         return emptyState_;
     }
 
+    bool isPausable(DownloadStatus status) const {
+        return status == DownloadStatus::Queued ||
+               status == DownloadStatus::Checking ||
+               status == DownloadStatus::Fetching ||
+               status == DownloadStatus::Downloading ||
+               status == DownloadStatus::Installing ||
+               status == DownloadStatus::Verifying;
+    }
+
+    bool hasPausableTask(const std::vector<DownloadTask>& tasks) const {
+        for (const DownloadTask& task : tasks)
+            if (isPausable(task.status))
+                return true;
+        return false;
+    }
+
+    void pauseAll() {
+        manager_->pauseAll();
+        startRefreshing(true);
+    }
+
+    void resumeAll() {
+        manager_->resumeAll();
+        startRefreshing(true);
+    }
+
+    // One Y action that flips with the queue: pause the active tasks, or resume
+    // the paused/failed ones when nothing is running.
+    void pauseResumeAll() {
+        if (hasPausableTask(manager_->snapshot()))
+            pauseAll();
+        else
+            resumeAll();
+    }
+
+    void clearCompleted() {
+        bool any = false;
+        for (const DownloadTask& task : manager_->snapshot())
+            if (task.status == DownloadStatus::Completed ||
+                task.status == DownloadStatus::Installed) {
+                any = true;
+                break;
+            }
+        if (!any) {
+            brls::Application::notify(
+                tr("pipensx/downloads/clear_completed_none"));
+            return;
+        }
+        auto* dialog =
+            new brls::Dialog(tr("pipensx/downloads/clear_completed_question"));
+        auto run = [this](bool deleteData) {
+            std::string error;
+            if (!manager_->clearCompleted(deleteData, error) && !error.empty())
+                brls::Application::notify(error);
+            startRefreshing(true);
+        };
+        dialog->addButton(tr("pipensx/downloads/remove_keep"),
+                          [run] { run(false); });
+        dialog->addButton(tr("pipensx/downloads/remove_delete"),
+                          [run] { run(true); });
+        dialog->addButton(tr("pipensx/common/cancel"), [] {});
+        dialog->open();
+    }
+
+    std::string summaryText(const std::vector<DownloadTask>& tasks) const {
+        if (tasks.empty())
+            return {};
+        const pipensx::QueueSummary s = summarizeQueue(tasks, now_ms());
+        std::string text = tr("pipensx/downloads/summary_counts",
+                              s.downloading, s.queued, s.installing);
+        if (s.paused)
+            text += "   " + tr("pipensx/downloads/summary_paused", s.paused);
+        if (s.errors)
+            text += "   " + tr("pipensx/downloads/summary_errors", s.errors);
+        const uint64_t speed = s.downloadSpeedBps + s.installSpeedBps;
+        if (speed)
+            text += "\n" +
+                    tr("pipensx/downloads/summary_speed", formatSpeed(speed));
+        if (s.etaSeconds)
+            text += "   " + tr("pipensx/downloads/summary_eta",
+                               formatEtaSeconds(s.etaSeconds));
+        return text;
+    }
+
     void refresh() {
         auto next = manager_->snapshot();
         const SwitchDeploySnapshot deployState = deploy_ ? deploy_->snapshot()
@@ -274,6 +406,11 @@ private:
                             task.status == DownloadStatus::Installed);
                 }), next.end());
         }
+        setTextIfChanged(summary_, summaryText(next));
+        updateActionHint(brls::BUTTON_Y,
+                         hasPausableTask(next)
+                             ? tr("pipensx/downloads/pause_all")
+                             : tr("pipensx/downloads/resume_all"));
         uint64_t settingsGeneration = settings_ ? settings_->generation() : 0;
         bool settingsChanged = settingsGeneration != settingsGeneration_;
         bool structureChanged = !initialized_ || settingsChanged ||
@@ -376,6 +513,7 @@ private:
     AppSettings* settings_;
     SwitchDeployService* deploy_;
     EmptyStateView* emptyState_ = nullptr;
+    brls::Label* summary_ = nullptr;
     brls::RecyclerFrame* recycler_;
     DownloadDataSource* dataSource_;
     brls::RepeatingTimer timer_;
