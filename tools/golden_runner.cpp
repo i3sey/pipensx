@@ -9,10 +9,11 @@
 //                 [--locale en-US|ru]
 //                 --screen catalog|shelf-scroll|shelf-header|detail|torrent-selection|
 //                          torrent-selection-scroll|downloads|downloads-back|frame|
-//                          hints-budget|installed|installed-populated|installed-bundles|
+//                          hints-budget|installed|installed-populated|updates|
+//                          installed-bundles|
 //                          update-chooser|
 //                          update-chooser-toggle|settings|settings-debrid|help|
-//                          first-run|first-run-focus|first-run-disclaimer|debrid-link|
+//                          network-health|first-run|first-run-focus|first-run-disclaimer|debrid-link|
 //                          about|bug-report|
 //                          bug-report-detail|bug-report-focus|sidebar-touch
 //                 [--frames N] [--sandbox <dir>]
@@ -54,6 +55,7 @@
 #include "app/catalog_service.hpp"
 #include "app/download_manager.hpp"
 #include "app/game_metadata_service.hpp"
+#include "app/game_update_service.hpp"
 #include "app/install_space.hpp"
 #include "app/installed_title_service.hpp"
 #include "ui/catalog/catalog_view.hpp"
@@ -68,6 +70,7 @@
 #include "ui/installed/installed_view.hpp"
 #include "ui/main_frame.hpp"
 #include "ui/settings/about_view.hpp"
+#include "ui/settings/network_health.hpp"
 #include "ui/settings/bug_report_view.hpp"
 #include "ui/settings/help_view.hpp"
 #include "ui/settings/settings_view.hpp"
@@ -85,6 +88,7 @@ using pipensx::AppSettings;
 using pipensx::CatalogService;
 using pipensx::DownloadManager;
 using pipensx::GameMetadataService;
+using pipensx::GameUpdateService;
 using pipensx::InstalledTitle;
 using pipensx::InstalledTitleService;
 using pipensx::ModIndexService;
@@ -439,6 +443,12 @@ int main(int argc, char** argv) {
 
     InstalledTitleService installed("sdmc:/switch/pipensx");
     installed.refresh(error); // shim: succeeds with an empty library
+    GameUpdateService gameUpdates(&metadata,
+                                  "sdmc:/switch/pipensx/game-updates.json");
+    {
+        std::string loadError;
+        gameUpdates.load(loadError);
+    }
 
     DownloadManager manager("sdmc:/switch/pipensx");
 
@@ -756,7 +766,13 @@ int main(int argc, char** argv) {
             // checkOnEntry=false: the installed-populated screens pin a
             // planted fixture state, an auto-check would overwrite it.
             return new InstalledView(&installed, &manager, &metadata,
-                                     &settings, &catalog, false);
+                                     &settings, &catalog, &gameUpdates, false);
+        });
+        tabs->addNavTab(tr("pipensx/nav/updates"), NavIconType::Updates,
+                        [&] {
+            return new InstalledView(&installed, &manager, &metadata,
+                                     &settings, &catalog, &gameUpdates, false,
+                                     InstalledView::Mode::Updates);
         });
         tabs->addNavTab(tr("pipensx/nav/settings"), NavIconType::Settings,
                         [&] {
@@ -821,11 +837,19 @@ int main(int argc, char** argv) {
         tabs->attachStorageFooter(&manager);
         activity = new GoldenActivity(tabs, /*withExitAction=*/true);
     } else if (screen == "installed" || screen == "installed-populated" ||
+               screen == "updates" ||
                screen == "installed-bundles") {
-        if (screen == "installed-populated" || screen == "installed-bundles")
+        if (screen == "installed-populated" || screen == "updates" ||
+            screen == "installed-bundles") {
             seedInstalledFixture(installed);
+            std::string loadError;
+            gameUpdates.load(loadError);
+        }
         auto* view = new InstalledView(&installed, &manager, &metadata,
-                                       &settings, &catalog, false);
+                                       &settings, &catalog, &gameUpdates, false,
+                                       screen == "updates"
+                                           ? InstalledView::Mode::Updates
+                                           : InstalledView::Mode::Library);
         activity = new GoldenActivity(view);
         if (screen == "installed-bundles")
             installedBundles = view;
@@ -847,6 +871,17 @@ int main(int argc, char** argv) {
             &settings, &manager, &catalog, &metadata, &installed, nullptr,
             &mods));
         settingsDebrid = true;
+    } else if (screen == "network-health") {
+        pipensx::AppSettingsData values = settings.get();
+        values.torboxApiKey = "golden-fixture-key";
+        values.torrserverUrl = "192.168.1.5:8090";
+        values.proxyUrl = "";
+        values.lastCatalogRefreshWallSec =
+            static_cast<uint64_t>(time(nullptr)) - 3 * 3600;
+        if (!settings.update(values, error))
+            return fail("network-health could not plant provider settings");
+        activity = new NetworkHealthActivity(&manager, &settings,
+                                             "192.168.1.5");
     } else if (screen == "help") {
         activity = new GoldenActivity(
             new HelpView(&manager, &catalog, &metadata, &installed));

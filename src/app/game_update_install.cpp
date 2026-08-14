@@ -1,10 +1,11 @@
 #include "game_update_install.hpp"
+#include "installed_title_service.hpp"
 
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
-#include <vector>
+#include <unordered_set>
 
 namespace pipensx {
 namespace {
@@ -122,6 +123,40 @@ std::vector<size_t> smartUpdateMatches(const TorrentPreview& preview,
     return matches;
 }
 
+std::string normalizeNxBaseTitleId(const std::string& titleId) {
+    uint64_t parsed = 0;
+    if (!InstalledTitleService::parseTitleId(titleId, parsed))
+        return {};
+    return InstalledTitleService::formatTitleId(
+        InstalledTitleService::nxBaseApplicationId(parsed));
+}
+
+// Every 16-hex title id embedded in a file path, uppercased.
+std::vector<std::string> titleIdsInPath(const std::string& path) {
+    std::vector<std::string> ids;
+    for (size_t i = 0; i + 16 <= path.size(); ++i) {
+        std::string candidate = path.substr(i, 16);
+        uint64_t parsed = 0;
+        if (InstalledTitleService::parseTitleId(candidate, parsed)) {
+            ids.push_back(InstalledTitleService::formatTitleId(parsed));
+            i += 15;
+        }
+    }
+    return ids;
+}
+
+std::unordered_set<std::string> normalizedSet(
+    const std::vector<std::string>& values) {
+    std::unordered_set<std::string> out;
+    out.reserve(values.size());
+    for (const std::string& value : values) {
+        uint64_t parsed = 0;
+        if (InstalledTitleService::parseTitleId(value, parsed))
+            out.insert(InstalledTitleService::formatTitleId(parsed));
+    }
+    return out;
+}
+
 } // namespace
 
 std::vector<size_t> updateVersionMatches(const TorrentPreview& preview,
@@ -201,30 +236,63 @@ std::vector<uint8_t> selectSmartInstallFiles(
     bool titleInstalled,
     const std::string& installedVersion,
     const std::string& latestVersion,
-    const std::string& titleId) {
+    const std::string& titleId,
+    const std::vector<std::string>& installedDlcIds) {
     if (preview.files.empty())
         return {};
 
+    std::vector<uint8_t> actions(
+        preview.files.size(), static_cast<uint8_t>(FileAction::Skip));
+
+    // Base + exact update (the smart-install behaviour from #28).
     if (titleInstalled) {
         uint64_t installed = 0;
         uint64_t latest = 0;
-        if (!parseDecimal(installedVersion, installed) ||
-            !parseDecimal(latestVersion, latest) || latest <= installed)
-            return selectFiles(preview, {});
-        return selectFiles(preview, smartUpdateMatches(preview, latestVersion,
-                                                       titleId));
+        if (parseDecimal(installedVersion, installed) &&
+            parseDecimal(latestVersion, latest) && latest > installed) {
+            const std::vector<size_t> updates =
+                smartUpdateMatches(preview, latestVersion, titleId);
+            for (const size_t i : updates)
+                if (i < actions.size())
+                    actions[i] = static_cast<uint8_t>(FileAction::Install);
+        }
+    } else {
+        for (size_t i = 0; i < preview.files.size(); ++i)
+            if (isBasePackageFile(preview.files[i], titleId))
+                actions[i] = static_cast<uint8_t>(FileAction::Install);
+        const std::vector<size_t> updates =
+            smartUpdateMatches(preview, latestVersion, titleId);
+        for (const size_t i : updates)
+            if (i < actions.size())
+                actions[i] = static_cast<uint8_t>(FileAction::Install);
     }
 
-    std::vector<size_t> packages;
-    for (size_t i = 0; i < preview.files.size(); ++i) {
-        if (isBasePackageFile(preview.files[i], titleId))
-            packages.push_back(i);
+    // Smart DLC (#29): AddOnContent packages for the selected title that are
+    // not already installed. A DLC title id sets bit 12 (…1000) and carries its
+    // index in the low 12 bits, so it normalises onto the base title.
+    const std::string wantedBase = normalizeNxBaseTitleId(titleId);
+    if (!wantedBase.empty()) {
+        const std::unordered_set<std::string> installedDlc =
+            normalizedSet(installedDlcIds);
+        for (size_t i = 0; i < preview.files.size(); ++i) {
+            if (!preview.files[i].package ||
+                actions[i] == static_cast<uint8_t>(FileAction::Install))
+                continue;
+            for (const std::string& id : titleIdsInPath(preview.files[i].path)) {
+                if (normalizeNxBaseTitleId(id) != wantedBase)
+                    continue;
+                uint64_t parsed = 0;
+                InstalledTitleService::parseTitleId(id, parsed);
+                if ((parsed & 0x1FFFULL) >= 0x1000ULL &&
+                    installedDlc.count(id) == 0) {
+                    actions[i] = static_cast<uint8_t>(FileAction::Install);
+                    break;
+                }
+            }
+        }
     }
-    const std::vector<size_t> updates = smartUpdateMatches(preview,
-                                                           latestVersion,
-                                                           titleId);
-    packages.insert(packages.end(), updates.begin(), updates.end());
-    return selectFiles(preview, packages);
+
+    return actions;
 }
 
 std::string updateMagnetFor(const std::string& infoHash,

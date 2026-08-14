@@ -11,6 +11,7 @@
     "catalog": "Catalogue",
     "downloads": "Téléchargements",
     "installed": "Installés",
+    "updates": "Mises à jour",
     "settings": "Paramètres",
     "help": "Aide",
     "about": "À propos"
@@ -152,6 +153,8 @@
     "players_single": "1 joueur",
     "fact_size": "Taille",
     "fact_title_id": "Title ID",
+    "fact_dlc": "DLC",
+    "dlc_installed": "{} installés",
     "fact_mods": "Mods",
     "mods_available": "ModCD - disponible",
     "mods_count": "ModCD - {} mods",
@@ -184,7 +187,7 @@
     "already_in_downloads": "Déjà dans les téléchargements.",
     "status_fetching": "Récupération {}%",
     "install_contract": "Installer = NSP/NSZ uniquement · extras ignorés",
-    "smart_install_contract": "Installation intelligente : base/update · options pour contrôle manuel"
+    "smart_install_contract": "Installation intelligente : base/update/DLC · options pour contrôle manuel"
   },
   "torrent": {
     "title": "Choisir les fichiers du torrent",
@@ -270,6 +273,10 @@
     "speed_install": "Installation : {}",
     "peers_line": "Pairs : {}   DHT : {} bons / {} douteux",
     "pieces_line": "Pièces : {} / {}   Vérifiées : {}",
+    "health_line": "Santé du torrent : {0}",
+    "health_excellent": "Excellente",
+    "health_slow": "Lente",
+    "health_poor": "Mauvaise",
     "error_line": "Erreur : {}",
     "eta_seconds": "{}s",
     "eta_minutes": "{}m {}s",
@@ -391,6 +398,14 @@
     "update_choose_more": "Autres paquets ({0})...",
     "update_choose_file": "Choisir les fichiers de mise à jour",
     "update_nothing_selected": "Sélectionnez au moins un fichier."
+  },
+  "updates": {
+    "empty_title": "Aucune mise à jour trouvée",
+    "empty_body": "Appuyez sur L pour vérifier les jeux installés dans l'index du catalogue.",
+    "count": "{} mises à jour disponibles",
+    "update_all": "Tout mettre à jour",
+    "update_all_empty": "Aucune mise à jour à installer.",
+    "update_all_started": "Mise en file de {} mises à jour…"
   },
   "batch": {
     "frame_title": "Installation par lots",
@@ -527,6 +542,8 @@
     "reset_done": "Paramètres restaurés aux valeurs par défaut.",
     "log_path": "Journal : {}",
     "advanced": "Avancé",
+    "network_health": "Santé du réseau",
+    "network_health_detail": "État de la connectivité et des fournisseurs",
     "advanced_detail": "Diagnostics, stockage, réinitialisation",
     "report_bug": "Afficher les journaux récents en QR",
     "report_bug_detail": "Afficher les journaux récents en codes QR pour le développeur",
@@ -641,5 +658,30 @@
     "sending_magnet": "Envoi du magnet au serveur…",
     "magnet_rejected": "Le serveur a rejeté le magnet.",
     "queued": "Ajouté à la file. Les métadonnées peuvent encore arriver."
+  },
+  "diag": {
+    "title": "Santé du réseau",
+    "internet": "Internet",
+    "dht": "DHT",
+    "peers": "Pairs",
+    "torbox": "TorBox",
+    "torrserver": "TorrServer",
+    "realdebrid": "Real-Debrid",
+    "proxy": "Proxy",
+    "catalog": "Catalogue",
+    "connected": "Connecté",
+    "offline": "Hors ligne",
+    "linked": "Lié",
+    "not_linked": "Non lié",
+    "not_configured": "Non configuré",
+    "enabled": "Activé",
+    "disabled": "Désactivé",
+    "dht_nodes": "{0} bons / {1} douteux nœuds",
+    "dht_off": "Désactivé",
+    "dht_bootstrapping": "Amorçage",
+    "peers_n": "{0} pairs",
+    "updated_h": "Mis à jour il y a {0}h",
+    "updated_m": "Mis à jour il y a {0}min",
+    "never": "Jamais"
   }
 }
