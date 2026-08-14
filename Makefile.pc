@@ -322,6 +322,10 @@ $(BUILD_DIR)/tests/test_update_file_select: tests/test_update_file_select.cpp \
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
 
+$(BUILD_DIR)/tests/test_torrent_health: tests/test_torrent_health.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
+
 $(BUILD_DIR)/tests/test_update_transaction: tests/test_update_transaction.c \
 		src/app/update_transaction.c src/core/sha256.c
 	@mkdir -p $(dir $@)

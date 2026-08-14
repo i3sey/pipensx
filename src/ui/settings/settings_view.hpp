@@ -25,6 +25,7 @@
 #include "ui/debrid_ui.hpp"
 #include "ui/i18n.hpp"
 #include "ui/settings/advanced_settings.hpp"
+#include "ui/settings/network_health.hpp"
 #include "ui/settings/settings_cells.hpp"
 #include "ui/theme.hpp"
 
@@ -284,6 +285,10 @@ public:
             tr("pipensx/settings/advanced_detail"),
             [this] { openAdvanced(); }));
 
+        content->addView(actionCell(tr("pipensx/settings/network_health"),
+            tr("pipensx/settings/network_health_detail"),
+            [this] { openNetworkHealth(); }));
+
         auto* scroll = new brls::ScrollingFrame();
         scroll->setGrow(1);
         scroll->setContentView(content);
@@ -364,6 +369,11 @@ private:
                 if (alive->load())
                     applyValues();
             }));
+    }
+
+    void openNetworkHealth() {
+        brls::Application::pushActivity(
+            new NetworkHealthActivity(manager_, settings_));
     }
 
     bool persist(const AppSettingsData& values, const char* tag) {

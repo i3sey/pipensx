@@ -62,3 +62,6 @@ int dht_cache_write(const char *path, const uint8_t node_id[20],
 
 /* Stats for the shared engine's routing table. */
 void dht_shared_nodes(int *good, int *dubious);
+
+/* 1 while at least one session is attached and the engine thread is up. */
+int dht_shared_running(void);

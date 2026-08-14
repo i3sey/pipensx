@@ -468,11 +468,22 @@ int dht_session_poll(dht_session_t *s, uint8_t (*out)[6], int max) {
     return n;
 }
 
+int dht_shared_running(void) {
+    pthread_mutex_lock(&g_dht.lifecycle_mu);
+    int n = g_dht.refcount;
+    pthread_mutex_unlock(&g_dht.lifecycle_mu);
+    return n > 0;
+}
+
 void dht_shared_nodes(int *good, int *dubious) {
     int g = 0, d = 0, c = 0, in = 0;
-    pthread_mutex_lock(&g_dht.jech_mu);
-    dht_nodes(AF_INET, &g, &d, &c, &in);
-    pthread_mutex_unlock(&g_dht.jech_mu);
+    pthread_mutex_lock(&g_dht.lifecycle_mu);
+    if (g_dht.refcount > 0) {
+        pthread_mutex_lock(&g_dht.jech_mu);
+        dht_nodes(AF_INET, &g, &d, &c, &in);
+        pthread_mutex_unlock(&g_dht.jech_mu);
+    }
+    pthread_mutex_unlock(&g_dht.lifecycle_mu);
     *good = g;
     *dubious = d;
 }

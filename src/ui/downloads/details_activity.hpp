@@ -67,6 +67,7 @@ public:
         auto* networkCard = addCard(left, tr("pipensx/downloads/card_network"));
         peers_ = addLine(networkCard, theme::kFontBody);
         pieces_ = addLine(networkCard, theme::kFontBody);
+        health_ = addLine(networkCard, theme::kFontBody);
 
         auto* filesCard = addCard(left, tr("pipensx/files/card"));
         filesSummary_ = addLine(filesCard, theme::kFontSmall);
@@ -220,6 +221,33 @@ private:
         button->setText(text);
         column->addView(button);
         return button;
+    }
+
+    static std::string healthText(TorrentHealth health) {
+        switch (health) {
+        case TorrentHealth::Excellent:
+            return tr("pipensx/downloads/health_line",
+                      tr("pipensx/downloads/health_excellent"));
+        case TorrentHealth::Slow:
+            return tr("pipensx/downloads/health_line",
+                      tr("pipensx/downloads/health_slow"));
+        case TorrentHealth::Poor:
+            return tr("pipensx/downloads/health_line",
+                      tr("pipensx/downloads/health_poor"));
+        case TorrentHealth::NotActive:
+            return {};
+        }
+        return {};
+    }
+
+    static NVGcolor healthColor(TorrentHealth health) {
+        switch (health) {
+        case TorrentHealth::Excellent: return theme::success();
+        case TorrentHealth::Slow: return theme::warning();
+        case TorrentHealth::Poor: return theme::error();
+        case TorrentHealth::NotActive: return theme::textSecondary();
+        }
+        return theme::textSecondary();
     }
 
     const DownloadTask* currentTask() {
@@ -506,6 +534,9 @@ private:
         setTextIfChanged(pieces_,
                          tr("pipensx/downloads/pieces_line", task->piecesDone,
                             task->piecesTotal, task->piecesVerified));
+        const TorrentHealth health = torrentHealth(*task, now);
+        setTextIfChanged(health_, healthText(health));
+        health_->setTextColor(healthColor(health));
         setTextIfChanged(error_,
                          task->error.empty()
                              ? std::string()
@@ -634,6 +665,7 @@ private:
     SpeedGraphView* speedGraph_;
     brls::Label* peers_;
     brls::Label* pieces_;
+    brls::Label* health_;
     brls::Label* filesSummary_;
     brls::Label* deployPhase_;
     brls::Label* deployStatus_;
