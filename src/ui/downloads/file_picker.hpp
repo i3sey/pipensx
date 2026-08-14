@@ -58,6 +58,7 @@ public:
         brls::RecyclerCell::onFocusGained();
         label_->setAnimated(true);
     }
+
     void onFocusLost() override {
         brls::RecyclerCell::onFocusLost();
         label_->setAnimated(false);

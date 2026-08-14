@@ -44,9 +44,11 @@ public:
         body->setJustifyContent(brls::JustifyContent::CENTER);
         title_ = new brls::Label();
         title_->setSingleLine(true);
+        title_->setAutoAnimate(false);
         title_->setFontSize(18);
         meta_ = new brls::Label();
         meta_->setSingleLine(true);
+        meta_->setAutoAnimate(false);
         meta_->setFontSize(14);
         meta_->setMarginTop(4);
         meta_->setTextColor(theme::textTertiary());
@@ -77,6 +79,16 @@ public:
         title_->setTextColor(theme::textPrimary());
         title_->setText(failure.entry.title);
         meta_->setText(failure.error);
+    }
+
+    void onFocusGained() override {
+        brls::RecyclerCell::onFocusGained();
+        title_->setAnimated(true);
+    }
+
+    void onFocusLost() override {
+        brls::RecyclerCell::onFocusLost();
+        title_->setAnimated(false);
     }
 
 private:

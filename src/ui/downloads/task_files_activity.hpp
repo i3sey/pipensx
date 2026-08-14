@@ -319,10 +319,12 @@ public:
         setAxis(brls::Axis::COLUMN);
         destination_ = new brls::Label();
         destination_->setSingleLine(true);
+        destination_->setAutoAnimate(false);
         destination_->setFontSize(18);
         addView(destination_);
         state_ = new brls::Label();
         state_->setSingleLine(true);
+        state_->setAutoAnimate(false);
         state_->setFontSize(13);
         state_->setMarginTop(3);
         addView(state_);
@@ -339,6 +341,16 @@ public:
         state_->setTextColor(entry.state ==
                                      SwitchDeployEntryState::ExistingConflict
                                  ? theme::error() : theme::textTertiary());
+    }
+
+    void onFocusGained() override {
+        brls::Box::onFocusGained();
+        destination_->setAnimated(true);
+    }
+
+    void onFocusLost() override {
+        brls::Box::onFocusLost();
+        destination_->setAnimated(false);
     }
 
 private:
