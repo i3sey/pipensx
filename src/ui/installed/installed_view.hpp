@@ -48,9 +48,11 @@ public:
         labels->setGrow(1);
         title_ = new brls::Label();
         title_->setSingleLine(true);
+        title_->setAutoAnimate(false);
         title_->setFontSize(21);
         subtitle_ = new brls::Label();
         subtitle_->setSingleLine(true);
+        subtitle_->setAutoAnimate(false);
         subtitle_->setFontSize(15);
         subtitle_->setMarginTop(6);
         subtitle_->setTextColor(theme::textTertiary());
@@ -61,6 +63,7 @@ public:
         // Update-state chip (Q10 colours): right-aligned coloured label.
         chip_ = new brls::Label();
         chip_->setSingleLine(true);
+        chip_->setAutoAnimate(false);
         chip_->setFontSize(13);
         chip_->setMarginLeft(12);
         chip_->setShrink(0.0f);
@@ -143,6 +146,16 @@ public:
             chip_->setTextColor(theme::textTertiary());
             break;
         }
+    }
+
+    void onFocusGained() override {
+        brls::RecyclerCell::onFocusGained();
+        title_->setAnimated(true);
+    }
+
+    void onFocusLost() override {
+        brls::RecyclerCell::onFocusLost();
+        title_->setAnimated(false);
     }
 
 private:

@@ -84,12 +84,14 @@ public:
 
         directory_ = new brls::Label();
         directory_->setSingleLine(true);
+        directory_->setAutoAnimate(false);
         directory_->setFontSize(18);
         directory_->setTextColor(theme::textTertiary());
         pathRow->addView(directory_);
 
         name_ = new brls::Label();
         name_->setSingleLine(true);
+        name_->setAutoAnimate(false);
         name_->setFontSize(18);
         name_->setGrow(1);
         pathRow->addView(name_);
@@ -97,6 +99,7 @@ public:
 
         meta_ = new brls::Label();
         meta_->setSingleLine(true);
+        meta_->setAutoAnimate(false);
         meta_->setFontSize(14);
         meta_->setMarginTop(4);
         meta_->setTextColor(theme::textTertiary());
@@ -107,6 +110,7 @@ public:
         // an auto-width label would also spill under the scroll bar.
         size_ = new brls::Label();
         size_->setSingleLine(true);
+        size_->setAutoAnimate(false);
         size_->setFontSize(17);
         size_->setWidth(110);
         size_->setMarginLeft(16);
@@ -159,6 +163,16 @@ public:
         name_->setTextColor(theme::textDisabled());
         meta_->setText("");
         size_->setText("");
+    }
+
+    void onFocusGained() override {
+        brls::RecyclerCell::onFocusGained();
+        name_->setAnimated(true);
+    }
+
+    void onFocusLost() override {
+        brls::RecyclerCell::onFocusLost();
+        name_->setAnimated(false);
     }
 
 private:
