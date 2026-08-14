@@ -32,7 +32,7 @@
 namespace pipensx::ui {
 
 enum class NavIconType {
-    Catalog, Downloads, Installed, Settings, Help, About
+    Catalog, Downloads, Installed, Updates, Settings, Help, About
 };
 
 // Shrinks the stock sidebar so the icon rail + expanded menu both look right.
@@ -90,6 +90,7 @@ public:
             case NavIconType::Catalog:   drawCatalog(vg, gx, gy, s); break;
             case NavIconType::Downloads: drawDownloads(vg, gx, gy, s); break;
             case NavIconType::Installed: drawInstalled(vg, gx, gy, s); break;
+            case NavIconType::Updates:   drawUpdates(vg, gx, gy, s); break;
             case NavIconType::Settings:    drawSettings(vg, gx, gy, s); break;
             case NavIconType::Help:        drawPulse(vg, gx, gy, s); break;
             case NavIconType::About:       drawAbout(vg, gx, gy, s); break;
@@ -139,6 +140,21 @@ private:
         nvgMoveTo(vg, gx + 6.0f, gy + 12.0f);
         nvgLineTo(vg, gx + 10.0f, gy + 16.0f);
         nvgLineTo(vg, gx + 17.0f, gy + 8.0f);
+        nvgStroke(vg);
+    }
+
+    // Circular update arrow.
+    static void drawUpdates(NVGcontext* vg, float gx, float gy, float s) {
+        const float cx = gx + s / 2.0f;
+        const float cy = gy + s / 2.0f;
+        const float r = s / 2.0f - 3.0f;
+        nvgBeginPath(vg);
+        nvgArc(vg, cx, cy, r, -0.35f, 4.7f, NVG_CW);
+        nvgStroke(vg);
+        nvgBeginPath(vg);
+        nvgMoveTo(vg, cx + r - 1.0f, cy - 4.0f);
+        nvgLineTo(vg, cx + r + 3.0f, cy - 10.0f);
+        nvgLineTo(vg, cx + r + 5.0f, cy - 2.0f);
         nvgStroke(vg);
     }
 

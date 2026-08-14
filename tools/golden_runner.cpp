@@ -9,7 +9,8 @@
 //                 [--locale en-US|ru]
 //                 --screen catalog|shelf-scroll|shelf-header|detail|torrent-selection|
 //                          torrent-selection-scroll|downloads|downloads-back|frame|
-//                          hints-budget|installed|installed-populated|installed-bundles|
+//                          hints-budget|installed|installed-populated|updates|
+//                          installed-bundles|
 //                          update-chooser|
 //                          update-chooser-toggle|settings|settings-debrid|help|
 //                          network-health|first-run|first-run-focus|first-run-disclaimer|debrid-link|
@@ -54,6 +55,7 @@
 #include "app/catalog_service.hpp"
 #include "app/download_manager.hpp"
 #include "app/game_metadata_service.hpp"
+#include "app/game_update_service.hpp"
 #include "app/install_space.hpp"
 #include "app/installed_title_service.hpp"
 #include "ui/catalog/catalog_view.hpp"
@@ -86,6 +88,7 @@ using pipensx::AppSettings;
 using pipensx::CatalogService;
 using pipensx::DownloadManager;
 using pipensx::GameMetadataService;
+using pipensx::GameUpdateService;
 using pipensx::InstalledTitle;
 using pipensx::InstalledTitleService;
 using pipensx::ModIndexService;
@@ -440,6 +443,12 @@ int main(int argc, char** argv) {
 
     InstalledTitleService installed("sdmc:/switch/pipensx");
     installed.refresh(error); // shim: succeeds with an empty library
+    GameUpdateService gameUpdates(&metadata,
+                                  "sdmc:/switch/pipensx/game-updates.json");
+    {
+        std::string loadError;
+        gameUpdates.load(loadError);
+    }
 
     DownloadManager manager("sdmc:/switch/pipensx");
 
@@ -757,7 +766,13 @@ int main(int argc, char** argv) {
             // checkOnEntry=false: the installed-populated screens pin a
             // planted fixture state, an auto-check would overwrite it.
             return new InstalledView(&installed, &manager, &metadata,
-                                     &settings, &catalog, false);
+                                     &settings, &catalog, &gameUpdates, false);
+        });
+        tabs->addNavTab(tr("pipensx/nav/updates"), NavIconType::Updates,
+                        [&] {
+            return new InstalledView(&installed, &manager, &metadata,
+                                     &settings, &catalog, &gameUpdates, false,
+                                     InstalledView::Mode::Updates);
         });
         tabs->addNavTab(tr("pipensx/nav/settings"), NavIconType::Settings,
                         [&] {
@@ -822,11 +837,19 @@ int main(int argc, char** argv) {
         tabs->attachStorageFooter(&manager);
         activity = new GoldenActivity(tabs, /*withExitAction=*/true);
     } else if (screen == "installed" || screen == "installed-populated" ||
+               screen == "updates" ||
                screen == "installed-bundles") {
-        if (screen == "installed-populated" || screen == "installed-bundles")
+        if (screen == "installed-populated" || screen == "updates" ||
+            screen == "installed-bundles") {
             seedInstalledFixture(installed);
+            std::string loadError;
+            gameUpdates.load(loadError);
+        }
         auto* view = new InstalledView(&installed, &manager, &metadata,
-                                       &settings, &catalog, false);
+                                       &settings, &catalog, &gameUpdates, false,
+                                       screen == "updates"
+                                           ? InstalledView::Mode::Updates
+                                           : InstalledView::Mode::Library);
         activity = new GoldenActivity(view);
         if (screen == "installed-bundles")
             installedBundles = view;
