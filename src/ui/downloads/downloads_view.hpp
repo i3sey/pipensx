@@ -204,13 +204,21 @@ public:
                 if (pos > 0)
                     add(tr("pipensx/downloads/move_up"), [this, taskId] {
                         std::string error;
-                        manager_->moveTask(taskId, true, error);
+                        if (!manager_->moveTask(taskId, true, error) &&
+                            !error.empty()) {
+                            brls::Application::notify(tr(
+                                "pipensx/downloads/move_to_top_failed", error));
+                        }
                         startRefreshing(true);
                     });
                 if (pos + 1 < queuedIds.size())
                     add(tr("pipensx/downloads/move_down"), [this, taskId] {
                         std::string error;
-                        manager_->moveTask(taskId, false, error);
+                        if (!manager_->moveTask(taskId, false, error) &&
+                            !error.empty()) {
+                            brls::Application::notify(tr(
+                                "pipensx/downloads/move_to_top_failed", error));
+                        }
                         startRefreshing(true);
                     });
                 if (pos != 0)
@@ -306,7 +314,6 @@ private:
                status == DownloadStatus::Fetching ||
                status == DownloadStatus::Downloading ||
                status == DownloadStatus::Installing ||
-               status == DownloadStatus::Committing ||
                status == DownloadStatus::Verifying;
     }
 
@@ -318,17 +325,12 @@ private:
     }
 
     void pauseAll() {
-        for (const DownloadTask& task : manager_->snapshot())
-            if (isPausable(task.status))
-                manager_->pause(task.id);
+        manager_->pauseAll();
         startRefreshing(true);
     }
 
     void resumeAll() {
-        for (const DownloadTask& task : manager_->snapshot())
-            if (task.status == DownloadStatus::Paused ||
-                task.status == DownloadStatus::Error)
-                manager_->resume(task.id);
+        manager_->resumeAll();
         startRefreshing(true);
     }
 
@@ -342,22 +344,32 @@ private:
     }
 
     void clearCompleted() {
-        std::vector<std::string> ids;
+        bool any = false;
         for (const DownloadTask& task : manager_->snapshot())
             if (task.status == DownloadStatus::Completed ||
-                task.status == DownloadStatus::Installed)
-                ids.push_back(task.id);
-        if (ids.empty()) {
+                task.status == DownloadStatus::Installed) {
+                any = true;
+                break;
+            }
+        if (!any) {
             brls::Application::notify(
                 tr("pipensx/downloads/clear_completed_none"));
             return;
         }
-        for (const std::string& id : ids) {
+        auto* dialog =
+            new brls::Dialog(tr("pipensx/downloads/clear_completed_question"));
+        auto run = [this](bool deleteData) {
             std::string error;
-            if (!manager_->remove(id, true, error))
+            if (!manager_->clearCompleted(deleteData, error) && !error.empty())
                 brls::Application::notify(error);
-        }
-        startRefreshing(true);
+            startRefreshing(true);
+        };
+        dialog->addButton(tr("pipensx/downloads/remove_keep"),
+                          [run] { run(false); });
+        dialog->addButton(tr("pipensx/downloads/remove_delete"),
+                          [run] { run(true); });
+        dialog->addButton(tr("pipensx/common/cancel"), [] {});
+        dialog->open();
     }
 
     std::string summaryText(const std::vector<DownloadTask>& tasks) const {

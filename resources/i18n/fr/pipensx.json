@@ -232,6 +232,7 @@
     "resume_all": "Tout reprendre",
     "clear_completed": "Effacer les terminés",
     "clear_completed_none": "Aucun téléchargement terminé.",
+    "clear_completed_question": "Retirer les téléchargements terminés de pipensx ?",
     "summary_counts": "{0} en téléchargement · {1} en file · {2} en installation",
     "summary_paused": "{0} en pause",
     "summary_errors": "{0} erreurs",

@@ -233,6 +233,7 @@
     "resume_all": "Resume all",
     "clear_completed": "Clear completed",
     "clear_completed_none": "No completed downloads.",
+    "clear_completed_question": "Remove completed downloads from pipensx?",
     "summary_counts": "{0} downloading · {1} queued · {2} installing",
     "summary_paused": "{0} paused",
     "summary_errors": "{0} errors",

@@ -225,6 +225,14 @@ public:
     bool verify(const std::string& taskId);
     bool remove(const std::string& taskId, bool deleteData,
                 std::string& error);
+    // Pause every task pause() would accept except Committing (a NAND commit
+    // in flight is left alone). One lock, one state write.
+    void pauseAll();
+    // Requeue every Paused and Error task. One lock, one state write.
+    void resumeAll();
+    // Drop Completed/Installed tasks. deleteData matches per-row remove.
+    // One lock and one state write; debrid account cleanup runs after unlock.
+    bool clearCompleted(bool deleteData, std::string& error);
 
     // Make a queued task the next one to start. The scheduler always claims
     // the first claimable Queued entry in list order, so "next up" is a
@@ -316,7 +324,7 @@ private:
     void endExternalDeploy(const std::string& taskId);
     bool externallyLeasedLocked(const std::string& taskId) const;
     bool removeLocked(const std::string& id, bool deleteData,
-                      std::string& error);
+                      std::string& error, bool persist = true);
     // Fires a detached thread, so it must not touch *this: the manager can be
     // torn down while a provider call is still in flight.
     static void removeFromDebridAsync(DebridProviderKind provider,

@@ -830,6 +830,50 @@ bool DownloadManager::resume(const std::string& taskId) {
     return true;
 }
 
+void DownloadManager::pauseAll() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    bool changed = false;
+    for (DownloadTask& task : tasks_) {
+        if (externallyLeasedLocked(task.id))
+            continue;
+        if (task.status != DownloadStatus::Queued &&
+            task.status != DownloadStatus::Checking &&
+            task.status != DownloadStatus::Fetching &&
+            task.status != DownloadStatus::Downloading &&
+            task.status != DownloadStatus::Installing &&
+            task.status != DownloadStatus::Verifying)
+            continue;
+        task.status = DownloadStatus::Paused;
+        task.speedBytesPerSecond = 0;
+        changed = true;
+    }
+    if (changed) {
+        std::string ignored;
+        saveLocked(ignored);
+    }
+    condition_.notify_all();
+}
+
+void DownloadManager::resumeAll() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    bool changed = false;
+    for (DownloadTask& task : tasks_) {
+        if (externallyLeasedLocked(task.id))
+            continue;
+        if (task.status != DownloadStatus::Paused &&
+            task.status != DownloadStatus::Error)
+            continue;
+        task.status = DownloadStatus::Queued;
+        task.error.clear();
+        changed = true;
+    }
+    if (changed) {
+        std::string ignored;
+        saveLocked(ignored);
+    }
+    condition_.notify_all();
+}
+
 bool DownloadManager::retry(const std::string& taskId) {
     return resume(taskId);
 }
@@ -959,6 +1003,43 @@ bool DownloadManager::remove(const std::string& taskId, bool deleteData,
     if (!removeLocked(taskId, deleteData, error))
         return false;
     removeFromDebridAsync(provider, apiKey, debridId);
+    return true;
+}
+
+bool DownloadManager::clearCompleted(bool deleteData, std::string& error) {
+    struct Cleanup {
+        DebridProviderKind provider;
+        std::string apiKey;
+        std::string debridId;
+    };
+    std::vector<Cleanup> cleanups;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<std::string> ids;
+        for (const DownloadTask& task : tasks_) {
+            if (externallyLeasedLocked(task.id))
+                continue;
+            if (task.status == DownloadStatus::Completed ||
+                task.status == DownloadStatus::Installed)
+                ids.push_back(task.id);
+        }
+        if (ids.empty())
+            return true;
+        for (const std::string& id : ids) {
+            DownloadTask* task = findLocked(id);
+            if (!task)
+                continue;
+            Cleanup cleanup{task->debridProvider, apiKeyFor(task->debridProvider),
+                            task->debridId};
+            if (!removeLocked(id, deleteData, error, false))
+                return false;
+            cleanups.push_back(std::move(cleanup));
+        }
+        if (!saveLocked(error))
+            return false;
+    }
+    for (const Cleanup& cleanup : cleanups)
+        removeFromDebridAsync(cleanup.provider, cleanup.apiKey, cleanup.debridId);
     return true;
 }
 
@@ -1294,7 +1375,7 @@ void DownloadManager::endExternalDeploy(const std::string& taskId) {
 }
 
 bool DownloadManager::removeLocked(const std::string& id, bool deleteData,
-                                   std::string& error) {
+                                   std::string& error, bool persist) {
     for (auto it = tasks_.begin(); it != tasks_.end(); ++it) {
         if (it->id != id)
             continue;
@@ -1321,7 +1402,7 @@ bool DownloadManager::removeLocked(const std::string& id, bool deleteData,
         install::removeInstallJournal(installJournalPath(rootPath_, it->id));
         removeTaskFileManifest(rootPath_, it->id);
         tasks_.erase(it);
-        return saveLocked(error);
+        return persist ? saveLocked(error) : true;
     }
     error = "Download task not found.";
     return false;
@@ -1339,6 +1420,8 @@ QueueSummary summarizeQueue(const std::vector<DownloadTask>& tasks,
     QueueSummary summary;
     for (const DownloadTask& task : tasks) {
         switch (task.status) {
+        case DownloadStatus::Checking:
+        case DownloadStatus::Fetching:
         case DownloadStatus::Downloading:
             ++summary.downloading;
             break;
@@ -1361,7 +1444,7 @@ QueueSummary summarizeQueue(const std::vector<DownloadTask>& tasks,
             ++summary.errors;
             break;
         default:
-            break; // Checking/Fetching/Removing are transient "active" states
+            break; // Removing is transient
         }
         const bool outstanding =
             task.status == DownloadStatus::Queued ||
@@ -1390,7 +1473,9 @@ QueueSummary summarizeQueue(const std::vector<DownloadTask>& tasks,
     const uint64_t throughput =
         summary.downloadSpeedBps + summary.installSpeedBps;
     if (throughput > 0 && summary.totalRemainingBytes > 0)
-        summary.etaSeconds = summary.totalRemainingBytes / throughput;
+        summary.etaSeconds =
+            summary.totalRemainingBytes / throughput +
+            (summary.totalRemainingBytes % throughput != 0);
     return summary;
 }
 

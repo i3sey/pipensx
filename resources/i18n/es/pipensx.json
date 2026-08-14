@@ -232,6 +232,7 @@
     "resume_all": "Reanudar todo",
     "clear_completed": "Borrar completados",
     "clear_completed_none": "No hay descargas completadas.",
+    "clear_completed_question": "¿Quitar las descargas completadas de pipensx?",
     "summary_counts": "{0} descargando · {1} en cola · {2} instalando",
     "summary_paused": "{0} en pausa",
     "summary_errors": "{0} errores",

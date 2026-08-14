@@ -2,6 +2,7 @@
 
 #include <cassert>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <string>
 #include <sys/stat.h>
@@ -19,6 +20,10 @@ std::string tempRoot() {
            std::to_string(static_cast<long long>(getpid()));
 }
 
+void removeAll(const std::string& path) {
+    system(("rm -rf " + path).c_str());
+}
+
 std::string makeTorrent(const std::string& directory, const std::string& name,
                         const std::string& payload) {
     uint8_t digest[20];
@@ -33,6 +38,7 @@ std::string makeTorrent(const std::string& directory, const std::string& name,
     torrent += "e6:pieces20:";
     torrent.append(reinterpret_cast<const char*>(digest), 20);
     torrent += "ee";
+    mkdir(directory.c_str(), 0755);
     std::string path = directory + "/" + name + ".torrent";
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     out.write(torrent.data(), static_cast<std::streamsize>(torrent.size()));
@@ -53,6 +59,8 @@ void testSummarizeQueueCounts() {
     std::vector<DownloadTask> tasks;
     tasks.push_back(task(DownloadStatus::Downloading));
     tasks.push_back(task(DownloadStatus::Downloading));
+    tasks.push_back(task(DownloadStatus::Checking));
+    tasks.push_back(task(DownloadStatus::Fetching));
     tasks.push_back(task(DownloadStatus::Installing));
     tasks.push_back(task(DownloadStatus::Queued));
     tasks.push_back(task(DownloadStatus::Queued));
@@ -62,7 +70,7 @@ void testSummarizeQueueCounts() {
     tasks.push_back(task(DownloadStatus::Completed));
     tasks.push_back(task(DownloadStatus::Error));
     const pipensx::QueueSummary s = pipensx::summarizeQueue(tasks, 0);
-    assert(s.downloading == 2);
+    assert(s.downloading == 4); // Downloading + Checking + Fetching
     assert(s.installing == 1);
     assert(s.queued == 4);
     assert(s.paused == 1);
@@ -89,7 +97,8 @@ void testSummarizeQueueSpeedAndEta() {
     assert(s.downloadSpeedBps == 300);
     assert(s.installSpeedBps == 0);
     assert(s.totalRemainingBytes == 600 + 400 + 300);
-    assert(s.etaSeconds == 1300 / 300); // 4 (integer division)
+    // 1300 / 300 = 4 remainder 100 → ceil to 5, matching taskEtaSeconds.
+    assert(s.etaSeconds == 5);
 }
 
 void testSummarizeQueueNoThroughputNoEta() {
@@ -101,14 +110,12 @@ void testSummarizeQueueNoThroughputNoEta() {
 }
 
 void testMoveTask() {
-    const std::string root = tempRoot();
+    const std::string root = tempRoot() + "-move";
+    removeAll(root);
     mkdir(root.c_str(), 0755);
-    const std::string source =
-        makeTorrent(root, "a.bin", "aaaa");
-    const std::string source2 =
-        makeTorrent(root, "b.bin", "bbbb");
-    const std::string source3 =
-        makeTorrent(root, "c.bin", "cccc");
+    const std::string source = makeTorrent(root, "a.bin", "aaaa");
+    const std::string source2 = makeTorrent(root, "b.bin", "bbbb");
+    const std::string source3 = makeTorrent(root, "c.bin", "cccc");
     std::string queueRoot = root + "/queue";
     {
         pipensx::DownloadManager manager(queueRoot, false);
@@ -144,21 +151,115 @@ void testMoveTask() {
         assert(!manager.moveTask("nope", true, error));
         assert(!error.empty());
 
-        // Pausing removes the task from the queue; it can no longer move.
-        assert(manager.pause(third));
+        // Pause the middle queued neighbour; move up skips it.
+        assert(manager.pause(first));
+        // order: third (queued), first (paused), second (queued)
+        assert(manager.moveTask(second, true, error));
+        tasks = manager.snapshot();
+        assert(tasks[0].id == second && tasks[1].id == first &&
+               tasks[2].id == third);
+
         error.clear();
-        assert(!manager.moveTask(third, true, error));
+        assert(!manager.moveTask(first, true, error));
         assert(!error.empty());
     }
-    unlink(source.c_str());
-    unlink(source2.c_str());
-    unlink(source3.c_str());
-    // Clean the queue app directory tree.
-    unlink((queueRoot + "/queue.bencode").c_str());
-    rmdir((queueRoot + "/torrents").c_str());
-    rmdir((queueRoot + "/downloads").c_str());
-    rmdir(queueRoot.c_str());
-    rmdir(root.c_str());
+    removeAll(root);
+}
+
+void testPauseResumeAll() {
+    const std::string root = tempRoot() + "-pause";
+    removeAll(root);
+    mkdir(root.c_str(), 0755);
+    const std::string source = makeTorrent(root, "a.bin", "aaaa");
+    const std::string source2 = makeTorrent(root, "b.bin", "bbbb");
+    std::string queueRoot = root + "/queue";
+    {
+        pipensx::DownloadManager manager(queueRoot, false);
+        std::string error;
+        std::string first, second;
+        assert(manager.importTorrent(source, pipensx::TransferMode::DownloadOnly,
+                                     first, error));
+        assert(manager.importTorrent(source2, pipensx::TransferMode::DownloadOnly,
+                                     second, error));
+        manager.pauseAll();
+        auto tasks = manager.snapshot();
+        assert(tasks.size() == 2);
+        assert(tasks[0].status == DownloadStatus::Paused);
+        assert(tasks[1].status == DownloadStatus::Paused);
+        manager.resumeAll();
+        tasks = manager.snapshot();
+        assert(tasks[0].status == DownloadStatus::Queued);
+        assert(tasks[1].status == DownloadStatus::Queued);
+    }
+    removeAll(root);
+}
+
+void markFirstQueuedCompleted(const std::string& queueRoot) {
+    const std::string path = queueRoot + "/queue.bencode";
+    std::ifstream in(path, std::ios::binary);
+    std::string data((std::istreambuf_iterator<char>(in)),
+                     std::istreambuf_iterator<char>());
+    const std::string from = "6:status6:queued";
+    const std::string to = "6:status9:completed";
+    const auto pos = data.find(from);
+    assert(pos != std::string::npos);
+    data.replace(pos, from.size(), to);
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out.write(data.data(), static_cast<std::streamsize>(data.size()));
+}
+
+void testClearCompleted() {
+    const std::string root = tempRoot() + "-clear";
+    removeAll(root);
+    mkdir(root.c_str(), 0755);
+    const std::string source = makeTorrent(root, "a.bin", "aaaa");
+    const std::string source2 = makeTorrent(root, "b.bin", "bbbb");
+    std::string queueRoot = root + "/queue";
+    std::string keepPath;
+    {
+        pipensx::DownloadManager manager(queueRoot, false);
+        std::string error;
+        std::string first, second;
+        assert(manager.importTorrent(source, pipensx::TransferMode::DownloadOnly,
+                                     first, error));
+        assert(manager.importTorrent(source2, pipensx::TransferMode::DownloadOnly,
+                                     second, error));
+        keepPath = manager.snapshot()[0].dataPath;
+        std::ofstream marker(keepPath + "/kept.bin",
+                             std::ios::binary | std::ios::trunc);
+        marker << "keep-me";
+        assert(manager.save(error));
+    }
+    markFirstQueuedCompleted(queueRoot);
+    {
+        pipensx::DownloadManager manager(queueRoot, false);
+        auto tasks = manager.snapshot();
+        assert(tasks.size() == 2);
+        assert(tasks[0].status == DownloadStatus::Completed);
+        assert(tasks[1].status == DownloadStatus::Queued);
+        std::string error;
+        assert(manager.clearCompleted(false, error));
+        tasks = manager.snapshot();
+        assert(tasks.size() == 1);
+        assert(tasks[0].status == DownloadStatus::Queued);
+        assert(access((keepPath + "/kept.bin").c_str(), F_OK) == 0);
+        const std::string remainingPath = tasks[0].dataPath;
+        std::ofstream leftover(remainingPath + "/gone.bin",
+                               std::ios::binary | std::ios::trunc);
+        leftover << "delete-me";
+        assert(manager.save(error));
+    }
+    markFirstQueuedCompleted(queueRoot);
+    {
+        pipensx::DownloadManager manager(queueRoot, false);
+        std::string error;
+        const std::string remainingPath = manager.snapshot()[0].dataPath;
+        assert(manager.clearCompleted(true, error));
+        assert(manager.snapshot().empty());
+        assert(access((keepPath + "/kept.bin").c_str(), F_OK) == 0);
+        assert(access((remainingPath + "/gone.bin").c_str(), F_OK) != 0);
+    }
+    removeAll(root);
 }
 
 } // namespace
@@ -168,6 +269,8 @@ int main() {
     testSummarizeQueueSpeedAndEta();
     testSummarizeQueueNoThroughputNoEta();
     testMoveTask();
+    testPauseResumeAll();
+    testClearCompleted();
     std::puts("queue controls tests passed");
     return 0;
 }

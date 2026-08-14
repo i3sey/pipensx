@@ -232,6 +232,7 @@
     "resume_all": "Продолжить все",
     "clear_completed": "Удалить завершённые",
     "clear_completed_none": "Нет завершённых загрузок.",
+    "clear_completed_question": "Удалить завершённые загрузки из pipensx?",
     "summary_counts": "{0} качается · {1} в очереди · {2} устанавливается",
     "summary_paused": "{0} на паузе",
     "summary_errors": "{0} ошибок",

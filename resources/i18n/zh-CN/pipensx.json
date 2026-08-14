@@ -232,6 +232,7 @@
     "resume_all": "全部继续",
     "clear_completed": "清除已完成",
     "clear_completed_none": "没有已完成的下载。",
+    "clear_completed_question": "要从 pipensx 中移除已完成的下载吗？",
     "summary_counts": "{0} 下载中 · {1} 排队 · {2} 安装中",
     "summary_paused": "{0} 已暂停",
     "summary_errors": "{0} 错误",
