@@ -27,6 +27,7 @@
 #include "ui/settings/advanced_settings.hpp"
 #include "ui/settings/network_health.hpp"
 #include "ui/settings/settings_cells.hpp"
+#include "ui/settings/storage_manager.hpp"
 #include "ui/theme.hpp"
 
 namespace pipensx::ui {
@@ -285,6 +286,10 @@ public:
             tr("pipensx/settings/advanced_detail"),
             [this] { openAdvanced(); }));
 
+        content->addView(actionCell(tr("pipensx/settings/storage"),
+            tr("pipensx/settings/storage_detail"),
+            [this] { openStorage(); }));
+
         content->addView(actionCell(tr("pipensx/settings/network_health"),
             tr("pipensx/settings/network_health_detail"),
             [this] { openNetworkHealth(); }));
@@ -369,6 +374,11 @@ private:
                 if (alive->load())
                     applyValues();
             }));
+    }
+
+    void openStorage() {
+        brls::Application::pushActivity(
+            new StorageManagerActivity(manager_, metadata_));
     }
 
     void openNetworkHealth() {

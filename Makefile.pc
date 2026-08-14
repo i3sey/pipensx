@@ -335,6 +335,11 @@ $(BUILD_DIR)/tests/test_update_file_select: tests/test_update_file_select.cpp \
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
 
+$(BUILD_DIR)/tests/test_storage_manager: tests/test_storage_manager.cpp \
+		src/app/storage_manager.cpp src/app/install_space.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
+
 $(BUILD_DIR)/tests/test_torrent_health: tests/test_torrent_health.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
