@@ -96,6 +96,7 @@ static void test_lifecycle(void) {
     memset(hash_a, 1, 20);
     memset(hash_b, 2, 20);
 
+    assert(!dht_shared_running());
     dht_session_t *a = dht_attach(hash_a, 51413);
     if (!a) {
         /* Another process owns UDP 51413 on this machine; the interesting
@@ -103,6 +104,7 @@ static void test_lifecycle(void) {
         puts("test_lifecycle skipped: UDP 51413 unavailable");
         return;
     }
+    assert(dht_shared_running());
     assert(!port_is_free(DHT_SHARED_PORT));
 
     dht_session_t *b = dht_attach(hash_b, 51414);
@@ -114,6 +116,7 @@ static void test_lifecycle(void) {
     assert(!port_is_free(DHT_SHARED_PORT)); /* still one session attached */
 
     dht_detach(b);
+    assert(!dht_shared_running());
     assert(port_is_free(DHT_SHARED_PORT)); /* engine stopped, port free */
 }
 

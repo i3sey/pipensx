@@ -574,10 +574,12 @@ public:
         kicker_->setText(tr("pipensx/catalog/featured"));
         title_ = new brls::Label();
         title_->setSingleLine(true);
+        title_->setAutoAnimate(false);
         title_->setFontSize(theme::kFontHeading);
         title_->setMarginTop(2);
         sub_ = new brls::Label();
         sub_->setSingleLine(true);
+        sub_->setAutoAnimate(false);
         sub_->setFontSize(theme::kFontCaption);
         sub_->setTextColor(theme::textTertiary());
         sub_->setMarginTop(2);
@@ -608,6 +610,16 @@ public:
         sub_->setTextColor(info.subIsBadge ? theme::accent()
                                            : theme::textTertiary());
         setArtworkUrl(image_, service, imageUrl, currentUrl_, imageState_);
+    }
+
+    void onFocusGained() override {
+        brls::Box::onFocusGained();
+        title_->setAnimated(true);
+    }
+
+    void onFocusLost() override {
+        brls::Box::onFocusLost();
+        title_->setAnimated(false);
     }
 
     int entryIndex() const { return entryIndex_; }

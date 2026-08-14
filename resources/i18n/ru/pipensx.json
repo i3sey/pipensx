@@ -11,6 +11,7 @@
     "catalog": "Каталог",
     "downloads": "Загрузки",
     "installed": "Мои игры",
+    "updates": "Обновления",
     "settings": "Настройки",
     "help": "Помощь",
     "about": "Инфо"
@@ -152,6 +153,8 @@
     "players_single": "1 игрок",
     "fact_size": "Размер",
     "fact_title_id": "Title ID",
+    "fact_dlc": "DLC",
+    "dlc_installed": "установлено: {}",
     "fact_mods": "Моды",
     "mods_available": "ModCD - есть",
     "mods_count": "ModCD - модов: {}",
@@ -184,7 +187,7 @@
     "already_in_downloads": "Уже в загрузках.",
     "status_fetching": "Загрузка на сервисе {}%",
     "install_contract": "Установка = только NSP/NSZ · остальное пропускается",
-    "smart_install_contract": "Умная установка: база/апдейт · параметры для ручного выбора"
+    "smart_install_contract": "Умная установка: база/апдейт/DLC · параметры для ручного выбора"
   },
   "torrent": {
     "title": "Выбор файлов раздачи",
@@ -226,6 +229,18 @@
     "section_completed": "Готово",
     "section_errors": "Ошибки",
     "move_to_top": "Загрузить следующей",
+    "move_up": "Вверх",
+    "move_down": "Вниз",
+    "pause_all": "Пауза для всех",
+    "resume_all": "Продолжить все",
+    "clear_completed": "Удалить завершённые",
+    "clear_completed_none": "Нет завершённых загрузок.",
+    "clear_completed_question": "Удалить завершённые загрузки из pipensx?",
+    "summary_counts": "{0} качается · {1} в очереди · {2} устанавливается",
+    "summary_paused": "{0} на паузе",
+    "summary_errors": "{0} ошибок",
+    "summary_speed": "{0} ↓",
+    "summary_eta": "Осталось {0}",
     "move_to_top_failed": "Не удалось изменить очередь: {}",
     "remove_question": "Удалить эту загрузку из pipensx?",
     "remove_keep": "Оставить файлы",
@@ -258,6 +273,10 @@
     "speed_install": "Установка: {}",
     "peers_line": "Пиры: {}   DHT: {} годных / {} сомнительных",
     "pieces_line": "Части: {} / {}   Проверено: {}",
+    "health_line": "Здоровье торрента: {0}",
+    "health_excellent": "Отличное",
+    "health_slow": "Медленное",
+    "health_poor": "Плохое",
     "error_line": "Ошибка: {}",
     "eta_seconds": "{} с",
     "eta_minutes": "{} мин {} с",
@@ -379,6 +398,14 @@
     "update_choose_more": "Другие бандлы ({0})...",
     "update_choose_file": "Выберите файлы обновления",
     "update_nothing_selected": "Выберите хотя бы один файл."
+  },
+  "updates": {
+    "empty_title": "Обновлений не найдено",
+    "empty_body": "Нажмите L, чтобы сверить установленные игры с индексом каталога.",
+    "count": "Доступно обновлений: {}",
+    "update_all": "Обновить всё",
+    "update_all_empty": "Нет обновлений для установки.",
+    "update_all_started": "В очередь: {} обновлений…"
   },
   "batch": {
     "frame_title": "Массовая установка",
@@ -535,6 +562,8 @@
     "reset_done": "Настройки сброшены.",
     "log_path": "Журнал: {}",
     "advanced": "Дополнительно",
+    "network_health": "Состояние сети",
+    "network_health_detail": "Состояние сети и провайдеров",
     "advanced_detail": "Диагностика, хранилище, сброс",
     "storage": "Хранилище",
     "storage_detail": "Использование SD-карты и очистка",
@@ -651,5 +680,36 @@
     "sending_magnet": "Отправка magnet-ссылки на сервер…",
     "magnet_rejected": "Сервер отклонил magnet-ссылку.",
     "queued": "Добавлено в очередь. Метаданные ещё могут загружаться."
+  },
+  "diag": {
+    "title": "Состояние сети",
+    "internet": "Интернет",
+    "dht": "DHT",
+    "peers": "Пиры",
+    "torbox": "TorBox",
+    "torrserver": "TorrServer",
+    "realdebrid": "Real-Debrid",
+    "proxy": "Прокси",
+    "catalog": "Каталог",
+    "connected": "Подключено",
+    "offline": "Нет сети",
+    "linked": "Привязано",
+    "not_linked": "Не привязано",
+    "not_configured": "Не настроено",
+    "enabled": "Включено",
+    "disabled": "Выключено",
+    "dht_nodes": "{0} хороших / {1} сомнительных узлов",
+    "dht_off": "Выкл",
+    "dht_bootstrapping": "Загрузка",
+    "peers_n": "{0} пиров",
+    "updated_h": "Обновлено {0} ч назад",
+    "updated_m": "Обновлено {0} мин назад",
+    "never": "Никогда"
+  },
+  "notify": {
+    "download_completed": "Загрузка «{}» завершена.",
+    "install_completed": "«{}» установлено.",
+    "download_failed": "Загрузка «{}» не удалась.",
+    "install_failed": "Установка «{}» не удалась."
   }
 }

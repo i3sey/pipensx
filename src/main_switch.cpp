@@ -3,6 +3,7 @@
 #include "app/companion_settings.hpp"
 #include "app/download_manager.hpp"
 #include "app/game_metadata_service.hpp"
+#include "app/game_update_service.hpp"
 #include "app/installed_title_service.hpp"
 #include "app/switch_deploy.hpp"
 #include "app/update_service.hpp"
@@ -32,6 +33,8 @@ extern "C" {
 #include <string>
 #include <thread>
 #include <typeinfo>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -57,6 +60,7 @@ using pipensx::CatalogService;
 using pipensx::DownloadManager;
 using pipensx::SwitchDeployService;
 using pipensx::GameMetadataService;
+using pipensx::GameUpdateService;
 using pipensx::InstalledTitleService;
 using pipensx::FavoritesService;
 using pipensx::ModIndexService;
@@ -125,11 +129,11 @@ public:
                  InstalledTitleService* installed, AppSettings* settings,
                  UpdateService* updater, ModIndexService* mods,
                  FavoritesService* favorites, WebServer* webServer,
-                 SwitchDeployService* deploy)
+                 SwitchDeployService* deploy, GameUpdateService* gameUpdates)
         : manager_(manager), catalog_(catalog), metadata_(metadata),
           installed_(installed), settings_(settings), updater_(updater),
           mods_(mods), favorites_(favorites), webServer_(webServer),
-          deploy_(deploy) {
+          deploy_(deploy), gameUpdates_(gameUpdates) {
         auto* tabs = new pipensx::ui::MainFrame();
         using pipensx::ui::NavIconType;
         tabs->addNavTab(tr("pipensx/nav/catalog"), NavIconType::Catalog,
@@ -144,9 +148,17 @@ public:
             return new MainView(manager, metadata, settings, deploy);
         });
         tabs->addNavTab(tr("pipensx/nav/installed"), NavIconType::Installed,
-                        [installed, manager, metadata, settings, catalog] {
+                        [installed, manager, metadata, settings, catalog,
+                         gameUpdates] {
             return new InstalledView(installed, manager, metadata, settings,
-                                     catalog);
+                                     catalog, gameUpdates);
+        });
+        tabs->addNavTab(tr("pipensx/nav/updates"), NavIconType::Updates,
+                        [installed, manager, metadata, settings, catalog,
+                         gameUpdates] {
+            return new InstalledView(installed, manager, metadata, settings,
+                                     catalog, gameUpdates, true,
+                                     InstalledView::Mode::Updates);
         });
         tabs->addNavTab(tr("pipensx/nav/settings"), NavIconType::Settings,
                         [settings, manager, catalog, metadata,
@@ -223,6 +235,7 @@ private:
     FavoritesService* favorites_;
     WebServer* webServer_;
     SwitchDeployService* deploy_;
+    GameUpdateService* gameUpdates_;
     brls::AppletFrame* frame_;
 };
 
@@ -475,11 +488,19 @@ int main(int argc, char** argv) {
             log_msg("[metadata] initial load failed: %s\n",
                     metadataError.c_str());
 
+        startupStage("GameUpdateService load");
+        GameUpdateService gameUpdates(&metadata,
+                                      "sdmc:/switch/pipensx/game-updates.json");
+        std::string gameUpdatesError;
+        if (!gameUpdates.load(gameUpdatesError))
+            diagnostic_error("game_updates", "load", "error=%s",
+                             gameUpdatesError.c_str());
+
         startupStage("MainActivity construction");
         auto* activity = new MainActivity(&manager, &catalog, &metadata,
                                            &installed, &settings, &updater,
                                            &mods, &favorites, &webServer,
-                                           &deploy);
+                                           &deploy, &gameUpdates);
 
         startupStage("push MainActivity");
         brls::Application::pushActivity(activity);
@@ -556,6 +577,13 @@ int main(int argc, char** argv) {
         pipensx::SwitchDeployPhase lastDeployPhase =
             pipensx::SwitchDeployPhase::Idle;
         bool deployOfferDialogOpen = false;
+        // Download/install lifecycle notifications (#33): the main loop is the
+        // only place that runs regardless of which screen is focused, so
+        // terminal status transitions are surfaced here as toasts instead of
+        // requiring the Downloads tab to stay open. The map only tracks tasks
+        // observed after startup, so pre-existing rows never re-notify.
+        std::unordered_map<std::string, pipensx::DownloadStatus> lastTaskStatus;
+        uint64_t lastDownloadScanMs = now_ms();
         while (true) {
             const pipensx::SwitchDeploySnapshot deployState = deploy.snapshot();
             bool activeTransfer = manager.hasActiveTransfer() ||
@@ -594,11 +622,54 @@ int main(int argc, char** argv) {
                 lastDeployPhase = deployState.phase;
             }
 
+            // Throttled scan of task statuses: notify once per terminal
+            // transition (download complete, install complete, download failed).
             const uint64_t frameNowMs = now_ms();
-            if (frameNowMs - lastDeployOfferPollMs >= 10000 &&
+            if (frameNowMs - lastDownloadScanMs >= 1000) {
+                lastDownloadScanMs = frameNowMs;
+                std::unordered_set<std::string> seen;
+                for (const pipensx::DownloadTask& task : manager.snapshot()) {
+                    seen.insert(task.id);
+                    auto previous = lastTaskStatus.find(task.id);
+                    if (previous == lastTaskStatus.end()) {
+                        lastTaskStatus[task.id] = task.status;
+                        continue;
+                    }
+                    const pipensx::DownloadStatus prevStatus = previous->second;
+                    if (prevStatus == task.status)
+                        continue;
+                    lastTaskStatus[task.id] = task.status;
+                    if (task.status == pipensx::DownloadStatus::Completed)
+                        brls::Application::notify(
+                            tr("pipensx/notify/download_completed", task.name));
+                    else if (task.status == pipensx::DownloadStatus::Installed)
+                        brls::Application::notify(
+                            tr("pipensx/notify/install_completed", task.name));
+                    else if (task.status == pipensx::DownloadStatus::Error) {
+                        const bool installFailed =
+                            prevStatus == pipensx::DownloadStatus::Installing ||
+                            prevStatus == pipensx::DownloadStatus::Committing ||
+                            task.mode == pipensx::TransferMode::StreamInstall;
+                        brls::Application::notify(tr(
+                            installFailed ? "pipensx/notify/install_failed"
+                                          : "pipensx/notify/download_failed",
+                            task.name));
+                    }
+                }
+                for (auto it = lastTaskStatus.begin();
+                     it != lastTaskStatus.end();) {
+                    if (seen.count(it->first) == 0)
+                        it = lastTaskStatus.erase(it);
+                    else
+                        ++it;
+                }
+            }
+
+            const uint64_t deployPollNowMs = now_ms();
+            if (deployPollNowMs - lastDeployOfferPollMs >= 10000 &&
                 !activeTransfer && !deployState.active() &&
                 !deployOfferDialogOpen) {
-                lastDeployOfferPollMs = frameNowMs;
+                lastDeployOfferPollMs = deployPollNowMs;
                 deploy.scheduleDeployOfferPoll();
             }
             if (!deployOfferDialogOpen) {

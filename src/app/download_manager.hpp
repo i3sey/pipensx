@@ -225,6 +225,14 @@ public:
     bool verify(const std::string& taskId);
     bool remove(const std::string& taskId, bool deleteData,
                 std::string& error);
+    // Pause every task pause() would accept except Committing (a NAND commit
+    // in flight is left alone). One lock, one state write.
+    void pauseAll();
+    // Requeue every Paused and Error task. One lock, one state write.
+    void resumeAll();
+    // Drop Completed/Installed tasks. deleteData matches per-row remove.
+    // One lock and one state write; debrid account cleanup runs after unlock.
+    bool clearCompleted(bool deleteData, std::string& error);
 
     // Make a queued task the next one to start. The scheduler always claims
     // the first claimable Queued entry in list order, so "next up" is a
@@ -233,6 +241,12 @@ public:
     // single install token is held, a stream-install task at the front can
     // still be passed by download-only tasks behind it.
     bool moveToFront(const std::string& taskId, std::string& error);
+
+    // Move a queued task one position up (earlier) or down (later) within the
+    // queue. Only queued tasks can move; a move past the edge of the queue is
+    // a no-op success. Returns false for an unknown id, a non-queued task, or
+    // when the task is leased for external deploy.
+    bool moveTask(const std::string& taskId, bool up, std::string& error);
 
     // How many torrents may download concurrently (clamped to
     // [kMinActiveDownloads, kMaxActiveDownloads]).
@@ -310,7 +324,7 @@ private:
     void endExternalDeploy(const std::string& taskId);
     bool externallyLeasedLocked(const std::string& taskId) const;
     bool removeLocked(const std::string& id, bool deleteData,
-                      std::string& error);
+                      std::string& error, bool persist = true);
     // Fires a detached thread, so it must not touch *this: the manager can be
     // torn down while a provider call is still in flight.
     static void removeFromDebridAsync(DebridProviderKind provider,
@@ -365,6 +379,57 @@ std::optional<uint64_t> taskEtaSeconds(const DownloadTask& task,
 // The scheduler's claim rule, exposed for tests: a Queued task may start
 // unless it is a stream install while another one holds the install token.
 bool taskClaimableUnderInstallToken(const DownloadTask& task,
-                                    bool installTokenHeld);
+                                     bool installTokenHeld);
+
+// Aggregate view of the queue for the Downloads summary header: counts per
+// status, total download/install throughput, and the bytes + ETA to drain the
+// outstanding work. etaSeconds is 0 when the throughput is unknown (zero).
+struct QueueSummary {
+    uint32_t downloading = 0;
+    uint32_t queued = 0;
+    uint32_t installing = 0;
+    uint32_t paused = 0;
+    uint32_t completed = 0;
+    uint32_t errors = 0;
+    uint64_t downloadSpeedBps = 0;
+    uint64_t installSpeedBps = 0;
+    uint64_t totalRemainingBytes = 0;
+    uint64_t etaSeconds = 0;
+};
+
+QueueSummary summarizeQueue(const std::vector<DownloadTask>& tasks,
+                            uint64_t nowMs);
+
+// User-facing download health for an active transfer. NotActive when the
+// task is not downloading. Stall uses the same 3s window as ETA.
+enum class TorrentHealth {
+    NotActive,
+    Poor,
+    Slow,
+    Excellent,
+};
+
+inline TorrentHealth torrentHealth(const DownloadTask& task, uint64_t nowMs) {
+    if (task.status != DownloadStatus::Downloading)
+        return TorrentHealth::NotActive;
+    const bool stalled = !task.downloadProgressUpdatedAtMs ||
+                         nowMs < task.downloadProgressUpdatedAtMs ||
+                         nowMs - task.downloadProgressUpdatedAtMs >
+                             kProgressRateStaleMs;
+    constexpr uint64_t kSlowThreshold = 512ull * 1024ull;
+    const uint64_t speed = task.speedBytesPerSecond;
+    if (task.source == TaskSource::Debrid) {
+        if (stalled)
+            return TorrentHealth::Poor;
+        if (speed < kSlowThreshold)
+            return TorrentHealth::Slow;
+        return TorrentHealth::Excellent;
+    }
+    if (task.peers == 0 && (stalled || speed == 0))
+        return TorrentHealth::Poor;
+    if (stalled || speed < kSlowThreshold)
+        return TorrentHealth::Slow;
+    return TorrentHealth::Excellent;
+}
 
 } // namespace pipensx

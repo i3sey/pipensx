@@ -11,6 +11,7 @@
     "catalog": "Catálogo",
     "downloads": "Descargas",
     "installed": "Instalados",
+    "updates": "Actualizaciones",
     "settings": "Ajustes",
     "help": "Ajuda",
     "about": "Acerca de"
@@ -152,6 +153,8 @@
     "players_single": "1 jugador",
     "fact_size": "Tamanho",
     "fact_title_id": "Title ID",
+    "fact_dlc": "DLC",
+    "dlc_installed": "{} instalados",
     "fact_mods": "Mods",
     "mods_available": "ModCD - disponível",
     "mods_count": "ModCD - {} mods",
@@ -184,7 +187,7 @@
     "already_in_downloads": "Ya está en descargas.",
     "status_fetching": "Obteniendo {}%",
     "install_contract": "Instalar = solo NSP/NSZ · extras omitidos",
-    "smart_install_contract": "Instalación inteligente: base/update · opciones para control manual"
+    "smart_install_contract": "Instalación inteligente: base/update/DLC · opciones para control manual"
   },
   "torrent": {
     "title": "Elegir archivos del torrent",
@@ -226,6 +229,18 @@
     "section_completed": "Completadas",
     "section_errors": "Erros",
     "move_to_top": "Iniciar siguiente",
+    "move_up": "Subir",
+    "move_down": "Bajar",
+    "pause_all": "Pausar todo",
+    "resume_all": "Reanudar todo",
+    "clear_completed": "Borrar completados",
+    "clear_completed_none": "No hay descargas completadas.",
+    "clear_completed_question": "¿Quitar las descargas completadas de pipensx?",
+    "summary_counts": "{0} descargando · {1} en cola · {2} instalando",
+    "summary_paused": "{0} en pausa",
+    "summary_errors": "{0} errores",
+    "summary_speed": "{0} ↓",
+    "summary_eta": "Tiempo restante {0}",
     "move_to_top_failed": "No se pudo reordenar la cola: {}",
     "remove_question": "¿Quitar esta descarga de pipensx?",
     "remove_keep": "Conservar datos descargados",
@@ -258,6 +273,10 @@
     "speed_install": "Instalación: {}",
     "peers_line": "Peers: {}   DHT: {} buenos / {} dudosos",
     "pieces_line": "Piezas: {} / {}   Comprobadas: {}",
+    "health_line": "Salud del torrent: {0}",
+    "health_excellent": "Excelente",
+    "health_slow": "Lenta",
+    "health_poor": "Mala",
     "error_line": "Erro: {}",
     "eta_seconds": "{}s",
     "eta_minutes": "{}m {}s",
@@ -379,6 +398,14 @@
     "update_choose_more": "Otros paquetes ({0})...",
     "update_choose_file": "Elige los archivos de actualización",
     "update_nothing_selected": "Selecciona al menos un archivo."
+  },
+  "updates": {
+    "empty_title": "No se encontraron actualizaciones",
+    "empty_body": "Pulsa L para comprobar los juegos instalados contra el índice del catálogo.",
+    "count": "{} actualizaciones disponibles",
+    "update_all": "Actualizar todo",
+    "update_all_empty": "No hay actualizaciones que instalar.",
+    "update_all_started": "Encolando {} actualizaciones…"
   },
   "batch": {
     "frame_title": "Instalación por lotes",
@@ -533,6 +560,8 @@
     "reset_done": "Ajustes restaurados a los valores predeterminados.",
     "log_path": "Registro: {}",
     "advanced": "Avanzado",
+    "network_health": "Salud de la red",
+    "network_health_detail": "Estado de conectividad y proveedores",
     "advanced_detail": "Diagnóstico, almacenamiento, restablecer",
     "storage": "Almacenamiento",
     "storage_detail": "Uso de la tarjeta SD y limpieza",
@@ -651,5 +680,36 @@
     "sending_magnet": "Enviando el magnet al servidor…",
     "magnet_rejected": "El servidor rechazó el magnet.",
     "queued": "Añadido a la cola. Los metadatos pueden seguir obteniéndose."
+  },
+  "diag": {
+    "title": "Salud de la red",
+    "internet": "Internet",
+    "dht": "DHT",
+    "peers": "Pares",
+    "torbox": "TorBox",
+    "torrserver": "TorrServer",
+    "realdebrid": "Real-Debrid",
+    "proxy": "Proxy",
+    "catalog": "Catálogo",
+    "connected": "Conectado",
+    "offline": "Sin conexión",
+    "linked": "Vinculado",
+    "not_linked": "No vinculado",
+    "not_configured": "No configurado",
+    "enabled": "Activado",
+    "disabled": "Desactivado",
+    "dht_nodes": "{0} buenos / {1} dudosos nodos",
+    "dht_off": "Apagado",
+    "dht_bootstrapping": "Arranque",
+    "peers_n": "{0} pares",
+    "updated_h": "Actualizado hace {0}h",
+    "updated_m": "Actualizado hace {0}min",
+    "never": "Nunca"
+  },
+  "notify": {
+    "download_completed": "Descarga de {} completada.",
+    "install_completed": "{} instalado.",
+    "download_failed": "La descarga de {} falló.",
+    "install_failed": "La instalación de {} falló."
   }
 }

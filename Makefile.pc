@@ -69,6 +69,22 @@ TEST_BINS := $(sort $(patsubst tests/%,$(BUILD_DIR)/tests/%,$(basename $(TEST_SO
 # DHT against live routers — always last so a bad network cannot hide others.
 TEST_BINS_EARLY := $(filter-out $(BUILD_DIR)/tests/test_manager,$(TEST_BINS))
 
+# Shared by test_manager and test_queue_controls (and anything else that
+# links the full DownloadManager graph).
+MANAGER_TEST_OBJS = \
+		$(BUILD_DIR)/src/app/download_manager.o \
+		$(BUILD_DIR)/src/app/task_files.o \
+		$(BUILD_DIR)/src/app/web_seed_source.o \
+		$(BUILD_DIR)/src/app/stream_ram_budget.o $(BUILD_DIR)/src/app/stream_budget_arbiter.o \
+		$(BUILD_DIR)/src/app/request_gate.o \
+		$(BUILD_DIR)/src/app/install_pacer.o \
+		$(BUILD_DIR)/src/app/debrid_transfer.o $(BUILD_DIR)/src/app/torbox_client.o \
+		$(BUILD_DIR)/src/app/torbox_provider.o $(BUILD_DIR)/src/app/torrserver_provider.o \
+		$(BUILD_DIR)/src/app/realdebrid_client.o $(BUILD_DIR)/src/app/realdebrid_provider.o \
+		$(BUILD_DIR)/src/install/package_stream.o $(BUILD_DIR)/src/install/install_journal.o \
+		$(BUILD_DIR)/src/install/install_backend_pc.o \
+		$(filter-out $(BUILD_DIR)/src/main_pc.o,$(OBJS)) $(UTP_OBJS)
+
 TEST_SRCS = \
     tests/test_piece.c       \
     src/core/sha1.c          \
@@ -177,18 +193,15 @@ $(BUILD_DIR)/tests/test_manager.o: tests/test_manager.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
-$(BUILD_DIR)/tests/test_manager: $(BUILD_DIR)/tests/test_manager.o $(BUILD_DIR)/src/app/download_manager.o \
-		$(BUILD_DIR)/src/app/task_files.o \
-		$(BUILD_DIR)/src/app/web_seed_source.o \
-		$(BUILD_DIR)/src/app/stream_ram_budget.o $(BUILD_DIR)/src/app/stream_budget_arbiter.o \
-		$(BUILD_DIR)/src/app/request_gate.o \
-		$(BUILD_DIR)/src/app/install_pacer.o \
-		$(BUILD_DIR)/src/app/debrid_transfer.o $(BUILD_DIR)/src/app/torbox_client.o \
-		$(BUILD_DIR)/src/app/torbox_provider.o $(BUILD_DIR)/src/app/torrserver_provider.o \
-		$(BUILD_DIR)/src/app/realdebrid_client.o $(BUILD_DIR)/src/app/realdebrid_provider.o \
-		$(BUILD_DIR)/src/install/package_stream.o $(BUILD_DIR)/src/install/install_journal.o \
-		$(BUILD_DIR)/src/install/install_backend_pc.o \
-		$(filter-out $(BUILD_DIR)/src/main_pc.o,$(OBJS)) $(UTP_OBJS)
+$(BUILD_DIR)/tests/test_manager: $(BUILD_DIR)/tests/test_manager.o $(MANAGER_TEST_OBJS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS) $(INSTALL_LDFLAGS) -pthread
+
+$(BUILD_DIR)/tests/test_queue_controls.o: tests/test_queue_controls.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+$(BUILD_DIR)/tests/test_queue_controls: $(BUILD_DIR)/tests/test_queue_controls.o $(MANAGER_TEST_OBJS)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS) $(INSTALL_LDFLAGS) -pthread
 
@@ -324,6 +337,10 @@ $(BUILD_DIR)/tests/test_update_file_select: tests/test_update_file_select.cpp \
 
 $(BUILD_DIR)/tests/test_storage_manager: tests/test_storage_manager.cpp \
 		src/app/storage_manager.cpp src/app/install_space.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
+
+$(BUILD_DIR)/tests/test_torrent_health: tests/test_torrent_health.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
 

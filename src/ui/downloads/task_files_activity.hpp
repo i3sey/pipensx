@@ -70,10 +70,12 @@ public:
         setAxis(brls::Axis::COLUMN);
         path_ = new brls::Label();
         path_->setSingleLine(true);
+        path_->setAutoAnimate(false);
         path_->setFontSize(18);
         addView(path_);
         meta_ = new brls::Label();
         meta_->setSingleLine(true);
+        meta_->setAutoAnimate(false);
         meta_->setFontSize(14);
         meta_->setMarginTop(4);
         meta_->setTextColor(theme::textTertiary());
@@ -87,6 +89,16 @@ public:
         path_->setTextColor(file.state == TaskFileState::Missing ||
                                     file.state == TaskFileState::Unsafe
                                 ? theme::error() : theme::textPrimary());
+    }
+
+    void onFocusGained() override {
+        brls::RecyclerCell::onFocusGained();
+        path_->setAnimated(true);
+    }
+
+    void onFocusLost() override {
+        brls::RecyclerCell::onFocusLost();
+        path_->setAnimated(false);
     }
 
 private:
@@ -307,10 +319,12 @@ public:
         setAxis(brls::Axis::COLUMN);
         destination_ = new brls::Label();
         destination_->setSingleLine(true);
+        destination_->setAutoAnimate(false);
         destination_->setFontSize(18);
         addView(destination_);
         state_ = new brls::Label();
         state_->setSingleLine(true);
+        state_->setAutoAnimate(false);
         state_->setFontSize(13);
         state_->setMarginTop(3);
         addView(state_);
@@ -327,6 +341,16 @@ public:
         state_->setTextColor(entry.state ==
                                      SwitchDeployEntryState::ExistingConflict
                                  ? theme::error() : theme::textTertiary());
+    }
+
+    void onFocusGained() override {
+        brls::Box::onFocusGained();
+        destination_->setAnimated(true);
+    }
+
+    void onFocusLost() override {
+        brls::Box::onFocusLost();
+        destination_->setAnimated(false);
     }
 
 private:
