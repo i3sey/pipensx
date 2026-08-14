@@ -70,14 +70,18 @@ std::vector<uint8_t> selectUpdateFiles(const TorrentPreview& preview,
 // title is not installed, base packages for that title and an exact bundled
 // update are selected while DLC/mod/extra packages are skipped. When the title
 // is already installed and the catalog exposes a newer update version, only an
-// exact update package is selected. If the intended base/update packages cannot
-// be identified safely, the caller should fall back to the manual chooser.
+// exact update package is selected. AddOnContent packages whose title id maps
+// to the selected base title are also installed when not already present
+// (installedDlcIds), so an installed game pulls its DLC without re-pulling the
+// base. If the intended base/update packages cannot be identified safely, the
+// caller should fall back to the manual chooser.
 std::vector<uint8_t> selectSmartInstallFiles(
     const TorrentPreview& preview,
     bool titleInstalled,
     const std::string& installedVersion,
     const std::string& latestVersion,
-    const std::string& titleId = {});
+    const std::string& titleId = {},
+    const std::vector<std::string>& installedDlcIds = {});
 
 // Settled when the tracked task is gone or in a terminal download status —
 // used by InstalledView's post-install re-check tick (and tested directly so

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstdio>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -31,16 +32,31 @@ public:
     bool uninstall(const std::string& titleId, std::string& error,
                    std::string& refreshError);
     bool contains(const std::string& titleId) const;
+    bool containsDlc(const std::string& titleId) const;
 
     std::vector<InstalledTitle> titles() const;
+    std::vector<std::string> dlcTitleIds() const;
+    size_t dlcCountForBase(const std::string& titleId) const;
     uint64_t generation() const;
     const std::string& rootPath() const { return rootPath_; }
     // Golden-runner seam: the PC shim reports an empty library, but the
     // installed-populated screen needs rows to pin the update chips. Replaces
     // the enumerated set like a refresh would (generation bumps).
     void injectTitles(std::vector<InstalledTitle> titles);
+    void injectDlcTitleIds(std::vector<std::string> dlcTitleIds);
 
-    static std::string formatTitleId(uint64_t applicationId);
+    // Updates set bit 11 (…800); DLC lives in the low 12 bits from …1000.
+    // Masking those bits maps every variant onto the base application id.
+    static uint64_t nxBaseApplicationId(uint64_t applicationId) {
+        return applicationId & ~0x1FFFULL;
+    }
+
+    static std::string formatTitleId(uint64_t applicationId) {
+        char text[17];
+        std::snprintf(text, sizeof(text), "%016llX",
+                      static_cast<unsigned long long>(applicationId));
+        return text;
+    }
     static bool parseTitleId(const std::string& titleId,
                              uint64_t& applicationId) {
         if (titleId.size() != 16)
@@ -69,6 +85,7 @@ private:
     mutable std::mutex mutex_;
     std::vector<InstalledTitle> titles_;
     std::unordered_set<std::string> titleIds_;
+    std::unordered_set<std::string> dlcTitleIds_;
     uint64_t generation_ = 0;
 };
 

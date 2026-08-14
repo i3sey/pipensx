@@ -11,6 +11,7 @@
     "catalog": "Каталог",
     "downloads": "Загрузки",
     "installed": "Мои игры",
+    "updates": "Обновления",
     "settings": "Настройки",
     "help": "Помощь",
     "about": "Инфо"
@@ -152,6 +153,8 @@
     "players_single": "1 игрок",
     "fact_size": "Размер",
     "fact_title_id": "Title ID",
+    "fact_dlc": "DLC",
+    "dlc_installed": "установлено: {}",
     "fact_mods": "Моды",
     "mods_available": "ModCD - есть",
     "mods_count": "ModCD - модов: {}",
@@ -184,7 +187,7 @@
     "already_in_downloads": "Уже в загрузках.",
     "status_fetching": "Загрузка на сервисе {}%",
     "install_contract": "Установка = только NSP/NSZ · остальное пропускается",
-    "smart_install_contract": "Умная установка: база/апдейт · параметры для ручного выбора"
+    "smart_install_contract": "Умная установка: база/апдейт/DLC · параметры для ручного выбора"
   },
   "torrent": {
     "title": "Выбор файлов раздачи",
@@ -379,6 +382,14 @@
     "update_choose_more": "Другие бандлы ({0})...",
     "update_choose_file": "Выберите файлы обновления",
     "update_nothing_selected": "Выберите хотя бы один файл."
+  },
+  "updates": {
+    "empty_title": "Обновлений не найдено",
+    "empty_body": "Нажмите L, чтобы сверить установленные игры с индексом каталога.",
+    "count": "Доступно обновлений: {}",
+    "update_all": "Обновить всё",
+    "update_all_empty": "Нет обновлений для установки.",
+    "update_all_started": "В очередь: {} обновлений…"
   },
   "batch": {
     "frame_title": "Массовая установка",

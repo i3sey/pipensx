@@ -11,6 +11,7 @@
     "catalog": "目录",
     "downloads": "下载",
     "installed": "已安装",
+    "updates": "更新",
     "settings": "设置",
     "help": "帮助",
     "about": "关于"
@@ -152,6 +153,8 @@
     "players_single": "1 名玩家",
     "fact_size": "大小",
     "fact_title_id": "标题 ID",
+    "fact_dlc": "DLC",
+    "dlc_installed": "已安装 {}",
     "fact_mods": "模组",
     "mods_available": "ModCD - 可用",
     "mods_count": "ModCD - {} 个模组",
@@ -184,7 +187,7 @@
     "already_in_downloads": "已在下载列表中。",
     "status_fetching": "获取中 {}%",
     "install_contract": "安装 = 仅 NSP/NSZ · 额外文件已跳过",
-    "smart_install_contract": "智能安装：本体/更新 · 选项用于手动控制"
+    "smart_install_contract": "智能安装：本体/更新/DLC · 选项用于手动控制"
   },
   "torrent": {
     "title": "选择种子文件",
@@ -379,6 +382,14 @@
     "update_choose_more": "其他捆绑包（{0}）…",
     "update_choose_file": "选择更新文件",
     "update_nothing_selected": "请至少选择一个文件。"
+  },
+  "updates": {
+    "empty_title": "未找到更新",
+    "empty_body": "按 L 根据目录索引检查已安装游戏。",
+    "count": "{} 个可用更新",
+    "update_all": "全部更新",
+    "update_all_empty": "没有可安装的更新。",
+    "update_all_started": "正在排队 {} 个更新…"
   },
   "batch": {
     "frame_title": "批量安装",
