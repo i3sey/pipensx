@@ -424,8 +424,17 @@ private:
                    entry_.size ? formatBytes(entry_.size)
                                : tr("pipensx/common/unknown"));
         addFactRow(table, tr("pipensx/detail/fact_title_id"), titleId_);
+        addFactRow(table, tr("pipensx/detail/fact_dlc"), dlcFact());
         addFactRow(table, tr("pipensx/detail/fact_mods"), modsFact());
         right->addView(table);
+    }
+
+    std::string dlcFact() const {
+        if (!installed_ || titleId_.empty() ||
+            !installed_->contains(titleId_))
+            return {};
+        return tr("pipensx/detail/dlc_installed",
+                  installed_->dlcCountForBase(titleId_));
     }
 
     // ModCD carries mods for this title id (in-memory lookup — the table is

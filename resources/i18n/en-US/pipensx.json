@@ -153,6 +153,8 @@
     "players_single": "1 player",
     "fact_size": "Size",
     "fact_title_id": "Title ID",
+    "fact_dlc": "DLC",
+    "dlc_installed": "{} installed",
     "fact_mods": "Mods",
     "mods_available": "ModCD - available",
     "mods_count": "ModCD - {} mods",
@@ -185,7 +187,7 @@
     "already_in_downloads": "Already in downloads.",
     "status_fetching": "Fetching {}%",
     "install_contract": "Install = NSP/NSZ only · extras skipped",
-    "smart_install_contract": "Smart Install: base/update · options for manual control"
+    "smart_install_contract": "Smart Install: base/update/DLC · options for manual control"
   },
   "torrent": {
     "title": "Choose torrent files",
@@ -384,7 +386,10 @@
   "updates": {
     "empty_title": "No updates found",
     "empty_body": "Press L to check installed games against the catalog index.",
-    "count": "{} updates available"
+    "count": "{} updates available",
+    "update_all": "Update all",
+    "update_all_empty": "No updates to install.",
+    "update_all_started": "Queuing {} updates…"
   },
   "batch": {
     "frame_title": "Batch install",

@@ -79,13 +79,6 @@ InstalledTitleService::InstalledTitleService(std::string rootPath)
     mkdir(iconRoot_.c_str(), 0755);
 }
 
-std::string InstalledTitleService::formatTitleId(uint64_t applicationId) {
-    char text[17];
-    std::snprintf(text, sizeof(text), "%016llX",
-                  static_cast<unsigned long long>(applicationId));
-    return text;
-}
-
 bool InstalledTitleService::uninstall(const std::string& titleId,
                                       std::string& error) {
     std::string refreshError;
@@ -147,6 +140,21 @@ std::vector<std::string> InstalledTitleService::dlcTitleIds() const {
     return {dlcTitleIds_.begin(), dlcTitleIds_.end()};
 }
 
+size_t InstalledTitleService::dlcCountForBase(const std::string& titleId) const {
+    uint64_t base = 0;
+    if (!parseTitleId(titleId, base))
+        return 0;
+    base = nxBaseApplicationId(base);
+    std::lock_guard<std::mutex> lock(mutex_);
+    size_t count = 0;
+    for (const std::string& id : dlcTitleIds_) {
+        uint64_t parsed = 0;
+        if (parseTitleId(id, parsed) && nxBaseApplicationId(parsed) == base)
+            ++count;
+    }
+    return count;
+}
+
 uint64_t InstalledTitleService::generation() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return generation_;
@@ -161,6 +169,16 @@ void InstalledTitleService::injectTitles(std::vector<InstalledTitle> titles) {
     titles_ = std::move(titles);
     titleIds_ = std::move(ids);
     dlcTitleIds_.clear();
+    ++generation_;
+}
+
+void InstalledTitleService::injectDlcTitleIds(
+    std::vector<std::string> dlcTitleIds) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    dlcTitleIds_.clear();
+    dlcTitleIds_.reserve(dlcTitleIds.size());
+    for (const std::string& id : dlcTitleIds)
+        dlcTitleIds_.insert(upperAscii(id));
     ++generation_;
 }
 

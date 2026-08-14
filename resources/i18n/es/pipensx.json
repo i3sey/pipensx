@@ -153,6 +153,8 @@
     "players_single": "1 jugador",
     "fact_size": "Tamanho",
     "fact_title_id": "Title ID",
+    "fact_dlc": "DLC",
+    "dlc_installed": "{} instalados",
     "fact_mods": "Mods",
     "mods_available": "ModCD - disponível",
     "mods_count": "ModCD - {} mods",
@@ -185,7 +187,7 @@
     "already_in_downloads": "Ya está en descargas.",
     "status_fetching": "Obteniendo {}%",
     "install_contract": "Instalar = solo NSP/NSZ · extras omitidos",
-    "smart_install_contract": "Instalación inteligente: base/update · opciones para control manual"
+    "smart_install_contract": "Instalación inteligente: base/update/DLC · opciones para control manual"
   },
   "torrent": {
     "title": "Elegir archivos del torrent",
@@ -384,7 +386,10 @@
   "updates": {
     "empty_title": "No se encontraron actualizaciones",
     "empty_body": "Pulsa L para comprobar los juegos instalados contra el índice del catálogo.",
-    "count": "{} actualizaciones disponibles"
+    "count": "{} actualizaciones disponibles",
+    "update_all": "Actualizar todo",
+    "update_all_empty": "No hay actualizaciones que instalar.",
+    "update_all_started": "Encolando {} actualizaciones…"
   },
   "batch": {
     "frame_title": "Instalación por lotes",

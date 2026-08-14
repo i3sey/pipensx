@@ -201,6 +201,8 @@ public:
         onUninstallOne_ = std::move(onUninstallOne);
     }
 
+    const std::vector<InstalledTitle>& titles() const { return titles_; }
+
     int numberOfRows(brls::RecyclerFrame*, int) override {
         return static_cast<int>(titles_.size());
     }
@@ -239,11 +241,12 @@ public:
 
     InstalledView(InstalledTitleService* installed, DownloadManager* manager,
                   GameMetadataService* metadata, AppSettings* settings,
-                  CatalogService* catalog, bool checkOnEntry = true,
-                  Mode mode = Mode::Library)
+                  CatalogService* catalog, GameUpdateService* updates,
+                  bool checkOnEntry = true, Mode mode = Mode::Library)
         : brls::Box(brls::Axis::COLUMN), installed_(installed),
           manager_(manager), metadata_(metadata), settings_(settings),
-          catalog_(catalog), checkOnEntry_(checkOnEntry), mode_(mode),
+          catalog_(catalog), updates_(updates), checkOnEntry_(checkOnEntry),
+          mode_(mode),
           alive_(std::make_shared<std::atomic<bool>>(true)) {
         status_ = new brls::Label();
         status_->setFontSize(15);
@@ -266,12 +269,6 @@ public:
         recyclerHost_ = recyclerHost(recycler_);
         addView(recyclerHost_);
 
-        updates_ = std::make_unique<GameUpdateService>(
-            metadata, installed->rootPath() + "/game-updates.json");
-        std::string loadError;
-        if (!updates_->load(loadError))
-            diagnostic_error("game_updates", "load", "error=%s",
-                             loadError.c_str());
         dataSource_->setResults(&updates_->results());
         dataSource_->setCheckOne(
             [this](const std::string& titleId, const std::string& version) {
@@ -294,6 +291,13 @@ public:
             checkAllTitles();
             return true;
         });
+        if (mode_ == Mode::Updates) {
+            registerAction(tr("pipensx/updates/update_all"),
+                           brls::BUTTON_X, [this](brls::View*) {
+                queueAllUpdates();
+                return true;
+            });
+        }
     }
 
     ~InstalledView() override {
@@ -368,6 +372,8 @@ private:
 
     // A-тап по строке "Update available": скачать и установить апдейт.
     void installUpdate(const std::string& titleId) {
+        pendingUpdateAll_.clear();
+        updateAllAutoImport_ = false;
         if (refreshing_ || updateInFlight_ || uninstallInFlight_)
             return;
         std::vector<const GameMetadata*> entries;
@@ -387,6 +393,45 @@ private:
         for (const GameMetadata* entry : entries)
             bundles.push_back(*entry);
         chooseBundle(std::move(bundles), 0);
+    }
+
+    void queueAllUpdates() {
+        if (mode_ != Mode::Updates)
+            return;
+        if (refreshing_ || updateInFlight_ || uninstallInFlight_)
+            return;
+        pendingUpdateAll_.clear();
+        for (const InstalledTitle& title : dataSource_->titles())
+            pendingUpdateAll_.push_back(title.titleId);
+        if (pendingUpdateAll_.empty()) {
+            brls::Application::notify(tr("pipensx/updates/update_all_empty"));
+            return;
+        }
+        updateAllAutoImport_ = true;
+        brls::Application::notify(
+            tr("pipensx/updates/update_all_started",
+               pendingUpdateAll_.size()));
+        pumpUpdateAll();
+    }
+
+    void pumpUpdateAll() {
+        if (updateInFlight_ || uninstallInFlight_ || refreshing_)
+            return;
+        while (!pendingUpdateAll_.empty()) {
+            const std::string titleId = pendingUpdateAll_.front();
+            pendingUpdateAll_.erase(pendingUpdateAll_.begin());
+            std::vector<const GameMetadata*> entries;
+            if (!metadata_ || !metadata_->findByTitleId(titleId, entries) ||
+                entries.empty()) {
+                brls::Application::notify(
+                    tr("pipensx/installed/update_no_bundle"));
+                continue;
+            }
+            beginUpdateInstall(GameMetadata(*entries.front()));
+            return;
+        }
+        updateAllAutoImport_ = false;
+        reload();
     }
 
     void confirmUninstall(InstalledTitle title) {
@@ -587,6 +632,8 @@ private:
                     // as a failure, so distinguish it from a genuine one
                     // before the diagnostic and the toast.
                     if (cancelled_->load()) {
+                        pendingUpdateAll_.clear();
+                        updateAllAutoImport_ = false;
                         brls::Application::notify(
                             tr("pipensx/installed/update_cancelled"));
                         return;
@@ -594,6 +641,7 @@ private:
                     diagnostic_error("game_updates", "resolve",
                                      "title error=%s", err.c_str());
                     brls::Application::notify(resolveErrorToast(err));
+                    pumpUpdateAll();
                     return;
                 }
                 finishUpdateImport(tmp, std::move(initialPeers),
@@ -633,6 +681,26 @@ private:
             brls::Application::notify(
                 tr("pipensx/installed/update_error_preview"));
             reload();
+            pumpUpdateAll();
+            return;
+        }
+        std::vector<uint8_t> actions =
+            selectUpdateFiles(preview, latestVersion, titleId);
+        if (updateAllAutoImport_) {
+            bool hasInstall = false;
+            for (uint8_t action : actions) {
+                if (action == static_cast<uint8_t>(FileAction::Install)) {
+                    hasInstall = true;
+                    break;
+                }
+            }
+            if (!hasInstall) {
+                ::unlink(path.c_str());
+                pumpUpdateAll();
+                return;
+            }
+            importUpdateTorrent(preview, path, std::move(initialPeers),
+                                std::move(actions));
             return;
         }
         // Every update offer lands in the chooser with the recommended
@@ -640,7 +708,7 @@ private:
         // when exactly one package carried the update's version — is gone:
         // the user always gets to see (and tune) what an update would pull.
         chooseUpdateFile(preview, path, std::move(initialPeers),
-                         selectUpdateFiles(preview, latestVersion, titleId));
+                         std::move(actions));
     }
 
     // The tmp torrent stays alive until the choice lands; the chooser hands
@@ -667,8 +735,11 @@ private:
             },
             [this, alive, path] {
                 ::unlink(path.c_str());
-                if (alive->load())
+                if (alive->load()) {
+                    pendingUpdateAll_.clear();
+                    updateAllAutoImport_ = false;
                     reload();
+                }
             }));
     }
 
@@ -700,6 +771,7 @@ private:
         }
         ::unlink(path.c_str());
         reload();
+        pumpUpdateAll();
     }
 
     // UI-thread tick while an update task we started is in flight: wait for
@@ -824,6 +896,7 @@ private:
     GameMetadataService* metadata_ = nullptr;
     AppSettings* settings_;
     CatalogService* catalog_ = nullptr;
+    GameUpdateService* updates_ = nullptr;
     bool checkOnEntry_ = true;
     Mode mode_ = Mode::Library;
     brls::Label* status_ = nullptr;
@@ -831,13 +904,14 @@ private:
     brls::RecyclerFrame* recycler_ = nullptr;
     brls::Box* recyclerHost_ = nullptr;
     InstalledDataSource* dataSource_ = nullptr;
-    std::unique_ptr<GameUpdateService> updates_;
     std::shared_ptr<std::atomic<bool>> alive_;
     std::shared_ptr<std::atomic<bool>> cancelled_ =
         std::make_shared<std::atomic<bool>>(false);
     std::atomic<uint32_t> updateTempSerial_{0};
     brls::RepeatingTimer recheckTimer_;
     std::string pendingRecheckTaskId_;
+    std::vector<std::string> pendingUpdateAll_;
+    bool updateAllAutoImport_ = false;
     bool refreshing_ = false;
     bool updateInFlight_ = false;
     bool uninstallInFlight_ = false;

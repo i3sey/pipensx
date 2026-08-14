@@ -3,6 +3,7 @@
 #include "app/companion_settings.hpp"
 #include "app/download_manager.hpp"
 #include "app/game_metadata_service.hpp"
+#include "app/game_update_service.hpp"
 #include "app/installed_title_service.hpp"
 #include "app/switch_deploy.hpp"
 #include "app/update_service.hpp"
@@ -57,6 +58,7 @@ using pipensx::CatalogService;
 using pipensx::DownloadManager;
 using pipensx::SwitchDeployService;
 using pipensx::GameMetadataService;
+using pipensx::GameUpdateService;
 using pipensx::InstalledTitleService;
 using pipensx::FavoritesService;
 using pipensx::ModIndexService;
@@ -125,11 +127,11 @@ public:
                  InstalledTitleService* installed, AppSettings* settings,
                  UpdateService* updater, ModIndexService* mods,
                  FavoritesService* favorites, WebServer* webServer,
-                 SwitchDeployService* deploy)
+                 SwitchDeployService* deploy, GameUpdateService* gameUpdates)
         : manager_(manager), catalog_(catalog), metadata_(metadata),
           installed_(installed), settings_(settings), updater_(updater),
           mods_(mods), favorites_(favorites), webServer_(webServer),
-          deploy_(deploy) {
+          deploy_(deploy), gameUpdates_(gameUpdates) {
         auto* tabs = new pipensx::ui::MainFrame();
         using pipensx::ui::NavIconType;
         tabs->addNavTab(tr("pipensx/nav/catalog"), NavIconType::Catalog,
@@ -144,14 +146,16 @@ public:
             return new MainView(manager, metadata, settings, deploy);
         });
         tabs->addNavTab(tr("pipensx/nav/installed"), NavIconType::Installed,
-                        [installed, manager, metadata, settings, catalog] {
+                        [installed, manager, metadata, settings, catalog,
+                         gameUpdates] {
             return new InstalledView(installed, manager, metadata, settings,
-                                     catalog);
+                                     catalog, gameUpdates);
         });
         tabs->addNavTab(tr("pipensx/nav/updates"), NavIconType::Updates,
-                        [installed, manager, metadata, settings, catalog] {
+                        [installed, manager, metadata, settings, catalog,
+                         gameUpdates] {
             return new InstalledView(installed, manager, metadata, settings,
-                                     catalog, true,
+                                     catalog, gameUpdates, true,
                                      InstalledView::Mode::Updates);
         });
         tabs->addNavTab(tr("pipensx/nav/settings"), NavIconType::Settings,
@@ -229,6 +233,7 @@ private:
     FavoritesService* favorites_;
     WebServer* webServer_;
     SwitchDeployService* deploy_;
+    GameUpdateService* gameUpdates_;
     brls::AppletFrame* frame_;
 };
 
@@ -481,11 +486,19 @@ int main(int argc, char** argv) {
             log_msg("[metadata] initial load failed: %s\n",
                     metadataError.c_str());
 
+        startupStage("GameUpdateService load");
+        GameUpdateService gameUpdates(&metadata,
+                                      "sdmc:/switch/pipensx/game-updates.json");
+        std::string gameUpdatesError;
+        if (!gameUpdates.load(gameUpdatesError))
+            diagnostic_error("game_updates", "load", "error=%s",
+                             gameUpdatesError.c_str());
+
         startupStage("MainActivity construction");
         auto* activity = new MainActivity(&manager, &catalog, &metadata,
                                            &installed, &settings, &updater,
                                            &mods, &favorites, &webServer,
-                                           &deploy);
+                                           &deploy, &gameUpdates);
 
         startupStage("push MainActivity");
         brls::Application::pushActivity(activity);

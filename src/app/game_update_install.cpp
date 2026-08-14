@@ -1,10 +1,10 @@
 #include "game_update_install.hpp"
+#include "installed_title_service.hpp"
 
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
-#include <cstdio>
 #include <unordered_set>
 
 namespace pipensx {
@@ -123,41 +123,12 @@ std::vector<size_t> smartUpdateMatches(const TorrentPreview& preview,
     return matches;
 }
 
-bool parseNxTitleId(const std::string& titleId, uint64_t& value) {
-    if (titleId.size() != 16)
-        return false;
-    uint64_t parsed = 0;
-    for (char c : titleId) {
-        int digit = -1;
-        if (c >= '0' && c <= '9')
-            digit = c - '0';
-        else if (c >= 'a' && c <= 'f')
-            digit = c - 'a' + 10;
-        else if (c >= 'A' && c <= 'F')
-            digit = c - 'A' + 10;
-        if (digit < 0)
-            return false;
-        parsed = (parsed << 4) | static_cast<uint64_t>(digit);
-    }
-    value = parsed;
-    return true;
-}
-
-std::string formatNxTitleId(uint64_t value) {
-    char text[17];
-    std::snprintf(text, sizeof(text), "%016llX",
-                  static_cast<unsigned long long>(value));
-    return text;
-}
-
-// Base application id of a title id: updates set bit 11 (…800) and DLC
-// increments the low 12 bits, so masking them off maps every variant onto the
-// base title. Empty when the id is not 16 hex characters.
 std::string normalizeNxBaseTitleId(const std::string& titleId) {
     uint64_t parsed = 0;
-    if (!parseNxTitleId(titleId, parsed))
+    if (!InstalledTitleService::parseTitleId(titleId, parsed))
         return {};
-    return formatNxTitleId(parsed & ~0x1FFFULL);
+    return InstalledTitleService::formatTitleId(
+        InstalledTitleService::nxBaseApplicationId(parsed));
 }
 
 // Every 16-hex title id embedded in a file path, uppercased.
@@ -166,8 +137,8 @@ std::vector<std::string> titleIdsInPath(const std::string& path) {
     for (size_t i = 0; i + 16 <= path.size(); ++i) {
         std::string candidate = path.substr(i, 16);
         uint64_t parsed = 0;
-        if (parseNxTitleId(candidate, parsed)) {
-            ids.push_back(formatNxTitleId(parsed));
+        if (InstalledTitleService::parseTitleId(candidate, parsed)) {
+            ids.push_back(InstalledTitleService::formatTitleId(parsed));
             i += 15;
         }
     }
@@ -180,8 +151,8 @@ std::unordered_set<std::string> normalizedSet(
     out.reserve(values.size());
     for (const std::string& value : values) {
         uint64_t parsed = 0;
-        if (parseNxTitleId(value, parsed))
-            out.insert(formatNxTitleId(parsed));
+        if (InstalledTitleService::parseTitleId(value, parsed))
+            out.insert(InstalledTitleService::formatTitleId(parsed));
     }
     return out;
 }
@@ -311,7 +282,7 @@ std::vector<uint8_t> selectSmartInstallFiles(
                 if (normalizeNxBaseTitleId(id) != wantedBase)
                     continue;
                 uint64_t parsed = 0;
-                parseNxTitleId(id, parsed);
+                InstalledTitleService::parseTitleId(id, parsed);
                 if ((parsed & 0x1FFFULL) >= 0x1000ULL &&
                     installedDlc.count(id) == 0) {
                     actions[i] = static_cast<uint8_t>(FileAction::Install);
