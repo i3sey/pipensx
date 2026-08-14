@@ -687,6 +687,7 @@
   "notify": {
     "download_completed": "{} 下载完成。",
     "install_completed": "{} 已安装。",
-    "download_failed": "{} 下载失败。"
+    "download_failed": "{} 下载失败。",
+    "install_failed": "{} 安装失败。"
   }
 }

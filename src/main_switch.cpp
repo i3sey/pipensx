@@ -635,7 +635,8 @@ int main(int argc, char** argv) {
                         lastTaskStatus[task.id] = task.status;
                         continue;
                     }
-                    if (previous->second == task.status)
+                    const pipensx::DownloadStatus prevStatus = previous->second;
+                    if (prevStatus == task.status)
                         continue;
                     lastTaskStatus[task.id] = task.status;
                     if (task.status == pipensx::DownloadStatus::Completed)
@@ -644,9 +645,16 @@ int main(int argc, char** argv) {
                     else if (task.status == pipensx::DownloadStatus::Installed)
                         brls::Application::notify(
                             tr("pipensx/notify/install_completed", task.name));
-                    else if (task.status == pipensx::DownloadStatus::Error)
-                        brls::Application::notify(
-                            tr("pipensx/notify/download_failed", task.name));
+                    else if (task.status == pipensx::DownloadStatus::Error) {
+                        const bool installFailed =
+                            prevStatus == pipensx::DownloadStatus::Installing ||
+                            prevStatus == pipensx::DownloadStatus::Committing ||
+                            task.mode == pipensx::TransferMode::StreamInstall;
+                        brls::Application::notify(tr(
+                            installFailed ? "pipensx/notify/install_failed"
+                                          : "pipensx/notify/download_failed",
+                            task.name));
+                    }
                 }
                 for (auto it = lastTaskStatus.begin();
                      it != lastTaskStatus.end();) {

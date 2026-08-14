@@ -687,6 +687,7 @@
   "notify": {
     "download_completed": "Загрузка «{}» завершена.",
     "install_completed": "«{}» установлено.",
-    "download_failed": "Загрузка «{}» не удалась."
+    "download_failed": "Загрузка «{}» не удалась.",
+    "install_failed": "Установка «{}» не удалась."
   }
 }

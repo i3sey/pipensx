@@ -687,6 +687,7 @@
   "notify": {
     "download_completed": "{} download complete.",
     "install_completed": "{} installed.",
-    "download_failed": "{} download failed."
+    "download_failed": "{} download failed.",
+    "install_failed": "{} install failed."
   }
 }
