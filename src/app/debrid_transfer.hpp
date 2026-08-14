@@ -53,8 +53,15 @@ struct DebridTaskSpec {
     std::function<void(const std::vector<ResolvedFile>&)> filesResolved;
 };
 
+// Fetcher reported HTTP 200 for a bounded Range request: the server ignored
+// Range. The transfer falls back to one sequential stream from the committed
+// offset. Never treat a 200 body as a mid-file slice.
+inline constexpr const char* kDebridRangeNotSupported = "range-not-supported";
+
+// endExclusive == 0 means "to EOF" (CURLOPT_RESUME_FROM). A non-zero end is
+// exclusive and must be served as HTTP 206.
 using RangeFetcher = std::function<bool(
-    const std::string& url, uint64_t offset,
+    const std::string& url, uint64_t offset, uint64_t endExclusive,
     const std::function<bool(const uint8_t*, size_t)>& sink,
     const std::function<bool()>& cancelled,
     std::string& error)>;

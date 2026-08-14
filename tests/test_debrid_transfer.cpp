@@ -1,13 +1,17 @@
 #include "app/debrid_transfer.hpp"
 #include "app/torbox_provider.hpp"
 
+#include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <mutex>
 #include <string>
 #include <sys/stat.h>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -34,14 +38,22 @@ TorboxTransport scriptedTransport(
 }
 
 RangeFetcher memoryFetcher(const std::string& content) {
-    return [content](const std::string&, uint64_t offset,
+    return [content](const std::string&, uint64_t offset, uint64_t endExclusive,
                      const std::function<bool(const uint8_t*, size_t)>& sink,
                      const std::function<bool()>&, std::string& error) {
         if (offset > content.size()) {
             error = "range past end";
             return false;
         }
-        std::string slice = content.substr(offset);
+        uint64_t end = endExclusive == 0
+            ? content.size()
+            : std::min<uint64_t>(endExclusive, content.size());
+        if (offset > end) {
+            error = "range past end";
+            return false;
+        }
+        std::string slice = content.substr(static_cast<size_t>(offset),
+                                           static_cast<size_t>(end - offset));
         size_t half = slice.size() / 2;
         if (half && !sink(reinterpret_cast<const uint8_t*>(slice.data()),
                           half))
@@ -49,6 +61,32 @@ RangeFetcher memoryFetcher(const std::string& content) {
         if (!sink(reinterpret_cast<const uint8_t*>(slice.data()) + half,
                   slice.size() - half))
             return false;
+        return true;
+    };
+}
+
+RangeFetcher chunkedFetcher(const std::string& content, size_t piece) {
+    return [content, piece](const std::string&, uint64_t offset,
+                            uint64_t endExclusive,
+                            const std::function<bool(const uint8_t*, size_t)>&
+                                sink,
+                            const std::function<bool()>&, std::string& error) {
+        if (offset > content.size()) {
+            error = "range past end";
+            return false;
+        }
+        uint64_t end = endExclusive == 0
+            ? content.size()
+            : std::min<uint64_t>(endExclusive, content.size());
+        size_t pos = static_cast<size_t>(offset);
+        size_t stop = static_cast<size_t>(end);
+        while (pos < stop) {
+            size_t n = std::min(piece, stop - pos);
+            if (!sink(reinterpret_cast<const uint8_t*>(content.data()) + pos,
+                      n))
+                return false;
+            pos += n;
+        }
         return true;
     };
 }
@@ -173,11 +211,15 @@ void testResumeUsesOnDiskOffset() {
     }
     uint64_t seenOffset = UINT64_MAX;
     RangeFetcher fetcher = [&content, &seenOffset](
-        const std::string&, uint64_t offset,
+        const std::string&, uint64_t offset, uint64_t endExclusive,
         const std::function<bool(const uint8_t*, size_t)>& sink,
         const std::function<bool()>&, std::string&) {
         seenOffset = offset;
-        std::string slice = content.substr(offset);
+        uint64_t end = endExclusive == 0
+            ? content.size()
+            : std::min<uint64_t>(endExclusive, content.size());
+        std::string slice = content.substr(static_cast<size_t>(offset),
+                                           static_cast<size_t>(end - offset));
         return sink(reinterpret_cast<const uint8_t*>(slice.data()),
                     slice.size());
     };
@@ -290,7 +332,7 @@ void testPartialStreamFailureRetriesWithoutPacerDeadlock() {
     std::string content(nsp.begin(), nsp.end());
     int attempts = 0;
     RangeFetcher fetcher = [&content, &attempts](
-        const std::string&, uint64_t,
+        const std::string&, uint64_t, uint64_t,
         const std::function<bool(const uint8_t*, size_t)>& sink,
         const std::function<bool()>&, std::string& error) {
         ++attempts;
@@ -444,6 +486,164 @@ void testMagnetFileFallback() {
     std::puts("magnet->file fallback ok");
 }
 
+void testOutOfOrderRangesAssembleInOrder() {
+    const std::string root = "/tmp/pipensx-torbox-ooo-test";
+    system(("rm -rf " + root).c_str());
+    mkdir(root.c_str(), 0755);
+    const std::string data = root + "/data";
+    mkdir(data.c_str(), 0755);
+
+    const size_t size = 10 * 1024 * 1024;
+    std::string content(size, '\0');
+    for (size_t i = 0; i < size; ++i)
+        content[i] = static_cast<char>(i * 131u);
+
+    std::mutex mu;
+    std::vector<uint64_t> starts;
+    RangeFetcher fetcher = [&](const std::string&, uint64_t offset,
+                               uint64_t endExclusive,
+                               const std::function<bool(const uint8_t*, size_t)>&
+                                   sink,
+                               const std::function<bool()>&, std::string& error) {
+        {
+            std::lock_guard<std::mutex> lock(mu);
+            starts.push_back(offset);
+        }
+        if (endExclusive != 0 && offset == 0)
+            std::this_thread::sleep_for(std::chrono::milliseconds(80));
+        uint64_t end = endExclusive == 0
+            ? content.size()
+            : std::min<uint64_t>(endExclusive, content.size());
+        if (offset > end) {
+            error = "range past end";
+            return false;
+        }
+        return sink(reinterpret_cast<const uint8_t*>(content.data()) +
+                        static_cast<size_t>(offset),
+                    static_cast<size_t>(end - offset));
+    };
+
+    std::vector<std::pair<std::string, std::string>> script = {
+        {"mylist", infoReadyJson("Example/file.bin", content.size())},
+        {"requestdl", "{\"success\":true,\"data\":\"https://x/dl\"}"},
+    };
+    TorboxProvider provider("k", scriptedTransport(&script));
+    DebridTransfer transfer(provider, fetcher);
+
+    DebridTaskSpec spec;
+    spec.taskId = "aabbccddaabbccddaabbccddaabbccddaabbccdd";
+    spec.debridId = "42";
+    spec.dataPath = data;
+    spec.workingRoot = root;
+    spec.mode = TransferMode::DownloadOnly;
+
+    std::string debridId;
+    std::string error;
+    DebridRunResult result = transfer.run(
+        spec, [] { return false; }, [](const DebridProgress&) {}, debridId,
+        error);
+    assert(result == DebridRunResult::Finished);
+    assert(starts.size() >= 2);
+
+    std::ifstream check(data + "/file.bin", std::ios::binary);
+    std::string written((std::istreambuf_iterator<char>(check)),
+                        std::istreambuf_iterator<char>());
+    assert(written == content);
+}
+
+void testRangeIgnoredFallsBackToSequential() {
+    const std::string root = "/tmp/pipensx-torbox-range200-test";
+    system(("rm -rf " + root).c_str());
+    mkdir(root.c_str(), 0755);
+    const std::string data = root + "/data";
+    mkdir(data.c_str(), 0755);
+
+    const size_t size = 10 * 1024 * 1024;
+    std::string content(size, 'R');
+    int rangedCalls = 0;
+    int sequentialCalls = 0;
+    RangeFetcher fetcher = [&](const std::string&, uint64_t offset,
+                               uint64_t endExclusive,
+                               const std::function<bool(const uint8_t*, size_t)>&
+                                   sink,
+                               const std::function<bool()>&, std::string& error) {
+        if (endExclusive != 0) {
+            ++rangedCalls;
+            error = kDebridRangeNotSupported;
+            return false;
+        }
+        ++sequentialCalls;
+        std::string slice = content.substr(static_cast<size_t>(offset));
+        return sink(reinterpret_cast<const uint8_t*>(slice.data()),
+                    slice.size());
+    };
+
+    std::vector<std::pair<std::string, std::string>> script = {
+        {"mylist", infoReadyJson("Example/file.bin", content.size())},
+        {"requestdl", "{\"success\":true,\"data\":\"https://x/dl\"}"},
+    };
+    TorboxProvider provider("k", scriptedTransport(&script));
+    DebridTransfer transfer(provider, fetcher);
+
+    DebridTaskSpec spec;
+    spec.taskId = "aabbccddaabbccddaabbccddaabbccddaabbccdd";
+    spec.debridId = "42";
+    spec.dataPath = data;
+    spec.workingRoot = root;
+    spec.mode = TransferMode::DownloadOnly;
+
+    std::string debridId;
+    std::string error;
+    DebridRunResult result = transfer.run(
+        spec, [] { return false; }, [](const DebridProgress&) {}, debridId,
+        error);
+    assert(result == DebridRunResult::Finished);
+    assert(rangedCalls >= 1);
+    assert(sequentialCalls == 1);
+
+    std::ifstream check(data + "/file.bin", std::ios::binary);
+    std::string written((std::istreambuf_iterator<char>(check)),
+                        std::istreambuf_iterator<char>());
+    assert(written == content);
+}
+
+void testStreamInstallCoalescesTinyChunks() {
+    const std::string root = "/tmp/pipensx-torbox-coalesce-test";
+    system(("rm -rf " + root).c_str());
+    mkdir(root.c_str(), 0755);
+    const std::string data = root + "/data";
+    mkdir(data.c_str(), 0755);
+
+    std::vector<uint8_t> nca(2 * 1024 * 1024, 0x3c);
+    std::vector<uint8_t> nsp =
+        makePfs0({{"00112233445566778899aabbccddeeff.nca", nca}});
+    std::string content(nsp.begin(), nsp.end());
+
+    std::vector<std::pair<std::string, std::string>> script = {
+        {"mylist", infoReadyJson("Example/game.nsp", content.size())},
+        {"requestdl", "{\"success\":true,\"data\":\"https://x/dl\"}"},
+    };
+    TorboxProvider provider("k", scriptedTransport(&script));
+    DebridTransfer transfer(provider, chunkedFetcher(content, 4096));
+
+    DebridTaskSpec spec;
+    spec.taskId = "aabbccddaabbccddaabbccddaabbccddaabbccdd";
+    spec.debridId = "42";
+    spec.dataPath = data;
+    spec.workingRoot = root;
+    spec.mode = TransferMode::StreamInstall;
+
+    std::string debridId;
+    std::string error;
+    DebridProgress last;
+    DebridRunResult result = transfer.run(
+        spec, [] { return false; },
+        [&last](const DebridProgress& p) { last = p; }, debridId, error);
+    assert(result == DebridRunResult::Finished);
+    assert(last.status == DownloadStatus::Installed);
+    assert(last.packagesInstalled == 1);
+}
+
 void testBuildRichMagnet() {
     std::string m = buildRichMagnet(
         "0123456789abcdef0123456789abcdef01234567",
@@ -471,6 +671,9 @@ int main() {
     testSelectionPathsPicksOneFile();
     testSelectionPathsNoMatchReturnsFailed();
     testMagnetFileFallback();
+    testOutOfOrderRangesAssembleInOrder();
+    testRangeIgnoredFallsBackToSequential();
+    testStreamInstallCoalescesTinyChunks();
     testBuildRichMagnet();
     std::printf("test_debrid_transfer ok\n");
     return 0;

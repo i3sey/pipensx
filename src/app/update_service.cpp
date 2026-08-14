@@ -1,5 +1,6 @@
 #include "update_service.hpp"
 #include "update_transaction.h"
+#include "curl_https.hpp"
 
 #include <curl/curl.h>
 #include <borealis/extern/nlohmann/json.hpp>
@@ -13,7 +14,6 @@
 #include <cstring>
 #include <fstream>
 #include <sstream>
-#include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -84,18 +84,6 @@ size_t writeFile(char* bytes, size_t size, size_t count, void* opaque) {
     return received;
 }
 
-int enlargeSocketBuffer(void*, curl_socket_t socket, curlsocktype purpose) {
-    // Borealis boots the Switch socket service with tiny default buffers;
-    // a larger receive window is what keeps the NRO download off the
-    // kilobytes-per-second floor.
-    if (purpose == CURLSOCKTYPE_IPCXN) {
-        int size = 256 * 1024;
-        setsockopt(socket, SOL_SOCKET, SO_RCVBUF,
-                   reinterpret_cast<const char*>(&size), sizeof(size));
-    }
-    return CURL_SOCKOPT_OK;
-}
-
 struct TransferProgress {
     const UpdateService::ProgressCallback* callback;
     const std::atomic<bool>* stopping;
@@ -130,8 +118,7 @@ bool configureCurl(CURL* curl, const std::string& url, TransferKind kind,
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L * 60L);
         curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1024L);
         curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 60L);
-        curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, 256L * 1024L);
-        curl_easy_setopt(curl, CURLOPT_SOCKOPTFUNCTION, enlargeSocketBuffer);
+        curlTuneDownloadSocket(curl);
     } else {
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, 120L);
         curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
