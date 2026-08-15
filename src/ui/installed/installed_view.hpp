@@ -26,9 +26,8 @@ namespace pipensx::ui {
 
 class InstalledCell : public brls::RecyclerCell {
 public:
-    using CheckOne = std::function<void(const std::string&, const std::string&)>;
+    using OpenMenu = std::function<void(InstalledTitle)>;
     using InstallOne = std::function<void(const std::string&)>;
-    using UninstallOne = std::function<void(InstalledTitle)>;
 
     InstalledCell() {
         setFocusable(true);
@@ -82,19 +81,20 @@ public:
         registerClickAction([this](brls::View*) {
             if (titleId_.empty())
                 return true;
-            if (currentState_ == GameUpdateState::UpdateAvailable &&
+            if (!ignored_ &&
+                currentState_ == GameUpdateState::UpdateAvailable &&
                 onInstallOne_)
                 onInstallOne_(titleId_);
-            else if (onCheckOne_)
-                onCheckOne_(titleId_, version_);
+            else if (onOpenMenu_)
+                onOpenMenu_(storedTitle_);
             return true;
         });
         addGestureRecognizer(new brls::TapGestureRecognizer(this));
 
-        registerAction(tr("pipensx/installed/uninstall_action"),
-                       brls::BUTTON_Y, [this](brls::View*) {
-            if (!titleId_.empty() && onUninstallOne_)
-                onUninstallOne_(storedTitle_);
+        registerAction(tr("pipensx/common/more"), brls::BUTTON_Y,
+                       [this](brls::View*) {
+            if (!titleId_.empty() && onOpenMenu_)
+                onOpenMenu_(storedTitle_);
             return true;
         });
     }
@@ -111,11 +111,11 @@ public:
                       imageState_);
     }
 
-    void setResult(const GameUpdateResult* result, CheckOne onCheckOne,
-                   InstallOne onInstallOne, UninstallOne onUninstallOne) {
-        onCheckOne_ = std::move(onCheckOne);
+    void setResult(const GameUpdateResult* result, bool ignored,
+                   OpenMenu onOpenMenu, InstallOne onInstallOne) {
+        onOpenMenu_ = std::move(onOpenMenu);
         onInstallOne_ = std::move(onInstallOne);
-        onUninstallOne_ = std::move(onUninstallOne);
+        ignored_ = ignored;
         const GameUpdateState state =
             result ? result->state : GameUpdateState::NotChecked;
         currentState_ = state;
@@ -125,14 +125,19 @@ public:
         // means something different per state, so the hint bar must say so.
         // updateActionHint rewrites the text of the existing action (the
         // click still routes through the tap handler), then repaints the bar.
-        updateActionHint(
-            brls::BUTTON_A,
-            state == GameUpdateState::UpdateAvailable
-                ? tr("pipensx/common/install")
-                : tr("pipensx/installed/action_check"));
-        const bool available = state == GameUpdateState::UpdateAvailable;
+        const bool available =
+            !ignored && state == GameUpdateState::UpdateAvailable;
+        updateActionHint(brls::BUTTON_A,
+                         available ? tr("pipensx/common/install")
+                                   : tr("pipensx/common/more"));
         mark_->setVisibility(available ? brls::Visibility::VISIBLE
                                        : brls::Visibility::GONE);
+        if (ignored) {
+            chip_->setText(tr("pipensx/installed/update_chip_ignored"));
+            chip_->setTextColor(theme::textTertiary());
+            chip_->setVisibility(brls::Visibility::VISIBLE);
+            return;
+        }
         switch (state) {
         case GameUpdateState::UpdateAvailable:
             chip_->setText(tr("pipensx/common/install"));
@@ -176,7 +181,8 @@ private:
             subtitle = publisher_ + " · ";
         if (!version_.empty()) {
             subtitle += "v" + version_;
-            if (currentState_ == GameUpdateState::UpdateAvailable &&
+            if (!ignored_ &&
+                currentState_ == GameUpdateState::UpdateAvailable &&
                 !currentFoundVersion_.empty())
                 subtitle += " → v" + currentFoundVersion_;
         }
@@ -197,9 +203,9 @@ private:
     std::string version_;
     std::string currentFoundVersion_;
     GameUpdateState currentState_ = GameUpdateState::NotChecked;
-    CheckOne onCheckOne_;
+    bool ignored_ = false;
+    OpenMenu onOpenMenu_;
     InstallOne onInstallOne_;
-    UninstallOne onUninstallOne_;
 };
 
 class InstalledDataSource : public brls::RecyclerDataSource {
@@ -219,14 +225,12 @@ public:
     }
 
     void setResults(const GameUpdateResults* results) { results_ = results; }
-    void setCheckOne(InstalledCell::CheckOne onCheckOne) {
-        onCheckOne_ = std::move(onCheckOne);
+    void setUpdates(GameUpdateService* service) { updateService_ = service; }
+    void setOpenMenu(InstalledCell::OpenMenu onOpenMenu) {
+        onOpenMenu_ = std::move(onOpenMenu);
     }
     void setInstallOne(InstalledCell::InstallOne onInstallOne) {
         onInstallOne_ = std::move(onInstallOne);
-    }
-    void setUninstallOne(InstalledCell::UninstallOne onUninstallOne) {
-        onUninstallOne_ = std::move(onUninstallOne);
     }
 
     const std::vector<InstalledTitle>& updateTitles() const { return updates_; }
@@ -267,12 +271,16 @@ public:
             if (it != results_->end())
                 result = &it->second;
         }
-        cell->setResult(result, onCheckOne_, onInstallOne_, onUninstallOne_);
+        cell->setResult(result,
+                        updateService_ && updateService_->isIgnored(title.titleId),
+                        onOpenMenu_, onInstallOne_);
         return cell;
     }
 
 private:
     bool isUpdateAvailable(const std::string& titleId) const {
+        if (updateService_ && updateService_->isIgnored(titleId))
+            return false;
         if (!results_)
             return false;
         auto it = results_->find(titleId);
@@ -287,24 +295,30 @@ private:
     }
 
     GameMetadataService* metadata_;
+    GameUpdateService* updateService_ = nullptr;
     std::vector<InstalledTitle> updates_;
     std::vector<InstalledTitle> rest_;
     const GameUpdateResults* results_ = nullptr;
-    InstalledCell::CheckOne onCheckOne_;
+    InstalledCell::OpenMenu onOpenMenu_;
     InstalledCell::InstallOne onInstallOne_;
-    InstalledCell::UninstallOne onUninstallOne_;
 };
 
-inline size_t availableUpdateCount(const GameUpdateResults& results,
-                                   const std::vector<InstalledTitle>& titles) {
-    size_t count = 0;
-    for (const InstalledTitle& title : titles) {
-        auto it = results.find(title.titleId);
-        if (it != results.end() &&
-            it->second.state == GameUpdateState::UpdateAvailable)
-            ++count;
+inline void setAncestorActionHidden(brls::View* start,
+                                    brls::ControllerButton button,
+                                    bool hidden) {
+    for (brls::View* view = start; view; view = view->getParent()) {
+        for (const auto& action : view->getActions()) {
+            if (action->getType() != brls::ACTION_GAMEPAD)
+                continue;
+            if (!(*action == button))
+                continue;
+            if (action->isHidden() == hidden)
+                return;
+            view->registerAction(action->getHintText(), button,
+                                 action->getActionListener(), hidden);
+            return;
+        }
     }
-    return count;
 }
 
 class InstalledView : public brls::Box {
@@ -337,32 +351,30 @@ public:
         addView(recyclerHost_);
 
         dataSource_->setResults(&updates_->results());
-        dataSource_->setCheckOne(
-            [this](const std::string& titleId, const std::string& version) {
-                checkOneTitle(titleId, version);
-            });
+        dataSource_->setUpdates(updates_);
+        dataSource_->setOpenMenu(
+            [this](InstalledTitle title) { openRowMenu(std::move(title)); });
         dataSource_->setInstallOne(
             [this](const std::string& titleId) { installUpdate(titleId); });
-        dataSource_->setUninstallOne(
-            [this](InstalledTitle title) { confirmUninstall(std::move(title)); });
         reload();
         recheckTimer_.setCallback([this] { pollUpdateRecheck(); });
-        // Entering the tab re-checks every installed title so verdicts are
-        // fresh without pressing L. Skipped when nothing is installed and
-        // disabled in the golden runner, which pins planted fixture states.
-        if (checkOnEntry_ && !installed_->titles().empty())
+        // Catalog/settings metadata refresh is the scheduled check. A silent
+        // pass here only runs when those results no longer match the installed
+        // set or the index. Golden pins fixture states with checkOnEntry=false.
+        if (checkOnEntry_ && !installed_->titles().empty() &&
+            updates_->stale(installed_->generation(),
+                            settings_->get().lastMetadataRefreshMs))
             checkAllTitles();
+    }
 
-        registerAction(tr("pipensx/installed/update_check_all"),
-                       brls::BUTTON_LB, [this](brls::View*) {
-            checkAllTitles();
-            return true;
-        });
-        registerAction(tr("pipensx/updates/update_all"),
-                       brls::BUTTON_X, [this](brls::View*) {
-            queueAllUpdates();
-            return true;
-        });
+    void willAppear(bool resetState) override {
+        brls::Box::willAppear(resetState);
+        setAncestorActionHidden(this, brls::BUTTON_BACK, true);
+    }
+
+    void willDisappear(bool resetState) override {
+        setAncestorActionHidden(this, brls::BUTTON_BACK, false);
+        brls::Box::willDisappear(resetState);
     }
 
     void setOnUpdateCount(std::function<void(size_t)> callback) {
@@ -409,7 +421,7 @@ private:
         return false;
     }
 
-    // "Проверить всё" (LB): synchronous in-memory check of every installed
+    // "Проверить всё": synchronous in-memory check of every installed
     // title, then persist and re-render. Re-entrancy is guarded by the
     // service itself; the work is microseconds, so no spinner is shown.
     void checkAllTitles() {
@@ -422,22 +434,43 @@ private:
         reload();
     }
 
-    // "Проверить" на отдельное приложение (A-тап по строке).
-    void checkOneTitle(const std::string& titleId,
-                       const std::string& version) {
-        std::string saveError;
-        updates_->checkOne(titleId, version, saveError);
-        if (!saveError.empty())
-            diagnostic_error("game_updates", "save", "error=%s",
-                             saveError.c_str());
-        reload();
+    void openRowMenu(InstalledTitle title) {
+        std::vector<std::string> labels;
+        auto runners =
+            std::make_shared<std::vector<std::function<void()>>>();
+        auto add = [&](const std::string& label, std::function<void()> run) {
+            labels.push_back(label);
+            runners->push_back(std::move(run));
+        };
+        const bool ignored = updates_->isIgnored(title.titleId);
+        add(tr(ignored ? "pipensx/installed/unignore_updates"
+                       : "pipensx/installed/ignore_updates"),
+            [this, titleId = title.titleId, ignored] {
+                std::string saveError;
+                updates_->setIgnored(titleId, !ignored, saveError);
+                if (!saveError.empty())
+                    diagnostic_error("game_updates", "save", "error=%s",
+                                     saveError.c_str());
+                reload();
+            });
+        add(tr("pipensx/installed/uninstall_action"),
+            [this, title] { confirmUninstall(title); });
+        auto* dropdown = new brls::Dropdown(
+            title.name, labels, [runners](int selected) {
+                if (selected < 0 ||
+                    selected >= static_cast<int>(runners->size()))
+                    return;
+                auto run = (*runners)[selected];
+                brls::sync([run] { run(); });
+            });
+        brls::Application::pushActivity(new brls::Activity(dropdown));
     }
 
     // A-тап по строке "Update available": скачать и установить апдейт.
     void installUpdate(const std::string& titleId) {
-        pendingUpdateAll_.clear();
-        updateAllAutoImport_ = false;
         if (refreshing_ || updateInFlight_ || uninstallInFlight_)
+            return;
+        if (updates_->isIgnored(titleId))
             return;
         std::vector<const GameMetadata*> entries;
         if (!metadata_ || !metadata_->findByTitleId(titleId, entries)) {
@@ -456,43 +489,6 @@ private:
         for (const GameMetadata* entry : entries)
             bundles.push_back(*entry);
         chooseBundle(std::move(bundles), 0);
-    }
-
-    void queueAllUpdates() {
-        if (refreshing_ || updateInFlight_ || uninstallInFlight_)
-            return;
-        pendingUpdateAll_.clear();
-        for (const InstalledTitle& title : dataSource_->updateTitles())
-            pendingUpdateAll_.push_back(title.titleId);
-        if (pendingUpdateAll_.empty()) {
-            brls::Application::notify(tr("pipensx/updates/update_all_empty"));
-            return;
-        }
-        updateAllAutoImport_ = true;
-        brls::Application::notify(
-            tr("pipensx/updates/update_all_started",
-               pendingUpdateAll_.size()));
-        pumpUpdateAll();
-    }
-
-    void pumpUpdateAll() {
-        if (updateInFlight_ || uninstallInFlight_ || refreshing_)
-            return;
-        while (!pendingUpdateAll_.empty()) {
-            const std::string titleId = pendingUpdateAll_.front();
-            pendingUpdateAll_.erase(pendingUpdateAll_.begin());
-            std::vector<const GameMetadata*> entries;
-            if (!metadata_ || !metadata_->findByTitleId(titleId, entries) ||
-                entries.empty()) {
-                brls::Application::notify(
-                    tr("pipensx/installed/update_no_bundle"));
-                continue;
-            }
-            beginUpdateInstall(GameMetadata(*entries.front()));
-            return;
-        }
-        updateAllAutoImport_ = false;
-        reload();
     }
 
     void confirmUninstall(InstalledTitle title) {
@@ -693,8 +689,6 @@ private:
                     // as a failure, so distinguish it from a genuine one
                     // before the diagnostic and the toast.
                     if (cancelled_->load()) {
-                        pendingUpdateAll_.clear();
-                        updateAllAutoImport_ = false;
                         brls::Application::notify(
                             tr("pipensx/installed/update_cancelled"));
                         return;
@@ -702,7 +696,6 @@ private:
                     diagnostic_error("game_updates", "resolve",
                                      "title error=%s", err.c_str());
                     brls::Application::notify(resolveErrorToast(err));
-                    pumpUpdateAll();
                     return;
                 }
                 finishUpdateImport(tmp, std::move(initialPeers),
@@ -742,28 +735,10 @@ private:
             brls::Application::notify(
                 tr("pipensx/installed/update_error_preview"));
             reload();
-            pumpUpdateAll();
             return;
         }
         std::vector<uint8_t> actions =
             selectUpdateFiles(preview, latestVersion, titleId);
-        if (updateAllAutoImport_) {
-            bool hasInstall = false;
-            for (uint8_t action : actions) {
-                if (action == static_cast<uint8_t>(FileAction::Install)) {
-                    hasInstall = true;
-                    break;
-                }
-            }
-            if (!hasInstall) {
-                ::unlink(path.c_str());
-                pumpUpdateAll();
-                return;
-            }
-            importUpdateTorrent(preview, path, std::move(initialPeers),
-                                std::move(actions));
-            return;
-        }
         // Every update offer lands in the chooser with the recommended
         // packages preselected. The old shortcut — importing straight away
         // when exactly one package carried the update's version — is gone:
@@ -796,11 +771,8 @@ private:
             },
             [this, alive, path] {
                 ::unlink(path.c_str());
-                if (alive->load()) {
-                    pendingUpdateAll_.clear();
-                    updateAllAutoImport_ = false;
+                if (alive->load())
                     reload();
-                }
             }));
     }
 
@@ -832,7 +804,6 @@ private:
         }
         ::unlink(path.c_str());
         reload();
-        pumpUpdateAll();
     }
 
     // UI-thread tick while an update task we started is in flight: wait for
@@ -962,8 +933,6 @@ private:
     std::atomic<uint32_t> updateTempSerial_{0};
     brls::RepeatingTimer recheckTimer_;
     std::string pendingRecheckTaskId_;
-    std::vector<std::string> pendingUpdateAll_;
-    bool updateAllAutoImport_ = false;
     bool refreshing_ = false;
     bool updateInFlight_ = false;
     bool uninstallInFlight_ = false;

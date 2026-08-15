@@ -44,7 +44,8 @@
     "later": "Plus tard",
     "unavailable": "indisponible",
     "close": "Fermer",
-    "choose_files": "Choisir les fichiers"
+    "choose_files": "Choisir les fichiers",
+    "more": "Plus"
   },
   "catalog": {
     "sort_latest": "Récents",
@@ -373,12 +374,15 @@
     "uninstall_confirm": "Désinstaller {0} de cette console ? Les données de sauvegarde sont conservées.",
     "uninstalling": "Désinstallation de {0}...",
     "uninstall_done": "Application désinstallée.",
-    "update_stale": "Résultats de mise à jour obsolètes — appuyez sur L pour revérifier",
+    "ignore_updates": "Ignorer les mises à jour",
+    "unignore_updates": "Ne plus ignorer les mises à jour",
+    "update_stale": "Résultats de mise à jour obsolètes",
     "update_chip_available": "Mise à jour",
     "update_chip_latest": "À jour",
     "update_chip_not_checked": "Non vérifié",
     "update_chip_no_source": "Sans source",
     "update_chip_error": "Erreur",
+    "update_chip_ignored": "Ignoré",
     "update_no_bundle": "Aucun paquet de sortie pour ce titre dans l'index",
     "update_choose_bundle": "Choisir un paquet de sortie",
     "update_install_confirm": "Installer la mise à jour {1} pour {0} ?",
@@ -400,7 +404,7 @@
   },
   "updates": {
     "empty_title": "Aucune mise à jour trouvée",
-    "empty_body": "Appuyez sur L pour vérifier les jeux installés dans l'index du catalogue.",
+    "empty_body": "Actualisez le catalogue pour vérifier les jeux installés dans l'index.",
     "count": "{} mises à jour disponibles",
     "update_all": "Tout mettre à jour",
     "update_all_empty": "Aucune mise à jour à installer.",
@@ -601,7 +605,9 @@
     "disclaimer": "pipensx est un projet open source indépendant et n'est pas affilié à Nintendo."
   },
   "disclaimer": {
-    "catalog": "Le catalogue est une liste de sorties RuTracker collectée par @Langegen. pipensx n'est affilié ni à RuTracker ni à @Langegen.\n\nLe catalogue va se mettre à jour maintenant. Cela peut prendre un moment."
+    "catalog": "Le catalogue est une liste de sorties RuTracker collectée par @Langegen. pipensx n'est affilié ni à RuTracker ni à @Langegen.\n\nLe catalogue va se mettre à jour maintenant. Cela peut prendre un moment.",
+    "catalog_direct": "Le téléchargement direct depuis l'essaim peut ne pas fonctionner en 4G/5G, via un VPN ou un réseau similaire.",
+    "ok_wait": "OK ({})"
   },
   "setup_summary": {
     "connection": "Connexion",
@@ -636,8 +642,10 @@
     "realdebrid_setup": "Configuration requise : entrez le jeton API sur la console, ou envoyez-le depuis votre téléphone en scannant un QR.",
     "direct": "Directement depuis l'essaim",
     "direct_how": "La console rejoint l'essaim directement et télécharge les fichiers elle-même.",
-    "direct_peer": "Chaque pair de l'essaim voit votre adresse IP. En Russie, Ukraine et CEI c'est largement ignoré ; en Allemagne, Autriche, France et aux USA votre FAI peut transmettre un avis de droit d'auteur, parfois avec une facture.",
+    "direct_peer": "Chaque pair de l'essaim voit votre adresse IP. En Russie, Ukraine et CEI c'est largement ignoré ; en Allemagne et Autriche votre FAI peut transmettre un avis de droit d'auteur, parfois avec une facture.",
     "direct_setup": "Aucune configuration nécessaire.",
+    "direct_hint_ok": "Généralement sans souci dans votre région",
+    "direct_hint_no": "Peu adapté à votre région",
     "diagram_console": "Console",
     "diagram_swarm": "Essaim",
     "diagram_torrserver": "TorrServer",

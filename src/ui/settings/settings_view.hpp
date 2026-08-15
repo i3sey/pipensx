@@ -36,10 +36,12 @@ public:
     SettingsView(AppSettings* settings, DownloadManager* manager,
                  CatalogService* catalog, GameMetadataService* metadata,
                  InstalledTitleService* installed, UpdateService* updater = nullptr,
-                 WebServer* webServer = nullptr)
+                 WebServer* webServer = nullptr,
+                 std::function<void()> onMetadataRefreshed = {})
         : brls::Box(brls::Axis::COLUMN), settings_(settings), manager_(manager),
           catalog_(catalog), metadata_(metadata), installed_(installed), updater_(updater),
           webServer_(webServer),
+          onMetadataRefreshed_(std::move(onMetadataRefreshed)),
           alive_(std::make_shared<std::atomic<bool>>(true)) {
         auto* content = new brls::Box(brls::Axis::COLUMN);
         content->setPadding(24, 34, 24, 34);
@@ -463,6 +465,8 @@ private:
                 metadata_->adopt(std::move(snapshot));
                 metadata_->dropMemoryImageCache();
                 recordRefreshTime(false, true);
+                if (onMetadataRefreshed_)
+                    onMetadataRefreshed_();
                 brls::Application::notify(
                     tr("pipensx/catalog/updated_artwork", metadata_->size()));
                 if (onDone)
@@ -701,6 +705,7 @@ private:
     InstalledTitleService* installed_;
     UpdateService* updater_;
     WebServer* webServer_;
+    std::function<void()> onMetadataRefreshed_;
     std::shared_ptr<std::atomic<bool>> alive_;
     brls::SelectorCell* language_ = nullptr;
     brls::BooleanCell* refreshCatalog_ = nullptr;

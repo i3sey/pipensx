@@ -44,7 +44,8 @@
     "later": "稍后",
     "unavailable": "不可用",
     "close": "关闭",
-    "choose_files": "选择文件"
+    "choose_files": "选择文件",
+    "more": "更多"
   },
   "catalog": {
     "sort_latest": "最新",
@@ -373,12 +374,15 @@
     "uninstall_confirm": "从本机卸载 {0}？存档会保留。",
     "uninstalling": "正在卸载 {0}…",
     "uninstall_done": "应用已卸载。",
-    "update_stale": "更新结果已过时 — 按 L 重新检查",
+    "ignore_updates": "忽略更新",
+    "unignore_updates": "停止忽略更新",
+    "update_stale": "更新结果已过时",
     "update_chip_available": "有更新",
     "update_chip_latest": "已是最新",
     "update_chip_not_checked": "未检查",
     "update_chip_no_source": "无来源",
     "update_chip_error": "错误",
+    "update_chip_ignored": "已忽略",
     "update_no_bundle": "索引中没有此标题的发行捆绑包",
     "update_choose_bundle": "选择发行捆绑包",
     "update_install_confirm": "为 {0} 安装更新 {1}？",
@@ -400,7 +404,7 @@
   },
   "updates": {
     "empty_title": "未找到更新",
-    "empty_body": "按 L 根据目录索引检查已安装游戏。",
+    "empty_body": "刷新目录以根据索引检查已安装游戏。",
     "count": "{} 个可用更新",
     "update_all": "全部更新",
     "update_all_empty": "没有可安装的更新。",
@@ -601,7 +605,9 @@
     "disclaimer": "pipensx 是一个独立的开源项目，与任天堂无关联。"
   },
   "disclaimer": {
-    "catalog": "目录是 @Langegen 收集的 RuTracker 发行列表。pipensx 与 RuTracker 和 @Langegen 均无关联。\n\n目录即将更新，可能需要一些时间。"
+    "catalog": "目录是 @Langegen 收集的 RuTracker 发行列表。pipensx 与 RuTracker 和 @Langegen 均无关联。\n\n目录即将更新，可能需要一些时间。",
+    "catalog_direct": "通过移动网络、VPN 或类似网络时，直接从节点群下载可能无法工作。",
+    "ok_wait": "确定 ({})"
   },
   "setup_summary": {
     "connection": "连接",
@@ -636,8 +642,10 @@
     "realdebrid_setup": "需要配置：在主机上输入 API 令牌，或用手机扫码发送。",
     "direct": "直接从节点群下载",
     "direct_how": "主机直接加入节点群并自行下载文件。",
-    "direct_peer": "节点群中的每个节点都能看到你的 IP。在俄罗斯、乌克兰和独联体国家这通常被忽视；在德国、奥地利、法国和美国，你的网络服务商可能会转发版权通知，有时还附带账单。",
+    "direct_peer": "节点群中的每个节点都能看到你的 IP。在俄罗斯、乌克兰和独联体国家这通常被忽视；在德国和奥地利，你的网络服务商可能会转发版权通知，有时还附带账单。",
     "direct_setup": "无需配置。",
+    "direct_hint_ok": "在你所在地区通常没问题",
+    "direct_hint_no": "不太适合你所在的地区",
     "diagram_console": "主机",
     "diagram_swarm": "节点群",
     "diagram_torrserver": "TorrServer",

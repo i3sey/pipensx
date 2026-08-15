@@ -77,6 +77,7 @@
 #include "ui/settings/storage_manager.hpp"
 #include "ui/theme.hpp"
 
+#include <chrono>
 #include <ctime>
 
 extern "C" {
@@ -374,6 +375,10 @@ int main(int argc, char** argv) {
         return fail("--locale must be en-US or ru");
     if (frames < 1 || frames > 100000)
         return fail("--frames out of range");
+    // Layout only: the disclaimer test waits out the 5s read timer itself.
+    // 200 settle frames would expire the timer before the early-OK assert.
+    if (screen == "first-run-disclaimer" && frames == 200)
+        frames = 8;
 
     std::error_code ec;
     const fs::path fixtures = fs::absolute(fixturesArg, ec);
@@ -792,8 +797,8 @@ int main(int argc, char** argv) {
             });
             return view;
         }, true);
-        tabs->setUpdateCountBadge(
-            availableUpdateCount(gameUpdates.results(), installed.titles()));
+            tabs->setUpdateCountBadge(
+                gameUpdates.availableCount(installed.titles()));
         tabs->addNavTab(tr("pipensx/nav/settings"), NavIconType::Settings,
                         [&] {
             return new SettingsView(&settings, &manager, &catalog, &metadata,
@@ -1114,25 +1119,30 @@ int main(int argc, char** argv) {
                          firstRunFocus->summaryOverflow().c_str());
             return fail("first-run-focus summary clips on a mode");
         };
-        std::vector<std::string> states{firstRunFocus->summaryState()};
-        if (int rc = checkFits(); rc)
-            return rc;
-        for (int i = 0; i < 2; ++i) {
-            brls::View* next = option->getNextFocus(brls::FocusDirection::DOWN,
-                                                    option);
-            option = dynamic_cast<FirstRunOption*>(next);
-            if (!option)
-                return fail("first-run-focus could not reach every option");
-            brls::Application::giveFocus(option);
+        auto* row = dynamic_cast<brls::Box*>(option->getParent());
+        if (!row)
+            return fail("first-run-focus option has no parent row");
+        std::vector<FirstRunOption*> options;
+        for (brls::View* child : row->getChildren()) {
+            if (auto* card = dynamic_cast<FirstRunOption*>(child))
+                options.push_back(card);
+        }
+        if (options.size() != 4)
+            return fail("first-run-focus expected four method options");
+        std::vector<std::string> states;
+        FirstRunOption* last = nullptr;
+        for (FirstRunOption* card : options) {
+            brls::Application::giveFocus(card);
             for (int frame = 0; frame < 5; ++frame)
                 brls::Application::mainLoop();
             states.push_back(firstRunFocus->summaryState());
             if (int rc = checkFits(); rc)
                 return rc;
+            last = card;
         }
-        if (states[0] == states[1] || states[1] == states[2] ||
-            states[0] == states[2] ||
-            brls::Application::getCurrentFocus() != option)
+        if (states.size() != 4 || states[0] == states[1] ||
+            states[1] == states[2] || states[2] == states[3] ||
+            brls::Application::getCurrentFocus() != last)
             return fail("first-run-focus did not update the summary in place");
         std::printf("golden_runner: first-run summary followed all options\n");
         manager.shutdown();
@@ -1432,13 +1442,14 @@ int main(int argc, char** argv) {
         if (disclaimerOkFired)
             return fail("first-run-disclaimer B continued the chain");
 
-        // Press OK: the flag persists and the continuation fires.
+        // Press OK before the 5s read timer: must not acknowledge. Dialog
+        // buttons start labelled "OK (5)", so match any visible button.
         brls::Button* ok = nullptr;
         std::function<void(brls::View*)> findOk = [&](brls::View* node) {
             if (ok)
                 return;
             if (auto* button = dynamic_cast<brls::Button*>(node))
-                if (button->getText() == tr("pipensx/common/ok"))
+                if (button->getVisibility() == brls::Visibility::VISIBLE)
                     ok = button;
             if (auto* box = dynamic_cast<brls::Box*>(node))
                 for (brls::View* child : box->getChildren())
@@ -1454,6 +1465,23 @@ int main(int argc, char** argv) {
                 okAction = action.get();
         if (!okAction)
             return fail("first-run-disclaimer OK has no A action");
+        okAction->getActionListener()(ok);
+        for (int frame = 0; frame < 5; ++frame)
+            brls::Application::mainLoop();
+        if (brls::Application::getActivitiesStack().back() != dialogActivity)
+            return fail("first-run-disclaimer OK skipped the read timer");
+        if (settings.get().catalogDisclaimerAcknowledged)
+            return fail("first-run-disclaimer OK acknowledged during the timer");
+        if (disclaimerOkFired)
+            return fail("first-run-disclaimer OK continued during the timer");
+
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(7);
+        while (ok->getText() != tr("pipensx/common/ok")) {
+            brls::Application::mainLoop();
+            if (std::chrono::steady_clock::now() > deadline)
+                return fail("first-run-disclaimer timer never unlocked OK");
+        }
         okAction->getActionListener()(ok);
         // buttonClick runs the callback only after the dismiss animation
         // completes, so pump until the dialog is gone or we give up.

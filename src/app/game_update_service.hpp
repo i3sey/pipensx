@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -69,6 +70,13 @@ public:
     const GameUpdateResults& results() const { return results_; }
     const GameUpdateResult* find(const std::string& titleId) const;
 
+    bool isIgnored(const std::string& titleId) const;
+    void setIgnored(const std::string& titleId, bool ignored,
+                    std::string& saveError);
+
+    // UpdateAvailable titles that are not ignored.
+    size_t availableCount(const std::vector<InstalledTitle>& titles) const;
+
     bool load(std::string& error);
     bool save(std::string& error) const;
 
@@ -89,6 +97,7 @@ private:
     const IUpdateMetadataSource* source_;
     std::string statePath_;
     GameUpdateResults results_;
+    std::set<std::string> ignored_;
     uint64_t installedGeneration_ = 0;
     uint64_t metadataRefreshMs_ = 0;
     uint64_t lastCheckedAt_ = 0;

@@ -44,7 +44,8 @@
     "later": "Más tarde",
     "unavailable": "no disponible",
     "close": "Fechar",
-    "choose_files": "Escolher archivos"
+    "choose_files": "Escolher archivos",
+    "more": "Más"
   },
   "catalog": {
     "sort_latest": "Recentes",
@@ -373,12 +374,15 @@
     "uninstall_confirm": "¿Desinstalar {0} de esta consola? Se conservarán los datos guardados.",
     "uninstalling": "Desinstalando {0}...",
     "uninstall_done": "Aplicación desinstalada.",
-    "update_stale": "Resultados de actualización obsoletos — pulsa L para volver a comprobar",
+    "ignore_updates": "Ignorar actualizaciones",
+    "unignore_updates": "Dejar de ignorar actualizaciones",
+    "update_stale": "Resultados de actualización obsoletos",
     "update_chip_available": "Actualización",
     "update_chip_latest": "Al día",
     "update_chip_not_checked": "Sin comprobar",
     "update_chip_no_source": "Sin fuente",
     "update_chip_error": "Erro",
+    "update_chip_ignored": "Ignorado",
     "update_no_bundle": "No hay paquete de lanzamiento para este título en el índice",
     "update_choose_bundle": "Elige un paquete de lanzamiento",
     "update_install_confirm": "¿Instalar actualización {1} para {0}?",
@@ -400,7 +404,7 @@
   },
   "updates": {
     "empty_title": "No se encontraron actualizaciones",
-    "empty_body": "Pulsa L para comprobar los juegos instalados contra el índice del catálogo.",
+    "empty_body": "Actualiza el catálogo para comprobar los juegos instalados en el índice.",
     "count": "{} actualizaciones disponibles",
     "update_all": "Actualizar todo",
     "update_all_empty": "No hay actualizaciones que instalar.",
@@ -601,7 +605,9 @@
     "disclaimer": "pipensx es un proyecto independiente de código abierto y no está afiliado a Nintendo."
   },
   "disclaimer": {
-    "catalog": "El catálogo es una lista de lanzamientos de RuTracker recopilada por @Langegen. pipensx no está afiliado a RuTracker ni a @Langegen.\n\nEl catálogo se actualizará ahora. Puede tardar un rato."
+    "catalog": "El catálogo es una lista de lanzamientos de RuTracker recopilada por @Langegen. pipensx no está afiliado a RuTracker ni a @Langegen.\n\nEl catálogo se actualizará ahora. Puede tardar un rato.",
+    "catalog_direct": "La descarga directa del enjambre puede no funcionar por datos móviles, una VPN u otras redes similares.",
+    "ok_wait": "OK ({})"
   },
   "setup_summary": {
     "connection": "Conexión",
@@ -636,8 +642,10 @@
     "realdebrid_setup": "Configuración necesaria: introduce el token API en la consola, o envíalo desde el teléfono escaneando un código QR.",
     "direct": "Directamente del enjambre",
     "direct_how": "La consola se une al enjambre directamente y descarga los archivos por sí misma.",
-    "direct_peer": "Todos los peers del enjambre ven tu dirección IP. En Rusia, Ucrania y la CEI esto suele ignorarse; en Alemania, Austria, Francia y EE. UU. tu proveedor puede reenviar un aviso de derechos de autor, a veces con una factura.",
+    "direct_peer": "Todos los peers del enjambre ven tu dirección IP. En Rusia, Ucrania y la CEI esto suele ignorarse; en Alemania y Austria tu proveedor puede reenviar un aviso de derechos de autor, a veces con una factura.",
     "direct_setup": "No hace falta configuración.",
+    "direct_hint_ok": "Suele ir bien en tu región",
+    "direct_hint_no": "No encaja bien en tu región",
     "diagram_console": "Console",
     "diagram_swarm": "Enjambre",
     "diagram_torrserver": "TorrServer",

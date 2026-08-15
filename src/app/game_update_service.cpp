@@ -204,9 +204,38 @@ const GameUpdateResult* GameUpdateService::find(
     return it == results_.end() ? nullptr : &it->second;
 }
 
+bool GameUpdateService::isIgnored(const std::string& titleId) const {
+    return ignored_.count(titleId) != 0;
+}
+
+void GameUpdateService::setIgnored(const std::string& titleId, bool ignored,
+                                   std::string& saveError) {
+    saveError.clear();
+    if (ignored)
+        ignored_.insert(titleId);
+    else
+        ignored_.erase(titleId);
+    save(saveError);
+}
+
+size_t GameUpdateService::availableCount(
+    const std::vector<InstalledTitle>& titles) const {
+    size_t count = 0;
+    for (const InstalledTitle& title : titles) {
+        if (ignored_.count(title.titleId))
+            continue;
+        auto it = results_.find(title.titleId);
+        if (it != results_.end() &&
+            it->second.state == GameUpdateState::UpdateAvailable)
+            ++count;
+    }
+    return count;
+}
+
 bool GameUpdateService::load(std::string& error) {
     error.clear();
     results_.clear();
+    ignored_.clear();
     installedGeneration_ = 0;
     metadataRefreshMs_ = 0;
     lastCheckedAt_ = 0;
@@ -248,6 +277,16 @@ bool GameUpdateService::load(std::string& error) {
             results_[titleId] = std::move(result);
         }
     }
+    if (root.contains("ignored_title_ids") &&
+        root["ignored_title_ids"].is_array()) {
+        for (const auto& item : root["ignored_title_ids"]) {
+            if (!item.is_string())
+                continue;
+            const std::string titleId = item.get<std::string>();
+            if (!titleId.empty())
+                ignored_.insert(titleId);
+        }
+    }
     return true;
 }
 
@@ -270,6 +309,10 @@ bool GameUpdateService::save(std::string& error) const {
         list.push_back(std::move(item));
     }
     root["results"] = std::move(list);
+    nlohmann::json ignored = nlohmann::json::array();
+    for (const std::string& titleId : ignored_)
+        ignored.push_back(titleId);
+    root["ignored_title_ids"] = std::move(ignored);
 
     std::string temporary = statePath_ + ".tmp";
     {

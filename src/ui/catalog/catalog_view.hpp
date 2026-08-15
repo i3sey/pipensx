@@ -212,13 +212,15 @@ public:
                  std::function<void()> openDownloads,
                  FavoritesService* favorites = nullptr,
                  SwitchDeployService* deploy = nullptr,
-                 CatalogSection section = CatalogSection::Games,
-                 std::function<void()> openGames = {})
+                CatalogSection section = CatalogSection::Games,
+                std::function<void()> openGames = {},
+                std::function<void()> onSourcesRefreshed = {})
         : brls::Box(brls::Axis::COLUMN), manager_(manager), catalog_(catalog),
           metadata_(metadata), installed_(installed), settings_(settings),
           favorites_(favorites), deploy_(deploy),
           openDownloads_(std::move(openDownloads)),
-          openGames_(std::move(openGames)), section_(section),
+          openGames_(std::move(openGames)),
+          onSourcesRefreshed_(std::move(onSourcesRefreshed)), section_(section),
           alive_(std::make_shared<std::atomic<bool>>(true)),
           cancelled_(std::make_shared<std::atomic<bool>>(false)) {
         recycler_ = new brls::RecyclerFrame();
@@ -1735,6 +1737,8 @@ private:
                 // badge once settings are written.
                 if (fetchCatalog && catalogOk)
                     updateFreshnessLabel();
+                if (metadataOk && onSourcesRefreshed_)
+                    onSourcesRefreshed_();
                 if (notify)
                     notifyRefreshResult(fetchCatalog, fetchMetadata, catalogOk,
                                         metadataOk, catalogError,
@@ -1752,6 +1756,7 @@ private:
     SwitchDeployService* deploy_;
     std::function<void()> openDownloads_;
     std::function<void()> openGames_;
+    std::function<void()> onSourcesRefreshed_;
     CatalogSection section_ = CatalogSection::Games;
     brls::RecyclerFrame* recycler_;
     brls::Box* recyclerHost_ = nullptr;

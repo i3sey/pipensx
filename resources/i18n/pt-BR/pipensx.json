@@ -44,7 +44,8 @@
     "later": "Depois",
     "unavailable": "indisponível",
     "close": "Fechar",
-    "choose_files": "Escolher arquivos"
+    "choose_files": "Escolher arquivos",
+    "more": "Mais"
   },
   "catalog": {
     "sort_latest": "Recentes",
@@ -373,12 +374,15 @@
     "uninstall_confirm": "Desinstalar {0} deste console? Os dados salvos serão mantidos.",
     "uninstalling": "Desinstalando {0}...",
     "uninstall_done": "Aplicativo desinstalado.",
-    "update_stale": "Resultados de atualização desatualizados — pressione L para verificar novamente",
+    "ignore_updates": "Ignorar atualizações",
+    "unignore_updates": "Parar de ignorar atualizações",
+    "update_stale": "Resultados de atualização desatualizados",
     "update_chip_available": "Atualização",
     "update_chip_latest": "Atualizado",
     "update_chip_not_checked": "Não verificado",
     "update_chip_no_source": "Sem fonte",
     "update_chip_error": "Erro",
+    "update_chip_ignored": "Ignorado",
     "update_no_bundle": "Nenhum pacote de lançamento para este título no índice",
     "update_choose_bundle": "Escolha um pacote de lançamento",
     "update_install_confirm": "Baixar atualização {1} para {0}?",
@@ -400,7 +404,7 @@
   },
   "updates": {
     "empty_title": "Nenhuma atualização encontrada",
-    "empty_body": "Pressione L para verificar os jogos instalados no índice do catálogo.",
+    "empty_body": "Atualize o catálogo para verificar os jogos instalados no índice.",
     "count": "{} atualizações disponíveis",
     "update_all": "Atualizar tudo",
     "update_all_empty": "Nenhuma atualização para instalar.",
@@ -601,7 +605,9 @@
     "disclaimer": "pipensx é um projeto de código aberto independente e não é afiliado à Nintendo."
   },
   "disclaimer": {
-    "catalog": "O catálogo é uma lista de lançamentos do RuTracker reunida por @Langegen. O pipensx não é afiliado ao RuTracker nem a @Langegen.\n\nO catálogo será atualizado agora. Isso pode demorar um pouco."
+    "catalog": "O catálogo é uma lista de lançamentos do RuTracker reunida por @Langegen. O pipensx não é afiliado ao RuTracker nem a @Langegen.\n\nO catálogo será atualizado agora. Isso pode demorar um pouco.",
+    "catalog_direct": "Baixar direto do enxame pode falhar em dados móveis, VPN ou redes parecidas.",
+    "ok_wait": "OK ({})"
   },
   "setup_summary": {
     "connection": "Conexão",
@@ -636,8 +642,10 @@
     "realdebrid_setup": "Configuração necessária: informe o token API no console, ou envie-o pelo celular escaneando um código QR.",
     "direct": "Diretamente do enxame",
     "direct_how": "O console entra no enxame diretamente e baixa os arquivos por conta própria.",
-    "direct_peer": "Todo peer do enxame vê seu endereço IP. Na Rússia, Ucrânia e CEI isso geralmente é ignorado; na Alemanha, Áustria, França e EUA seu provedor pode encaminhar um aviso de direitos autorais, às vezes com uma cobrança.",
+    "direct_peer": "Todo peer do enxame vê seu endereço IP. Na Rússia, Ucrânia e CEI isso geralmente é ignorado; na Alemanha e Áustria seu provedor pode encaminhar um aviso de direitos autorais, às vezes com uma cobrança.",
     "direct_setup": "Nenhuma configuração necessária.",
+    "direct_hint_ok": "Normalmente ok na sua região",
+    "direct_hint_no": "Não é uma boa escolha na sua região",
     "diagram_console": "Console",
     "diagram_swarm": "Enxame",
     "diagram_torrserver": "TorrServer",

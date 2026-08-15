@@ -221,9 +221,16 @@ bool httpGetOnce(const std::string& url, size_t limit,
 
 #ifdef __SWITCH__
 bool isNintendoImageUrl(const std::string& url) {
-    static const std::string prefix =
-        "https://img-eshop.cdn.nintendo.net/";
-    return url.compare(0, prefix.size(), prefix) == 0;
+    static const char* const prefixes[] = {
+        "https://img-eshop.cdn.nintendo.net/",
+        "https://assets.nintendo.com/",
+    };
+    for (const char* prefix : prefixes) {
+        const size_t n = std::strlen(prefix);
+        if (url.compare(0, n, prefix) == 0)
+            return true;
+    }
+    return false;
 }
 
 std::string percentEncode(const std::string& value) {
@@ -285,7 +292,8 @@ bool httpGet(const std::string& url, size_t limit, std::vector<uint8_t>& data,
 
 #ifdef __SWITCH__
     if (isNintendoImageUrl(url)) {
-        // img-eshop is geo-blocked for RU, so a direct fetch dead-ends there.
+        // img-eshop (and store CDN) is geo-blocked for RU, so a direct fetch
+        // dead-ends there.
         // Fan out across image relays on diverse infra (so one ASN slips past
         // the censor); whichever answers first wins.
         const std::string relays[] = {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <memory>
 #include <string>
 #include <utility>
 
@@ -10,6 +11,7 @@ extern "C" {
 #include "core/util.h"
 }
 #include "app/app_settings.hpp"
+#include "app/direct_hint.hpp"
 #include "app/download_manager.hpp"
 #include "ui/common/ui_helpers.hpp"
 #include "ui/debrid_ui.hpp"
@@ -282,7 +284,7 @@ private:
 class FirstRunOption : public brls::Box {
 public:
     FirstRunOption(const std::string& heading, std::function<void()> onChoose,
-                   std::function<void()> onFocus)
+                   std::function<void()> onFocus, const std::string& hint = {})
         : brls::Box(brls::Axis::COLUMN), onChoose_(std::move(onChoose)),
           onFocus_(std::move(onFocus)) {
         setFocusable(true);
@@ -297,6 +299,15 @@ public:
         title->setFontSize(theme::kFontBody);
         title->setTextColor(theme::textPrimary());
         addView(title);
+
+        if (!hint.empty()) {
+            auto* caption = new brls::Label();
+            caption->setText(hint);
+            caption->setFontSize(theme::kFontCaption);
+            caption->setTextColor(theme::textTertiary());
+            caption->setMarginTop(4);
+            addView(caption);
+        }
 
         registerClickAction([this](brls::View*) {
             onChoose_();
@@ -340,6 +351,15 @@ public:
         intro->setMarginBottom(16);
         left->addView(intro);
 
+        DirectHint hint = classifyDirectHint(consoleTimeZone(), consoleLanguage());
+        if (hint == DirectHint::None)
+            hint = classifyDirectHint("", brls::Application::getLocale());
+        std::string directHint;
+        if (hint == DirectHint::Recommended)
+            directHint = tr("pipensx/first_run/direct_hint_ok");
+        else if (hint == DirectHint::Discouraged)
+            directHint = tr("pipensx/first_run/direct_hint_no");
+
         left->addView(new FirstRunOption(
             tr("pipensx/first_run/torrserver"),
             [this] { choose(DebridProviderKind::TorrServer, false); },
@@ -355,8 +375,10 @@ public:
         left->addView(new FirstRunOption(
             tr("pipensx/first_run/direct"),
             [this] { choose(DebridProviderKind::TorBox, true); },
-            [this] { updateSelection(DebridProviderKind::TorBox, true); }));
-        left->setDefaultFocusedIndex(0);
+            [this] { updateSelection(DebridProviderKind::TorBox, true); },
+            directHint));
+        const bool preferDirect = hint == DirectHint::Recommended;
+        left->setDefaultFocusedIndex(preferDirect ? 4 : 1);
 
         auto* note = new brls::Label();
         note->setText(tr("pipensx/first_run/note"));
@@ -378,7 +400,10 @@ public:
         registerAction("", brls::BUTTON_B, [](brls::View*) { return true; },
                        /*hidden=*/true);
 
-        updateSelection(DebridProviderKind::TorrServer, false);
+        if (preferDirect)
+            updateSelection(DebridProviderKind::TorBox, true);
+        else
+            updateSelection(DebridProviderKind::TorrServer, false);
     }
 
     void willAppear(bool resetState) override {
@@ -495,9 +520,32 @@ inline void showCatalogDisclaimer(AppSettings* settings,
         onOk();
         return;
     }
-    auto* dialog = new brls::Dialog(tr("pipensx/disclaimer/catalog"));
-    dialog->setCancelable(false);
-    dialog->addButton(tr("pipensx/common/ok"), [settings, onOk] {
+    auto* box = new brls::Box(brls::Axis::COLUMN);
+    brls::Style style = brls::Application::getStyle();
+    box->setAlignItems(brls::AlignItems::CENTER);
+    box->setJustifyContent(brls::JustifyContent::CENTER);
+    box->setPadding(style["brls/dialog/paddingTopBottom"],
+                    style["brls/dialog/paddingLeftRight"],
+                    style["brls/dialog/paddingTopBottom"],
+                    style["brls/dialog/paddingLeftRight"]);
+
+    auto* body = new brls::Label();
+    body->setText(tr("pipensx/disclaimer/catalog"));
+    body->setFontSize(style["brls/dialog/fontSize"]);
+    body->setHorizontalAlign(brls::HorizontalAlign::CENTER);
+    body->setSingleLine(false);
+    box->addView(body);
+
+    auto* warn = new brls::Label();
+    warn->setText(tr("pipensx/disclaimer/catalog_direct"));
+    warn->setFontSize(style["brls/dialog/fontSize"]);
+    warn->setHorizontalAlign(brls::HorizontalAlign::CENTER);
+    warn->setSingleLine(false);
+    warn->setTextColor(theme::warning());
+    warn->setMarginTop(16);
+    box->addView(warn);
+
+    auto persist = [settings, onOk] {
         pipensx::AppSettingsData values = settings->get();
         if (!values.catalogDisclaimerAcknowledged) {
             values.catalogDisclaimerAcknowledged = true;
@@ -514,7 +562,56 @@ inline void showCatalogDisclaimer(AppSettings* settings,
             }
         }
         onOk();
-    });
+    };
+
+    constexpr int kReadSec = 5;
+    auto* dialog = new brls::Dialog(box);
+    dialog->setCancelable(false);
+    // Dialog::buttonClick always dismisses; the empty callback is replaced
+    // below so A is a no-op until the timer elapses.
+    dialog->addButton(tr("pipensx/disclaimer/ok_wait", kReadSec), [] {});
+
+    brls::Button* ok = nullptr;
+    std::function<void(brls::View*)> findOk = [&](brls::View* node) {
+        if (ok)
+            return;
+        if (auto* button = dynamic_cast<brls::Button*>(node))
+            if (button->getVisibility() == brls::Visibility::VISIBLE)
+                ok = button;
+        if (auto* parent = dynamic_cast<brls::Box*>(node))
+            for (brls::View* child : parent->getChildren())
+                findOk(child);
+    };
+    findOk(dialog);
+    if (ok) {
+        auto ready = std::make_shared<bool>(false);
+        auto live = std::make_shared<bool>(true);
+        auto remaining = std::make_shared<int>(kReadSec);
+        ok->setState(brls::ButtonState::DISABLED);
+        ok->registerClickAction(
+            [dialog, persist, ready, live](brls::View*) {
+                if (!*ready || !*live)
+                    return true;
+                *live = false;
+                dialog->close(persist);
+                return true;
+            });
+        auto tick = std::make_shared<std::function<void()>>();
+        *tick = [ok, remaining, ready, live, tick]() {
+            if (!*live)
+                return;
+            --*remaining;
+            if (*remaining <= 0) {
+                *ready = true;
+                ok->setState(brls::ButtonState::ENABLED);
+                ok->setText(tr("pipensx/common/ok"));
+                return;
+            }
+            ok->setText(tr("pipensx/disclaimer/ok_wait", *remaining));
+            brls::delay(1000, *tick);
+        };
+        brls::delay(1000, *tick);
+    }
     dialog->open();
 }
 

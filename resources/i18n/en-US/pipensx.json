@@ -44,7 +44,8 @@
     "later": "Later",
     "unavailable": "unavailable",
     "close": "Close",
-    "choose_files": "Choose files"
+    "choose_files": "Choose files",
+    "more": "More"
   },
   "catalog": {
     "sort_latest": "Latest",
@@ -373,12 +374,15 @@
     "uninstall_confirm": "Uninstall {0} from this console? Save data is kept.",
     "uninstalling": "Uninstalling {0}...",
     "uninstall_done": "Application uninstalled.",
-    "update_stale": "Update results are stale — press L to re-check",
+    "ignore_updates": "Ignore updates",
+    "unignore_updates": "Stop ignoring updates",
+    "update_stale": "Update results are stale",
     "update_chip_available": "Update",
     "update_chip_latest": "Latest",
     "update_chip_not_checked": "Not checked",
     "update_chip_no_source": "No source",
     "update_chip_error": "Error",
+    "update_chip_ignored": "Ignored",
     "update_no_bundle": "No release bundle for this title in the index",
     "update_choose_bundle": "Choose a release bundle",
     "update_install_confirm": "Install update {1} for {0}?",
@@ -400,7 +404,7 @@
   },
   "updates": {
     "empty_title": "No updates found",
-    "empty_body": "Press L to check installed games against the catalog index.",
+    "empty_body": "Refresh the catalog to check installed games against the index.",
     "count": "{} updates available",
     "update_all": "Update all",
     "update_all_empty": "No updates to install.",
@@ -601,7 +605,9 @@
     "disclaimer": "pipensx is an independent open-source project and is not affiliated with Nintendo."
   },
   "disclaimer": {
-    "catalog": "The catalog is a list of RuTracker releases collected by @Langegen. pipensx is not affiliated with RuTracker or @Langegen.\n\nThe catalog will update now. This can take a while."
+    "catalog": "The catalog is a list of RuTracker releases collected by @Langegen. pipensx is not affiliated with RuTracker or @Langegen.\n\nThe catalog will update now. This can take a while.",
+    "catalog_direct": "Downloading straight from the swarm may not work over mobile data, a VPN, or similar networks.",
+    "ok_wait": "OK ({})"
   },
   "setup_summary": {
     "connection": "Connection",
@@ -636,8 +642,10 @@
     "realdebrid_setup": "Setup required: enter the API token on the console, or send it from your phone by scanning a QR code.",
     "direct": "Straight from the swarm",
     "direct_how": "The console joins the swarm directly and downloads the files itself.",
-    "direct_peer": "Every peer in the swarm sees your IP address. In Russia, Ukraine and the CIS this is largely ignored; in Germany, Austria, France and the USA your provider may forward a copyright notice, sometimes with a bill attached.",
+    "direct_peer": "Every peer in the swarm sees your IP address. In Russia, Ukraine and the CIS this is largely ignored; in Germany and Austria your provider may forward a copyright notice, sometimes with a bill attached.",
     "direct_setup": "No setup needed.",
+    "direct_hint_ok": "Usually fine in your region",
+    "direct_hint_no": "Not a good fit for your region",
     "diagram_console": "Console",
     "diagram_swarm": "Swarm",
     "diagram_torrserver": "TorrServer",

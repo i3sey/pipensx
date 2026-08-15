@@ -136,19 +136,21 @@ public:
         using pipensx::CatalogSection;
         // Games, Ports, separator, Downloads, ... — Downloads is sidebar index 3.
         tabs->addNavTab(tr("pipensx/nav/games"), NavIconType::Catalog,
-                        [manager, catalog, metadata, installed,
+                        [this, manager, catalog, metadata, installed,
                          settings, favorites, deploy, tabs] {
             return new CatalogView(manager, catalog, metadata, installed,
                                    settings, [tabs] { tabs->focusTab(3); },
-                                   favorites, deploy);
+                                   favorites, deploy, CatalogSection::Games, {},
+                                   [this] { refreshUpdateBadge(); });
         });
         tabs->addNavTab(tr("pipensx/nav/ports"), NavIconType::Ports,
-                        [manager, catalog, metadata, installed,
+                        [this, manager, catalog, metadata, installed,
                          settings, favorites, deploy, tabs] {
             return new CatalogView(manager, catalog, metadata, installed,
                                    settings, [tabs] { tabs->focusTab(3); },
                                    favorites, deploy, CatalogSection::Ports,
-                                   [tabs] { tabs->focusTab(0); });
+                                   [tabs] { tabs->focusTab(0); },
+                                   [this] { refreshUpdateBadge(); });
         });
         tabs->addSeparator();
         tabs->addNavTab(tr("pipensx/nav/downloads"), NavIconType::Downloads,
@@ -166,10 +168,11 @@ public:
             return view;
         }, true);
         tabs->addNavTab(tr("pipensx/nav/settings"), NavIconType::Settings,
-                        [settings, manager, catalog, metadata,
+                        [this, settings, manager, catalog, metadata,
                          installed, updater, webServer] {
             return new SettingsView(settings, manager, catalog, metadata,
-                                    installed, updater, webServer);
+                                    installed, updater, webServer,
+                                    [this] { refreshUpdateBadge(); });
         });
         tabs->addNavTab(tr("pipensx/nav/help"), NavIconType::Help,
                         [manager, catalog, metadata, installed] {
@@ -202,8 +205,7 @@ public:
                 diagnostic_error("game_updates", "save", "error=%s",
                                  saveError.c_str());
         }
-        tabs_->setUpdateCountBadge(
-            availableUpdateCount(gameUpdates_->results(), titles));
+        tabs_->setUpdateCountBadge(gameUpdates_->availableCount(titles));
     }
 
     brls::View* createContentView() override {

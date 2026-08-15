@@ -268,6 +268,45 @@ void testSaveLoadRoundTrip() {
     reset();
 }
 
+void testIgnoredPersistsAndSkipsAvailableCount() {
+    FakeSource source;
+    source.set("0100000000000001", {"131072"});
+    source.set("0100000000000002", {"131072"});
+    GameUpdateService service(&source, StatePath);
+
+    std::vector<InstalledTitle> installed = {
+        title("0100000000000001", "65536"),
+        title("0100000000000002", "65536"),
+    };
+    std::string saveError;
+    service.checkAll(installed, 1, 1, saveError);
+    assert(saveError.empty());
+    assert(service.availableCount(installed) == 2);
+
+    service.setIgnored("0100000000000001", true, saveError);
+    assert(saveError.empty());
+    assert(service.isIgnored("0100000000000001"));
+    assert(!service.isIgnored("0100000000000002"));
+    assert(service.availableCount(installed) == 1);
+    assert(service.find("0100000000000001")->state ==
+           GameUpdateState::UpdateAvailable);
+
+    service.checkAll(installed, 1, 1, saveError);
+    assert(service.isIgnored("0100000000000001"));
+    assert(service.availableCount(installed) == 1);
+
+    GameUpdateService reloaded(&source, StatePath);
+    std::string loadError;
+    assert(reloaded.load(loadError));
+    assert(reloaded.isIgnored("0100000000000001"));
+    assert(reloaded.availableCount(installed) == 1);
+
+    reloaded.setIgnored("0100000000000001", false, saveError);
+    assert(!reloaded.isIgnored("0100000000000001"));
+    assert(reloaded.availableCount(installed) == 2);
+    reset();
+}
+
 void testLoadMissingFileIsEmpty() {
     FakeSource source;
     GameUpdateService service(&source, StatePath);
@@ -321,6 +360,7 @@ int main() {
     testCheckAllAndStale();
     testStaleFalseBeforeAnyCheck();
     testSaveLoadRoundTrip();
+    testIgnoredPersistsAndSkipsAvailableCount();
     testLoadMissingFileIsEmpty();
     testLoadCorruptFileFails();
     testUnknownStateStringsAreDroppedOnLoad();
