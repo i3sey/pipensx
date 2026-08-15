@@ -77,7 +77,6 @@ void testMissingFileUsesSafeDefaults() {
     assert(values.lastCatalogRefreshMs == 0);
     assert(values.lastCatalogRefreshWallSec == 0);
     assert(values.lastMetadataRefreshMs == 0);
-    assert(values.lastModsRefreshMs == 0);
     assert(values.streamSelection == StreamSelection::AllFiles);
     assert(values.installLocation == InstallLocation::SdCard);
     assert(values.showCompletedDownloads);
@@ -113,7 +112,6 @@ void testUpdatePersistsEveryPublicSetting() {
     changed.lastCatalogRefreshMs = 123456;
     changed.lastCatalogRefreshWallSec = 1700000000;
     changed.lastMetadataRefreshMs = 234567;
-    changed.lastModsRefreshMs = 345678;
     changed.streamSelection = StreamSelection::PackagesOnly;
     changed.installLocation = InstallLocation::SystemMemory;
     changed.showCompletedDownloads = false;
@@ -159,7 +157,6 @@ void testOldSettingsJsonDefaultsRefreshTimes() {
     assert(settings.get().lastCatalogRefreshMs == 0);
     assert(settings.get().lastCatalogRefreshWallSec == 0);
     assert(settings.get().lastMetadataRefreshMs == 0);
-    assert(settings.get().lastModsRefreshMs == 0);
     assert(settings.get().catalogDisclaimerAcknowledged);
     assert(settings.get().checkForUpdatesOnLaunch);
 }

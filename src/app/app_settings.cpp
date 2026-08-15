@@ -117,8 +117,6 @@ bool parseSettings(const std::string& text, AppSettingsData& values,
                       values.lastCatalogRefreshWallSec, error) ||
         !readUnsigned(root, "last_metadata_refresh_ms",
                       values.lastMetadataRefreshMs, error) ||
-        !readUnsigned(root, "last_mods_refresh_ms",
-                      values.lastModsRefreshMs, error) ||
         !readString(root, "stream_selection", selection, error) ||
         !readString(root, "install_location", install, error) ||
         !readBool(root, "show_completed_downloads",
@@ -232,7 +230,6 @@ std::string serializeSettings(const AppSettingsData& values) {
     root["last_catalog_refresh_ms"] = values.lastCatalogRefreshMs;
     root["last_catalog_refresh_wall_sec"] = values.lastCatalogRefreshWallSec;
     root["last_metadata_refresh_ms"] = values.lastMetadataRefreshMs;
-    root["last_mods_refresh_ms"] = values.lastModsRefreshMs;
     root["stream_selection"] = streamSelectionName(values.streamSelection);
     root["install_location"] = installLocationName(values.installLocation);
     root["show_completed_downloads"] = values.showCompletedDownloads;
@@ -377,7 +374,6 @@ bool AppSettingsData::operator==(const AppSettingsData& other) const {
            lastCatalogRefreshMs == other.lastCatalogRefreshMs &&
            lastCatalogRefreshWallSec == other.lastCatalogRefreshWallSec &&
            lastMetadataRefreshMs == other.lastMetadataRefreshMs &&
-           lastModsRefreshMs == other.lastModsRefreshMs &&
            streamSelection == other.streamSelection &&
            installLocation == other.installLocation &&
            showCompletedDownloads == other.showCompletedDownloads &&

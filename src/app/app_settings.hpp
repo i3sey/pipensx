@@ -43,7 +43,6 @@ struct AppSettingsData {
     // lastCatalogRefreshMs, which is monotonic now_ms() for the daily gate.
     uint64_t lastCatalogRefreshWallSec = 0;
     uint64_t lastMetadataRefreshMs = 0;
-    uint64_t lastModsRefreshMs = 0;
     StreamSelection streamSelection = StreamSelection::AllFiles;
     InstallLocation installLocation = InstallLocation::SdCard;
     bool showCompletedDownloads = true;

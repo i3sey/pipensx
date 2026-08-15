@@ -22,7 +22,6 @@
 #include "app/install_space.hpp"
 #include "app/installed_title_service.hpp"
 #include "app/magnet_resolver.hpp"
-#include "app/mod_index_service.hpp"
 #include "app/switch_deploy.hpp"
 #include "app/nx_file_types.hpp"
 #include "ui/catalog/catalog_helpers.hpp"
@@ -90,14 +89,13 @@ public:
     GameDetailActivity(CatalogEntry entry, std::string lastFailure,
                        DownloadManager* manager, GameMetadataService* metadata,
                        InstalledTitleService* installed, AppSettings* settings,
-                       ModIndexService* mods,
                         FailureCallback onFailure, ChangeCallback onChange,
                         CloseCallback onClose = nullptr,
                         FavoritesService* favorites = nullptr,
                         SwitchDeployService* deploy = nullptr)
         : entry_(std::move(entry)), lastFailure_(std::move(lastFailure)),
           manager_(manager), metadata_(metadata), installed_(installed),
-          settings_(settings), mods_(mods), favorites_(favorites),
+          settings_(settings), favorites_(favorites),
           deploy_(deploy),
           onFailure_(std::move(onFailure)), onChange_(std::move(onChange)),
           onClose_(std::move(onClose)),
@@ -425,7 +423,6 @@ private:
                                : tr("pipensx/common/unknown"));
         addFactRow(table, tr("pipensx/detail/fact_title_id"), titleId_);
         addFactRow(table, tr("pipensx/detail/fact_dlc"), dlcFact());
-        addFactRow(table, tr("pipensx/detail/fact_mods"), modsFact());
         right->addView(table);
     }
 
@@ -435,17 +432,6 @@ private:
             return {};
         return tr("pipensx/detail/dlc_installed",
                   installed_->dlcCountForBase(titleId_));
-    }
-
-    // ModCD carries mods for this title id (in-memory lookup — the table is
-    // fetched with the catalogue, never from this page). Empty = no row.
-    std::string modsFact() const {
-        if (!mods_ || titleId_.empty() || !mods_->has(titleId_))
-            return std::string();
-        const uint32_t count = mods_->modCount(titleId_);
-        if (count == 0)
-            return tr("pipensx/detail/mods_available");
-        return tr("pipensx/detail/mods_count", count);
     }
 
     void addFactRow(brls::Box* table, const std::string& name,
@@ -1132,7 +1118,6 @@ private:
     GameMetadataService* metadata_;
     InstalledTitleService* installed_;
     AppSettings* settings_;
-    ModIndexService* mods_ = nullptr;
     FavoritesService* favorites_ = nullptr;
     SwitchDeployService* deploy_ = nullptr;
     std::string titleId_;

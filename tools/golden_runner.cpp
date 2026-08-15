@@ -92,7 +92,6 @@ using pipensx::GameMetadataService;
 using pipensx::GameUpdateService;
 using pipensx::InstalledTitle;
 using pipensx::InstalledTitleService;
-using pipensx::ModIndexService;
 using namespace pipensx::ui;
 
 namespace {
@@ -410,7 +409,7 @@ int main(int argc, char** argv) {
     std::string error;
     AppSettings settings(SettingsPath, TelemetryFlagPath);
     settings.load(error);
-    // Keep metadata/mods dailyRefreshDue satisfied so CatalogView does not
+    // Keep metadata dailyRefreshDue satisfied so CatalogView does not
     // open a live fetch against the offline golden fixtures. Stamp the wall
     // clock too: the freshness badge treats 0 as "never refreshed".
     {
@@ -420,7 +419,6 @@ int main(int argc, char** argv) {
         values.lastCatalogRefreshWallSec =
             static_cast<uint64_t>(time(nullptr));
         values.lastMetadataRefreshMs = now;
-        values.lastModsRefreshMs = now;
         std::string stampError;
         settings.update(values, stampError);
     }
@@ -444,14 +442,6 @@ int main(int argc, char** argv) {
                      error.c_str());
     metadata.setImageNetwork(
         GameMetadataService::ImageNetwork::Off); // placeholders, no network
-
-    // Fixture mod index: no network, the table lists the fixture title so the
-    // ModCD chip and fact row are covered by the golden screens.
-    ModIndexService mods("sdmc:/switch/pipensx",
-                         (fixtures / "modcd_table.md").string());
-    if (!mods.load(error))
-        std::fprintf(stderr, "golden_runner: mod index fixture: %s\n",
-                     error.c_str());
 
     // Seeded with one favourite so the baselines cover the starred card badge,
     // the active ★ chip and the game page's "in wishlist" button, not just the
@@ -512,7 +502,7 @@ int main(int argc, char** argv) {
     if (screen == "catalog") {
         activity = new GoldenActivity(new CatalogView(
             &manager, &catalog, &metadata, &installed, &settings, [] {},
-            &mods, &favorites));
+            &favorites));
     } else if (screen == "shelf-scroll") {
         auto* content = new brls::Box(brls::Axis::COLUMN);
         content->setPadding(32, 32, 32, 32);
@@ -575,7 +565,7 @@ int main(int argc, char** argv) {
         seedInstalledFixture(installed);
         activity = new GameDetailActivity(
             entries.front(), "", &manager, &metadata, &installed, &settings,
-            &mods, [](const std::string&, const std::string&) {}, [] {},
+            [](const std::string&, const std::string&) {}, [] {},
             nullptr, &favorites);
         // Behaviour check, not a baseline: the screenshot rail is the only
         // focusable view in the right column, so nothing forces UP out of it.
@@ -776,10 +766,16 @@ int main(int argc, char** argv) {
         // Whole shell, same wiring as src/main_switch.cpp: covers the sidebar
         // and the storage footer docked at its bottom.
         auto* tabs = new MainFrame();
-        tabs->addNavTab(tr("pipensx/nav/catalog"), NavIconType::Catalog, [&] {
+        tabs->addNavTab(tr("pipensx/nav/games"), NavIconType::Catalog, [&] {
             return new CatalogView(&manager, &catalog, &metadata, &installed,
-                                   &settings, [] {}, &mods, &favorites);
+                                   &settings, [] {}, &favorites);
         });
+        tabs->addNavTab(tr("pipensx/nav/ports"), NavIconType::Ports, [&] {
+            return new CatalogView(&manager, &catalog, &metadata, &installed,
+                                   &settings, [] {}, &favorites, nullptr,
+                                   pipensx::CatalogSection::Ports, [] {});
+        });
+        tabs->addSeparator();
         tabs->addNavTab(tr("pipensx/nav/downloads"), NavIconType::Downloads,
                         [&] {
             return new MainView(&manager, &metadata, &settings);
@@ -800,7 +796,7 @@ int main(int argc, char** argv) {
         tabs->addNavTab(tr("pipensx/nav/settings"), NavIconType::Settings,
                         [&] {
             return new SettingsView(&settings, &manager, &catalog, &metadata,
-                                    &installed, nullptr, &mods);
+                                    &installed, nullptr);
         });
         tabs->addNavTab(tr("pipensx/nav/help"), NavIconType::Help, [&] {
             return new HelpView(&manager, &catalog, &metadata, &installed);
@@ -816,10 +812,16 @@ int main(int argc, char** argv) {
         // the gamepad kept working. Screenshots cannot see that.
         sidebarTouch = true;
         auto* tabs = new MainFrame();
-        tabs->addNavTab(tr("pipensx/nav/catalog"), NavIconType::Catalog, [&] {
+        tabs->addNavTab(tr("pipensx/nav/games"), NavIconType::Catalog, [&] {
             return new CatalogView(&manager, &catalog, &metadata, &installed,
-                                   &settings, [] {}, &mods, &favorites);
+                                   &settings, [] {}, &favorites);
         });
+        tabs->addNavTab(tr("pipensx/nav/ports"), NavIconType::Ports, [&] {
+            return new CatalogView(&manager, &catalog, &metadata, &installed,
+                                   &settings, [] {}, &favorites, nullptr,
+                                   pipensx::CatalogSection::Ports, [] {});
+        });
+        tabs->addSeparator();
         tabs->addNavTab(tr("pipensx/nav/downloads"), NavIconType::Downloads,
                         [&] {
             return new MainView(&manager, &metadata, &settings);
@@ -831,10 +833,10 @@ int main(int argc, char** argv) {
         // filter row after focus folds the sidebar to its icon rail.
         catalogHeaderClearance = true;
         auto* tabs = new MainFrame();
-        tabs->addNavTab(tr("pipensx/nav/catalog"), NavIconType::Catalog, [&] {
+        tabs->addNavTab(tr("pipensx/nav/games"), NavIconType::Catalog, [&] {
             collapsedCatalog = new CatalogView(
-                &manager, &catalog, &metadata, &installed, &settings, [] {},
-                &mods, &favorites);
+                &manager, &catalog, &metadata, &installed,                 &settings, [] {},
+                &favorites);
             return collapsedCatalog;
         });
         activity = new GoldenActivity(tabs);
@@ -847,12 +849,18 @@ int main(int argc, char** argv) {
         auto* tabs = new MainFrame();
         // Tab views are built lazily, on the first draw — hintsCatalog is only
         // readable from inside the frame loop below.
-        tabs->addNavTab(tr("pipensx/nav/catalog"), NavIconType::Catalog, [&] {
+        tabs->addNavTab(tr("pipensx/nav/games"), NavIconType::Catalog, [&] {
             hintsCatalog = new CatalogView(&manager, &catalog, &metadata,
-                                           &installed, &settings, [] {}, &mods,
+                                           &installed, &settings, [] {},
                                            &favorites);
             return hintsCatalog;
         });
+        tabs->addNavTab(tr("pipensx/nav/ports"), NavIconType::Ports, [&] {
+            return new CatalogView(&manager, &catalog, &metadata, &installed,
+                                   &settings, [] {}, &favorites, nullptr,
+                                   pipensx::CatalogSection::Ports, [] {});
+        });
+        tabs->addSeparator();
         tabs->addNavTab(tr("pipensx/nav/downloads"), NavIconType::Downloads,
                         [&] {
             return new MainView(&manager, &metadata, &settings);
@@ -878,8 +886,7 @@ int main(int argc, char** argv) {
             installedBundles = view;
     } else if (screen == "settings") {
         activity = new GoldenActivity(new SettingsView(
-            &settings, &manager, &catalog, &metadata, &installed, nullptr,
-            &mods));
+            &settings, &manager, &catalog, &metadata, &installed, nullptr));
     } else if (screen == "storage") {
         seedStorageFixture(manager.rootPath());
         activity = new StorageManagerActivity(&manager, &metadata);
@@ -894,8 +901,7 @@ int main(int argc, char** argv) {
         if (!settings.update(values, error))
             return fail("settings-debrid could not plant a linked key");
         activity = new GoldenActivity(new SettingsView(
-            &settings, &manager, &catalog, &metadata, &installed, nullptr,
-            &mods));
+            &settings, &manager, &catalog, &metadata, &installed, nullptr));
         settingsDebrid = true;
     } else if (screen == "network-health") {
         pipensx::AppSettingsData values = settings.get();

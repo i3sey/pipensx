@@ -587,7 +587,6 @@ async function loadSettings() {
   $("set-torrserver").value = s.torrserverUrl || "";
   $("set-proxy").value = s.proxyUrl || "";
   $("set-catalog-url").value = s.catalogSourceUrl || "";
-  $("set-catalog-filter").value = s.catalogFilter || "games";
   $("set-catalog-refresh").checked = !!s.refreshCatalogOnLaunch;
   secretFlags.torbox = !!s.torboxConfigured;
   secretFlags.realdebrid = !!s.realdebridConfigured;
@@ -608,7 +607,6 @@ $("settings-save").addEventListener("click", async () => {
     torrserverUrl: $("set-torrserver").value.trim(),
     proxyUrl: $("set-proxy").value.trim(),
     catalogSourceUrl: $("set-catalog-url").value.trim(),
-    catalogFilter: $("set-catalog-filter").value,
     refreshCatalogOnLaunch: $("set-catalog-refresh").checked,
   };
   const torbox = $("set-torbox").value;

@@ -32,7 +32,7 @@
 namespace pipensx::ui {
 
 enum class NavIconType {
-    Catalog, Downloads, Installed, Updates, Settings, Help, About
+    Catalog, Ports, Downloads, Installed, Updates, Settings, Help, About
 };
 
 // Shrinks the stock sidebar so the icon rail + expanded menu both look right.
@@ -88,6 +88,7 @@ public:
         const float gy = y + (height - s) / 2.0f;
         switch (type_) {
             case NavIconType::Catalog:   drawCatalog(vg, gx, gy, s); break;
+            case NavIconType::Ports:     drawPorts(vg, gx, gy, s); break;
             case NavIconType::Downloads: drawDownloads(vg, gx, gy, s); break;
             case NavIconType::Installed: drawInstalled(vg, gx, gy, s); break;
             case NavIconType::Updates:   drawUpdates(vg, gx, gy, s); break;
@@ -109,6 +110,17 @@ private:
             nvgRoundedRect(vg, px, py, cell, cell, 2.0f);
             nvgStroke(vg);
         }
+    }
+
+    // Game cartridge: body plus a left-edge notch.
+    static void drawPorts(NVGcontext* vg, float gx, float gy, float s) {
+        nvgBeginPath(vg);
+        nvgRoundedRect(vg, gx + 4.0f, gy + 2.0f, s - 8.0f, s - 4.0f, 3.0f);
+        nvgStroke(vg);
+        nvgBeginPath(vg);
+        nvgMoveTo(vg, gx + 8.0f, gy + 2.0f);
+        nvgLineTo(vg, gx + 8.0f, gy + s - 2.0f);
+        nvgStroke(vg);
     }
 
     // Down arrow dropping into a tray.

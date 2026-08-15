@@ -21,7 +21,6 @@
 #include "app/game_metadata_service.hpp"
 #include "app/install_space.hpp"
 #include "app/installed_title_service.hpp"
-#include "app/mod_index_service.hpp"
 #include "ui/catalog/batch_install.hpp"
 #include "ui/catalog/catalog_grid.hpp"
 #include "ui/catalog/catalog_helpers.hpp"
@@ -55,7 +54,6 @@ public:
                     std::vector<uint8_t> iconPreserveAspect,
                     std::vector<uint8_t> selected,
                     std::vector<uint8_t> selectable,
-                    std::vector<uint8_t> hasMods,
                     std::vector<uint8_t> favorite,
                     GameMetadataService* metadata,
                     bool selectionMode) {
@@ -66,7 +64,6 @@ public:
         iconPreserveAspect_ = std::move(iconPreserveAspect);
         selected_ = std::move(selected);
         selectable_ = std::move(selectable);
-        hasMods_ = std::move(hasMods);
         favorite_ = std::move(favorite);
         metadata_ = metadata;
         selectionMode_ = selectionMode;
@@ -145,7 +142,6 @@ private:
         info.selectionMode = selectionMode_;
         info.selected = row < selected_.size() && selected_[row] != 0;
         info.selectable = row < selectable_.size() && selectable_[row] != 0;
-        info.hasMods = row < hasMods_.size() && hasMods_[row] != 0;
         info.favorite = row < favorite_.size() && favorite_[row] != 0;
         return info;
     }
@@ -170,7 +166,6 @@ private:
     std::vector<uint8_t> iconPreserveAspect_;
     std::vector<uint8_t> selected_;
     std::vector<uint8_t> selectable_;
-    std::vector<uint8_t> hasMods_;
     std::vector<uint8_t> favorite_;
     std::vector<CatalogShelf> shelves_;
     int heroIndex_ = -1;
@@ -215,13 +210,15 @@ public:
                 GameMetadataService* metadata,
                 InstalledTitleService* installed, AppSettings* settings,
                  std::function<void()> openDownloads,
-                 ModIndexService* mods = nullptr,
                  FavoritesService* favorites = nullptr,
-                 SwitchDeployService* deploy = nullptr)
+                 SwitchDeployService* deploy = nullptr,
+                 CatalogSection section = CatalogSection::Games,
+                 std::function<void()> openGames = {})
         : brls::Box(brls::Axis::COLUMN), manager_(manager), catalog_(catalog),
           metadata_(metadata), installed_(installed), settings_(settings),
-          mods_(mods), favorites_(favorites), deploy_(deploy),
+          favorites_(favorites), deploy_(deploy),
           openDownloads_(std::move(openDownloads)),
+          openGames_(std::move(openGames)), section_(section),
           alive_(std::make_shared<std::atomic<bool>>(true)),
           cancelled_(std::make_shared<std::atomic<bool>>(false)) {
         recycler_ = new brls::RecyclerFrame();
@@ -301,19 +298,8 @@ public:
         header_->addView(sortPopular_);
         header_->addView(sortAlpha_);
         header_->addView(sortSize_);
-        filterAll_ = makeChip(tr("pipensx/catalog/filter_all"),
-                              [this] { setFilter(CatalogFilter::All); });
-        filterGames_ = makeChip(tr("pipensx/catalog/filter_games"),
-                                [this] { setFilter(CatalogFilter::Games); });
-        filterAll_->setMarginLeft(16);
-        header_->addView(filterAll_);
-        header_->addView(filterGames_);
-        if (!settings_) {
-            filterAll_->setVisibility(brls::Visibility::GONE);
-            filterGames_->setVisibility(brls::Visibility::GONE);
-        }
-        // Session-only view filters, unlike the All/Games pair above: these are
-        // independent toggles, and a relaunch always shows the full catalog.
+        // Session-only view filters. Sections live in the sidebar, so there
+        // is no All/Games pair here.
         filterFavorites_ = makeChip("★", [this] {
             favoritesOnly_ = !favoritesOnly_;
             rebuildEntries();
@@ -545,7 +531,7 @@ public:
         };
         brls::Application::pushActivity(new GameDetailActivity(
             std::move(entry), std::move(lastFailure), manager_, metadata_,
-            installed_, settings_, mods_,
+            installed_, settings_,
             std::move(onFailure), std::move(onChange), std::move(onClose),
             favorites_, deploy_));
     }
@@ -779,8 +765,6 @@ private:
         std::vector<CatalogEntry> visible;
         std::string needle = lowerAscii(query_);
         const bool searching = !needle.empty();
-        const bool matchedGamesOnly = !searching && settings_ &&
-            settings_->get().catalogFilter == CatalogFilter::Games;
         // One syscall per rebuild, and only when the filter is on. Rebuilds are
         // event-driven (refreshLiveState only rebuilds when something changed),
         // so this does not run on a timer.
@@ -797,7 +781,7 @@ private:
                 continue;
             const GameMetadata* meta =
                 metadata_ ? metadata_->findByInfoHash(entry.infoHash) : nullptr;
-            if (matchedGamesOnly && !catalogEntryHasMatchedTitle(meta))
+            if (!catalogEntryInSection(entry, meta, section_))
                 continue;
             // Unlike the Games filter above, this one also narrows a search:
             // "which racing game can we play together" is exactly the question
@@ -857,7 +841,6 @@ private:
         std::vector<uint8_t> iconPreserveAspect;
         std::vector<uint8_t> selected;
         std::vector<uint8_t> selectable;
-        std::vector<uint8_t> hasMods;
         std::vector<uint8_t> favorite;
         std::vector<const GameMetadata*> metas;
         stateBadges.reserve(visible.size());
@@ -866,7 +849,6 @@ private:
         iconPreserveAspect.reserve(visible.size());
         selected.reserve(visible.size());
         selectable.reserve(visible.size());
-        hasMods.reserve(visible.size());
         favorite.reserve(visible.size());
         metas.reserve(visible.size());
         for (const CatalogEntry& entry : visible) {
@@ -892,13 +874,6 @@ private:
                 presentation.iconPreserveAspect ? 1 : 0);
             selected.push_back(selectedHashes_.count(hash) ? 1 : 0);
             selectable.push_back(canSelect ? 1 : 0);
-            // In-memory lookup only: the ModCD table is fetched with the
-            // catalogue, never from a card path.
-            hasMods.push_back(
-                mods_ && !presentation.titleId.empty() &&
-                        mods_->has(presentation.titleId)
-                    ? 1
-                    : 0);
             favorite.push_back(favorites_ && favorites_->contains(hash) ? 1
                                                                        : 0);
             metas.push_back(meta);
@@ -1070,7 +1045,7 @@ private:
                                 std::move(gameNames), std::move(iconUrls),
                                 std::move(iconPreserveAspect),
                                 std::move(selected), std::move(selectable),
-                                std::move(hasMods), std::move(favorite),
+                                std::move(favorite),
                                 metadata_, batchMode_);
         dataSource_->setShelves(std::move(shelves), heroIndex,
                                 std::move(heroImage));
@@ -1083,11 +1058,20 @@ private:
         const bool empty = count == 0;
         if (empty) {
             if (query_.empty()) {
-                ensureEmptyState()->setContent(
-                    tr("pipensx/catalog/empty_title"),
-                    tr("pipensx/catalog/empty_body"),
-                    tr("pipensx/catalog/empty_action"),
-                    [this] { refreshCatalog(); });
+                if (section_ == CatalogSection::Ports && openGames_ &&
+                    catalogHasVisibleEntries()) {
+                    ensureEmptyState()->setContent(
+                        tr("pipensx/catalog/empty_ports_title"),
+                        tr("pipensx/catalog/empty_ports_body"),
+                        tr("pipensx/catalog/empty_ports_action"),
+                        [this] { openGames_(); });
+                } else {
+                    ensureEmptyState()->setContent(
+                        tr("pipensx/catalog/empty_title"),
+                        tr("pipensx/catalog/empty_body"),
+                        tr("pipensx/catalog/empty_action"),
+                        [this] { refreshCatalog(); });
+                }
             } else {
                 ensureEmptyState()->setContent(
                     tr("pipensx/catalog/no_match_title"),
@@ -1143,10 +1127,6 @@ private:
                       tr("pipensx/catalog/sort_alpha"));
         styleSortChip(sortSize_, SortMode::Largest,
                       tr("pipensx/catalog/sort_size"));
-        const bool gamesOnly = settings_ &&
-            settings_->get().catalogFilter == CatalogFilter::Games;
-        styleChip(filterAll_, !gamesOnly);
-        styleChip(filterGames_, gamesOnly);
         styleChip(filterFavorites_, favoritesOnly_);
         styleChip(filterFits_, fitsOnly_);
         // The chip carries the active choice, so the header states the filter
@@ -1354,7 +1334,8 @@ private:
     void updatePlayerChipVisibility() {
         if (!filterPlayers_)
             return;
-        const bool usable = metadata_ && metadata_->hasPlayerData();
+        const bool usable = section_ != CatalogSection::Ports && metadata_ &&
+                            metadata_->hasPlayerData();
         filterPlayers_->setVisibility(usable ? brls::Visibility::VISIBLE
                                              : brls::Visibility::GONE);
         if (!usable && playerFilter_ != PlayerFilter::Any) {
@@ -1393,19 +1374,14 @@ private:
         rebuildEntries();
     }
 
-    void setFilter(CatalogFilter filter) {
-        if (busy_ || !settings_ ||
-            settings_->get().catalogFilter == filter)
-            return;
-        AppSettingsData values = settings_->get();
-        values.catalogFilter = filter;
-        std::string error;
-        if (!settings_->update(values, error)) {
-            brls::Application::notify(error);
-            return;
+    bool catalogHasVisibleEntries() const {
+        if (!catalog_)
+            return false;
+        for (const CatalogEntry& entry : catalog_->entries()) {
+            if (!entry.isHiddenByDefault())
+                return true;
         }
-        observedSettingsGeneration_ = settings_->generation();
-        rebuildEntries();
+        return false;
     }
 
     // Re-focus the card that was focused before reloadData recycled all
@@ -1602,17 +1578,6 @@ private:
         refreshSources(true, metadata_ != nullptr, true);
     }
 
-    // True when the ModCD table is missing or a day old. Unlike the catalogue
-    // and artwork sources this is not gated on refreshCatalogOnLaunch: the
-    // chips are dead weight until the table exists on disk, and the fetch is a
-    // single 30 KB request per day.
-    bool modsRefreshDue() const {
-        if (!mods_ || !settings_)
-            return false;
-        return mods_->size() == 0 ||
-               dailyRefreshDue(now_ms(), settings_->get().lastModsRefreshMs);
-    }
-
     void refreshCatalogIfDue() {
         // Bundled dumps do not count. Auto-refresh when this console has never
         // pulled the catalogue, or the last pull was not today.
@@ -1625,8 +1590,8 @@ private:
         refreshSources(catalogDue, catalogDue || metadataDue, false);
     }
 
-    void recordRefreshSuccess(bool catalog, bool metadata, bool mods) {
-        if (!settings_ || (!catalog && !metadata && !mods))
+    void recordRefreshSuccess(bool catalog, bool metadata) {
+        if (!settings_ || (!catalog && !metadata))
             return;
         AppSettingsData values = settings_->get();
         const uint64_t now = now_ms();
@@ -1637,8 +1602,6 @@ private:
         }
         if (metadata)
             values.lastMetadataRefreshMs = now;
-        if (mods)
-            values.lastModsRefreshMs = now;
         std::string error;
         if (!settings_->update(values, error)) {
             diagnostic_error("settings", "refresh_time", "error=%s",
@@ -1684,22 +1647,11 @@ private:
 
     void refreshSources(bool fetchCatalog, bool fetchMetadata, bool notify) {
         fetchMetadata = fetchMetadata && metadata_;
-        // The ModCD table rides along with every catalogue refresh, plus its
-        // own daily/first-run fetch: one 30 KB request, never per card.
-        const bool fetchMods =
-            mods_ && !modsInFlight_ && (fetchCatalog || modsRefreshDue());
-        // A mods-only fetch stays out of the busy state: it is silent
-        // background work and must not steal the Y button or freeze the live
-        // state ticker the way a catalogue refresh does.
-        const bool heavy = fetchCatalog || fetchMetadata;
-        if (!heavy && !fetchMods)
+        if (!fetchCatalog && !fetchMetadata)
             return;
-        if (heavy && busy_)
+        if (busy_)
             return;
-        if (heavy)
-            setBusy(true);
-        if (fetchMods)
-            modsInFlight_ = true;
+        setBusy(true);
         const std::string updating = fetchCatalog && fetchMetadata
             ? tr("pipensx/catalog/updating_both")
             : fetchCatalog ? tr("pipensx/catalog/updating_catalog")
@@ -1709,26 +1661,17 @@ private:
         auto alive = alive_;
         CatalogService* catalog = catalog_;
         GameMetadataService* metadata = metadata_;
-        ModIndexService* mods = mods_;
         const std::string catalogSourceUrl =
             effectiveCatalogSourceUrl(settings_->get().catalogSourceUrl);
         uint64_t startedMs = now_ms();
-        brls::async([this, alive, catalog, metadata, mods, startedMs,
-                     fetchCatalog, fetchMetadata, fetchMods, heavy, notify,
-                     catalogSourceUrl] {
+        brls::async([this, alive, catalog, metadata, startedMs,
+                     fetchCatalog, fetchMetadata, notify, catalogSourceUrl] {
             CatalogRefreshBatch batch;
             std::thread metadataFetch;
-            std::thread modsFetch;
             if (fetchMetadata) {
                 metadataFetch = std::thread([&] {
                     batch.metadataOk = metadata->fetchLatest(
                         batch.metadata, batch.metadataError);
-                });
-            }
-            if (fetchMods) {
-                modsFetch = std::thread([&] {
-                    batch.modsOk = mods->fetchLatest(batch.mods,
-                                                     batch.modsError);
                 });
             }
             if (fetchCatalog) {
@@ -1737,8 +1680,6 @@ private:
             }
             if (metadataFetch.joinable())
                 metadataFetch.join();
-            if (modsFetch.joinable())
-                modsFetch.join();
             if (fetchCatalog) {
                 telemetry_log("catalog", "-",
                               "event=refresh ok=%d duration_ms=%llu entries=%zu",
@@ -1753,28 +1694,15 @@ private:
                               (unsigned long long)(now_ms() - startedMs),
                               batch.metadata.items.size());
             }
-            if (fetchMods) {
-                telemetry_log("mods", "-",
-                              "event=refresh ok=%d duration_ms=%llu entries=%zu",
-                              batch.modsOk ? 1 : 0,
-                              (unsigned long long)(now_ms() - startedMs),
-                              batch.mods.items.size());
-            }
             brls::sync([this, alive, batch = std::move(batch), fetchCatalog,
-                        fetchMetadata, fetchMods, heavy, notify,
-                        catalogSourceUrl]() mutable {
+                        fetchMetadata, notify, catalogSourceUrl]() mutable {
                 if (!alive->load())
                     return;
-                if (heavy) {
-                    setBusy(false);
-                    if (batchMode_)
-                        status_->setTextColor(theme::textTertiary());
-                }
-                if (fetchMods)
-                    modsInFlight_ = false;
+                setBusy(false);
+                if (batchMode_)
+                    status_->setTextColor(theme::textTertiary());
                 const bool catalogOk = batch.catalogOk;
                 const bool metadataOk = batch.metadataOk;
-                const bool modsOk = batch.modsOk;
                 const std::string catalogError = batch.catalogError;
                 const std::string metadataError = batch.metadataError;
                 if (fetchCatalog && !catalogOk) {
@@ -1785,34 +1713,24 @@ private:
                     diagnostic_error("metadata", "refresh", "error=%s",
                                      metadataError.c_str());
                 }
-                // A failed mods fetch stays silent: the cached table keeps the
-                // chips alive and the catalogue toast must not change.
-                if (fetchMods && !modsOk) {
-                    diagnostic_error("mods", "refresh", "error=%s",
-                                     batch.modsError.c_str());
-                }
                 if (metadata_) {
                     adoptCatalogRefresh(*catalog_, *metadata_, std::move(batch),
-                                        mods_, catalogSourceUrl);
-                } else {
-                    if (catalogOk)
-                        catalog_->adopt(std::move(batch.catalogEntries),
                                         catalogSourceUrl);
-                    if (modsOk && mods_)
-                        mods_->adopt(std::move(batch.mods));
+                } else if (catalogOk) {
+                    catalog_->adopt(std::move(batch.catalogEntries),
+                                    catalogSourceUrl);
                 }
                 // A metadata release can be the first one to carry player
                 // data, so the chip appears (or its menu grows) right here,
                 // without a new app build.
                 if (metadataOk)
                     updatePlayerChipVisibility();
-                if (catalogOk || metadataOk || modsOk)
+                if (catalogOk || metadataOk)
                     rebuildEntries();
-                else if (heavy)
+                else
                     updateFreshnessLabel();
                 recordRefreshSuccess(fetchCatalog && catalogOk,
-                                     fetchMetadata && metadataOk,
-                                     fetchMods && modsOk);
+                                     fetchMetadata && metadataOk);
                 // Stamp may have landed after rebuildEntries — refresh the
                 // badge once settings are written.
                 if (fetchCatalog && catalogOk)
@@ -1830,10 +1748,11 @@ private:
     GameMetadataService* metadata_;
     InstalledTitleService* installed_;
     AppSettings* settings_;
-    ModIndexService* mods_;
     FavoritesService* favorites_;
     SwitchDeployService* deploy_;
     std::function<void()> openDownloads_;
+    std::function<void()> openGames_;
+    CatalogSection section_ = CatalogSection::Games;
     brls::RecyclerFrame* recycler_;
     brls::Box* recyclerHost_ = nullptr;
     CatalogDataSource* dataSource_;
@@ -1847,8 +1766,6 @@ private:
     brls::Button* sortPopular_ = nullptr;
     brls::Button* sortAlpha_ = nullptr;
     brls::Button* sortSize_ = nullptr;
-    brls::Button* filterAll_ = nullptr;
-    brls::Button* filterGames_ = nullptr;
     brls::Button* filterFavorites_ = nullptr;
     brls::Button* filterFits_ = nullptr;
     brls::Button* filterPlayers_ = nullptr;
@@ -1879,8 +1796,6 @@ private:
     // catalog's own idea of order.
     bool sortReversed_ = false;
     bool busy_ = false;
-    // Mods fetches run outside busy_, so they need their own re-entry guard.
-    bool modsInFlight_ = false;
     bool batchMode_ = false;
     bool shelfDrilldown_ = false;
     // Session-only view filters: deliberately not persisted, so a relaunch

@@ -53,8 +53,29 @@ CatalogPresentation resolveCatalogPresentation(
     const CatalogEntry& entry, const GameMetadata* metadata,
     TextPreference preference = TextPreference::Metadata);
 
+// Games vs Ports sidebar tabs. An [NRO] title is a port even when it carries
+// a Nintendo title id (ports often reuse the original game's id). Package
+// markers and a title id without an NRO tag are games. Everything else
+// (Linux images, untagged emulators) is a port so it does not vanish.
+enum class CatalogSection {
+    Games,
+    Ports,
+};
+
 bool catalogEntryIsGame(const CatalogEntry& entry,
                         const GameMetadata* metadata);
+
+inline bool catalogEntryIsPort(const CatalogEntry& entry,
+                               const GameMetadata* metadata) {
+    return !catalogEntryIsGame(entry, metadata);
+}
+
+inline bool catalogEntryInSection(const CatalogEntry& entry,
+                                  const GameMetadata* metadata,
+                                  CatalogSection section) {
+    return catalogEntryIsGame(entry, metadata) ==
+           (section == CatalogSection::Games);
+}
 
 bool catalogEntryHasMatchedTitle(const GameMetadata* metadata);
 

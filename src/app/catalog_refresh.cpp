@@ -4,8 +4,7 @@ namespace pipensx {
 
 CatalogRefreshAdoption adoptCatalogRefresh(
     CatalogService& catalog, GameMetadataService& metadata,
-    CatalogRefreshBatch batch, ModIndexService* mods,
-    const std::string& catalogSourceUrl) {
+    CatalogRefreshBatch batch, const std::string& catalogSourceUrl) {
     CatalogRefreshAdoption result;
     if (batch.catalogOk) {
         catalog.adopt(std::move(batch.catalogEntries), catalogSourceUrl);
@@ -15,10 +14,6 @@ CatalogRefreshAdoption adoptCatalogRefresh(
         metadata.adopt(std::move(batch.metadata));
         metadata.dropMemoryImageCache();
         result.metadataChanged = true;
-    }
-    if (batch.modsOk && mods) {
-        mods->adopt(std::move(batch.mods));
-        result.modsChanged = true;
     }
     return result;
 }

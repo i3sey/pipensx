@@ -39,7 +39,6 @@ extern "C" {
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include "app/mod_index_service.hpp"
 #include "ui/catalog/catalog_view.hpp"
 #include "ui/common/burn_in_saver.hpp"
 #include "ui/common/ui_helpers.hpp"
@@ -63,7 +62,6 @@ using pipensx::GameMetadataService;
 using pipensx::GameUpdateService;
 using pipensx::InstalledTitleService;
 using pipensx::FavoritesService;
-using pipensx::ModIndexService;
 using pipensx::SwitchPerformanceController;
 using pipensx::UpdateCheckResult;
 using pipensx::UpdateService;
@@ -127,22 +125,32 @@ public:
     MainActivity(DownloadManager* manager, CatalogService* catalog,
                  GameMetadataService* metadata,
                  InstalledTitleService* installed, AppSettings* settings,
-                 UpdateService* updater, ModIndexService* mods,
-                 FavoritesService* favorites, WebServer* webServer,
+                 UpdateService* updater, FavoritesService* favorites, WebServer* webServer,
                  SwitchDeployService* deploy, GameUpdateService* gameUpdates)
         : manager_(manager), catalog_(catalog), metadata_(metadata),
           installed_(installed), settings_(settings), updater_(updater),
-          mods_(mods), favorites_(favorites), webServer_(webServer),
+          favorites_(favorites), webServer_(webServer),
           deploy_(deploy), gameUpdates_(gameUpdates) {
         auto* tabs = new pipensx::ui::MainFrame();
         using pipensx::ui::NavIconType;
-        tabs->addNavTab(tr("pipensx/nav/catalog"), NavIconType::Catalog,
+        using pipensx::CatalogSection;
+        // Games, Ports, separator, Downloads, ... — Downloads is sidebar index 3.
+        tabs->addNavTab(tr("pipensx/nav/games"), NavIconType::Catalog,
                         [manager, catalog, metadata, installed,
-                         settings, mods, favorites, deploy, tabs] {
+                         settings, favorites, deploy, tabs] {
             return new CatalogView(manager, catalog, metadata, installed,
-                                   settings, [tabs] { tabs->focusTab(1); },
-                                   mods, favorites, deploy);
+                                   settings, [tabs] { tabs->focusTab(3); },
+                                   favorites, deploy);
         });
+        tabs->addNavTab(tr("pipensx/nav/ports"), NavIconType::Ports,
+                        [manager, catalog, metadata, installed,
+                         settings, favorites, deploy, tabs] {
+            return new CatalogView(manager, catalog, metadata, installed,
+                                   settings, [tabs] { tabs->focusTab(3); },
+                                   favorites, deploy, CatalogSection::Ports,
+                                   [tabs] { tabs->focusTab(0); });
+        });
+        tabs->addSeparator();
         tabs->addNavTab(tr("pipensx/nav/downloads"), NavIconType::Downloads,
                         [manager, metadata, settings, deploy] {
             return new MainView(manager, metadata, settings, deploy);
@@ -162,9 +170,9 @@ public:
         });
         tabs->addNavTab(tr("pipensx/nav/settings"), NavIconType::Settings,
                         [settings, manager, catalog, metadata,
-                         installed, updater, mods, webServer] {
+                         installed, updater, webServer] {
             return new SettingsView(settings, manager, catalog, metadata,
-                                    installed, updater, mods, webServer);
+                                    installed, updater, webServer);
         });
         tabs->addNavTab(tr("pipensx/nav/help"), NavIconType::Help,
                         [manager, catalog, metadata, installed] {
@@ -231,7 +239,6 @@ private:
     InstalledTitleService* installed_;
     AppSettings* settings_;
     UpdateService* updater_;
-    ModIndexService* mods_;
     FavoritesService* favorites_;
     WebServer* webServer_;
     SwitchDeployService* deploy_;
@@ -381,12 +388,6 @@ int main(int argc, char** argv) {
             log_msg("[catalog] initial load failed: %s\n",
                     catalogError.c_str());
 
-        startupStage("ModIndexService construction");
-        ModIndexService mods("sdmc:/switch/pipensx");
-        std::string modsError;
-        if (!mods.load(modsError))
-            log_msg("[mods] initial load skipped: %s\n", modsError.c_str());
-
         startupStage("FavoritesService construction");
         FavoritesService favorites("sdmc:/switch/pipensx");
         std::string favoritesError;
@@ -499,7 +500,7 @@ int main(int argc, char** argv) {
         startupStage("MainActivity construction");
         auto* activity = new MainActivity(&manager, &catalog, &metadata,
                                            &installed, &settings, &updater,
-                                           &mods, &favorites, &webServer,
+                                           &favorites, &webServer,
                                            &deploy, &gameUpdates);
 
         startupStage("push MainActivity");

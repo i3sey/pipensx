@@ -62,7 +62,8 @@ bool hasNroMarker(const std::string& title) {
 
 bool hasPackageMarker(const std::string& title) {
     return containsAny(title, {"[nsp", "[nsz", "[xci", "[xcz",
-                               ".nsp", ".nsz", ".xci", ".xcz"});
+                               ".nsp", ".nsz", ".xci", ".xcz",
+                               "/nsp", "/nsz", "/xci", "/xcz"});
 }
 
 bool isHex(char c) {
@@ -125,13 +126,13 @@ CatalogPresentation resolveCatalogPresentation(
 
 bool catalogEntryIsGame(const CatalogEntry& entry,
                         const GameMetadata* metadata) {
+    const std::string title = lowerAscii(entry.title);
+    if (hasNroMarker(title))
+        return false;
     if (metadata && looksLikeTitleId(metadata->titleId))
         return true;
     if (looksLikeTitleId(entry.titleId))
         return true;
-    const std::string title = lowerAscii(entry.title);
-    if (hasNroMarker(title))
-        return false;
     return hasPackageMarker(title);
 }
 

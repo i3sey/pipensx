@@ -236,10 +236,6 @@ $(BUILD_DIR)/src/app/catalog_presentation.o: src/app/catalog_presentation.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
 
-$(BUILD_DIR)/src/app/mod_index_service.o: src/app/mod_index_service.cpp
-	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
-
 $(BUILD_DIR)/src/app/http_server.o: src/app/http_server.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
@@ -285,7 +281,6 @@ $(BUILD_DIR)/tests/test_catalog: tests/test_catalog.cpp \
 		$(BUILD_DIR)/src/app/catalog_service.o $(BUILD_DIR)/src/app/catalog_refresh.o \
 		$(BUILD_DIR)/src/app/catalog_presentation.o \
 		$(BUILD_DIR)/src/app/snapshot_zstd.o \
-		$(BUILD_DIR)/src/app/mod_index_service.o \
 		$(BUILD_DIR)/src/app/game_metadata_service.o \
 		$(BUILD_DIR)/src/app/magnet_resolver.o \
 		$(BUILD_DIR)/src/core/tracker.o $(BUILD_DIR)/src/core/net.o \
@@ -558,7 +553,7 @@ $(BUILD_DIR)/tools/webserver: tools/web_server_main.cpp \
 		src/app/app_settings.cpp \
 		$(BUILD_DIR)/src/app/catalog_service.o $(BUILD_DIR)/src/app/catalog_refresh.o \
 		$(BUILD_DIR)/src/app/snapshot_zstd.o \
-		$(BUILD_DIR)/src/app/mod_index_service.o $(BUILD_DIR)/src/app/game_metadata_service.o \
+		$(BUILD_DIR)/src/app/game_metadata_service.o \
 		$(BUILD_DIR)/src/app/magnet_resolver.o src/app/install_space.cpp \
 		$(BUILD_DIR)/src/app/download_manager.o $(BUILD_DIR)/src/app/task_files.o \
 		$(BUILD_DIR)/src/app/web_seed_source.o \

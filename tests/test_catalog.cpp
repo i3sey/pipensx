@@ -3,7 +3,6 @@
 #include "app/catalog_presentation.hpp"
 #include "app/game_metadata_service.hpp"
 #include "app/magnet_resolver.hpp"
-#include "app/mod_index_service.hpp"
 
 extern "C" {
 #include "core/sha1.h"
@@ -34,7 +33,10 @@ using pipensx::CatalogPresentation;
 using pipensx::CatalogRefreshBatch;
 using pipensx::CatalogService;
 using pipensx::defaultCatalogSourceUrl;
+using pipensx::CatalogSection;
 using pipensx::catalogEntryIsGame;
+using pipensx::catalogEntryIsPort;
+using pipensx::catalogEntryInSection;
 using pipensx::catalogEntryHasMatchedTitle;
 using pipensx::catalogEntryMatchesPlayerFilter;
 using pipensx::PlayerFilter;
@@ -42,9 +44,6 @@ using pipensx::adoptCatalogRefresh;
 using pipensx::GameMetadata;
 using pipensx::GameMetadataService;
 using pipensx::MetadataSnapshot;
-using pipensx::ModIndexEntry;
-using pipensx::ModIndexService;
-using pipensx::ModIndexSnapshot;
 using pipensx::MagnetResolver;
 using pipensx::MagnetSpec;
 using pipensx::mergeScreenshotUrls;
@@ -591,102 +590,6 @@ void testMetadataLoadFallsBackWhenRuntimeCacheIsCorrupt() {
     rmdir(root.c_str());
 }
 
-void testModIndexTableParsing() {
-    const std::string table =
-        "| Title ID           | Game Name | Mods |\n"
-        "|--------------------|-----------|------|\n"
-        "| 0100F2C0115B6000 | Zelda TotK | **Name**: A<br>**Type**: gfx<br>"
-        "<br>**Name**: B<br>**Type**: gfx |\n"
-        "| 01003DD00D658000 | Bulletstorm | **Name**: Solo mod |\n"
-        "| 0100A5C00D16200 | Too short | **Name**: Ignored |\n"
-        "| 0100A5C00D162ZZZ | Not hex | **Name**: Ignored |\n"
-        "not a table row at all\n"
-        "| 0100BEEF0BEE6000 | Marker-less | mods listed without markers |\n";
-
-    std::vector<ModIndexEntry> entries;
-    std::string error;
-    assert(ModIndexService::parseTable(table, entries, error));
-    // Header, rule, both malformed ids and the prose line are all skipped.
-    assert(entries.size() == 3);
-    assert(entries[0].titleId == "0100F2C0115B6000");
-    assert(entries[0].gameName == "Zelda TotK");
-    assert(entries[0].modCount == 2);
-    assert(entries[1].titleId == "01003DD00D658000");
-    assert(entries[1].modCount == 1);
-    // A matched row whose mod markers did not parse still counts as a match;
-    // the UI shows "available" instead of a number it cannot trust.
-    assert(entries[2].titleId == "0100BEEF0BEE6000");
-    assert(entries[2].modCount == 0);
-
-    std::vector<ModIndexEntry> empty;
-    assert(!ModIndexService::parseTable("", empty, error));
-    assert(!ModIndexService::parseTable(
-        "| Title ID | Game |\n|---|---|\n", empty, error));
-}
-
-void testModIndexTitleIdNormalization() {
-    // Update (…800) and DLC (…001) ids collapse onto the base application id.
-    assert(ModIndexService::normalizeTitleId("0100f2c0115b6000") ==
-           "0100F2C0115B6000");
-    assert(ModIndexService::normalizeTitleId("0100F2C0115B6800") ==
-           "0100F2C0115B6000");
-    assert(ModIndexService::normalizeTitleId("0100F2C0115B7001") ==
-           "0100F2C0115B6000");
-    assert(ModIndexService::normalizeTitleId("0100F2C0115B600").empty());
-    assert(ModIndexService::normalizeTitleId("0100F2C0115B600G").empty());
-    assert(ModIndexService::normalizeTitleId("").empty());
-}
-
-void testModIndexLookupAndCache() {
-    const std::string root = "/tmp/pipensx-mods-" +
-        std::to_string(static_cast<long long>(getpid()));
-    mkdir(root.c_str(), 0755);
-    const std::string bundled = root + "/bundled_table.md";
-    writeTextFile(bundled,
-        "| Title ID | Game Name | Mods |\n"
-        "|---|---|---|\n"
-        "| 0100F2C0115B6000 | Zelda TotK | **Name**: A<br>**Name**: B |\n");
-    {
-        ModIndexService mods(root, bundled);
-        std::string error;
-        assert(mods.load(error));
-        assert(mods.size() == 1);
-        assert(mods.has("0100F2C0115B6000"));
-        assert(mods.modCount("0100F2C0115B6000") == 2);
-        // Case, update and DLC ids all resolve to the same row.
-        assert(mods.has("0100f2c0115b6800"));
-        assert(mods.modCount("0100F2C0115B7001") == 2);
-        assert(!mods.has("0100000000010000"));
-        assert(mods.modCount("garbage") == 0);
-    }
-    {
-        // No cache and no bundled table: an empty index, never a hard failure.
-        ModIndexService mods(root + "/empty", "");
-        std::string error;
-        assert(!mods.load(error));
-        assert(!error.empty());
-        assert(mods.size() == 0);
-        assert(!mods.has("0100F2C0115B6000"));
-    }
-    unlink(bundled.c_str());
-    rmdir((root + "/empty/catalog").c_str());
-    rmdir((root + "/empty").c_str());
-    rmdir((root + "/catalog").c_str());
-    rmdir(root.c_str());
-}
-
-void testModIndexTrustedSourceAllowlist() {
-    assert(ModIndexService::isTrustedSource(
-        "https://raw.githubusercontent.com/kawaii-flesh/ModCD/"
-        "refs/heads/main/table.md"));
-    assert(!ModIndexService::isTrustedSource(
-        "http://raw.githubusercontent.com/kawaii-flesh/ModCD/main/table.md"));
-    assert(!ModIndexService::isTrustedSource(
-        "https://raw.githubusercontent.com/attacker/ModCD/main/table.md"));
-    assert(!ModIndexService::isTrustedSource(
-        "https://example.com/kawaii-flesh/ModCD/table.md"));
-}
-
 void testCatalogAndMetadataRefreshAdoptIndependently() {
     const std::string root = "/tmp/pipensx-refresh-adopt-" +
         std::to_string(static_cast<long long>(getpid()));
@@ -730,28 +633,6 @@ void testCatalogAndMetadataRefreshAdoptIndependently() {
         assert(!second.catalogChanged && second.metadataChanged);
         assert(catalog.entries()[0].title == "New");
         assert(metadata.size() == 1);
-
-        ModIndexService mods(root, "");
-        CatalogRefreshBatch modsOnly;
-        modsOnly.modsOk = true;
-        assert(ModIndexService::parseTable(
-            "| Title ID | Game | Mods |\n|---|---|---|\n"
-            "| 0100230005A52000 | Runtime | **Name**: A |\n",
-            modsOnly.mods.items, error));
-        const auto third = adoptCatalogRefresh(
-            catalog, metadata, std::move(modsOnly), &mods);
-        assert(!third.catalogChanged && !third.metadataChanged &&
-               third.modsChanged);
-        assert(mods.has("0100230005A52000"));
-        assert(catalog.entries()[0].title == "New");
-        assert(metadata.size() == 1);
-
-        // A failed mods fetch leaves the previously adopted table in place.
-        CatalogRefreshBatch modsFailed;
-        const auto fourth = adoptCatalogRefresh(
-            catalog, metadata, std::move(modsFailed), &mods);
-        assert(!fourth.modsChanged);
-        assert(mods.has("0100230005A52000"));
     }
     rmdir((root + "/catalog/metadata").c_str());
     rmdir((root + "/catalog/images").c_str());
@@ -936,6 +817,8 @@ void testCatalogGameFilterKeepsUnmatchedSwitchReleases() {
     CatalogEntry release;
     release.title = "New game [NSZ][ENG]";
     assert(catalogEntryIsGame(release, nullptr));
+    assert(!catalogEntryIsPort(release, nullptr));
+    assert(catalogEntryInSection(release, nullptr, CatalogSection::Games));
 
     CatalogEntry nspRelease;
     nspRelease.title = "Base game [NSP][RUS]";
@@ -945,20 +828,37 @@ void testCatalogGameFilterKeepsUnmatchedSwitchReleases() {
     cartridgeRelease.title = "Cart dump [XCI][ENG]";
     assert(catalogEntryIsGame(cartridgeRelease, nullptr));
 
+    CatalogEntry slashPackage;
+    slashPackage.title = "No More Heroes [RUS (Mod.)/NSP][ENG]";
+    assert(catalogEntryIsGame(slashPackage, nullptr));
+
     CatalogEntry homebrew;
     homebrew.title = "Source port [NRO][ENG]";
     assert(!catalogEntryIsGame(homebrew, nullptr));
+    assert(catalogEntryIsPort(homebrew, nullptr));
+    assert(catalogEntryInSection(homebrew, nullptr, CatalogSection::Ports));
 
     GameMetadata emptyMetadata;
     assert(!catalogEntryIsGame(homebrew, &emptyMetadata));
 
+    // An NRO that borrowed the original Switch title id is still a port.
     GameMetadata metadata;
     metadata.titleId = "0100230005A52000";
-    assert(catalogEntryIsGame(homebrew, &metadata));
+    assert(!catalogEntryIsGame(homebrew, &metadata));
+    assert(catalogEntryIsPort(homebrew, &metadata));
 
     GameMetadata invalidMetadata;
     invalidMetadata.titleId = "not-a-title-id";
     assert(!catalogEntryIsGame(homebrew, &invalidMetadata));
+
+    CatalogEntry titledGame;
+    titledGame.title = "Adventure Reborn [RUS/Multi7]";
+    titledGame.titleId = "01007F9026144000";
+    assert(catalogEntryIsGame(titledGame, nullptr));
+
+    CatalogEntry linuxImage;
+    linuxImage.title = "Lakka Linux L4T with Dolphin [ENG,RUS]";
+    assert(catalogEntryIsPort(linuxImage, nullptr));
 }
 
 void testCatalogBrowseMatchFilterRequiresTitleIdMetadata() {
@@ -1494,10 +1394,6 @@ int main() {
     testMetadataLoadPrefersVerifiedRuntimeCache();
     testMetadataFetchVerifiesBeforeAdoptAndFallsBackToCache();
     testMetadataLoadFallsBackWhenRuntimeCacheIsCorrupt();
-    testModIndexTableParsing();
-    testModIndexTitleIdNormalization();
-    testModIndexLookupAndCache();
-    testModIndexTrustedSourceAllowlist();
     testCatalogAndMetadataRefreshAdoptIndependently();
     testOptionalCatalogDataMayBeAbsent();
     testCatalogPresentationUsesGameMetadata();

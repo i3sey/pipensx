@@ -176,7 +176,6 @@ set(APP_SERVICE_SOURCES
     src/app/game_update_service.cpp
     src/app/installed_title_service.cpp
     src/app/storage_manager.cpp
-    src/app/mod_index_service.cpp
     src/app/install_space.cpp
     src/app/magnet_resolver.cpp
     src/app/http_server.cpp
