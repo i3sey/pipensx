@@ -395,7 +395,8 @@
     "update_added": "Update added to downloads",
     "update_choose_more": "Other bundles ({0})...",
     "update_choose_file": "Choose the update files",
-    "update_nothing_selected": "Select at least one file."
+    "update_nothing_selected": "Select at least one file.",
+    "section_other": "Other"
   },
   "updates": {
     "empty_title": "No updates found",
@@ -600,7 +601,7 @@
     "disclaimer": "pipensx is an independent open-source project and is not affiliated with Nintendo."
   },
   "disclaimer": {
-    "catalog": "Catalog is a RuTracker dump by @Langegen. Not affiliated."
+    "catalog": "The catalog is a list of RuTracker releases collected by @Langegen. pipensx is not affiliated with RuTracker or @Langegen.\n\nThe catalog will update now. This can take a while."
   },
   "setup_summary": {
     "connection": "Connection",

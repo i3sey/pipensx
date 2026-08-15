@@ -395,7 +395,8 @@
     "update_added": "Обновление добавлено в загрузки",
     "update_choose_more": "Другие бандлы ({0})...",
     "update_choose_file": "Выберите файлы обновления",
-    "update_nothing_selected": "Выберите хотя бы один файл."
+    "update_nothing_selected": "Выберите хотя бы один файл.",
+    "section_other": "Остальные"
   },
   "updates": {
     "empty_title": "Обновлений не найдено",
@@ -600,7 +601,7 @@
     "disclaimer": "pipensx — независимый проект с открытым исходным кодом, не связанный с Nintendo."
   },
   "disclaimer": {
-    "catalog": "Каталог — дамп RuTracker от @Langegen. Проект не связан с ними."
+    "catalog": "Каталог — список релизов с RuTracker, собранный @Langegen. pipensx не связан ни с RuTracker, ни с @Langegen.\n\nСейчас каталог обновится. Это может занять время."
   },
   "setup_summary": {
     "connection": "Подключение",

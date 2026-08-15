@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -29,12 +30,21 @@ public:
     using InstallOne = std::function<void(const std::string&)>;
     using UninstallOne = std::function<void(InstalledTitle)>;
 
-    explicit InstalledCell(bool allowUninstall = true) {
+    InstalledCell() {
         setFocusable(true);
         setAxis(brls::Axis::ROW);
         setAlignItems(brls::AlignItems::CENTER);
-        setPadding(10, 18, 10, 18);
+        setPadding(10, 18, 10, 14);
         setHeight(92);
+
+        mark_ = new brls::Box();
+        mark_->setWidth(4);
+        mark_->setHeight(64);
+        mark_->setCornerRadius(2);
+        mark_->setBackgroundColor(theme::error());
+        mark_->setMarginRight(12);
+        mark_->setVisibility(brls::Visibility::GONE);
+        addView(mark_);
 
         image_ = new AsyncRgbaImage();
         image_->setWidth(64);
@@ -81,14 +91,12 @@ public:
         });
         addGestureRecognizer(new brls::TapGestureRecognizer(this));
 
-        if (allowUninstall) {
-            registerAction(tr("pipensx/installed/uninstall_action"),
-                           brls::BUTTON_X, [this](brls::View*) {
-                if (!titleId_.empty() && onUninstallOne_)
-                    onUninstallOne_(storedTitle_);
-                return true;
-            });
-        }
+        registerAction(tr("pipensx/installed/uninstall_action"),
+                       brls::BUTTON_Y, [this](brls::View*) {
+            if (!titleId_.empty() && onUninstallOne_)
+                onUninstallOne_(storedTitle_);
+            return true;
+        });
     }
 
     void setTitle(const InstalledTitle& title,
@@ -122,28 +130,27 @@ public:
             state == GameUpdateState::UpdateAvailable
                 ? tr("pipensx/common/install")
                 : tr("pipensx/installed/action_check"));
+        const bool available = state == GameUpdateState::UpdateAvailable;
+        mark_->setVisibility(available ? brls::Visibility::VISIBLE
+                                       : brls::Visibility::GONE);
         switch (state) {
         case GameUpdateState::UpdateAvailable:
-            chip_->setText(tr("pipensx/installed/update_chip_available"));
-            chip_->setTextColor(theme::warning());
-            break;
-        case GameUpdateState::UpToDate:
-            chip_->setText(tr("pipensx/installed/update_chip_latest"));
-            chip_->setTextColor(theme::success());
+            chip_->setText(tr("pipensx/common/install"));
+            chip_->setTextColor(theme::error());
+            chip_->setVisibility(brls::Visibility::VISIBLE);
             break;
         case GameUpdateState::CheckError:
             chip_->setText(tr("pipensx/installed/update_chip_error"));
             chip_->setTextColor(theme::error());
+            chip_->setVisibility(brls::Visibility::VISIBLE);
             break;
+        case GameUpdateState::UpToDate:
         case GameUpdateState::SourceUnknown:
-            chip_->setText(tr("pipensx/installed/update_chip_no_source"));
-            chip_->setTextColor(theme::textTertiary());
-            break;
         case GameUpdateState::NotChecked:
         case GameUpdateState::Checking:
         default:
-            chip_->setText(tr("pipensx/installed/update_chip_not_checked"));
-            chip_->setTextColor(theme::textTertiary());
+            chip_->setText("");
+            chip_->setVisibility(brls::Visibility::GONE);
             break;
         }
     }
@@ -176,6 +183,7 @@ private:
         subtitle_->setText(subtitle);
     }
 
+    brls::Box* mark_ = nullptr;
     AsyncRgbaImage* image_ = nullptr;
     brls::Label* title_ = nullptr;
     brls::Label* subtitle_ = nullptr;
@@ -200,7 +208,14 @@ public:
         : metadata_(metadata) {}
 
     void setTitles(std::vector<InstalledTitle> titles) {
-        titles_ = std::move(titles);
+        updates_.clear();
+        rest_.clear();
+        for (InstalledTitle& title : titles) {
+            if (isUpdateAvailable(title.titleId))
+                updates_.push_back(std::move(title));
+            else
+                rest_.push_back(std::move(title));
+        }
     }
 
     void setResults(const GameUpdateResults* results) { results_ = results; }
@@ -214,15 +229,35 @@ public:
         onUninstallOne_ = std::move(onUninstallOne);
     }
 
-    const std::vector<InstalledTitle>& titles() const { return titles_; }
+    const std::vector<InstalledTitle>& updateTitles() const { return updates_; }
 
-    int numberOfRows(brls::RecyclerFrame*, int) override {
-        return static_cast<int>(titles_.size());
+    int numberOfSections(brls::RecyclerFrame*) override {
+        if (!updates_.empty() && !rest_.empty())
+            return 2;
+        return 1;
+    }
+
+    int numberOfRows(brls::RecyclerFrame*, int section) override {
+        return static_cast<int>(sectionTitles(section).size());
+    }
+
+    std::string titleForHeader(brls::RecyclerFrame*, int section) override {
+        if (!updates_.empty() && !rest_.empty())
+            return section == 0 ? tr("pipensx/nav/updates")
+                                : tr("pipensx/installed/section_other");
+        if (!updates_.empty() && section == 0)
+            return tr("pipensx/nav/updates");
+        return "";
+    }
+
+    float heightForHeader(brls::RecyclerFrame* recycler, int section) override {
+        return titleForHeader(recycler, section).empty() ? 0.0f : 44.0f;
     }
 
     brls::RecyclerCell* cellForRow(brls::RecyclerFrame* recycler,
                                     brls::IndexPath index) override {
-        const InstalledTitle& title = titles_[static_cast<size_t>(index.row)];
+        const std::vector<InstalledTitle>& titles = sectionTitles(index.section);
+        const InstalledTitle& title = titles[static_cast<size_t>(index.row)];
         auto* cell = static_cast<InstalledCell*>(
             recycler->dequeueReusableCell("Installed"));
         cell->setTitle(title, metadata_);
@@ -237,29 +272,50 @@ public:
     }
 
 private:
+    bool isUpdateAvailable(const std::string& titleId) const {
+        if (!results_)
+            return false;
+        auto it = results_->find(titleId);
+        return it != results_->end() &&
+               it->second.state == GameUpdateState::UpdateAvailable;
+    }
+
+    const std::vector<InstalledTitle>& sectionTitles(int section) const {
+        if (!updates_.empty() && !rest_.empty())
+            return section == 0 ? updates_ : rest_;
+        return updates_.empty() ? rest_ : updates_;
+    }
+
     GameMetadataService* metadata_;
-    std::vector<InstalledTitle> titles_;
+    std::vector<InstalledTitle> updates_;
+    std::vector<InstalledTitle> rest_;
     const GameUpdateResults* results_ = nullptr;
     InstalledCell::CheckOne onCheckOne_;
     InstalledCell::InstallOne onInstallOne_;
     InstalledCell::UninstallOne onUninstallOne_;
 };
 
+inline size_t availableUpdateCount(const GameUpdateResults& results,
+                                   const std::vector<InstalledTitle>& titles) {
+    size_t count = 0;
+    for (const InstalledTitle& title : titles) {
+        auto it = results.find(title.titleId);
+        if (it != results.end() &&
+            it->second.state == GameUpdateState::UpdateAvailable)
+            ++count;
+    }
+    return count;
+}
+
 class InstalledView : public brls::Box {
 public:
-    enum class Mode {
-        Library,
-        Updates,
-    };
-
     InstalledView(InstalledTitleService* installed, DownloadManager* manager,
                   GameMetadataService* metadata, AppSettings* settings,
                   CatalogService* catalog, GameUpdateService* updates,
-                  bool checkOnEntry = true, Mode mode = Mode::Library)
+                  bool checkOnEntry = true)
         : brls::Box(brls::Axis::COLUMN), installed_(installed),
           manager_(manager), metadata_(metadata), settings_(settings),
           catalog_(catalog), updates_(updates), checkOnEntry_(checkOnEntry),
-          mode_(mode),
           alive_(std::make_shared<std::atomic<bool>>(true)) {
         status_ = new brls::Label();
         status_->setFontSize(15);
@@ -272,9 +328,7 @@ public:
         recycler_->setGrow(1);
         recycler_->setPadding(6, 32, 6, 32);
         recycler_->estimatedRowHeight = 92;
-        recycler_->registerCell("Installed", [this] {
-            return new InstalledCell(mode_ == Mode::Library);
-        });
+        recycler_->registerCell("Installed", [] { return new InstalledCell(); });
         dataSource_ = new InstalledDataSource(metadata);
         recycler_->setDataSource(dataSource_);
         // Visibility toggles on the host, not the recycler: the host is the
@@ -304,13 +358,17 @@ public:
             checkAllTitles();
             return true;
         });
-        if (mode_ == Mode::Updates) {
-            registerAction(tr("pipensx/updates/update_all"),
-                           brls::BUTTON_X, [this](brls::View*) {
-                queueAllUpdates();
-                return true;
-            });
-        }
+        registerAction(tr("pipensx/updates/update_all"),
+                       brls::BUTTON_X, [this](brls::View*) {
+            queueAllUpdates();
+            return true;
+        });
+    }
+
+    void setOnUpdateCount(std::function<void(size_t)> callback) {
+        onUpdateCount_ = std::move(callback);
+        if (onUpdateCount_)
+            onUpdateCount_(dataSource_->updateTitles().size());
     }
 
     ~InstalledView() override {
@@ -326,19 +384,11 @@ private:
         if (emptyState_)
             return emptyState_;
         emptyState_ = new EmptyStateView();
-        if (mode_ == Mode::Updates) {
-            emptyState_->setContent(
-                tr("pipensx/updates/empty_title"),
-                tr("pipensx/updates/empty_body"),
-                tr("pipensx/installed/update_check_all"),
-                [this] { checkAllTitles(); });
-        } else {
             emptyState_->setContent(
                 tr("pipensx/installed/empty_title"),
                 tr("pipensx/installed/empty_body"),
                 tr("pipensx/installed/refresh_action"),
                 [this] { refresh(); });
-        }
         addView(emptyState_);
         return emptyState_;
     }
@@ -409,12 +459,10 @@ private:
     }
 
     void queueAllUpdates() {
-        if (mode_ != Mode::Updates)
-            return;
         if (refreshing_ || updateInFlight_ || uninstallInFlight_)
             return;
         pendingUpdateAll_.clear();
-        for (const InstalledTitle& title : dataSource_->titles())
+        for (const InstalledTitle& title : dataSource_->updateTitles())
             pendingUpdateAll_.push_back(title.titleId);
         if (pendingUpdateAll_.empty()) {
             brls::Application::notify(tr("pipensx/updates/update_all_empty"));
@@ -839,19 +887,7 @@ private:
 
     void reload() {
         std::vector<InstalledTitle> titles = installed_->titles();
-        if (mode_ == Mode::Updates) {
-            const GameUpdateResults& results = updates_->results();
-            std::vector<InstalledTitle> filtered;
-            filtered.reserve(titles.size());
-            for (InstalledTitle& title : titles) {
-                auto it = results.find(title.titleId);
-                if (it != results.end() &&
-                    it->second.state == GameUpdateState::UpdateAvailable)
-                    filtered.push_back(std::move(title));
-            }
-            titles = std::move(filtered);
-        }
-        size_t count = titles.size();
+        const size_t count = titles.size();
         dataSource_->setTitles(std::move(titles));
         recycler_->reloadData();
         // reloadData re-renders the focused row, whose A hint may have
@@ -866,13 +902,16 @@ private:
             emptyState_->setVisibility(brls::Visibility::GONE);
         recyclerHost_->setVisibility(empty ? brls::Visibility::GONE
                                            : brls::Visibility::VISIBLE);
-        std::string text = mode_ == Mode::Updates
-            ? tr("pipensx/updates/count", count)
-            : tr("pipensx/installed/count", count);
+        const size_t updateCount = dataSource_->updateTitles().size();
+        std::string text = tr("pipensx/installed/count", count);
+        if (updateCount > 0)
+            text += "   " + tr("pipensx/updates/count", updateCount);
         if (updates_->stale(installed_->generation(),
                             settings_->get().lastMetadataRefreshMs))
             text += "   " + tr("pipensx/installed/update_stale");
         status_->setText(text);
+        if (onUpdateCount_)
+            onUpdateCount_(updateCount);
     }
 
     void refresh() {
@@ -911,7 +950,7 @@ private:
     CatalogService* catalog_ = nullptr;
     GameUpdateService* updates_ = nullptr;
     bool checkOnEntry_ = true;
-    Mode mode_ = Mode::Library;
+    std::function<void(size_t)> onUpdateCount_;
     brls::Label* status_ = nullptr;
     EmptyStateView* emptyState_ = nullptr;
     brls::RecyclerFrame* recycler_ = nullptr;

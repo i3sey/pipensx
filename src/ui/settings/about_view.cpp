@@ -118,9 +118,9 @@ AboutView::AboutView() : brls::Box(brls::Axis::COLUMN) {
     auto* qrRow = new brls::Box(brls::Axis::ROW);
     qrRow->setAlignItems(brls::AlignItems::STRETCH);
     qrRow->setMarginBottom(kCardGap);
-    auto* telegram = makeQrCard("Telegram", "@i3sey",
+    auto* telegram = makeQrCard("Telegram", "@pipensx",
                                 tr("pipensx/about/telegram_summary"),
-                                "https://t.me/i3sey");
+                                "https://t.me/pipensx");
     auto* github = makeQrCard("GitHub", "i3sey/pipensx",
                               tr("pipensx/about/github_summary"),
                               "https://github.com/i3sey/pipensx");

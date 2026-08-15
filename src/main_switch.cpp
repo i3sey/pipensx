@@ -157,17 +157,14 @@ public:
         });
         tabs->addNavTab(tr("pipensx/nav/installed"), NavIconType::Installed,
                         [installed, manager, metadata, settings, catalog,
-                         gameUpdates] {
-            return new InstalledView(installed, manager, metadata, settings,
-                                     catalog, gameUpdates);
-        });
-        tabs->addNavTab(tr("pipensx/nav/updates"), NavIconType::Updates,
-                        [installed, manager, metadata, settings, catalog,
-                         gameUpdates] {
-            return new InstalledView(installed, manager, metadata, settings,
-                                     catalog, gameUpdates, true,
-                                     InstalledView::Mode::Updates);
-        });
+                         gameUpdates, tabs] {
+            auto* view = new InstalledView(installed, manager, metadata,
+                                           settings, catalog, gameUpdates);
+            view->setOnUpdateCount([tabs](size_t count) {
+                tabs->setUpdateCountBadge(count);
+            });
+            return view;
+        }, true);
         tabs->addNavTab(tr("pipensx/nav/settings"), NavIconType::Settings,
                         [settings, manager, catalog, metadata,
                          installed, updater, webServer] {
@@ -182,8 +179,31 @@ public:
             return new AboutView();
         });
         tabs->attachStorageFooter(manager, webServer);
+        tabs_ = tabs;
+        refreshUpdateBadge();
         frame_ = new brls::AppletFrame(tabs);
         frame_->setTitle(tr("pipensx/app/title"));
+    }
+
+    // The installed scan runs off-thread so the first frame is not blocked.
+    // Call again when that scan lands: titles() is empty in the constructor
+    // and availableUpdateCount would otherwise keep the sidebar chip at 0
+    // until the user opens the Installed tab (which constructs InstalledView).
+    void refreshUpdateBadge() {
+        if (!tabs_ || !gameUpdates_ || !installed_ || !settings_)
+            return;
+        const std::vector<pipensx::InstalledTitle> titles = installed_->titles();
+        if (!titles.empty()) {
+            std::string saveError;
+            gameUpdates_->checkAll(titles, installed_->generation(),
+                                   settings_->get().lastMetadataRefreshMs,
+                                   saveError);
+            if (!saveError.empty())
+                diagnostic_error("game_updates", "save", "error=%s",
+                                 saveError.c_str());
+        }
+        tabs_->setUpdateCountBadge(
+            availableUpdateCount(gameUpdates_->results(), titles));
     }
 
     brls::View* createContentView() override {
@@ -243,6 +263,7 @@ private:
     WebServer* webServer_;
     SwitchDeployService* deploy_;
     GameUpdateService* gameUpdates_;
+    pipensx::ui::MainFrame* tabs_ = nullptr;
     brls::AppletFrame* frame_;
 };
 
@@ -403,11 +424,14 @@ int main(int argc, char** argv) {
         // UI come up immediately; the list fills in when the scan lands.
         startupStage("InstalledTitleService refresh (async)");
         InstalledTitleService installed("sdmc:/switch/pipensx");
-        ThreadJoiner installedScanner{std::thread([&installed] {
+        std::atomic<bool> installedScanDone{false};
+        ThreadJoiner installedScanner{std::thread([&installed,
+                                                   &installedScanDone] {
             std::string installedError;
             if (!installed.refresh(installedError))
                 diagnostic_error("installed", "startup", "error=%s",
                                  installedError.c_str());
+            installedScanDone.store(true);
         })};
 
         startupStage("DownloadManager construction");
@@ -585,6 +609,7 @@ int main(int argc, char** argv) {
         // observed after startup, so pre-existing rows never re-notify.
         std::unordered_map<std::string, pipensx::DownloadStatus> lastTaskStatus;
         uint64_t lastDownloadScanMs = now_ms();
+        bool updateBadgeApplied = false;
         while (true) {
             const pipensx::SwitchDeploySnapshot deployState = deploy.snapshot();
             bool activeTransfer = manager.hasActiveTransfer() ||
@@ -595,6 +620,10 @@ int main(int argc, char** argv) {
                                : GameMetadataService::ImageNetwork::Full);
             if (!brls::Application::mainLoop())
                 break;
+            if (!updateBadgeApplied && installedScanDone.load()) {
+                updateBadgeApplied = true;
+                activity->refreshUpdateBadge();
+            }
             if (deployState.phase != lastDeployPhase) {
                 if (deployState.phase == pipensx::SwitchDeployPhase::Completed)
                     brls::Application::notify(deployState.detail.empty()

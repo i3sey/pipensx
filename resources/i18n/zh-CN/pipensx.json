@@ -395,7 +395,8 @@
     "update_added": "更新已添加到下载列表",
     "update_choose_more": "其他捆绑包（{0}）…",
     "update_choose_file": "选择更新文件",
-    "update_nothing_selected": "请至少选择一个文件。"
+    "update_nothing_selected": "请至少选择一个文件。",
+    "section_other": "其他"
   },
   "updates": {
     "empty_title": "未找到更新",
@@ -600,7 +601,7 @@
     "disclaimer": "pipensx 是一个独立的开源项目，与任天堂无关联。"
   },
   "disclaimer": {
-    "catalog": "目录是 @Langegen 的 RuTracker 转储。无关联。"
+    "catalog": "目录是 @Langegen 收集的 RuTracker 发行列表。pipensx 与 RuTracker 和 @Langegen 均无关联。\n\n目录即将更新，可能需要一些时间。"
   },
   "setup_summary": {
     "connection": "连接",

@@ -395,7 +395,8 @@
     "update_added": "Mise à jour ajoutée aux téléchargements",
     "update_choose_more": "Autres paquets ({0})...",
     "update_choose_file": "Choisir les fichiers de mise à jour",
-    "update_nothing_selected": "Sélectionnez au moins un fichier."
+    "update_nothing_selected": "Sélectionnez au moins un fichier.",
+    "section_other": "Autres"
   },
   "updates": {
     "empty_title": "Aucune mise à jour trouvée",
@@ -600,7 +601,7 @@
     "disclaimer": "pipensx est un projet open source indépendant et n'est pas affilié à Nintendo."
   },
   "disclaimer": {
-    "catalog": "Le catalogue est une dump RuTracker par @Langegen. Non affilié."
+    "catalog": "Le catalogue est une liste de sorties RuTracker collectée par @Langegen. pipensx n'est affilié ni à RuTracker ni à @Langegen.\n\nLe catalogue va se mettre à jour maintenant. Cela peut prendre un moment."
   },
   "setup_summary": {
     "connection": "Connexion",

@@ -30,7 +30,7 @@ SCREENS="${GOLDEN_SCREENS:-catalog detail frame downloads download-files deploy-
 BEHAVIOR_SCREENS="${GOLDEN_BEHAVIOR_SCREENS:-downloads-back downloads-removing torrent-selection-scroll hints-budget hints-budget:ru bug-report-focus first-run-focus first-run-focus:ru sidebar-touch detail-rail-nav catalog-header-clearance update-chooser-toggle first-run-disclaimer installed-bundles}"
 THEMES="${GOLDEN_THEMES:-light dark}"
 # frame is in the list because it is the only screen that renders the nav
-# sidebar, whose 248px width (theme.hpp installSidebarStyle) is the
+# sidebar, whose 280px width (main_frame.hpp installSidebarStyle) is the
 # tightest label constraint in the app.
 RU_SCREENS="${GOLDEN_RU_SCREENS:-frame catalog detail settings settings-debrid help first-run debrid-link torrent-selection downloads download-files deploy-preview updates update-chooser}"
 RU_THEME="${GOLDEN_RU_THEME:-dark}"

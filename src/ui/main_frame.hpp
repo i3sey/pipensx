@@ -32,19 +32,26 @@
 namespace pipensx::ui {
 
 enum class NavIconType {
-    Catalog, Ports, Downloads, Installed, Updates, Settings, Help, About
+    Catalog, Ports, Downloads, Installed, Settings, Help, About
 };
 
-// Shrinks the stock sidebar so the icon rail + expanded menu both look right.
-// Style metrics back a shared global table, so this must run once after
-// Application::init() and BEFORE the first TabFrame/Sidebar is constructed
-// (both read these at inflate time).
+// Expanded column is wide enough for ru «Мои игры» plus the updates badge.
+// Item/separator/padding metrics keep all seven tabs above the IP+storage
+// dock so the sidebar does not scroll on 720p. Style metrics back a shared
+// global table, so this must run once after Application::init() and BEFORE
+// the first TabFrame/Sidebar is constructed (both read these at inflate time).
+inline constexpr float kSidebarExpandedWidth = 280.0f;
+inline constexpr float kSidebarDockReserve = 96.0f;
+
 inline void installSidebarStyle() {
     brls::Style style = brls::Application::getStyle();
-    style.addMetric("brls/tab_frame/sidebar_width", 248.0f);  // was 410
-    style.addMetric("brls/sidebar/padding_left", 22.0f);      // was 80
-    style.addMetric("brls/sidebar/padding_right", 16.0f);     // was 40
-    style.addMetric("brls/sidebar/padding_top", 28.0f);
+    style.addMetric("brls/tab_frame/sidebar_width", kSidebarExpandedWidth);
+    style.addMetric("brls/sidebar/padding_left", 22.0f);   // was 80
+    style.addMetric("brls/sidebar/padding_right", 16.0f);  // was 40
+    style.addMetric("brls/sidebar/padding_top", 16.0f);
+    style.addMetric("brls/sidebar/padding_bottom", kSidebarDockReserve);
+    style.addMetric("brls/sidebar/item_height", 54.0f);      // was 70
+    style.addMetric("brls/sidebar/separator_height", 8.0f);  // was 30
 }
 
 // Box that reports no hit at all, so touches fall through to whatever sits
@@ -91,7 +98,6 @@ public:
             case NavIconType::Ports:     drawPorts(vg, gx, gy, s); break;
             case NavIconType::Downloads: drawDownloads(vg, gx, gy, s); break;
             case NavIconType::Installed: drawInstalled(vg, gx, gy, s); break;
-            case NavIconType::Updates:   drawUpdates(vg, gx, gy, s); break;
             case NavIconType::Settings:    drawSettings(vg, gx, gy, s); break;
             case NavIconType::Help:        drawPulse(vg, gx, gy, s); break;
             case NavIconType::About:       drawAbout(vg, gx, gy, s); break;
@@ -152,21 +158,6 @@ private:
         nvgMoveTo(vg, gx + 6.0f, gy + 12.0f);
         nvgLineTo(vg, gx + 10.0f, gy + 16.0f);
         nvgLineTo(vg, gx + 17.0f, gy + 8.0f);
-        nvgStroke(vg);
-    }
-
-    // Circular update arrow.
-    static void drawUpdates(NVGcontext* vg, float gx, float gy, float s) {
-        const float cx = gx + s / 2.0f;
-        const float cy = gy + s / 2.0f;
-        const float r = s / 2.0f - 3.0f;
-        nvgBeginPath(vg);
-        nvgArc(vg, cx, cy, r, -0.35f, 4.7f, NVG_CW);
-        nvgStroke(vg);
-        nvgBeginPath(vg);
-        nvgMoveTo(vg, cx + r - 1.0f, cy - 4.0f);
-        nvgLineTo(vg, cx + r + 3.0f, cy - 10.0f);
-        nvgLineTo(vg, cx + r + 5.0f, cy - 2.0f);
         nvgStroke(vg);
     }
 
@@ -245,7 +236,7 @@ public:
             setTextIfChanged(label_, tr("pipensx/settings/web_address_none"));
             label_->setTextColor(theme::textTertiary());
         } else {
-            // Drop the scheme: the footer column is 216px, every pixel counts.
+            // Drop the scheme: the footer column is ~242px, every pixel counts.
             setTextIfChanged(label_, url.rfind("http://", 0) == 0
                                          ? url.substr(7)
                                          : url);
@@ -285,13 +276,13 @@ public:
         expandedWidth_ =
             brls::Application::getStyle()["brls/tab_frame/sidebar_width"];
         if (expandedWidth_ < 1.0f)
-            expandedWidth_ = 248.0f;
+            expandedWidth_ = kSidebarExpandedWidth;
     }
 
     // Like TabFrame::addTab, but also plants an icon between the active-accent
     // bar and the label, and remembers the label so it can be folded away.
     void addNavTab(const std::string& label, NavIconType icon,
-                   brls::TabViewCreator creator) {
+                   brls::TabViewCreator creator, bool countBadge = false) {
         this->addTab(label, std::move(creator));
         const int index = static_cast<int>(this->sidebar->getItemsSize()) - 1;
         brls::SidebarItem* item = this->sidebar->getItem(index);
@@ -308,6 +299,38 @@ public:
             if (collapsed_)
                 labelView->setVisibility(brls::Visibility::GONE);
         }
+        if (countBadge) {
+            updateBadge_ = new brls::Box();
+            updateBadge_->setFocusable(false);
+            updateBadge_->setHeight(24);
+            updateBadge_->setCornerRadius(theme::kRadiusSmall);
+            updateBadge_->setBackgroundColor(theme::accent());
+            updateBadge_->setPadding(0, 8, 0, 8);
+            updateBadge_->setMarginLeft(8);
+            updateBadge_->setMarginRight(8);
+            updateBadge_->setShrink(0.0f);
+            updateBadge_->setAlignSelf(brls::AlignSelf::CENTER);
+            updateBadge_->setAlignItems(brls::AlignItems::CENTER);
+            updateBadge_->setJustifyContent(brls::JustifyContent::CENTER);
+            updateBadge_->setVisibility(brls::Visibility::GONE);
+            updateBadgeLabel_ = new brls::Label();
+            updateBadgeLabel_->setFontSize(theme::kFontCaption);
+            updateBadgeLabel_->setTextColor(theme::onAccent());
+            updateBadge_->addView(updateBadgeLabel_);
+            item->addView(updateBadge_);
+        }
+    }
+
+    void setUpdateCountBadge(size_t count) {
+        updateBadgeCount_ = count;
+        if (!updateBadge_ || !updateBadgeLabel_)
+            return;
+        if (count == 0 || collapsed_) {
+            updateBadge_->setVisibility(brls::Visibility::GONE);
+            return;
+        }
+        updateBadgeLabel_->setText(count > 99 ? "99+" : std::to_string(count));
+        updateBadge_->setVisibility(brls::Visibility::VISIBLE);
     }
 
     void setCollapsed(bool collapsed) {
@@ -318,6 +341,11 @@ public:
         for (brls::View* label : labels_)
             label->setVisibility(collapsed ? brls::Visibility::GONE
                                            : brls::Visibility::VISIBLE);
+        if (updateBadge_)
+            updateBadge_->setVisibility(
+                collapsed || updateBadgeCount_ == 0
+                    ? brls::Visibility::GONE
+                    : brls::Visibility::VISIBLE);
         if (dock_) {
             dock_->setWidth(collapsed ? kCollapsedWidth : expandedWidth_);
             footer_->setCompact(collapsed);
@@ -441,8 +469,11 @@ private:
     static constexpr float kFooterPad = 16.0f;
 
     bool collapsed_ = false;
-    float expandedWidth_ = 248.0f;
+    float expandedWidth_ = kSidebarExpandedWidth;
     std::vector<brls::View*> labels_;
+    brls::Box* updateBadge_ = nullptr;
+    brls::Label* updateBadgeLabel_ = nullptr;
+    size_t updateBadgeCount_ = 0;
     brls::Box* dock_ = nullptr;
     StorageMeter* footer_ = nullptr;
     WebStatusRow* webRow_ = nullptr;

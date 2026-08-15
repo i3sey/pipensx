@@ -496,9 +496,6 @@ inline void showCatalogDisclaimer(AppSettings* settings,
         return;
     }
     auto* dialog = new brls::Dialog(tr("pipensx/disclaimer/catalog"));
-    // Narrow the stock 720px dialog frame for this short one-liner.
-    if (auto* frame = dialog->getView("brls/dialog/applet"))
-        frame->setWidth(520);
     dialog->setCancelable(false);
     dialog->addButton(tr("pipensx/common/ok"), [settings, onOk] {
         pipensx::AppSettingsData values = settings->get();

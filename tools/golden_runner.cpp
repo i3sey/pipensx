@@ -784,15 +784,16 @@ int main(int argc, char** argv) {
                         [&] {
             // checkOnEntry=false: the installed-populated screens pin a
             // planted fixture state, an auto-check would overwrite it.
-            return new InstalledView(&installed, &manager, &metadata,
-                                     &settings, &catalog, &gameUpdates, false);
-        });
-        tabs->addNavTab(tr("pipensx/nav/updates"), NavIconType::Updates,
-                        [&] {
-            return new InstalledView(&installed, &manager, &metadata,
-                                     &settings, &catalog, &gameUpdates, false,
-                                     InstalledView::Mode::Updates);
-        });
+            auto* view = new InstalledView(&installed, &manager, &metadata,
+                                           &settings, &catalog, &gameUpdates,
+                                           false);
+            view->setOnUpdateCount([tabs](size_t count) {
+                tabs->setUpdateCountBadge(count);
+            });
+            return view;
+        }, true);
+        tabs->setUpdateCountBadge(
+            availableUpdateCount(gameUpdates.results(), installed.titles()));
         tabs->addNavTab(tr("pipensx/nav/settings"), NavIconType::Settings,
                         [&] {
             return new SettingsView(&settings, &manager, &catalog, &metadata,
@@ -877,10 +878,7 @@ int main(int argc, char** argv) {
             gameUpdates.load(loadError);
         }
         auto* view = new InstalledView(&installed, &manager, &metadata,
-                                       &settings, &catalog, &gameUpdates, false,
-                                       screen == "updates"
-                                           ? InstalledView::Mode::Updates
-                                           : InstalledView::Mode::Library);
+                                       &settings, &catalog, &gameUpdates, false);
         activity = new GoldenActivity(view);
         if (screen == "installed-bundles")
             installedBundles = view;

@@ -13,7 +13,7 @@
 //
 // The root box clips to its bounds and every text row is single-line, so the
 // widget can never grow past the column it was given — the sidebar footer sits
-// in a 216px (56px collapsed) column and used to spill out of the frame.
+// in a ~242px (56px collapsed) column and used to spill out of the frame.
 
 #include <algorithm>
 #include <cstdint>
