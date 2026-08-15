@@ -63,8 +63,11 @@ bool curlTransport(const TsHttpRequest& request, TsHttpResponse& response,
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeBody);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response.body);
     curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
+    curl_easy_setopt(curl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
     CURLcode result = curl_easy_perform(curl);
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response.status);
+    log_msg("[torrserver] %s %s -> rc=%d http=%ld\n", request.method.c_str(),
+            logPath(request.url).c_str(), (int)result, response.status);
     if (mime)
         curl_mime_free(mime);
     if (headers)

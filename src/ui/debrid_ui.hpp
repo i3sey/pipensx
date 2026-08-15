@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <future>
 #include <memory>
 #include <optional>
 #include <string>
@@ -114,10 +115,27 @@ public:
             server_ = std::make_unique<TorboxPairingServer>(
                 kTorboxPairingPort,
                 [provider](const std::string& key, std::string& error) {
-                    if (makeDebridProvider(provider, key)->validate(error))
-                        return true;
-                    error = formatDebridValidateError(error);
-                    return false;
+                    auto done = std::make_shared<
+                        std::promise<std::pair<bool, std::string>>>();
+                    auto future = done->get_future();
+                    brls::async([provider, key, done] {
+                        std::string err;
+                        bool ok = false;
+                        try {
+                            ok = makeDebridProvider(provider, key)
+                                     ->validate(err);
+                        } catch (const std::exception& e) {
+                            err = e.what();
+                        } catch (...) {
+                            err = "Validation failed.";
+                        }
+                        if (!ok)
+                            err = formatDebridValidateError(err);
+                        done->set_value({ok, std::move(err)});
+                    });
+                    const auto result = future.get();
+                    error = result.second;
+                    return result.first;
                 },
                 provider == DebridProviderKind::TorrServer
                     ? "Paste the address of your TorrServer, for example "
@@ -262,7 +280,16 @@ private:
                 : tr("pipensx/debrid/keyboard_prompt",
                      debridProviderName(provider_));
         brls::Application::getImeManager()->openForText(
-            [this](std::string text) { validate(std::move(text)); }, prompt, "",
+            [this](std::string text) {
+                // SwitchImeManager calls this before swkbdClose(). Starting
+                // curl while the keyboard applet is still up takes the
+                // process down with std::terminate and no exception.
+                brls::sync([this, text = std::move(text)]() mutable {
+                    if (!alive_->load())
+                        return;
+                    validate(std::move(text));
+                });
+            }, prompt, "",
             128, activeKey(), brls::KEYBOARD_DISABLE_NONE);
     }
 
