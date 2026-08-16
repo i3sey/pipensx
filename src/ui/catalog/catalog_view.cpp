@@ -7,7 +7,7 @@ brls::RecyclerCell* CatalogDataSource::cellForRow(
     if (index.row == 0)
         return recycler->dequeueReusableCell("TopInset");
 
-    if (entries_.empty()) {
+    if (indices_.empty()) {
         auto* cell = static_cast<TextMessageCell*>(
             recycler->dequeueReusableCell("Message"));
         cell->setMessage(message_);
@@ -46,7 +46,7 @@ brls::RecyclerCell* CatalogDataSource::cellForRow(
 
     const int start = (index.row - headerRowCount()) * grid::kColumns;
     const int end = std::min(start + grid::kColumns,
-                             static_cast<int>(entries_.size()));
+                             static_cast<int>(indices_.size()));
     std::vector<GridCardInfo> infos;
     infos.reserve(static_cast<size_t>(grid::kColumns));
     for (int i = start; i < end; ++i)
@@ -65,7 +65,7 @@ void CatalogDataSource::didSelectRowAt(brls::RecyclerFrame*,
                                        brls::IndexPath) {
     // Cards handle their own activation (click action + tap recognizer);
     // a row-level select only ever fires for the empty-state message cell.
-    if (entries_.empty())
+    if (indices_.empty())
         owner_->openSearchKeyboard();
 }
 

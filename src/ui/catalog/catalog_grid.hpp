@@ -56,7 +56,7 @@ inline constexpr float kFocusZoom = 1.06f;
 }  // namespace grid
 
 // Everything a GameCard needs to render one catalog entry. entryIndex refers
-// to CatalogDataSource::entries() so activation flows through the existing
+// to the visible list so activation flows through the existing
 // CatalogView::onEntrySelected() logic (detail page / batch toggle).
 struct GridCardInfo {
     int entryIndex = -1;
@@ -203,6 +203,11 @@ public:
             : brls::ImageScalingType::FILL);
         setArtworkUrl(image_, service, info.iconUrl, currentIconUrl_,
                       imageState_);
+    }
+
+    void setSubLine(const std::string& text, bool badge) {
+        setTextIfChanged(sub_, text);
+        sub_->setTextColor(badge ? theme::accent() : theme::textTertiary());
     }
 
     // Unused trailing slot in a row/shelf: keeps its layout space so columns
@@ -578,6 +583,11 @@ public:
         sub_->setTextColor(info.subIsBadge ? theme::accent()
                                            : theme::textTertiary());
         setArtworkUrl(image_, service, imageUrl, currentUrl_, imageState_);
+    }
+
+    void setSubLine(const std::string& text, bool badge) {
+        setTextIfChanged(sub_, text);
+        sub_->setTextColor(badge ? theme::accent() : theme::textTertiary());
     }
 
     void onFocusGained() override {
