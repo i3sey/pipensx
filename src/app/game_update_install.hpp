@@ -33,10 +33,10 @@ inline size_t utf8TruncateBoundary(const std::string& text, size_t maxBytes) {
 // Indices of the packages whose [vN] tag numerically equals latestVersion —
 // the update the metadata index points at (the generator derives
 // latestVersion from exactly those tags). When titleId is non-empty, the
-// path must also contain that 16-hex title id (case-insensitive), so a mod
-// or DLC reusing the same [vN] is excluded. Empty when no package matches;
-// selectUpdateFiles then falls back to its own heuristics. The caller feeds
-// the recommendation into the update-file chooser, which always opens.
+// path must carry that title's base id or its Patch id (…800); DLC ids that
+// share the base are excluded. Empty when no package matches; selectUpdateFiles
+// then falls back to its own heuristics. The caller feeds the recommendation
+// into the update-file chooser, which always opens.
 std::vector<size_t> updateVersionMatches(const TorrentPreview& preview,
                                          const std::string& latestVersion,
                                          const std::string& titleId = {});
@@ -52,8 +52,8 @@ std::vector<uint8_t> selectFiles(const TorrentPreview& preview,
 // tags in release file names.
 //
 // The package whose [vN] tag equals latestVersion (and whose path carries
-// titleId when provided) is installed and everything else is skipped, so
-// only the update bytes hit the wire. Lookalikes such as a mod bundle named
+// the base or Patch title id when provided) is installed and everything else
+// is skipped, so only the update bytes hit the wire. Lookalikes such as a mod bundle named
 // "... [v9895936].nsp" beside the real "... [v10092544].nsp" are excluded by
 // the exact tag; same-tag mods under a different title id are excluded by
 // titleId. Without an exact match, the highest-tagged update-marked package
@@ -69,8 +69,9 @@ std::vector<uint8_t> selectUpdateFiles(const TorrentPreview& preview,
 // Builds the default one-tap install mask for a catalog release. When the base
 // title is not installed, base packages for that title and an exact bundled
 // update are selected while DLC/mod/extra packages are skipped. When the title
-// is already installed and the catalog exposes a newer update version, only an
-// exact update package is selected. AddOnContent packages whose title id maps
+// is already installed and a newer update is known (catalog latestVersion, or
+// the highest base/Patch [vN] in this torrent when that field is empty), only
+// an exact update package is selected. AddOnContent packages whose title id maps
 // to the selected base title are also installed when not already present
 // (installedDlcIds), so an installed game pulls its DLC without re-pulling the
 // base. If the intended base/update packages cannot be identified safely, the

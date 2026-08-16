@@ -72,8 +72,51 @@ bool isUpdateFile(const std::string& path) {
     return false;
 }
 
-// Release names put the 16-hex title id next to [vN]. Empty titleId skips
-// the check so older call sites / tests keep matching on version alone.
+// Every 16-hex title id embedded in a file path, uppercased.
+std::vector<std::string> titleIdsInPath(const std::string& path) {
+    std::vector<std::string> ids;
+    for (size_t i = 0; i + 16 <= path.size(); ++i) {
+        std::string candidate = path.substr(i, 16);
+        uint64_t parsed = 0;
+        if (InstalledTitleService::parseTitleId(candidate, parsed)) {
+            ids.push_back(InstalledTitleService::formatTitleId(parsed));
+            i += 15;
+        }
+    }
+    return ids;
+}
+
+std::string normalizeNxBaseTitleId(const std::string& titleId) {
+    uint64_t parsed = 0;
+    if (!InstalledTitleService::parseTitleId(titleId, parsed))
+        return {};
+    return InstalledTitleService::formatTitleId(
+        InstalledTitleService::nxBaseApplicationId(parsed));
+}
+
+// Scene releases tag the Patch package with …800, not the base …000.
+// DLC (low 12 bits >= 0x1000) shares the base id and must not match here.
+bool pathHasBaseOrPatchTitleId(const std::string& path,
+                               const std::string& titleId) {
+    if (titleId.empty())
+        return true;
+    const std::string wanted = normalizeNxBaseTitleId(titleId);
+    if (wanted.empty())
+        return false;
+    for (const std::string& id : titleIdsInPath(path)) {
+        uint64_t parsed = 0;
+        if (!InstalledTitleService::parseTitleId(id, parsed))
+            continue;
+        if (normalizeNxBaseTitleId(id) != wanted)
+            continue;
+        const uint64_t low = parsed & 0x1FFFULL;
+        if (low == 0 || low == 0x800ULL)
+            return true;
+    }
+    return false;
+}
+
+// Base packages keep the application id in the file name (…000), not …800.
 bool pathHasTitleId(const std::string& path, const std::string& titleId) {
     if (titleId.empty())
         return true;
@@ -123,26 +166,24 @@ std::vector<size_t> smartUpdateMatches(const TorrentPreview& preview,
     return matches;
 }
 
-std::string normalizeNxBaseTitleId(const std::string& titleId) {
-    uint64_t parsed = 0;
-    if (!InstalledTitleService::parseTitleId(titleId, parsed))
-        return {};
-    return InstalledTitleService::formatTitleId(
-        InstalledTitleService::nxBaseApplicationId(parsed));
-}
-
-// Every 16-hex title id embedded in a file path, uppercased.
-std::vector<std::string> titleIdsInPath(const std::string& path) {
-    std::vector<std::string> ids;
-    for (size_t i = 0; i + 16 <= path.size(); ++i) {
-        std::string candidate = path.substr(i, 16);
-        uint64_t parsed = 0;
-        if (InstalledTitleService::parseTitleId(candidate, parsed)) {
-            ids.push_back(InstalledTitleService::formatTitleId(parsed));
-            i += 15;
+std::string bundledUpdateVersion(const TorrentPreview& preview,
+                                 const std::string& titleId) {
+    uint64_t best = 0;
+    bool have = false;
+    for (const auto& file : preview.files) {
+        if (!file.package || !pathHasBaseOrPatchTitleId(file.path, titleId))
+            continue;
+        uint64_t tag = 0;
+        if (!fileVersionTag(file.path, tag) || tag == 0)
+            continue;
+        if (!have || tag > best) {
+            best = tag;
+            have = true;
         }
     }
-    return ids;
+    if (!have)
+        return {};
+    return std::to_string(best);
 }
 
 std::unordered_set<std::string> normalizedSet(
@@ -169,7 +210,7 @@ std::vector<size_t> updateVersionMatches(const TorrentPreview& preview,
     for (size_t i = 0; i < preview.files.size(); ++i) {
         uint64_t tag = 0;
         if (preview.files[i].package &&
-            pathHasTitleId(preview.files[i].path, titleId) &&
+            pathHasBaseOrPatchTitleId(preview.files[i].path, titleId) &&
             fileVersionTag(preview.files[i].path, tag) && tag == wanted)
             matches.push_back(i);
     }
@@ -198,7 +239,7 @@ std::vector<uint8_t> selectUpdateFiles(const TorrentPreview& preview,
     std::vector<size_t> marked;
     for (size_t i = 0; i < preview.files.size(); ++i) {
         if (preview.files[i].package &&
-            pathHasTitleId(preview.files[i].path, titleId) &&
+            pathHasBaseOrPatchTitleId(preview.files[i].path, titleId) &&
             isUpdateFile(preview.files[i].path))
             marked.push_back(i);
     }
@@ -244,14 +285,21 @@ std::vector<uint8_t> selectSmartInstallFiles(
     std::vector<uint8_t> actions(
         preview.files.size(), static_cast<uint8_t>(FileAction::Skip));
 
+    std::string latest = latestVersion;
+    uint64_t latestValue = 0;
+    if (!parseDecimal(latest, latestValue) || latestValue == 0) {
+        latest = bundledUpdateVersion(preview, titleId);
+        latestValue = 0;
+        parseDecimal(latest, latestValue);
+    }
+
     // Base + exact update (the smart-install behaviour from #28).
     if (titleInstalled) {
         uint64_t installed = 0;
-        uint64_t latest = 0;
         if (parseDecimal(installedVersion, installed) &&
-            parseDecimal(latestVersion, latest) && latest > installed) {
+            latestValue > installed) {
             const std::vector<size_t> updates =
-                smartUpdateMatches(preview, latestVersion, titleId);
+                smartUpdateMatches(preview, latest, titleId);
             for (const size_t i : updates)
                 if (i < actions.size())
                     actions[i] = static_cast<uint8_t>(FileAction::Install);
@@ -261,7 +309,7 @@ std::vector<uint8_t> selectSmartInstallFiles(
             if (isBasePackageFile(preview.files[i], titleId))
                 actions[i] = static_cast<uint8_t>(FileAction::Install);
         const std::vector<size_t> updates =
-            smartUpdateMatches(preview, latestVersion, titleId);
+            smartUpdateMatches(preview, latest, titleId);
         for (const size_t i : updates)
             if (i < actions.size())
                 actions[i] = static_cast<uint8_t>(FileAction::Install);

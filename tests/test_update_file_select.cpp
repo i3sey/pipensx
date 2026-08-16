@@ -327,6 +327,42 @@ void testSmartInstallInstalledTitleDoesNotUseHeuristicFallback() {
     assert(actions[1] == static_cast<uint8_t>(FileAction::Skip));
 }
 
+// Scene BOTW-style names: Patch title id …800, not the base …000. DLC must
+// stay DLC even when its [vN] is also non-zero.
+void testSmartInstallMatchesPatchTitleId() {
+    TorrentPreview preview;
+    preview.files = {
+        package("Zelda [01007EF00011E000][v0] (13.48 GB).nsz"),
+        package("Zelda [01007EF00011E800][v1114112] (0.94 GB).nsz"),
+        package("Zelda DLC [01007EF00011F001][v196608] (1.30 GB).nsz"),
+        package("Zelda DLC [01007EF00011F002][v196608].nsp")};
+    expectSmartActions(preview, true, "0", "1114112", "01007EF00011E000", {
+        static_cast<uint8_t>(FileAction::Skip),
+        static_cast<uint8_t>(FileAction::Install),
+        static_cast<uint8_t>(FileAction::Install),
+        static_cast<uint8_t>(FileAction::Install),
+    });
+    expectActions(preview, "1114112", {
+        static_cast<uint8_t>(FileAction::Skip),
+        static_cast<uint8_t>(FileAction::Install),
+        static_cast<uint8_t>(FileAction::Skip),
+        static_cast<uint8_t>(FileAction::Skip),
+    }, "01007EF00011E000");
+}
+
+void testSmartInstallUsesBundledPatchVersionWhenLatestEmpty() {
+    TorrentPreview preview;
+    preview.files = {
+        package("Zelda [01007EF00011E000][v0].nsz"),
+        package("Zelda [01007EF00011E800][v1114112].nsz"),
+        package("Zelda DLC [01007EF00011F001][v196608].nsz")};
+    expectSmartActions(preview, true, "0", "", "01007EF00011E000", {
+        static_cast<uint8_t>(FileAction::Skip),
+        static_cast<uint8_t>(FileAction::Install),
+        static_cast<uint8_t>(FileAction::Install),
+    });
+}
+
 void testMagnetPrefersCatalogEntry() {
     CatalogEntry entry;
     entry.infoHash = "E21269D03D34B557F63CE915DEA14F765C9C9798";
@@ -388,6 +424,8 @@ int main() {
     testSmartInstallInstalledTitleInstallsOnlyNewerUpdate();
     testSmartInstallInstalledTitleSkipsSameOrUnknownVersion();
     testSmartInstallInstalledTitleDoesNotUseHeuristicFallback();
+    testSmartInstallMatchesPatchTitleId();
+    testSmartInstallUsesBundledPatchVersionWhenLatestEmpty();
     testMagnetPrefersCatalogEntry();
     testMagnetFallsBackToRuTrackerMagnetWhenNoCatalogEntry();
     testUtf8TruncateBoundary();
