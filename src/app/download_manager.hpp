@@ -269,6 +269,10 @@ public:
     bool hasTask(const std::string& id) const;
     std::vector<DownloadTask> snapshot() const;
     std::optional<DownloadTask> snapshot(const std::string& id) const;
+    // UI pollers: same as snapshot() without fileSelection / initialPeers /
+    // resumeBitfield. Those vectors are KBs each and never drawn.
+    std::vector<DownloadTask> snapshotUi() const;
+    std::optional<DownloadTask> snapshotUi(const std::string& id) const;
     std::optional<ExternalDeployLease> beginExternalDeploy(
         const std::string& taskId, std::string& error);
     bool externalDeployActive() const;
@@ -318,7 +322,11 @@ private:
     void runDebridTask(const ClaimedTask& claim);
     DownloadTask* claimableLocked();
     void reapRunnersLocked(std::unique_lock<std::mutex>& lock);
-    bool saveLocked(std::string& error) const;
+    std::string serializeStateLocked() const;
+    bool writeStateFile(const std::string& payload, std::string& error) const;
+    bool persistState(std::unique_lock<std::mutex>& lock,
+                      std::string& error) const;
+    void persistState(std::unique_lock<std::mutex>& lock) const;
     DownloadTask* findLocked(const std::string& id);
     const DownloadTask* findLocked(const std::string& id) const;
     void endExternalDeploy(const std::string& taskId);
@@ -348,6 +356,8 @@ private:
     std::atomic<bool> torrentingEnabled_{false};
 
     mutable std::mutex mutex_;
+    mutable std::mutex ioMutex_;
+    mutable uint64_t persistEpoch_ = 0;
     std::condition_variable condition_;
     StreamBudgetArbiter arbiter_;
     std::vector<DownloadTask> tasks_;

@@ -129,6 +129,12 @@ void testMoveTask() {
                                      third, error));
         auto tasks = manager.snapshot();
         assert(tasks.size() == 3);
+        auto ui = manager.snapshotUi();
+        assert(ui.size() == 3);
+        assert(ui[0].id == tasks[0].id);
+        assert(ui[0].fileSelection.empty());
+        assert(ui[0].resumeBitfield.empty());
+        assert(ui[0].initialPeers.empty());
 
         // Move the last task up one: order becomes first, third, second.
         assert(manager.moveTask(third, true, error));

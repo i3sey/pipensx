@@ -202,6 +202,43 @@ std::string bint(uint64_t value) {
     return "i" + std::to_string(value) + "e";
 }
 
+DownloadTask copyTaskUi(const DownloadTask& src) {
+    DownloadTask dst;
+    dst.id = src.id;
+    dst.name = src.name;
+    dst.metainfoPath = src.metainfoPath;
+    dst.dataPath = src.dataPath;
+    dst.error = src.error;
+    dst.status = src.status;
+    dst.mode = src.mode;
+    dst.source = src.source;
+    dst.debridProvider = src.debridProvider;
+    dst.debridId = src.debridId;
+    dst.fetchProgress = src.fetchProgress;
+    dst.totalBytes = src.totalBytes;
+    dst.completedBytes = src.completedBytes;
+    dst.wantedTotalBytes = src.wantedTotalBytes;
+    dst.wantedCompletedBytes = src.wantedCompletedBytes;
+    dst.speedBytesPerSecond = src.speedBytesPerSecond;
+    dst.downloadProgressUpdatedAtMs = src.downloadProgressUpdatedAtMs;
+    dst.peers = src.peers;
+    dst.dhtGood = src.dhtGood;
+    dst.dhtDubious = src.dhtDubious;
+    dst.piecesDone = src.piecesDone;
+    dst.piecesTotal = src.piecesTotal;
+    dst.piecesVerified = src.piecesVerified;
+    dst.packageCount = src.packageCount;
+    dst.packagesInstalled = src.packagesInstalled;
+    dst.installedBytes = src.installedBytes;
+    dst.installTotalBytes = src.installTotalBytes;
+    dst.installSpeedBytesPerSecond = src.installSpeedBytesPerSecond;
+    dst.installSpeedUpdatedAtMs = src.installSpeedUpdatedAtMs;
+    dst.installRateBaseBytes = src.installRateBaseBytes;
+    dst.installRateBaseAtMs = src.installRateBaseAtMs;
+    dst.currentPackage = src.currentPackage;
+    return dst;
+}
+
 bool dictionaryString(const be_node_t& dict, const char* key,
                       std::string& value) {
     be_node_t node;
@@ -571,7 +608,7 @@ bool DownloadManager::importTorrentActions(
         ? TransferMode::StreamInstall
         : TransferMode::DownloadOnly;
 
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
     if (findLocked(preview.infoHash)) {
         error = "This torrent is already in the download manager.";
         return false;
@@ -617,7 +654,7 @@ bool DownloadManager::importTorrentActions(
     tasks_.push_back(std::move(task));
     taskId = preview.infoHash;
 
-    if (!saveLocked(error)) {
+    if (!persistState(lock, error)) {
         tasks_.pop_back();
         unlink(metainfoPath.c_str());
         removeTree(dataPath);
@@ -655,7 +692,7 @@ bool DownloadManager::importDebrid(const DebridImport& import,
             return false;
         }
     }
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
     if (findLocked(import.infoHash)) {
         error = "This torrent is already in the download manager.";
         return false;
@@ -695,7 +732,7 @@ bool DownloadManager::importDebrid(const DebridImport& import,
     tasks_.push_back(std::move(task));
     taskId = import.infoHash;
 
-    if (!saveLocked(error)) {
+    if (!persistState(lock, error)) {
         tasks_.pop_back();
         if (!metainfoPath.empty())
             unlink(metainfoPath.c_str());
@@ -730,17 +767,17 @@ bool DownloadManager::importDebrid(const DebridImport& import,
 }
 
 void DownloadManager::setTorboxApiKey(const std::string& key) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
     torboxApiKey_ = key;
 }
 
 void DownloadManager::setTorrserverUrl(const std::string& url) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
     torrserverUrl_ = url;
 }
 
 void DownloadManager::setRealdebridApiKey(const std::string& key) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
     realdebridApiKey_ = key;
 }
 
@@ -778,7 +815,7 @@ void DownloadManager::removeFromDebridAsync(DebridProviderKind provider,
 }
 
 std::string DownloadManager::torboxApiKey() const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
     return torboxApiKey_;
 }
 
@@ -792,7 +829,7 @@ bool DownloadManager::torrentingEnabled() const {
 }
 
 bool DownloadManager::pause(const std::string& taskId) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
     if (externallyLeasedLocked(taskId))
         return false;
     DownloadTask* task = findLocked(taskId);
@@ -808,14 +845,13 @@ bool DownloadManager::pause(const std::string& taskId) {
         return false;
     task->status = DownloadStatus::Paused;
     task->speedBytesPerSecond = 0;
-    std::string ignored;
-    saveLocked(ignored);
+    persistState(lock);
     condition_.notify_all();
     return true;
 }
 
 bool DownloadManager::resume(const std::string& taskId) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
     if (externallyLeasedLocked(taskId))
         return false;
     DownloadTask* task = findLocked(taskId);
@@ -824,14 +860,13 @@ bool DownloadManager::resume(const std::string& taskId) {
         return false;
     task->status = DownloadStatus::Queued;
     task->error.clear();
-    std::string ignored;
-    saveLocked(ignored);
+    persistState(lock);
     condition_.notify_all();
     return true;
 }
 
 void DownloadManager::pauseAll() {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
     bool changed = false;
     for (DownloadTask& task : tasks_) {
         if (externallyLeasedLocked(task.id))
@@ -848,14 +883,13 @@ void DownloadManager::pauseAll() {
         changed = true;
     }
     if (changed) {
-        std::string ignored;
-        saveLocked(ignored);
+        persistState(lock);
     }
     condition_.notify_all();
 }
 
 void DownloadManager::resumeAll() {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
     bool changed = false;
     for (DownloadTask& task : tasks_) {
         if (externallyLeasedLocked(task.id))
@@ -868,8 +902,7 @@ void DownloadManager::resumeAll() {
         changed = true;
     }
     if (changed) {
-        std::string ignored;
-        saveLocked(ignored);
+        persistState(lock);
     }
     condition_.notify_all();
 }
@@ -879,7 +912,7 @@ bool DownloadManager::retry(const std::string& taskId) {
 }
 
 bool DownloadManager::verify(const std::string& taskId) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
     if (externallyLeasedLocked(taskId))
         return false;
     DownloadTask* task = findLocked(taskId);
@@ -894,15 +927,14 @@ bool DownloadManager::verify(const std::string& taskId) {
     task->error.clear();
     task->piecesVerified = 0;
     task->resumeBitfield.clear();  // a recheck must really rehash
-    std::string ignored;
-    saveLocked(ignored);
+    persistState(lock);
     condition_.notify_all();
     return true;
 }
 
 bool DownloadManager::moveToFront(const std::string& taskId,
                                   std::string& error) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
     if (externallyLeasedLocked(taskId)) {
         error = "Task files are being copied to /switch.";
         return false;
@@ -928,12 +960,12 @@ bool DownloadManager::moveToFront(const std::string& taskId,
     // Rotate rather than swap: everything between the two keeps its relative
     // order, so promoting one download does not shuffle the rest of the queue.
     std::rotate(firstQueued, target, target + 1);
-    return saveLocked(error);
+    return persistState(lock, error);
 }
 
 bool DownloadManager::moveTask(const std::string& taskId, bool up,
                                std::string& error) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
     if (externallyLeasedLocked(taskId)) {
         error = "Task files are being copied to /switch.";
         return false;
@@ -956,7 +988,7 @@ bool DownloadManager::moveTask(const std::string& taskId, bool up,
             --other;
             if (other->status == DownloadStatus::Queued) {
                 std::iter_swap(other, target);
-                return saveLocked(error);
+                return persistState(lock, error);
             }
         }
         return true; // already the first queued task
@@ -966,7 +998,7 @@ bool DownloadManager::moveTask(const std::string& taskId, bool up,
     while (other != tasks_.end()) {
         if (other->status == DownloadStatus::Queued) {
             std::iter_swap(other, target);
-            return saveLocked(error);
+            return persistState(lock, error);
         }
         ++other;
     }
@@ -1036,7 +1068,7 @@ bool DownloadManager::clearCompleted(bool deleteData, std::string& error) {
                 return false;
             cleanups.push_back(std::move(cleanup));
         }
-        if (!saveLocked(error))
+        if (!persistState(lock, error))
             return false;
     }
     for (const Cleanup& cleanup : cleanups)
@@ -1045,21 +1077,37 @@ bool DownloadManager::clearCompleted(bool deleteData, std::string& error) {
 }
 
 std::vector<DownloadTask> DownloadManager::snapshot() const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
     return tasks_;
 }
 
 std::optional<DownloadTask> DownloadManager::snapshot(
     const std::string& id) const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
     const DownloadTask* task = findLocked(id);
     return task ? std::optional<DownloadTask>(*task) : std::nullopt;
+}
+
+std::vector<DownloadTask> DownloadManager::snapshotUi() const {
+    std::unique_lock<std::mutex> lock(mutex_);
+    std::vector<DownloadTask> out;
+    out.reserve(tasks_.size());
+    for (const DownloadTask& task : tasks_)
+        out.push_back(copyTaskUi(task));
+    return out;
+}
+
+std::optional<DownloadTask> DownloadManager::snapshotUi(
+    const std::string& id) const {
+    std::unique_lock<std::mutex> lock(mutex_);
+    const DownloadTask* task = findLocked(id);
+    return task ? std::optional<DownloadTask>(copyTaskUi(*task)) : std::nullopt;
 }
 
 std::optional<DownloadManager::ExternalDeployLease>
 DownloadManager::beginExternalDeploy(const std::string& taskId,
                                      std::string& error) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
     if (stopping_) {
         error = "The download manager is shutting down.";
         return std::nullopt;
@@ -1092,17 +1140,17 @@ DownloadManager::beginExternalDeploy(const std::string& taskId,
 }
 
 bool DownloadManager::externalDeployActive() const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
     return !externalDeployTaskId_.empty();
 }
 
 std::string DownloadManager::externalDeployTaskId() const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
     return externalDeployTaskId_;
 }
 
 bool DownloadManager::hasTask(const std::string& id) const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
     for (const DownloadTask& task : tasks_)
         if (task.id == id)
             return true;
@@ -1110,7 +1158,7 @@ bool DownloadManager::hasTask(const std::string& id) const {
 }
 
 bool DownloadManager::hasActiveTransfer() const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
     for (const DownloadTask& task : tasks_) {
         switch (task.status) {
             case DownloadStatus::Queued:
@@ -1133,11 +1181,11 @@ bool DownloadManager::hasActiveTransfer() const {
 }
 
 bool DownloadManager::save(std::string& error) const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return saveLocked(error);
+    std::unique_lock<std::mutex> lock(mutex_);
+    return persistState(lock, error);
 }
 
-bool DownloadManager::saveLocked(std::string& error) const {
+std::string DownloadManager::serializeStateLocked() const {
     std::ostringstream state;
     state << "d5:tasks";
     state << "l";
@@ -1180,7 +1228,11 @@ bool DownloadManager::saveLocked(std::string& error) const {
     state << "e";
     state << "7:versioni6e";
     state << "e";
+    return state.str();
+}
 
+bool DownloadManager::writeStateFile(const std::string& payload,
+                                     std::string& error) const {
     std::string temporary = statePath_ + ".tmp";
     {
         std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
@@ -1188,7 +1240,7 @@ bool DownloadManager::saveLocked(std::string& error) const {
             error = "Unable to open queue state for writing.";
             return false;
         }
-        output << state.str();
+        output << payload;
         output.flush();
         if (!output.good()) {
             error = "Unable to write queue state.";
@@ -1216,6 +1268,30 @@ bool DownloadManager::saveLocked(std::string& error) const {
         return false;
     }
     return true;
+}
+
+bool DownloadManager::persistState(std::unique_lock<std::mutex>& lock,
+                                   std::string& error) const {
+    while (true) {
+        const uint64_t seq = ++persistEpoch_;
+        const std::string payload = serializeStateLocked();
+        lock.unlock();
+        bool ok;
+        {
+            std::lock_guard<std::mutex> io(ioMutex_);
+            ok = writeStateFile(payload, error);
+        }
+        lock.lock();
+        if (!ok)
+            return false;
+        if (seq == persistEpoch_)
+            return true;
+    }
+}
+
+void DownloadManager::persistState(std::unique_lock<std::mutex>& lock) const {
+    std::string ignored;
+    persistState(lock, ignored);
 }
 
 void DownloadManager::load() {
@@ -1368,7 +1444,7 @@ bool DownloadManager::externallyLeasedLocked(const std::string& taskId) const {
 }
 
 void DownloadManager::endExternalDeploy(const std::string& taskId) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
     if (externalDeployTaskId_ != taskId)
         return;
     externalDeployTaskId_.clear();
@@ -1387,8 +1463,7 @@ bool DownloadManager::removeLocked(std::unique_lock<std::mutex>& lock,
             error = "Refusing to remove a path outside application storage.";
             it->status = DownloadStatus::Error;
             it->error = error;
-            std::string ignored;
-            saveLocked(ignored);
+            persistState(lock);
             return false;
         }
         // FAT32 unlink of a big torrent tree can take minutes. Holding
@@ -1412,8 +1487,7 @@ bool DownloadManager::removeLocked(std::unique_lock<std::mutex>& lock,
                 error = "Unable to remove all downloaded data.";
                 it->status = DownloadStatus::Error;
                 it->error = error;
-                std::string ignored;
-                saveLocked(ignored);
+                persistState(lock);
                 return false;
             }
         }
@@ -1422,7 +1496,7 @@ bool DownloadManager::removeLocked(std::unique_lock<std::mutex>& lock,
         install::removeInstallJournal(installJournalPath(rootPath_, it->id));
         removeTaskFileManifest(rootPath_, it->id);
         tasks_.erase(it);
-        return persist ? saveLocked(error) : true;
+        return persist ? persistState(lock, error) : true;
     }
     error = "Download task not found.";
     return false;
@@ -1580,8 +1654,7 @@ void DownloadManager::schedulerMain() {
         // must fall back to a full scan.
         claim.resumeBitfield = std::move(task->resumeBitfield);
         task->resumeBitfield.clear();
-        std::string ignored;
-        saveLocked(ignored);
+        persistState(lock);
 
         auto slot = std::make_unique<RunnerSlot>();
         slot->taskId = claim.id;
@@ -1607,24 +1680,22 @@ void DownloadManager::schedulerMain() {
                 } catch (const std::exception& e) {
                     log_msg("[manager] task %s threw %s: %s\n", id.c_str(),
                             typeid(e).name(), e.what());
-                    std::lock_guard<std::mutex> guard(mutex_);
+                    std::unique_lock<std::mutex> lock(mutex_);
                     if (DownloadTask* task = findLocked(id)) {
                         task->status = DownloadStatus::Error;
                         task->error = std::string("Internal error: ") + e.what();
                         task->speedBytesPerSecond = 0;
-                        std::string ignored;
-                        saveLocked(ignored);
+                        persistState(lock);
                     }
                 } catch (...) {
                     log_msg("[manager] task %s threw a non-std exception\n",
                             id.c_str());
-                    std::lock_guard<std::mutex> guard(mutex_);
+                    std::unique_lock<std::mutex> lock(mutex_);
                     if (DownloadTask* task = findLocked(id)) {
                         task->status = DownloadStatus::Error;
                         task->error = "Internal error during the transfer.";
                         task->speedBytesPerSecond = 0;
-                        std::string ignored;
-                        saveLocked(ignored);
+                        persistState(lock);
                     }
                 }
                 std::lock_guard<std::mutex> guard(mutex_);
@@ -1647,7 +1718,7 @@ void DownloadManager::schedulerMain() {
 }
 
 void DownloadManager::setMaxActiveDownloads(uint32_t count) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
     maxActive_ = clampMaxActiveDownloads(count);
     condition_.notify_all();
 }
@@ -1656,11 +1727,11 @@ void DownloadManager::runDebridTask(const ClaimedTask& claim) {
     const std::string& activeId = claim.id;
     std::string apiKey;
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock<std::mutex> lock(mutex_);
         apiKey = apiKeyFor(claim.debridProvider);
     }
     if (apiKey.empty()) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock<std::mutex> lock(mutex_);
         if (DownloadTask* task = findLocked(activeId)) {
             task->status = DownloadStatus::Error;
             task->error =
@@ -1669,8 +1740,7 @@ void DownloadManager::runDebridTask(const ClaimedTask& claim) {
                     : claim.debridProvider == DebridProviderKind::RealDebrid
                     ? "Real-Debrid key missing — link your account in Settings."
                     : "TorBox key missing — link your account in Settings.";
-            std::string ignored;
-            saveLocked(ignored);
+            persistState(lock);
         }
         return;
     }
@@ -1743,13 +1813,13 @@ void DownloadManager::runDebridTask(const ClaimedTask& claim) {
     auto shouldStop = [this, &activeId] {
         if (stopping_)
             return true;
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock<std::mutex> lock(mutex_);
         const DownloadTask* task = findLocked(activeId);
         return !task || task->status == DownloadStatus::Paused ||
                task->status == DownloadStatus::Removing;
     };
     auto onProgress = [this, &activeId](const DebridProgress& p) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock<std::mutex> lock(mutex_);
         DownloadTask* task = findLocked(activeId);
         if (!task || task->status == DownloadStatus::Removing ||
             task->status == DownloadStatus::Paused)
@@ -1767,8 +1837,7 @@ void DownloadManager::runDebridTask(const ClaimedTask& claim) {
         // Only package boundaries hit the state file; the per-chunk progress
         // above is in-memory until then.
         if (packageCommitted) {
-            std::string ignored;
-            saveLocked(ignored);
+            persistState(lock);
         }
     };
 
@@ -1813,8 +1882,7 @@ void DownloadManager::runDebridTask(const ClaimedTask& claim) {
                 task->error = runError;
             }
             task->speedBytesPerSecond = 0;
-            std::string ignored;
-            saveLocked(ignored);
+            persistState(lock);
             return;
         }
     }
@@ -1836,14 +1904,13 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
     // task runs no engine, so reserving engine RAM for it would starve the
     // torrent slots for nothing.
     if (claim.source == TaskSource::Torrent && !torrentingEnabled_.load()) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock<std::mutex> lock(mutex_);
         if (DownloadTask* task = findLocked(claim.id)) {
             task->status = DownloadStatus::Error;
             task->error =
                 "Torrenting disabled — enable it in Settings to retry.";
             task->speedBytesPerSecond = 0;
-            std::string ignored;
-            saveLocked(ignored);
+            persistState(lock);
         }
         return;
     }
@@ -1870,12 +1937,11 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
 
     metainfo_t metainfo;
     if (!metainfo_load(claim.metainfoPath.c_str(), &metainfo)) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock<std::mutex> lock(mutex_);
         if (DownloadTask* task = findLocked(activeId)) {
             task->status = DownloadStatus::Error;
             task->error = "Unable to read the stored .torrent file.";
-            std::string ignored;
-            saveLocked(ignored);
+            persistState(lock);
         }
         return;
     }
@@ -1893,7 +1959,7 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
                              const std::string& package,
                              uint64_t installed, uint64_t expected,
                              DownloadStatus status) {
-                std::lock_guard<std::mutex> lock(mutex_);
+                std::unique_lock<std::mutex> lock(mutex_);
                 DownloadTask* task = findLocked(activeId);
                 if (!task || task->status == DownloadStatus::Removing ||
                     task->status == DownloadStatus::Paused)
@@ -1905,17 +1971,15 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
                 updateTaskInstallProgress(*task, installed, expected, status,
                                           now_ms());
                 if (packageCommitted) {
-                    std::string ignored;
-                    saveLocked(ignored);
+                    persistState(lock);
                 }
             });
         if (!coordinator->error().empty()) {
-            std::lock_guard<std::mutex> lock(mutex_);
+            std::unique_lock<std::mutex> lock(mutex_);
             if (DownloadTask* task = findLocked(activeId)) {
                 task->status = DownloadStatus::Error;
                 task->error = coordinator->error();
-                std::string ignored;
-                saveLocked(ignored);
+                persistState(lock);
             }
             coordinator.reset();
             metainfo_free(&metainfo);
@@ -1946,7 +2010,7 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
             options.have_bitfield_len =
                 static_cast<uint32_t>(resumeBitfield.size());
         }
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock<std::mutex> lock(mutex_);
         if (DownloadTask* task = findLocked(activeId))
             task->packageCount = coordinator->packageCount();
     }
@@ -1955,12 +2019,11 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
         &metainfo, static_cast<uint16_t>(kBasePeerPort + slot->slotIndex),
         dataPath.c_str(), &options);
     if (!torrent) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock<std::mutex> lock(mutex_);
         if (DownloadTask* task = findLocked(activeId)) {
             task->status = DownloadStatus::Error;
             task->error = "Unable to initialize torrent storage or network.";
-            std::string ignored;
-            saveLocked(ignored);
+            persistState(lock);
         }
         coordinator.reset();
         metainfo_free(&metainfo);
@@ -1992,7 +2055,7 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
     bool finished = false;
     while (!stopping_) {
         {
-            std::lock_guard<std::mutex> lock(mutex_);
+            std::unique_lock<std::mutex> lock(mutex_);
             DownloadTask* task = findLocked(activeId);
             if (!task || task->status == DownloadStatus::Paused ||
                 task->status == DownloadStatus::Removing)
@@ -2004,8 +2067,7 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
                 task->error =
                     "Torrenting disabled — enable it in Settings to retry.";
                 task->speedBytesPerSecond = 0;
-                std::string ignored;
-                saveLocked(ignored);
+                persistState(lock);
                 break;
             }
         }
@@ -2052,7 +2114,7 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
                 torrent, coordinator->requestsCurtailed() ? 1 : 0);
         }
         {
-            std::lock_guard<std::mutex> lock(mutex_);
+            std::unique_lock<std::mutex> lock(mutex_);
             DownloadTask* task = findLocked(activeId);
             if (!task)
                 break;
@@ -2100,7 +2162,7 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
         if (!running) {
             bool installOk = mode != TransferMode::StreamInstall ||
                              coordinator->finish();
-            std::lock_guard<std::mutex> lock(mutex_);
+            std::unique_lock<std::mutex> lock(mutex_);
             DownloadTask* task = findLocked(activeId);
             if (task && task->status != DownloadStatus::Removing &&
                 task->status != DownloadStatus::Paused) {
@@ -2143,7 +2205,7 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
     torrent_destroy(torrent);
     log_msg("[manager] torrent destroyed %s\n", activeId.c_str());
     if (coordinator) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock<std::mutex> lock(mutex_);
         const DownloadTask* task = findLocked(activeId);
         if (!task || task->status == DownloadStatus::Removing)
             coordinator->abandonResume();
@@ -2167,8 +2229,7 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
                 task->resumeBitfield.clear();
             else
                 task->resumeBitfield = std::move(teardownBitfield);
-            std::string ignored;
-            saveLocked(ignored);
+            persistState(lock);
             if (finished)
                 log_msg("[manager] completion saved %s\n",
                         activeId.c_str());
