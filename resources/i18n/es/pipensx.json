@@ -374,6 +374,8 @@
     "uninstall_confirm": "¿Desinstalar {0} de esta consola? Se conservarán los datos guardados.",
     "uninstalling": "Desinstalando {0}...",
     "uninstall_done": "Aplicación desinstalada.",
+    "update_action": "Actualizar",
+    "open_in_catalog": "Abrir en el catálogo",
     "ignore_updates": "Ignorar actualizaciones",
     "unignore_updates": "Dejar de ignorar actualizaciones",
     "update_stale": "Resultados de actualización obsoletos",

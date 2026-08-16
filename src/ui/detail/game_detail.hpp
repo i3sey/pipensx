@@ -92,7 +92,8 @@ public:
                         FailureCallback onFailure, ChangeCallback onChange,
                         CloseCallback onClose = nullptr,
                         FavoritesService* favorites = nullptr,
-                        SwitchDeployService* deploy = nullptr)
+                        SwitchDeployService* deploy = nullptr,
+                        bool autoInstall = false)
         : entry_(std::move(entry)), lastFailure_(std::move(lastFailure)),
           manager_(manager), metadata_(metadata), installed_(installed),
           settings_(settings), favorites_(favorites),
@@ -100,7 +101,8 @@ public:
           onFailure_(std::move(onFailure)), onChange_(std::move(onChange)),
           onClose_(std::move(onClose)),
           alive_(std::make_shared<std::atomic<bool>>(true)),
-          cancelled_(std::make_shared<std::atomic<bool>>(false)) {
+          cancelled_(std::make_shared<std::atomic<bool>>(false)),
+          autoInstall_(autoInstall) {
         const GameMetadata* found = metadata_->findByInfoHash(entry_.infoHash);
         presentation_ = resolveCatalogPresentation(entry_, found,
                                                    catalogTextPreference());
@@ -168,6 +170,10 @@ public:
         brls::Button* focus = primary_;
         if (focus)
             brls::Application::giveFocus(focus);
+        if (autoInstall_) {
+            autoInstall_ = false;
+            startInstall(false);
+        }
     }
 
 private:
@@ -1145,6 +1151,7 @@ private:
     brls::RepeatingTimer timer_;
     std::vector<DownloadTask> cache_;
     bool busy_ = false;
+    bool autoInstall_ = false;
 };
 
 }  // namespace pipensx::ui

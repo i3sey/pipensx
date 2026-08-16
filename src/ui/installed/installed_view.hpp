@@ -10,16 +10,16 @@
 #include "app/app_settings.hpp"
 #include "app/catalog_service.hpp"
 #include "app/download_manager.hpp"
+#include "app/favorites_service.hpp"
 #include "app/game_metadata_service.hpp"
-#include "app/game_update_install.hpp"
 #include "app/game_update_service.hpp"
 #include "app/installed_title_service.hpp"
-#include "app/magnet_resolver.hpp"
+#include "app/switch_deploy.hpp"
 #include "ui/catalog/catalog_helpers.hpp"
 #include "ui/common/async_image.hpp"
 #include "ui/common/ui_helpers.hpp"
+#include "ui/detail/game_detail.hpp"
 #include "ui/i18n.hpp"
-#include "ui/installed/update_file_chooser.hpp"
 #include "ui/theme.hpp"
 
 namespace pipensx::ui {
@@ -27,7 +27,6 @@ namespace pipensx::ui {
 class InstalledCell : public brls::RecyclerCell {
 public:
     using OpenMenu = std::function<void(InstalledTitle)>;
-    using InstallOne = std::function<void(const std::string&)>;
 
     InstalledCell() {
         setFocusable(true);
@@ -79,24 +78,12 @@ public:
         addView(chip_);
 
         registerClickAction([this](brls::View*) {
-            if (titleId_.empty())
-                return true;
-            if (!ignored_ &&
-                currentState_ == GameUpdateState::UpdateAvailable &&
-                onInstallOne_)
-                onInstallOne_(titleId_);
-            else if (onOpenMenu_)
-                onOpenMenu_(storedTitle_);
-            return true;
-        });
-        addGestureRecognizer(new brls::TapGestureRecognizer(this));
-
-        registerAction(tr("pipensx/common/more"), brls::BUTTON_Y,
-                       [this](brls::View*) {
             if (!titleId_.empty() && onOpenMenu_)
                 onOpenMenu_(storedTitle_);
             return true;
         });
+        addGestureRecognizer(new brls::TapGestureRecognizer(this));
+        updateActionHint(brls::BUTTON_A, tr("pipensx/common/more"));
     }
 
     void setTitle(const InstalledTitle& title,
@@ -112,24 +99,17 @@ public:
     }
 
     void setResult(const GameUpdateResult* result, bool ignored,
-                   OpenMenu onOpenMenu, InstallOne onInstallOne) {
+                   OpenMenu onOpenMenu) {
         onOpenMenu_ = std::move(onOpenMenu);
-        onInstallOne_ = std::move(onInstallOne);
         ignored_ = ignored;
         const GameUpdateState state =
             result ? result->state : GameUpdateState::NotChecked;
         currentState_ = state;
         currentFoundVersion_ = result ? result->foundVersion : std::string();
         updateSubtitle();
-        // The base click action is registered with a generic "OK" hint; A
-        // means something different per state, so the hint bar must say so.
-        // updateActionHint rewrites the text of the existing action (the
-        // click still routes through the tap handler), then repaints the bar.
+        updateActionHint(brls::BUTTON_A, tr("pipensx/common/more"));
         const bool available =
             !ignored && state == GameUpdateState::UpdateAvailable;
-        updateActionHint(brls::BUTTON_A,
-                         available ? tr("pipensx/common/install")
-                                   : tr("pipensx/common/more"));
         mark_->setVisibility(available ? brls::Visibility::VISIBLE
                                        : brls::Visibility::GONE);
         if (ignored) {
@@ -205,7 +185,6 @@ private:
     GameUpdateState currentState_ = GameUpdateState::NotChecked;
     bool ignored_ = false;
     OpenMenu onOpenMenu_;
-    InstallOne onInstallOne_;
 };
 
 class InstalledDataSource : public brls::RecyclerDataSource {
@@ -228,9 +207,6 @@ public:
     void setUpdates(GameUpdateService* service) { updateService_ = service; }
     void setOpenMenu(InstalledCell::OpenMenu onOpenMenu) {
         onOpenMenu_ = std::move(onOpenMenu);
-    }
-    void setInstallOne(InstalledCell::InstallOne onInstallOne) {
-        onInstallOne_ = std::move(onInstallOne);
     }
 
     const std::vector<InstalledTitle>& updateTitles() const { return updates_; }
@@ -273,7 +249,7 @@ public:
         }
         cell->setResult(result,
                         updateService_ && updateService_->isIgnored(title.titleId),
-                        onOpenMenu_, onInstallOne_);
+                        onOpenMenu_);
         return cell;
     }
 
@@ -300,7 +276,6 @@ private:
     std::vector<InstalledTitle> rest_;
     const GameUpdateResults* results_ = nullptr;
     InstalledCell::OpenMenu onOpenMenu_;
-    InstalledCell::InstallOne onInstallOne_;
 };
 
 inline void setAncestorActionHidden(brls::View* start,
@@ -326,10 +301,13 @@ public:
     InstalledView(InstalledTitleService* installed, DownloadManager* manager,
                   GameMetadataService* metadata, AppSettings* settings,
                   CatalogService* catalog, GameUpdateService* updates,
-                  bool checkOnEntry = true)
+                  bool checkOnEntry = true,
+                  FavoritesService* favorites = nullptr,
+                  SwitchDeployService* deploy = nullptr)
         : brls::Box(brls::Axis::COLUMN), installed_(installed),
           manager_(manager), metadata_(metadata), settings_(settings),
-          catalog_(catalog), updates_(updates), checkOnEntry_(checkOnEntry),
+          catalog_(catalog), updates_(updates), favorites_(favorites),
+          deploy_(deploy), checkOnEntry_(checkOnEntry),
           alive_(std::make_shared<std::atomic<bool>>(true)) {
         status_ = new brls::Label();
         status_->setFontSize(15);
@@ -354,10 +332,7 @@ public:
         dataSource_->setUpdates(updates_);
         dataSource_->setOpenMenu(
             [this](InstalledTitle title) { openRowMenu(std::move(title)); });
-        dataSource_->setInstallOne(
-            [this](const std::string& titleId) { installUpdate(titleId); });
         reload();
-        recheckTimer_.setCallback([this] { pollUpdateRecheck(); });
         // Catalog/settings metadata refresh is the scheduled check. A silent
         // pass here only runs when those results no longer match the installed
         // set or the index. Golden pins fixture states with checkOnEntry=false.
@@ -384,11 +359,7 @@ public:
     }
 
     ~InstalledView() override {
-        recheckTimer_.stop();
         alive_->store(false);
-        // Abort an in-flight magnet resolve: without this, tearing the tab
-        // down leaves the resolver hammering the network to completion.
-        cancelled_->store(true);
     }
 
 private:
@@ -443,6 +414,15 @@ private:
             runners->push_back(std::move(run));
         };
         const bool ignored = updates_->isIgnored(title.titleId);
+        if (!ignored) {
+            auto it = updates_->results().find(title.titleId);
+            if (it != updates_->results().end() &&
+                it->second.state == GameUpdateState::UpdateAvailable)
+                add(tr("pipensx/installed/update_action"),
+                    [this, titleId = title.titleId] { installUpdate(titleId); });
+        }
+        add(tr("pipensx/installed/open_in_catalog"),
+            [this, titleId = title.titleId] { openInCatalog(titleId); });
         add(tr(ignored ? "pipensx/installed/unignore_updates"
                        : "pipensx/installed/ignore_updates"),
             [this, titleId = title.titleId, ignored] {
@@ -456,7 +436,8 @@ private:
         add(tr("pipensx/installed/uninstall_action"),
             [this, title] { confirmUninstall(title); });
         auto* dropdown = new brls::Dropdown(
-            title.name, labels, [runners](int selected) {
+            title.name, labels, [](int) {}, 0,
+            [runners](int selected) {
                 if (selected < 0 ||
                     selected >= static_cast<int>(runners->size()))
                     return;
@@ -466,33 +447,68 @@ private:
         brls::Application::pushActivity(new brls::Activity(dropdown));
     }
 
-    // A-тап по строке "Update available": скачать и установить апдейт.
-    void installUpdate(const std::string& titleId) {
-        if (refreshing_ || updateInFlight_ || uninstallInFlight_)
-            return;
-        if (updates_->isIgnored(titleId))
-            return;
+    const CatalogEntry* catalogEntryForTitle(const std::string& titleId) const {
+        if (!catalog_)
+            return nullptr;
         std::vector<const GameMetadata*> entries;
-        if (!metadata_ || !metadata_->findByTitleId(titleId, entries)) {
+        if (metadata_)
+            metadata_->findByTitleId(titleId, entries);
+        const std::string want = catalogLower(titleId);
+        const CatalogEntry* best = nullptr;
+        for (const CatalogEntry& entry : catalog_->entries()) {
+            bool match = false;
+            if (!entry.titleId.empty() && catalogLower(entry.titleId) == want)
+                match = true;
+            if (!match) {
+                const std::string hash = catalogLower(entry.infoHash);
+                for (const GameMetadata* meta : entries) {
+                    if (catalogLower(meta->infoHash) == hash) {
+                        match = true;
+                        break;
+                    }
+                }
+            }
+            if (!match)
+                continue;
+            if (!best || entry.publishedAt > best->publishedAt)
+                best = &entry;
+        }
+        return best;
+    }
+
+    void openCatalogPage(const std::string& titleId, bool autoInstall) {
+        const CatalogEntry* catalogEntry = catalogEntryForTitle(titleId);
+        if (!catalogEntry) {
             brls::Application::notify(
                 tr("pipensx/installed/update_no_bundle"));
             return;
         }
-        if (entries.size() == 1) {
-            confirmUpdateInstall(GameMetadata(*entries.front()));
+        brls::Application::pushActivity(new GameDetailActivity(
+            *catalogEntry, "", manager_, metadata_, installed_, settings_,
+            [](const std::string&, const std::string&) {},
+            [this, alive = alive_] {
+                brls::sync([this, alive] {
+                    if (alive->load())
+                        reload();
+                });
+            },
+            nullptr, favorites_, deploy_, autoInstall));
+    }
+
+    void openInCatalog(const std::string& titleId) {
+        openCatalogPage(titleId, false);
+    }
+
+    void installUpdate(const std::string& titleId) {
+        if (refreshing_ || uninstallInFlight_)
             return;
-        }
-        // A title with several bundles pages through them one at a time —
-        // see chooseBundle. Entries arrive newest-first.
-        std::vector<GameMetadata> bundles;
-        bundles.reserve(entries.size());
-        for (const GameMetadata* entry : entries)
-            bundles.push_back(*entry);
-        chooseBundle(std::move(bundles), 0);
+        if (updates_->isIgnored(titleId))
+            return;
+        openCatalogPage(titleId, true);
     }
 
     void confirmUninstall(InstalledTitle title) {
-        if (refreshing_ || updateInFlight_ || uninstallInFlight_)
+        if (refreshing_ || uninstallInFlight_)
             return;
         if (hasActiveStreamInstall()) {
             brls::Application::notify(tr("pipensx/installed/busy"));
@@ -541,320 +557,6 @@ private:
         });
     }
 
-    // brls::Dialog's third button claims a full-width top slot, so paging
-    // two bundles at a time put the auxiliary "more" button above both
-    // candidates. One bundle per page keeps the hierarchy honest: candidate
-    // in the left half, "more"/"later" in the right. Entries arrive
-    // newest-first, so the first candidate is the newest release.
-    void chooseBundle(std::vector<GameMetadata> bundles, size_t start) {
-        auto* dialog = new brls::Dialog(
-            tr("pipensx/installed/update_choose_bundle"));
-        if (start < bundles.size()) {
-            const GameMetadata& candidate = bundles[start];
-            // Two bundles of the same title can share a version (different
-            // builds); a bare version would then make the buttons identical,
-            // so pin the short info-hash suffix onto each twin.
-            bool twin = false;
-            for (size_t i = 0; i < bundles.size(); ++i)
-                if (i != start &&
-                    bundles[i].latestVersion == candidate.latestVersion) {
-                    twin = true;
-                    break;
-                }
-            dialog->addButton(bundleLabel(candidate, twin),
-                              [this, entry = bundles[start]] {
-                confirmUpdateInstall(entry);
-            });
-        }
-        const size_t remaining = bundles.size() - start - 1;
-        if (remaining > 0)
-            dialog->addButton(
-                tr("pipensx/installed/update_choose_more", remaining),
-                [this, bundles = std::move(bundles), start = start + 1] {
-                    chooseBundle(std::move(bundles), start);
-                });
-        else
-            dialog->addButton(tr("pipensx/common/later"), [] {});
-        dialog->open();
-    }
-
-    // Dialog buttons hold one line and half the dialog width, so a full game
-    // name cannot fit reliably: the old byte-capped "name  vN" label still
-    // ran over into the neighbouring button, because Cyrillic and Latin
-    // letters have different widths and a byte cap has nothing to do with
-    // pixels. The dialog is already about one title, so the version alone
-    // identifies the candidate — and a short info-hash suffix tells two
-    // same-version bundles apart.
-    static std::string bundleLabel(const GameMetadata& entry, bool twin) {
-        std::string label = "v" + entry.latestVersion;
-        if (twin && entry.infoHash.size() >= 8)
-            label += " (" + entry.infoHash.substr(0, 8) + ")";
-        return label;
-    }
-
-    void confirmUpdateInstall(GameMetadata entry) {
-        const std::string foundVersion =
-            entry.latestVersion.empty() ? std::string("?") : entry.latestVersion;
-        auto* dialog = new brls::Dialog(tr(
-            "pipensx/installed/update_install_confirm", entry.name,
-            foundVersion));
-        dialog->addButton(tr("pipensx/installed/update_download"),
-                          [this, entry = std::move(entry)] {
-            beginUpdateInstall(entry);
-        });
-        dialog->addButton(tr("pipensx/common/later"), [] {});
-        dialog->open();
-    }
-
-    // Резолв magnet'а в .torrent (паттерн из game_detail), затем импорт
-    // торрента с установкой только файлов-апдейтов.
-    void beginUpdateInstall(GameMetadata entry) {
-        if (updateInFlight_)
-            return;
-        updateInFlight_ = true;
-        cancelled_->store(false);
-        status_->setText(tr("pipensx/installed/update_resolving"));
-        // While the resolve is in flight no other action can start, so Y is
-        // the cancel: it flips the flag the resolver polls, and the
-        // completion path unlinks the tmp torrent and says so in a toast.
-        // Re-registering in a later beginUpdateInstall replaces the action;
-        // unregistering on completion removes the hint from the bar.
-        updateCancelAction_ = registerAction(
-            tr("pipensx/installed/update_cancel"), brls::BUTTON_Y,
-            [this](brls::View*) {
-                cancelled_->store(true);
-                return true;
-            });
-        const std::string hash = entry.infoHash;
-        const CatalogEntry* catalogEntry =
-            catalog_ ? catalog_->findByInfoHash(hash) : nullptr;
-        const std::string magnet = updateMagnetFor(hash, catalogEntry);
-        std::vector<uint8_t> infoDict =
-            catalogEntry ? catalogEntry->infoDict : std::vector<uint8_t>();
-        const std::string tmp = manager_->rootPath() + "/_update_tmp_" +
-                                catalogLower(hash) + "_" +
-                                std::to_string(updateTempSerial_.fetch_add(1)) +
-                                ".torrent";
-        auto alive = alive_;
-        auto cancelled = cancelled_;
-        const std::string latestVersion = entry.latestVersion;
-        const std::string titleId = entry.titleId;
-        brls::async([this, alive, cancelled, magnet, tmp,
-                     infoDict = std::move(infoDict), latestVersion, titleId] {
-            std::string err;
-            MagnetResolver resolver;
-            auto progress = [this, alive](const pipensx::MagnetProgress& p) {
-                std::string text;
-                switch (p.stage) {
-                    case pipensx::MagnetProgress::Stage::FindingPeers:
-                        text = tr("pipensx/detail/finding_peers");
-                        break;
-                    case pipensx::MagnetProgress::Stage::Connecting:
-                        text = tr("pipensx/detail/contacting_peer",
-                                  p.peerIndex, p.peerCount);
-                        break;
-                    case pipensx::MagnetProgress::Stage::FetchingMetadata:
-                        text = tr("pipensx/detail/fetching_metadata",
-                                  p.completedPieces, p.totalPieces);
-                        break;
-                    case pipensx::MagnetProgress::Stage::Validating:
-                        text = tr("pipensx/detail/validating");
-                        break;
-                }
-                brls::sync([this, alive, text] {
-                    if (alive->load())
-                        status_->setText(text);
-                });
-            };
-            std::vector<uint8_t> initialPeers;
-            const bool ok = resolver.resolveToFile(
-                magnet, tmp, *cancelled, progress, err, &initialPeers,
-                infoDict.empty() ? nullptr : &infoDict);
-            brls::sync([this, alive, ok, err = std::move(err), tmp,
-                        initialPeers = std::move(initialPeers),
-                        latestVersion, titleId]() mutable {
-                if (!alive->load()) {
-                    ::unlink(tmp.c_str());
-                    return;
-                }
-                updateInFlight_ = false;
-                if (updateCancelAction_ != ACTION_NONE) {
-                    unregisterAction(updateCancelAction_);
-                    updateCancelAction_ = ACTION_NONE;
-                }
-                if (!ok) {
-                    ::unlink(tmp.c_str());
-                    reload();
-                    // A user cancel is not an error: the resolver reports it
-                    // as a failure, so distinguish it from a genuine one
-                    // before the diagnostic and the toast.
-                    if (cancelled_->load()) {
-                        brls::Application::notify(
-                            tr("pipensx/installed/update_cancelled"));
-                        return;
-                    }
-                    diagnostic_error("game_updates", "resolve",
-                                     "title error=%s", err.c_str());
-                    brls::Application::notify(resolveErrorToast(err));
-                    return;
-                }
-                finishUpdateImport(tmp, std::move(initialPeers),
-                                   latestVersion, titleId);
-            });
-        });
-    }
-
-    // The resolver's errors are English diagnostic strings; what the user
-    // sees must be localized. Classify by the failure modes it actually
-    // emits (magnet_resolver.cpp resolveToFile) and keep the raw string in
-    // the diagnostic log either way.
-    static std::string resolveErrorToast(const std::string& err) {
-        const auto has = [&err](const char* needle) {
-            return err.find(needle) != std::string::npos;
-        };
-        if (has("not registered anymore"))
-            return tr("pipensx/installed/update_error_unregistered");
-        if (has("no usable peers") || has("could not connect to any of them") ||
-            has("none returned"))
-            return tr("pipensx/installed/update_error_no_peers");
-        if (has("rejected"))
-            return tr("pipensx/installed/update_error_rejected");
-        return tr("pipensx/installed/update_error_failed");
-    }
-
-    void finishUpdateImport(const std::string& path,
-                            std::vector<uint8_t> initialPeers,
-                            const std::string& latestVersion,
-                            const std::string& titleId) {
-        TorrentPreview preview;
-        std::string err;
-        if (!manager_->previewTorrent(path, preview, err)) {
-            ::unlink(path.c_str());
-            diagnostic_error("game_updates", "preview", "error=%s",
-                             err.c_str());
-            brls::Application::notify(
-                tr("pipensx/installed/update_error_preview"));
-            reload();
-            return;
-        }
-        std::vector<uint8_t> actions =
-            selectUpdateFiles(preview, latestVersion, titleId);
-        // Every update offer lands in the chooser with the recommended
-        // packages preselected. The old shortcut — importing straight away
-        // when exactly one package carried the update's version — is gone:
-        // the user always gets to see (and tune) what an update would pull.
-        chooseUpdateFile(preview, path, std::move(initialPeers),
-                         std::move(actions));
-    }
-
-    // The tmp torrent stays alive until the choice lands; the chooser hands
-    // the bootstrap peers straight back into the import, so a resolved
-    // torrent never loses its only way to start where the tracker is
-    // unreachable. Both exits (confirm and cancel) come back here, where the
-    // tmp torrent is owned. `actions` is the recommendation mask from
-    // selectUpdateFiles — the rows open with it preselected.
-    void chooseUpdateFile(const TorrentPreview& preview,
-                          const std::string& path,
-                          std::vector<uint8_t> initialPeers,
-                          std::vector<uint8_t> actions) {
-        auto alive = alive_;
-        brls::Application::pushActivity(new UpdateFileChooserActivity(
-            manager_, preview, std::move(actions), std::move(initialPeers),
-            [this, alive, preview, path](std::vector<uint8_t> mask,
-                                         std::vector<uint8_t> peers) {
-                if (!alive->load()) {
-                    ::unlink(path.c_str());
-                    return;
-                }
-                importUpdateTorrent(preview, path, std::move(peers),
-                                    std::move(mask));
-            },
-            [this, alive, path] {
-                ::unlink(path.c_str());
-                if (alive->load())
-                    reload();
-            }));
-    }
-
-    void importUpdateTorrent(const TorrentPreview& preview,
-                             const std::string& path,
-                             std::vector<uint8_t> initialPeers,
-                             std::vector<uint8_t> actions) {
-        std::string id;
-        std::string err;
-        if (manager_->importTorrentActions(path, actions, id, err,
-                                           initialPeers)) {
-            log_msg("[game_updates] imported update torrent %s\n", id.c_str());
-            brls::Application::notify(
-                tr("pipensx/installed/update_added"));
-            // Once the task settles (installed, failed or removed) refresh
-            // the installed list and re-check, so the row flips to Latest
-            // without another manual press.
-            pendingRecheckTaskId_ = catalogLower(id);
-            recheckTimer_.start(1000);
-        } else if (err.find("already in the download manager") !=
-                   std::string::npos) {
-            brls::Application::notify(
-                tr("pipensx/detail/already_in_downloads"));
-        } else {
-            diagnostic_error("game_updates", "import", "error=%s",
-                             err.c_str());
-            brls::Application::notify(
-                tr("pipensx/installed/update_error_import"));
-        }
-        ::unlink(path.c_str());
-        reload();
-    }
-
-    // UI-thread tick while an update task we started is in flight: wait for
-    // a terminal state, then refresh installed titles and re-check them.
-    void pollUpdateRecheck() {
-        if (pendingRecheckTaskId_.empty())
-            return;
-        bool found = false;
-        DownloadStatus status = DownloadStatus::Queued;
-        for (const DownloadTask& candidate : manager_->snapshotUi()) {
-            if (catalogLower(candidate.id) == pendingRecheckTaskId_) {
-                found = true;
-                status = candidate.status;
-                break;
-            }
-        }
-        if (!updateRecheckSettled(found, status))
-            return;
-        // Another stream install still running: the installed scan would
-        // race it (same reason RB refresh refuses), keep polling.
-        if (hasActiveStreamInstall() || refreshing_)
-            return;
-        recheckTimer_.stop();
-        pendingRecheckTaskId_.clear();
-        recheckAfterInstall();
-    }
-
-    // Refresh the installed list, then re-check every title. Mirrors
-    // refresh() but always re-checks on success; callers ensure no stream
-    // install is active and no other refresh is in flight.
-    void recheckAfterInstall() {
-        refreshing_ = true;
-        status_->setText(tr("pipensx/installed/refreshing"));
-        auto alive = alive_;
-        InstalledTitleService* installed = installed_;
-        brls::async([this, alive, installed] {
-            std::string error;
-            const bool ok = installed->refresh(error);
-            brls::sync([this, alive, ok, error] {
-                if (!alive->load())
-                    return;
-                refreshing_ = false;
-                if (!ok) {
-                    status_->setText(error);
-                    brls::Application::notify(error);
-                    return;
-                }
-                checkAllTitles();
-            });
-        });
-    }
 
     void reload() {
         std::vector<InstalledTitle> titles = installed_->titles();
@@ -920,6 +622,8 @@ private:
     AppSettings* settings_;
     CatalogService* catalog_ = nullptr;
     GameUpdateService* updates_ = nullptr;
+    FavoritesService* favorites_ = nullptr;
+    SwitchDeployService* deploy_ = nullptr;
     bool checkOnEntry_ = true;
     std::function<void(size_t)> onUpdateCount_;
     brls::Label* status_ = nullptr;
@@ -928,15 +632,8 @@ private:
     brls::Box* recyclerHost_ = nullptr;
     InstalledDataSource* dataSource_ = nullptr;
     std::shared_ptr<std::atomic<bool>> alive_;
-    std::shared_ptr<std::atomic<bool>> cancelled_ =
-        std::make_shared<std::atomic<bool>>(false);
-    std::atomic<uint32_t> updateTempSerial_{0};
-    brls::RepeatingTimer recheckTimer_;
-    std::string pendingRecheckTaskId_;
     bool refreshing_ = false;
-    bool updateInFlight_ = false;
     bool uninstallInFlight_ = false;
-    brls::ActionIdentifier updateCancelAction_ = ACTION_NONE;
 };
 
 }  // namespace pipensx::ui

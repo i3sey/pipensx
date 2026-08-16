@@ -374,6 +374,8 @@
     "uninstall_confirm": "Uninstall {0} from this console? Save data is kept.",
     "uninstalling": "Uninstalling {0}...",
     "uninstall_done": "Application uninstalled.",
+    "update_action": "Update",
+    "open_in_catalog": "Open in catalog",
     "ignore_updates": "Ignore updates",
     "unignore_updates": "Stop ignoring updates",
     "update_stale": "Update results are stale",

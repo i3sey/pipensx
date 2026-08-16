@@ -374,6 +374,8 @@
     "uninstall_confirm": "从本机卸载 {0}？存档会保留。",
     "uninstalling": "正在卸载 {0}…",
     "uninstall_done": "应用已卸载。",
+    "update_action": "更新",
+    "open_in_catalog": "在目录中打开",
     "ignore_updates": "忽略更新",
     "unignore_updates": "停止忽略更新",
     "update_stale": "更新结果已过时",

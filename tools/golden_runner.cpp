@@ -71,6 +71,7 @@
 #include "ui/first_run_view.hpp"
 #include "ui/i18n.hpp"
 #include "ui/installed/installed_view.hpp"
+#include "ui/installed/update_file_chooser.hpp"
 #include "ui/main_frame.hpp"
 #include "ui/settings/about_view.hpp"
 #include "ui/settings/network_health.hpp"
@@ -1269,15 +1270,21 @@ int main(int argc, char** argv) {
     }
 
     if (installedBundles) {
-        // The update-available row (Pipen Odyssey, two fixture bundles) opens
-        // the release-bundle chooser on A. The old "name  vN" button label
-        // overflowed into its neighbour on long titles, so the candidate is
-        // now labelled by version alone — this pins that the two buttons sit
-        // side by side without overlap, that paging reaches the second
-        // bundle, and that the last page ends in "later", not "more".
+        // A on an update-available row opens the context menu; Update then
+        // opens the catalog detail page and starts the same one-tap install
+        // as the catalog Install button.
         auto pump = [](int frames) {
             for (int frame = 0; frame < frames; ++frame)
                 brls::Application::mainLoop();
+        };
+        auto fireA = [](brls::View* view) -> bool {
+            for (const auto& action : view->getActions())
+                if (action->getType() == brls::ACTION_GAMEPAD &&
+                    action->getButton() == brls::BUTTON_A) {
+                    action->getActionListener()(view);
+                    return true;
+                }
+            return false;
         };
         brls::View* cell = nullptr;
         std::function<void(brls::View*)> findCell = [&](brls::View* node) {
@@ -1294,127 +1301,66 @@ int main(int argc, char** argv) {
             return fail("installed-bundles found no installed row");
         brls::Application::giveFocus(cell);
         pump(5);
-        brls::Action* installAction = nullptr;
-        for (const auto& action : cell->getActions())
-            if (action->getType() == brls::ACTION_GAMEPAD &&
-                action->getButton() == brls::BUTTON_A)
-                installAction = action.get();
-        if (!installAction)
+        if (!fireA(cell))
             return fail("installed-bundles row has no A action");
-        installAction->getActionListener()(cell);
         brls::Activity* host = activity;
-        brls::Activity* page1 = nullptr;
-        for (int frame = 0; frame < 180 && !page1; ++frame) {
+        brls::Activity* menu = nullptr;
+        for (int frame = 0; frame < 180 && !menu; ++frame) {
             brls::Application::mainLoop();
             if (brls::Application::getActivitiesStack().back() != host)
-                page1 = brls::Application::getActivitiesStack().back();
+                menu = brls::Application::getActivitiesStack().back();
         }
-        if (!page1)
-            return fail("installed-bundles A never opened the chooser");
+        if (!menu)
+            return fail("installed-bundles A never opened the menu");
 
-        brls::Button* candidate = nullptr;
-        brls::Button* more = nullptr;
-        brls::Button* later = nullptr;
-        const std::string moreLabel = tr("pipensx/installed/update_choose_more", 1);
-        const std::string laterLabel = tr("pipensx/common/later");
-        std::function<void(brls::View*)> findButtons = [&](brls::View* node) {
-            if (auto* button = dynamic_cast<brls::Button*>(node)) {
-                if (button->getText() == "v196608" ||
-                    button->getText() == "v131072")
-                    candidate = button;
-                else if (button->getText() == moreLabel)
-                    more = button;
-                else if (button->getText() == laterLabel)
-                    later = button;
+        const std::string updateLabel = tr("pipensx/installed/update_action");
+        brls::RadioCell* updateRow = nullptr;
+        std::function<void(brls::View*)> findUpdate = [&](brls::View* node) {
+            if (updateRow)
+                return;
+            if (auto* radio = dynamic_cast<brls::RadioCell*>(node)) {
+                if (radio->title->getFullText() == updateLabel)
+                    updateRow = radio;
             }
             if (auto* box = dynamic_cast<brls::Box*>(node))
                 for (brls::View* child : box->getChildren())
-                    findButtons(child);
+                    findUpdate(child);
         };
-        findButtons(page1->getContentView());
-        if (!candidate || candidate->getText() != "v196608")
-            return fail("installed-bundles page 1 shows the wrong candidate");
-        if (!more)
-            return fail("installed-bundles page 1 is missing 'more'");
-        if (later)
-            return fail("installed-bundles page 1 must not show 'later'");
-        // The old bug overflowed the label *text* past its own button into
-        // the neighbour — the button boxes themselves never moved, so the
-        // overlap must be measured on the button's label child, not on the
-        // button frames.
-        auto labelFits = [](brls::Button* button) {
-            brls::Label* label = nullptr;
-            std::function<void(brls::View*)> findLabel = [&](brls::View* node) {
-                if (label)
-                    return;
-                if (dynamic_cast<brls::Label*>(node))
-                    label = dynamic_cast<brls::Label*>(node);
-                if (auto* box = dynamic_cast<brls::Box*>(node))
-                    for (brls::View* child : box->getChildren())
-                        findLabel(child);
-            };
-            findLabel(button);
-            if (!label)
-                return false;
-            const brls::Rect text = label->getFrame();
-            const brls::Rect box = button->getFrame();
-            return text.getMinX() >= box.getMinX() - 0.5f &&
-                   text.getMaxX() <= box.getMaxX() + 0.5f &&
-                   text.getMinY() >= box.getMinY() - 0.5f &&
-                   text.getMaxY() <= box.getMaxY() + 0.5f;
+        findUpdate(menu->getContentView());
+        if (!updateRow)
+            return fail("installed-bundles menu has no Update item");
+        brls::Application::giveFocus(updateRow);
+        pump(5);
+        if (!fireA(updateRow))
+            return fail("installed-bundles Update item has no A action");
+
+        // Update is catalog one-tap: the newest catalog card for the title,
+        // not the old per-bundle dialog (v196608 / more / later).
+        const std::string moreLabel = tr("pipensx/installed/update_choose_more", 1);
+        brls::Activity* detail = nullptr;
+        for (int frame = 0; frame < 180 && !detail; ++frame) {
+            brls::Application::mainLoop();
+            brls::Activity* top = brls::Application::getActivitiesStack().back();
+            if (dynamic_cast<pipensx::ui::GameDetailActivity*>(top))
+                detail = top;
+        }
+        if (!detail)
+            return fail("installed-bundles Update did not open catalog detail");
+        bool sawBundleChooser = false;
+        std::function<void(brls::View*)> findChooser = [&](brls::View* node) {
+            if (auto* button = dynamic_cast<brls::Button*>(node)) {
+                if (button->getText() == "v196608" ||
+                    button->getText() == moreLabel)
+                    sawBundleChooser = true;
+            }
+            if (auto* box = dynamic_cast<brls::Box*>(node))
+                for (brls::View* child : box->getChildren())
+                    findChooser(child);
         };
-        if (!labelFits(candidate) || !labelFits(more))
-            return fail("installed-bundles a button label overflows its box");
-        const brls::Rect candidateFrame = candidate->getFrame();
-        const brls::Rect moreFrame = more->getFrame();
-        if (candidateFrame.getMaxX() > moreFrame.getMinX() + 0.5f)
-            return fail("installed-bundles candidate overlaps the 'more' "
-                        "button");
-
-        // "More" pages to the second bundle: "v131072" plus "later".
-        brls::Action* moreAction = nullptr;
-        for (const auto& action : more->getActions())
-            if (action->getType() == brls::ACTION_GAMEPAD &&
-                action->getButton() == brls::BUTTON_A)
-                moreAction = action.get();
-        if (!moreAction)
-            return fail("installed-bundles 'more' has no A action");
-        moreAction->getActionListener()(more);
-        brls::Activity* page2 = nullptr;
-        for (int frame = 0; frame < 180 && !page2; ++frame) {
-            brls::Application::mainLoop();
-            if (brls::Application::getActivitiesStack().back() != page1)
-                page2 = brls::Application::getActivitiesStack().back();
-        }
-        if (!page2)
-            return fail("installed-bundles 'more' never opened page 2");
-        candidate = nullptr;
-        more = nullptr;
-        later = nullptr;
-        findButtons(page2->getContentView());
-        if (!candidate || candidate->getText() != "v131072")
-            return fail("installed-bundles page 2 shows the wrong candidate");
-        if (!later)
-            return fail("installed-bundles last page must show 'later'");
-        if (more)
-            return fail("installed-bundles last page must not show 'more'");
-
-        brls::Action* laterAction = nullptr;
-        for (const auto& action : later->getActions())
-            if (action->getType() == brls::ACTION_GAMEPAD &&
-                action->getButton() == brls::BUTTON_A)
-                laterAction = action.get();
-        if (!laterAction)
-            return fail("installed-bundles 'later' has no A action");
-        laterAction->getActionListener()(later);
-        for (int frame = 0; frame < 180; ++frame) {
-            brls::Application::mainLoop();
-            if (brls::Application::getActivitiesStack().back() == activity)
-                break;
-        }
-        if (brls::Application::getActivitiesStack().back() != activity)
-            return fail("installed-bundles 'later' never closed the dialog");
-        std::printf("golden_runner: bundle chooser pages and fits the dialog\n");
+        findChooser(detail->getContentView());
+        if (sawBundleChooser)
+            return fail("installed-bundles Update opened the bundle chooser");
+        std::printf("golden_runner: Update opened catalog one-tap detail\n");
         manager.shutdown();
         std::fflush(nullptr);
         _exit(0);

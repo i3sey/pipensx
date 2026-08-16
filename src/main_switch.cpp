@@ -159,9 +159,10 @@ public:
         });
         tabs->addNavTab(tr("pipensx/nav/installed"), NavIconType::Installed,
                         [installed, manager, metadata, settings, catalog,
-                         gameUpdates, tabs] {
+                         gameUpdates, tabs, favorites, deploy] {
             auto* view = new InstalledView(installed, manager, metadata,
-                                           settings, catalog, gameUpdates);
+                                           settings, catalog, gameUpdates,
+                                           true, favorites, deploy);
             view->setOnUpdateCount([tabs](size_t count) {
                 tabs->setUpdateCountBadge(count);
             });
