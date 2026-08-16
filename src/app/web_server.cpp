@@ -166,6 +166,10 @@ WebServer::~WebServer() { shutdown(); }
 
 bool WebServer::start(uint16_t port) {
     if (http_.running()) return true;
+    {
+        std::lock_guard<std::mutex> lock(catalogMutex_);
+        rebuildCatalogIndexLocked();
+    }
     std::string error;
     bool ok = http_.start(
         port, [this](const HttpRequest& req) { return route(req); }, error);
@@ -207,12 +211,19 @@ void WebServer::updateCatalog(
         entries = std::make_shared<const std::vector<CatalogEntry>>();
     std::lock_guard<std::mutex> lock(catalogMutex_);
     catalog_ = std::move(entries);
+    ++catalogGeneration_;
+    catalogGzip_ = nullptr;
+    if (http_.running())
+        rebuildCatalogIndexLocked();
+    else
+        catalogIndex_.clear();
+}
+
+void WebServer::rebuildCatalogIndexLocked() {
     catalogIndex_.clear();
     catalogIndex_.reserve(catalog_->size());
     for (size_t i = 0; i < catalog_->size(); ++i)
         catalogIndex_[lowerAscii((*catalog_)[i].infoHash)] = i;
-    ++catalogGeneration_;
-    catalogGzip_ = nullptr;
 }
 
 // A cross-site request carries an Origin; a same-origin one names the host
@@ -246,7 +257,7 @@ std::string WebServer::buildStateJson() {
     Json state;
     Json tasks = Json::array();
     uint64_t now = nowMs();
-    for (const DownloadTask& t : manager_.snapshot()) {
+    for (const DownloadTask& t : manager_.snapshotUi()) {
         Json j;
         j["id"] = t.id;
         j["name"] = t.name;

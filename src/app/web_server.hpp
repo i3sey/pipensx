@@ -78,6 +78,7 @@ private:
     HttpResponse handleAddCatalog(const HttpRequest& req);
     HttpResponse handleAddTorrent(const HttpRequest& req);
     HttpResponse handleCatalog(const HttpRequest& req);
+    void rebuildCatalogIndexLocked();
     HttpResponse handleGetSettings(const HttpRequest& req);
     HttpResponse handlePatchSettings(const HttpRequest& req);
     bool authorized(const HttpRequest& req) const;
