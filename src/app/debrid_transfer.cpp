@@ -18,6 +18,7 @@ extern "C" {
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <exception>
 #include <condition_variable>
 #include <cstdio>
 #include <cstring>
@@ -271,26 +272,35 @@ struct CurlSink {
 size_t curlWrite(char* ptr, size_t size, size_t nmemb, void* userdata) {
     CurlSink* c = static_cast<CurlSink*>(userdata);
     size_t total = size * nmemb;
-    if (c->ranged && c->curl) {
-        long status = 0;
-        curl_easy_getinfo(c->curl, CURLINFO_RESPONSE_CODE, &status);
-        if (status == 200) {
-            c->rangeIgnored = true;
+    try {
+        if (c->ranged && c->curl) {
+            long status = 0;
+            curl_easy_getinfo(c->curl, CURLINFO_RESPONSE_CODE, &status);
+            if (status == 200) {
+                c->rangeIgnored = true;
+                c->aborted = true;
+                return 0;
+            }
+        }
+        if ((*c->cancelled)()) {
             c->aborted = true;
             return 0;
         }
-    }
-    if ((*c->cancelled)()) {
-        c->aborted = true;
-        return 0;
-    }
-    if (!(*c->sink)(reinterpret_cast<const uint8_t*>(ptr), total)) {
+        if (!(*c->sink)(reinterpret_cast<const uint8_t*>(ptr), total)) {
+            c->aborted = true;
+            c->sinkRefused = true;
+            return 0;
+        }
+        c->received += total;
+        return total;
+    } catch (...) {
+        // libcurl is C: an exception through the write callback is
+        // std::terminate with no live exception, which is how a TorrServer
+        // stream-install presented after GET /echo already succeeded.
         c->aborted = true;
         c->sinkRefused = true;
         return 0;
     }
-    c->received += total;
-    return total;
 }
 
 RangeFetcher curlRangeFetcher() {
@@ -641,41 +651,58 @@ bool fetchOrdered(const RangeFetcher& fetcher, const std::string& url,
     workers.reserve(maxInFlight);
     for (size_t i = 0; i < maxInFlight; ++i) {
         workers.emplace_back([&] {
-            uint64_t start = 0;
-            uint64_t end = 0;
-            while (takeJob(start, end)) {
-                std::vector<uint8_t> buf;
-                buf.reserve(static_cast<size_t>(end - start));
-                auto collect = [&](const uint8_t* data, size_t n) -> bool {
-                    buf.insert(buf.end(), data, data + n);
-                    return !cancelled();
-                };
-                std::string err;
-                auto workerCancel = [&] {
-                    std::lock_guard<std::mutex> lock(mu);
-                    return stopWorkers || cancelled();
-                };
-                bool ok = fetcher(url, start, end, collect, workerCancel, err);
-                if (ok && buf.size() != static_cast<size_t>(end - start)) {
-                    ok = false;
-                    err = "short range";
-                }
-                {
-                    std::lock_guard<std::mutex> lock(mu);
-                    --inFlight;
-                    if (!ok) {
-                        if (err == kDebridRangeNotSupported)
-                            rangeIgnored = true;
-                        else {
-                            failed = true;
-                            if (workerError.empty())
-                                workerError = err;
-                        }
-                        stopWorkers = true;
-                    } else {
-                        ready.emplace(start, std::move(buf));
+            try {
+                uint64_t start = 0;
+                uint64_t end = 0;
+                while (takeJob(start, end)) {
+                    std::vector<uint8_t> buf;
+                    buf.reserve(static_cast<size_t>(end - start));
+                    auto collect = [&](const uint8_t* data, size_t n) -> bool {
+                        buf.insert(buf.end(), data, data + n);
+                        return !cancelled();
+                    };
+                    std::string err;
+                    auto workerCancel = [&] {
+                        std::lock_guard<std::mutex> lock(mu);
+                        return stopWorkers || cancelled();
+                    };
+                    bool ok = fetcher(url, start, end, collect, workerCancel,
+                                      err);
+                    if (ok && buf.size() != static_cast<size_t>(end - start)) {
+                        ok = false;
+                        err = "short range";
                     }
+                    {
+                        std::lock_guard<std::mutex> lock(mu);
+                        --inFlight;
+                        if (!ok) {
+                            if (err == kDebridRangeNotSupported)
+                                rangeIgnored = true;
+                            else {
+                                failed = true;
+                                if (workerError.empty())
+                                    workerError = err;
+                            }
+                            stopWorkers = true;
+                        } else {
+                            ready.emplace(start, std::move(buf));
+                        }
+                    }
+                    cv.notify_all();
                 }
+            } catch (const std::exception& e) {
+                std::lock_guard<std::mutex> lock(mu);
+                failed = true;
+                stopWorkers = true;
+                if (workerError.empty())
+                    workerError = e.what();
+                cv.notify_all();
+            } catch (...) {
+                std::lock_guard<std::mutex> lock(mu);
+                failed = true;
+                stopWorkers = true;
+                if (workerError.empty())
+                    workerError = "Download worker failed.";
                 cv.notify_all();
             }
         });
