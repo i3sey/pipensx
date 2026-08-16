@@ -19,9 +19,9 @@
 //                 [--frames N] [--sandbox <dir>]
 //
 // downloads-back, downloads-removing, torrent-selection-scroll, hints-budget,
-// bug-report-focus, sidebar-touch, update-chooser-toggle, first-run-disclaimer and
-// installed-bundles are behaviour checks: they assert and exit non-zero
-// instead of producing a baseline.
+// bug-report-focus, sidebar-touch, update-chooser-toggle, first-run-disclaimer,
+// installed-bundles and installed-focus-reload are behaviour checks: they
+// assert and exit non-zero instead of producing a baseline.
 //
 // Determinism notes:
 //   - run with LIBGL_ALWAYS_SOFTWARE=1 so Mesa llvmpipe rasterizes the same
@@ -41,11 +41,14 @@
 #include <borealis/views/hint.hpp> // not re-exported by borealis.hpp
 #include <zlib.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -494,6 +497,7 @@ int main(int argc, char** argv) {
     BugReportActivity* bugReportFocus = nullptr;
     FirstRunView* firstRunFocus = nullptr;
     InstalledView* installedBundles = nullptr;
+    MainFrame* installedFocusReload = nullptr;
     brls::Activity* detailRailNav = nullptr;
     UpdateFileChooserActivity* updateChooser = nullptr;
     std::vector<uint8_t> updateChooserMask;
@@ -887,6 +891,27 @@ int main(int argc, char** argv) {
         activity = new GoldenActivity(view);
         if (screen == "installed-bundles")
             installedBundles = view;
+    } else if (screen == "installed-focus-reload") {
+        // Behaviour check, not a baseline: build the production shell so the
+        // tab opens lazily and the sidebar fold resizes the recycler — the
+        // exact "open My Games in windowed mode" path that shifted the focus
+        // highlight onto the wrong row.
+        seedInstalledFixture(installed);
+        std::string loadError;
+        gameUpdates.load(loadError);
+        auto* tabs = new MainFrame();
+        tabs->addNavTab(tr("pipensx/nav/games"), NavIconType::Catalog, [&] {
+            return new CatalogView(&manager, &catalog, &metadata, &installed,
+                                   &settings, [] {}, &favorites);
+        });
+        tabs->addNavTab(tr("pipensx/nav/installed"), NavIconType::Installed,
+                        [&] {
+            return new InstalledView(&installed, &manager, &metadata,
+                                     &settings, &catalog, &gameUpdates, false);
+        });
+        tabs->attachStorageFooter(&manager);
+        installedFocusReload = tabs;
+        activity = new GoldenActivity(tabs);
     } else if (screen == "settings") {
         activity = new GoldenActivity(new SettingsView(
             &settings, &manager, &catalog, &metadata, &installed, nullptr));
@@ -1145,6 +1170,99 @@ int main(int argc, char** argv) {
             brls::Application::getCurrentFocus() != last)
             return fail("first-run-focus did not update the summary in place");
         std::printf("golden_runner: first-run summary followed all options\n");
+        manager.shutdown();
+        std::fflush(nullptr);
+        _exit(0);
+    }
+
+    if (installedFocusReload) {
+        // reloadData() recycles every cell, and it fires on its own when
+        // entering the list folds the sidebar (the recycler's width changes).
+        // The old code left Application::currentFocus on the recycled
+        // instance, whose highlight kept drawing at the stale position — the
+        // shifted focus in "My Games" that only a fullscreen relayout
+        // repaired — and a re-entrant reload could duplicate the child list.
+        auto pump = [](int count) {
+            for (int frame = 0; frame < count; ++frame)
+                brls::Application::mainLoop();
+        };
+        installedFocusReload->focusTab(1);
+        pump(20);
+
+        brls::RecyclerFrame* recycler = nullptr;
+        std::function<void(brls::View*)> findRecycler = [&](brls::View* node) {
+            if (recycler)
+                return;
+            recycler = dynamic_cast<brls::RecyclerFrame*>(node);
+            if (recycler)
+                return;
+            if (auto* box = dynamic_cast<brls::Box*>(node))
+                for (brls::View* child : box->getChildren())
+                    findRecycler(child);
+        };
+        findRecycler(installedFocusReload);
+        if (!recycler)
+            return fail("installed-focus-reload found no recycler");
+
+        // Press RIGHT into the list, like a gamepad user would.
+        brls::View* focus = brls::Application::getCurrentFocus();
+        brls::View* next =
+            focus ? focus->getNextFocus(brls::FocusDirection::RIGHT, focus)
+                  : nullptr;
+        if (!next)
+            return fail("installed-focus-reload: RIGHT never entered the list");
+        brls::Application::giveFocus(next);
+        pump(30); // let the sidebar fold finish; it reloads the recycler
+
+        // A zombie cell still names the content box as its parent, so only a
+        // membership scan tells a live row from a recycled one.
+        auto focusedCell = [&]() -> pipensx::ui::InstalledCell* {
+            for (brls::View* node = brls::Application::getCurrentFocus(); node;
+                 node             = node->getParent())
+                if (auto* cell =
+                        dynamic_cast<pipensx::ui::InstalledCell*>(node))
+                    return cell;
+            return nullptr;
+        };
+        auto liveCells = [&]() {
+            return pipensx::ui::visibleCells<pipensx::ui::InstalledCell>(
+                recycler);
+        };
+
+        pipensx::ui::InstalledCell* before = focusedCell();
+        if (!before)
+            return fail("installed-focus-reload: focus is not on a row");
+        std::vector<pipensx::ui::InstalledCell*> cells = liveCells();
+        if (std::find(cells.begin(), cells.end(), before) == cells.end())
+            return fail("installed-focus-reload: sidebar fold left focus on "
+                        "a recycled row");
+        const brls::IndexPath beforePath = before->getIndexPath();
+        const float beforeY              = before->getY();
+
+        // The async-refresh path: reload while a row is focused.
+        recycler->reloadData();
+        pump(2);
+
+        pipensx::ui::InstalledCell* after = focusedCell();
+        if (!after)
+            return fail("installed-focus-reload: focus vanished on reload");
+        cells = liveCells();
+        if (std::find(cells.begin(), cells.end(), after) == cells.end())
+            return fail("installed-focus-reload: reloadData left focus on a "
+                        "recycled row");
+        if (!(after->getIndexPath() == beforePath))
+            return fail("installed-focus-reload: reloadData moved focus to "
+                        "another row");
+        if (std::fabs(after->getY() - beforeY) > 1.0f)
+            return fail("installed-focus-reload: reloadData shifted the "
+                        "focused row");
+
+        std::set<brls::View*> unique(cells.begin(), cells.end());
+        if (unique.size() != cells.size() || cells.size() != 4)
+            return fail("installed-focus-reload: recycled row list is "
+                        "corrupt");
+
+        std::printf("golden_runner: installed focus survives reloadData\n");
         manager.shutdown();
         std::fflush(nullptr);
         _exit(0);
