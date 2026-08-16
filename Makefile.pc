@@ -345,9 +345,10 @@ $(BUILD_DIR)/tests/test_update_transaction: tests/test_update_transaction.c \
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Isrc -o $@ $^ -Wl,--wrap=rename
 
-$(BUILD_DIR)/tests/test_title_version: tests/test_title_version.cpp
+$(BUILD_DIR)/tests/test_title_version: tests/test_title_version.cpp \
+		src/app/nacp_language.cpp
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ -lz
 
 $(BUILD_DIR)/tests/test_direct_hint: tests/test_direct_hint.cpp
 	@mkdir -p $(dir $@)

@@ -1,4 +1,5 @@
 #include "installed_title_service.hpp"
+#include "nacp_language.hpp"
 
 extern "C" {
 #include "../core/util.h"
@@ -25,13 +26,6 @@ std::string resultText(const char* operation, Result result) {
     char text[160];
     std::snprintf(text, sizeof(text), "%s (0x%08x).", operation, result);
     return text;
-}
-
-std::string boundedText(const char* value, size_t size) {
-    if (!value || size == 0)
-        return {};
-    size_t length = strnlen(value, size);
-    return std::string(value, length);
 }
 
 std::string upperAscii(std::string value) {
@@ -311,6 +305,24 @@ bool InstalledTitleService::refresh(std::string& error) {
     std::vector<InstalledTitle> next;
     next.reserve(records.size());
     auto control = std::make_unique<NsApplicationControlData>();
+    int preferred = 0;
+#ifdef __SWITCH__
+    // Same SetLanguage → NACP slot map as libnx nacpGetLanguageEntry.
+    static const u32 kNacpLanguageTable[18] = {
+        2, 0, 3, 4, 7, 6, 14, 12, 8, 10, 11, 13, 1, 9, 5, 14, 13, 15};
+    u64 languageCode = 0;
+    SetLanguage language = SetLanguage_ENUS;
+    if (R_SUCCEEDED(setInitialize())) {
+        if (R_SUCCEEDED(setGetSystemLanguage(&languageCode)))
+            setMakeLanguage(languageCode, &language);
+        setExit();
+    }
+    if (language >= 0 &&
+        static_cast<u32>(language) <
+            sizeof(kNacpLanguageTable) / sizeof(kNacpLanguageTable[0]))
+        preferred = static_cast<int>(
+            kNacpLanguageTable[static_cast<u32>(language)]);
+#endif
     for (const NsApplicationRecord& record : records) {
         InstalledTitle title;
         title.applicationId = record.application_id;
@@ -327,16 +339,13 @@ bool InstalledTitleService::refresh(std::string& error) {
             NsApplicationControlSource_Storage, record.application_id,
             control.get(), sizeof(*control), &actualSize);
         if (R_SUCCEEDED(rc)) {
-            NacpLanguageEntry* language = nullptr;
-            if (R_SUCCEEDED(nacpGetLanguageEntry(&control->nacp, &language)) &&
-                language) {
-                std::string name = boundedText(language->name,
-                                               sizeof(language->name));
-                if (!name.empty())
-                    title.name = std::move(name);
-                title.publisher = boundedText(language->author,
-                                              sizeof(language->author));
-            }
+            std::string name;
+            std::string author;
+            if (nacpReadLanguage(&control->nacp, sizeof(control->nacp),
+                                 preferred, name, author) &&
+                !name.empty())
+                title.name = std::move(name);
+            title.publisher = std::move(author);
             size_t iconSize = actualSize > sizeof(NacpStruct)
                 ? static_cast<size_t>(actualSize - sizeof(NacpStruct)) : 0;
             iconSize = std::min(iconSize, sizeof(control->icon));
