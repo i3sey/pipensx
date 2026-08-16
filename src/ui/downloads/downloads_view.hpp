@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <string>
@@ -42,9 +43,10 @@ public:
 private:
     struct Section {
         std::string title;
-        std::vector<DownloadTask> tasks;
+        std::vector<size_t> rows;
     };
     MainView* owner_;
+    std::vector<DownloadTask> tasks_;
     std::vector<Section> sections_;
 };
 
@@ -100,6 +102,7 @@ public:
     }
 
     ~MainView() override {
+        alive_->store(false);
         timer_.stop();
     }
 
@@ -116,17 +119,37 @@ public:
     // O7: per-row context menu on A. Replaces the old blind Y/X hotkeys — the
     // items are labelled and only the ones valid for the current status appear.
     void openRowMenu(const std::string& taskId) {
-        DownloadTask task;
-        bool found = false;
-        for (const auto& candidate : manager_->snapshot())
-            if (candidate.id == taskId) {
-                task = candidate;
-                found = true;
-                break;
-            }
+        auto found = manager_->snapshotUi(taskId);
         if (!found)
             return;
+        DownloadTask task = std::move(*found);
+        const SwitchDeploySnapshot deployState = deploy_ ? deploy_->snapshot()
+                                                         : SwitchDeploySnapshot{};
+        const bool leased = deployState.active() && deployState.taskId == taskId;
+        const bool needInspect =
+            !leased && (task.status == DownloadStatus::Completed ||
+                        task.status == DownloadStatus::Installed) &&
+            deploy_ && taskReadyForSwitchDeploy(task);
+        if (needInspect) {
+            SwitchDeployService* deploy = deploy_;
+            auto alive = alive_;
+            brls::async([this, alive, task = std::move(task), taskId, deploy,
+                         leased]() mutable {
+                SwitchDeployInspection inspection = deploy->inspect(taskId);
+                brls::sync([this, alive, task = std::move(task), taskId, leased,
+                            inspection = std::move(inspection)]() mutable {
+                    if (!alive->load())
+                        return;
+                    showRowMenu(taskId, task, leased, &inspection);
+                });
+            });
+            return;
+        }
+        showRowMenu(taskId, task, leased, nullptr);
+    }
 
+    void showRowMenu(const std::string& taskId, const DownloadTask& task,
+                     bool leased, const SwitchDeployInspection* inspection) {
         std::vector<std::string> labels;
         auto runners =
             std::make_shared<std::vector<std::function<void()>>>();
@@ -136,9 +159,6 @@ public:
         };
 
         add(tr("pipensx/common/details"), [this, taskId] { openDetails(taskId); });
-        const SwitchDeploySnapshot deployState = deploy_ ? deploy_->snapshot()
-                                                         : SwitchDeploySnapshot{};
-        const bool leased = deployState.active() && deployState.taskId == taskId;
         if (leased)
             add(tr("pipensx/deploy/cancel"), [this] { deploy_->cancel(); });
 
@@ -160,21 +180,11 @@ public:
                 manager_->resume(taskId);
                 startRefreshing(true);
             });
-        if (!leased && (task.status == DownloadStatus::Completed ||
-                        task.status == DownloadStatus::Installed) &&
-            deploy_ && taskReadyForSwitchDeploy(task)) {
-            add(tr("pipensx/deploy/copy"), [this, taskId] {
+        if (inspection && switchDeployOffersCopy(inspection->problem)) {
+            add(tr("pipensx/deploy/copy"),
+                [this, inspection = *inspection]() mutable {
                 if (!deploy_)
                     return;
-                SwitchDeployInspection inspection = deploy_->inspect(taskId);
-                if (inspection.problem != SwitchDeployProblem::None &&
-                    inspection.problem != SwitchDeployProblem::Conflict &&
-                    inspection.problem != SwitchDeployProblem::NoSpace &&
-                    inspection.problem != SwitchDeployProblem::NoRam) {
-                    brls::Application::notify(deployProblemText(
-                        inspection.problem, inspection.detail));
-                    return;
-                }
                 brls::Application::pushActivity(
                     new SwitchDeployPreviewActivity(std::move(inspection),
                                                     deploy_));
@@ -185,22 +195,20 @@ public:
                 manager_->verify(taskId);
                 startRefreshing(true);
             });
-        // Queue reordering: only offered when it would change something —
-        // the task must be queued and not already at the relevant edge.
         if (task.status == DownloadStatus::Queued) {
             std::vector<std::string> queuedIds;
-            for (const auto& candidate : manager_->snapshot())
+            for (const auto& candidate : manager_->snapshotUi())
                 if (candidate.status == DownloadStatus::Queued)
                     queuedIds.push_back(candidate.id);
             size_t pos = 0;
-            bool found = false;
+            bool foundQueued = false;
             for (size_t i = 0; i < queuedIds.size(); ++i)
                 if (queuedIds[i] == taskId) {
                     pos = i;
-                    found = true;
+                    foundQueued = true;
                     break;
                 }
-            if (found) {
+            if (foundQueued) {
                 if (pos > 0)
                     add(tr("pipensx/downloads/move_up"), [this, taskId] {
                         std::string error;
@@ -237,9 +245,6 @@ public:
             add(tr("pipensx/common/remove"),
                     [this, taskId] { openRemoveDialog(taskId); });
 
-        // The Dropdown pops itself right after firing the callback, so defer
-        // the action a frame — otherwise a pushActivity here would land under
-        // that pop.
         auto* dropdown = new brls::Dropdown(
             task.name, labels, [runners](int selected) {
                 if (selected < 0 ||
@@ -342,7 +347,7 @@ private:
     // One Y action that flips with the queue: pause the active tasks, or resume
     // the paused/failed ones when nothing is running.
     void pauseResumeAll() {
-        if (hasPausableTask(manager_->snapshot()))
+        if (hasPausableTask(manager_->snapshotUi()))
             pauseAll();
         else
             resumeAll();
@@ -350,7 +355,7 @@ private:
 
     void clearCompleted() {
         bool any = false;
-        for (const DownloadTask& task : manager_->snapshot())
+        for (const DownloadTask& task : manager_->snapshotUi())
             if (task.status == DownloadStatus::Completed ||
                 task.status == DownloadStatus::Installed) {
                 any = true;
@@ -398,7 +403,7 @@ private:
     }
 
     void refresh() {
-        auto next = manager_->snapshot();
+        auto next = manager_->snapshotUi();
         const SwitchDeploySnapshot deployState = deploy_ ? deploy_->snapshot()
                                                          : SwitchDeploySnapshot{};
         const std::string activeDeployTask = deployState.active()
@@ -442,9 +447,7 @@ private:
                     next[i].peers != tasks_[i].peers ||
                     next[i].packagesInstalled != tasks_[i].packagesInstalled ||
                     next[i].installedBytes != tasks_[i].installedBytes ||
-                    next[i].currentPackage != tasks_[i].currentPackage ||
-                    next[i].status == DownloadStatus::Downloading ||
-                    next[i].status == DownloadStatus::Installing;
+                    next[i].currentPackage != tasks_[i].currentPackage;
             }
         }
         if (!structureChanged && !progressChanged)
@@ -529,6 +532,8 @@ private:
     SwitchDeploySnapshot deploySnapshot_;
     uint64_t deployGeneration_ = 0;
     std::string activeDeployTask_;
+    std::shared_ptr<std::atomic<bool>> alive_ =
+        std::make_shared<std::atomic<bool>>(true);
 };
 
 }  // namespace pipensx::ui

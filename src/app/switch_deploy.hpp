@@ -81,6 +81,15 @@ struct SwitchDeployInspection {
     bool canStart() const { return problem == SwitchDeployProblem::None; }
 };
 
+// Copy-to-/switch is offered for a real port layout, including recoverable
+// destination problems. LayoutNotFound is the normal NSP/NSZ case — not an error.
+inline bool switchDeployOffersCopy(SwitchDeployProblem problem) {
+    return problem == SwitchDeployProblem::None ||
+           problem == SwitchDeployProblem::Conflict ||
+           problem == SwitchDeployProblem::NoSpace ||
+           problem == SwitchDeployProblem::NoRam;
+}
+
 enum class SwitchDeployPhase {
     Idle,
     Preparing,

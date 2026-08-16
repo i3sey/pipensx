@@ -82,18 +82,62 @@ public:
 
     void setTask(const DownloadTask& task, GameMetadataService* service,
                  const SwitchDeploySnapshot* deploy = nullptr) {
+        const auto wanted = downloadProgressBytes(task);
+        const uint64_t deployGen = deploy ? deploy->generation : 0;
+        const uint64_t deployBytes = deploy && deploy->taskId == task.id
+            ? deploy->bytesCopied : 0;
+        const bool sameTask = paintedId_ == task.id;
+        if (sameTask &&
+            paintedStatus_ == task.status &&
+            paintedCompleted_ == wanted.first &&
+            paintedTotal_ == wanted.second &&
+            paintedSpeed_ == task.speedBytesPerSecond &&
+            paintedInstallSpeed_ == task.installSpeedBytesPerSecond &&
+            paintedPeers_ == task.peers &&
+            paintedPackages_ == task.packagesInstalled &&
+            paintedPackageCount_ == task.packageCount &&
+            paintedInstalled_ == task.installedBytes &&
+            paintedCurrentPackage_ == task.currentPackage &&
+            paintedError_ == task.error &&
+            paintedFetch_ == task.fetchProgress &&
+            paintedDeployGen_ == deployGen &&
+            paintedDeployBytes_ == deployBytes)
+            return;
+
+        paintedId_ = task.id;
+        paintedStatus_ = task.status;
+        paintedCompleted_ = wanted.first;
+        paintedTotal_ = wanted.second;
+        paintedSpeed_ = task.speedBytesPerSecond;
+        paintedInstallSpeed_ = task.installSpeedBytesPerSecond;
+        paintedPeers_ = task.peers;
+        paintedPackages_ = task.packagesInstalled;
+        paintedPackageCount_ = task.packageCount;
+        paintedInstalled_ = task.installedBytes;
+        paintedCurrentPackage_ = task.currentPackage;
+        paintedError_ = task.error;
+        paintedFetch_ = task.fetchProgress;
+        paintedDeployGen_ = deployGen;
+        paintedDeployBytes_ = deployBytes;
+
         setTextIfChanged(title_, task.name);
         setTextIfChanged(placeholder_, placeholderLetter(task.name));
         setTextIfChanged(status_, taskStatusText(task));
         status_->setTextColor(statusColor(task.status));
         const float progress = task.status == DownloadStatus::Fetching
             ? static_cast<float>(task.fetchProgress)
+            : (task.mode == TransferMode::StreamInstall &&
+               (task.status == DownloadStatus::Downloading ||
+                task.status == DownloadStatus::Installing ||
+                task.status == DownloadStatus::Committing ||
+                task.status == DownloadStatus::Checking ||
+                task.status == DownloadStatus::Verifying))
+                ? streamInstallProgressOf(task)
             : (task.status == DownloadStatus::Installing ||
                task.status == DownloadStatus::Committing)
                 ? installProgressOf(task) : progressOf(task);
         progress_->setProgress(progress);
 
-        const auto wanted = downloadProgressBytes(task);
         std::string meta = formatBytes(wanted.first) + " / " +
                            formatBytes(wanted.second);
         if (task.status == DownloadStatus::Installing ||
@@ -112,8 +156,9 @@ public:
             meta = tr("pipensx/downloads/cell_fetching",
                       percentOf(static_cast<float>(task.fetchProgress)));
         } else if (task.status == DownloadStatus::Downloading) {
-            meta += "   " + formatSpeed(task.speedBytesPerSecond) +
-                    tr("pipensx/downloads/cell_peers", task.peers);
+            meta += "   " + formatSpeed(task.speedBytesPerSecond);
+            if (task.source == TaskSource::Torrent)
+                meta += tr("pipensx/downloads/cell_peers", task.peers);
             if (auto eta = taskEtaSeconds(task, now_ms()))
                 meta += tr("pipensx/downloads/cell_eta",
                            formatEtaSeconds(*eta));
@@ -162,13 +207,15 @@ public:
         }
         setTextIfChanged(meta_, meta);
 
-        std::string iconUrl;
-        if (service) {
-            const GameMetadata* found = service->findByInfoHash(task.id);
-            if (found)
-                iconUrl = found->iconUrl;
+        if (!sameTask) {
+            std::string iconUrl;
+            if (service) {
+                const GameMetadata* found = service->findByInfoHash(task.id);
+                if (found)
+                    iconUrl = found->iconUrl;
+            }
+            setArtworkUrl(image_, service, iconUrl, currentIconUrl_, imageState_);
         }
-        setArtworkUrl(image_, service, iconUrl, currentIconUrl_, imageState_);
     }
 
     void onFocusGained() override {
@@ -192,6 +239,21 @@ private:
     std::string currentIconUrl_;
     std::shared_ptr<ImageRequestState> imageState_ =
         std::make_shared<ImageRequestState>();
+    std::string paintedId_;
+    DownloadStatus paintedStatus_ = DownloadStatus::Queued;
+    uint64_t paintedCompleted_ = 0;
+    uint64_t paintedTotal_ = 0;
+    uint64_t paintedSpeed_ = 0;
+    uint64_t paintedInstallSpeed_ = 0;
+    uint32_t paintedPeers_ = 0;
+    uint32_t paintedPackages_ = 0;
+    uint32_t paintedPackageCount_ = 0;
+    uint64_t paintedInstalled_ = 0;
+    std::string paintedCurrentPackage_;
+    std::string paintedError_;
+    double paintedFetch_ = 0;
+    uint64_t paintedDeployGen_ = 0;
+    uint64_t paintedDeployBytes_ = 0;
 };
 
 }  // namespace pipensx::ui

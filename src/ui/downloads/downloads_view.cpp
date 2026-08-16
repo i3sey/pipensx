@@ -5,6 +5,7 @@ namespace pipensx::ui {
 
 void DownloadDataSource::setTasks(std::vector<DownloadTask> tasks,
                                   std::string activeDeployTask) {
+    tasks_ = std::move(tasks);
     sections_.clear();
     // std::string, not const char*: the titles are now resolved per-locale at
     // call time rather than being string literals with static storage.
@@ -37,7 +38,8 @@ void DownloadDataSource::setTasks(std::vector<DownloadTask> tasks,
     for (const auto& group : groups) {
         Section section;
         section.title = group.title;
-        for (const auto& task : tasks) {
+        for (size_t i = 0; i < tasks_.size(); ++i) {
+            const DownloadTask& task = tasks_[i];
             const bool deploying = task.id == activeDeployTask;
             const bool activeGroup = group.matches(DownloadStatus::Checking);
             const bool completedGroup = group.matches(DownloadStatus::Completed);
@@ -45,9 +47,9 @@ void DownloadDataSource::setTasks(std::vector<DownloadTask> tasks,
                 (!deploying && group.matches(task.status)) ||
                 (deploying && !activeGroup && !completedGroup &&
                  group.matches(task.status)))
-                section.tasks.push_back(task);
+                section.rows.push_back(i);
         }
-        if (!section.tasks.empty())
+        if (!section.rows.empty())
             sections_.push_back(std::move(section));
     }
     if (sections_.empty())
@@ -59,9 +61,10 @@ const DownloadTask* DownloadDataSource::taskAt(brls::IndexPath index) const {
         return nullptr;
     const Section& section = sections_[index.section];
     if (index.row < 0 ||
-        static_cast<size_t>(index.row) >= section.tasks.size())
+        static_cast<size_t>(index.row) >= section.rows.size())
         return nullptr;
-    return &section.tasks[static_cast<size_t>(index.row)];
+    const size_t slot = section.rows[static_cast<size_t>(index.row)];
+    return slot < tasks_.size() ? &tasks_[slot] : nullptr;
 }
 
 std::string DownloadDataSource::taskIdAt(brls::IndexPath index) const {
@@ -73,8 +76,9 @@ brls::IndexPath DownloadDataSource::indexForTask(
     const std::string& taskId) const {
     if (!taskId.empty()) {
         for (size_t section = 0; section < sections_.size(); ++section) {
-            for (size_t row = 0; row < sections_[section].tasks.size(); ++row) {
-                if (sections_[section].tasks[row].id == taskId)
+            for (size_t row = 0; row < sections_[section].rows.size(); ++row) {
+                const size_t slot = sections_[section].rows[row];
+                if (slot < tasks_.size() && tasks_[slot].id == taskId)
                     return brls::IndexPath(section, row);
             }
         }
@@ -87,9 +91,9 @@ int DownloadDataSource::numberOfSections(brls::RecyclerFrame*) {
 }
 
 int DownloadDataSource::numberOfRows(brls::RecyclerFrame*, int section) {
-    return sections_[section].tasks.empty()
+    return sections_[section].rows.empty()
         ? 1
-        : static_cast<int>(sections_[section].tasks.size());
+        : static_cast<int>(sections_[section].rows.size());
 }
 
 std::string DownloadDataSource::titleForHeader(brls::RecyclerFrame*,
@@ -100,20 +104,20 @@ std::string DownloadDataSource::titleForHeader(brls::RecyclerFrame*,
 brls::RecyclerCell* DownloadDataSource::cellForRow(
     brls::RecyclerFrame* recycler, brls::IndexPath index) {
     Section& section = sections_[index.section];
-    if (section.tasks.empty())
+    if (section.rows.empty())
         return recycler->dequeueReusableCell("Message");
     auto* cell = static_cast<DownloadCell*>(
         recycler->dequeueReusableCell("Download"));
-    cell->setTask(section.tasks[index.row], owner_->metadataService(),
-                  &owner_->deploySnapshot());
+    if (const DownloadTask* task = taskAt(index))
+        cell->setTask(*task, owner_->metadataService(),
+                      &owner_->deploySnapshot());
     return cell;
 }
 
 void DownloadDataSource::didSelectRowAt(brls::RecyclerFrame*,
                                          brls::IndexPath index) {
-    Section& section = sections_[index.section];
-    if (!section.tasks.empty())
-        owner_->openRowMenu(section.tasks[index.row].id);
+    if (const DownloadTask* task = taskAt(index))
+        owner_->openRowMenu(task->id);
     else
         owner_->openFilePicker();
 }
