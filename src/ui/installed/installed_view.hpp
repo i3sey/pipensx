@@ -406,7 +406,7 @@ private:
     }
 
     bool hasActiveStreamInstall() const {
-        for (const DownloadTask& task : manager_->snapshot()) {
+        for (const DownloadTask& task : manager_->snapshotUi()) {
             if (task.mode != TransferMode::StreamInstall)
                 continue;
             if (task.status == DownloadStatus::Queued ||
@@ -813,7 +813,7 @@ private:
             return;
         bool found = false;
         DownloadStatus status = DownloadStatus::Queued;
-        for (const DownloadTask& candidate : manager_->snapshot()) {
+        for (const DownloadTask& candidate : manager_->snapshotUi()) {
             if (catalogLower(candidate.id) == pendingRecheckTaskId_) {
                 found = true;
                 status = candidate.status;

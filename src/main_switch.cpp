@@ -611,15 +611,23 @@ int main(int argc, char** argv) {
         // observed after startup, so pre-existing rows never re-notify.
         std::unordered_map<std::string, pipensx::DownloadStatus> lastTaskStatus;
         uint64_t lastDownloadScanMs = now_ms();
+        uint64_t lastPerfMs = 0;
+        pipensx::SwitchDeploySnapshot deployState{};
+        bool activeTransfer = false;
         bool updateBadgeApplied = false;
         while (true) {
-            const pipensx::SwitchDeploySnapshot deployState = deploy.snapshot();
-            bool activeTransfer = manager.hasActiveTransfer() ||
+            const uint64_t nowPerf = now_ms();
+            if (lastPerfMs == 0 || nowPerf - lastPerfMs >= 250) {
+                lastPerfMs = nowPerf;
+                deployState = deploy.snapshot();
+                activeTransfer = manager.hasActiveTransfer() ||
                                   deployState.active();
-            performance.setActive(activeTransfer);
-            metadata.setImageNetwork(
-                activeTransfer ? GameMetadataService::ImageNetwork::Throttled
-                               : GameMetadataService::ImageNetwork::Full);
+                performance.setActive(activeTransfer);
+                metadata.setImageNetwork(
+                    activeTransfer
+                        ? GameMetadataService::ImageNetwork::Throttled
+                        : GameMetadataService::ImageNetwork::Full);
+            }
             if (!brls::Application::mainLoop())
                 break;
             if (!updateBadgeApplied && installedScanDone.load()) {
@@ -660,7 +668,7 @@ int main(int argc, char** argv) {
             if (frameNowMs - lastDownloadScanMs >= 1000) {
                 lastDownloadScanMs = frameNowMs;
                 std::unordered_set<std::string> seen;
-                for (const pipensx::DownloadTask& task : manager.snapshot()) {
+                for (const pipensx::DownloadTask& task : manager.snapshotUi()) {
                     seen.insert(task.id);
                     auto previous = lastTaskStatus.find(task.id);
                     if (previous == lastTaskStatus.end()) {
@@ -709,7 +717,7 @@ int main(int argc, char** argv) {
                 if (offer) {
                     deployOfferDialogOpen = true;
                     const std::string offerId = offer->taskId;
-                    const auto task = manager.snapshot(offerId);
+                    const auto task = manager.snapshotUi(offerId);
                     const std::string name =
                         task ? task->name : offerId.substr(0, 8);
                     auto* dialog = new brls::Dialog(

@@ -111,7 +111,7 @@ private:
         }
 
         uint32_t peers = 0;
-        for (const DownloadTask& task : manager_->snapshot())
+        for (const DownloadTask& task : manager_->snapshotUi())
             if (task.status == DownloadStatus::Downloading)
                 peers += task.peers;
         setValue(peers_, tr("pipensx/diag/peers_n", peers),

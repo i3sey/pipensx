@@ -312,7 +312,6 @@ private:
             shots->setText(tr("pipensx/detail/screenshots"));
             right->addView(shots);
 
-            std::string viewerTitle = presentation_.title;
             auto* rail = new brls::Box(brls::Axis::ROW);
             rail->setHeight(180);
             for (size_t i = 0; i < screenshots.size(); ++i) {
@@ -336,10 +335,11 @@ private:
                                                 primary_);
                 // O6: A opens the fullscreen pager at this shot.
                 image->registerClickAction(
-                    [this, screenshots, i, viewerTitle](brls::View*) {
+                    [this, i](brls::View*) {
                         brls::Application::pushActivity(
-                            new ScreenshotViewerActivity(metadata_, screenshots,
-                                                         i, viewerTitle));
+                            new ScreenshotViewerActivity(
+                                metadata_, presentation_.screenshots, i,
+                                presentation_.title));
                         return true;
                     });
                 loadImageInto(image, metadata_, screenshots[i]);
@@ -493,12 +493,14 @@ private:
 
     // Find the managed task for this game, if any.
     const DownloadTask* currentTask() {
-        cache_ = manager_->snapshot();
-        std::string hash = catalogLower(entry_.infoHash);
-        for (const DownloadTask& task : cache_)
-            if (catalogLower(task.id) == hash)
-                return &task;
-        return nullptr;
+        cache_.clear();
+        auto task = manager_->snapshotUi(catalogLower(entry_.infoHash));
+        if (!task)
+            task = manager_->snapshotUi(entry_.infoHash);
+        if (!task)
+            return nullptr;
+        cache_.push_back(std::move(*task));
+        return &cache_.front();
     }
 
     static std::string installButtonLabel(const DownloadTask& task) {
@@ -553,14 +555,16 @@ private:
                                   0.0f, 1.0f);
             case DownloadStatus::Installing:
             case DownloadStatus::Committing:
-                return installProgressOf(task);
+                return streamInstallProgressOf(task);
             case DownloadStatus::Completed:
             case DownloadStatus::Installed:
                 return 1.0f;
             case DownloadStatus::Queued:
                 return 0.0f;
             default:
-                return progressOf(task);
+                return task.mode == TransferMode::StreamInstall
+                           ? streamInstallProgressOf(task)
+                           : progressOf(task);
         }
     }
 
