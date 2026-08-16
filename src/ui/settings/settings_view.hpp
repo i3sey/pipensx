@@ -13,7 +13,7 @@
 #endif
 
 #include "app/app_settings.hpp"
-#include "app/catalog_service.hpp"
+#include "app/catalog_refresh.hpp"
 #include "app/download_manager.hpp"
 #include "app/game_metadata_service.hpp"
 #include "app/installed_title_service.hpp"
@@ -293,6 +293,9 @@ public:
         brls::Box::willAppear(resetState);
         // The console may have joined/left Wi-Fi since the last visit.
         updateWebCells();
+        // DebridLinkView is a stacked activity; the detail stays stale unless
+        // we re-read settings when this tab comes back.
+        refreshDebridLinkDetail();
     }
 
 private:
@@ -380,20 +383,6 @@ private:
         return false;
     }
 
-    void recordRefreshTime(bool catalog, bool metadata) {
-        AppSettingsData values = settings_->get();
-        const uint64_t now = now_ms();
-        if (catalog) {
-            values.lastCatalogRefreshMs = now;
-            values.lastCatalogRefreshWallSec =
-                static_cast<uint64_t>(time(nullptr));
-        }
-        if (metadata)
-            values.lastMetadataRefreshMs = now;
-        persist(values, catalog ? "catalog_refresh_time"
-                                : "metadata_refresh_time");
-    }
-
     // The manual "Update now" action chains catalog then artwork.
     void updateAllNow() {
         if (refreshInFlight_)
@@ -404,20 +393,34 @@ private:
     void refreshCatalogNow(std::function<void()> onDone = {}) {
         if (refreshInFlight_)
             return;
+        if (!tryBeginCatalogRefresh())
+            return;
         refreshInFlight_ = true;
         brls::Application::notify(tr("pipensx/catalog/updating_catalog"));
         auto alive = alive_;
         CatalogService* catalog = catalog_;
+        AppSettings* settings = settings_;
         const std::string catalogSourceUrl =
             effectiveCatalogSourceUrl(settings_->get().catalogSourceUrl);
-        brls::async([this, alive, catalog, catalogSourceUrl,
+        brls::async([this, alive, catalog, settings, catalogSourceUrl,
                      onDone = std::move(onDone)]() mutable {
             std::vector<CatalogEntry> entries;
             std::string error;
             bool ok = catalog->fetchLatest(entries, error, catalogSourceUrl);
             brls::sync([this, alive, ok, entries = std::move(entries),
-                        error = std::move(error), catalogSourceUrl,
-                        onDone = std::move(onDone)]() mutable {
+                        error = std::move(error), catalogSourceUrl, catalog,
+                        settings, onDone = std::move(onDone)]() mutable {
+                if (ok) {
+                    catalog->adopt(std::move(entries), catalogSourceUrl);
+                    std::string stampError;
+                    if (!recordCatalogRefreshSuccess(settings, true, false,
+                                                     stampError) &&
+                        !stampError.empty()) {
+                        diagnostic_error("settings", "catalog_refresh_time",
+                                         "error=%s", stampError.c_str());
+                    }
+                }
+                endCatalogRefresh();
                 if (!alive->load())
                     return;
                 refreshInFlight_ = false;
@@ -427,11 +430,9 @@ private:
                     brls::Application::notify(error);
                     return;
                 }
-                catalog_->adopt(std::move(entries), catalogSourceUrl);
-                recordRefreshTime(true, false);
                 brls::Application::notify(
                     tr("pipensx/catalog/updated_catalog",
-                       catalog_->entries().size()));
+                       catalog->entries().size()));
                 if (onDone)
                     onDone();
             });
@@ -441,18 +442,33 @@ private:
     void refreshMetadataNow(std::function<void()> onDone = {}) {
         if (refreshInFlight_ || !metadata_)
             return;
+        if (!tryBeginCatalogRefresh())
+            return;
         refreshInFlight_ = true;
         brls::Application::notify(tr("pipensx/catalog/updating_artwork"));
         auto alive = alive_;
         GameMetadataService* metadata = metadata_;
-        brls::async([this, alive, metadata, onDone = std::move(onDone)]()
-                        mutable {
+        AppSettings* settings = settings_;
+        brls::async([this, alive, metadata, settings,
+                     onDone = std::move(onDone)]() mutable {
             MetadataSnapshot snapshot;
             std::string error;
             bool ok = metadata->fetchLatest(snapshot, error);
             brls::sync([this, alive, ok, snapshot = std::move(snapshot),
-                        error = std::move(error),
+                        error = std::move(error), metadata, settings,
                         onDone = std::move(onDone)]() mutable {
+                if (ok) {
+                    metadata->adopt(std::move(snapshot));
+                    metadata->dropMemoryImageCache();
+                    std::string stampError;
+                    if (!recordCatalogRefreshSuccess(settings, false, true,
+                                                     stampError) &&
+                        !stampError.empty()) {
+                        diagnostic_error("settings", "metadata_refresh_time",
+                                         "error=%s", stampError.c_str());
+                    }
+                }
+                endCatalogRefresh();
                 if (!alive->load())
                     return;
                 refreshInFlight_ = false;
@@ -462,13 +478,10 @@ private:
                     brls::Application::notify(error);
                     return;
                 }
-                metadata_->adopt(std::move(snapshot));
-                metadata_->dropMemoryImageCache();
-                recordRefreshTime(false, true);
                 if (onMetadataRefreshed_)
                     onMetadataRefreshed_();
                 brls::Application::notify(
-                    tr("pipensx/catalog/updated_artwork", metadata_->size()));
+                    tr("pipensx/catalog/updated_artwork", metadata->size()));
                 if (onDone)
                     onDone();
             });

@@ -49,6 +49,18 @@ std::vector<std::string> mergeScreenshotUrls(
     const GameMetadata* metadata, const CatalogEntry& entry,
     size_t limit = 6);
 
+// Title/icon/titleId only — the grid rebuilds thousands of rows and must not
+// copy description or screenshot URLs.
+struct CatalogRowPresentation {
+    std::string title;
+    std::string titleId;
+    std::string iconUrl;
+    bool iconPreserveAspect = false;
+};
+
+CatalogRowPresentation resolveCatalogRow(const CatalogEntry& entry,
+                                         const GameMetadata* metadata);
+
 CatalogPresentation resolveCatalogPresentation(
     const CatalogEntry& entry, const GameMetadata* metadata,
     TextPreference preference = TextPreference::Metadata);

@@ -279,6 +279,7 @@ $(BUILD_DIR)/tests/test_web_server: tests/test_web_server.cpp \
 
 $(BUILD_DIR)/tests/test_catalog: tests/test_catalog.cpp \
 		$(BUILD_DIR)/src/app/catalog_service.o $(BUILD_DIR)/src/app/catalog_refresh.o \
+		src/app/app_settings.cpp \
 		$(BUILD_DIR)/src/app/catalog_presentation.o \
 		$(BUILD_DIR)/src/app/snapshot_zstd.o \
 		$(BUILD_DIR)/src/app/game_metadata_service.o \

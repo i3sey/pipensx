@@ -1,3 +1,4 @@
+#include "app/app_settings.hpp"
 #include "app/catalog_service.hpp"
 #include "app/catalog_refresh.hpp"
 #include "app/catalog_presentation.hpp"
@@ -27,6 +28,7 @@ extern "C" {
 #include <unistd.h>
 #include <vector>
 
+using pipensx::AppSettings;
 using pipensx::CatalogEntry;
 using pipensx::CatalogHealth;
 using pipensx::CatalogPresentation;
@@ -41,6 +43,11 @@ using pipensx::catalogEntryHasMatchedTitle;
 using pipensx::catalogEntryMatchesPlayerFilter;
 using pipensx::PlayerFilter;
 using pipensx::adoptCatalogRefresh;
+using pipensx::catalogRefreshInFlight;
+using pipensx::endCatalogRefresh;
+using pipensx::recordCatalogRefreshSuccess;
+using pipensx::tryBeginCatalogRefresh;
+using pipensx::resolveCatalogRow;
 using pipensx::GameMetadata;
 using pipensx::GameMetadataService;
 using pipensx::MetadataSnapshot;
@@ -633,11 +640,60 @@ void testCatalogAndMetadataRefreshAdoptIndependently() {
         assert(!second.catalogChanged && second.metadataChanged);
         assert(catalog.entries()[0].title == "New");
         assert(metadata.size() == 1);
+        assert(metadata.generation() >= 1);
     }
     rmdir((root + "/catalog/metadata").c_str());
     rmdir((root + "/catalog/images").c_str());
     rmdir((root + "/catalog").c_str());
     rmdir(root.c_str());
+}
+
+void testCatalogRefreshInFlightGuard() {
+    endCatalogRefresh();
+    assert(!catalogRefreshInFlight());
+    assert(tryBeginCatalogRefresh());
+    assert(catalogRefreshInFlight());
+    assert(!tryBeginCatalogRefresh());
+    endCatalogRefresh();
+    assert(!catalogRefreshInFlight());
+    assert(tryBeginCatalogRefresh());
+    endCatalogRefresh();
+}
+
+void testCatalogRefreshStampsSurviveWithoutView() {
+    const std::string path = "/tmp/pipensx-refresh-stamp-" +
+        std::to_string(static_cast<long long>(getpid())) + ".json";
+    unlink(path.c_str());
+    AppSettings settings(path);
+    std::string error;
+    assert(settings.load(error));
+    assert(settings.get().lastCatalogRefreshWallSec == 0);
+    assert(recordCatalogRefreshSuccess(&settings, true, true, error));
+    assert(error.empty());
+    assert(settings.get().lastCatalogRefreshMs != 0);
+    assert(settings.get().lastCatalogRefreshWallSec != 0);
+    assert(settings.get().lastMetadataRefreshMs != 0);
+    unlink(path.c_str());
+    unlink((path + ".tmp").c_str());
+}
+
+void testCatalogRowPresentationSkipsProse() {
+    GameMetadata metadata;
+    metadata.name = "eShop name";
+    metadata.titleId = "0100230005A52000";
+    metadata.iconUrl = "https://example/icon.jpg";
+    metadata.description = "should not be copied";
+    metadata.screenshots = {"https://example/shot.jpg"};
+    CatalogEntry entry;
+    entry.title = "Langegen title";
+    entry.posterUrl = "https://example/cover.jpg";
+    entry.description = "also unused";
+    entry.screenshots = {"https://example/catalog.jpg"};
+    pipensx::CatalogRowPresentation row = resolveCatalogRow(entry, &metadata);
+    assert(row.title == "eShop name");
+    assert(row.titleId == "0100230005A52000");
+    assert(row.iconUrl == "https://example/icon.jpg");
+    assert(!row.iconPreserveAspect);
 }
 
 void testOptionalCatalogDataMayBeAbsent() {
@@ -1395,6 +1451,9 @@ int main() {
     testMetadataFetchVerifiesBeforeAdoptAndFallsBackToCache();
     testMetadataLoadFallsBackWhenRuntimeCacheIsCorrupt();
     testCatalogAndMetadataRefreshAdoptIndependently();
+    testCatalogRefreshInFlightGuard();
+    testCatalogRefreshStampsSurviveWithoutView();
+    testCatalogRowPresentationSkipsProse();
     testOptionalCatalogDataMayBeAbsent();
     testCatalogPresentationUsesGameMetadata();
     testCatalogPresentationFallsBackFieldByField();

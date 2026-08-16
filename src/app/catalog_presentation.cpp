@@ -79,10 +79,9 @@ bool looksLikeTitleId(const std::string& titleId) {
 
 } // namespace
 
-CatalogPresentation resolveCatalogPresentation(
-    const CatalogEntry& entry, const GameMetadata* metadata,
-    TextPreference preference) {
-    CatalogPresentation result;
+CatalogRowPresentation resolveCatalogRow(const CatalogEntry& entry,
+                                         const GameMetadata* metadata) {
+    CatalogRowPresentation result;
     result.title = metadata && !metadata->name.empty()
         ? metadata->name : entry.title;
     result.titleId = metadata && !metadata->titleId.empty()
@@ -94,6 +93,18 @@ CatalogPresentation resolveCatalogPresentation(
         result.iconUrl = entry.posterUrl;
         result.iconPreserveAspect = !result.iconUrl.empty();
     }
+    return result;
+}
+
+CatalogPresentation resolveCatalogPresentation(
+    const CatalogEntry& entry, const GameMetadata* metadata,
+    TextPreference preference) {
+    CatalogRowPresentation row = resolveCatalogRow(entry, metadata);
+    CatalogPresentation result;
+    result.title = std::move(row.title);
+    result.titleId = std::move(row.titleId);
+    result.iconUrl = std::move(row.iconUrl);
+    result.iconPreserveAspect = row.iconPreserveAspect;
     if (metadata && !metadata->bannerUrl.empty())
         result.coverUrl = metadata->bannerUrl;
     else

@@ -870,6 +870,7 @@ void GameMetadataService::adopt(MetadataSnapshot snapshot) {
     manifest_ = std::move(snapshot.manifest);
     recomputePlayerSummary();
     rebuildTitleIdIndex();
+    ++generation_;
 }
 
 bool GameMetadataService::fetchLatest(MetadataSnapshot& snapshot,

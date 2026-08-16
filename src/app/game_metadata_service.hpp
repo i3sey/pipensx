@@ -150,6 +150,9 @@ public:
     bool clearImageCache(std::string& error) const;
 
     size_t size() const { return byHash_.size(); }
+    // Bumps on every adopt() (including the startup cache load). Catalog UI
+    // polls this to pick up a refresh that finished after the view was built.
+    uint64_t generation() const { return generation_; }
     const MetadataManifest& manifest() const { return manifest_; }
 
     // PlayerMode bits present anywhere in the loaded index. The catalogue
@@ -234,6 +237,7 @@ private:
     // byTitleId_. Consumed by findByTitleId() for update downloads.
     std::unordered_map<std::string, std::vector<std::string>> byTitleIdHashes_;
     MetadataManifest manifest_;
+    uint64_t generation_ = 0;
     uint8_t availableModes_ = 0;
     bool localPlayerCounts_ = false;
 };
