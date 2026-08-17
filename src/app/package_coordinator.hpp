@@ -4,6 +4,7 @@
 #include "install_pacer.hpp"
 #include "request_gate.hpp"
 #include "stream_budget_arbiter.hpp"
+#include "stream_install_flag.hpp"
 #include "stream_ram_budget.hpp"
 #include "nx_file_types.hpp"
 #include "../install/install_backend.hpp"
@@ -775,6 +776,7 @@ private:
     }
 
     void installMain() {
+        StreamInstallWorkerGuard streamGuard;
         log_msg("[install] worker started queue=%zu buffer=%zu window=%llu bytes\n",
                 maxQueuedBytes_, maxBufferedBytes_,
                 static_cast<unsigned long long>(requestAheadBytes_));

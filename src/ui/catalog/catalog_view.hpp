@@ -479,6 +479,16 @@ public:
         refreshCatalogIfDue();
     }
 
+    void willAppear(bool resetState) override {
+        brls::Box::willAppear(resetState);
+        timer_.start(1000);
+    }
+
+    void willDisappear(bool resetState) override {
+        timer_.stop();
+        brls::Box::willDisappear(resetState);
+    }
+
     ~CatalogView() override {
         alive_->store(false);
         cancelled_->store(true);

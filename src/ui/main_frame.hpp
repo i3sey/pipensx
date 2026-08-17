@@ -13,6 +13,7 @@
 // Sidebar::getItem() / Box::getChildren() surface.
 
 #include <atomic>
+#include <exception>
 #include <functional>
 #include <memory>
 #include <string>
@@ -34,6 +35,25 @@ namespace pipensx::ui {
 enum class NavIconType {
     Catalog, Ports, Downloads, Installed, Settings, Help, About
 };
+
+inline const char* navTabTag(NavIconType icon) {
+    switch (icon) {
+        case NavIconType::Catalog: return "games";
+        case NavIconType::Ports: return "ports";
+        case NavIconType::Downloads: return "downloads";
+        case NavIconType::Installed: return "installed";
+        case NavIconType::Settings: return "settings";
+        case NavIconType::Help: return "help";
+        case NavIconType::About: return "about";
+    }
+    return "unknown";
+}
+
+inline constexpr int kNavTabCount = 7;
+
+inline int navTabIndex(NavIconType icon) {
+    return static_cast<int>(icon);
+}
 
 // Expanded column is wide enough for ru «Мои игры» plus the updates badge.
 // Item/separator/padding metrics keep all seven tabs above the IP+storage
@@ -283,7 +303,35 @@ public:
     // bar and the label, and remembers the label so it can be folded away.
     void addNavTab(const std::string& label, NavIconType icon,
                    brls::TabViewCreator creator, bool countBadge = false) {
-        this->addTab(label, std::move(creator));
+        this->addTab(label, [this, creator = std::move(creator), icon]() -> brls::View* {
+            const char* tag = navTabTag(icon);
+            const int index = navTabIndex(icon);
+            log_msg("[ui] tab=%s\n", tag);
+            log_flush();
+            if (index >= 0 && index < kNavTabCount && tabViews_[index]) {
+                log_msg("[ui] tab=%s reuse\n", tag);
+                log_flush();
+                return tabViews_[index];
+            }
+            switch_crashlog_stage(tag);
+            brls::View* view = nullptr;
+            try {
+                view = creator();
+            } catch (const std::exception& error) {
+                log_msg("[ui] tab=%s failed: %s\n", tag, error.what());
+                log_flush();
+                view = new brls::Box();
+            } catch (...) {
+                log_msg("[ui] tab=%s failed: unknown exception\n", tag);
+                log_flush();
+                view = new brls::Box();
+            }
+            if (index >= 0 && index < kNavTabCount)
+                tabViews_[index] = view;
+            log_msg("[ui] tab=%s ready\n", tag);
+            log_flush();
+            return view;
+        });
         const int index = static_cast<int>(this->sidebar->getItemsSize()) - 1;
         brls::SidebarItem* item = this->sidebar->getItem(index);
         if (!item)
@@ -319,6 +367,26 @@ public:
             updateBadge_->addView(updateBadgeLabel_);
             item->addView(updateBadge_);
         }
+    }
+
+    // TabFrame destroys the outgoing tab on every sidebar focus change.
+    // Recreating catalog/ports next to a stream-install (or while Borealis still
+    // holds lastFocusedView into that tree) is the crash on the way to Downloads.
+    void removeView(brls::View* view, bool free = true) override {
+        int index = -1;
+        for (int i = 0; i < kNavTabCount; ++i) {
+            if (tabViews_[i] == view) {
+                index = i;
+                break;
+            }
+        }
+        if (index >= 0) {
+            log_msg("[ui] keep tab=%s\n", navTabTag(static_cast<NavIconType>(index)));
+            log_flush();
+            brls::TabFrame::removeView(view, false);
+            return;
+        }
+        brls::TabFrame::removeView(view, free);
     }
 
     void setUpdateCountBadge(size_t count) {
@@ -404,6 +472,8 @@ public:
     ~MainFrame() override {
         queryTimer_.stop();
         alive_->store(false);
+        for (int i = 0; i < kNavTabCount; ++i)
+            dropDetachedTab(tabViews_[i]);
     }
 
 protected:
@@ -417,6 +487,24 @@ protected:
     }
 
 private:
+    bool isDirectChild(brls::View* view) {
+        if (!view)
+            return false;
+        for (brls::View* child : getChildren()) {
+            if (child == view)
+                return true;
+        }
+        return false;
+    }
+
+    void dropDetachedTab(brls::View*& slot) {
+        if (!slot)
+            return;
+        if (!isDirectChild(slot))
+            slot->freeView();
+        slot = nullptr;
+    }
+
     void scheduleRefresh() {
         if (!footer_ || !manager_ || queryInFlight_)
             return;
@@ -479,6 +567,7 @@ private:
     WebStatusRow* webRow_ = nullptr;
     DownloadManager* manager_ = nullptr;
     pipensx::WebServer* webServer_ = nullptr;
+    brls::View* tabViews_[kNavTabCount] = {};
     brls::RepeatingTimer queryTimer_;
     bool queryInFlight_ = false;
     std::shared_ptr<std::atomic<bool>> alive_ =

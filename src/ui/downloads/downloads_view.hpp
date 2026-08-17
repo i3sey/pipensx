@@ -101,6 +101,16 @@ public:
         startRefreshing();
     }
 
+    void willAppear(bool resetState) override {
+        brls::Box::willAppear(resetState);
+        startRefreshing();
+    }
+
+    void willDisappear(bool resetState) override {
+        timer_.stop();
+        brls::Box::willDisappear(resetState);
+    }
+
     ~MainView() override {
         alive_->store(false);
         timer_.stop();

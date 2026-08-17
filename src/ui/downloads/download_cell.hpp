@@ -207,7 +207,7 @@ public:
         }
         setTextIfChanged(meta_, meta);
 
-        if (!sameTask) {
+        if (!sameTask || !image_->hasArtwork()) {
             std::string iconUrl;
             if (service) {
                 const GameMetadata* found = service->findByInfoHash(task.id);

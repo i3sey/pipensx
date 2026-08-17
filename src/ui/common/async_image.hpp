@@ -1,15 +1,48 @@
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <cstring>
 #include <memory>
+#include <optional>
 #include <string>
+#include <vector>
 
 #include <borealis.hpp>
 
 #include "app/game_metadata_service.hpp"
+#include "app/stream_install_flag.hpp"
 
 namespace pipensx::ui {
+
+// Full-res covers (~360px RGBA) are what blew Horizon's ~4 MB mapping
+// slack during stream-install. A 160px nearest preview is ~102 KB; ~20
+// tiles still fit the headroom and stay readable until the worker exits.
+constexpr int kStreamInstallPreviewDim = 160;
+
+inline void nearestDownscaleRgba(const uint8_t* src, int sw, int sh,
+                                 std::vector<uint8_t>& dst, int& dw, int& dh,
+                                 int maxDim) {
+    const int longEdge = std::max(sw, sh);
+    if (longEdge <= maxDim) {
+        dw = sw;
+        dh = sh;
+        dst.assign(src, src + static_cast<size_t>(sw) * sh * 4);
+        return;
+    }
+    dw = std::max(1, sw * maxDim / longEdge);
+    dh = std::max(1, sh * maxDim / longEdge);
+    dst.resize(static_cast<size_t>(dw) * dh * 4);
+    for (int y = 0; y < dh; ++y) {
+        const int sy = y * sh / dh;
+        for (int x = 0; x < dw; ++x) {
+            const int sx = x * sw / dw;
+            std::memcpy(dst.data() + (static_cast<size_t>(y) * dw + x) * 4,
+                        src + (static_cast<size_t>(sy) * sw + sx) * 4, 4);
+        }
+    }
+}
 
 struct ImageRequestState {
     std::atomic<uint64_t> generation {0};
@@ -34,12 +67,36 @@ public:
         lifetime_->image = nullptr;
     }
 
+    void draw(NVGcontext* vg, float x, float y, float width, float height,
+              brls::Style style, brls::FrameContext* ctx) override {
+        flushDeferred();
+        brls::Image::draw(vg, x, y, width, height, style, ctx);
+    }
+
+    void resetArtwork() {
+        deferred_.reset();
+        clear();
+    }
+
+    bool hasArtwork() {
+        return getTexture() != 0 || deferred_.has_value();
+    }
+
     // UI_PLAN F6: synchronous upload for memory-cache hits. UI thread only
     // (needs the live NVG context) — the cover paints in the same frame,
     // so catalog re-entry shows no placeholder flash.
     void setRgbaNow(const uint8_t* pixels, int width, int height) {
         if (!pixels || width <= 0 || height <= 0)
             return;
+        if (streamInstallActive()) {
+            const size_t bytes =
+                static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
+            applyRgba(std::make_shared<std::vector<uint8_t>>(
+                          pixels, pixels + bytes),
+                      width, height);
+            return;
+        }
+        deferred_.reset();
         NVGcontext* vg = brls::Application::getNVGContext();
         innerSetImage(nvgCreateImageRGBA(vg, width, height, 0, pixels));
     }
@@ -56,18 +113,57 @@ public:
                 if (!lifetime)
                     return;
                 std::lock_guard<std::mutex> lock(lifetime->mutex);
-                if (!lifetime->image || !pixels || pixels->empty() ||
-                    width <= 0 || height <= 0)
+                if (!lifetime->image)
                     return;
-                NVGcontext* vg = brls::Application::getNVGContext();
-                lifetime->image->innerSetImage(nvgCreateImageRGBA(
-                    vg, width, height, 0, pixels->data()));
+                lifetime->image->applyRgba(std::move(pixels), width, height);
             });
         });
     }
 
 private:
+    struct DeferredRgba {
+        std::shared_ptr<const std::vector<uint8_t>> pixels;
+        int width = 0;
+        int height = 0;
+    };
+
+    void applyRgba(std::shared_ptr<const std::vector<uint8_t>> pixels,
+                   int width, int height) {
+        if (!pixels || pixels->empty() || width <= 0 || height <= 0)
+            return;
+        // Stream-install already owns the process mapping slack (ENOBUFS
+        // on sockets, ~4 MB kernel headroom). Full-res covers killed the
+        // Zelda session; a 160px preview does not. Keep the decode for a
+        // full upload on the first draw after the worker exits.
+        if (streamInstallActive()) {
+            // Always replace the texture with the new preview: a recycled
+            // tile can still hold the previous game's texture, and keeping
+            // it makes covers appear swapped while the install runs.
+            deferred_ = DeferredRgba{pixels, width, height};
+            std::vector<uint8_t> preview;
+            int pw = 0;
+            int ph = 0;
+            nearestDownscaleRgba(pixels->data(), width, height, preview, pw,
+                                 ph, kStreamInstallPreviewDim);
+            NVGcontext* vg = brls::Application::getNVGContext();
+            innerSetImage(nvgCreateImageRGBA(vg, pw, ph, 0, preview.data()));
+            return;
+        }
+        deferred_.reset();
+        NVGcontext* vg = brls::Application::getNVGContext();
+        innerSetImage(nvgCreateImageRGBA(vg, width, height, 0, pixels->data()));
+    }
+
+    void flushDeferred() {
+        if (!deferred_ || streamInstallActive())
+            return;
+        DeferredRgba held = std::move(*deferred_);
+        deferred_.reset();
+        applyRgba(std::move(held.pixels), held.width, held.height);
+    }
+
     std::shared_ptr<AsyncImageLifetime> lifetime_;
+    std::optional<DeferredRgba> deferred_;
 };
 
 inline void loadImageInto(AsyncRgbaImage* image, GameMetadataService* service,
@@ -78,7 +174,7 @@ inline void loadImageInto(AsyncRgbaImage* image, GameMetadataService* service,
     if (!image)
         return;
     if (!service || url.empty()) {
-        image->clear();
+        image->resetArtwork();
         state->pending = false;
         return;
     }
@@ -91,7 +187,7 @@ inline void loadImageInto(AsyncRgbaImage* image, GameMetadataService* service,
                           cached->height);
         return;
     }
-    image->clear();
+    image->resetArtwork();
     state->pending = true;
     image->setRgbaAsync([service, url, state, generation, maxDim](
         std::function<void(std::shared_ptr<const std::vector<uint8_t>>,
@@ -130,7 +226,7 @@ inline void setArtworkUrl(AsyncRgbaImage* image, GameMetadataService* service,
                    const std::shared_ptr<ImageRequestState>& state,
                    int maxDim = GameMetadataService::kImageDimCard) {
     if (currentUrl == url &&
-        (image->getTexture() != 0 || state->pending.load()))
+        (image->hasArtwork() || state->pending.load()))
         return;
     currentUrl = url;
     uint64_t generation = ++state->generation;
