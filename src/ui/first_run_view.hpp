@@ -359,9 +359,9 @@ public:
     using OnComplete = std::function<void(DebridProviderKind, bool)>;
 
     FirstRunView(AppSettings* settings, DownloadManager* manager,
-                 OnComplete onComplete)
+                 OnComplete onComplete, bool lockBack = true)
         : brls::Box(brls::Axis::ROW), settings_(settings), manager_(manager),
-          onComplete_(std::move(onComplete)) {
+          onComplete_(std::move(onComplete)), lockBack_(lockBack) {
         setPadding(24, 40, 24, 40);
 
         auto* left = new brls::Box(brls::Axis::COLUMN);
@@ -427,8 +427,11 @@ public:
         // choice, or the app would open with no download source at all. The
         // action is hidden so it never rides the hint bar; it sits on this
         // box, closer to the focused option than the frame's dismiss action.
-        registerAction("", brls::BUTTON_B, [](brls::View*) { return true; },
-                       /*hidden=*/true);
+        // From Settings the same view is an editor, so B keeps popping back.
+        if (lockBack_)
+            registerAction("", brls::BUTTON_B,
+                           [](brls::View*) { return true; },
+                           /*hidden=*/true);
 
         if (preferDirect)
             updateSelection(DebridProviderKind::TorBox, true);
@@ -438,6 +441,8 @@ public:
 
     void willAppear(bool resetState) override {
         brls::Box::willAppear(resetState);
+        if (!lockBack_)
+            return;
         // The frame's own B action ("Back", visible in the hint bar) is
         // still registered on the AppletFrame. Replace it with a hidden
         // no-op — registerAction with the same button overwrites — so the
@@ -453,9 +458,10 @@ public:
     }
 
     static void push(AppSettings* settings, DownloadManager* manager,
-                     OnComplete onComplete) {
+                     OnComplete onComplete, bool lockBack = true) {
         auto* frame = new brls::AppletFrame(
-            new FirstRunView(settings, manager, std::move(onComplete)));
+            new FirstRunView(settings, manager, std::move(onComplete),
+                             lockBack));
         frame->setTitle(tr("pipensx/first_run/title"));
         brls::Application::pushActivity(new brls::Activity(frame));
     }
@@ -530,6 +536,7 @@ private:
     DownloadManager* manager_;
     OnComplete onComplete_;
     ModeSummaryPanel* summary_ = nullptr;
+    bool lockBack_ = true;
 };
 
 inline void showFirstRunChoice(AppSettings* settings, DownloadManager* manager,
