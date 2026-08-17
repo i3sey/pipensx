@@ -17,6 +17,7 @@
 build_switch/
 build-switch/
 build-golden/
+build-golden-asan/
 build-pc/
 
 # LSP / code intelligence

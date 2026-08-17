@@ -1,0 +1,25 @@
+# LeakSanitizer suppressions for the PC golden_runner's normal-exit path
+# (GOLDEN_NORMAL_EXIT=1, see scripts/leak_check.sh). Desktop windowing,
+# font and accessibility infrastructure caches its state for the whole
+# process and never frees it — none of these libraries exist on the Switch,
+# so none of these leaks can occur in production. A leak whose stack lands
+# in pipensx or borealis code is NOT suppressed and fails the run.
+leak:libdecor-gtk
+leak:libgtk-3
+leak:libatk-bridge
+leak:libatspi
+leak:libdbus
+leak:libfontconfig
+leak:libpango
+leak:libpangocairo
+leak:libcairo
+leak:libSDL3
+leak:libSDL2
+leak:libdecor-0
+leak:libffi
+leak:libglib
+leak:libEGL_nvidia
+# dlopen'd GL/windowing drivers whose frames LSan cannot attribute to a
+# named module. A pipensx/borealis leak names its own frames in
+# golden_runner, so this cannot mask one.
+leak:<unknown module>

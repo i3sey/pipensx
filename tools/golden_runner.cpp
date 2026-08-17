@@ -339,6 +339,18 @@ int fail(const char* message) {
     return 1;
 }
 
+// The default _exit(0) skips GL/window teardown on purpose: the frame is
+// already on disk and llvmpipe teardown is slow. GOLDEN_NORMAL_EXIT=1 takes
+// the production path instead (atexit handlers + static destructors — the
+// borealis Application, the GL window, SDL), which is the shutdown sequence
+// main_switch.cpp runs on the console. Sanitizer builds use it to audit that
+// sequence for leaks and use-after-free.
+[[noreturn]] static void quitOk() {
+    if (getenv("GOLDEN_NORMAL_EXIT"))
+        std::exit(0);
+    ::_exit(0);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -775,7 +787,7 @@ int main(int argc, char** argv) {
         std::printf("golden_runner: downloads-removing row visible\n");
         manager.shutdown();
         std::fflush(nullptr);
-        _exit(0);
+        quitOk();
     } else if (screen == "frame") {
         // Whole shell, same wiring as src/main_switch.cpp: covers the sidebar
         // and the storage footer docked at its bottom.
@@ -1111,7 +1123,7 @@ int main(int argc, char** argv) {
         std::printf("golden_runner: sidebar item reachable by touch\n");
         manager.shutdown();
         std::fflush(nullptr);
-        _exit(0);
+        quitOk();
     }
 
     if (firstRunFocus) {
@@ -1188,7 +1200,7 @@ int main(int argc, char** argv) {
         std::printf("golden_runner: first-run summary followed all options\n");
         manager.shutdown();
         std::fflush(nullptr);
-        _exit(0);
+        quitOk();
     }
 
     if (installedFocusReload) {
@@ -1281,7 +1293,7 @@ int main(int argc, char** argv) {
         std::printf("golden_runner: installed focus survives reloadData\n");
         manager.shutdown();
         std::fflush(nullptr);
-        _exit(0);
+        quitOk();
     }
 
     if (installedBundles) {
@@ -1378,7 +1390,7 @@ int main(int argc, char** argv) {
         std::printf("golden_runner: Update opened catalog one-tap detail\n");
         manager.shutdown();
         std::fflush(nullptr);
-        _exit(0);
+        quitOk();
     }
 
     if (updateChooser && screen == "update-chooser-toggle") {
@@ -1497,7 +1509,7 @@ int main(int argc, char** argv) {
                     updateChooserMask[1], updateChooserMask[2]);
         manager.shutdown();
         std::fflush(nullptr);
-        _exit(0);
+        quitOk();
     }
 
     if (screen == "first-run-disclaimer") {
@@ -1578,7 +1590,7 @@ int main(int argc, char** argv) {
         std::printf("golden_runner: disclaimer blocks B and continues on OK\n");
         manager.shutdown();
         std::fflush(nullptr);
-        _exit(0);
+        quitOk();
     }
 
     if (screen == "port-install-indexing") {
@@ -1628,7 +1640,7 @@ int main(int argc, char** argv) {
         std::printf("golden_runner: port install Continue waits for indexing\n");
         manager.shutdown();
         std::fflush(nullptr);
-        _exit(0);
+        quitOk();
     }
 
     if (downloadsBackFrame &&
@@ -1638,7 +1650,7 @@ int main(int argc, char** argv) {
         std::printf("golden_runner: downloads-back focus preserved\n");
         manager.shutdown();
         std::fflush(nullptr);
-        _exit(0);
+        quitOk();
     }
 
     if (detailRailNav) {
@@ -1692,7 +1704,7 @@ int main(int argc, char** argv) {
                     "button\n");
         manager.shutdown();
         std::fflush(nullptr);
-        _exit(0);
+        quitOk();
     }
 
     if (bugReportFocus) {
@@ -1737,7 +1749,7 @@ int main(int argc, char** argv) {
                     "(%s -> %s)\n", before.c_str(), after.c_str());
         manager.shutdown();
         std::fflush(nullptr);
-        _exit(0);
+        quitOk();
     }
 
     if (catalogHeaderClearance) {
@@ -1762,7 +1774,7 @@ int main(int argc, char** argv) {
                     clearance);
         manager.shutdown();
         std::fflush(nullptr);
-        _exit(0);
+        quitOk();
     }
 
     if (hintsBudget) {
@@ -1821,7 +1833,7 @@ int main(int argc, char** argv) {
         }
         manager.shutdown();
         std::fflush(nullptr);
-        _exit(0);
+        quitOk();
     }
 
     // RecyclerFrame culls off-screen cells and getNextCellFocus() can only
@@ -1940,7 +1952,7 @@ int main(int argc, char** argv) {
                     cell->renderedState().c_str());
         manager.shutdown();
         std::fflush(nullptr);
-        _exit(0);
+        quitOk();
     }
 
     GLint viewport[4] = {0, 0, 0, 0};
@@ -1969,5 +1981,5 @@ int main(int argc, char** argv) {
 
     manager.shutdown();
     std::fflush(nullptr);
-    _exit(0); // skip GL/window teardown; the frame is already on disk
+    quitOk();
 }
