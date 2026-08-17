@@ -209,6 +209,31 @@ public:
         tabs_->setUpdateCountBadge(gameUpdates_->availableCount(titles));
     }
 
+    // Called when a task reaches Installed: the installed scan and the
+    // game-update results both go stale the moment the title version changes,
+    // so refresh the scan off-thread and re-check the update results — this
+    // is what drops an installed update from the Updates list and the
+    // sidebar badge without the user touching anything.
+    void refreshInstalledAndRecheck() {
+        if (!gameUpdates_ || !installed_ || !settings_ ||
+            installedRefreshInFlight_)
+            return;
+        installedRefreshInFlight_ = true;
+        brls::async([this] {
+            std::string error;
+            const bool ok = installed_->refresh(error);
+            brls::sync([this, ok, error] {
+                installedRefreshInFlight_ = false;
+                if (!ok) {
+                    diagnostic_error("installed", "post_install_refresh",
+                                     "error=%s", error.c_str());
+                    return;
+                }
+                refreshUpdateBadge();
+            });
+        });
+    }
+
     brls::View* createContentView() override {
         return frame_;
     }
@@ -268,6 +293,7 @@ private:
     GameUpdateService* gameUpdates_;
     pipensx::ui::MainFrame* tabs_ = nullptr;
     brls::AppletFrame* frame_;
+    bool installedRefreshInFlight_ = false;
 };
 
 }  // namespace
@@ -683,9 +709,11 @@ int main(int argc, char** argv) {
                     if (task.status == pipensx::DownloadStatus::Completed)
                         brls::Application::notify(
                             tr("pipensx/notify/download_completed", task.name));
-                    else if (task.status == pipensx::DownloadStatus::Installed)
+                    else if (task.status == pipensx::DownloadStatus::Installed) {
                         brls::Application::notify(
                             tr("pipensx/notify/install_completed", task.name));
+                        activity->refreshInstalledAndRecheck();
+                    }
                     else if (task.status == pipensx::DownloadStatus::Error) {
                         const bool installFailed =
                             prevStatus == pipensx::DownloadStatus::Installing ||

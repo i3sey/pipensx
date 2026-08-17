@@ -345,6 +345,29 @@ void testUnknownStateStringsAreDroppedOnLoad() {
     reset();
 }
 
+void testResultsGenerationBumpsOnRecheck() {
+    FakeSource source;
+    source.set("0100000000000001", {"131072"});
+    GameUpdateService service(&source, StatePath);
+    const uint64_t initial = service.generation();
+    std::string saveError;
+
+    service.checkOne("0100000000000001", "65536", saveError);
+    assert(service.generation() == initial + 1);
+
+    std::vector<InstalledTitle> titles = {title("0100000000000001",
+                                                "131072")};
+    service.checkAll(titles, /*installedGeneration=*/1,
+                     /*metadataRefreshMs=*/2, saveError);
+    assert(service.generation() == initial + 2);
+
+    // Re-checking with the same inputs still bumps: the result set was
+    // replaced, and watchers must re-render even if nothing changed.
+    service.checkAll(titles, 1, 2, saveError);
+    assert(service.generation() == initial + 3);
+    reset();
+}
+
 } // namespace
 
 int main() {
@@ -360,6 +383,7 @@ int main() {
     testCheckAllAndStale();
     testStaleFalseBeforeAnyCheck();
     testSaveLoadRoundTrip();
+    testResultsGenerationBumpsOnRecheck();
     testIgnoredPersistsAndSkipsAvailableCount();
     testLoadMissingFileIsEmpty();
     testLoadCorruptFileFails();

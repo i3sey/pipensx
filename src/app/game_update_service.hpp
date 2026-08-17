@@ -86,6 +86,10 @@ public:
     // nothing was ever checked.
     bool stale(uint64_t installedGeneration, uint64_t metadataRefreshMs) const;
     uint64_t lastCheckedAt() const { return lastCheckedAt_; }
+    // Bumps whenever the in-memory result set is replaced or extended
+    // (checkOne/checkAll). Runtime-only, never persisted; lets views detect
+    // a re-check that ran elsewhere (e.g. the main loop after an install).
+    uint64_t generation() const { return resultsGeneration_; }
 
     // State name round-trips (persisted JSON strings).
     static const char* stateName(GameUpdateState state);
@@ -101,6 +105,7 @@ private:
     uint64_t installedGeneration_ = 0;
     uint64_t metadataRefreshMs_ = 0;
     uint64_t lastCheckedAt_ = 0;
+    uint64_t resultsGeneration_ = 0;
     bool checking_ = false;
 };
 

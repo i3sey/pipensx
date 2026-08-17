@@ -163,6 +163,7 @@ GameUpdateResult GameUpdateService::checkOne(
     GameUpdateResult result = compute(titleId, currentVersion);
     result.checkedAt = now_ms();
     results_[titleId] = result;
+    ++resultsGeneration_;
     checking_ = false;
     save(saveError);
     return result;
@@ -187,6 +188,7 @@ void GameUpdateService::checkAll(const std::vector<InstalledTitle>& titles,
         next[title.titleId] = std::move(result);
     }
     results_ = std::move(next);
+    ++resultsGeneration_;
     installedGeneration_ = installedGeneration;
     metadataRefreshMs_ = metadataRefreshMs;
     lastCheckedAt_ = checkedAt;
@@ -239,6 +241,7 @@ bool GameUpdateService::load(std::string& error) {
     installedGeneration_ = 0;
     metadataRefreshMs_ = 0;
     lastCheckedAt_ = 0;
+    resultsGeneration_ = 0;
 
     std::ifstream input(statePath_, std::ios::binary);
     if (!input) {

@@ -333,6 +333,8 @@ public:
         dataSource_->setOpenMenu(
             [this](InstalledTitle title) { openRowMenu(std::move(title)); });
         reload();
+        observedUpdateGeneration_ = updates_->generation();
+        updatePollTimer_.setCallback([this] { pollUpdateResults(); });
         // Catalog/settings metadata refresh is the scheduled check. A silent
         // pass here only runs when those results no longer match the installed
         // set or the index. Golden pins fixture states with checkOnEntry=false.
@@ -345,9 +347,12 @@ public:
     void willAppear(bool resetState) override {
         brls::Box::willAppear(resetState);
         setAncestorActionHidden(this, brls::BUTTON_BACK, true);
+        updatePollTimer_.start(1000);
+        pollUpdateResults();
     }
 
     void willDisappear(bool resetState) override {
+        updatePollTimer_.stop();
         setAncestorActionHidden(this, brls::BUTTON_BACK, false);
         brls::Box::willDisappear(resetState);
     }
@@ -359,6 +364,7 @@ public:
     }
 
     ~InstalledView() override {
+        updatePollTimer_.stop();
         alive_->store(false);
     }
 
@@ -390,6 +396,18 @@ private:
                 return true;
         }
         return false;
+    }
+
+    // The main loop re-checks game updates (and refreshes the installed
+    // scan) when an install task reaches Installed. That check runs outside
+    // this view, so watch the service generation and re-render when it
+    // changes — this is what drops an installed update out of the Updates
+    // section without a manual refresh.
+    void pollUpdateResults() {
+        if (updates_->generation() != observedUpdateGeneration_) {
+            observedUpdateGeneration_ = updates_->generation();
+            reload();
+        }
     }
 
     // "Проверить всё": synchronous in-memory check of every installed
@@ -634,6 +652,8 @@ private:
     std::shared_ptr<std::atomic<bool>> alive_;
     bool refreshing_ = false;
     bool uninstallInFlight_ = false;
+    uint64_t observedUpdateGeneration_ = 0;
+    brls::RepeatingTimer updatePollTimer_;
 };
 
 }  // namespace pipensx::ui
