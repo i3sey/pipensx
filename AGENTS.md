@@ -75,3 +75,17 @@ PC-build patterns, and required dual-build verification.
  `tests/` sources).
 - Branch from `main`; merge with `--ff-only`. CI requires `make test`, gitleaks,
   and golden checks.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues for this repo; use the `gh` CLI for all operations. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical triage roles map to `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
