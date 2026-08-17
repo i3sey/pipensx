@@ -39,7 +39,10 @@ int main(void) {
     telemetry_log("test", "unit", "suppressed=1");
     diagnostic_error("settings", "unit", "event=save_failed code=%d", 7);
     diagnostic_snapshot("system", "unit", "installed=%d", 12);
+    log_flush();
+    log_emergency("[crash] signal=11 stage=unit\n");
     log_close();
+    assert(file_contains(path, "[crash] signal=11 stage=unit"));
     assert(file_contains(path, "stage=test tag=unit value=42"));
     assert(!file_contains(path, "suppressed=1"));
     assert(file_contains(path,

@@ -88,6 +88,17 @@ FILE *log_file(void) {
     return g_logfile;
 }
 
+void log_emergency(const char *text) {
+    if (!text || !text[0] || !g_logfile)
+        return;
+    int fd = fileno(g_logfile);
+    if (fd < 0)
+        return;
+    size_t n = strlen(text);
+    (void)write(fd, text, n);
+    (void)fsync(fd);
+}
+
 size_t log_read_tail(char *buf, size_t max) {
     if (!g_logfile || !buf || max == 0) return 0;
     size_t got = 0;

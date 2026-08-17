@@ -23,6 +23,11 @@ int log_clear(void);
  * path silently yields nothing. NULL when logging is disabled. */
 FILE *log_file(void);
 
+/* Append `text` with write(2)+fsync on that same fd. Async-signal-safe;
+ * crash handlers must not fopen the log path (it fails while this handle
+ * is live) and must not call log_msg (stdio is not signal-safe). */
+void log_emergency(const char *text);
+
 /* Copy up to `max` bytes from the end of the log into `buf`, flushing pending
  * writes first, and return how many bytes were copied. The stream position is
  * left at the end so appending continues undisturbed. */
