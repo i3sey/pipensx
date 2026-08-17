@@ -664,6 +664,8 @@
     "diagram_lan": "局域网",
     "diagram_internet": "互联网",
     "diagram_torrent": "种子",
+    "chip_free": "免费",
+    "chip_paid": "付费",
     "note": "你可以稍后在设置中更改。"
   },
   "debrid": {

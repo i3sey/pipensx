@@ -284,7 +284,8 @@ private:
 class FirstRunOption : public brls::Box {
 public:
     FirstRunOption(const std::string& heading, std::function<void()> onChoose,
-                   std::function<void()> onFocus, const std::string& hint = {})
+                   std::function<void()> onFocus, const std::string& hint = {},
+                   const std::string& chip = {}, NVGcolor chipColor = {})
         : brls::Box(brls::Axis::COLUMN), onChoose_(std::move(onChoose)),
           onFocus_(std::move(onFocus)) {
         setFocusable(true);
@@ -294,11 +295,36 @@ public:
         setCornerRadius(theme::kRadiusLarge);
         setHighlightCornerRadius(theme::kRadiusLarge);
 
+        auto* titleRow = new brls::Box(brls::Axis::ROW);
+        titleRow->setAlignItems(brls::AlignItems::CENTER);
+
         auto* title = new brls::Label();
         title->setText(heading);
         title->setFontSize(theme::kFontBody);
         title->setTextColor(theme::textPrimary());
-        addView(title);
+        title->setGrow(1);
+        titleRow->addView(title);
+
+        if (!chip.empty()) {
+            auto* badge = new brls::Box();
+            badge->setFocusable(false);
+            badge->setShrink(0);
+            badge->setWidth(104);
+            badge->setHeight(26);
+            badge->setCornerRadius(theme::kRadiusSmall);
+            badge->setBackgroundColor(theme::surface());
+            badge->setBorderColor(chipColor);
+            badge->setBorderThickness(1.0f);
+            badge->setAlignItems(brls::AlignItems::CENTER);
+            badge->setJustifyContent(brls::JustifyContent::CENTER);
+            auto* chipLabel = new brls::Label();
+            chipLabel->setText(chip);
+            chipLabel->setFontSize(theme::kFontCaption);
+            chipLabel->setTextColor(chipColor);
+            badge->addView(chipLabel);
+            titleRow->addView(badge);
+        }
+        addView(titleRow);
 
         if (!hint.empty()) {
             auto* caption = new brls::Label();
@@ -363,20 +389,24 @@ public:
         left->addView(new FirstRunOption(
             tr("pipensx/first_run/torrserver"),
             [this] { choose(DebridProviderKind::TorrServer, false); },
-            [this] { updateSelection(DebridProviderKind::TorrServer, false); }));
+            [this] { updateSelection(DebridProviderKind::TorrServer, false); },
+            "", tr("pipensx/first_run/chip_free"), theme::success()));
         left->addView(new FirstRunOption(
             tr("pipensx/first_run/realdebrid"),
             [this] { choose(DebridProviderKind::RealDebrid, false); },
-            [this] { updateSelection(DebridProviderKind::RealDebrid, false); }));
+            [this] { updateSelection(DebridProviderKind::RealDebrid, false); },
+            "", tr("pipensx/first_run/chip_paid"), theme::warning()));
         left->addView(new FirstRunOption(
             tr("pipensx/first_run/torbox"),
             [this] { choose(DebridProviderKind::TorBox, false); },
-            [this] { updateSelection(DebridProviderKind::TorBox, false); }));
+            [this] { updateSelection(DebridProviderKind::TorBox, false); },
+            "", tr("pipensx/first_run/chip_paid"), theme::warning()));
         left->addView(new FirstRunOption(
             tr("pipensx/first_run/direct"),
             [this] { choose(DebridProviderKind::TorBox, true); },
             [this] { updateSelection(DebridProviderKind::TorBox, true); },
-            directHint));
+            directHint, tr("pipensx/first_run/chip_free"),
+            theme::success()));
         const bool preferDirect = hint == DirectHint::Recommended;
         left->setDefaultFocusedIndex(preferDirect ? 4 : 1);
 

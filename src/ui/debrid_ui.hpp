@@ -142,7 +142,8 @@ public:
                       "http://192.168.1.10:8090."
                     : provider == DebridProviderKind::RealDebrid
                     ? "Paste your Real-Debrid API token. Find it at "
-                      "real-debrid.com/apitoken."
+                      "real-debrid.com/apitoken. A premium subscription "
+                      "is required — free accounts cannot add torrents."
                     : kTorboxPairingHint);
             std::string error;
             pairingAvailable = server_->start(error);

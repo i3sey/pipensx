@@ -664,10 +664,12 @@
     "diagram_lan": "LAN",
     "diagram_internet": "internet",
     "diagram_torrent": "torrent",
+    "chip_free": "Gratuit",
+    "chip_paid": "Payant",
     "note": "Vous pourrez changer cela plus tard dans Paramètres."
   },
   "debrid": {
-    "link_hint": "Scannez le code depuis un appareil sur le même réseau, ou saisissez votre clé API {} à la main. Elle est stockée uniquement dans les paramètres de pipensx.",
+    "link_hint": "Scannez le code depuis un appareil sur le même réseau, ou saisissez votre clé API {} à la main. Elle est stockée uniquement dans les paramètres de pipensx. Un abonnement premium actif est requis — les comptes gratuits ne peuvent pas ajouter de torrents.",
     "link_hint_url": "Entrez l'adresse de votre TorrServer, par exemple http://192.168.1.10:8090. Elle est stockée uniquement dans les paramètres de pipensx.",
     "link_title": "Configurer {}",
     "enter_key": "Saisir à la main",

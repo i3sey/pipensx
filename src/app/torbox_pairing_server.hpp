@@ -21,7 +21,9 @@ namespace pipensx {
 // What the phone form tells the user to paste. TorBox hands out an API key;
 // a TorrServer is identified by its address, so the caller overrides it.
 inline constexpr const char* kTorboxPairingHint =
-    "Paste your TorBox API key. Find it at torbox.app > Settings > API.";
+    "Paste your TorBox API key. Find it at torbox.app > Settings > API. "
+    "A premium subscription is required — free accounts cannot add "
+    "torrents.";
 
 class TorboxPairingServer {
 public:
