@@ -85,6 +85,9 @@ bool curlTransport(const RdHttpRequest& request,
             if (result != CURLE_OK)
                 error = std::string("Real-Debrid request failed: ") +
                         curl_easy_strerror(result);
+            log_msg("[realdebrid] %s %s -> HTTP %ld (%s)\n",
+                    request.method.c_str(), endpoint.c_str(), response.status,
+                    result == CURLE_OK ? "ok" : curl_easy_strerror(result));
             curl_easy_cleanup(curl);
             return result == CURLE_OK;
         }
@@ -99,6 +102,9 @@ bool curlTransport(const RdHttpRequest& request,
     if (result != CURLE_OK)
         error = std::string("Real-Debrid request failed: ") +
                 curl_easy_strerror(result);
+    log_msg("[realdebrid] %s %s -> HTTP %ld (%s)\n",
+            request.method.c_str(), endpoint.c_str(), response.status,
+            result == CURLE_OK ? "ok" : curl_easy_strerror(result));
     curl_easy_cleanup(curl);
     return result == CURLE_OK;
 }
@@ -130,29 +136,29 @@ bool readNumberField(const Json& obj, const char* key, uint64_t& value) {
 
 bool checkAuthError(const std::string& body, long status,
                     std::string& error) {
-    if (status == 401 || status == 403) {
-        error = "Real-Debrid key rejected - relink in Settings.";
-        return false;
-    }
     if (status == 204)
         return true;
     if (status < 200 || status >= 300) {
+        std::string detail;
         Json root;
-        if (parseJson(body, root, error)) {
-            std::string detail;
-            if (root.is_object() && root.contains("error") &&
-                root["error"].is_string())
+        if (parseJson(body, root, error) && root.is_object()) {
+            if (root.contains("error") && root["error"].is_string())
                 detail = root["error"].get<std::string>();
-            else if (root.is_object()) {
+            else {
                 uint64_t code = 0;
                 if (readNumberField(root, "error_code", code))
-                    detail = std::to_string(code);
+                    detail = "error_code " + std::to_string(code);
             }
+        }
+        if (status == 401 || status == 403)
+            error = "Real-Debrid key rejected - relink in Settings.";
+        else
             error = detail.empty()
                 ? "Real-Debrid request failed (HTTP " +
                   std::to_string(status) + ")."
                 : detail;
-        }
+        log_msg("[realdebrid] error HTTP %ld: %s\n", status,
+                detail.empty() ? error.c_str() : detail.c_str());
         return false;
     }
     return true;

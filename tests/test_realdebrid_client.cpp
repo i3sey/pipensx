@@ -5,6 +5,8 @@
 #include <string>
 
 using pipensx::RdClient;
+using pipensx::RdHttpRequest;
+using pipensx::RdHttpResponse;
 using pipensx::RdTorrentInfo;
 
 namespace {
@@ -142,6 +144,41 @@ void testParseUnrestrict() {
     assert(!error.empty());
 }
 
+void testCheckAuthErrorPaths() {
+    std::string id, error;
+
+    // HTTP 403 with an RD error body: message stays the relink hint, but the
+    // detail (permission_denied, e.g. a free-tier account) must be parsed
+    // without tripping over the numeric error_code.
+    RdClient client403(
+        "key", [](const RdHttpRequest&, RdHttpResponse& resp, std::string&) {
+            resp.status = 403;
+            resp.body = R"({"error":"permission_denied","error_code":9})";
+            return true;
+        });
+    assert(!client403.createFromMagnet("magnet:?xt=urn:btih:abc", id, error));
+    assert(error == "Real-Debrid key rejected - relink in Settings.");
+
+    // HTTP 400 with a body error: the RD message is surfaced.
+    RdClient client400(
+        "key", [](const RdHttpRequest&, RdHttpResponse& resp, std::string&) {
+            resp.status = 400;
+            resp.body = R"({"error":"Invalid magnet","error_code":30})";
+            return true;
+        });
+    assert(!client400.createFromMagnet("magnet:?xt=urn:btih:abc", id, error));
+    assert(error == "Invalid magnet");
+
+    // HTTP 503 without a body: generic message carrying the status.
+    RdClient client503(
+        "key", [](const RdHttpRequest&, RdHttpResponse& resp, std::string&) {
+            resp.status = 503;
+            return true;
+        });
+    assert(!client503.createFromMagnet("magnet:?xt=urn:btih:abc", id, error));
+    assert(error.find("HTTP 503") != std::string::npos);
+}
+
 } // namespace
 
 int main() {
@@ -150,6 +187,7 @@ int main() {
     testParseAddTorrentResponse();
     testParseInfo();
     testParseUnrestrict();
+    testCheckAuthErrorPaths();
     std::printf("test_realdebrid_client: all assertions passed\n");
     return 0;
 }
