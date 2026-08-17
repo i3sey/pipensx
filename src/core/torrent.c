@@ -1224,8 +1224,10 @@ static int check_completion(torrent_t *t) {
     /* Resume of an already-complete torrent: startup verification just read
        and hashed every piece from disk, so the final pass would produce the
        same answer at the cost of a second full disk scan. */
-    if (t->startup_verified_all)
+    if (t->startup_verified_all) {
+        storage_finalize(t->store);
         return 0;
+    }
 
     if (!t->final_verifying) {
         if (!storage_flush(t->store)) {
@@ -1248,6 +1250,7 @@ static int check_completion(torrent_t *t) {
         return 1;
     }
 
+    storage_finalize(t->store);
     return 0;
 }
 

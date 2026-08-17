@@ -7,9 +7,18 @@
 #include <errno.h>
 #include <ctype.h>
 
+#ifdef __SWITCH__
+#  include <switch.h>
+#endif
+
 #ifndef _WIN32
 #  include <unistd.h>
 #endif
+
+/* DBI split-archive format: a folder holding parts of at most
+   0xFFFF0000 bytes, named 00..NN so alphabetical order is data order. */
+#define SPLIT_PART_SIZE ((int64_t)0xFFFF0000u)
+#define FAT32_FILE_MAX   ((int64_t)0xFFFFFFFFu) /* 4 GiB - 1 */
 
 struct file_handle {
     char  path[512];
@@ -17,6 +26,12 @@ struct file_handle {
     int64_t offset; /* start in torrent flat space */
     int64_t length;
     storage_file_config_t config;
+    /* Split mode: fp stays NULL, parts are opened lazily into part_fp. */
+    int      split;
+    uint32_t num_parts;
+    uint32_t part_size;
+    FILE    *part_fp;
+    uint32_t part_fp_index;
 };
 
 struct storage {
@@ -107,20 +122,133 @@ int storage_locate_file_path(const metainfo_t *mi, const char *outdir,
     return 0;
 }
 
+/* Preallocate size bytes (sparse on PC) so later writes cannot fail with
+   ENOSPC/EFBIG unexpectedly. Returns 0 when the final byte cannot be
+   written — the FAT32 probe relies on that. */
+static int prealloc(FILE *fp, int64_t size) {
+    if (size <= 0)
+        return 1;
+    if (fseek(fp, (long)(size - 1), SEEK_SET) != 0)
+        return 0;
+    if (fputc(0, fp) == EOF)
+        return 0;
+    if (fflush(fp) != 0)
+        return 0;
+    fseek(fp, 0, SEEK_SET);
+    return 1;
+}
+
+static int64_t split_part_size_at(const struct file_handle *fh, uint32_t idx) {
+    int64_t left = fh->length - (int64_t)idx * fh->part_size;
+    return left < fh->part_size ? left : fh->part_size;
+}
+
+static int split_part_path(const struct file_handle *fh, uint32_t idx,
+                           char *out, size_t out_size) {
+    /* Zero-padded decimal so alphabetical order = data order. Width grows
+       beyond 99 parts, keeping "100" after "99". */
+    int width = 2;
+    for (uint32_t n = fh->num_parts - 1; n >= 100; n /= 10)
+        width++;
+    int len = snprintf(out, out_size, "%s/%0*u", fh->path, width, idx);
+    return len >= 0 && (size_t)len < out_size;
+}
+
+static int split_setup(struct file_handle *fh) {
+    fh->split = 1;
+    fh->part_size = (uint32_t)SPLIT_PART_SIZE;
+    fh->num_parts =
+        (uint32_t)((fh->length + SPLIT_PART_SIZE - 1) / SPLIT_PART_SIZE);
+    fh->part_fp = NULL;
+    fh->part_fp_index = (uint32_t)-1;
+    return 1;
+}
+
+/* Resume: the path is already a split folder from a previous session. */
+static int split_open(struct file_handle *fh) {
+    return split_setup(fh);
+}
+
+/* Fresh session: the >4 GiB probe failed, store as a DBI split folder. */
+static int split_create(struct file_handle *fh) {
+    if (fh->fp) {
+        fclose(fh->fp);
+        fh->fp = NULL;
+    }
+    remove(fh->path);
+    if (mkdir(fh->path, 0755) != 0)
+        return 0;
+    if (!split_setup(fh))
+        return 0;
+    for (uint32_t i = 0; i < fh->num_parts; i++) {
+        char ppath[528];
+        if (!split_part_path(fh, i, ppath, sizeof(ppath)))
+            return 0;
+        FILE *p = fopen(ppath, "w+b");
+        if (!p)
+            return 0;
+        int ok = prealloc(p, split_part_size_at(fh, i));
+        fclose(p);
+        if (!ok)
+            return 0;
+    }
+    log_msg("[storage] split '%s' into %u parts\n", fh->path, fh->num_parts);
+    return 1;
+}
+
+static FILE *split_part_open(struct file_handle *fh, uint32_t idx) {
+    if (idx >= fh->num_parts)
+        return NULL;
+    if (fh->part_fp && fh->part_fp_index == idx)
+        return fh->part_fp;
+    if (fh->part_fp) {
+        fclose(fh->part_fp);
+        fh->part_fp = NULL;
+    }
+    char ppath[528];
+    if (!split_part_path(fh, idx, ppath, sizeof(ppath)))
+        return NULL;
+    FILE *p = fopen(ppath, "r+b");
+    if (!p) {
+        /* Missing part (deleted mid-resume): recreate preallocated; piece
+           hashes re-download whatever it held. */
+        p = fopen(ppath, "w+b");
+        if (p && !prealloc(p, split_part_size_at(fh, idx))) {
+            fclose(p);
+            p = NULL;
+        }
+    }
+    if (!p)
+        return NULL;
+    fh->part_fp = p;
+    fh->part_fp_index = idx;
+    return p;
+}
+
 static int open_disk_file(struct file_handle *fh) {
     fh->fp = fopen(fh->path, "r+b");
     if (fh->fp)
         return 1;
 
+    /* Previous session's split folder? */
+    struct stat st;
+    if (stat(fh->path, &st) == 0 && S_ISDIR(st.st_mode))
+        return split_open(fh);
+
     fh->fp = fopen(fh->path, "w+b");
     if (!fh->fp)
         return 0;
 
-    if (fh->length > 0) {
-        fseek(fh->fp, (long)(fh->length - 1), SEEK_SET);
-        fputc(0, fh->fp);
-        fseek(fh->fp, 0, SEEK_SET);
-    }
+    /* Files above the FAT32 ceiling: preallocating the final byte probes
+       whether they can exist as one file. If it cannot land (FAT32) or the
+       caller forced it, store as a DBI split folder instead. exFAT and PC
+       filesystems pass the probe and stay a plain file.
+       ponytail: the probe can also fail for other reasons (full SD on
+       exFAT) and then splits too — harmless, parts are still correct. */
+    int probe_ok = prealloc(fh->fp, fh->length);
+    if (fh->length > FAT32_FILE_MAX &&
+        (fh->config.force_split || !probe_ok))
+        return split_create(fh);
     return 1;
 }
 
@@ -217,6 +345,7 @@ static int find_file(storage_t *s, int64_t off,
 
 int storage_write(storage_t *s, int64_t offset, const uint8_t *data, size_t len) {
     size_t written = 0;
+    const struct file_handle *err_fh = NULL;
     while (written < len) {
         struct file_handle *fh;
         int64_t local_off;
@@ -260,21 +389,78 @@ int storage_write(storage_t *s, int64_t offset, const uint8_t *data, size_t len)
             written += can_write;
             continue;
         }
-        if (!fh->fp) return 0;
-        if (fseek(fh->fp, (long)local_off, SEEK_SET) != 0) return 0;
+        if (fh->split) {
+            int64_t pos = local_off;
+            int64_t end = local_off + can_write;
+            while (pos < end) {
+                uint32_t part_idx = (uint32_t)(pos / fh->part_size);
+                FILE *fp = split_part_open(fh, part_idx);
+                if (!fp) {
+                    err_fh = fh;
+                    goto write_fail;
+                }
+                int64_t seek = pos - (int64_t)part_idx * fh->part_size;
+                int64_t chunk = end - pos;
+                int64_t part_end = (int64_t)(part_idx + 1) * fh->part_size;
+                if (part_end - pos < chunk)
+                    chunk = part_end - pos;
+                if (fseek(fp, (long)seek, SEEK_SET) != 0) {
+                    err_fh = fh;
+                    goto write_fail;
+                }
+                size_t w = fwrite(data + written, 1, (size_t)chunk, fp);
+                if (w != (size_t)chunk) {
+                    err_fh = fh;
+                    goto write_fail;
+                }
+                pos += (int64_t)w;
+                written += w;
+            }
+            continue;
+        }
+        if (!fh->fp) {
+            if (!s->error[0])
+                snprintf(s->error, sizeof(s->error), "file '%.200s' not open",
+                         fh->path);
+            return 0;
+        }
+        if (fseek(fh->fp, (long)local_off, SEEK_SET) != 0) {
+            err_fh = fh;
+            goto write_fail;
+        }
         size_t w = fwrite(data + written, 1, can_write, fh->fp);
-        if (w != can_write) return 0;
+        if (w != can_write) {
+            err_fh = fh;
+            goto write_fail;
+        }
         written += w;
     }
     return 1;
+
+write_fail:
+    {
+        int saved_errno = errno;
+        if (!s->error[0] && err_fh)
+            snprintf(s->error, sizeof(s->error), "write '%.200s': %s",
+                     err_fh->path, strerror(saved_errno));
+        return 0;
+    }
 }
 
 int storage_flush(storage_t *s) {
     if (!s) return 0;
     for (uint32_t i = 0; i < s->num_files; i++) {
-        if (s->files[i].config.mode == STORAGE_FILE_DISK &&
-            (!s->files[i].fp || fflush(s->files[i].fp) != 0))
+        struct file_handle *fh = &s->files[i];
+        if (fh->config.mode != STORAGE_FILE_DISK)
+            continue;
+        if (fh->split) {
+            /* Parts closed by a switch were flushed on close; only the
+               cached part can hold buffered data. */
+            if (fh->part_fp && fflush(fh->part_fp) != 0)
+                return 0;
+        } else if (!fh->fp || fflush(fh->fp) != 0) {
             return 0;
+        }
     }
     return 1;
 }
@@ -286,14 +472,33 @@ int storage_read(storage_t *s, int64_t offset, uint8_t *data, size_t len) {
         int64_t local_off;
         if (!find_file(s, offset + (int64_t)done, (int64_t)(len - done), &fh, &local_off))
             return -1;
-        if (fh->config.mode != STORAGE_FILE_DISK || !fh->fp) return -1;
+        if (fh->config.mode != STORAGE_FILE_DISK) return -1;
+        if (!fh->split && !fh->fp) return -1;
         size_t can_read = (size_t)(fh->length - local_off);
         if (can_read > len - done) can_read = len - done;
-        clearerr(fh->fp);
-        if (fseek(fh->fp, (long)local_off, SEEK_SET) != 0) return -1;
-        size_t r = fread(data + done, 1, can_read, fh->fp);
-        done += r;
-        if (r != can_read) return -1;
+        int64_t pos = local_off;
+        int64_t end = local_off + can_read;
+        while (pos < end) {
+            FILE *fp = fh->fp;
+            int64_t seek = pos;
+            int64_t chunk = end - pos;
+            if (fh->split) {
+                uint32_t part_idx = (uint32_t)(pos / fh->part_size);
+                fp = split_part_open(fh, part_idx);
+                if (!fp)
+                    return -1;
+                seek = pos - (int64_t)part_idx * fh->part_size;
+                int64_t part_end = (int64_t)(part_idx + 1) * fh->part_size;
+                if (part_end - pos < chunk)
+                    chunk = part_end - pos;
+            }
+            clearerr(fp);
+            if (fseek(fp, (long)seek, SEEK_SET) != 0) return -1;
+            size_t r = fread(data + done, 1, (size_t)chunk, fp);
+            done += r;
+            if (r != (size_t)chunk) return -1;
+            pos += (int64_t)r;
+        }
     }
     return (int)done;
 }
@@ -353,8 +558,27 @@ const char *storage_error(storage_t *s) {
 
 void storage_close(storage_t *s) {
     if (!s) return;
-    for (uint32_t i = 0; i < s->num_files; i++)
+    for (uint32_t i = 0; i < s->num_files; i++) {
         if (s->files[i].fp) fclose(s->files[i].fp);
+        if (s->files[i].part_fp) fclose(s->files[i].part_fp);
+    }
     free(s->files);
     free(s);
+}
+
+void storage_finalize(storage_t *s) {
+    if (!s) return;
+    for (uint32_t i = 0; i < s->num_files; i++) {
+        const struct file_handle *fh = &s->files[i];
+        if (fh->config.mode != STORAGE_FILE_DISK || !fh->split)
+            continue;
+#ifdef __SWITCH__
+        /* DBI archive trick: HOS then reads the whole folder as one file
+           (concatenating 00..NN in name order). */
+        Result rc = fsdevSetConcatenationFileAttribute(fh->path);
+        log_msg("[storage] concat attribute '%s': 0x%08x\n", fh->path, rc);
+#else
+        (void)fh;
+#endif
+    }
 }

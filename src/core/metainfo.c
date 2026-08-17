@@ -207,10 +207,12 @@ int metainfo_parse(const uint8_t *data, size_t len, metainfo_t *mi) {
         return 0;
     }
 
-    /* Warn about FAT32 limit */
+    /* Warn about the FAT32 limit — storage handles it via DBI split folders,
+       but it is worth a log line when it actually happens. */
     for (uint32_t i = 0; i < mi->num_files; i++) {
         if (mi->files[i].length > (int64_t)4*1024*1024*1024LL - 1)
-            log_msg("[meta] WARNING: file '%s' exceeds 4 GB FAT32 limit\n", mi->files[i].path);
+            log_msg("[meta] file '%s' exceeds 4 GB; on FAT32 it will be "
+                    "stored as a split folder\n", mi->files[i].path);
     }
 
     /* ---- trackers ---- */

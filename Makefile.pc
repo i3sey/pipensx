@@ -529,6 +529,11 @@ $(BUILD_DIR)/tests/test_telemetry: tests/test_telemetry.c src/core/util.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
 
+$(BUILD_DIR)/tests/test_storage_split: tests/test_storage_split.c \
+		$(BUILD_DIR)/src/platform/storage.o $(BUILD_DIR)/src/core/util.o
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
+
 $(BUILD_DIR)/tests/test_peer: tests/test_peer.c src/core/peer.c src/core/net.c \
 		src/core/bencode.c src/core/util.c src/core/mse.c src/core/sha1.c \
 		$(UTP_OBJS)
