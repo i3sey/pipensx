@@ -22,17 +22,17 @@ GOLDEN_DIR="$ROOT/tests/golden"
 OUT_DIR="${GOLDEN_OUT:-$ROOT/build-golden/golden-out}"
 FUZZ="${GOLDEN_FUZZ:-5%}"
 MAX_DIFF="${GOLDEN_MAX_DIFF:-25000}"
-SCREENS="${GOLDEN_SCREENS:-catalog detail frame downloads download-files deploy-preview installed installed-populated updates update-chooser settings settings-debrid storage network-health help first-run debrid-link about torrent-selection bug-report bug-report-detail screenshot-viewer screenshot-viewer-preview screenshot-viewer-missing}"
+SCREENS="${GOLDEN_SCREENS:-catalog detail frame downloads download-files deploy-preview installed installed-populated updates update-chooser settings settings-debrid storage network-health help first-run debrid-link about torrent-selection bug-report bug-report-detail screenshot-viewer screenshot-viewer-preview screenshot-viewer-missing port-install-warning}"
 # Behaviour checks: these assert and exit non-zero instead of writing a
 # baseline, so they are never compared against tests/golden/. Entries are
 # <screen> or <screen>:<locale>; hints-budget runs in both because Russian hint
 # labels are ~20% wider than English and are what actually overruns the bar.
-BEHAVIOR_SCREENS="${GOLDEN_BEHAVIOR_SCREENS:-downloads-back downloads-removing torrent-selection-scroll hints-budget hints-budget:ru bug-report-focus first-run-focus first-run-focus:ru sidebar-touch detail-rail-nav catalog-header-clearance update-chooser-toggle first-run-disclaimer installed-bundles installed-focus-reload}"
+BEHAVIOR_SCREENS="${GOLDEN_BEHAVIOR_SCREENS:-downloads-back downloads-removing torrent-selection-scroll hints-budget hints-budget:ru bug-report-focus first-run-focus first-run-focus:ru sidebar-touch detail-rail-nav catalog-header-clearance update-chooser-toggle first-run-disclaimer port-install-indexing installed-bundles installed-focus-reload}"
 THEMES="${GOLDEN_THEMES:-light dark}"
 # frame is in the list because it is the only screen that renders the nav
 # sidebar, whose 280px width (main_frame.hpp installSidebarStyle) is the
 # tightest label constraint in the app.
-RU_SCREENS="${GOLDEN_RU_SCREENS:-frame catalog detail settings settings-debrid help first-run debrid-link torrent-selection downloads download-files deploy-preview updates update-chooser}"
+RU_SCREENS="${GOLDEN_RU_SCREENS:-frame catalog detail settings settings-debrid help first-run debrid-link torrent-selection downloads download-files deploy-preview updates update-chooser port-install-warning}"
 RU_THEME="${GOLDEN_RU_THEME:-dark}"
 
 export LIBGL_ALWAYS_SOFTWARE=1

@@ -189,6 +189,10 @@ std::string receiptPath(const std::string& root, const std::string& taskId) {
     return root + "/deployments/" + taskId + ".bencode";
 }
 
+std::string autoCopyPath(const std::string& root, const std::string& taskId) {
+    return root + "/deployments/" + taskId + ".auto";
+}
+
 std::string jobPath(const std::string& root) {
     return root + "/deploy-job.bencode";
 }
@@ -972,6 +976,20 @@ SwitchDeployReceiptState SwitchDeployService::receiptState(
     return SwitchDeployReceiptState::Valid;
 }
 
+bool SwitchDeployService::armAutoCopy(const std::string& taskId) {
+    return atomicWrite(autoCopyPath(appRoot_, taskId), "1");
+}
+
+void SwitchDeployService::clearAutoCopy(const std::string& taskId) {
+    std::remove(autoCopyPath(appRoot_, taskId).c_str());
+}
+
+bool SwitchDeployService::autoCopyArmed(const std::string& taskId) const {
+    struct stat st {};
+    return lstat(autoCopyPath(appRoot_, taskId).c_str(), &st) == 0 &&
+           S_ISREG(st.st_mode);
+}
+
     bool SwitchDeployService::considerDeployOffer(const std::string& taskId) {
         {
             std::lock_guard<std::mutex> lock(offerMutex_);
@@ -979,15 +997,49 @@ SwitchDeployReceiptState SwitchDeployService::receiptState(
                 return false;
         }
         const std::optional<DownloadTask> task = manager_.snapshot(taskId);
-        if (!task || task->mode != TransferMode::StreamInstall ||
-            !taskReadyForSwitchDeploy(*task))
+        if (!task || !taskReadyForSwitchDeploy(*task))
+            return false;
+        const bool autoArmed = autoCopyArmed(taskId);
+        if (task->mode != TransferMode::StreamInstall && !autoArmed)
             return false;
         if (receiptState(taskId) == SwitchDeployReceiptState::Valid) {
+            if (autoArmed)
+                clearAutoCopy(taskId);
             std::lock_guard<std::mutex> lock(offerMutex_);
             offerHandled_.insert(taskId);
             return false;
         }
         SwitchDeployInspection inspection = inspect(taskId);
+        if (autoArmed) {
+            const bool missingLayout =
+                inspection.problem == SwitchDeployProblem::LayoutNotFound ||
+                inspection.problem == SwitchDeployProblem::AmbiguousLayout;
+            if (!inspection.canStart() &&
+                !switchDeployOffersCopy(inspection.problem) && !missingLayout)
+                return false;
+            if (inspection.canStart()) {
+                uint64_t looseBytes = 0;
+                for (const SwitchDeployEntry& entry : inspection.plan.files) {
+                    if (entry.state == SwitchDeployEntryState::Missing)
+                        looseBytes += entry.size;
+                }
+                if (looseBytes == 0 && inspection.plan.archives.empty()) {
+                    clearAutoCopy(taskId);
+                    std::lock_guard<std::mutex> lock(offerMutex_);
+                    offerHandled_.insert(taskId);
+                    return false;
+                }
+            }
+            {
+                std::lock_guard<std::mutex> lock(offerMutex_);
+                if (offerHandled_.count(taskId) || pendingOffer_)
+                    return false;
+                pendingOffer_ = PendingOffer{taskId, std::move(inspection),
+                                             true};
+            }
+            log_msg("[deploy] auto-copy ready %s\n", taskId.c_str());
+            return true;
+        }
         if (!inspection.canStart())
             return false;
         uint64_t looseBytes = 0;
@@ -1001,7 +1053,7 @@ SwitchDeployReceiptState SwitchDeployService::receiptState(
             std::lock_guard<std::mutex> lock(offerMutex_);
             if (offerHandled_.count(taskId) || pendingOffer_)
                 return false;
-            pendingOffer_ = PendingOffer{taskId, std::move(inspection)};
+            pendingOffer_ = PendingOffer{taskId, std::move(inspection), false};
         }
         log_msg("[deploy] offer ready %s\n", taskId.c_str());
         return true;
@@ -1022,8 +1074,7 @@ void SwitchDeployService::pollDeployOffers() {
     if (snapshot().active())
         return;
     for (const DownloadTask& task : manager_.snapshot()) {
-        if (task.mode != TransferMode::StreamInstall ||
-            !taskReadyForSwitchDeploy(task))
+        if (!taskReadyForSwitchDeploy(task))
             continue;
         if (considerDeployOffer(task.id))
             return;

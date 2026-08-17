@@ -216,6 +216,14 @@
     "preset_packages": "包",
     "preset_download_all": "全部下载"
   },
+  "port_install": {
+    "unofficial": "这是非官方自制移植。安装时可能仍需额外步骤。",
+    "indexing": "正在读取种子文件…",
+    "layout_detected": "已检测到移植结构。pipensx 会尝试安装，但仍可能需要额外设置。",
+    "layout_missing": "未找到 switch/ 文件夹或 switch.zip / switch.7z。pipensx 将下载这些文件；仍可能需要额外设置。",
+    "queued": "已添加。下载完成后会将文件复制到 /switch。",
+    "copy_skipped": "下载已完成。安装此移植仍可能需要额外设置。"
+  },
   "downloads": {
     "import": "导入种子",
     "import_action": "导入 .torrent",

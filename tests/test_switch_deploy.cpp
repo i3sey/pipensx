@@ -1,6 +1,7 @@
 #include "../src/app/install_space.hpp"
 #include "../src/app/nx_file_types.hpp"
 #include "../src/app/port_archive.hpp"
+#include "../src/app/port_selection.hpp"
 #include "../src/app/switch_deploy.hpp"
 
 #include <cassert>
@@ -67,6 +68,45 @@ int main() {
     assert(isPortArchiveName("SWITCH.ZIP"));
     assert(!isPortArchiveName("myswitch.7z"));
     assert(!isPortArchiveName("switch.rar"));
+
+    {
+        TorrentPreview preview;
+        preview.multi = true;
+        preview.name = "Release";
+        preview.files = {
+            {"switch/MyPort/MyPort.nro", 32, false, false, false},
+            {"switch/MyPort/data.bin", 9, false, false, false},
+            {"readme.txt", 4, false, false, false},
+        };
+        assert(candidatePortRoot(preview) == "release/switch");
+        assert(torrentPortLayoutDetected(preview));
+        const auto mask = selectPortInstallActions(preview);
+        assert(mask.size() == 3);
+        assert(mask[0] == static_cast<uint8_t>(FileAction::Download));
+        assert(mask[1] == static_cast<uint8_t>(FileAction::Download));
+        assert(mask[2] == static_cast<uint8_t>(FileAction::Skip));
+    }
+    {
+        TorrentPreview preview;
+        preview.files = {
+            {"game.nsp", 100, true, false, false},
+            {"switch.zip", 50, false, false, false},
+            {"notes.txt", 3, false, false, false},
+        };
+        assert(torrentHasPortArchive(preview));
+        const auto mask = selectPortInstallActions(preview);
+        assert(mask[0] == static_cast<uint8_t>(FileAction::Install));
+        assert(mask[1] == static_cast<uint8_t>(FileAction::Download));
+        assert(mask[2] == static_cast<uint8_t>(FileAction::Skip));
+    }
+    {
+        TorrentPreview preview;
+        preview.files = {{"readme.txt", 4, false, false, false}};
+        assert(!torrentPortLayoutDetected(preview));
+        const auto mask = selectPortInstallActions(preview);
+        assert(mask.size() == 1);
+        assert(mask[0] == static_cast<uint8_t>(FileAction::Download));
+    }
 
     assert(portArchiveSolidFitsRam(0, 0));
     assert(portArchiveSolidFitsRam(100, kPortArchiveSolidRamReserveBytes + 100));
@@ -311,6 +351,7 @@ int main() {
     }
     assert(offered);
     assert(offered->taskId == autoId);
+    assert(!offered->autoStart);
     assert(offered->inspection.canStart());
     autoDeploy.dismissDeployOffer(autoId);
     assert(!autoDeploy.takePendingDeployOffer());
@@ -321,6 +362,42 @@ int main() {
     assert(autoDeploy.snapshot().phase == SwitchDeployPhase::Completed);
     assert(autoDeploy.receiptState(autoId) == SwitchDeployReceiptState::Valid);
     autoDeploy.shutdown();
+
+    const std::string oneTapRoot = root + "/onetap";
+    const std::string oneTapData = oneTapRoot + "/downloads/task";
+    const std::string oneTapTarget = oneTapRoot + "/sd/switch";
+    const std::string oneTapId = "cccccccccccccccccccccccccccccccccccccccc";
+    fs::create_directories(oneTapTarget);
+    writeFile(oneTapData + "/Release/switch/MyPort/MyPort.nro", nro);
+    writeFile(oneTapData + "/Release/switch/MyPort/data.bin", asset);
+    writeFile(oneTapData + "/Release/switch/MyPort/update.nsp", package);
+    writeFile(oneTapData + "/Release/README.txt", external);
+    writeCompletedQueue(oneTapRoot, oneTapId, oneTapData,
+                        nro.size() + asset.size() + package.size() +
+                            external.size(),
+                        "download", "completed");
+    TaskFileManifest oneTapManifest = manifest;
+    oneTapManifest.taskId = oneTapId;
+    assert(saveTaskFileManifest(oneTapRoot, oneTapManifest, error));
+    DownloadManager oneTapManager(oneTapRoot, false);
+    SwitchDeployService oneTapDeploy(oneTapManager, oneTapRoot, oneTapTarget);
+    assert(oneTapDeploy.armAutoCopy(oneTapId));
+    assert(oneTapDeploy.autoCopyArmed(oneTapId));
+    oneTapDeploy.scheduleDeployOfferPoll();
+    std::optional<SwitchDeployService::PendingOffer> oneTapOffer;
+    for (int i = 0; i < 500 && !oneTapOffer; ++i) {
+        oneTapOffer = oneTapDeploy.takePendingDeployOffer();
+        if (!oneTapOffer)
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    assert(oneTapOffer);
+    assert(oneTapOffer->taskId == oneTapId);
+    assert(oneTapOffer->autoStart);
+    assert(oneTapOffer->inspection.canStart());
+    oneTapDeploy.dismissDeployOffer(oneTapId);
+    oneTapDeploy.clearAutoCopy(oneTapId);
+    assert(!oneTapDeploy.autoCopyArmed(oneTapId));
+    oneTapDeploy.shutdown();
 
     setStorageSpaceOverride(nullptr);
     fs::remove_all(root);

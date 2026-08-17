@@ -744,8 +744,35 @@ int main(int argc, char** argv) {
             if (!deployOfferDialogOpen) {
                 auto offer = deploy.takePendingDeployOffer();
                 if (offer) {
-                    deployOfferDialogOpen = true;
                     const std::string offerId = offer->taskId;
+                    auto inspection = std::move(offer->inspection);
+                    if (offer->autoStart && inspection.canStart()) {
+                        std::string startError;
+                        if (deploy.start(offerId, startError))
+                            deploy.dismissDeployOffer(offerId);
+                        else
+                            brls::Application::notify(startError.empty()
+                                ? tr("pipensx/deploy/failed")
+                                : startError);
+                    } else if (offer->autoStart &&
+                               (inspection.problem ==
+                                    pipensx::SwitchDeployProblem::Conflict ||
+                                inspection.problem ==
+                                    pipensx::SwitchDeployProblem::NoSpace ||
+                                inspection.problem ==
+                                    pipensx::SwitchDeployProblem::NoRam)) {
+                        deploy.dismissDeployOffer(offerId);
+                        brls::Application::pushActivity(
+                            new pipensx::ui::SwitchDeployPreviewActivity(
+                                std::move(inspection), &deploy),
+                            brls::TransitionAnimation::NONE);
+                    } else if (offer->autoStart) {
+                        deploy.clearAutoCopy(offerId);
+                        deploy.dismissDeployOffer(offerId);
+                        brls::Application::notify(
+                            tr("pipensx/port_install/copy_skipped"));
+                    } else {
+                    deployOfferDialogOpen = true;
                     const auto task = manager.snapshotUi(offerId);
                     const std::string name =
                         task ? task->name : offerId.substr(0, 8);
@@ -754,7 +781,7 @@ int main(int argc, char** argv) {
                     dialog->addButton(
                         tr("pipensx/deploy/copy"),
                         [&deploy, offerId,
-                         inspection = std::move(offer->inspection),
+                         inspection = std::move(inspection),
                          &deployOfferDialogOpen]() mutable {
                             deployOfferDialogOpen = false;
                             deploy.dismissDeployOffer(offerId);
@@ -792,6 +819,7 @@ int main(int argc, char** argv) {
                             deploy.dismissDeployOffer(offerId);
                         });
                     dialog->open();
+                    }
                 }
             }
 

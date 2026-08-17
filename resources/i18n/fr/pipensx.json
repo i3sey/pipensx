@@ -216,6 +216,14 @@
     "preset_packages": "Paquets",
     "preset_download_all": "Tout télécharger"
   },
+  "port_install": {
+    "unofficial": "Ceci est un port homebrew non officiel. Des étapes supplémentaires peuvent encore être nécessaires pour l'installer.",
+    "indexing": "Lecture des fichiers du torrent...",
+    "layout_detected": "Structure du port détectée. pipensx va tenter de l'installer, mais une configuration supplémentaire peut encore être nécessaire.",
+    "layout_missing": "Aucun dossier switch/ ni archive switch.zip / switch.7z n'a été trouvé. pipensx téléchargera les fichiers ; une configuration supplémentaire peut encore être nécessaire.",
+    "queued": "Ajouté. Les fichiers seront copiés vers /switch à la fin du téléchargement.",
+    "copy_skipped": "Téléchargement terminé. Une configuration supplémentaire peut encore être nécessaire pour installer ce port."
+  },
   "downloads": {
     "import": "Importer un torrent",
     "import_action": "Importer un .torrent",

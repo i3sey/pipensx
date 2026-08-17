@@ -143,12 +143,17 @@ public:
     void shutdown();
     SwitchDeploySnapshot snapshot() const;
     SwitchDeployReceiptState receiptState(const std::string& taskId) const;
-    // Background scan for stream-install ports ready to copy. Never starts a
-    // copy — takePendingDeployOffer() hands the inspected plan to the UI prompt.
+    // Background scan for ports ready to copy. Stream-install tasks without
+    // an auto-copy marker become a UI prompt. Armed one-tap ports set
+    // autoStart so the UI can start the copy without a second question.
     struct PendingOffer {
         std::string taskId;
         SwitchDeployInspection inspection;
+        bool autoStart = false;
     };
+    bool armAutoCopy(const std::string& taskId);
+    void clearAutoCopy(const std::string& taskId);
+    bool autoCopyArmed(const std::string& taskId) const;
     void scheduleDeployOfferPoll();
     std::optional<PendingOffer> takePendingDeployOffer();
     void dismissDeployOffer(const std::string& taskId);

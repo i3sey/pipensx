@@ -571,7 +571,8 @@ public:
             std::move(entry), std::move(lastFailure), manager_, metadata_,
             installed_, settings_,
             std::move(onFailure), std::move(onChange), std::move(onClose),
-            favorites_, deploy_));
+            favorites_, deploy_, false,
+            section_ == CatalogSection::Ports));
     }
 
 private:

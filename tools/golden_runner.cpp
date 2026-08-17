@@ -14,14 +14,16 @@
 //                          update-chooser|
 //                          update-chooser-toggle|settings|settings-debrid|help|
 //                          storage|network-health|first-run|first-run-focus|first-run-disclaimer|debrid-link|
+//                          port-install-warning|port-install-indexing|
 //                          about|bug-report|
 //                          bug-report-detail|bug-report-focus|sidebar-touch
 //                 [--frames N] [--sandbox <dir>]
 //
 // downloads-back, downloads-removing, torrent-selection-scroll, hints-budget,
 // bug-report-focus, sidebar-touch, update-chooser-toggle, first-run-disclaimer,
-// installed-bundles and installed-focus-reload are behaviour checks: they
-// assert and exit non-zero instead of producing a baseline.
+// port-install-indexing, installed-bundles and installed-focus-reload are
+// behaviour checks: they assert and exit non-zero instead of producing a
+// baseline.
 //
 // Determinism notes:
 //   - run with LIBGL_ALWAYS_SOFTWARE=1 so Mesa llvmpipe rasterizes the same
@@ -64,6 +66,7 @@
 #include "ui/catalog/catalog_view.hpp"
 #include "ui/common/ui_helpers.hpp"
 #include "ui/detail/game_detail.hpp"
+#include "ui/detail/port_install_dialog.hpp"
 #include "ui/detail/screenshot_viewer.hpp"
 #include "ui/detail/torrent_selection.hpp"
 #include "ui/downloads/downloads_view.hpp"
@@ -503,6 +506,7 @@ int main(int argc, char** argv) {
     UpdateFileChooserActivity* updateChooser = nullptr;
     std::vector<uint8_t> updateChooserMask;
     bool disclaimerOkFired = false;
+    bool portInstallContinued = false;
     const std::string setupDiagnosticFixture =
         "cut-off secret body api_key=DO_NOT_SHOW\n"
         "[  13010] [diagnostic] schema=1 level=error stage=net "
@@ -956,6 +960,9 @@ int main(int argc, char** argv) {
         // Host for the disclaimer dialog; the dialog is opened right after
         // the activity is pushed below.
         activity = new GoldenActivity(new brls::Box());
+    } else if (screen == "port-install-warning" ||
+               screen == "port-install-indexing") {
+        activity = new GoldenActivity(new brls::Box());
     } else if (screen == "debrid-link") {
         pipensx::AppSettingsData values = settings.get();
         values.debridProvider = pipensx::DebridProviderKind::TorBox;
@@ -1016,6 +1023,14 @@ int main(int argc, char** argv) {
     if (screen == "first-run-disclaimer")
         pipensx::ui::showCatalogDisclaimer(
             &settings, [&disclaimerOkFired] { disclaimerOkFired = true; });
+    if (screen == "port-install-warning")
+        pipensx::ui::openPortInstallDialog(
+            [] {}, [] {},
+            pipensx::ui::tr("pipensx/port_install/layout_detected"), true);
+    if (screen == "port-install-indexing")
+        pipensx::ui::openPortInstallDialog(
+            [&portInstallContinued] { portInstallContinued = true; },
+            [] {});
     for (int i = 0; i < frames; ++i) {
         if (i == 10 && focusAfterLayout)
             brls::Application::giveFocus(focusAfterLayout);
@@ -1561,6 +1576,56 @@ int main(int argc, char** argv) {
         if (!disclaimerOkFired)
             return fail("first-run-disclaimer OK did not continue the chain");
         std::printf("golden_runner: disclaimer blocks B and continues on OK\n");
+        manager.shutdown();
+        std::fflush(nullptr);
+        _exit(0);
+    }
+
+    if (screen == "port-install-indexing") {
+        auto stack = brls::Application::getActivitiesStack();
+        if (stack.size() < 2)
+            return fail("port-install-indexing never opened over the host");
+        brls::Activity* dialogActivity = stack.back();
+        brls::Button* cont = nullptr;
+        std::function<void(brls::View*)> findContinue = [&](brls::View* node) {
+            if (cont)
+                return;
+            if (auto* button = dynamic_cast<brls::Button*>(node))
+                if (button->getVisibility() == brls::Visibility::VISIBLE &&
+                    button->getText() == pipensx::ui::tr("pipensx/common/continue"))
+                    cont = button;
+            if (auto* box = dynamic_cast<brls::Box*>(node))
+                for (brls::View* child : box->getChildren())
+                    findContinue(child);
+        };
+        findContinue(dialogActivity->getContentView());
+        if (!cont)
+            return fail("port-install-indexing has no Continue button");
+        brls::Action* contAction = nullptr;
+        for (const auto& action : cont->getActions())
+            if (action->getType() == brls::ACTION_GAMEPAD &&
+                action->getButton() == brls::BUTTON_A)
+                contAction = action.get();
+        if (!contAction)
+            return fail("port-install-indexing Continue has no A action");
+        contAction->getActionListener()(cont);
+        for (int frame = 0; frame < 5; ++frame)
+            brls::Application::mainLoop();
+        if (portInstallContinued)
+            return fail("port-install-indexing Continue proceeded while indexing");
+        if (brls::Application::getActivitiesStack().back() != dialogActivity)
+            return fail("port-install-indexing Continue dismissed while indexing");
+        brls::Application::onControllerButtonPressed(brls::BUTTON_B, false);
+        for (int frame = 0; frame < 180; ++frame) {
+            brls::Application::mainLoop();
+            if (brls::Application::getActivitiesStack().back() == activity)
+                break;
+        }
+        if (brls::Application::getActivitiesStack().back() != activity)
+            return fail("port-install-indexing B never dismissed the dialog");
+        if (portInstallContinued)
+            return fail("port-install-indexing B continued the install");
+        std::printf("golden_runner: port install Continue waits for indexing\n");
         manager.shutdown();
         std::fflush(nullptr);
         _exit(0);

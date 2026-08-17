@@ -2,7 +2,6 @@
 
 #include <cstdint>
 #include <functional>
-#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -12,6 +11,7 @@
 #include "app/download_manager.hpp"
 #include "app/install_space.hpp"
 #include "app/nx_file_types.hpp"
+#include "app/port_selection.hpp"
 #include "ui/common/action_icon.hpp"
 #include "ui/common/storage_meter.hpp"
 #include "ui/common/ui_helpers.hpp"
@@ -216,27 +216,10 @@ public:
 
     void selectPortFiles(const TorrentPreview& preview,
                          const std::string& root) {
-        auto lower = [](std::string value) {
-            for (char& ch : value)
-                if (ch >= 'A' && ch <= 'Z')
-                    ch = static_cast<char>(ch - 'A' + 'a');
-            return value;
-        };
-        const std::string prefix = root.empty() ? std::string()
-                                                : lower(root) + "/";
-        for (size_t i = 0; i < entries_.size() && i < preview.files.size(); ++i) {
-            const std::string logical = preview.multi
-                ? preview.name + "/" + preview.files[i].path
-                : preview.files[i].path;
-            const std::string folded = lower(logical);
-            const bool underRoot =
-                !prefix.empty() && folded.rfind(prefix, 0) == 0 &&
-                !entries_[i].package && !entries_[i].cartridge;
-            const bool portArchive = isPortArchiveName(logical) &&
-                !entries_[i].package && !entries_[i].cartridge;
-            entries_[i].action = underRoot || portArchive
-                ? FileAction::Download : FileAction::Skip;
-        }
+        const std::vector<uint8_t> mask =
+            pipensx::selectPortPayloadActions(preview, root);
+        for (size_t i = 0; i < entries_.size() && i < mask.size(); ++i)
+            entries_[i].action = static_cast<FileAction>(mask[i]);
     }
 
     size_t selectedCount() const {
@@ -356,8 +339,9 @@ public:
         meter_->setMarginBottom(10);
         content->addView(meter_);
 
-        portRoot_ = candidatePortRoot();
-        const bool portLayout = !portRoot_.empty() || hasPortArchive();
+        portRoot_ = pipensx::candidatePortRoot(preview_);
+        const bool portLayout =
+            !portRoot_.empty() || pipensx::torrentHasPortArchive(preview_);
         if (portLayout) {
             portHint_ = new brls::Label();
             portHint_->setFontSize(theme::kFontCaption);
@@ -488,53 +472,6 @@ public:
                            confirmSelection();
                            return true;
                        });
-    }
-
-private:
-    std::string candidatePortRoot() const {
-        auto lower = [](std::string value) {
-            for (char& ch : value)
-                if (ch >= 'A' && ch <= 'Z')
-                    ch = static_cast<char>(ch - 'A' + 'a');
-            return value;
-        };
-        std::set<std::string> roots;
-        for (const TorrentPreview::File& file : preview_.files) {
-            const std::string logical = preview_.multi
-                ? preview_.name + "/" + file.path : file.path;
-            const std::string folded = lower(logical);
-            if (folded.size() < 4 ||
-                folded.compare(folded.size() - 4, 4, ".nro") != 0)
-                continue;
-            size_t start = 0;
-            while (start < logical.size()) {
-                const size_t slash = logical.find('/', start);
-                const std::string component = logical.substr(
-                    start, slash == std::string::npos ? std::string::npos
-                                                       : slash - start);
-                if (lower(component) == "switch") {
-                    roots.insert(lower(
-                        logical.substr(0, start + component.size())));
-                    break;
-                }
-                if (slash == std::string::npos)
-                    break;
-                start = slash + 1;
-            }
-        }
-        if (roots.size() == 1)
-            return *roots.begin();
-        return {};
-    }
-
-    bool hasPortArchive() const {
-        for (const TorrentPreview::File& file : preview_.files) {
-            const std::string logical = preview_.multi
-                ? preview_.name + "/" + file.path : file.path;
-            if (isPortArchiveName(logical))
-                return true;
-        }
-        return false;
     }
 
     // One "<glyph> Label" pair of the icon key. Same glyphs the rows draw, so
