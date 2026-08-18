@@ -287,25 +287,6 @@ inline float installProgressOf(const DownloadTask& task) {
                               static_cast<float>(task.installTotalBytes));
 }
 
-// Stream-install bar: per-package install % resets to 0 on each NSP. Combine
-// committed packages with the current package fraction, and never drop below
-// the selection-aware download fraction so the bar does not jump backwards.
-inline float streamInstallProgressOf(const DownloadTask& task) {
-    const float wanted = progressOf(task);
-    if (task.mode != TransferMode::StreamInstall || task.packageCount == 0)
-        return wanted;
-    float packageFrac = 0.0f;
-    if (task.status == DownloadStatus::Installing ||
-        task.status == DownloadStatus::Committing)
-        packageFrac = installProgressOf(task);
-    else if (task.packagesInstalled >= task.packageCount)
-        packageFrac = 1.0f;
-    const float fromPackages =
-        (static_cast<float>(task.packagesInstalled) + packageFrac) /
-        static_cast<float>(task.packageCount);
-    return std::min(1.0f, std::max(wanted, fromPackages));
-}
-
 inline int percentOf(float progress) {
     return static_cast<int>(std::clamp(progress, 0.0f, 1.0f) * 100.0f);
 }

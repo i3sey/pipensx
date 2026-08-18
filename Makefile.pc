@@ -310,6 +310,11 @@ test: $(TEST_BINS)
 	./$(BUILD_DIR)/tests/test_manager
 
 
+# Header-only: exercises the inline progress fractions in download_manager.hpp.
+$(BUILD_DIR)/tests/test_task_progress: tests/test_task_progress.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $<
+
 $(BUILD_DIR)/tests/test_app_settings: tests/test_app_settings.cpp src/app/app_settings.cpp \
 		$(BUILD_DIR)/src/app/companion_settings.o $(BUILD_DIR)/src/core/util.o
 	@mkdir -p $(dir $@)

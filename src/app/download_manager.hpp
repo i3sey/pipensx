@@ -128,6 +128,33 @@ inline std::pair<uint64_t, uint64_t> downloadProgressBytes(
     return {task.completedBytes, task.totalBytes};
 }
 
+// Stream-install progress fraction. While a package is installing or
+// committing, blend the package axis (packagesInstalled + current install
+// fraction over packageCount) with the selection-aware download fraction,
+// taking the max so the bar never drops below the download axis. Outside
+// those phases the bar is the download fraction alone: a single-package port
+// whose forwarder commits early must not peg at 100% while its data files
+// are still downloading.
+inline float streamInstallProgressOf(const DownloadTask& task) {
+    const auto wanted = downloadProgressBytes(task);
+    const float wantedFrac = wanted.second
+        ? std::min(1.0f, static_cast<float>(wanted.first) /
+                         static_cast<float>(wanted.second))
+        : 0.0f;
+    if (task.mode != TransferMode::StreamInstall || task.packageCount == 0 ||
+        (task.status != DownloadStatus::Installing &&
+         task.status != DownloadStatus::Committing))
+        return wantedFrac;
+    const float installFrac = task.installTotalBytes
+        ? std::min(1.0f, static_cast<float>(task.installedBytes) /
+                         static_cast<float>(task.installTotalBytes))
+        : 0.0f;
+    const float fromPackages =
+        (static_cast<float>(task.packagesInstalled) + installFrac) /
+        static_cast<float>(task.packageCount);
+    return std::min(1.0f, std::max(wantedFrac, fromPackages));
+}
+
 struct TorrentPreview {
     std::string name;
     std::string infoHash;
