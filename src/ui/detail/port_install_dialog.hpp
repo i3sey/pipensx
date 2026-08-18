@@ -45,6 +45,15 @@ inline PortInstallDialogHost openPortInstallDialog(
 
     auto* box = new Body();
     box->setAxis(brls::Axis::COLUMN);
+    // Same padding as the stock brls::Dialog(text) body: without it the
+    // labels span the full 720px dialog width and the wrapped Russian text
+    // touches the window edges (and is clipped by them once the system font
+    // runs a few pixels wider).
+    box->setPadding(
+        brls::Application::getStyle()["brls/dialog/paddingTopBottom"],
+        brls::Application::getStyle()["brls/dialog/paddingLeftRight"],
+        brls::Application::getStyle()["brls/dialog/paddingTopBottom"],
+        brls::Application::getStyle()["brls/dialog/paddingLeftRight"]);
 
     auto* warning = new brls::Label();
     warning->setFontSize(brls::Application::getStyle()["brls/dialog/fontSize"]);
