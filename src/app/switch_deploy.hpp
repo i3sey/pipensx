@@ -7,6 +7,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -190,6 +191,78 @@ private:
     std::mutex offerMutex_;
     std::unordered_set<std::string> offerHandled_;
     std::optional<PendingOffer> pendingOffer_;
+};
+
+// What removing one installed port touches, computed up front so the
+// confirmation dialog can show the breakdown. One title maps to one or more
+// infohashes (task ids); every hash with a deployment receipt is cleaned.
+struct PortUninstallPlan {
+    std::string titleId;
+    std::vector<std::string> taskIds;
+    // Exact mode: destination-relative paths under /switch to delete
+    // (receipt copies plus unpacked archive members).
+    std::vector<std::string> switchFiles;
+    uint64_t switchBytes = 0;
+    // Folder mode: a v1 receipt whose archive is gone from the task data, so
+    // the unpacked list cannot be rebuilt — these top-level folders under
+    // /switch are removed entirely instead.
+    std::vector<std::string> wholeFolders;
+    bool hasTask = false;
+    bool taskHasData = false;
+};
+
+struct PortUninstallReport {
+    bool shortcutRemoved = false;
+    bool filesDeleted = false;
+    bool tasksRemoved = false;
+    size_t filesRemoved = 0;
+    size_t filesMissing = 0;
+    size_t filesFailed = 0;
+    std::string error;
+
+    bool complete() const {
+        return shortcutRemoved && filesDeleted && tasksRemoved;
+    }
+};
+
+// Stateless helper for full port removal from "My Games": deployed files →
+// download task + data → the ncm shortcut (injected, keeps this service free
+// of InstalledTitleService so it builds on PC) → receipts and auto-copy
+// markers. Best-effort: already-missing files are fine, and the receipts
+// survive a failed run so tapping Uninstall again is safe.
+class PortUninstallService {
+public:
+    PortUninstallService(DownloadManager& manager, std::string appRoot,
+                         std::string targetRoot);
+
+    bool receiptExists(const std::string& taskId) const;
+
+    // Builds the removal breakdown for the dialog. False when none of the
+    // receipts could be read (caller falls back to a plain shortcut
+    // uninstall, leaving the deployment untouched).
+    bool plan(const std::string& titleId,
+              const std::vector<std::string>& taskIds,
+              PortUninstallPlan& plan) const;
+
+    // Runs the removal pipeline synchronously — call from a worker thread.
+    // uninstallShortcut(error) removes the ncm shortcut (existing installed
+    // title uninstall); false and a non-empty error marks the run failed.
+    // Returns report.complete(); on full success the receipts and auto-copy
+    // markers are deleted.
+    bool uninstallPort(
+        const PortUninstallPlan& plan,
+        const std::function<bool(std::string&)>& uninstallShortcut,
+        PortUninstallReport& report) const;
+
+private:
+    bool deleteDeployed(const PortUninstallPlan& plan,
+                        PortUninstallReport& report) const;
+    bool removeTasks(const PortUninstallPlan& plan,
+                     PortUninstallReport& report) const;
+
+    DownloadManager& manager_;
+    std::string appRoot_;
+    std::string targetRoot_;
 };
 
 } // namespace pipensx

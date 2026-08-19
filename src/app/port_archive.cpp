@@ -50,6 +50,7 @@ constexpr UInt32 kMethodIa64 = 0x3030401;
 constexpr UInt32 kMethodArm = 0x3030501;
 constexpr UInt32 kMethodArmt = 0x3030701;
 constexpr UInt32 kMethodSparc = 0x3030805;
+constexpr size_t kMaxProbeFiles = 16384;
 
 std::string lowerAscii(std::string value) {
     for (char& ch : value)
@@ -297,6 +298,65 @@ bool extractZip(const std::string& archivePath, const std::string& targetRoot,
         error = "Cancelled.";
         return false;
     }
+    return true;
+}
+
+// Header-only ZIP member walk (no decompression): fills unpackBytes,
+// switchFiles and the switch-relative member list. Mirrors extractZip's
+// member handling so the two can never disagree about what lands in
+// targetRoot.
+bool probeZip(const std::string& archivePath, PortArchiveProbe& out) {
+    std::FILE* file = std::fopen(archivePath.c_str(), "rb");
+    if (!file) {
+        out.error = "Unable to open ZIP archive.";
+        return false;
+    }
+    std::vector<uint8_t> local(30);
+    std::vector<uint8_t> name;
+    while (true) {
+        if (std::fread(local.data(), 1, 30, file) != 30) {
+            if (std::feof(file))
+                break;
+            std::fclose(file);
+            out.error = "Truncated ZIP local header.";
+            return false;
+        }
+        const uint32_t sig = readU32le(local.data());
+        if (sig == 0x02014b50 || sig == 0x06054b50)
+            break; // central directory / end
+        if (sig != 0x04034b50) {
+            std::fclose(file);
+            out.error = "Invalid ZIP local header.";
+            return false;
+        }
+        const uint32_t compSize = readU32le(local.data() + 18);
+        const uint32_t uncompSize = readU32le(local.data() + 22);
+        const uint16_t nameLen = readU16le(local.data() + 26);
+        const uint16_t extraLen = readU16le(local.data() + 28);
+        name.resize(nameLen);
+        if (nameLen && std::fread(name.data(), 1, nameLen, file) != nameLen) {
+            std::fclose(file);
+            out.error = "Truncated ZIP entry header.";
+            return false;
+        }
+        const uint64_t skip = static_cast<uint64_t>(extraLen) + compSize;
+        if (skip && std::fseek(file, static_cast<long>(skip), SEEK_CUR) != 0) {
+            std::fclose(file);
+            out.error = "Truncated ZIP entry data.";
+            return false;
+        }
+        const std::string member(reinterpret_cast<char*>(name.data()), nameLen);
+        const bool isDir = !member.empty() && member.back() == '/';
+        const std::string relative =
+            isDir ? std::string() : switchRelativeDestination(member);
+        if (relative.empty())
+            continue;
+        ++out.switchFiles;
+        out.unpackBytes += uncompSize;
+        if (out.files.size() < kMaxProbeFiles)
+            out.files.push_back(relative);
+    }
+    std::fclose(file);
     return true;
 }
 
@@ -1071,10 +1131,13 @@ bool probe7z(const std::string& archivePath, PortArchiveProbe& out) {
         nameBuf.resize(nameLen);
         SzArEx_GetFileNameUtf16(&db, i, nameBuf.data());
         const std::string member = utf16ToUtf8(nameBuf.data(), nameLen);
-        if (switchRelativeDestination(member).empty())
+        const std::string relative = switchRelativeDestination(member);
+        if (relative.empty())
             continue;
         ++out.switchFiles;
         out.unpackBytes += SzArEx_GetFileSize(&db, i);
+        if (out.files.size() < kMaxProbeFiles)
+            out.files.push_back(relative);
     }
     SzArEx_Free(&db, &allocImp);
     ISzAlloc_Free(&allocImp, lookStream.buf);
@@ -1094,12 +1157,8 @@ bool probePortArchive(const std::string& archivePath, PortArchiveProbe& out) {
     out.packedBytes = static_cast<uint64_t>(st.st_size);
     const std::string base = lowerAscii(basenameOf(archivePath));
     if (base == "switch.zip" || endsWithCi(archivePath, ".zip")) {
-        // ZIP extracts entry-by-entry; treat packed size as a stand-in.
-        out.unpackBytes = out.packedBytes;
-        out.maxSolidBlockBytes = 0;
-        out.switchFiles = 1;
-        out.ok = true;
-        return true;
+        out.ok = probeZip(archivePath, out);
+        return out.ok;
     }
     if (base == "switch.7z" || endsWithCi(archivePath, ".7z")) {
         out.ok = probe7z(archivePath, out);
