@@ -662,11 +662,40 @@ int main(int argc, char** argv) {
                 activity->refreshUpdateBadge();
             }
             if (deployState.phase != lastDeployPhase) {
-                if (deployState.phase == pipensx::SwitchDeployPhase::Completed)
+                if (deployState.phase == pipensx::SwitchDeployPhase::Completed) {
                     brls::Application::notify(deployState.detail.empty()
                         ? tr("pipensx/deploy/completed")
                         : tr("pipensx/deploy/completed_warning",
                              deployState.detail));
+                    // The port now lives in /switch, so the downloaded
+                    // files only waste SD space. Offer to delete them.
+                    const auto deployed =
+                        manager.snapshotUi(deployState.taskId);
+                    if (deployed &&
+                        (deployed->status ==
+                             pipensx::DownloadStatus::Completed ||
+                         deployed->status ==
+                             pipensx::DownloadStatus::Installed)) {
+                        const std::string cleanupTaskId = deployState.taskId;
+                        auto* cleanupDialog = new brls::Dialog(tr(
+                            "pipensx/deploy/cleanup_question", deployed->name));
+                        cleanupDialog->addButton(
+                            tr("pipensx/downloads/remove_keep"), [] {});
+                        cleanupDialog->addButton(
+                            tr("pipensx/downloads/remove_delete"),
+                            [&manager, cleanupTaskId] {
+                                brls::async([&manager, cleanupTaskId] {
+                                    std::string error;
+                                    if (!manager.remove(cleanupTaskId, true,
+                                                        error))
+                                        brls::sync([error] {
+                                            brls::Application::notify(error);
+                                        });
+                                });
+                            });
+                        cleanupDialog->open();
+                    }
+                }
                 else if (deployState.phase ==
                          pipensx::SwitchDeployPhase::Failed)
                     brls::Application::notify(

@@ -329,6 +329,7 @@
     "archive_files": "{} files inside",
     "archive_unreadable": "cannot read archive",
     "offer_question": "Port files for «{}» are ready. Copy them to /switch now?",
+    "cleanup_question": "«{}» was copied to /switch. Delete the downloaded data to free SD card space?",
     "warning": "Only files under the detected switch directory are copied. Selected switch.7z / switch.zip archives are extracted. Conflicting destination files block the copy (nothing is overwritten).",
     "state_copy": "Will copy",
     "state_identical": "Already identical",

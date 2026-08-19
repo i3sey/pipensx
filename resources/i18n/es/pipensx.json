@@ -329,6 +329,7 @@
     "archive_files": "{} archivos dentro",
     "archive_unreadable": "no se puede leer el archivo",
     "offer_question": "Los archivos del port «{}» están listos. ¿Copiarlos a /switch ahora?",
+    "cleanup_question": "«{}» se copió a /switch. ¿Eliminar los datos descargados para liberar espacio en la tarjeta SD?",
     "warning": "Solo se copian archivos bajo la carpeta switch detectada. Los archivos switch.7z / switch.zip seleccionados se extraen. Los archivos de destino en conflicto bloquean la copia (nada se sobrescribe).",
     "state_copy": "Se copiará",
     "state_identical": "Ya idéntico",

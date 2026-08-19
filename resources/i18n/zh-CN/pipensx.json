@@ -329,6 +329,7 @@
     "archive_files": "内含 {} 个文件",
     "archive_unreadable": "无法读取存档",
     "offer_question": "「{}」的移植文件已就绪。现在复制到 /switch 吗？",
+    "cleanup_question": "「{}」已复制到 /switch。删除已下载的数据以释放 SD 卡空间？",
     "warning": "仅复制检测到的 switch 目录下的文件。选中的 switch.7z / switch.zip 存档会被解压。目标文件冲突会阻止复制（不会覆盖任何内容）。",
     "state_copy": "将复制",
     "state_identical": "已完全相同",
