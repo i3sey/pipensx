@@ -90,6 +90,17 @@ inline bool switchDeployOffersCopy(SwitchDeployProblem problem) {
            problem == SwitchDeployProblem::NoRam;
 }
 
+// True when every deployable file already sits on the destination byte-for-byte
+// identical and there is no archive left to extract — the port is fully
+// installed and a copy offer would be a no-op.
+inline bool switchDeployFullyInstalled(
+    const SwitchDeployInspection& inspection) {
+    return inspection.problem == SwitchDeployProblem::None &&
+           !inspection.plan.files.empty() &&
+           inspection.plan.identicalFiles == inspection.plan.files.size() &&
+           inspection.plan.archives.empty();
+}
+
 enum class SwitchDeployPhase {
     Idle,
     Preparing,

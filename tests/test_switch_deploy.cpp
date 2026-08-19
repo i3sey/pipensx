@@ -171,6 +171,7 @@ int main() {
     assert(inspection.plan.files.size() == 2);
     assert(inspection.plan.ignoredFiles == 2);
     assert(inspection.plan.bytesToCopy == nro.size() + asset.size());
+    assert(!switchDeployFullyInstalled(inspection));
     assert(inspection.plan.files[0].destinationRelativePath ==
                "MyPort/MyPort.nro" ||
            inspection.plan.files[1].destinationRelativePath ==
@@ -276,11 +277,13 @@ int main() {
     assert(inspection.canStart());
     assert(inspection.plan.identicalFiles == 2);
     assert(inspection.plan.bytesToCopy == 0);
+    assert(switchDeployFullyInstalled(inspection));
 
     writeFile(target + "/MyPort/data.bin", "DIFFERENT");
     inspection = deploy.inspect(taskId);
     assert(inspection.problem == SwitchDeployProblem::Conflict);
     assert(inspection.plan.conflictFiles == 1);
+    assert(!switchDeployFullyInstalled(inspection));
     assert(deploy.receiptState(taskId) == SwitchDeployReceiptState::Modified);
 
     deploy.shutdown();
@@ -398,6 +401,66 @@ int main() {
     oneTapDeploy.clearAutoCopy(oneTapId);
     assert(!oneTapDeploy.autoCopyArmed(oneTapId));
     oneTapDeploy.shutdown();
+
+    // Deleting the installed files must not restart the copy. A one-tap
+    // auto-copy that already ran leaves a receipt; when the user removes the
+    // files from /switch afterwards, the next app start must not offer or
+    // auto-start the copy again — restoring them is a manual choice.
+    const std::string rearmRoot = root + "/rearm";
+    const std::string rearmData = rearmRoot + "/downloads/task";
+    const std::string rearmTarget = rearmRoot + "/sd/switch";
+    const std::string rearmId = "dddddddddddddddddddddddddddddddddddddddd";
+    fs::create_directories(rearmTarget);
+    writeFile(rearmData + "/Release/switch/MyPort/MyPort.nro", nro);
+    writeFile(rearmData + "/Release/switch/MyPort/data.bin", asset);
+    writeFile(rearmData + "/Release/switch/MyPort/update.nsp", package);
+    writeFile(rearmData + "/Release/README.txt", external);
+    writeCompletedQueue(rearmRoot, rearmId, rearmData,
+                        nro.size() + asset.size() + package.size() +
+                            external.size(),
+                        "install", "installed");
+    TaskFileManifest rearmManifest = manifest;
+    rearmManifest.taskId = rearmId;
+    assert(saveTaskFileManifest(rearmRoot, rearmManifest, error));
+    DownloadManager rearmManager(rearmRoot, false);
+    SwitchDeployService rearmDeploy(rearmManager, rearmRoot, rearmTarget);
+    assert(rearmDeploy.armAutoCopy(rearmId));
+    rearmDeploy.scheduleDeployOfferPoll();
+    std::optional<SwitchDeployService::PendingOffer> rearmOffer;
+    for (int i = 0; i < 500 && !rearmOffer; ++i) {
+        rearmOffer = rearmDeploy.takePendingDeployOffer();
+        if (!rearmOffer)
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    assert(rearmOffer);
+    assert(rearmOffer->autoStart);
+    assert(rearmOffer->inspection.canStart());
+    rearmDeploy.dismissDeployOffer(rearmId);
+    assert(rearmDeploy.start(rearmId, error, false));
+    for (int i = 0; i < 500 && rearmDeploy.snapshot().active(); ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    assert(rearmDeploy.snapshot().phase == SwitchDeployPhase::Completed);
+    assert(rearmDeploy.receiptState(rearmId) == SwitchDeployReceiptState::Valid);
+    // The one-tap marker survives until the next offer poll, like on console.
+    assert(rearmDeploy.autoCopyArmed(rearmId));
+    // User deletes the installed port files from /switch.
+    fs::remove_all(rearmTarget + "/MyPort");
+    assert(rearmDeploy.receiptState(rearmId) ==
+           SwitchDeployReceiptState::Modified);
+    rearmDeploy.shutdown();
+    {
+        // Fresh service = fresh offer bookkeeping, as after an app restart.
+        SwitchDeployService fresh(rearmManager, rearmRoot, rearmTarget);
+        fresh.scheduleDeployOfferPoll();
+        std::optional<SwitchDeployService::PendingOffer> rearmAgain;
+        for (int i = 0; i < 500 && !rearmAgain; ++i) {
+            rearmAgain = fresh.takePendingDeployOffer();
+            if (!rearmAgain)
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        assert(!rearmAgain);
+        assert(!fresh.autoCopyArmed(rearmId));
+    }
 
     setStorageSpaceOverride(nullptr);
     fs::remove_all(root);

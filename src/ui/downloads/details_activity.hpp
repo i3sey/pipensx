@@ -113,7 +113,7 @@ public:
         filesButton_ = addActionButton(sidebar, tr("pipensx/files/open"),
                                        &brls::BUTTONSTYLE_DEFAULT);
         filesButton_->setVisibility(brls::Visibility::GONE);
-        copyButton_ = addActionButton(sidebar, tr("pipensx/deploy/copy"),
+        copyButton_ = addActionButton(sidebar, tr("pipensx/deploy/install_port"),
                                       &brls::BUTTONSTYLE_PRIMARY);
         copyButton_->setVisibility(brls::Visibility::GONE);
 
@@ -308,7 +308,13 @@ private:
                     "pipensx/files/summary", inspection.inventory.files.size(),
                     formatBytes(inspection.inventory.presentBytes)));
                 copyAvailable_ = switchDeployOffersCopy(inspection.problem);
-                if (!copyAvailable_) {
+                installed_ = switchDeployFullyInstalled(inspection);
+                if (installed_) {
+                    deployProgress_->setProgress(1.0f);
+                    setTextIfChanged(deployPhase_,
+                                     tr("pipensx/deploy/installed"));
+                    setTextIfChanged(deployStatus_, "");
+                } else if (!copyAvailable_) {
                     setTextIfChanged(deployPhase_, "");
                     setTextIfChanged(deployStatus_, "");
                     deployProgress_->setProgress(0.0f);
@@ -342,6 +348,12 @@ private:
     }
 
     void showReceiptState() {
+        if (installed_) {
+            deployProgress_->setProgress(1.0f);
+            setTextIfChanged(deployPhase_, tr("pipensx/deploy/installed"));
+            setTextIfChanged(deployStatus_, "");
+            return;
+        }
         if (!receiptChecked_) {
             loadReceiptState();
             setTextIfChanged(deployPhase_, tr("pipensx/deploy/preparing"));
@@ -392,6 +404,16 @@ private:
                     setSwitchFilesVisible(false);
                     return;
                 }
+                copyAvailable_ = true;
+                if (switchDeployFullyInstalled(inspection)) {
+                    installed_ = true;
+                    deployProgress_->setProgress(1.0f);
+                    setTextIfChanged(deployPhase_,
+                                     tr("pipensx/deploy/installed"));
+                    setTextIfChanged(deployStatus_, "");
+                    refresh();
+                    return;
+                }
                 brls::Application::pushActivity(
                     new SwitchDeployPreviewActivity(std::move(inspection),
                                                     deploy_));
@@ -431,7 +453,7 @@ private:
             deployStatus_->setTextColor(theme::accent());
             return;
         }
-        setTextIfChanged(copyButton_, tr("pipensx/deploy/copy"));
+        setTextIfChanged(copyButton_, tr("pipensx/deploy/install_port"));
         deployPhase_->setTextColor(theme::textSecondary());
         deployStatus_->setTextColor(theme::textSecondary());
         if (state.taskId == taskId_) {
@@ -592,25 +614,22 @@ private:
             (task.status == DownloadStatus::Installing ||
              task.status == DownloadStatus::Committing);
         const bool showSwitchFiles = deploy_ != nullptr &&
-            ((deploy.active() && deploy.taskId == taskId_) || copyAvailable_);
+            ((deploy.active() && deploy.taskId == taskId_) || copyAvailable_ ||
+             installed_);
         setSwitchFilesVisible(showSwitchFiles);
         setButtonAvailable(filesButton_, showSwitchFiles);
-        const bool copyEnabled = showSwitchFiles &&
+        const bool copyEnabled = showSwitchFiles && !installed_ &&
             ((deploy.active() && deploy.taskId == taskId_) ||
              (copyAvailable_ && !busyElsewhere && !packageBusy));
         setButtonAvailable(copyButton_, copyEnabled);
-        if (deploy_ && !leased && !copyAvailable_ && availabilityLoaded_ &&
-            !availabilityLoading_) {
-            // Keep the label informative when Copy cannot start yet.
-            setTextIfChanged(copyButton_, tr("pipensx/deploy/copy"));
-        } else if (busyElsewhere) {
-            setTextIfChanged(copyButton_, tr("pipensx/deploy/problem_busy"));
-        } else if (packageBusy) {
-            setTextIfChanged(copyButton_, tr("pipensx/deploy/problem_busy"));
-        } else if (leased) {
+        if (leased) {
             setTextIfChanged(copyButton_, tr("pipensx/deploy/cancel"));
+        } else if (installed_) {
+            setTextIfChanged(copyButton_, tr("pipensx/deploy/installed"));
+        } else if (busyElsewhere || packageBusy) {
+            setTextIfChanged(copyButton_, tr("pipensx/deploy/problem_busy"));
         } else {
-            setTextIfChanged(copyButton_, tr("pipensx/deploy/copy"));
+            setTextIfChanged(copyButton_, tr("pipensx/deploy/install_port"));
         }
     }
 
@@ -707,6 +726,7 @@ private:
     bool availabilityLoaded_ = false;
     bool availabilityLoading_ = false;
     bool copyAvailable_ = false;
+    bool installed_ = false;
     bool receiptChecked_ = false;
     bool receiptLoading_ = false;
     SwitchDeployReceiptState receiptState_ = SwitchDeployReceiptState::None;

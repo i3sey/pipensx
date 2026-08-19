@@ -315,6 +315,8 @@
   },
   "deploy": {
     "copy": "复制到 /switch",
+    "install_port": "安装移植",
+    "installed": "已安装",
     "cancel": "取消 /switch 复制",
     "preview_title": "复制预览",
     "preparing": "正在检查源文件和目标文件…",
