@@ -70,6 +70,11 @@ inline const Token kTokens[] = {
     {"pipensx/overlay", nvgRGBA(240, 240, 244, 235), nvgRGBA(35, 35, 40, 235)},
     {"pipensx/panel", nvgRGBA(228, 228, 234, 180), nvgRGBA(45, 45, 50, 180)},
     {"pipensx/track", nvgRGBA(128, 128, 128, 70), nvgRGBA(128, 128, 128, 70)},
+    // Settings sub-sidebar: a shade off the app background so the section
+    // column reads as a rail, and the translucent accent wash behind the
+    // active section item.
+    {"pipensx/sidebar", nvgRGB(232, 232, 238), nvgRGB(50, 50, 50)},
+    {"pipensx/sidebar_active", nvgRGBA(0, 195, 227, 26), nvgRGBA(0, 195, 227, 26)},
 
     // Storage meter. The segmented SD bar needs far more separation than
     // the generic track/surface pair: the dark sidebar sits at rgb(50,50,50)
@@ -99,7 +104,7 @@ inline const Token kTokens[] = {
 enum class Tok : size_t {
     Accent, OnAccent, Error, Success, Warning,
     TextPrimary, TextSecondary, TextTertiary, TextDisabled,
-    Surface, Overlay, Panel, Track,
+    Surface, Overlay, Panel, Track, Sidebar, SidebarActive,
     MeterTrack, MeterUsed, MeterBorder,
     GraphBg, GraphGrid,
     QrPaper, QrInk,
@@ -135,6 +140,8 @@ inline NVGcolor surface() { return color(Tok::Surface); }
 inline NVGcolor overlay() { return color(Tok::Overlay); }
 inline NVGcolor panel() { return color(Tok::Panel); }
 inline NVGcolor track() { return color(Tok::Track); }
+inline NVGcolor sidebar() { return color(Tok::Sidebar); }
+inline NVGcolor sidebarActive() { return color(Tok::SidebarActive); }
 inline NVGcolor meterTrack() { return color(Tok::MeterTrack); }
 inline NVGcolor meterUsed() { return color(Tok::MeterUsed); }
 inline NVGcolor meterBorder() { return color(Tok::MeterBorder); }
