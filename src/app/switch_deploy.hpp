@@ -237,8 +237,11 @@ public:
 
     bool receiptExists(const std::string& taskId) const;
 
-    // Builds the removal breakdown for the dialog. False when none of the
-    // receipts could be read (caller falls back to a plain shortcut
+    // Builds the removal breakdown for the dialog. Receipts are matched to
+    // the title by the recorded title ids (v3) or the forwarder package name
+    // in the task manifest (older receipts); `taskIds` (metadata-index
+    // infohashes) is only a fallback for ordinary NSP titles. False when no
+    // matching receipt could be read (caller falls back to a plain shortcut
     // uninstall, leaving the deployment untouched).
     bool plan(const std::string& titleId,
               const std::vector<std::string>& taskIds,

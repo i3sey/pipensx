@@ -28,7 +28,7 @@ namespace {
 
 constexpr size_t kCopyBufferBytes = 256 * 1024;
 constexpr uint32_t kNroMagic = 0x304f524e;
-constexpr int64_t kReceiptVersion = 2;
+constexpr int64_t kReceiptVersion = 3;
 constexpr int64_t kJobVersion = 1;
 constexpr size_t kMaxStateBytes = 8 * 1024 * 1024;
 constexpr size_t kMaxReceiptUnpacked = 16384;
@@ -48,6 +48,34 @@ std::string lowerAscii(std::string value) {
 
 bool asciiEqual(const std::string& a, const std::string& b) {
     return lowerAscii(a) == lowerAscii(b);
+}
+
+// Every 16-hex title id embedded in a path, uppercased. Forwarder NSP file
+// names carry the id in brackets ("Port [01d2c0b236000000].nsp"), and the
+// receipt records them so Uninstall can link a title to its deployment
+// without the metadata index (which covers retail releases only).
+std::vector<std::string> titleIdsInPath(const std::string& path) {
+    std::vector<std::string> ids;
+    for (size_t i = 0; i + 16 <= path.size(); ++i) {
+        bool hex = true;
+        for (size_t j = 0; j < 16; ++j) {
+            const char c = path[i + j];
+            if (!(c >= '0' && c <= '9') && !(c >= 'a' && c <= 'f') &&
+                !(c >= 'A' && c <= 'F')) {
+                hex = false;
+                break;
+            }
+        }
+        if (!hex)
+            continue;
+        std::string id = path.substr(i, 16);
+        for (char& c : id)
+            if (c >= 'a' && c <= 'f')
+                c = static_cast<char>(c - 'a' + 'A');
+        ids.push_back(std::move(id));
+        i += 15;
+    }
+    return ids;
 }
 
 std::vector<std::string> splitPath(const std::string& path) {
@@ -241,7 +269,8 @@ bool readBlob(const std::string& path, std::string& blob) {
 }
 
 bool saveReceipt(const std::string& root, const SwitchDeployPlan& plan,
-                 const std::vector<std::string>& unpacked) {
+                 const std::vector<std::string>& unpacked,
+                 const std::vector<std::string>& titleIds) {
     std::string blob = "d5:filesl";
     for (const SwitchDeployEntry& entry : plan.files) {
         blob += "d6:digest";
@@ -260,6 +289,9 @@ bool saveReceipt(const std::string& root, const SwitchDeployPlan& plan,
         blob += bstr(path);
         ++unpackedCount;
     }
+    blob += "e5:titlel";
+    for (const std::string& id : titleIds)
+        blob += bstr(id);
     blob += "e7:version" + bint(kReceiptVersion) + "e";
     return atomicWrite(receiptPath(root, plan.taskId), blob);
 }
@@ -271,7 +303,8 @@ bool saveReceipt(const std::string& root, const SwitchDeployPlan& plan,
 bool loadReceipt(const std::string& root, const std::string& taskId,
                  std::vector<ReceiptFile>& files,
                  std::vector<std::string>& unpacked,
-                 bool* unpackedKnown = nullptr) {
+                 bool* unpackedKnown = nullptr,
+                 std::vector<std::string>* titleIds = nullptr) {
     if (unpackedKnown)
         *unpackedKnown = false;
     unpacked.clear();
@@ -288,7 +321,7 @@ bool loadReceipt(const std::string& root, const std::string& taskId,
     std::string storedTask;
     be_node_t list;
     if (!readInteger(rootNode, "version", version) ||
-        (version != 1 && version != static_cast<uint64_t>(kReceiptVersion)) ||
+        version < 1 || version > static_cast<uint64_t>(kReceiptVersion) ||
         !readString(rootNode, "task", storedTask) || storedTask != taskId ||
         !be_dict_get(rootNode.buf, rootNode.buf + rootNode.raw_len, "files", 5,
                      &list) || list.type != BE_LIST)
@@ -336,6 +369,24 @@ bool loadReceipt(const std::string& root, const std::string& taskId,
             *unpackedKnown = true;
     }
     files = std::move(parsed);
+    if (titleIds) {
+        titleIds->clear();
+        be_node_t titleList;
+        if (be_dict_get(rootNode.buf, rootNode.buf + rootNode.raw_len,
+                        "title", 5, &titleList)) {
+            if (titleList.type != BE_LIST)
+                return false;
+            const char* titleCursor = titleList.buf + 1;
+            const char* titleEnd = titleList.buf + titleList.raw_len - 1;
+            be_node_t titleEntry;
+            while (be_list_next(&titleCursor, titleEnd, &titleEntry)) {
+                if (titleIds->size() >= 64 || titleEntry.type != BE_STR ||
+                    titleEntry.slen == 0)
+                    return false;
+                titleIds->emplace_back(titleEntry.sval, titleEntry.slen);
+            }
+        }
+    }
     return true;
 }
 
@@ -849,6 +900,18 @@ void SwitchDeployService::run(DownloadManager::ExternalDeployLease lease,
                std::move(error));
         return;
     }
+    // The receipt records the title ids of the installed packages (the
+    // forwarder NSP carries its id in the file name): Uninstall links a
+    // title to its receipt through them, no metadata index needed.
+    std::vector<std::string> receiptTitleIds;
+    {
+        std::set<std::string> seen;
+        for (const TaskFileInfo& file : inventory.files)
+            if (file.package)
+                for (const std::string& id : titleIdsInPath(file.logicalPath))
+                    if (seen.insert(id).second)
+                        receiptTitleIds.push_back(id);
+    }
     SwitchDeployInspection inspection = inspectSwitchDeploy(
         std::move(inventory), targetRoot_);
     if (!inspection.canStart()) {
@@ -997,7 +1060,7 @@ void SwitchDeployService::run(DownloadManager::ExternalDeployLease lease,
         ++snapshot_.filesCopied;
         ++snapshot_.generation;
     }
-    if (!saveReceipt(appRoot_, plan, unpacked)) {
+    if (!saveReceipt(appRoot_, plan, unpacked, receiptTitleIds)) {
         finish(SwitchDeployPhase::Completed, SwitchDeployProblem::Io,
                "Files were copied, but the deployment receipt was not saved.");
         return;
@@ -1230,6 +1293,58 @@ void SwitchDeployService::cleanupInterruptedJob() {
     std::remove(jobPath(appRoot_).c_str());
 }
 
+namespace {
+
+// Task ids of every receipt under <root>/deployments, sorted so the plan is
+// deterministic across runs.
+std::vector<std::string> listReceiptTaskIds(const std::string& root) {
+    std::vector<std::string> ids;
+    const std::string directory = root + "/deployments";
+    DIR* dir = opendir(directory.c_str());
+    if (!dir)
+        return ids;
+    while (struct dirent* entry = readdir(dir)) {
+        const std::string name = entry->d_name;
+        if (name.size() != 48 ||
+            name.compare(name.size() - 8, 8, ".bencode") != 0)
+            continue;
+        ids.push_back(name.substr(0, 40));
+    }
+    closedir(dir);
+    std::sort(ids.begin(), ids.end());
+    return ids;
+}
+
+// Does the receipt link taskId to titleId? Receipt v3 records the title ids
+// of the installed packages; older receipts fall back to the bracketed id in
+// the task manifest's package file names. False for unreadable receipts and
+// for titles the receipt does not belong to.
+bool receiptMatchesTitle(const std::string& root, const std::string& taskId,
+                         const std::string& titleId) {
+    std::vector<ReceiptFile> files;
+    std::vector<std::string> unpacked;
+    std::vector<std::string> titleIds;
+    if (!loadReceipt(root, taskId, files, unpacked, nullptr, &titleIds))
+        return false;
+    for (const std::string& id : titleIds)
+        if (asciiEqual(id, titleId))
+            return true;
+    if (!titleIds.empty())
+        return false; // v3 names the titles — no other source to consult
+    TaskFileManifest manifest;
+    std::string manifestError;
+    if (!loadTaskFileManifest(root, taskId, manifest, manifestError))
+        return false;
+    for (const TaskFileRecord& file : manifest.files)
+        if (file.package)
+            for (const std::string& id : titleIdsInPath(file.logicalPath))
+                if (asciiEqual(id, titleId))
+                    return true;
+    return false;
+}
+
+} // namespace
+
 PortUninstallService::PortUninstallService(DownloadManager& manager,
                                            std::string appRoot,
                                            std::string targetRoot)
@@ -1254,7 +1369,24 @@ bool PortUninstallService::plan(const std::string& titleId,
     std::set<std::string> wholeFolders;
     uint64_t switchBytes = 0;
     bool anyReceipt = false;
-    for (const std::string& taskId : taskIds) {
+    // Every receipt on disk is matched to the title two ways: the recorded
+    // title ids (receipt v3), or — for receipts written before titles were
+    // recorded — the bracketed id in the task manifest's package file names
+    // (forwarder NSPs carry it, e.g. "Port [01d2c0b236000000].nsp").
+    // `taskIds` carries the metadata-index infohashes and only acts as a
+    // last-resort fallback for ordinary NSP titles; the index covers retail
+    // releases only, which is exactly how ports were missed before.
+    std::set<std::string> fallback(taskIds.begin(), taskIds.end());
+    std::vector<std::string> matched;
+    for (const std::string& taskId : listReceiptTaskIds(appRoot_)) {
+        if (receiptMatchesTitle(appRoot_, taskId, titleId))
+            matched.push_back(taskId);
+        else if (fallback.count(taskId))
+            matched.push_back(taskId);
+    }
+    if (matched.empty())
+        return false;
+    for (const std::string& taskId : matched) {
         std::vector<ReceiptFile> files;
         std::vector<std::string> unpacked;
         bool unpackedKnown = false;

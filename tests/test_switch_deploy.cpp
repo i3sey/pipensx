@@ -147,6 +147,25 @@ void writeV1Receipt(const std::string& root, const std::string& taskId,
     writeFile(root + "/deployments/" + taskId + ".bencode", blob);
 }
 
+// Writes a v2 receipt (unpacked member list, no recorded titles).
+void writeV2Receipt(const std::string& root, const std::string& taskId,
+                    const std::vector<std::pair<std::string, uint64_t>>& files,
+                    const std::vector<std::string>& unpacked) {
+    std::string blob = "d5:filesl";
+    for (const auto& file : files) {
+        blob += "d6:digest" + bstr(std::string(32, '\0'));
+        blob += "4:path" + bstr(file.first);
+        blob += "4:size" + std::string("i") + std::to_string(file.second) +
+                "ee";
+    }
+    blob += "e4:task" + bstr(taskId);
+    blob += "8:unpackedl";
+    for (const std::string& path : unpacked)
+        blob += bstr(path);
+    blob += "e7:versioni2ee";
+    writeFile(root + "/deployments/" + taskId + ".bencode", blob);
+}
+
 } // namespace
 
 int main() {
@@ -753,6 +772,108 @@ int main() {
     assert(fs::exists(goneTarget + "/KeepMe/keep.txt"));
     assert(!goneUninstall.receiptExists(goneId));
     goneManager.shutdown();
+
+    // ------------------------------------------------------------------
+    // Receipt v3: the deploy records the bracketed title id of the forwarder
+    // package, so Uninstall links the title to its receipt without the
+    // metadata index (which covers retail releases only — the very reason a
+    // port uninstall used to fall back to a plain shortcut removal).
+    const std::string titledRoot = root + "/titled";
+    const std::string titledData = titledRoot + "/downloads/task";
+    const std::string titledTarget = titledRoot + "/sd/switch";
+    const std::string titledId = "f99434b99c431b6229609c2f5755e5d1e5b890ab";
+    fs::create_directories(titledTarget);
+    writeFile(titledData + "/Release/switch/MyPort/MyPort.nro", nro);
+    writeCompletedQueue(titledRoot, titledId, titledData, nro.size());
+    TaskFileManifest titledManifest;
+    titledManifest.taskId = titledId;
+    TaskFileRecord titledNro;
+    titledNro.logicalPath = "Release/switch/MyPort/MyPort.nro";
+    titledNro.localPath = titledNro.logicalPath;
+    titledNro.size = nro.size();
+    titledManifest.files.push_back(titledNro);
+    TaskFileRecord titledForwarder;
+    titledForwarder.logicalPath =
+        "Subway Surfers (port) [01d2c0b236000000].nsp";
+    titledForwarder.localPath = titledForwarder.logicalPath;
+    titledForwarder.size = 2048;
+    titledForwarder.package = true;
+    titledForwarder.action = TaskFileAction::Install;
+    titledManifest.files.push_back(titledForwarder);
+    assert(saveTaskFileManifest(titledRoot, titledManifest, error));
+    DownloadManager titledManager(titledRoot, false);
+    SwitchDeployService titledDeploy(titledManager, titledRoot, titledTarget);
+    PortUninstallService titledUninstall(titledManager, titledRoot,
+                                         titledTarget);
+    SwitchDeployInspection titledInspection = titledDeploy.inspect(titledId);
+    assert(titledInspection.canStart());
+    assert(titledDeploy.start(titledId, error));
+    for (int i = 0; i < 500 && titledDeploy.snapshot().active(); ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    assert(titledDeploy.snapshot().phase == SwitchDeployPhase::Completed);
+    assert(titledDeploy.receiptState(titledId) ==
+           SwitchDeployReceiptState::Valid);
+    // The receipt carries the title: the plan matches with no metadata
+    // hashes, and a different title id does not match.
+    PortUninstallPlan titledPlan;
+    assert(titledUninstall.plan("01d2c0b236000000", {}, titledPlan));
+    assert(titledPlan.taskIds == std::vector<std::string>({titledId}));
+    assert(titledPlan.switchFiles.size() == 1);
+    PortUninstallPlan otherPlan;
+    assert(!titledUninstall.plan("0100000000000000", {}, otherPlan));
+    // A full removal through the title-linked plan cleans everything.
+    PortUninstallReport titledReport;
+    assert(titledUninstall.uninstallPort(
+        titledPlan, [](std::string&) { return true; }, titledReport));
+    assert(titledReport.complete());
+    assert(!fs::exists(titledTarget + "/MyPort"));
+    assert(!titledManager.snapshot(titledId));
+    assert(!titledUninstall.receiptExists(titledId));
+    titledDeploy.shutdown();
+    titledManager.shutdown();
+
+    // ------------------------------------------------------------------
+    // Receipts written before titles were recorded (v2): the link title →
+    // task is recovered from the bracketed id in the forwarder package name
+    // inside the task manifest — the exact shape of a deployed port on
+    // builds before this fix.
+    const std::string legacyRoot = root + "/legacy";
+    const std::string legacyData = legacyRoot + "/downloads/task";
+    const std::string legacyTarget = legacyRoot + "/sd/switch";
+    const std::string legacyId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    fs::create_directories(legacyTarget);
+    writeFile(legacyTarget + "/MyPort/MyPort.nro", nro);
+    writeCompletedQueue(legacyRoot, legacyId, legacyData, nro.size());
+    TaskFileManifest legacyManifest;
+    legacyManifest.taskId = legacyId;
+    TaskFileRecord legacyNro;
+    legacyNro.logicalPath = "Release/switch/MyPort/MyPort.nro";
+    legacyNro.localPath = legacyNro.logicalPath;
+    legacyNro.size = nro.size();
+    legacyManifest.files.push_back(legacyNro);
+    TaskFileRecord legacyForwarder;
+    legacyForwarder.logicalPath =
+        "Subway Surfers (port) [01d2c0b236000000].nsp";
+    legacyForwarder.localPath = legacyForwarder.logicalPath;
+    legacyForwarder.size = 2048;
+    legacyForwarder.package = true;
+    legacyForwarder.action = TaskFileAction::Install;
+    legacyManifest.files.push_back(legacyForwarder);
+    assert(saveTaskFileManifest(legacyRoot, legacyManifest, error));
+    writeV2Receipt(legacyRoot, legacyId,
+                   {{"MyPort/MyPort.nro", nro.size()}},
+                   {"MyPort/MyPort.nro"});
+    DownloadManager legacyManager(legacyRoot, false);
+    PortUninstallService legacyUninstall(legacyManager, legacyRoot,
+                                         legacyTarget);
+    // Matched with no metadata hashes: the forwarder name carries the id.
+    PortUninstallPlan legacyPlan;
+    assert(legacyUninstall.plan("01D2C0B236000000", {}, legacyPlan));
+    assert(legacyPlan.taskIds == std::vector<std::string>({legacyId}));
+    assert(legacyPlan.switchFiles.size() == 1);
+    // A different title id does not match.
+    assert(!legacyUninstall.plan("0100000000000000", {}, legacyPlan));
+    legacyManager.shutdown();
 
     setStorageSpaceOverride(nullptr);
     fs::remove_all(root);

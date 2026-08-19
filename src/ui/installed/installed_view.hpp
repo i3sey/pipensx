@@ -555,24 +555,23 @@ private:
         dialog->open();
     }
 
-    // Port detection: the title links to its deployment through the metadata
-    // index — titleId → infohash (task id) → receipt under
-    // appRoot/deployments/. No receipt means an ordinary NSP install, and
-    // Uninstall keeps its plain behaviour.
+    // Port detection: the service matches receipts under
+    // appRoot/deployments/ by the recorded title ids (or the forwarder
+    // package name in the task manifest for older receipts); the metadata
+    // infohashes only back ordinary NSP titles. No match means an ordinary
+    // install, and Uninstall keeps its plain behaviour.
     bool planPortUninstall(const InstalledTitle& title,
                            PortUninstallPlan& plan) {
-        if (!portUninstall_ || !metadata_)
+        if (!portUninstall_)
             return false;
-        std::vector<const GameMetadata*> entries;
-        metadata_->findByTitleId(title.titleId, entries);
         std::vector<std::string> hashes;
-        for (const GameMetadata* meta : entries) {
-            if (meta && !meta->infoHash.empty() &&
-                portUninstall_->receiptExists(meta->infoHash))
-                hashes.push_back(meta->infoHash);
+        if (metadata_) {
+            std::vector<const GameMetadata*> entries;
+            metadata_->findByTitleId(title.titleId, entries);
+            for (const GameMetadata* meta : entries)
+                if (meta && !meta->infoHash.empty())
+                    hashes.push_back(meta->infoHash);
         }
-        if (hashes.empty())
-            return false;
         return portUninstall_->plan(title.titleId, hashes, plan);
     }
 
