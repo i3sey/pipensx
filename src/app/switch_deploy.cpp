@@ -1002,7 +1002,11 @@ bool SwitchDeployService::autoCopyArmed(const std::string& taskId) const {
         const bool autoArmed = autoCopyArmed(taskId);
         if (task->mode != TransferMode::StreamInstall && !autoArmed)
             return false;
-        if (receiptState(taskId) == SwitchDeployReceiptState::Valid) {
+        // A saved receipt means this task was already copied to /switch once.
+        // Do not offer it again — if the user deleted or changed the installed
+        // files afterwards, restoring them is a deliberate manual action
+        // (Details → Install port), not something to silently restart.
+        if (receiptState(taskId) != SwitchDeployReceiptState::None) {
             if (autoArmed)
                 clearAutoCopy(taskId);
             std::lock_guard<std::mutex> lock(offerMutex_);

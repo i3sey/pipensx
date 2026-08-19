@@ -190,8 +190,13 @@ public:
                 manager_->resume(taskId);
                 startRefreshing(true);
             });
-        if (inspection && switchDeployOffersCopy(inspection->problem)) {
-            add(tr("pipensx/deploy/copy"),
+        if (inspection && switchDeployFullyInstalled(*inspection)) {
+            add(tr("pipensx/deploy/installed"), [this, taskId] {
+                openDetails(taskId);
+            });
+        } else if (inspection &&
+                   switchDeployOffersCopy(inspection->problem)) {
+            add(tr("pipensx/deploy/install_port"),
                 [this, inspection = *inspection]() mutable {
                 if (!deploy_)
                     return;

@@ -315,6 +315,8 @@
   },
   "deploy": {
     "copy": "Copiar para /switch",
+    "install_port": "Instalar port",
+    "installed": "Instalado",
     "cancel": "Cancelar cópia para /switch",
     "preview_title": "Prévia da cópia",
     "preparing": "Verificando arquivos de origem e destino...",
