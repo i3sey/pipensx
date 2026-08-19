@@ -77,11 +77,9 @@
 #include "ui/installed/update_file_chooser.hpp"
 #include "ui/main_frame.hpp"
 #include "ui/settings/about_view.hpp"
-#include "ui/settings/network_health.hpp"
 #include "ui/settings/bug_report_view.hpp"
 #include "ui/settings/help_view.hpp"
 #include "ui/settings/settings_view.hpp"
-#include "ui/settings/storage_manager.hpp"
 #include "ui/theme.hpp"
 
 #include <chrono>
@@ -507,6 +505,9 @@ int main(int argc, char** argv) {
     bool portSelectionOk = true;
     bool settingsDebrid = false;
     bool hintsBudget = false;
+    SettingsView* sectionSettings = nullptr;
+    SettingsSection sectionToShow = SettingsSection::General;
+    bool sectionSelectAtFrame10 = false;
     CatalogView* hintsCatalog = nullptr;
     bool catalogHeaderClearance = false;
     CatalogView* collapsedCatalog = nullptr;
@@ -934,19 +935,26 @@ int main(int argc, char** argv) {
             &settings, &manager, &catalog, &metadata, &installed, nullptr));
     } else if (screen == "storage") {
         seedStorageFixture(manager.rootPath());
-        activity = new StorageManagerActivity(&manager, &metadata);
+        sectionSettings = new SettingsView(
+            &settings, &manager, &catalog, &metadata, &installed, nullptr);
+        sectionToShow = SettingsSection::Storage;
+        sectionSelectAtFrame10 = true;
+        activity = new GoldenActivity(sectionSettings);
     } else if (screen == "settings-debrid") {
-        // The debrid section is well below the fold on the settings screen,
-        // so it needs a shot of its own. A key is planted first: "linked" is
-        // the state worth pinning, since it is the one the detail text
-        // composes from the provider name.
+        // The source section is only visible once its rail item is focused,
+        // and it holds the link the runner scrolls to. A key is planted
+        // first: "linked" is the state worth pinning, since it is the one
+        // the detail text composes from the provider name.
         pipensx::AppSettingsData values = settings.get();
         values.torboxApiKey = "golden-fixture-key";
         values.debridProvider = pipensx::DebridProviderKind::TorBox;
         if (!settings.update(values, error))
             return fail("settings-debrid could not plant a linked key");
-        activity = new GoldenActivity(new SettingsView(
-            &settings, &manager, &catalog, &metadata, &installed, nullptr));
+        sectionSettings = new SettingsView(
+            &settings, &manager, &catalog, &metadata, &installed, nullptr);
+        sectionToShow = SettingsSection::Source;
+        sectionSelectAtFrame10 = true;
+        activity = new GoldenActivity(sectionSettings);
         settingsDebrid = true;
     } else if (screen == "network-health") {
         pipensx::AppSettingsData values = settings.get();
@@ -957,8 +965,12 @@ int main(int argc, char** argv) {
             static_cast<uint64_t>(time(nullptr)) - 3 * 3600;
         if (!settings.update(values, error))
             return fail("network-health could not plant provider settings");
-        activity = new NetworkHealthActivity(&manager, &settings,
-                                             "192.168.1.5");
+        sectionSettings = new SettingsView(
+            &settings, &manager, &catalog, &metadata, &installed, nullptr, {},
+            {}, "192.168.1.5");
+        sectionToShow = SettingsSection::Network;
+        sectionSelectAtFrame10 = true;
+        activity = new GoldenActivity(sectionSettings);
     } else if (screen == "help") {
         activity = new GoldenActivity(
             new HelpView(&manager, &catalog, &metadata, &installed));
@@ -1053,6 +1065,11 @@ int main(int argc, char** argv) {
         // catalog's actions.
         if (i == 10 && hintsCatalog)
             brls::Application::giveFocus(hintsCatalog);
+        // Panels other than General only exist behind their rail item, so the
+        // storage / network-health / settings-debrid screens switch sections
+        // first (focus-driven, the same way a gamepad user would).
+        if (i == 10 && sectionSelectAtFrame10)
+            sectionSettings->selectSection(sectionToShow);
         if (i == 10 && collapsedCatalog) {
             brls::View* focus = brls::Application::getCurrentFocus();
             brls::View* next = focus
@@ -1062,12 +1079,11 @@ int main(int argc, char** argv) {
                 return fail("catalog-header-clearance: RIGHT never entered catalog");
             brls::Application::giveFocus(next);
         }
-        // The settings scroller is NATURAL: it follows the d-pad, not focus,
-        // and getNextFocus() cannot reach a row that is still off-screen. So
-        // scroll it directly to the cell's own offset — that is independent
-        // of how many rows sit above the section, unlike counting presses.
-        // The headroom puts the section heading and its two other rows in
-        // frame rather than the link cell alone.
+        // The source section sits behind its rail item and the link cell is
+        // below the fold there, so the scroller is moved directly to the
+        // cell's own offset — independent of how many rows sit above the
+        // section, unlike counting presses. The headroom puts the section
+        // heading and its other rows in frame rather than the link cell alone.
         if (i == 30 && settingsDebrid) {
             brls::View* link =
                 activity->getContentView()->getView("settings-debrid-link");
