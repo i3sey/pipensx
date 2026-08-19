@@ -58,6 +58,7 @@ using pipensx::AppSettings;
 using pipensx::CatalogService;
 using pipensx::DownloadManager;
 using pipensx::SwitchDeployService;
+using pipensx::PortUninstallService;
 using pipensx::GameMetadataService;
 using pipensx::GameUpdateService;
 using pipensx::InstalledTitleService;
@@ -125,12 +126,15 @@ public:
     MainActivity(DownloadManager* manager, CatalogService* catalog,
                  GameMetadataService* metadata,
                  InstalledTitleService* installed, AppSettings* settings,
-                 UpdateService* updater, FavoritesService* favorites, WebServer* webServer,
-                 SwitchDeployService* deploy, GameUpdateService* gameUpdates)
+                 UpdateService* updater, FavoritesService* favorites,
+                 WebServer* webServer, SwitchDeployService* deploy,
+                 GameUpdateService* gameUpdates,
+                 PortUninstallService* portUninstall)
         : manager_(manager), catalog_(catalog), metadata_(metadata),
           installed_(installed), settings_(settings), updater_(updater),
           favorites_(favorites), webServer_(webServer),
-          deploy_(deploy), gameUpdates_(gameUpdates) {
+          deploy_(deploy), gameUpdates_(gameUpdates),
+          portUninstall_(portUninstall) {
         auto* tabs = new pipensx::ui::MainFrame();
         using pipensx::ui::NavIconType;
         using pipensx::CatalogSection;
@@ -159,10 +163,12 @@ public:
         });
         tabs->addNavTab(tr("pipensx/nav/installed"), NavIconType::Installed,
                         [installed, manager, metadata, settings, catalog,
-                         gameUpdates, tabs, favorites, deploy] {
+                         gameUpdates, tabs, favorites, deploy,
+                         portUninstall = portUninstall_] {
             auto* view = new InstalledView(installed, manager, metadata,
                                            settings, catalog, gameUpdates,
-                                           true, favorites, deploy);
+                                           true, favorites, deploy,
+                                           portUninstall);
             view->setOnUpdateCount([tabs](size_t count) {
                 tabs->setUpdateCountBadge(count);
             });
@@ -290,6 +296,7 @@ private:
     FavoritesService* favorites_;
     WebServer* webServer_;
     SwitchDeployService* deploy_;
+    PortUninstallService* portUninstall_ = nullptr;
     GameUpdateService* gameUpdates_;
     pipensx::ui::MainFrame* tabs_ = nullptr;
     brls::AppletFrame* frame_;
@@ -469,6 +476,8 @@ int main(int argc, char** argv) {
         DownloadManager manager("sdmc:/switch/pipensx");
         SwitchDeployService deploy(manager, "sdmc:/switch/pipensx",
                                    "sdmc:/switch");
+        PortUninstallService portUninstall(manager, "sdmc:/switch/pipensx",
+                                           "sdmc:/switch");
         manager.setInstallTarget(
             installTargetFor(settings.get().installLocation));
         manager.setMaxActiveDownloads(settings.get().maxActiveDownloads);
@@ -554,7 +563,8 @@ int main(int argc, char** argv) {
         auto* activity = new MainActivity(&manager, &catalog, &metadata,
                                            &installed, &settings, &updater,
                                            &favorites, &webServer,
-                                           &deploy, &gameUpdates);
+                                           &deploy, &gameUpdates,
+                                           &portUninstall);
 
         startupStage("push MainActivity");
         brls::Application::pushActivity(activity);

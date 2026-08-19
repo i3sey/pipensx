@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <vector>
 
 namespace pipensx {
 
@@ -13,6 +14,11 @@ struct PortArchiveProbe {
     uint64_t unpackBytes = 0;
     uint64_t maxSolidBlockBytes = 0;
     size_t switchFiles = 0;
+    // Switch-relative destination of every extractable member, in archive
+    // order (read from the archive headers, not by decompressing). Capped;
+    // the extraction callback stays the authoritative source of written
+    // files. Empty when the headers could not be walked.
+    std::vector<std::string> files;
     std::string error;
 };
 

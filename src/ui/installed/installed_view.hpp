@@ -303,11 +303,13 @@ public:
                   CatalogService* catalog, GameUpdateService* updates,
                   bool checkOnEntry = true,
                   FavoritesService* favorites = nullptr,
-                  SwitchDeployService* deploy = nullptr)
+                  SwitchDeployService* deploy = nullptr,
+                  PortUninstallService* portUninstall = nullptr)
         : brls::Box(brls::Axis::COLUMN), installed_(installed),
           manager_(manager), metadata_(metadata), settings_(settings),
           catalog_(catalog), updates_(updates), favorites_(favorites),
-          deploy_(deploy), checkOnEntry_(checkOnEntry),
+          deploy_(deploy), portUninstall_(portUninstall),
+          checkOnEntry_(checkOnEntry),
           alive_(std::make_shared<std::atomic<bool>>(true)) {
         status_ = new brls::Label();
         status_->setFontSize(15);
@@ -532,6 +534,17 @@ private:
             brls::Application::notify(tr("pipensx/installed/busy"));
             return;
         }
+        PortUninstallPlan portPlan;
+        if (planPortUninstall(title, portPlan)) {
+            // Removing a port means deleting deployed files, so a copy or
+            // extraction running against /switch would race the deletion.
+            if (deploy_ && deploy_->snapshot().active()) {
+                brls::Application::notify(tr("pipensx/installed/busy"));
+                return;
+            }
+            openPortUninstallDialog(std::move(title), std::move(portPlan));
+            return;
+        }
         auto* dialog = new brls::Dialog(
             tr("pipensx/installed/uninstall_confirm", title.name));
         dialog->addButton(tr("pipensx/installed/uninstall_action"),
@@ -540,6 +553,115 @@ private:
         });
         dialog->addButton(tr("pipensx/common/cancel"), [] {});
         dialog->open();
+    }
+
+    // Port detection: the title links to its deployment through the metadata
+    // index — titleId → infohash (task id) → receipt under
+    // appRoot/deployments/. No receipt means an ordinary NSP install, and
+    // Uninstall keeps its plain behaviour.
+    bool planPortUninstall(const InstalledTitle& title,
+                           PortUninstallPlan& plan) {
+        if (!portUninstall_ || !metadata_)
+            return false;
+        std::vector<const GameMetadata*> entries;
+        metadata_->findByTitleId(title.titleId, entries);
+        std::vector<std::string> hashes;
+        for (const GameMetadata* meta : entries) {
+            if (meta && !meta->infoHash.empty() &&
+                portUninstall_->receiptExists(meta->infoHash))
+                hashes.push_back(meta->infoHash);
+        }
+        if (hashes.empty())
+            return false;
+        return portUninstall_->plan(title.titleId, hashes, plan);
+    }
+
+    // One confirmation dialog with the full breakdown: the ncm shortcut, the
+    // deployed files (or, for a v1 receipt whose archive is gone, the folder
+    // that will be removed entirely) and the download task with its data.
+    void openPortUninstallDialog(InstalledTitle title,
+                                 PortUninstallPlan plan) {
+        auto* box = new brls::Box(brls::Axis::COLUMN);
+        box->setPadding(
+            brls::Application::getStyle()["brls/dialog/paddingTopBottom"],
+            brls::Application::getStyle()["brls/dialog/paddingLeftRight"],
+            brls::Application::getStyle()["brls/dialog/paddingTopBottom"],
+            brls::Application::getStyle()["brls/dialog/paddingLeftRight"]);
+        auto addLine = [box](const std::string& text, bool primary) {
+            auto* label = new brls::Label();
+            label->setFontSize(primary
+                ? brls::Application::getStyle()["brls/dialog/fontSize"]
+                : theme::kFontSmall);
+            label->setHorizontalAlign(brls::HorizontalAlign::CENTER);
+            label->setSingleLine(false);
+            if (!primary) {
+                label->setTextColor(theme::textSecondary());
+                label->setMarginTop(14);
+            }
+            label->setText(text);
+            box->addView(label);
+        };
+        addLine(tr("pipensx/installed/uninstall_confirm", title.name), true);
+        if (!plan.switchFiles.empty())
+            addLine(tr("pipensx/installed/uninstall_port_files",
+                       plan.switchFiles.size(),
+                       formatBytes(plan.switchBytes)),
+                    false);
+        for (const std::string& folder : plan.wholeFolders)
+            addLine(tr("pipensx/installed/uninstall_port_folder", folder),
+                    false);
+        if (plan.hasTask)
+            addLine(tr("pipensx/installed/uninstall_port_task"), false);
+        auto* dialog = new brls::Dialog(box);
+        dialog->addButton(
+            tr("pipensx/installed/uninstall_action"),
+            [this, title = std::move(title), plan = std::move(plan)] {
+                beginPortUninstall(title, plan);
+            });
+        dialog->addButton(tr("pipensx/common/cancel"), [] {});
+        dialog->open();
+    }
+
+    void beginPortUninstall(const InstalledTitle& title,
+                            const PortUninstallPlan& plan) {
+        if (uninstallInFlight_)
+            return;
+        uninstallInFlight_ = true;
+        status_->setText(
+            tr("pipensx/installed/uninstall_port_working", title.name));
+        auto alive = alive_;
+        InstalledTitleService* installed = installed_;
+        PortUninstallService* service = portUninstall_;
+        const std::string titleId = title.titleId;
+        const std::string titleName = title.name;
+        brls::async([this, alive, installed, service, titleId, titleName,
+                     plan] {
+            PortUninstallReport report;
+            const bool ok = service->uninstallPort(
+                plan,
+                [installed, titleId](std::string& error) {
+                    std::string refreshError;
+                    return installed->uninstall(titleId, error,
+                                                refreshError);
+                },
+                report);
+            brls::sync([this, alive, ok, report, titleName] {
+                if (!alive->load())
+                    return;
+                uninstallInFlight_ = false;
+                if (ok) {
+                    brls::Application::notify(tr(
+                        "pipensx/installed/uninstall_port_done", titleName));
+                    checkAllTitles();
+                    return;
+                }
+                const std::string error = report.error.empty()
+                    ? tr("pipensx/installed/uninstall_port_failed")
+                    : report.error;
+                status_->setText(error);
+                brls::Application::notify(error);
+            });
+        });
     }
 
     void beginUninstall(const InstalledTitle& title) {
@@ -642,6 +764,7 @@ private:
     GameUpdateService* updates_ = nullptr;
     FavoritesService* favorites_ = nullptr;
     SwitchDeployService* deploy_ = nullptr;
+    PortUninstallService* portUninstall_ = nullptr;
     bool checkOnEntry_ = true;
     std::function<void(size_t)> onUpdateCount_;
     brls::Label* status_ = nullptr;
