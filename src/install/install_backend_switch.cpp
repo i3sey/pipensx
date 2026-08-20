@@ -1,3 +1,4 @@
+#include "install/content_meta.hpp"
 #include "install_backend.hpp"
 
 #ifdef __SWITCH__
@@ -24,6 +25,13 @@ extern "C" {
 
 namespace pipensx::install {
 namespace {
+
+// content_meta.hpp hardcodes the packaged meta type bytes; fail the build if
+// they ever drift from libnx.
+static_assert(static_cast<int>(kMetaTypeApplication) == NcmContentMetaType_Application &&
+                  static_cast<int>(kMetaTypePatch) == NcmContentMetaType_Patch &&
+                  static_cast<int>(kMetaTypeAddOnContent) == NcmContentMetaType_AddOnContent,
+              "content_meta.hpp meta type constants drifted from libnx");
 
 constexpr const char* TempRoot = "sdmc:/switch/pipensx/install-temp";
 
@@ -207,6 +215,9 @@ struct ParsedMeta {
     std::vector<NcmContentMetaInfo> metaInfos;
     std::vector<NcmContentId> deltaIds;             // content ids we skip
     uint32_t extendedDataSize = 0;                  // patch delta history size
+    // Original CNMT required_system_version, captured before it is zeroed
+    // (see patchRequiredSystemVersion). Logged for "update required" triage.
+    uint32_t requiredSystemVersion = 0;
 };
 
 bool readPackagedMeta(const std::string& ncaPath, ParsedMeta& out,
@@ -291,6 +302,13 @@ bool readPackagedMeta(const std::string& ncaPath, ParsedMeta& out,
     const uint8_t* cursor = data.data() + sizeof(out.header);
     out.extendedHeader.assign(cursor,
         cursor + out.header.extended_header_size);
+    // Issue #60: HOS enforces required_system_version from the meta database
+    // record, not from the NCA payloads. Zero it so a title stamped for
+    // newer firmware still launches; the NCAs stay byte-identical.
+    out.requiredSystemVersion = patchRequiredSystemVersion(
+        out.extendedHeader.data(),
+        out.header.extended_header_size,
+        out.header.type);
     cursor += out.header.extended_header_size;
     std::vector<NcmPackagedContentInfo> packaged(out.header.content_count);
     std::memcpy(packaged.data(), cursor,
@@ -658,9 +676,14 @@ public:
             if (!readPackagedMeta(metaNcaPath, meta, error_))
                 return false;
         }
-        log_msg("[install] CNMT parsed title=%016llx version=%u contents=%u\n",
+        log_msg("[install] CNMT parsed title=%016llx version=%u contents=%u rsv=0x%08x (%u.%u.%u)%s\n",
                 static_cast<unsigned long long>(meta.header.id),
-                meta.header.version, meta.header.content_count);
+                meta.header.version, meta.header.content_count,
+                meta.requiredSystemVersion,
+                (meta.requiredSystemVersion >> 26) & 0x3fu,
+                (meta.requiredSystemVersion >> 20) & 0x3fu,
+                (meta.requiredSystemVersion >> 16) & 0xfu,
+                meta.requiredSystemVersion ? " zeroed" : "");
 
         NcmContentMetaKey key {
             meta.header.id,
