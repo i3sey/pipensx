@@ -423,7 +423,7 @@ public:
         warning->setTextColor(inspection_.problem == SwitchDeployProblem::None
                                   ? theme::textSecondary() : theme::error());
         warning->setText(inspection_.problem == SwitchDeployProblem::None
-            ? tr("pipensx/deploy/warning")
+            ? tr(switchDeployWarningKey(inspection_.plan))
             : deployProblemText(inspection_.problem, inspection_.detail));
         warning->setMarginBottom(8);
         content->addView(warning);
@@ -461,7 +461,7 @@ public:
             else
                 copy->setText(tr("pipensx/deploy/copy"));
         } else {
-            copy->setText(tr("pipensx/deploy/copy"));
+            copy->setText(tr(switchDeployCopyActionKey(inspection_.plan)));
         }
         copy->setState(inspection_.canStart() && deploy_
                            ? brls::ButtonState::ENABLED

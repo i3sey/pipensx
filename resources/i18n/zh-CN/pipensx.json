@@ -316,6 +316,7 @@
   "deploy": {
     "copy": "复制到 /switch",
     "install_port": "安装移植",
+    "install_mod": "复制到 Atmosphere",
     "installed": "已安装",
     "cancel": "取消 /switch 复制",
     "preview_title": "复制预览",
@@ -333,6 +334,7 @@
     "offer_question": "「{}」的移植文件已就绪。现在复制到 /switch 吗？",
     "cleanup_question": "「{}」已复制到 /switch。删除已下载的数据以释放 SD 卡空间？",
     "warning": "仅复制检测到的 switch 目录下的文件。选中的 switch.7z / switch.zip 存档会被解压。目标文件冲突会阻止复制（不会覆盖任何内容）。",
+    "warning_mod": "LayeredFS 文件会复制到 /atmosphere/contents。文件夹名 atmopshere 会更正为 atmosphere。目标文件冲突会阻止复制（不会覆盖任何内容）。",
     "state_copy": "将复制",
     "state_identical": "已完全相同",
     "state_conflict": "冲突",

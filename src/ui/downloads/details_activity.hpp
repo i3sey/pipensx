@@ -308,6 +308,7 @@ private:
                     "pipensx/files/summary", inspection.inventory.files.size(),
                     formatBytes(inspection.inventory.presentBytes)));
                 copyAvailable_ = switchDeployOffersCopy(inspection.problem);
+                copyAtmosphere_ = switchDeployCopiesAtmosphere(inspection.plan);
                 installed_ = switchDeployFullyInstalled(inspection);
                 if (installed_) {
                     deployProgress_->setProgress(1.0f);
@@ -399,12 +400,14 @@ private:
                 copyButton_->setState(brls::ButtonState::ENABLED);
                 if (!switchDeployOffersCopy(inspection.problem)) {
                     copyAvailable_ = false;
+                    copyAtmosphere_ = false;
                     setTextIfChanged(deployPhase_, "");
                     setTextIfChanged(deployStatus_, "");
                     setSwitchFilesVisible(false);
                     return;
                 }
                 copyAvailable_ = true;
+                copyAtmosphere_ = switchDeployCopiesAtmosphere(inspection.plan);
                 if (switchDeployFullyInstalled(inspection)) {
                     installed_ = true;
                     deployProgress_->setProgress(1.0f);
@@ -453,7 +456,9 @@ private:
             deployStatus_->setTextColor(theme::accent());
             return;
         }
-        setTextIfChanged(copyButton_, tr("pipensx/deploy/install_port"));
+        setTextIfChanged(copyButton_,
+                         tr(copyAtmosphere_ ? "pipensx/deploy/install_mod"
+                                            : "pipensx/deploy/install_port"));
         deployPhase_->setTextColor(theme::textSecondary());
         deployStatus_->setTextColor(theme::textSecondary());
         if (state.taskId == taskId_) {
@@ -629,7 +634,9 @@ private:
         } else if (busyElsewhere || packageBusy) {
             setTextIfChanged(copyButton_, tr("pipensx/deploy/problem_busy"));
         } else {
-            setTextIfChanged(copyButton_, tr("pipensx/deploy/install_port"));
+            setTextIfChanged(copyButton_,
+                             tr(copyAtmosphere_ ? "pipensx/deploy/install_mod"
+                                                : "pipensx/deploy/install_port"));
         }
     }
 
@@ -726,6 +733,7 @@ private:
     bool availabilityLoaded_ = false;
     bool availabilityLoading_ = false;
     bool copyAvailable_ = false;
+    bool copyAtmosphere_ = false;
     bool installed_ = false;
     bool receiptChecked_ = false;
     bool receiptLoading_ = false;

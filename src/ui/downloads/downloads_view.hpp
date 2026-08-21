@@ -196,7 +196,7 @@ public:
             });
         } else if (inspection &&
                    switchDeployOffersCopy(inspection->problem)) {
-            add(tr("pipensx/deploy/install_port"),
+            add(tr(switchDeployCopyActionKey(inspection->plan)),
                 [this, inspection = *inspection]() mutable {
                 if (!deploy_)
                     return;

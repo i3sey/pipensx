@@ -877,6 +877,86 @@ int main() {
 
     setStorageSpaceOverride(nullptr);
     fs::remove_all(root);
+
+    {
+        assert(isLayeredFsPayloadPath(
+            "Russian Language Mod/atmopshere/contents/"
+            "0100A3D008C5C000/romfs/a.bin"));
+        assert(!isLayeredFsPayloadPath(
+            "Russian Language Mod/atmopshere/contents/"
+            "0100000000000042/romfs/a.bin"));
+
+        const std::string modRoot = "/tmp/pipensx-layeredfs-deploy";
+        const std::string modTarget = modRoot + "/sd/switch";
+        const std::string modData = modRoot + "/downloads/task";
+        fs::remove_all(modRoot);
+        fs::create_directories(modTarget);
+        const std::string payload = "RUS-TEXT";
+        const std::string scarlet =
+            "Russian Language Mod/atmopshere/contents/"
+            "0100A3D008C5C000/romfs/message.txt";
+        const std::string sysmod =
+            "Russian Language Mod/atmopshere/contents/"
+            "0100000000000042/romfs/sys.bin";
+        writeFile(modData + "/" + scarlet, payload);
+        writeFile(modData + "/" + sysmod, "SYS");
+        writeFile(modData + "/readme.txt", "HI");
+
+        TaskFileInventory inv;
+        inv.taskId = "layeredfs";
+        inv.rootPath = modData;
+        inv.settled = true;
+        inv.completeManifest = true;
+        auto addMod = [&](const std::string& logical, uint64_t size) {
+            TaskFileInfo file;
+            file.logicalPath = logical;
+            file.localPath = logical;
+            file.absolutePath = modData + "/" + logical;
+            file.size = size;
+            file.action = TaskFileAction::Download;
+            file.state = TaskFileState::Present;
+            inv.files.push_back(std::move(file));
+        };
+        addMod(scarlet, payload.size());
+        addMod(sysmod, 3);
+        addMod("readme.txt", 2);
+
+        StorageSpaceSnapshot modStorage;
+        modStorage.available = true;
+        modStorage.totalBytes = 1024 * 1024;
+        modStorage.freeBytes = 1024 * 1024;
+        setStorageSpaceOverride(&modStorage);
+        SwitchDeployInspection got =
+            inspectSwitchDeploy(std::move(inv), modTarget);
+        assert(got.canStart());
+        assert(got.plan.files.size() == 1);
+        assert(got.plan.files[0].destinationRelativePath ==
+               "atmosphere/contents/0100A3D008C5C000/romfs/message.txt");
+        assert(got.plan.files[0].destinationPath ==
+               modRoot + "/sd/atmosphere/contents/0100A3D008C5C000/"
+                         "romfs/message.txt");
+        assert(switchDeployCopiesAtmosphere(got.plan));
+
+        TaskFileInventory sysOnly;
+        sysOnly.taskId = "sysmodule";
+        sysOnly.rootPath = modData;
+        sysOnly.settled = true;
+        sysOnly.completeManifest = true;
+        TaskFileInfo sysFile;
+        sysFile.logicalPath = sysmod;
+        sysFile.localPath = sysmod;
+        sysFile.absolutePath = modData + "/" + sysmod;
+        sysFile.size = 3;
+        sysFile.action = TaskFileAction::Download;
+        sysFile.state = TaskFileState::Present;
+        sysOnly.files.push_back(std::move(sysFile));
+        assert(inspectSwitchDeploy(std::move(sysOnly), modTarget).problem ==
+               SwitchDeployProblem::LayoutNotFound);
+
+        setStorageSpaceOverride(nullptr);
+        fs::remove_all(modRoot);
+    }
+
     std::cout << "switch deploy tests passed\n";
     return 0;
 }

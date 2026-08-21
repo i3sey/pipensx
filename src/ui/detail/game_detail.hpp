@@ -1233,8 +1233,8 @@ private:
                             debridId.c_str());
                     return;
                 }
+                TorrentPreview preview;
                 if (mode == TransferMode::StreamInstall && !info.files.empty()) {
-                    TorrentPreview preview;
                     preview.name = import.name;
                     preview.totalBytes = import.totalBytes;
                     preview.fileCount = static_cast<uint32_t>(info.files.size());
@@ -1273,6 +1273,8 @@ private:
                     operationMessage_ = importError;
                     brls::Application::notify(importError);
                 } else {
+                    if (deploy_ && torrentHasLayeredFsFiles(preview))
+                        deploy_->armAutoCopy(id);
                     statusLabel_->setText(tr("pipensx/debrid/queued"));
                     if (onChange_)
                         onChange_();
@@ -1351,6 +1353,8 @@ private:
                       : manager_->installTarget());
         if (manager_->importTorrentActions(path, mask, id, err, initialPeers)) {
             log_msg("[catalog] imported torrent %s\n", id.c_str());
+            if (deploy_ && torrentHasLayeredFsFiles(preview))
+                deploy_->armAutoCopy(id);
             if (titleInstalled) {
                 statusLabel_->setText(
                     tr("pipensx/detail/smart_installing_update", destination));

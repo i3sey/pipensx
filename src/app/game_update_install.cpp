@@ -1,5 +1,6 @@
 #include "game_update_install.hpp"
 #include "installed_title_service.hpp"
+#include "nx_file_types.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -340,6 +341,15 @@ std::vector<uint8_t> selectSmartInstallFiles(
         }
     }
 
+    for (size_t i = 0; i < preview.files.size(); ++i) {
+        if (actions[i] == static_cast<uint8_t>(FileAction::Install))
+            continue;
+        if (preview.files[i].package || preview.files[i].cartridge)
+            continue;
+        if (isLayeredFsPayloadPath(preview.files[i].path))
+            actions[i] = static_cast<uint8_t>(FileAction::Download);
+    }
+
     return actions;
 }
 
@@ -352,6 +362,15 @@ std::string updateMagnetFor(const std::string& infoHash,
     // mirror (resolveToFile bakes all mirrors into the announce list).
     return "magnet:?xt=urn:btih:" + infoHash +
            "&tr=http://bt.t-ru.org/ann?magnet";
+}
+
+bool torrentHasLayeredFsFiles(const TorrentPreview& preview) {
+    for (const TorrentPreview::File& file : preview.files) {
+        if (!file.package && !file.cartridge &&
+            isLayeredFsPayloadPath(file.path))
+            return true;
+    }
+    return false;
 }
 
 } // namespace pipensx

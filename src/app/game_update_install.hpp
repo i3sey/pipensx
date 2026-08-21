@@ -111,4 +111,6 @@ inline bool updateRecheckSettled(bool found, DownloadStatus status) {
 std::string updateMagnetFor(const std::string& infoHash,
                             const CatalogEntry* entry);
 
+bool torrentHasLayeredFsFiles(const TorrentPreview& preview);
+
 } // namespace pipensx

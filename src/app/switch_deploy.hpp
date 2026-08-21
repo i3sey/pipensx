@@ -102,6 +102,40 @@ inline bool switchDeployFullyInstalled(
            inspection.plan.archives.empty();
 }
 
+inline bool switchDeployCopiesAtmosphere(const SwitchDeployPlan& plan) {
+    for (const SwitchDeployEntry& entry : plan.files) {
+        const std::string& path = entry.destinationRelativePath;
+        if (path.size() < 11)
+            continue;
+        const char prefix[] = "atmosphere/";
+        bool match = true;
+        for (int i = 0; i < 11; ++i) {
+            char c = path[static_cast<size_t>(i)];
+            if (c >= 'A' && c <= 'Z')
+                c = static_cast<char>(c - 'A' + 'a');
+            if (c != prefix[i]) {
+                match = false;
+                break;
+            }
+        }
+        if (match)
+            return true;
+    }
+    return false;
+}
+
+inline const char* switchDeployCopyActionKey(const SwitchDeployPlan& plan) {
+    return switchDeployCopiesAtmosphere(plan)
+               ? "pipensx/deploy/install_mod"
+               : "pipensx/deploy/install_port";
+}
+
+inline const char* switchDeployWarningKey(const SwitchDeployPlan& plan) {
+    return switchDeployCopiesAtmosphere(plan)
+               ? "pipensx/deploy/warning_mod"
+               : "pipensx/deploy/warning";
+}
+
 enum class SwitchDeployPhase {
     Idle,
     Preparing,

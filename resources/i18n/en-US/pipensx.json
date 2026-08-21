@@ -316,6 +316,7 @@
   "deploy": {
     "copy": "Copy to /switch",
     "install_port": "Install port",
+    "install_mod": "Copy to Atmosphere",
     "installed": "Installed",
     "cancel": "Cancel /switch copy",
     "preview_title": "Copy preview",
@@ -333,6 +334,7 @@
     "offer_question": "Port files for «{}» are ready. Copy them to /switch now?",
     "cleanup_question": "«{}» was copied to /switch. Delete the downloaded data to free SD card space?",
     "warning": "Only files under the detected switch directory are copied. Selected switch.7z / switch.zip archives are extracted. Conflicting destination files block the copy (nothing is overwritten).",
+    "warning_mod": "LayeredFS files are copied to /atmosphere/contents. The folder name atmopshere is renamed to atmosphere. Conflicting destination files block the copy (nothing is overwritten).",
     "state_copy": "Will copy",
     "state_identical": "Already identical",
     "state_conflict": "Conflict",

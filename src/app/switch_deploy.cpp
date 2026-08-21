@@ -409,6 +409,123 @@ void setProblem(SwitchDeployInspection& result, SwitchDeployProblem problem,
     }
 }
 
+std::string sdRootFromSwitchTarget(const std::string& switchRoot) {
+    std::string path = switchRoot;
+    while (path.size() > 1 && path.back() == '/')
+        path.pop_back();
+    const size_t slash = path.find_last_of('/');
+    if (slash == std::string::npos || slash == 0)
+        return {};
+    if (!asciiEqual(path.substr(slash + 1), "switch"))
+        return {};
+    return path.substr(0, slash);
+}
+
+bool destinationRelativeIsAtmosphere(const std::string& relative) {
+    if (relative.size() < 11)
+        return false;
+    const char prefix[] = "atmosphere/";
+    for (int i = 0; i < 11; ++i) {
+        char c = relative[static_cast<size_t>(i)];
+        if (c >= 'A' && c <= 'Z')
+            c = static_cast<char>(c - 'A' + 'a');
+        if (c != prefix[i])
+            return false;
+    }
+    return true;
+}
+
+struct LayoutPath {
+    std::string spelling;
+    bool file = false;
+};
+
+bool addDeployFile(SwitchDeployInspection& result,
+                   std::map<std::string, LayoutPath>& layoutPaths,
+                   const TaskFileInfo& file, const std::string& destRoot,
+                   const std::string& destinationRelative, bool nro) {
+    if (!taskFilePathIsFatCompatible(destinationRelative)) {
+        setProblem(result, SwitchDeployProblem::UnsafePath, file.logicalPath);
+        return false;
+    }
+    const std::vector<std::string> destinationParts =
+        splitPath(destinationRelative);
+    if (destinationParts.empty() ||
+        asciiEqual(destinationParts.front(), "pipensx")) {
+        setProblem(result, SwitchDeployProblem::UnsafePath,
+                   "Writing inside the pipensx application directory is forbidden.");
+        return false;
+    }
+    std::string layoutPath;
+    for (size_t i = 0; i < destinationParts.size(); ++i) {
+        if (!layoutPath.empty())
+            layoutPath += '/';
+        layoutPath += destinationParts[i];
+        const bool isFile = i + 1 == destinationParts.size();
+        const std::string folded = lowerAscii(layoutPath);
+        auto collision = layoutPaths.find(folded);
+        if (collision != layoutPaths.end()) {
+            if (collision->second.spelling != layoutPath ||
+                collision->second.file != isFile || isFile) {
+                const char* detail =
+                    collision->second.spelling != layoutPath
+                        ? "Destination paths collide when case is ignored."
+                        : collision->second.file == isFile
+                              ? "The layout contains a duplicate destination path."
+                              : "The layout contains a file/directory conflict.";
+                setProblem(result, SwitchDeployProblem::UnsafePath, detail);
+                return false;
+            }
+        } else {
+            layoutPaths.emplace(folded, LayoutPath{layoutPath, isFile});
+        }
+    }
+
+    SwitchDeployEntry entry;
+    entry.sourcePath = file.absolutePath;
+    entry.sourceRelativePath = file.logicalPath;
+    entry.destinationRelativePath = destinationRelative;
+    entry.destinationPath = destRoot + "/" + destinationRelative;
+    entry.size = file.size;
+    entry.nro = nro;
+    result.plan.totalBytes += entry.size;
+    if (!destinationParentsSafe(destRoot, destinationRelative)) {
+        setProblem(result, SwitchDeployProblem::UnsafePath,
+                   destinationRelative);
+        return false;
+    }
+    struct stat destination {};
+    if (lstat(entry.destinationPath.c_str(), &destination) != 0) {
+        if (errno != ENOENT) {
+            setProblem(result, SwitchDeployProblem::Io, entry.destinationPath);
+            return false;
+        }
+        entry.state = SwitchDeployEntryState::Missing;
+        result.plan.bytesToCopy += entry.size;
+    } else if (!S_ISREG(destination.st_mode) || S_ISLNK(destination.st_mode) ||
+               static_cast<uint64_t>(destination.st_size) != entry.size) {
+        entry.state = SwitchDeployEntryState::ExistingConflict;
+        ++result.plan.conflictFiles;
+    } else {
+        std::array<uint8_t, 32> destinationDigest {};
+        if (!hashFile(entry.sourcePath, entry.sha256) ||
+            !hashFile(entry.destinationPath, destinationDigest)) {
+            setProblem(result, SwitchDeployProblem::Io,
+                       "Unable to hash an existing file.");
+            return false;
+        }
+        if (entry.sha256 == destinationDigest) {
+            entry.state = SwitchDeployEntryState::ExistingIdentical;
+            ++result.plan.identicalFiles;
+        } else {
+            entry.state = SwitchDeployEntryState::ExistingConflict;
+            ++result.plan.conflictFiles;
+        }
+    }
+    result.plan.files.push_back(std::move(entry));
+    return true;
+}
+
 bool copyFile(const SwitchDeployEntry& entry, const std::string& appRoot,
               const std::string& taskId, std::atomic<bool>& cancelled,
               const std::function<void(uint64_t)>& progress,
@@ -633,7 +750,26 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
             result.plan.bytesToCopy += need;
         }
     }
-    if (roots.empty() && result.plan.archives.empty()) {
+    const std::string sdRoot = sdRootFromSwitchTarget(targetRoot);
+    std::vector<const TaskFileInfo*> layeredFsFiles;
+    for (const TaskFileInfo& file : result.inventory.files) {
+        if (file.package || file.cartridge ||
+            file.action != TaskFileAction::Download ||
+            !isLayeredFsPayloadPath(file.logicalPath))
+            continue;
+        layeredFsFiles.push_back(&file);
+    }
+    if (roots.empty()) {
+        for (const TaskFileInfo& file : result.inventory.files) {
+            if (file.action != TaskFileAction::Download || file.package ||
+                file.cartridge || isPortArchiveName(file.logicalPath) ||
+                isLayeredFsPayloadPath(file.logicalPath))
+                continue;
+            ++result.plan.ignoredFiles;
+        }
+    }
+    if (roots.empty() && result.plan.archives.empty() &&
+        (layeredFsFiles.empty() || sdRoot.empty())) {
         setProblem(result, SwitchDeployProblem::LayoutNotFound,
                    "A switch directory with a valid NRO was not found.");
         return result;
@@ -643,139 +779,59 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
                    "More than one switch directory contains an NRO.");
         return result;
     }
-    if (roots.empty()) {
-        const StorageSpaceSnapshot storage = queryStorageSpace(targetRoot);
-        if (!storage.available) {
-            setProblem(result, SwitchDeployProblem::Io, storage.error);
-            return result;
-        }
-        result.plan.freeBytes = storage.freeBytes;
-        if (result.plan.bytesToCopy > storage.freeBytes) {
-            setProblem(result, SwitchDeployProblem::NoSpace,
-                       "There is not enough free space on the SD card.");
-            return result;
-        }
-        return result;
-    }
-    const std::string selectedRoot = *roots.begin();
-    struct LayoutPath {
-        std::string spelling;
-        bool file = false;
-    };
     std::map<std::string, LayoutPath> layoutPaths;
-    for (const TaskFileInfo& file : result.inventory.files) {
-        const std::vector<std::string> parts = splitPath(file.logicalPath);
-        size_t switchIndex = parts.size();
-        for (size_t i = 0; i < parts.size(); ++i) {
-            if (asciiEqual(parts[i], "switch") &&
-                lowerAscii(joinPath(parts, 0, i + 1)) == selectedRoot) {
-                switchIndex = i;
-                break;
-            }
-        }
-        if (switchIndex == parts.size()) {
-            if (file.action == TaskFileAction::Download &&
-                !isPortArchiveName(file.logicalPath))
-                ++result.plan.ignoredFiles;
-            continue;
-        }
-        if (file.action != TaskFileAction::Download || file.package ||
-            file.cartridge) {
-            ++result.plan.ignoredFiles;
-            continue;
-        }
-        if (file.state != TaskFileState::Present ||
-            !sourceFileSafe(result.inventory, file)) {
-            setProblem(result, SwitchDeployProblem::MissingSource,
-                       file.logicalPath);
-            return result;
-        }
-        const std::string destinationRelative =
-            joinPath(parts, switchIndex + 1, parts.size());
-        if (!taskFilePathIsFatCompatible(destinationRelative)) {
-            setProblem(result, SwitchDeployProblem::UnsafePath,
-                       file.logicalPath);
-            return result;
-        }
-        const std::vector<std::string> destinationParts =
-            splitPath(destinationRelative);
-        if (destinationParts.empty() ||
-            asciiEqual(destinationParts.front(), "pipensx")) {
-            setProblem(result, SwitchDeployProblem::UnsafePath,
-                       "Writing inside the pipensx application directory is forbidden.");
-            return result;
-        }
-        std::string layoutPath;
-        for (size_t i = 0; i < destinationParts.size(); ++i) {
-            if (!layoutPath.empty())
-                layoutPath += '/';
-            layoutPath += destinationParts[i];
-            const bool isFile = i + 1 == destinationParts.size();
-            const std::string folded = lowerAscii(layoutPath);
-            auto collision = layoutPaths.find(folded);
-            if (collision != layoutPaths.end()) {
-                if (collision->second.spelling != layoutPath ||
-                    collision->second.file != isFile || isFile) {
-                    const char* detail =
-                        collision->second.spelling != layoutPath
-                            ? "Destination paths collide when case is ignored."
-                            : collision->second.file == isFile
-                                  ? "The layout contains a duplicate destination path."
-                                  : "The layout contains a file/directory conflict.";
-                    setProblem(result, SwitchDeployProblem::UnsafePath,
-                               detail);
-                    return result;
+    if (!roots.empty()) {
+        const std::string selectedRoot = *roots.begin();
+        for (const TaskFileInfo& file : result.inventory.files) {
+            const std::vector<std::string> parts = splitPath(file.logicalPath);
+            size_t switchIndex = parts.size();
+            for (size_t i = 0; i < parts.size(); ++i) {
+                if (asciiEqual(parts[i], "switch") &&
+                    lowerAscii(joinPath(parts, 0, i + 1)) == selectedRoot) {
+                    switchIndex = i;
+                    break;
                 }
-            } else {
-                layoutPaths.emplace(folded,
-                                    LayoutPath{layoutPath, isFile});
             }
-        }
-
-        SwitchDeployEntry entry;
-        entry.sourcePath = file.absolutePath;
-        entry.sourceRelativePath = file.logicalPath;
-        entry.destinationRelativePath = destinationRelative;
-        entry.destinationPath = targetRoot + "/" + destinationRelative;
-        entry.size = file.size;
-        entry.nro = hasNroExtension(file.logicalPath);
-        result.plan.totalBytes += entry.size;
-        if (!destinationParentsSafe(targetRoot, destinationRelative)) {
-            setProblem(result, SwitchDeployProblem::UnsafePath,
-                       destinationRelative);
-            return result;
-        }
-        struct stat destination {};
-        if (lstat(entry.destinationPath.c_str(), &destination) != 0) {
-            if (errno != ENOENT) {
-                setProblem(result, SwitchDeployProblem::Io,
-                           entry.destinationPath);
+            if (switchIndex == parts.size()) {
+                if (file.action == TaskFileAction::Download &&
+                    !isPortArchiveName(file.logicalPath) &&
+                    !isLayeredFsPayloadPath(file.logicalPath))
+                    ++result.plan.ignoredFiles;
+                continue;
+            }
+            if (file.action != TaskFileAction::Download || file.package ||
+                file.cartridge) {
+                ++result.plan.ignoredFiles;
+                continue;
+            }
+            if (file.state != TaskFileState::Present ||
+                !sourceFileSafe(result.inventory, file)) {
+                setProblem(result, SwitchDeployProblem::MissingSource,
+                           file.logicalPath);
                 return result;
             }
-            entry.state = SwitchDeployEntryState::Missing;
-            result.plan.bytesToCopy += entry.size;
-        } else if (!S_ISREG(destination.st_mode) ||
-                   S_ISLNK(destination.st_mode) ||
-                   static_cast<uint64_t>(destination.st_size) != entry.size) {
-            entry.state = SwitchDeployEntryState::ExistingConflict;
-            ++result.plan.conflictFiles;
-        } else {
-            std::array<uint8_t, 32> destinationDigest {};
-            if (!hashFile(entry.sourcePath, entry.sha256) ||
-                !hashFile(entry.destinationPath, destinationDigest)) {
-                setProblem(result, SwitchDeployProblem::Io,
-                           "Unable to hash an existing file.");
+            const std::string destinationRelative =
+                joinPath(parts, switchIndex + 1, parts.size());
+            if (!addDeployFile(result, layoutPaths, file, targetRoot,
+                               destinationRelative,
+                               hasNroExtension(file.logicalPath)))
+                return result;
+        }
+    }
+    if (!sdRoot.empty()) {
+        for (const TaskFileInfo* file : layeredFsFiles) {
+            if (file->state != TaskFileState::Present ||
+                !sourceFileSafe(result.inventory, *file)) {
+                setProblem(result, SwitchDeployProblem::MissingSource,
+                           file->logicalPath);
                 return result;
             }
-            if (entry.sha256 == destinationDigest) {
-                entry.state = SwitchDeployEntryState::ExistingIdentical;
-                ++result.plan.identicalFiles;
-            } else {
-                entry.state = SwitchDeployEntryState::ExistingConflict;
-                ++result.plan.conflictFiles;
-            }
+            std::string destinationRelative;
+            layeredFsDeployRelative(file->logicalPath, destinationRelative);
+            if (!addDeployFile(result, layoutPaths, *file, sdRoot,
+                               destinationRelative, false))
+                return result;
         }
-        result.plan.files.push_back(std::move(entry));
     }
     if (result.plan.files.empty() && result.plan.archives.empty()) {
         setProblem(result, SwitchDeployProblem::LayoutNotFound,
@@ -1476,13 +1532,17 @@ bool PortUninstallService::plan(const std::string& titleId,
 bool PortUninstallService::deleteDeployed(
     const PortUninstallPlan& plan, PortUninstallReport& report) const {
     bool ok = true;
+    const std::string sdRoot = sdRootFromSwitchTarget(targetRoot_);
     auto fail = [&](const std::string& detail) {
         ok = false;
         if (report.error.empty())
             report.error = detail;
     };
     for (const std::string& relative : plan.switchFiles) {
-        const std::string full = targetRoot_ + "/" + relative;
+        const std::string destRoot =
+            destinationRelativeIsAtmosphere(relative) && !sdRoot.empty()
+                ? sdRoot : targetRoot_;
+        const std::string full = destRoot + "/" + relative;
         struct stat st {};
         if (lstat(full.c_str(), &st) != 0) {
             if (errno == ENOENT)
@@ -1502,7 +1562,7 @@ bool PortUninstallService::deleteDeployed(
             continue;
         }
         ++report.filesRemoved;
-        pruneEmptyParents(targetRoot_, full);
+        pruneEmptyParents(destRoot, full);
     }
     for (const std::string& folder : plan.wholeFolders) {
         const std::string full = targetRoot_ + "/" + folder;

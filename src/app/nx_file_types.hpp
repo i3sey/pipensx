@@ -1,7 +1,10 @@
 #pragma once
 
 #include <cctype>
+#include <cstdint>
+#include <cstdio>
 #include <string>
+#include <vector>
 
 namespace pipensx {
 
@@ -81,6 +84,111 @@ inline bool pathContainsSwitchComponent(const std::string& path) {
 
 inline bool isPortPayloadName(const std::string& path) {
     return isPortArchiveName(path) || pathContainsSwitchComponent(path);
+}
+
+inline bool asciiPathComponentEquals(const std::string& value,
+                                     const char* expected) {
+    size_t i = 0;
+    for (; expected[i] != '\0'; ++i) {
+        if (i >= value.size())
+            return false;
+        const char c = static_cast<char>(std::tolower(
+            static_cast<unsigned char>(value[i])));
+        if (c != expected[i])
+            return false;
+    }
+    return i == value.size();
+}
+
+// Atmosphere's own folder, plus the `atmopshere` typo used by some releases.
+inline bool isAtmosphereFolderName(const std::string& value) {
+    return asciiPathComponentEquals(value, "atmosphere") ||
+           asciiPathComponentEquals(value, "atmopshere");
+}
+
+inline bool parseNxTitleIdComponent(const std::string& name, uint64_t& id) {
+    if (name.size() != 16)
+        return false;
+    uint64_t value = 0;
+    for (char c : name) {
+        int digit = -1;
+        if (c >= '0' && c <= '9')
+            digit = c - '0';
+        else if (c >= 'a' && c <= 'f')
+            digit = c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F')
+            digit = c - 'A' + 10;
+        if (digit < 0)
+            return false;
+        value = (value << 4) | static_cast<uint64_t>(digit);
+    }
+    id = value;
+    return true;
+}
+
+// Atmosphere sysmodules live at 010000000000xxxx. Game LayeredFS must not
+// be allowed to overwrite those contents folders.
+inline bool isNxSysmoduleTitleId(uint64_t applicationId) {
+    return (applicationId & ~0xFFFFULL) == 0x0100000000000000ULL;
+}
+
+inline std::string formatNxTitleIdUpper(uint64_t applicationId) {
+    char text[17];
+    std::snprintf(text, sizeof(text), "%016llX",
+                  static_cast<unsigned long long>(applicationId));
+    return text;
+}
+
+// Loose LayeredFS file: .../{atmosphere|atmopshere}/contents/<tid>/{romfs|exefs}/...
+// Destination is always spelled `atmosphere/contents/<TID>/romfs|exefs/...`.
+// Sysmodule title ids return false and set rejectedSysmodule.
+inline bool layeredFsDeployRelative(const std::string& path,
+                                    std::string& destinationRelative,
+                                    bool* rejectedSysmodule = nullptr) {
+    if (rejectedSysmodule)
+        *rejectedSysmodule = false;
+    std::vector<std::string> parts;
+    size_t start = 0;
+    while (start <= path.size()) {
+        const size_t slash = path.find_first_of("/\\", start);
+        parts.push_back(path.substr(
+            start, slash == std::string::npos ? std::string::npos
+                                              : slash - start));
+        if (slash == std::string::npos)
+            break;
+        start = slash + 1;
+    }
+    for (size_t i = 0; i + 4 < parts.size(); ++i) {
+        if (!isAtmosphereFolderName(parts[i]) ||
+            !asciiPathComponentEquals(parts[i + 1], "contents"))
+            continue;
+        uint64_t titleId = 0;
+        if (!parseNxTitleIdComponent(parts[i + 2], titleId))
+            continue;
+        if (isNxSysmoduleTitleId(titleId)) {
+            if (rejectedSysmodule)
+                *rejectedSysmodule = true;
+            continue;
+        }
+        const bool romfs = asciiPathComponentEquals(parts[i + 3], "romfs");
+        const bool exefs = asciiPathComponentEquals(parts[i + 3], "exefs");
+        if (!romfs && !exefs)
+            continue;
+        destinationRelative = "atmosphere/contents/";
+        destinationRelative += formatNxTitleIdUpper(titleId);
+        destinationRelative += romfs ? "/romfs" : "/exefs";
+        for (size_t j = i + 4; j < parts.size(); ++j) {
+            destinationRelative += '/';
+            destinationRelative += parts[j];
+        }
+        return true;
+    }
+    return false;
+}
+
+inline bool isLayeredFsPayloadPath(const std::string& path) {
+    std::string unused;
+    return layeredFsDeployRelative(path, unused);
 }
 
 } // namespace pipensx

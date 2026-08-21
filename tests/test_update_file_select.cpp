@@ -327,6 +327,40 @@ void testSmartInstallInstalledTitleDoesNotUseHeuristicFallback() {
     assert(actions[1] == static_cast<uint8_t>(FileAction::Skip));
 }
 
+void testSmartInstallDownloadsLayeredFsExtras() {
+    TorrentPreview preview;
+    preview.files = {
+        package("Violet [01008F6008C5E000][v0].nsp"),
+        package("Violet [01008F6008C5E000][v720896].nsp"),
+        plain("Russian Language Mod/atmopshere/contents/"
+              "01008F6008C5E000/romfs/a.bin"),
+        plain("readme.txt"),
+        plain("Russian Language Mod/atmopshere/contents/"
+              "0100000000000042/romfs/x.bin")};
+    expectSmartActions(preview, false, "", "720896", "01008F6008C5E000", {
+        static_cast<uint8_t>(FileAction::Install),
+        static_cast<uint8_t>(FileAction::Install),
+        static_cast<uint8_t>(FileAction::Download),
+        static_cast<uint8_t>(FileAction::Skip),
+        static_cast<uint8_t>(FileAction::Skip),
+    });
+    assert(pipensx::torrentHasLayeredFsFiles(preview));
+}
+
+void testSmartInstallDownloadsLayeredFsWhenTitleAlreadyCurrent() {
+    TorrentPreview preview;
+    preview.files = {
+        package("Violet [01008F6008C5E000][v0].nsp"),
+        package("Violet [01008F6008C5E000][v720896].nsp"),
+        plain("Russian Language Mod/atmopshere/contents/"
+              "01008F6008C5E000/romfs/a.bin")};
+    expectSmartActions(preview, true, "720896", "720896", "01008F6008C5E000", {
+        static_cast<uint8_t>(FileAction::Skip),
+        static_cast<uint8_t>(FileAction::Skip),
+        static_cast<uint8_t>(FileAction::Download),
+    });
+}
+
 // Scene BOTW-style names: Patch title id …800, not the base …000. DLC must
 // stay DLC even when its [vN] is also non-zero.
 void testSmartInstallMatchesPatchTitleId() {
@@ -424,6 +458,8 @@ int main() {
     testSmartInstallInstalledTitleInstallsOnlyNewerUpdate();
     testSmartInstallInstalledTitleSkipsSameOrUnknownVersion();
     testSmartInstallInstalledTitleDoesNotUseHeuristicFallback();
+    testSmartInstallDownloadsLayeredFsExtras();
+    testSmartInstallDownloadsLayeredFsWhenTitleAlreadyCurrent();
     testSmartInstallMatchesPatchTitleId();
     testSmartInstallUsesBundledPatchVersionWhenLatestEmpty();
     testMagnetPrefersCatalogEntry();

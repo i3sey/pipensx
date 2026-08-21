@@ -43,7 +43,8 @@ std::vector<uint8_t> defaultInstallSelection(
         uint8_t action = static_cast<uint8_t>(FileAction::Skip);
         if (file.package)
             action = static_cast<uint8_t>(FileAction::Install);
-        else if (!file.cartridge && isPortPayloadName(file.path))
+        else if (!file.cartridge && (isPortPayloadName(file.path) ||
+                                     isLayeredFsPayloadPath(file.path)))
             action = static_cast<uint8_t>(FileAction::Download);
         mask.push_back(action);
         allSelected = allSelected &&
