@@ -165,6 +165,33 @@ void testFallsBackToAllSkipWhenNothingMatches() {
     });
 }
 
+void testComboDumpDoesNotSelectOtherTitlePatch() {
+    TorrentPreview preview;
+    preview.files = {
+        package("Super Mario Galaxy [0100AAAA00000000][v0].nsp"),
+        package("Super Mario Galaxy [0100AAAA00000800][v131072].nsp"),
+        package("Super Mario Galaxy 2 [0100BBBB00000000][v0].nsp"),
+        package("Super Mario Galaxy 2 [0100BBBB00000800][v327680].nsp")};
+    expectSmartActions(preview, true, "0", "131072", "0100AAAA00000000", {
+        static_cast<uint8_t>(FileAction::Skip),
+        static_cast<uint8_t>(FileAction::Install),
+        static_cast<uint8_t>(FileAction::Skip),
+        static_cast<uint8_t>(FileAction::Skip),
+    });
+    expectSmartActions(preview, true, "0", "327680", "0100AAAA00000000", {
+        static_cast<uint8_t>(FileAction::Skip),
+        static_cast<uint8_t>(FileAction::Skip),
+        static_cast<uint8_t>(FileAction::Skip),
+        static_cast<uint8_t>(FileAction::Skip),
+    });
+    expectActions(preview, "327680", {
+        static_cast<uint8_t>(FileAction::Skip),
+        static_cast<uint8_t>(FileAction::Skip),
+        static_cast<uint8_t>(FileAction::Skip),
+        static_cast<uint8_t>(FileAction::Install),
+    }, "0100BBBB00000000");
+}
+
 void testSameVersionDifferentTitleIdUsesTitleId() {
     TorrentPreview preview;
     preview.files = {
@@ -412,6 +439,7 @@ int main() {
     testMarkerFallbackWithoutTags();
     testFallsBackToAllSkipWhenNothingMatches();
     testSameVersionDifferentTitleIdUsesTitleId();
+    testComboDumpDoesNotSelectOtherTitlePatch();
     testSmartInstallIncludesApplicableDlc();
     testSmartInstallSkipsBaseWhenInstalledButKeepsDlc();
     testSmartInstallLeavesUnknownPackagesSkipped();

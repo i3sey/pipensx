@@ -503,8 +503,11 @@ private:
                 tr("pipensx/installed/update_no_bundle"));
             return;
         }
+        CatalogEntry entry = *catalogEntry;
+        if (!titleId.empty())
+            entry.titleId = titleId;
         brls::Application::pushActivity(new GameDetailActivity(
-            *catalogEntry, "", manager_, metadata_, installed_, settings_,
+            std::move(entry), "", manager_, metadata_, installed_, settings_,
             [](const std::string&, const std::string&) {},
             [this, alive = alive_] {
                 brls::sync([this, alive] {
