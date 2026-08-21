@@ -107,7 +107,8 @@ public:
           alive_(std::make_shared<std::atomic<bool>>(true)),
           cancelled_(std::make_shared<std::atomic<bool>>(false)),
           autoInstall_(autoInstall), portInstall_(portInstall) {
-        const GameMetadata* found = metadata_->findByInfoHash(entry_.infoHash);
+        const GameMetadata* found =
+            metadata_->findByInfoHash(entry_.infoHash, entry_.titleId);
         presentation_ = resolveCatalogPresentation(entry_, found,
                                                    catalogTextPreference());
         titleId_ = presentation_.titleId;
@@ -1403,7 +1404,8 @@ private:
     }
 
     std::string latestVersionForEntry() const {
-        const GameMetadata* metadata = metadata_->findByInfoHash(entry_.infoHash);
+        const GameMetadata* metadata =
+            metadata_->findByInfoHash(entry_.infoHash, titleId_);
         return metadata ? metadata->latestVersion : std::string();
     }
 

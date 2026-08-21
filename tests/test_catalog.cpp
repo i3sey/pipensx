@@ -369,6 +369,55 @@ void testFindByTitleIdBundles() {
     rmdir(root.c_str());
 }
 
+void testFindByTitleIdComboDump() {
+    const std::string root = "/tmp/pipensx-metadata-combo-" +
+        std::to_string(static_cast<long long>(getpid()));
+    const std::string bundled = root + "/bundled.json";
+    mkdir(root.c_str(), 0755);
+    writeTextFile(
+        bundled,
+        "[{\"infoHash\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\","
+        "\"titleId\":\"0100AAAA00000000\",\"name\":\"Super Mario Galaxy\","
+        "\"latestVersion\":\"131072\"},"
+        "{\"infoHash\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\","
+        "\"titleId\":\"0100BBBB00000000\",\"name\":\"Super Mario Galaxy 2\","
+        "\"latestVersion\":\"327680\"}]");
+
+    GameMetadataService metadata(root, bundled);
+    std::string error;
+    assert(metadata.load(error));
+
+    std::vector<const GameMetadata*> galaxy;
+    assert(metadata.findByTitleId("0100AAAA00000000", galaxy));
+    assert(galaxy.size() == 1);
+    assert(galaxy[0]->latestVersion == "131072");
+    assert(galaxy[0]->name == "Super Mario Galaxy");
+
+    std::vector<const GameMetadata*> galaxy2;
+    assert(metadata.findByTitleId("0100bbbb00000000", galaxy2));
+    assert(galaxy2.size() == 1);
+    assert(galaxy2[0]->latestVersion == "327680");
+
+    std::vector<std::string> versions;
+    assert(metadata.collectLatestVersions("0100AAAA00000000", versions));
+    assert(versions.size() == 1);
+    assert(versions[0] == "131072");
+
+    const GameMetadata* byHash = metadata.findByInfoHash(
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+    assert(byHash && byHash->titleId == "0100AAAA00000000");
+    const GameMetadata* byPair = metadata.findByInfoHash(
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0100BBBB00000000");
+    assert(byPair && byPair->latestVersion == "327680");
+    assert(byPair != byHash);
+
+    unlink(bundled.c_str());
+    rmdir((root + "/catalog/metadata").c_str());
+    rmdir((root + "/catalog/images").c_str());
+    rmdir((root + "/catalog").c_str());
+    rmdir(root.c_str());
+}
+
 void testPlayerFilterPredicate() {    GameMetadata igdb;
     igdb.players = 4;
     igdb.hasModes = true;
@@ -1444,6 +1493,7 @@ int main() {
     testMetadataIndexParsing();
     testMetadataIndexPlayerFields();
     testFindByTitleIdBundles();
+    testFindByTitleIdComboDump();
     testPlayerFilterPredicate();
     testMetadataSnapshotAcceptsVerifiedIndex();
     testMetadataSnapshotRejectsTamperedIndex();
