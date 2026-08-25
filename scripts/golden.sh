@@ -22,6 +22,18 @@ GOLDEN_DIR="$ROOT/tests/golden"
 OUT_DIR="${GOLDEN_OUT:-$ROOT/build-golden/golden-out}"
 FUZZ="${GOLDEN_FUZZ:-5%}"
 MAX_DIFF="${GOLDEN_MAX_DIFF:-25000}"
+
+# Optional user-local xvfb/ImageMagick (no root install). Keeps renders off the
+# interactive display — tiling WMs resize the golden window and poison baselines.
+_GOLDEN_TOOLS="${GOLDEN_TOOLS_PREFIX:-$HOME/.local/opt/golden-tools/root}"
+if [[ -x "$_GOLDEN_TOOLS/usr/bin/Xvfb" ]]; then
+    export PATH="$_GOLDEN_TOOLS/usr/bin:$PATH"
+    export LD_LIBRARY_PATH="$_GOLDEN_TOOLS/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    export MAGICK_HOME="$_GOLDEN_TOOLS/usr"
+    export MAGICK_CONFIGURE_PATH="$_GOLDEN_TOOLS/etc/ImageMagick-7"
+    export MAGICK_CODER_MODULE_PATH="$_GOLDEN_TOOLS/usr/lib/ImageMagick-7.1.2/modules-Q16HDRI/coders"
+    export MAGICK_FILTER_MODULE_PATH="$_GOLDEN_TOOLS/usr/lib/ImageMagick-7.1.2/modules-Q16HDRI/filters"
+fi
 SCREENS="${GOLDEN_SCREENS:-catalog detail frame downloads download-files deploy-preview installed installed-populated updates update-chooser settings settings-debrid storage network-health help first-run debrid-link about torrent-selection bug-report bug-report-detail screenshot-viewer screenshot-viewer-preview screenshot-viewer-missing port-install-warning}"
 # Behaviour checks: these assert and exit non-zero instead of writing a
 # baseline, so they are never compared against tests/golden/. Entries are

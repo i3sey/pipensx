@@ -214,7 +214,10 @@
     "cta_install": "Install {} to {} · {}",
     "cta_download": "Download {} · {}",
     "preset_packages": "Packages",
-    "preset_download_all": "Download all"
+    "preset_download_all": "Download all",
+    "folders": "Folders",
+    "expand": "Expand",
+    "folder_files": "{} files"
   },
   "port_install": {
     "unofficial": "This is an unofficial homebrew port. Extra steps may still be required to install it.",

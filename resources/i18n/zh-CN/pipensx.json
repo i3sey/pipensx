@@ -214,7 +214,10 @@
     "cta_install": "安装 {} 到 {} · {}",
     "cta_download": "下载 {} · {}",
     "preset_packages": "包",
-    "preset_download_all": "全部下载"
+    "preset_download_all": "全部下载",
+    "folders": "文件夹",
+    "expand": "展开",
+    "folder_files": "{} 个文件"
   },
   "port_install": {
     "unofficial": "这是非官方自制移植。安装时可能仍需额外步骤。",

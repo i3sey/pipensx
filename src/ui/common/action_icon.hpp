@@ -27,6 +27,7 @@ enum class ActionIconKind {
     Checked,    // solid accent badge, checkmark knocked out
     Unchecked,  // thin hollow ring, dimmed
     Error,      // outline warning triangle
+    Folder,     // outline folder tab + body
 };
 
 class ActionIcon : public brls::View {
@@ -77,6 +78,9 @@ public:
                 break;
             case ActionIconKind::Error:
                 drawWarning(vg, 0.0f, 0.0f, kGlyph, theme::error());
+                break;
+            case ActionIconKind::Folder:
+                drawFolder(vg, 0.0f, 0.0f, kGlyph, theme::accent());
                 break;
         }
         nvgRestore(vg);
@@ -178,6 +182,29 @@ private:
         nvgBeginPath(vg);
         nvgCircle(vg, cx, gy + 17.5f, 1.3f);
         nvgFill(vg);
+    }
+
+    // Tabbed folder outline — expand/collapse marker on selection rows.
+    static void drawFolder(NVGcontext* vg, float gx, float gy, float s,
+                           NVGcolor color) {
+        nvgStrokeColor(vg, color);
+        nvgStrokeWidth(vg, 1.8f);
+        nvgBeginPath(vg);
+        nvgMoveTo(vg, gx + 3.0f, gy + 8.0f);
+        nvgLineTo(vg, gx + 3.0f, gy + 8.0f);
+        nvgLineTo(vg, gx + 3.0f, gy + 7.0f);
+        nvgQuadTo(vg, gx + 3.0f, gy + 5.5f, gx + 4.5f, gy + 5.5f);
+        nvgLineTo(vg, gx + 10.0f, gy + 5.5f);
+        nvgLineTo(vg, gx + 12.5f, gy + 8.0f);
+        nvgLineTo(vg, gx + s - 3.5f, gy + 8.0f);
+        nvgQuadTo(vg, gx + s - 2.0f, gy + 8.0f, gx + s - 2.0f, gy + 9.5f);
+        nvgLineTo(vg, gx + s - 2.0f, gy + s - 4.0f);
+        nvgQuadTo(vg, gx + s - 2.0f, gy + s - 2.5f, gx + s - 3.5f,
+                  gy + s - 2.5f);
+        nvgLineTo(vg, gx + 4.5f, gy + s - 2.5f);
+        nvgQuadTo(vg, gx + 3.0f, gy + s - 2.5f, gx + 3.0f, gy + s - 4.0f);
+        nvgLineTo(vg, gx + 3.0f, gy + 8.0f);
+        nvgStroke(vg);
     }
 
     ActionIconKind kind_;

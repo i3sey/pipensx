@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -47,6 +48,55 @@ inline std::string fileKindLabel(const TorrentSelectionEntry& entry) {
     return tr("pipensx/torrent/kind_nsp");
 }
 
+struct TorrentFolderGroup {
+    std::string name;    // single path segment, e.g. "wallpapers"
+    std::string prefix;  // "bonus/wallpapers/" — empty means root files bucket
+    int depth = 0;
+    std::vector<size_t> indices;   // all descendant file entries
+    std::vector<size_t> children;  // child group indices (nested folders)
+    std::vector<size_t> files;     // direct child file entry indices
+    bool expanded = false;
+};
+
+constexpr float kThreadStep = 20.0f;
+
+// Reddit-style nest guides: one vertical rule per ancestor depth.
+class ThreadGuide : public brls::View {
+public:
+    ThreadGuide() {
+        setFocusable(false);
+        setHeight(82);
+    }
+
+    void setDepth(int depth) {
+        depth_ = std::max(0, depth);
+        setWidth(depth_ * kThreadStep);
+        setVisibility(depth_ == 0 ? brls::Visibility::GONE
+                                 : brls::Visibility::VISIBLE);
+    }
+
+    void draw(NVGcontext* vg, float x, float y, float width, float height,
+              brls::Style, brls::FrameContext*) override {
+        if (depth_ <= 0)
+            return;
+        NVGcolor color = theme::textTertiary();
+        color.a *= 0.55f;
+        nvgStrokeColor(vg, color);
+        nvgStrokeWidth(vg, 1.5f);
+        nvgLineCap(vg, NVG_BUTT);
+        for (int i = 0; i < depth_; ++i) {
+            const float px = x + (i + 0.5f) * kThreadStep;
+            nvgBeginPath(vg);
+            nvgMoveTo(vg, px, y + 4.0f);
+            nvgLineTo(vg, px, y + height - 4.0f);
+            nvgStroke(vg);
+        }
+    }
+
+private:
+    int depth_ = 0;
+};
+
 class TorrentSelectionCell : public brls::RecyclerCell {
 public:
     TorrentSelectionCell() {
@@ -70,6 +120,9 @@ public:
             return true;
         });
 
+        thread_ = new ThreadGuide();
+        addView(thread_);
+
         icon_ = new ActionIcon();
         icon_->setMarginRight(14);
         addView(icon_);
@@ -78,24 +131,11 @@ public:
         body->setGrow(1);
         body->setJustifyContent(brls::JustifyContent::CENTER);
 
-        auto* pathRow = new brls::Box(brls::Axis::ROW);
-        pathRow->setFocusable(false);
-        pathRow->setAlignItems(brls::AlignItems::BASELINE);
-
-        directory_ = new brls::Label();
-        directory_->setSingleLine(true);
-        directory_->setAutoAnimate(false);
-        directory_->setFontSize(18);
-        directory_->setTextColor(theme::textTertiary());
-        pathRow->addView(directory_);
-
         name_ = new brls::Label();
         name_->setSingleLine(true);
         name_->setAutoAnimate(false);
         name_->setFontSize(18);
-        name_->setGrow(1);
-        pathRow->addView(name_);
-        body->addView(pathRow);
+        body->addView(name_);
 
         meta_ = new brls::Label();
         meta_->setSingleLine(true);
@@ -119,7 +159,8 @@ public:
         addView(size_);
     }
 
-    void setEntry(const TorrentSelectionEntry& entry) {
+    void setEntry(const TorrentSelectionEntry& entry, int depth = 0) {
+        thread_->setDepth(depth);
         const bool skipped = entry.action == FileAction::Skip;
         icon_->setKind(entry.action == FileAction::Install
                            ? ActionIconKind::Install
@@ -128,11 +169,7 @@ public:
                                  : ActionIconKind::Skip);
 
         const auto [directory, name] = splitPath(entry.path);
-        directory_->setText(directory);
-        directory_->setVisibility(directory.empty() ? brls::Visibility::GONE
-                                                    : brls::Visibility::VISIBLE);
-        directory_->setTextColor(skipped ? theme::textDisabled()
-                                         : theme::textTertiary());
+        (void)directory;
         name_->setText(name);
         name_->setTextColor(skipped ? theme::textDisabled()
                                     : theme::textPrimary());
@@ -157,8 +194,8 @@ public:
 
     // Torrents with no files at all: one row explaining why the list is empty.
     void setEmpty() {
+        thread_->setDepth(0);
         icon_->setKind(ActionIconKind::Skip);
-        directory_->setVisibility(brls::Visibility::GONE);
         name_->setText(tr("pipensx/torrent/empty"));
         name_->setTextColor(theme::textDisabled());
         meta_->setText("");
@@ -176,8 +213,122 @@ public:
     }
 
 private:
+    ThreadGuide* thread_;
     ActionIcon* icon_;
-    brls::Label* directory_;
+    brls::Label* name_;
+    brls::Label* meta_;
+    brls::Label* size_;
+};
+
+// Collapsible folder row in a nested tree. Y expands/collapses; A cycles
+// Skip/Download/(Install if every descendant is a package). Starts collapsed.
+class TorrentFolderCell : public brls::RecyclerCell {
+public:
+    TorrentFolderCell() {
+        setFocusable(true);
+        setAxis(brls::Axis::ROW);
+        setAlignItems(brls::AlignItems::CENTER);
+        setPadding(12, 20, 12, 20);
+        setHeight(82);
+
+        registerAction(tr("pipensx/common/toggle"), brls::BUTTON_A,
+                       [this](brls::View*) {
+            auto* recycler =
+                dynamic_cast<brls::RecyclerFrame*>(getParent()->getParent());
+            if (recycler && recycler->getDataSource())
+                recycler->getDataSource()->didSelectRowAt(recycler,
+                                                          getIndexPath());
+            return true;
+        });
+
+        thread_ = new ThreadGuide();
+        addView(thread_);
+
+        icon_ = new ActionIcon();
+        icon_->setMarginRight(10);
+        addView(icon_);
+
+        folderIcon_ = new ActionIcon(ActionIconKind::Folder);
+        folderIcon_->setMarginRight(10);
+        addView(folderIcon_);
+
+        auto* body = new brls::Box(brls::Axis::COLUMN);
+        body->setGrow(1);
+        body->setJustifyContent(brls::JustifyContent::CENTER);
+
+        name_ = new brls::Label();
+        name_->setSingleLine(true);
+        name_->setAutoAnimate(false);
+        name_->setFontSize(18);
+        body->addView(name_);
+
+        meta_ = new brls::Label();
+        meta_->setSingleLine(true);
+        meta_->setAutoAnimate(false);
+        meta_->setFontSize(14);
+        meta_->setMarginTop(4);
+        meta_->setTextColor(theme::textTertiary());
+        body->addView(meta_);
+        addView(body);
+
+        size_ = new brls::Label();
+        size_->setSingleLine(true);
+        size_->setAutoAnimate(false);
+        size_->setFontSize(17);
+        size_->setWidth(110);
+        size_->setMarginLeft(16);
+        size_->setHorizontalAlign(brls::HorizontalAlign::RIGHT);
+        size_->setTextColor(theme::textSecondary());
+        addView(size_);
+    }
+
+    void setGroup(const TorrentFolderGroup& group,
+                  const std::vector<TorrentSelectionEntry>& entries) {
+        thread_->setDepth(group.depth);
+        uint64_t bytes = 0;
+        bool allInstall = true, allDownload = true, allSkip = true;
+        for (size_t index : group.indices) {
+            if (index >= entries.size())
+                continue;
+            bytes += entries[index].length;
+            const FileAction action = entries[index].action;
+            if (action != FileAction::Install)
+                allInstall = false;
+            if (action != FileAction::Download)
+                allDownload = false;
+            if (action != FileAction::Skip)
+                allSkip = false;
+        }
+        icon_->setKind(allInstall ? ActionIconKind::Install
+                                  : allDownload ? ActionIconKind::Download
+                                                : ActionIconKind::Skip);
+        folderIcon_->setKind(ActionIconKind::Folder);
+        name_->setText(group.name);
+        meta_->setText(tr("pipensx/torrent/folder_files", group.indices.size()));
+        size_->setText(formatBytes(bytes));
+        const bool dimmed = allSkip;
+        name_->setTextColor(dimmed ? theme::textDisabled()
+                                   : theme::textPrimary());
+        meta_->setTextColor(dimmed ? theme::textDisabled()
+                                   : theme::textTertiary());
+        size_->setTextColor(dimmed ? theme::textDisabled()
+                                   : theme::textSecondary());
+    }
+
+    void onFocusGained() override {
+        brls::RecyclerCell::onFocusGained();
+        name_->setAnimated(true);
+    }
+
+    void onFocusLost() override {
+        brls::RecyclerCell::onFocusLost();
+        name_->setAnimated(false);
+    }
+
+private:
+    ThreadGuide* thread_;
+    ActionIcon* icon_;
+    ActionIcon* folderIcon_;
     brls::Label* name_;
     brls::Label* meta_;
     brls::Label* size_;
@@ -187,11 +338,23 @@ class TorrentSelectionActivity;
 
 class TorrentSelectionDataSource : public brls::RecyclerDataSource {
 public:
+    enum class VisibleKind { File, Folder };
+
+    using FolderGroup = TorrentFolderGroup;
+
+    struct VisibleRow {
+        VisibleKind kind = VisibleKind::File;
+        size_t groupIndex = 0;
+        size_t entryIndex = 0;  // File only
+        int depth = 0;
+    };
+
     explicit TorrentSelectionDataSource(TorrentSelectionActivity* owner)
         : owner_(owner) {}
 
     void setEntries(std::vector<TorrentSelectionEntry> entries) {
         entries_ = std::move(entries);
+        rebuildGroups();
     }
 
     void setAll(bool selected) {
@@ -260,7 +423,7 @@ public:
     }
 
     int numberOfRows(brls::RecyclerFrame*, int) override {
-        return entries_.empty() ? 1 : static_cast<int>(entries_.size());
+        return visibleRowCount();
     }
 
     brls::RecyclerCell* cellForRow(brls::RecyclerFrame* recycler,
@@ -268,17 +431,43 @@ public:
 
     void didSelectRowAt(brls::RecyclerFrame*, brls::IndexPath index) override;
 
-    const TorrentSelectionEntry* entryAt(int row) const {
-        if (row < 0 || static_cast<size_t>(row) >= entries_.size())
+    const TorrentSelectionEntry* entryAt(int entryIndex) const {
+        if (entryIndex < 0 ||
+            static_cast<size_t>(entryIndex) >= entries_.size())
             return nullptr;
-        return &entries_[static_cast<size_t>(row)];
+        return &entries_[static_cast<size_t>(entryIndex)];
     }
 
+    const VisibleRow* visibleAt(int row) const;
+    const FolderGroup* groupAt(size_t groupIndex) const;
+    const std::vector<TorrentSelectionEntry>& entries() const {
+        return entries_;
+    }
+    int visibleRowCount() const;
+    bool anyFolderCollapsed() const;
+    bool toggleFolderAtVisibleRow(int row);
+    void setAllFoldersExpanded(bool expanded);
+    void cycleFolder(size_t groupIndex);
     void cycleRow(int row);
+    void cycleEntry(int entryIndex);
+    void rebuildVisible();
 
 private:
+    void rebuildGroups();
+    void emitVisible(size_t groupIndex);
+    static bool isCollapsibleFolder(const FolderGroup& group) {
+        return !group.prefix.empty();
+    }
+
     TorrentSelectionActivity* owner_;
     std::vector<TorrentSelectionEntry> entries_;
+    std::vector<FolderGroup> groups_;
+    struct RootItem {
+        bool folder = false;
+        size_t index = 0;
+    };
+    std::vector<RootItem> rootOrder_;
+    std::vector<VisibleRow> visible_;
 };
 
 class TorrentSelectionActivity : public brls::Activity {
@@ -357,6 +546,8 @@ public:
         recycler_->estimatedRowHeight = 82;
         recycler_->registerCell("FileSelect",
                                [] { return new TorrentSelectionCell(); });
+        recycler_->registerCell("FolderSelect",
+                               [] { return new TorrentFolderCell(); });
         dataSource_ = new TorrentSelectionDataSource(this);
         recycler_->setDataSource(dataSource_);
         content->addView(recyclerHost(recycler_));
@@ -462,9 +653,11 @@ public:
             applyPreset([this] { dataSource_->selectPackagesOnly(); });
             return true;
         });
-        registerAction(tr("pipensx/common/clear"), brls::BUTTON_Y,
+        // Clear stays on the on-screen button; Y expands/collapses folders so
+        // mod trees do not own the whole list.
+        registerAction(tr("pipensx/torrent/expand"), brls::BUTTON_Y,
                        [this](brls::View*) {
-            setAllSelected(false);
+            toggleFolderAtFocus();
             return true;
         });
         registerAction(tr("pipensx/common/continue"), brls::BUTTON_RB,
@@ -527,15 +720,87 @@ public:
 
     void setAllSelected(bool selected) {
         dataSource_->setAll(selected);
-        for (auto* cell : visibleCells<TorrentSelectionCell>(recycler_))
-            repaint(cell);
+        repaintVisible();
         refreshSummary();
     }
+
+    void cycleFolderAtRow(int row) {
+        const auto* vr = dataSource_->visibleAt(row);
+        if (!vr ||
+            vr->kind != TorrentSelectionDataSource::VisibleKind::Folder)
+            return;
+        dataSource_->cycleFolder(vr->groupIndex);
+        repaintVisible();
+        refreshSummary();
+    }
+
+    void repaintVisible() {
+        for (auto* cell : visibleCells<TorrentSelectionCell>(recycler_))
+            repaint(cell);
+        for (auto* cell : visibleCells<TorrentFolderCell>(recycler_)) {
+            const auto* vr =
+                dataSource_->visibleAt(cell->getIndexPath().row);
+            if (!vr ||
+                vr->kind != TorrentSelectionDataSource::VisibleKind::Folder)
+                continue;
+            if (const auto* group = dataSource_->groupAt(vr->groupIndex))
+                cell->setGroup(*group, dataSource_->entries());
+        }
+    }
+
+    void toggleFolderAtFocus() {
+        auto* cell = dynamic_cast<brls::RecyclerCell*>(
+            brls::Application::getCurrentFocus());
+        const int row = cell ? cell->getIndexPath().row : 0;
+        toggleFolderAtRow(row);
+    }
+
+    void toggleFolderAtRow(int row) {
+        size_t groupIndex = 0;
+        if (const auto* before = dataSource_->visibleAt(row))
+            groupIndex = before->groupIndex;
+        if (!dataSource_->toggleFolderAtVisibleRow(row))
+            return;
+        // Prefer the folder header for the toggled group after the rebuild.
+        int focusRow = 0;
+        for (int i = 0; i < dataSource_->visibleRowCount(); ++i) {
+            const auto* cand = dataSource_->visibleAt(i);
+            if (!cand || cand->groupIndex != groupIndex)
+                continue;
+            focusRow = i;
+            if (cand->kind == TorrentSelectionDataSource::VisibleKind::Folder)
+                break;
+        }
+        recycler_->reloadData();
+        // reloadData re-homes focus; nudge back onto the folder row once cells
+        // exist. Golden and Switch both need a frame of layout first.
+        brls::sync([this, focusRow] {
+            for (brls::View* child : recycler_->getChildren()) {
+                auto* box = dynamic_cast<brls::Box*>(child);
+                if (!box)
+                    continue;
+                for (brls::View* view : box->getChildren()) {
+                    auto* cell = dynamic_cast<brls::RecyclerCell*>(view);
+                    if (cell && cell->getIndexPath().row == focusRow) {
+                        brls::Application::giveFocus(cell);
+                        return;
+                    }
+                }
+            }
+        });
+    }
+
+    void setAllFoldersExpanded(bool expanded) {
+        dataSource_->setAllFoldersExpanded(expanded);
+        recycler_->reloadData();
+    }
+
+    int visibleRowCount() const { return dataSource_->visibleRowCount(); }
 
     // Repainting the one row that changed keeps the cursor and the scroll
     // offset exactly where they were. reloadData() would recycle every cell,
     // snap the scroll to 0 and re-home focus on defaultCellFocus.
-    void repaintRow(int row) {
+    void repaintVisibleRow(int row) {
         for (auto* cell : visibleCells<TorrentSelectionCell>(recycler_)) {
             if (cell->getIndexPath().row == row)
                 repaint(cell);
@@ -543,10 +808,15 @@ public:
     }
 
     void repaint(TorrentSelectionCell* cell) {
-        if (const auto* entry = dataSource_->entryAt(cell->getIndexPath().row))
-            cell->setEntry(*entry);
-        else
-            cell->setEmpty();
+        const auto* vr = dataSource_->visibleAt(cell->getIndexPath().row);
+        if (vr && vr->kind == TorrentSelectionDataSource::VisibleKind::File) {
+            if (const auto* entry =
+                    dataSource_->entryAt(static_cast<int>(vr->entryIndex))) {
+                cell->setEntry(*entry, vr->depth);
+                return;
+            }
+        }
+        cell->setEmpty();
     }
 
     void refreshStorageSnapshots() {

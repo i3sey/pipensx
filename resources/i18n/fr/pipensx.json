@@ -214,7 +214,10 @@
     "cta_install": "Installer {} vers {} · {}",
     "cta_download": "Télécharger {} · {}",
     "preset_packages": "Paquets",
-    "preset_download_all": "Tout télécharger"
+    "preset_download_all": "Tout télécharger",
+    "folders": "Dossiers",
+    "expand": "Déplier",
+    "folder_files": "{} fichiers"
   },
   "port_install": {
     "unofficial": "Ceci est un port homebrew non officiel. Des étapes supplémentaires peuvent encore être nécessaires pour l'installer.",

@@ -502,6 +502,7 @@ int main(int argc, char** argv) {
     bool sidebarTouch = false;
     int torrentSelectionRows = 0;
     bool torrentSelectionScroll = false;
+    TorrentSelectionActivity* torrentSelection = nullptr;
     bool portSelectionOk = true;
     bool settingsDebrid = false;
     bool hintsBudget = false;
@@ -682,7 +683,6 @@ int main(int argc, char** argv) {
             if (file.cartridge)
                 ++preview.cartridgeCount;
         }
-        torrentSelectionRows = static_cast<int>(preview.files.size());
         torrentSelectionScroll = screen == "torrent-selection-scroll";
         if (torrentSelectionScroll) {
             TorrentSelectionDataSource selection(nullptr);
@@ -707,10 +707,16 @@ int main(int argc, char** argv) {
         // PackagesOnly rather than the settings default, so the baseline shows
         // all three row states: packages Install, everything else Skip, and
         // a Download row appears as soon as anything is toggled.
-        activity = new TorrentSelectionActivity(
+        torrentSelection = new TorrentSelectionActivity(
             &manager, "sdmc:/switch/pipensx/_golden_selection.torrent",
             std::move(preview), pipensx::TransferMode::StreamInstall,
             pipensx::StreamSelection::PackagesOnly);
+        activity = torrentSelection;
+        // Scroll behaviour walks every visible row; expand folders so the
+        // walk covers file cells, not just collapsed headers.
+        if (torrentSelectionScroll)
+            torrentSelection->setAllFoldersExpanded(true);
+        torrentSelectionRows = torrentSelection->visibleRowCount();
     } else if (screen == "downloads") {
         activity = new GoldenActivity(
             new MainView(&manager, &metadata, &settings));

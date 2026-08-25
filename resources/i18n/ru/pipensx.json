@@ -214,7 +214,10 @@
     "cta_install": "Установить {} в {} · {}",
     "cta_download": "Скачать {} · {}",
     "preset_packages": "Пакеты",
-    "preset_download_all": "Скачать всё"
+    "preset_download_all": "Скачать всё",
+    "folders": "Папки",
+    "expand": "Развернуть",
+    "folder_files": "{} файлов"
   },
   "port_install": {
     "unofficial": "Это неофициальный homebrew-порт. Для установки могут потребоваться дополнительные шаги.",
