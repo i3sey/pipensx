@@ -119,6 +119,13 @@ void testParseInfo() {
     assert(info.links[1] == "https://rd.to/dl/xyz/file2");
     assert(info.progress >= 0.99);
 
+    // RD progress is always 0..100. progress=1 must be 1%, not 100%.
+    assert(RdClient::parseInfo(
+        "{\"id\":\"p\",\"filename\":\"x\",\"bytes\":1,\"progress\":1,"
+        "\"status\":\"downloading\",\"files\":[],\"links\":[]}",
+        info, error));
+    assert(info.progress > 0.009 && info.progress < 0.011);
+
     assert(RdClient::parseInfo(kInfoFailed, info, error));
     assert(info.status == "error");
 

@@ -710,7 +710,9 @@
     "mode_download": "下载所有文件",
     "submitting": "正在提交…",
     "sending_magnet": "正在将磁力链接发送到服务器…",
+    "fetching_torrent": "正在获取种子元数据…",
     "magnet_rejected": "服务器拒绝了该磁力链接。",
+    "magnet_unavailable": "Debrid 服务无法打开此种子。请尝试其他版本。",
     "queued": "已添加到队列。元数据可能仍在获取中。"
   },
   "diag": {

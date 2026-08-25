@@ -23,6 +23,7 @@
 #include "app/install_space.hpp"
 #include "app/installed_title_service.hpp"
 #include "app/magnet_resolver.hpp"
+#include "app/torrent_metainfo_fetch.hpp"
 #include "app/switch_deploy.hpp"
 #include "app/nx_file_types.hpp"
 #include "app/port_selection.hpp"
@@ -1014,35 +1015,43 @@ private:
         auto alive = alive_;
         auto cancelled = cancelled_;
         const CatalogEntry entry = entry_;
-        brls::async([alive, cancelled, host, pending, entry] {
+        const std::string root = manager_->rootPath();
+        const uint32_t serial = gCatalogTempSerial.fetch_add(1);
+        brls::async([alive, cancelled, host, pending, entry, root, serial] {
             auto provider = makeDebridProvider(pending->providerKind,
                                                pending->debridKey);
             std::string error;
             std::string debridId;
             DebridInfo info;
-            bool ok = provider->createFromMagnet(entry.magnetUri, debridId,
-                                                 error);
-            if (ok) {
-                const auto deadline = std::chrono::steady_clock::now() +
-                                      std::chrono::seconds(60);
-                do {
-                    std::string fetchError;
-                    if (!provider->fetchInfo(debridId, info, fetchError))
-                        error = std::move(fetchError);
-                    if (!info.files.empty())
+            const std::string tmp =
+                root + "/_debrid_tmp_" + catalogLower(entry.infoHash) + "_" +
+                std::to_string(serial) + ".torrent";
+            const auto deadline = std::chrono::steady_clock::now() +
+                                  std::chrono::seconds(60);
+            auto onStage = [host, alive](DebridCreateStage stage) {
+                std::string text;
+                switch (stage) {
+                    case DebridCreateStage::FetchingTorrent:
+                        text = tr("pipensx/debrid/fetching_torrent");
                         break;
-                    for (int i = 0; i < 8 && alive->load() &&
-                                         !cancelled->load(); ++i)
-                        std::this_thread::sleep_for(
-                            std::chrono::milliseconds(250));
-                } while (alive->load() && !cancelled->load() &&
-                         std::chrono::steady_clock::now() < deadline);
-                if (info.files.empty() && alive->load() && !cancelled->load()) {
-                    ok = false;
-                    if (error.empty())
-                        error = "Unable to resolve torrent metadata.";
+                    case DebridCreateStage::UploadingTorrent:
+                        text = tr("pipensx/debrid/submitting");
+                        break;
+                    case DebridCreateStage::SendingMagnet:
+                    default:
+                        text = tr("pipensx/debrid/sending_magnet");
+                        break;
                 }
-            }
+                brls::sync([host, alive, text] {
+                    if (alive->load() && host->live && host->live->load() &&
+                        host->status)
+                        host->status->setText(text);
+                });
+            };
+            const bool ok = createDebridWithMetainfoFallback(
+                *provider, entry.magnetUri, catalogLower(entry.infoHash),
+                entry.infoDict, tmp, *cancelled, deadline, debridId, info,
+                error, onStage);
             brls::sync([alive, ok, error, info, debridId, host, pending,
                         entry] {
                 if (!alive->load() || !host->live || !host->live->load()) {
@@ -1060,7 +1069,7 @@ private:
                     if (host->status)
                         host->status->setText(
                             error.empty()
-                                ? tr("pipensx/debrid/magnet_rejected")
+                                ? tr("pipensx/debrid/magnet_unavailable")
                                 : error);
                     return;
                 }
@@ -1147,39 +1156,45 @@ private:
         const DebridProviderKind providerKind = values.debridProvider;
         const std::string key = activeDebridKey(values);
         const CatalogEntry entry = entry_;
+        const std::string root = manager_->rootPath();
+        const uint32_t serial = gCatalogTempSerial.fetch_add(1);
         brls::async([this, alive, cancelled, providerKind, key, entry, mode,
-                     forcePicker] {
+                     forcePicker, root, serial] {
             auto provider = makeDebridProvider(providerKind, key);
             std::string debridId;
             std::string error;
             DebridInfo info;
-            bool ok = provider->createFromMagnet(entry.magnetUri, debridId,
-                                                  error);
-            if (ok) {
-                const auto deadline = std::chrono::steady_clock::now() +
-                                      std::chrono::seconds(60);
-                do {
-                    std::string fetchError;
-                    if (!provider->fetchInfo(debridId, info, fetchError))
-                        error = std::move(fetchError);
-                    log_msg("[DEBUG-debrid-picker] poll id=%s files=%u\n",
-                            debridId.c_str(),
-                            static_cast<unsigned>(info.files.size()));
-                    if (!forcePicker || !info.files.empty())
+            const std::string tmp =
+                root + "/_debrid_tmp_" + catalogLower(entry.infoHash) + "_" +
+                std::to_string(serial) + ".torrent";
+            const auto deadline = std::chrono::steady_clock::now() +
+                                  std::chrono::seconds(60);
+            auto onStage = [this, alive](DebridCreateStage stage) {
+                std::string text;
+                switch (stage) {
+                    case DebridCreateStage::FetchingTorrent:
+                        text = tr("pipensx/debrid/fetching_torrent");
                         break;
-                    for (int i = 0; i < 8 && alive->load() &&
-                                         !cancelled->load(); ++i)
-                        std::this_thread::sleep_for(
-                            std::chrono::milliseconds(250));
-                } while (alive->load() && !cancelled->load() &&
-                         std::chrono::steady_clock::now() < deadline);
-                if (forcePicker && info.files.empty() && alive->load() &&
-                    !cancelled->load()) {
-                    ok = false;
-                    if (error.empty())
-                        error = "Unable to resolve torrent metadata.";
+                    case DebridCreateStage::UploadingTorrent:
+                        text = tr("pipensx/debrid/submitting");
+                        break;
+                    case DebridCreateStage::SendingMagnet:
+                    default:
+                        text = tr("pipensx/debrid/sending_magnet");
+                        break;
                 }
-            }
+                brls::sync([this, alive, text] {
+                    if (alive->load() && busy_)
+                        statusLabel_->setText(text);
+                });
+            };
+            const bool ok = createDebridWithMetainfoFallback(
+                *provider, entry.magnetUri, catalogLower(entry.infoHash),
+                entry.infoDict, tmp, *cancelled, deadline, debridId, info,
+                error, onStage);
+            log_msg("[DEBUG-debrid-picker] create ok=%d id=%s files=%u\n",
+                    ok ? 1 : 0, debridId.c_str(),
+                    static_cast<unsigned>(info.files.size()));
             brls::sync([this, alive, cancelled, ok, error, debridId, info,
                         entry, providerKind, key, mode, forcePicker] {
                 if (!alive->load() || cancelled->load()) {
@@ -1196,7 +1211,7 @@ private:
                     if (!debridId.empty())
                         removeDebridTransferAsync(providerKind, key, debridId);
                     operationMessage_ = error.empty()
-                        ? tr("pipensx/debrid/magnet_rejected") : error;
+                        ? tr("pipensx/debrid/magnet_unavailable") : error;
                     refreshButtons();
                     brls::Application::notify(operationMessage_);
                     return;

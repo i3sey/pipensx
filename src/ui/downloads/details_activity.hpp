@@ -499,20 +499,40 @@ private:
                                      downloadStatusLabel(task->status)));
         status_->setTextColor(statusColor(task->status));
 
-        bool installing = task->status == DownloadStatus::Installing ||
-                          task->status == DownloadStatus::Committing;
-        float progress = task->mode == TransferMode::StreamInstall
-            ? streamInstallProgressOf(*task)
-            : (installing ? installProgressOf(*task) : progressOf(*task));
+        const bool installing = task->status == DownloadStatus::Installing ||
+                                task->status == DownloadStatus::Committing;
+        const bool fetching = task->status == DownloadStatus::Fetching;
+        float progress;
+        if (fetching)
+            progress = std::clamp(static_cast<float>(task->fetchProgress),
+                                  0.0f, 1.0f);
+        else if (task->mode == TransferMode::StreamInstall)
+            progress = streamInstallProgressOf(*task);
+        else if (installing)
+            progress = installProgressOf(*task);
+        else
+            progress = progressOf(*task);
         progressBar_->setProgress(progress);
         // Installing phases: the bar and the byte line track the same
-        // per-package install numbers. Downloading/other: the byte line
-        // follows the wanted (selection-aware) range like the bar does.
-        const auto wanted = downloadProgressBytes(*task);
-        const uint64_t doneBytes =
-            installing ? task->installedBytes : wanted.first;
-        const uint64_t totalBytes =
-            installing ? task->installTotalBytes : wanted.second;
+        // per-package install numbers. Fetching: the bar tracks the debrid
+        // service's own cache-fill fraction (no local bytes yet). Otherwise
+        // the byte line follows the wanted (selection-aware) range.
+        uint64_t doneBytes = 0;
+        uint64_t totalBytes = 0;
+        if (fetching) {
+            totalBytes = task->totalBytes;
+            doneBytes = totalBytes
+                ? static_cast<uint64_t>(static_cast<double>(totalBytes) *
+                                       task->fetchProgress)
+                : 0;
+        } else if (installing) {
+            doneBytes = task->installedBytes;
+            totalBytes = task->installTotalBytes;
+        } else {
+            const auto wanted = downloadProgressBytes(*task);
+            doneBytes = wanted.first;
+            totalBytes = wanted.second;
+        }
         setTextIfChanged(progress_, tr("pipensx/downloads/progress_line",
                                        percentOf(progress),
                                        formatBytes(doneBytes),
@@ -526,7 +546,13 @@ private:
                                    ? std::string()
                                    : tr("pipensx/downloads/eta_line", eta));
 
-        if (task->mode == TransferMode::StreamInstall && task->packageCount) {
+        if (fetching) {
+            setTextIfChanged(package_,
+                             tr("pipensx/downloads/cell_fetching",
+                                percentOf(progress)));
+            setTextIfChanged(currentPackage_, "");
+        } else if (task->mode == TransferMode::StreamInstall &&
+                   task->packageCount) {
             const bool hasCurrent = !task->currentPackage.empty() &&
                                     task->packagesInstalled < task->packageCount;
             if (hasCurrent) {

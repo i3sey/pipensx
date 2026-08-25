@@ -264,17 +264,64 @@ void testStopRequestedReturnsStopped() {
     spec.debridId = "42";
     spec.dataPath = "/tmp";
     spec.workingRoot = "/tmp";
-    bool sawFetch = false;
+    bool stop = false;
+    double maxFetch = -1.0;
     std::string debridId;
     std::string error;
     DebridRunResult result = transfer.run(
-        spec, [&sawFetch] { return sawFetch; },
-        [&sawFetch](const DebridProgress& p) {
-            if (p.status == DownloadStatus::Fetching)
-                sawFetch = true;
+        spec, [&stop] { return stop; },
+        [&stop, &maxFetch](const DebridProgress& p) {
+            if (p.status == DownloadStatus::Fetching) {
+                if (p.fetchProgress > maxFetch)
+                    maxFetch = p.fetchProgress;
+                // Initial emit is 0; wait for a polled server-side fraction.
+                if (p.fetchProgress > 0.0)
+                    stop = true;
+            }
         },
         debridId, error);
     assert(result == DebridRunResult::Stopped);
+    assert(maxFetch > 0.49 && maxFetch < 0.51);
+}
+
+void testFetchProgressEmittedWhilePolling() {
+    std::vector<std::pair<std::string, std::string>> script = {
+        {"mylist", "{\"success\":true,\"data\":{\"id\":42,\"name\":\"E\","
+                   "\"size\":100,\"progress\":0.25,"
+                   "\"download_state\":\"downloading\","
+                   "\"download_finished\":false,\"download_present\":false,"
+                   "\"files\":[]}}"},
+        {"mylist", infoReadyJson("file.bin", 4)},
+        {"requestdl", "{\"success\":true,\"data\":\"https://x/dl\"}"},
+    };
+    TorboxProvider provider("k", scriptedTransport(&script));
+    DebridTransfer transfer(provider, memoryFetcher("data"));
+    DebridTaskSpec spec;
+    spec.taskId = "aabbccddaabbccddaabbccddaabbccddaabbccdd";
+    spec.debridId = "42";
+    spec.dataPath = "/tmp/pipensx-debrid-fetch-progress";
+    spec.workingRoot = "/tmp/pipensx-debrid-fetch-progress";
+    system(("rm -rf " + spec.dataPath).c_str());
+    mkdir(spec.dataPath.c_str(), 0755);
+
+    bool sawPartial = false;
+    bool sawStart = false;
+    std::string debridId;
+    std::string error;
+    DebridRunResult result = transfer.run(
+        spec, [] { return false; },
+        [&](const DebridProgress& p) {
+            if (p.status == DownloadStatus::Fetching) {
+                if (p.fetchProgress == 0.0)
+                    sawStart = true;
+                if (p.fetchProgress > 0.24 && p.fetchProgress < 0.26)
+                    sawPartial = true;
+            }
+        },
+        debridId, error);
+    assert(result == DebridRunResult::Finished);
+    assert(sawStart);
+    assert(sawPartial);
 }
 
 void testStreamInstallCommitsPackage() {
@@ -666,6 +713,7 @@ int main() {
     testDownloadOnlyFullRun();
     testResumeUsesOnDiskOffset();
     testStopRequestedReturnsStopped();
+    testFetchProgressEmittedWhilePolling();
     testStreamInstallCommitsPackage();
     testPartialStreamFailureRetriesWithoutPacerDeadlock();
     testSelectionPathsPicksOneFile();

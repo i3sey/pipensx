@@ -21,8 +21,9 @@ int main() {
     for (size_t i = 0; (i = pem.find("BEGIN CERTIFICATE", i)) != std::string::npos;
          i += 16)
         ++certs;
-    // GTS Root R4 (self-signed) + GlobalSign Root CA + WE1 + cross-signed GTS.
-    assert(certs >= 2);
+    // GTS Root R4 + GlobalSign + WE1 + cross-signed GTS + DigiCert Global Root G2.
+    assert(certs >= 5);
+    assert(pem.find("DigiCert Global Root G2") != std::string::npos);
 
     assert(isSslCertificateErrorMessage(
         "TorBox request failed: SSL peer certificate or SSH remote key was not "

@@ -38,7 +38,12 @@ bool RealdebridProvider::fetchInfo(const std::string& id, DebridInfo& out,
                lower == "virus" || lower == "dead";
     };
 
-    if (info.status == "downloaded" && !info.files.empty())
+    // Hosted file links only appear once RD has finished its side. Prefer
+    // "downloaded", but also Ready if links are already populated — some
+    // responses briefly expose links while status lags on uploading/
+    // compressing, and waiting forever on status alone leaves the UI at 99%.
+    if (!info.files.empty() &&
+        (info.status == "downloaded" || !info.links.empty()))
         out.phase = DebridInfo::Phase::Ready;
     else if (failedStatus(info.status))
         out.phase = DebridInfo::Phase::Failed;

@@ -507,6 +507,12 @@ Step pollUntilReady(RunContext& ctx) {
         ctx.torrentName = info.name;
         ctx.files = info.files;
 
+        log_msg("[debrid] poll id=%s state=%s progress=%.0f%% files=%zu "
+                "links=%zu phase=%d\n",
+                ctx.debridId.c_str(), info.rawState.c_str(),
+                info.progress * 100.0, info.files.size(), info.links.size(),
+                static_cast<int>(info.phase));
+
         DebridProgress p;
         p.status = DownloadStatus::Fetching;
         p.fetchProgress = info.progress;
@@ -533,6 +539,10 @@ Step pollUntilReady(RunContext& ctx) {
             for (size_t i = 0; i < info.files.size(); ++i) {
                 if (selected(ctx.spec, i, info.files[i]))
                     selectedIds.push_back(info.files[i].id);
+            }
+            if (selectedIds.empty()) {
+                ctx.error = "No debrid files matched the selected files.";
+                return Step::Failed;
             }
             if (!ctx.provider.selectFiles(ctx.debridId, selectedIds,
                                           ctx.error))
@@ -1098,6 +1108,15 @@ DebridRunResult DebridTransfer::run(
     ctx.packagesInstalled = spec.packagesInstalled;
     ctx.resolveWindowMs =
         (resolveWindowMsOverride == UINT32_MAX) ? 60000 : resolveWindowMsOverride;
+
+    // Paint Fetching before the create/poll HTTPS round-trips so the queue
+    // does not sit on a stale status while the magnet is submitted.
+    {
+        DebridProgress starting;
+        starting.status = DownloadStatus::Fetching;
+        starting.fetchProgress = 0.0;
+        ctx.emit(starting);
+    }
 
     Step s = ensureCreated(ctx);
     debridIdOut = ctx.debridId;

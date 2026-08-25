@@ -143,6 +143,33 @@ int main() {
     DebridInfo dlInfo;
     assert(dlP.fetchInfo(id, dlInfo, err));
     assert(dlInfo.phase == DebridInfo::Phase::Downloading);
+    assert(dlInfo.progress > 0.41 && dlInfo.progress < 0.43);
+
+    // Links already present → Ready even if status has not flipped yet.
+    RdTransport linkedT =
+        [](const RdHttpRequest& r, RdHttpResponse& res, std::string&) {
+            if (r.url.find("/torrents/info/") != std::string::npos) {
+                res.status = 200;
+                res.body =
+                    "{\"id\":\"lk\",\"filename\":\"Game\",\"bytes\":100,"
+                    "\"progress\":100,\"status\":\"uploading\","
+                    "\"files\":[{\"id\":\"1\",\"path\":\"game.nsp\","
+                    "\"bytes\":100,\"selected\":1}],"
+                    "\"links\":[\"https://rd.to/dl/x\"]}";
+            } else if (r.url.find("/user") != std::string::npos) {
+                res.status = 200;
+                res.body = "{\"id\":12345}";
+            } else {
+                res.status = 200;
+                res.body = "{}";
+            }
+            return true;
+        };
+    RealdebridProvider linkedP("key", linkedT);
+    DebridInfo linkedInfo;
+    assert(linkedP.fetchInfo("lk", linkedInfo, err));
+    assert(linkedInfo.phase == DebridInfo::Phase::Ready);
+    assert(linkedInfo.links.size() == 1);
 
     std::printf("test_realdebrid_provider: all assertions passed\n");
     return 0;

@@ -710,7 +710,9 @@
     "mode_download": "Download every file",
     "submitting": "Submitting…",
     "sending_magnet": "Sending the magnet to the server…",
+    "fetching_torrent": "Fetching torrent metadata…",
     "magnet_rejected": "The server rejected the magnet.",
+    "magnet_unavailable": "The debrid service could not open this torrent. Try another release.",
     "queued": "Added to the queue. Metadata may still be fetching."
   },
   "diag": {

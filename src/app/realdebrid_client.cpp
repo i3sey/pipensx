@@ -223,10 +223,10 @@ bool RdClient::parseInfo(const std::string& json, RdTorrentInfo& info,
     readStringField(root, "hash", info.hash);
     readStringField(root, "filename", info.filename);
     readNumberField(root, "bytes", info.bytes);
+    // Real-Debrid documents progress as an integer percent 0..100. Always
+    // scale — a bare "> 1.0" guard would treat progress=1 (1%) as 100%.
     if (root.contains("progress") && root["progress"].is_number()) {
-        info.progress = root["progress"].get<double>();
-        if (info.progress > 1.0)
-            info.progress /= 100.0;
+        info.progress = root["progress"].get<double>() / 100.0;
         if (info.progress < 0.0)
             info.progress = 0.0;
         if (info.progress > 1.0)

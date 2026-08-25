@@ -1636,7 +1636,12 @@ void DownloadManager::schedulerMain() {
         if (!task)
             continue;
 
-        task->status = DownloadStatus::Checking;
+        // Torrents hash local pieces first (Checking). Debrid waits on the
+        // remote cache fill — surface Fetching immediately so the UI shows
+        // server-side progress instead of a bogus "Checking" label.
+        task->status = task->source == TaskSource::Debrid
+                           ? DownloadStatus::Fetching
+                           : DownloadStatus::Checking;
         ClaimedTask claim;
         claim.id = task->id;
         claim.name = task->name;

@@ -710,7 +710,9 @@
     "mode_download": "Baixar todos os arquivos",
     "submitting": "Enviando…",
     "sending_magnet": "Enviando o magnet para o servidor…",
+    "fetching_torrent": "Buscando metadados do torrent…",
     "magnet_rejected": "O servidor rejeitou o magnet.",
+    "magnet_unavailable": "O serviço debrid não conseguiu abrir este torrent. Tente outro lançamento.",
     "queued": "Adicionado à fila. Os metadados ainda podem estar sendo obtidos."
   },
   "diag": {
