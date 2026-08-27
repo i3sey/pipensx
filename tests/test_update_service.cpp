@@ -17,6 +17,7 @@ constexpr const char* Target = "/tmp/pipensx-update-test.nro";
 constexpr const char* HelperSource = "/tmp/pipensx-updater-fixture.nro";
 
 bool emulateSwitchRename = false;
+bool emulateSwitchHelperRename = false;
 bool failHelperPublish = false;
 
 extern "C" int __real_rename(const char* oldPath, const char* newPath);
@@ -37,6 +38,13 @@ extern "C" int __wrap_rename(const char* oldPath, const char* newPath) {
             errno = EEXIST;
             return -1;
         }
+    }
+    if (emulateSwitchHelperRename &&
+        std::strcmp(oldPath, "/tmp/pipensx-updater.nro.tmp") == 0 &&
+        std::strcmp(newPath, "/tmp/pipensx-updater.nro") == 0 &&
+        access(newPath, F_OK) == 0) {
+        errno = EEXIST;
+        return -1;
     }
     return __real_rename(oldPath, newPath);
 }
@@ -289,6 +297,40 @@ void testShutdownInterruptsRetryWait() {
     assert(attempts.load() == 1);
 }
 
+void testHelperPublishReplacesExistingHelperOnFat32() {
+    unlink(Target);
+    unlink("/tmp/pipensx-update-test.nro.update");
+    unlink("/tmp/pipensx-update-test.nro.update.sha256");
+    unlink("/tmp/pipensx-updater.nro.tmp");
+    write(Target, "old");
+    write(HelperSource, "minimal updater helper");
+    write("/tmp/pipensx-updater.nro", "previous helper");
+    const std::string payload = "new verified pipensx nro";
+    const std::string checksum =
+        "9dc1034a694baa2d68b032ed446fbc9b170975306c571202e99ff741821365b4";
+    pipensx::UpdateService service(Target,
+        [checksum](const std::string&, size_t, std::string& body,
+                   std::string&) { body = checksum + "  pipensx.nro\n"; return true; },
+        [payload](const std::string&, const std::string& path, size_t,
+                  std::string&) { write(path, payload); return true; },
+        HelperSource);
+    pipensx::ReleaseInfo release{"v1.2.3",
+        "https://github.com/i3sey/pipensx/releases/download/v1.2.3/pipensx.nro",
+        "https://github.com/i3sey/pipensx/releases/download/v1.2.3/pipensx.nro.sha256"};
+    std::string error;
+    emulateSwitchHelperRename = true;
+    const bool installed = service.install(release, error);
+    emulateSwitchHelperRename = false;
+    assert(installed);
+    std::ifstream helper(service.helperPath(), std::ios::binary);
+    std::string bytes((std::istreambuf_iterator<char>(helper)), {});
+    assert(bytes == "minimal updater helper");
+    assert(access("/tmp/pipensx-updater.nro.tmp", F_OK) != 0);
+    service.discardStaged();
+    unlink(Target);
+    unlink(HelperSource);
+}
+
 void testHelperPublishFailurePreservesPreviousHelper() {
     unlink(Target);
     unlink("/tmp/pipensx-update-test.nro.update");
@@ -335,6 +377,7 @@ int main() {
     testTransientNetworkFailuresAreRetried();
     testInstallNeverTouchesRunningNro();
     testShutdownInterruptsRetryWait();
+    testHelperPublishReplacesExistingHelperOnFat32();
     testHelperPublishFailurePreservesPreviousHelper();
     std::puts("update service tests passed");
     return 0;
