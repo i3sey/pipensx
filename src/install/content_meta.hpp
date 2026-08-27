@@ -5,6 +5,7 @@
 // byte-level logic lives here to stay unit-testable on the PC.
 
 #include <cstddef>
+#include <cstdio>
 #include <cstdint>
 #include <cstring>
 
