@@ -1751,6 +1751,9 @@ private:
                              bool catalogOk, bool metadataOk,
                              const std::string& catalogError,
                              const std::string& metadataError) {
+        const std::string catalogMsg = formatCatalogRefreshError(catalogError);
+        const std::string metadataMsg =
+            formatCatalogRefreshError(metadataError);
         if (fetchCatalog && fetchMetadata) {
             if (catalogOk && metadataOk) {
                 brls::Application::notify(
@@ -1759,25 +1762,25 @@ private:
             } else if (catalogOk) {
                 brls::Application::notify(
                     tr("pipensx/catalog/updated_catalog_artwork_failed",
-                       metadataError));
+                       metadataMsg));
             } else if (metadataOk) {
                 brls::Application::notify(
                     tr("pipensx/catalog/updated_artwork_catalog_failed",
-                       catalogError));
+                       catalogMsg));
             } else {
                 brls::Application::notify(
-                    tr("pipensx/catalog/updated_both_failed", catalogError,
-                       metadataError));
+                    tr("pipensx/catalog/updated_both_failed", catalogMsg,
+                       metadataMsg));
             }
         } else if (fetchCatalog) {
             brls::Application::notify(catalogOk
                 ? tr("pipensx/catalog/updated_catalog",
                      catalog_->entries().size())
-                : catalogError);
+                : catalogMsg);
         } else if (fetchMetadata) {
             brls::Application::notify(metadataOk
                 ? tr("pipensx/catalog/updated_artwork", metadata_->size())
-                : metadataError);
+                : metadataMsg);
         }
     }
 

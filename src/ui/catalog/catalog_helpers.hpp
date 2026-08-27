@@ -10,6 +10,7 @@
 
 #include "app/catalog_presentation.hpp"
 #include "app/catalog_service.hpp"
+#include "app/curl_https.hpp"
 #include "ui/i18n.hpp"
 #include "app/game_metadata_service.hpp"
 #include "ui/common/async_image.hpp"
@@ -26,6 +27,12 @@ inline std::string catalogLower(std::string value) {
                        return static_cast<char>(std::tolower(c));
                    });
     return value;
+}
+
+inline std::string formatCatalogRefreshError(const std::string& error) {
+    if (isSslCertificateErrorMessage(error))
+        return tr("pipensx/debrid/ssl_cert_hint");
+    return error;
 }
 
 inline std::string classifyResolveFailure(const std::string& error) {
