@@ -80,4 +80,10 @@ void storage_finalize(storage_t *s);
 
 const char *storage_error(storage_t *s);
 
+/* Record a fatal error on this storage handle (first error wins). */
+void storage_set_error(storage_t *s, const char *msg);
+
+/* Last error from a failed storage_open/storage_open_ex (handle was freed). */
+const char *storage_open_error(void);
+
 void storage_close(storage_t *s);

@@ -73,6 +73,10 @@ bool buildTaskFileInventory(const std::string& appRoot,
                             TaskFileInventory& inventory,
                             std::string& error);
 
+bool refreshTorrentManifestLocalPaths(const std::string& appRoot,
+                                      const DownloadTask& task,
+                                      std::string& error);
+
 bool taskReadyForSwitchDeploy(const DownloadTask& task);
 
 bool taskFilePathIsSafe(const std::string& path);

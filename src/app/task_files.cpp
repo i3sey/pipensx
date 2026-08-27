@@ -27,6 +27,18 @@ constexpr size_t kMaxManifestFiles = 4096;
 constexpr size_t kMaxPathBytes = 1024;
 constexpr size_t kMaxScanDepth = 32;
 constexpr size_t kMaxManifestBytes = 8 * 1024 * 1024;
+constexpr uint64_t kFat32FileMax = 0xFFFFFFFFu;
+
+bool filePresentAtPath(const std::string& path, uint64_t expectedSize) {
+    struct stat st {};
+    if (lstat(path.c_str(), &st) != 0 || S_ISLNK(st.st_mode))
+        return false;
+    if (S_ISREG(st.st_mode))
+        return static_cast<uint64_t>(st.st_size) == expectedSize;
+    if (S_ISDIR(st.st_mode) && expectedSize > kFat32FileMax)
+        return true;
+    return false;
+}
 
 std::string bstr(const std::string& value) {
     return std::to_string(value.size()) + ":" + value;
@@ -520,13 +532,8 @@ bool buildTaskFileInventory(const std::string& appRoot,
             } else if (!record.localPath.empty()) {
                 file.absolutePath = task.dataPath + "/" + record.localPath;
             }
-            struct stat st {};
             if (file.absolutePath.empty() ||
-                lstat(file.absolutePath.c_str(), &st) != 0) {
-                file.state = TaskFileState::Missing;
-            } else if (!S_ISREG(st.st_mode) || S_ISLNK(st.st_mode)) {
-                file.state = TaskFileState::Unsafe;
-            } else if (static_cast<uint64_t>(st.st_size) != record.size) {
+                !filePresentAtPath(file.absolutePath, record.size)) {
                 file.state = TaskFileState::Missing;
             } else {
                 file.state = TaskFileState::Present;
@@ -546,6 +553,44 @@ bool buildTaskFileInventory(const std::string& appRoot,
               });
     inventory = std::move(result);
     return true;
+}
+
+bool refreshTorrentManifestLocalPaths(const std::string& appRoot,
+                                      const DownloadTask& task,
+                                      std::string& error) {
+    if (task.source != TaskSource::Torrent || task.metainfoPath.empty())
+        return true;
+    TaskFileManifest manifest;
+    if (!loadTaskFileManifest(appRoot, task.id, manifest, error))
+        return false;
+    metainfo_t metainfo {};
+    if (!metainfo_load(task.metainfoPath.c_str(), &metainfo)) {
+        error = "Unable to read the stored .torrent file.";
+        return false;
+    }
+    const std::string prefix = task.dataPath + "/";
+    for (TaskFileRecord& file : manifest.files) {
+        if (file.sourceIndex >= metainfo.num_files)
+            continue;
+        char located[1024] {};
+        if (!storage_locate_file_path(&metainfo, task.dataPath.c_str(),
+                                      file.sourceIndex, located,
+                                      sizeof(located)))
+            continue;
+        const std::string absolute = located;
+        if (absolute.rfind(prefix, 0) == 0)
+            file.localPath = absolute.substr(prefix.size());
+        else if (absolute.rfind(task.dataPath, 0) == 0) {
+            std::string relative = absolute.substr(task.dataPath.size());
+            if (!relative.empty() && relative.front() == '/')
+                relative.erase(0, 1);
+            file.localPath = std::move(relative);
+        } else {
+            file.localPath = absolute;
+        }
+    }
+    metainfo_free(&metainfo);
+    return saveTaskFileManifest(appRoot, manifest, error);
 }
 
 } // namespace pipensx

@@ -404,24 +404,41 @@ void piece_mgr_mark_pending(piece_mgr_t *pm, uint32_t idx) {
     }
 }
 
+static void piece_fail(piece_mgr_t *pm, const char *msg) {
+    if (pm && pm->store && msg)
+        storage_set_error(pm->store, msg);
+}
+
 int piece_mgr_got_block(piece_mgr_t *pm, uint32_t idx, uint32_t offset,
                         const uint8_t *data, uint32_t len) {
-    if (idx >= pm->num_pieces || !data) return -1;
+    if (!pm || idx >= pm->num_pieces || !data) {
+        piece_fail(pm, "invalid piece block request");
+        return -1;
+    }
     piece_slot_t *sl = &pm->slots[idx];
     if (sl->state == PS_DONE || sl->state == PS_HASHING)
         return 1; /* already have it (buf may be detached to the worker) */
 
     int64_t plen = piece_len(pm, idx);
-    if (offset % BLOCK_SIZE != 0 || (int64_t)offset >= plen) return -1;
+    if (offset % BLOCK_SIZE != 0 || (int64_t)offset >= plen) {
+        piece_fail(pm, "invalid piece block offset");
+        return -1;
+    }
 
     uint32_t blk = offset / BLOCK_SIZE;
     uint32_t expected_len = ((int64_t)offset + BLOCK_SIZE <= plen)
                           ? BLOCK_SIZE : (uint32_t)(plen - offset);
-    if (blk >= sl->num_blocks || len != expected_len) return -1;
+    if (blk >= sl->num_blocks || len != expected_len) {
+        piece_fail(pm, "invalid piece block size");
+        return -1;
+    }
 
     if (!sl->buf) {
         sl->buf = piece_buf_get(pm);
-        if (!sl->buf) return -1;
+        if (!sl->buf) {
+            piece_fail(pm, "out of memory for piece buffer");
+            return -1;
+        }
     }
     sl->state = PS_PENDING;
     memcpy(sl->buf + offset, data, len);

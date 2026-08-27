@@ -22,6 +22,7 @@ enum class SwitchDeployProblem {
     TaskNotFound,
     NotReady,
     LayoutNotFound,
+    NotAPort,
     AmbiguousLayout,
     UnsafePath,
     MissingSource,

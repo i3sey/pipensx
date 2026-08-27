@@ -131,6 +131,20 @@ InstallSpaceCheck assessTransferSpace(
             shortfall = std::max(shortfall, need - storage.freeBytes);
     };
     checkPool(estimate.downloadBytes, downloadStorage);
+    if (estimate.certainty == SpaceEstimateCertainty::CompressedUnknown &&
+        estimate.packageBytes > 0 && packageStorage.available) {
+        constexpr uint64_t kCompressedExpansionMin = 3;
+        uint64_t conservative = estimate.packageBytes;
+        if (conservative > std::numeric_limits<uint64_t>::max() /
+                               kCompressedExpansionMin)
+            conservative = std::numeric_limits<uint64_t>::max();
+        else
+            conservative *= kCompressedExpansionMin;
+        if (conservative > packageStorage.freeBytes)
+            shortfall = std::max(shortfall,
+                                 conservative - packageStorage.freeBytes);
+        checked = true;
+    }
     checkPool(estimate.packageBytes, packageStorage);
     if (!checked &&
         ((estimate.downloadBytes > 0 && !downloadStorage.available) ||
