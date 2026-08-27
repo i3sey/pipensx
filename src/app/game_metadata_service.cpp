@@ -1,4 +1,5 @@
 #include "game_metadata_service.hpp"
+#include "curl_https.hpp"
 #include "snapshot_zstd.hpp"
 
 extern "C" {
@@ -194,8 +195,12 @@ bool httpGetOnce(const std::string& url, size_t limit,
         });
     curl_easy_setopt(curl, CURLOPT_XFERINFODATA,
                      const_cast<std::atomic<bool>*>(stopping));
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, verifyTls ? 1L : 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, verifyTls ? 2L : 0L);
+    if (verifyTls)
+        curlApplyTrustedSsl(curl);
+    else {
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    }
     curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
     CURLcode result = curl_easy_perform(curl);
     long status = 0;

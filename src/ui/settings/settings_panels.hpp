@@ -1056,7 +1056,7 @@ private:
                 if (!ok) {
                     diagnostic_error("catalog", "settings_refresh", "error=%s",
                                      error.c_str());
-                    brls::Application::notify(error);
+                    brls::Application::notify(formatCatalogRefreshError(error));
                     return;
                 }
                 brls::Application::notify(
@@ -1104,7 +1104,7 @@ private:
                 if (!ok) {
                     diagnostic_error("metadata", "settings_refresh",
                                      "error=%s", error.c_str());
-                    brls::Application::notify(error);
+                    brls::Application::notify(formatCatalogRefreshError(error));
                     return;
                 }
                 if (onMetadataRefreshed_)
@@ -1637,7 +1637,7 @@ private:
                         tr("pipensx/settings/install_failed"));
                     diagnostic_error("update", "install", "error=%s",
                                      error.c_str());
-                    brls::Application::notify(error);
+                    brls::Application::notify(formatCatalogRefreshError(error));
                     return;
                 }
                 updateAction_->setDetailText(
