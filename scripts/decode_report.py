@@ -101,22 +101,58 @@ def reassemble(chunk_bytes):
     return log.decode("utf-8", errors="replace"), info
 
 
+def _qr_payload(data):
+    """Normalize QR binary payload from pyzbar (bytes) or zbar (str)."""
+    if isinstance(data, bytes):
+        return data
+    if isinstance(data, str):
+        return data.encode("latin-1")
+    raise ReportError(f"unexpected QR payload type {type(data)!r}")
+
+
+def _decode_pyzbar(image):
+    from pyzbar.pyzbar import ZBarSymbol, decode
+
+    return [_qr_payload(sym.data) for sym in decode(image, symbols=[ZBarSymbol.QRCODE])]
+
+
+def _decode_zbar_module(image):
+    import zbar
+
+    gray = image.convert("L")
+    width, height = gray.size
+    zimg = zbar.Image(width, height, "Y800", gray.tobytes())
+    scanner = zbar.ImageScanner()
+    scanner.scan(zimg)
+    return [_qr_payload(sym.data) for sym in zimg]
+
+
 def chunks_from_images(paths):
     try:
         from PIL import Image
-        from pyzbar.pyzbar import ZBarSymbol, decode
     except ImportError as exc:  # pragma: no cover - env dependent
-        raise ReportError(
-            "image decoding needs pyzbar + Pillow "
-            "(pip install pyzbar pillow, apt install libzbar0)"
-        ) from exc
+        raise ReportError("image decoding needs Pillow") from exc
+
+    decode_image = None
+    try:
+        from pyzbar.pyzbar import ZBarSymbol  # noqa: F401 — probe pyzbar
+        decode_image = _decode_pyzbar
+    except ImportError:
+        try:
+            import zbar  # noqa: F401 — Arch: pacman -S zbar
+            decode_image = _decode_zbar_module
+        except ImportError as exc:
+            raise ReportError(
+                "image decoding needs pyzbar or the zbar Python bindings "
+                "(pip install pyzbar pillow, or pacman -S zbar python-pillow)"
+            ) from exc
 
     out = []
     for path in paths:
-        found = decode(Image.open(path), symbols=[ZBarSymbol.QRCODE])
+        found = decode_image(Image.open(path))
         if not found:
             print(f"decode_report: no QR codes in {path}", file=sys.stderr)
-        out.extend(sym.data for sym in found)
+        out.extend(found)
     return out
 
 

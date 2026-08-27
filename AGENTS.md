@@ -47,6 +47,10 @@ Before changing a libnx call, PC shim, install backend, or code under
 from `.agents/skills/libnx/`. It documents header-first API checks, the shared
 PC-build patterns, and required dual-build verification.
 
+When triaging a user bug report from a QR screenshot or photo, load the
+`bug-report` skill from `.agents/skills/bug-report/`. It covers
+`scripts/decode_report.py`, log grep patterns, and the triage output format.
+
 ## Context budget — don't read
 
 - `pipensx.log` is a multi-thousand-line runtime log. Never read it whole;
