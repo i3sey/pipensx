@@ -1165,7 +1165,13 @@ private:
             return true;
         uint64_t parseStartedUs = telemetry_enabled() ? now_us() : 0;
         if (std::memcmp(pending_.data(), "PFS0", 4) != 0) {
-            error_ = "Package is not a PFS0 NSP/NSZ.";
+            if (std::memcmp(pending_.data(), "HEAD", 4) == 0)
+                error_ = "Package is an XCI cartridge dump, not an NSP/NSZ.";
+            else if (pending_[0] == '<' || pending_[0] == '{')
+                error_ =
+                    "Package is not a PFS0 NSP/NSZ (the download was a webpage).";
+            else
+                error_ = "Package is not a PFS0 NSP/NSZ.";
             return fail();
         }
         uint32_t count = read32(pending_.data() + 4);

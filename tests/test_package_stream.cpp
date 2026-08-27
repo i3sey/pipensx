@@ -342,6 +342,29 @@ void feedChunked(PackageStream& stream, const std::vector<uint8_t>& data,
     }
 }
 
+void testRejectsXciMagic() {
+    std::vector<uint8_t> xci(32, 0);
+    xci[0] = 'H';
+    xci[1] = 'E';
+    xci[2] = 'A';
+    xci[3] = 'D';
+    Capture capture;
+    PackageStream stream(false, capture.callbacks());
+    assert(!stream.write(xci.data(), xci.size()));
+    assert(stream.error().find("XCI") != std::string::npos);
+}
+
+void testRejectsWebpagePayload() {
+    std::string html = "<!DOCTYPE html><html><body>error</body></html>";
+    while (html.size() < 16)
+        html.push_back(' ');
+    Capture capture;
+    PackageStream stream(false, capture.callbacks());
+    assert(!stream.write(reinterpret_cast<const uint8_t*>(html.data()),
+                         html.size()));
+    assert(stream.error().find("webpage") != std::string::npos);
+}
+
 void testNsp() {
     std::vector<uint8_t> first {1, 2, 3, 4, 5};
     std::vector<uint8_t> second(100000);
@@ -804,6 +827,8 @@ void testNszSmallWorkerStack() {
 } // namespace
 
 int main() {
+    testRejectsXciMagic();
+    testRejectsWebpagePayload();
     testNsp();
     testNsz();
     testNszUsesFourMiBOutputChunks();

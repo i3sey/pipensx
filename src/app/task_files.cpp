@@ -372,14 +372,28 @@ bool saveTaskFileManifest(const std::string& appRoot,
         fsync(fileno(output));
 #endif
     ok = std::fclose(output) == 0 && ok;
-    if (!ok || std::rename(temporary.c_str(), path.c_str()) != 0) {
-        const int saveErr = errno;
+    if (!ok) {
         std::remove(temporary.c_str());
-        error = "Unable to save task file manifest (errno=" +
-                std::to_string(saveErr) + ").";
+        error = "Unable to write task file manifest.";
         return false;
     }
-    return true;
+    if (std::rename(temporary.c_str(), path.c_str()) == 0)
+        return true;
+    // libnx rename() does not replace an existing dest (EEXIST).
+    if (unlink(path.c_str()) != 0 && errno != ENOENT) {
+        const int unlinkErrno = errno;
+        std::remove(temporary.c_str());
+        error = "Unable to save task file manifest (errno=" +
+                std::to_string(unlinkErrno) + ").";
+        return false;
+    }
+    if (std::rename(temporary.c_str(), path.c_str()) == 0)
+        return true;
+    const int saveErr = errno;
+    std::remove(temporary.c_str());
+    error = "Unable to save task file manifest (errno=" +
+            std::to_string(saveErr) + ").";
+    return false;
 }
 
 bool loadTaskFileManifest(const std::string& appRoot,

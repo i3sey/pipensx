@@ -80,6 +80,12 @@ int main() {
     slashRecord.action = TaskFileAction::Download;
     slashManifest.files.push_back(slashRecord);
     assert(saveTaskFileManifest(root, slashManifest, error));
+    slashRecord.size = 2000;
+    slashManifest.files[0] = slashRecord;
+    assert(saveTaskFileManifest(root, slashManifest, error));
+    TaskFileManifest reloaded;
+    assert(loadTaskFileManifest(root, slashManifest.taskId, reloaded, error));
+    assert(reloaded.files[0].size == 2000);
 
     removeTaskFileManifest(root, preview.infoHash);
     assert(!loadTaskFileManifest(root, preview.infoHash, loaded, error));

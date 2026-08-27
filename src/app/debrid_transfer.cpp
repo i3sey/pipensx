@@ -369,7 +369,7 @@ RangeFetcher curlRangeFetcher() {
             if (cancelled())
                 return false;
             error = state.sinkRefused
-                ? "The installer rejected the downloaded data."
+                ? "Unable to write the downloaded data."
                 : "The download stream was interrupted.";
             return false;
         }
@@ -609,9 +609,9 @@ bool shouldEmitProgress(Clock::time_point& lastEmit) {
     return false;
 }
 
-// One TCP stream from offset to EOF. Stream-install uses this instead of
-// fetchOrdered: parallel Range workers on the same debrid CDN URL corrupt
-// the byte stream (RD returns 206 but pipensx sees non-PFS0 payloads).
+// One TCP stream from offset to EOF. Stream-install always uses this, and
+// Real-Debrid download-only does too: parallel Range workers on RD CDN URLs
+// corrupt the byte stream (RD returns 206 but pipensx sees non-PFS0 payloads).
 bool fetchSequential(const RangeFetcher& fetcher, const std::string& url,
                      uint64_t offset,
                      const std::function<bool(const uint8_t*, size_t)>& sink,
@@ -753,7 +753,7 @@ bool fetchOrdered(const RangeFetcher& fetcher, const std::string& url,
             failed = true;
             stopWorkers = true;
             if (workerError.empty())
-                workerError = "The installer rejected the downloaded data.";
+                workerError = "Unable to write the downloaded data.";
             cv.notify_all();
             break;
         }
@@ -824,8 +824,11 @@ Step fetchAppend(RunContext& ctx, const std::string& url,
     StreamRamBudget budget = detectStreamRamBudget(1 * 1024 * 1024);
     const size_t maximumBuffered = budget.valid
         ? budget.maxBufferedBytes : 64 * 1024 * 1024;
-    bool ok = fetchOrdered(ctx.fetcher, url, offset, fileBytes,
-                           maximumBuffered / 2, sink, *ctx.shouldStop, err);
+    // TorBox/TorrServer still pipeline Range workers; RD's CDN does not.
+    bool ok = std::strcmp(ctx.provider.name(), "realdebrid") == 0
+        ? fetchSequential(ctx.fetcher, url, offset, sink, *ctx.shouldStop, err)
+        : fetchOrdered(ctx.fetcher, url, offset, fileBytes,
+                       maximumBuffered / 2, sink, *ctx.shouldStop, err);
     std::fflush(out);
     std::fclose(out);
     if (!ok) {

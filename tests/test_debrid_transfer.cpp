@@ -1,4 +1,5 @@
 #include "app/debrid_transfer.hpp"
+#include "app/realdebrid_provider.hpp"
 #include "app/torbox_provider.hpp"
 
 #include <algorithm>
@@ -749,6 +750,84 @@ void testStreamInstallLargeFileUsesSequentialFetch() {
     assert(last.packagesInstalled == 1);
 }
 
+void testRealdebridDownloadOnlyUsesSequentialFetch() {
+    const std::string root = "/tmp/pipensx-rd-download-seq-test";
+    system(("rm -rf " + root).c_str());
+    mkdir(root.c_str(), 0755);
+    const std::string data = root + "/data";
+    mkdir(data.c_str(), 0755);
+
+    const size_t size = 10 * 1024 * 1024;
+    std::string content(size, 'D');
+    int rangedCalls = 0;
+    int sequentialCalls = 0;
+    RangeFetcher fetcher = [&](const std::string&, uint64_t offset,
+                               uint64_t endExclusive,
+                               const std::function<bool(const uint8_t*, size_t)>&
+                                   sink,
+                               const std::function<bool()>&, std::string& error) {
+        if (endExclusive != 0) {
+            ++rangedCalls;
+            error = kDebridRangeNotSupported;
+            return false;
+        }
+        ++sequentialCalls;
+        std::string slice = content.substr(static_cast<size_t>(offset));
+        return sink(reinterpret_cast<const uint8_t*>(slice.data()),
+                    slice.size());
+    };
+
+    std::vector<std::pair<std::string, std::string>> script = {
+        {"/torrents/info/",
+         "{\"id\":\"abc123\",\"filename\":\"Example\",\"bytes\":" +
+             std::to_string(size) +
+             ",\"progress\":100,\"status\":\"downloaded\","
+             "\"files\":[{\"id\":\"1\",\"path\":\"/file.bin\","
+             "\"bytes\":" +
+             std::to_string(size) +
+             ",\"selected\":1}],"
+             "\"links\":[\"https://rd.to/dl/x\"]}"},
+        {"/unrestrict/link",
+         "{\"download\":\"https://cdn.example/file.bin\"}"},
+    };
+    RdTransport transport = [&script](const RdHttpRequest& request,
+                                      RdHttpResponse& response, std::string&) {
+        for (const auto& entry : script) {
+            if (request.url.find(entry.first) != std::string::npos) {
+                response.status = 200;
+                response.body = entry.second;
+                return true;
+            }
+        }
+        response.status = 200;
+        response.body = "{}";
+        return true;
+    };
+    RealdebridProvider provider("k", transport);
+    DebridTransfer transfer(provider, fetcher);
+
+    DebridTaskSpec spec;
+    spec.taskId = "aabbccddaabbccddaabbccddaabbccddaabbccdd";
+    spec.debridId = "abc123";
+    spec.dataPath = data;
+    spec.workingRoot = root;
+    spec.mode = TransferMode::DownloadOnly;
+
+    std::string debridId;
+    std::string error;
+    DebridRunResult result = transfer.run(
+        spec, [] { return false; }, [](const DebridProgress&) {}, debridId,
+        error);
+    assert(result == DebridRunResult::Finished);
+    assert(rangedCalls == 0);
+    assert(sequentialCalls >= 1);
+
+    std::ifstream check(data + "/file.bin", std::ios::binary);
+    std::string written((std::istreambuf_iterator<char>(check)),
+                        std::istreambuf_iterator<char>());
+    assert(written == content);
+}
+
 void testFilesResolvedStripsLeadingSlash() {
     const std::string root = "/tmp/pipensx-torbox-slash-path-test";
     system(("rm -rf " + root).c_str());
@@ -820,6 +899,7 @@ int main() {
     testRangeIgnoredFallsBackToSequential();
     testStreamInstallCoalescesTinyChunks();
     testStreamInstallLargeFileUsesSequentialFetch();
+    testRealdebridDownloadOnlyUsesSequentialFetch();
     testFilesResolvedStripsLeadingSlash();
     testBuildRichMagnet();
     std::printf("test_debrid_transfer ok\n");
