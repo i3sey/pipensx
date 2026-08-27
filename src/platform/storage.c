@@ -40,6 +40,32 @@ struct storage {
     char error[256];
 };
 
+static char g_open_error[256];
+
+static void copy_open_error(const storage_t *s) {
+    if (s && s->error[0])
+        snprintf(g_open_error, sizeof(g_open_error), "%s", s->error);
+    else
+        g_open_error[0] = '\0';
+}
+
+void storage_set_error(storage_t *s, const char *msg) {
+    if (!s || !msg || s->error[0])
+        return;
+    snprintf(s->error, sizeof(s->error), "%s", msg);
+}
+
+const char *storage_open_error(void) {
+    return g_open_error;
+}
+
+static void set_path_errno(storage_t *s, const char *path, const char *what) {
+    if (!s || s->error[0])
+        return;
+    snprintf(s->error, sizeof(s->error), "%s '%.200s': %s", what, path,
+             strerror(errno));
+}
+
 /* mkdir -p equivalent (portable) */
 static void mkdirs(const char *path) {
     char tmp[512];
@@ -170,14 +196,17 @@ static int split_open(struct file_handle *fh) {
 }
 
 /* Fresh session: the >4 GiB probe failed, store as a DBI split folder. */
-static int split_create(struct file_handle *fh) {
+static int split_create(struct file_handle *fh, storage_t *s) {
     if (fh->fp) {
         fclose(fh->fp);
         fh->fp = NULL;
     }
     remove(fh->path);
-    if (mkdir(fh->path, 0755) != 0)
+    if (mkdir(fh->path, 0755) != 0) {
+        if (s)
+            set_path_errno(s, fh->path, "cannot create split folder");
         return 0;
+    }
     if (!split_setup(fh))
         return 0;
     for (uint32_t i = 0; i < fh->num_parts; i++) {
@@ -185,9 +214,23 @@ static int split_create(struct file_handle *fh) {
         if (!split_part_path(fh, i, ppath, sizeof(ppath)))
             return 0;
         FILE *p = fopen(ppath, "w+b");
-        if (!p)
+        if (!p) {
+            if (s)
+                set_path_errno(s, ppath, "cannot create split part");
             return 0;
+        }
         int ok = prealloc(p, split_part_size_at(fh, i));
+        if (!ok) {
+            if (s) {
+                if (errno == ENOSPC)
+                    snprintf(s->error, sizeof(s->error),
+                             "not enough space for split part '%.200s'",
+                             ppath);
+                else
+                    snprintf(s->error, sizeof(s->error),
+                             "cannot allocate split part '%.200s'", ppath);
+            }
+        }
         fclose(p);
         if (!ok)
             return 0;
@@ -225,7 +268,7 @@ static FILE *split_part_open(struct file_handle *fh, uint32_t idx) {
     return p;
 }
 
-static int open_disk_file(struct file_handle *fh) {
+static int open_disk_file(struct file_handle *fh, storage_t *s) {
     fh->fp = fopen(fh->path, "r+b");
     if (fh->fp)
         return 1;
@@ -236,8 +279,11 @@ static int open_disk_file(struct file_handle *fh) {
         return split_open(fh);
 
     fh->fp = fopen(fh->path, "w+b");
-    if (!fh->fp)
+    if (!fh->fp) {
+        if (s)
+            set_path_errno(s, fh->path, "cannot open output file");
         return 0;
+    }
 
     /* Files above the FAT32 ceiling: preallocating the final byte probes
        whether they can exist as one file. If it cannot land (FAT32) or the
@@ -246,14 +292,25 @@ static int open_disk_file(struct file_handle *fh) {
        ponytail: the probe can also fail for other reasons (full SD on
        exFAT) and then splits too — harmless, parts are still correct. */
     int probe_ok = prealloc(fh->fp, fh->length);
+    if (!probe_ok && fh->length <= FAT32_FILE_MAX && s) {
+        if (errno == ENOSPC)
+            snprintf(s->error, sizeof(s->error),
+                     "not enough space for '%.200s'", fh->path);
+        else
+            snprintf(s->error, sizeof(s->error),
+                     "cannot allocate '%.200s'", fh->path);
+    }
     if (fh->length > FAT32_FILE_MAX &&
         (fh->config.force_split || !probe_ok))
-        return split_create(fh);
+        return split_create(fh, s);
+    if (!probe_ok)
+        return 0;
     return 1;
 }
 
 storage_t *storage_open_ex(const metainfo_t *mi, const char *outdir,
                            const storage_file_config_t *configs) {
+    g_open_error[0] = '\0';
     storage_t *s = (storage_t*)calloc(1, sizeof(*s));
     if (!s) return NULL;
     s->num_files = mi->num_files;
@@ -278,6 +335,8 @@ storage_t *storage_open_ex(const metainfo_t *mi, const char *outdir,
         if (using_fallback &&
             !build_fallback_path(fullpath, sizeof(fullpath), outdir, i, mf)) {
             log_msg("[storage] output path is too long, fallback failed\n");
+            storage_set_error(s, "output path is too long");
+            copy_open_error(s);
             storage_close(s);
             return NULL;
         }
@@ -288,21 +347,23 @@ storage_t *storage_open_ex(const metainfo_t *mi, const char *outdir,
         char *slash = strrchr(fullpath, '/');
         if (slash) { *slash = 0; mkdirs(fullpath); *slash = '/'; }
 
-        if (!open_disk_file(fh)) {
-            int saved_errno = errno;
-            if (!using_fallback && saved_errno == ENAMETOOLONG &&
+        if (!open_disk_file(fh, s)) {
+            if (!using_fallback && errno == ENAMETOOLONG &&
                 build_fallback_path(fullpath, sizeof(fullpath), outdir, i, mf)) {
                 memcpy(fh->path, fullpath, sizeof(fh->path));
                 fh->path[sizeof(fh->path)-1] = '\0';
                 slash = strrchr(fullpath, '/');
                 if (slash) { *slash = 0; mkdirs(fullpath); *slash = '/'; }
                 using_fallback = 1;
-                if (!open_disk_file(fh))
-                    saved_errno = errno;
-            }
-            if (!fh->fp) {
+                s->error[0] = '\0';
+                if (!open_disk_file(fh, s) && !s->error[0])
+                    set_path_errno(s, fh->path, "cannot open output file");
+            } else if (!s->error[0])
+                set_path_errno(s, fh->path, "cannot open output file");
+            if (!fh->fp && !fh->split) {
                 log_msg("[storage] cannot open '%s': %s\n",
-                        fh->path, strerror(saved_errno));
+                        fh->path, s->error[0] ? s->error : strerror(errno));
+                copy_open_error(s);
                 storage_close(s);
                 return NULL;
             }

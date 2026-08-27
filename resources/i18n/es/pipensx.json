@@ -352,6 +352,7 @@
     "problem_task": "La tarea de descarga ya no existe.",
     "problem_not_ready": "Termina la descarga antes de copiar archivos.",
     "problem_layout": "No se encontró una sola carpeta switch con un NRO válido.",
+    "problem_not_port": "Esta descarga solo contiene paquetes nativos (NSP/NSZ). Instálalos como paquetes, no como port en /switch.",
     "problem_ambiguous": "Más de una carpeta switch contiene un NRO.",
     "problem_unsafe": "La estructura de archivos no es segura para copiar.",
     "problem_missing": "Falta un archivo de origen seleccionado o tiene un tamaño incorrecto.",

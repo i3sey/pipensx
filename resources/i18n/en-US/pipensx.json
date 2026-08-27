@@ -352,6 +352,7 @@
     "problem_task": "The download task no longer exists.",
     "problem_not_ready": "Finish the download before copying files.",
     "problem_layout": "No single switch folder with a valid NRO was found.",
+    "problem_not_port": "This download contains native packages (NSP/NSZ). Install them as packages, not as a /switch port.",
     "problem_ambiguous": "More than one switch folder contains an NRO.",
     "problem_unsafe": "The file layout is unsafe for copying.",
     "problem_missing": "A selected source file is missing or has the wrong size.",

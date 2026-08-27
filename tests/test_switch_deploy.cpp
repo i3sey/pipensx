@@ -875,6 +875,57 @@ int main() {
     assert(!legacyUninstall.plan("0100000000000000", {}, legacyPlan));
     legacyManager.shutdown();
 
+    {
+        const std::string remapRoot = root + "-remap";
+        const std::string remapTarget = remapRoot + "/sd/switch";
+        const std::string remapData = remapRoot + "/downloads/remap-task";
+        fs::remove_all(remapRoot);
+        fs::create_directories(remapTarget);
+        const std::string remapNro = nroBytes();
+        writeFile(remapData + "/_files/000001_MyPort.nro", remapNro);
+        TaskFileInventory remapInventory;
+        remapInventory.taskId = "remap-task-id";
+        remapInventory.rootPath = remapData;
+        remapInventory.settled = true;
+        remapInventory.completeManifest = true;
+        TaskFileInfo remapFile;
+        remapFile.logicalPath =
+            "VeryLongReleaseName/switch/MyPort/MyPort.nro";
+        remapFile.localPath = "_files/000001_MyPort.nro";
+        remapFile.absolutePath = remapData + "/_files/000001_MyPort.nro";
+        remapFile.size = remapNro.size();
+        remapFile.action = TaskFileAction::Download;
+        remapFile.state = TaskFileState::Present;
+        remapInventory.files.push_back(std::move(remapFile));
+        SwitchDeployInspection remapInspection =
+            inspectSwitchDeploy(std::move(remapInventory), remapTarget);
+        assert(remapInspection.canStart());
+        assert(remapInspection.plan.files.size() == 1);
+        assert(remapInspection.plan.files[0].destinationRelativePath ==
+               "MyPort/MyPort.nro");
+        fs::remove_all(remapRoot);
+    }
+
+    {
+        TaskFileInventory nszInventory;
+        nszInventory.taskId = "nsz-only";
+        nszInventory.rootPath = data;
+        nszInventory.settled = true;
+        nszInventory.completeManifest = true;
+        TaskFileInfo nszFile;
+        nszFile.logicalPath = "Plants_vs_Zombies.nsz";
+        nszFile.localPath = "_files/000000_Plants_vs_Zombies.nsz";
+        nszFile.absolutePath = data + "/_files/000000_Plants_vs_Zombies.nsz";
+        nszFile.size = 1024;
+        nszFile.package = true;
+        nszFile.action = TaskFileAction::Download;
+        nszFile.state = TaskFileState::Present;
+        nszInventory.files.push_back(std::move(nszFile));
+        SwitchDeployInspection nszInspection =
+            inspectSwitchDeploy(std::move(nszInventory), target);
+        assert(nszInspection.problem == SwitchDeployProblem::NotAPort);
+    }
+
     setStorageSpaceOverride(nullptr);
     fs::remove_all(root);
     std::cout << "switch deploy tests passed\n";

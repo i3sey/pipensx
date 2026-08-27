@@ -634,8 +634,20 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
         }
     }
     if (roots.empty() && result.plan.archives.empty()) {
-        setProblem(result, SwitchDeployProblem::LayoutNotFound,
-                   "A switch directory with a valid NRO was not found.");
+        bool hasPackagePayload = false;
+        for (const TaskFileInfo& file : result.inventory.files) {
+            if (file.package &&
+                (file.action == TaskFileAction::Download ||
+                 file.action == TaskFileAction::Install))
+                hasPackagePayload = true;
+        }
+        if (hasPackagePayload) {
+            setProblem(result, SwitchDeployProblem::NotAPort,
+                       "This download contains native packages only.");
+        } else {
+            setProblem(result, SwitchDeployProblem::LayoutNotFound,
+                       "A switch directory with a valid NRO was not found.");
+        }
         return result;
     }
     if (roots.size() > 1) {
@@ -1193,6 +1205,12 @@ bool SwitchDeployService::autoCopyArmed(const std::string& taskId) const {
             if (!inspection.canStart() &&
                 !switchDeployOffersCopy(inspection.problem) && !missingLayout)
                 return false;
+            if (inspection.problem == SwitchDeployProblem::NotAPort) {
+                clearAutoCopy(taskId);
+                std::lock_guard<std::mutex> lock(offerMutex_);
+                offerHandled_.insert(taskId);
+                return false;
+            }
             if (inspection.canStart()) {
                 uint64_t looseBytes = 0;
                 for (const SwitchDeployEntry& entry : inspection.plan.files) {

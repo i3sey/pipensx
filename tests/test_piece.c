@@ -928,6 +928,29 @@ static void test_pick_skips_hashing_piece(void) {
     cleanup_output(outdir, "pick.bin");
 }
 
+static void test_got_block_geometry_sets_storage_error(void) {
+    const int64_t piece_length = BLOCK_SIZE * 4;
+    char outdir[] = "/tmp/pipensx-piece-geom-XXXXXX";
+    assert(mkdtemp(outdir));
+
+    metainfo_t mi;
+    init_single_file_metainfo(&mi, "geom.bin", piece_length, piece_length);
+    sha1((const uint8_t*)"seed", 4, mi.piece_hashes);
+
+    storage_t *store = storage_open(&mi, outdir);
+    assert(store);
+    piece_mgr_t *pm = piece_mgr_create(&mi, store);
+    assert(pm);
+
+    assert(piece_mgr_got_block(pm, 0, 1, (const uint8_t*)"bad", BLOCK_SIZE) == -1);
+    assert(strstr(storage_error(store), "invalid piece block offset") != NULL);
+
+    piece_mgr_destroy(pm);
+    storage_close(store);
+    free_test_metainfo(&mi);
+    cleanup_output(outdir, "geom.bin");
+}
+
 int main(void) {
     test_large_piece_and_short_last_piece();
     test_hash_mismatch_resets_all_blocks();
@@ -950,6 +973,7 @@ int main(void) {
     test_hash_result_callback_reports_in_order();
     test_destroy_flushes_inflight_hashes();
     test_pick_skips_hashing_piece();
+    test_got_block_geometry_sets_storage_error();
     puts("piece tests passed");
     return 0;
 }

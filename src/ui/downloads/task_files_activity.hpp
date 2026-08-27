@@ -38,6 +38,8 @@ inline std::string deployProblemText(SwitchDeployProblem problem,
             key = "pipensx/deploy/problem_not_ready"; break;
         case SwitchDeployProblem::LayoutNotFound:
             key = "pipensx/deploy/problem_layout"; break;
+        case SwitchDeployProblem::NotAPort:
+            key = "pipensx/deploy/problem_not_port"; break;
         case SwitchDeployProblem::AmbiguousLayout:
             key = "pipensx/deploy/problem_ambiguous"; break;
         case SwitchDeployProblem::UnsafePath:
