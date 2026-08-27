@@ -691,6 +691,103 @@ void testStreamInstallCoalescesTinyChunks() {
     assert(last.packagesInstalled == 1);
 }
 
+void testStreamInstallLargeFileUsesSequentialFetch() {
+    const std::string root = "/tmp/pipensx-torbox-stream-large-test";
+    system(("rm -rf " + root).c_str());
+    mkdir(root.c_str(), 0755);
+    const std::string data = root + "/data";
+    mkdir(data.c_str(), 0755);
+
+    const size_t size = 10 * 1024 * 1024;
+    std::vector<uint8_t> nca(size, 0x2a);
+    std::vector<uint8_t> nsp =
+        makePfs0({{"00112233445566778899aabbccddeeff.nca", nca}});
+    std::string content(nsp.begin(), nsp.end());
+
+    int rangedCalls = 0;
+    int sequentialCalls = 0;
+    RangeFetcher fetcher = [&](const std::string&, uint64_t offset,
+                               uint64_t endExclusive,
+                               const std::function<bool(const uint8_t*, size_t)>&
+                                   sink,
+                               const std::function<bool()>&, std::string& error) {
+        if (endExclusive != 0) {
+            ++rangedCalls;
+            error = kDebridRangeNotSupported;
+            return false;
+        }
+        ++sequentialCalls;
+        std::string slice = content.substr(static_cast<size_t>(offset));
+        return sink(reinterpret_cast<const uint8_t*>(slice.data()),
+                    slice.size());
+    };
+
+    std::vector<std::pair<std::string, std::string>> script = {
+        {"mylist", infoReadyJson("Example/game.nsp", content.size())},
+        {"requestdl", "{\"success\":true,\"data\":\"https://x/dl\"}"},
+    };
+    TorboxProvider provider("k", scriptedTransport(&script));
+    DebridTransfer transfer(provider, fetcher);
+
+    DebridTaskSpec spec;
+    spec.taskId = "aabbccddaabbccddaabbccddaabbccddaabbccdd";
+    spec.debridId = "42";
+    spec.dataPath = data;
+    spec.workingRoot = root;
+    spec.mode = TransferMode::StreamInstall;
+
+    std::string debridId;
+    std::string error;
+    DebridProgress last;
+    DebridRunResult result = transfer.run(
+        spec, [] { return false; },
+        [&last](const DebridProgress& p) { last = p; }, debridId, error);
+    assert(result == DebridRunResult::Finished);
+    assert(rangedCalls == 0);
+    assert(sequentialCalls >= 1);
+    assert(last.status == DownloadStatus::Installed);
+    assert(last.packagesInstalled == 1);
+}
+
+void testFilesResolvedStripsLeadingSlash() {
+    const std::string root = "/tmp/pipensx-torbox-slash-path-test";
+    system(("rm -rf " + root).c_str());
+    mkdir(root.c_str(), 0755);
+    const std::string data = root + "/data";
+    mkdir(data.c_str(), 0755);
+
+    std::string content(1000, 'p');
+    std::vector<std::pair<std::string, std::string>> script = {
+        {"createtorrent", "{\"success\":true,\"data\":{\"torrent_id\":42}}"},
+        {"mylist", infoReadyJson("/Example/file.bin", content.size())},
+        {"requestdl", "{\"success\":true,\"data\":\"https://x/dl\"}"},
+    };
+    TorboxProvider provider("k", scriptedTransport(&script));
+    DebridTransfer transfer(provider, memoryFetcher(content));
+
+    DebridTaskSpec spec;
+    spec.taskId = "aabbccddaabbccddaabbccddaabbccddaabbccdd";
+    spec.magnet = "magnet:?xt=urn:btih:" + spec.taskId;
+    spec.dataPath = data;
+    spec.workingRoot = root;
+    spec.mode = TransferMode::DownloadOnly;
+    std::vector<DebridTaskSpec::ResolvedFile> resolvedFiles;
+    spec.filesResolved = [&resolvedFiles](
+                             const std::vector<DebridTaskSpec::ResolvedFile>&
+                                 files) { resolvedFiles = files; };
+
+    std::string debridId;
+    std::string error;
+    DebridRunResult result = transfer.run(
+        spec, [] { return false; }, [](const DebridProgress&) {}, debridId,
+        error);
+    assert(result == DebridRunResult::Finished);
+    assert(resolvedFiles.size() == 1);
+    assert(resolvedFiles[0].path == "Example/file.bin");
+    assert(resolvedFiles[0].localPath == "Example/file.bin");
+    assert(resolvedFiles[0].path.front() != '/');
+}
+
 void testBuildRichMagnet() {
     std::string m = buildRichMagnet(
         "0123456789abcdef0123456789abcdef01234567",
@@ -722,6 +819,8 @@ int main() {
     testOutOfOrderRangesAssembleInOrder();
     testRangeIgnoredFallsBackToSequential();
     testStreamInstallCoalescesTinyChunks();
+    testStreamInstallLargeFileUsesSequentialFetch();
+    testFilesResolvedStripsLeadingSlash();
     testBuildRichMagnet();
     std::printf("test_debrid_transfer ok\n");
     return 0;

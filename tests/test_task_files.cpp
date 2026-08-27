@@ -71,6 +71,16 @@ int main() {
     assert(!taskFilePathIsFatCompatible("switch/Game/bad:name"));
     assert(!taskFilePathIsFatCompatible("switch/" + std::string(256, 'a')));
 
+    TaskFileManifest slashManifest;
+    slashManifest.taskId = "slashpathhash0123456789012345678901234";
+    TaskFileRecord slashRecord;
+    slashRecord.logicalPath = "Example/file.bin";
+    slashRecord.localPath = "Example/file.bin";
+    slashRecord.size = 1000;
+    slashRecord.action = TaskFileAction::Download;
+    slashManifest.files.push_back(slashRecord);
+    assert(saveTaskFileManifest(root, slashManifest, error));
+
     removeTaskFileManifest(root, preview.infoHash);
     assert(!loadTaskFileManifest(root, preview.infoHash, loaded, error));
     fs::remove_all(root);

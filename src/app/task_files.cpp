@@ -361,8 +361,10 @@ bool saveTaskFileManifest(const std::string& appRoot,
 #endif
     ok = std::fclose(output) == 0 && ok;
     if (!ok || std::rename(temporary.c_str(), path.c_str()) != 0) {
+        const int saveErr = errno;
         std::remove(temporary.c_str());
-        error = "Unable to save task file manifest.";
+        error = "Unable to save task file manifest (errno=" +
+                std::to_string(saveErr) + ").";
         return false;
     }
     return true;
