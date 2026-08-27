@@ -10,10 +10,17 @@
 
 #include "install/content_meta.hpp"
 
+using pipensx::install::copyFspPath;
+using pipensx::install::formatCnmtOpenError;
+using pipensx::install::isRomNcaHeaderSignature1VerificationFailed;
+using pipensx::install::kFspPathCapacity;
+using pipensx::install::kFsRomNcaHeaderSignature1VerificationFailed;
 using pipensx::install::kMetaTypeAddOnContent;
 using pipensx::install::kMetaTypeApplication;
 using pipensx::install::kMetaTypePatch;
 using pipensx::install::patchRequiredSystemVersion;
+using pipensx::install::resultDescription;
+using pipensx::install::resultModule;
 
 namespace {
 
@@ -103,6 +110,33 @@ int main() {
             kMetaTypeApplication);
         assert(rsv == 0);
         assert(header == original);
+    }
+
+    // FS Result decode: E5EB bug report used 0xaf5fb402 (module 2, desc 4058).
+    {
+        constexpr uint32_t kE5ebCnmtOpen = 0xaf5fb402u;
+        assert(resultModule(kE5ebCnmtOpen) == 2u);
+        assert(resultDescription(kE5ebCnmtOpen) ==
+               kFsRomNcaHeaderSignature1VerificationFailed);
+        assert(isRomNcaHeaderSignature1VerificationFailed(kE5ebCnmtOpen));
+        char text[160];
+        const size_t written =
+            formatCnmtOpenError(text, sizeof(text), kE5ebCnmtOpen);
+        assert(written > 0);
+        assert(std::strstr(text, "signature verification failed") != nullptr);
+        assert(std::strstr(text, "0xaf5fb402") != nullptr);
+    }
+
+    // copyFspPath zero-fills and truncates safely.
+    {
+        char path[kFspPathCapacity] {};
+        path[0] = 'x';
+        copyFspPath(path, sizeof(path), "registered:/a/b/c.nca");
+        assert(path[0] == 'r');
+        assert(std::strcmp(path, "registered:/a/b/c.nca") == 0);
+        assert(path[sizeof(path) - 1] == '\0');
+        for (size_t i = std::strlen(path) + 1; i < sizeof(path); ++i)
+            assert(path[i] == '\0');
     }
 
     std::printf("test_content_meta: all ok\n");
