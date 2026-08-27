@@ -250,16 +250,36 @@ struct ParsedMeta {
     uint32_t requiredSystemVersion = 0;
 };
 
+Result flushContentPlaceholders(NcmContentStorage* storage) {
+    if (!hosversionAtLeast(3, 0, 0))
+        return 0;
+    return ncmContentStorageFlushPlaceHolder(storage);
+}
+
+Result resolveCnmtNcaPath(NcmContentStorage* storage, const Content& content,
+                          char path[FS_MAX_PATH]) {
+    Result rc = flushContentPlaceholders(storage);
+    if (R_FAILED(rc))
+        return rc;
+    if (content.existing || content.registered) {
+        return ncmContentStorageGetPath(storage, path, FS_MAX_PATH,
+                                        &content.id);
+    }
+    return ncmContentStorageGetPlaceHolderPath(storage, path, FS_MAX_PATH,
+                                               &content.placeholder);
+}
+
 bool readPackagedMeta(const std::string& ncaPath, ParsedMeta& out,
                       std::string& error) {
+    char fspPath[FS_MAX_PATH] {};
+    copyFspPath(fspPath, sizeof(fspPath), ncaPath.c_str());
     FsFileSystem filesystem {};
     Result rc = fsOpenFileSystemWithId(&filesystem, 0,
-        FsFileSystemType_ContentMeta, ncaPath.c_str(),
+        FsFileSystemType_ContentMeta, fspPath,
         FsContentAttributes_All);
     if (R_FAILED(rc)) {
-        char text[96];
-        std::snprintf(text, sizeof(text),
-                      "Unable to open CNMT NCA (0x%08x).", rc);
+        char text[128];
+        formatCnmtOpenError(text, sizeof(text), rc);
         error = text;
         return false;
     }
@@ -691,6 +711,11 @@ public:
         // "sdmc:" devoptab path of the on-disk copy. Register the CNMT NCA so we
         // can mount it through NCM. On an already-installed title the CNMT NCA's
         // content id already exists (existing == true), so we never register here.
+        Result flushRc = flushContentPlaceholders(&storage_);
+        if (R_FAILED(flushRc)) {
+            errorResult("Unable to flush CNMT placeholder", flushRc);
+            return false;
+        }
         if (!metaContent->existing && !metaContent->registered) {
             Result rc = ncmContentStorageRegister(
                 &storage_, &metaContent->id, &metaContent->placeholder);
@@ -705,9 +730,8 @@ public:
             meta = earlyMeta_;
         } else {
             char metaNcaPath[FS_MAX_PATH];
-            Result pathRc = ncmContentStorageGetPath(&storage_, metaNcaPath,
-                                                     sizeof(metaNcaPath),
-                                                     &metaContent->id);
+            Result pathRc = resolveCnmtNcaPath(&storage_, *metaContent,
+                                               metaNcaPath);
             if (R_FAILED(pathRc)) {
                 errorResult("Unable to resolve CNMT NCA path", pathRc);
                 return false;
@@ -1224,22 +1248,19 @@ private:
     void prepareEarlyMeta(Content& metaContent) {
         if (earlyMetaValid_)
             return;
-        if (!metaContent.existing && !metaContent.registered) {
-            Result rc = ncmContentStorageRegister(
-                &storage_, &metaContent.id, &metaContent.placeholder);
-            if (R_FAILED(rc)) {
-                log_msg("[install] early CNMT register failed (0x%08x)\n", rc);
-                return;
-            }
-            metaContent.registered = true;
-        }
         char path[FS_MAX_PATH];
-        Result rc = ncmContentStorageGetPath(&storage_, path, sizeof(path),
-                                             &metaContent.id);
+        Result rc = resolveCnmtNcaPath(&storage_, metaContent, path);
         if (R_FAILED(rc)) {
-            log_msg("[install] early CNMT path failed (0x%08x)\n", rc);
+            log_msg("[install] early CNMT path failed (0x%08x) existing=%d "
+                    "id=%s\n",
+                    rc, metaContent.existing ? 1 : 0,
+                    hexBytes(metaContent.id.c, sizeof(metaContent.id.c)).c_str());
             return;
         }
+        log_msg("[install] early CNMT path existing=%d id=%s prefix='%.32s'\n",
+                metaContent.existing ? 1 : 0,
+                hexBytes(metaContent.id.c, sizeof(metaContent.id.c)).c_str(),
+                path);
         ParsedMeta meta;
         std::string parseError;
         if (!readPackagedMeta(path, meta, parseError)) {
