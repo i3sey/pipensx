@@ -540,12 +540,26 @@ bool UpdateService::install(const ReleaseInfo& release, std::string& error) cons
         return false;
     }
     if (rename(helperTemporary.c_str(), helper.c_str()) != 0) {
-        helperError = std::strerror(errno);
-        unlink(helperTemporary.c_str());
-        unlink(marker.c_str());
-        unlink(temporary.c_str());
-        error = "Unable to publish update helper: " + helperError;
-        return false;
+        const int renameErrno = errno;
+        bool helperPublished = false;
+        if (renameErrno == EEXIST) {
+            if (unlink(helper.c_str()) != 0 && errno != ENOENT) {
+                helperError = std::strerror(errno);
+            } else if (rename(helperTemporary.c_str(), helper.c_str()) == 0) {
+                helperPublished = true;
+            } else {
+                helperError = std::strerror(errno);
+            }
+        } else {
+            helperError = std::strerror(renameErrno);
+        }
+        if (!helperPublished) {
+            unlink(helperTemporary.c_str());
+            unlink(marker.c_str());
+            unlink(temporary.c_str());
+            error = "Unable to publish update helper: " + helperError;
+            return false;
+        }
     }
 #ifdef __SWITCH__
     const Result commit = fsdevCommitDevice("sdmc");
