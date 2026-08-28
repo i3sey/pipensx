@@ -3,7 +3,10 @@
 #include <stdint.h>
 
 #define MAX_TRACKERS  32
-#define MAX_FILES     4096
+/* Multi-file torrent ceiling. Unpacked port/homebrew trees (e.g. Lain at
+   ~8352 files) exceed the old 4096 cap; keep aligned with
+   port_archive.cpp kMaxProbeFiles and switch_deploy kMaxReceiptUnpacked. */
+#define MAX_FILES     16384
 #define MAX_NAME_LEN  256
 #define MAX_WEB_SEEDS 8
 

@@ -331,7 +331,7 @@ bool loadReceipt(const std::string& root, const std::string& taskId,
     const char* itemEnd = list.buf + list.raw_len - 1;
     be_node_t item;
     while (be_list_next(&itemCursor, itemEnd, &item)) {
-        if (parsed.size() >= 4096)
+        if (parsed.size() >= kMaxReceiptUnpacked)
             return false;
         ReceiptFile file;
         std::string digest;

@@ -654,9 +654,18 @@ private:
         journal.packageId = file.path;
         journal.packageSize = static_cast<uint64_t>(file.length);
         journal.compressed = isCompressedName(file.path);
-        if (!saveInstallJournal(journalPath_, journal)) {
-            log_msg("[install] journal write failed '%s'\n",
-                    journalPath_.c_str());
+        std::string journalError;
+        if (!saveInstallJournal(journalPath_, journal, &journalError)) {
+            log_msg("[install] journal write failed '%s': %s\n",
+                    journalPath_.c_str(),
+                    journalError.empty() ? "unknown error" : journalError.c_str());
+            if (!journalDiagnosticSent_) {
+                journalDiagnosticSent_ = true;
+                diagnostic_error("install", "journal",
+                                 "path=%s error=%s", journalPath_.c_str(),
+                                 journalError.empty() ? "unknown error"
+                                                      : journalError.c_str());
+            }
             return;
         }
         journalConsumed_ = consumed;
@@ -1021,6 +1030,7 @@ private:
     uint64_t arbiterLease_ = 0;
     uint64_t journalConsumed_ = 0;
     bool journalValid_ = false;
+    bool journalDiagnosticSent_ = false;
     bool abandonResume_ = false;
     std::atomic<bool> recoverableError_{false};
     bool streamInstall_ = false;

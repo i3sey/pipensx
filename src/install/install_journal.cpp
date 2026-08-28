@@ -276,14 +276,31 @@ bool InstallJournal::load(const char* data, size_t size) {
     return true;
 }
 
+namespace {
+
+void setJournalError(std::string* error, const char* what,
+                     const std::string& path, int err) {
+    if (!error)
+        return;
+    *error = std::string(what) + " '" + path + "': " + strerror(err);
+}
+
+} // namespace
+
 bool saveInstallJournal(const std::string& path,
-                        const InstallJournal& journal) {
+                        const InstallJournal& journal,
+                        std::string* error) {
     const std::string blob = journal.serialize();
     const std::string tmp = path + ".tmp";
     std::FILE* file = std::fopen(tmp.c_str(), "wb");
-    if (!file)
+    if (!file) {
+        setJournalError(error, "cannot open install journal temp file", tmp,
+                        errno);
         return false;
+    }
     bool ok = std::fwrite(blob.data(), 1, blob.size(), file) == blob.size();
+    if (!ok && !errno)
+        errno = EIO;
     ok = std::fflush(file) == 0 && ok;
 #if !defined(_WIN32)
     if (ok)
@@ -291,10 +308,13 @@ bool saveInstallJournal(const std::string& path,
 #endif
     ok = std::fclose(file) == 0 && ok;
     if (!ok) {
+        setJournalError(error, "cannot write install journal temp file", tmp,
+                        errno ? errno : EIO);
         std::remove(tmp.c_str());
         return false;
     }
     if (std::rename(tmp.c_str(), path.c_str()) != 0) {
+        setJournalError(error, "cannot rename install journal", path, errno);
         std::remove(tmp.c_str());
         return false;
     }

@@ -104,6 +104,10 @@ $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
+$(BUILD_DIR)/src/core/metainfo.o: src/core/metainfo.c src/core/metainfo.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
 $(BUILD_DIR)/$(UTP_DIR)/%.o: $(UTP_DIR)/%.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(UTP_CXXFLAGS) -c -o $@ $<

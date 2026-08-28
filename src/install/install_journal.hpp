@@ -29,7 +29,9 @@ struct InstallJournal {
 };
 
 // Atomic file helpers (write <path>.tmp, then rename over <path>).
-bool saveInstallJournal(const std::string& path, const InstallJournal& journal);
+// On failure, errno detail is written to *error when non-null.
+bool saveInstallJournal(const std::string& path, const InstallJournal& journal,
+                        std::string* error = nullptr);
 bool loadInstallJournal(const std::string& path, InstallJournal& journal);
 // True when the journal no longer exists (including "never existed").
 bool removeInstallJournal(const std::string& path);

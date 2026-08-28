@@ -149,6 +149,7 @@ static void test_metainfo_file_count_cap(void) {
     /* Catalog dumps (Pokemon Sword/Shield + DLC) exceed the old 512 cap
        and used to fail as "none returned torrent metadata". */
     const uint32_t ok_count = 1535;
+    const uint32_t lain_count = 8352; /* Serial Experiments Lain port */
     size_t cap = 256 + (size_t)ok_count * 48;
     char *buf = malloc(cap);
     assert(buf);
@@ -167,6 +168,26 @@ static void test_metainfo_file_count_cap(void) {
     metainfo_t mi;
     assert(metainfo_parse((const uint8_t *)buf, n, &mi) == 1);
     assert(mi.num_files == ok_count);
+    metainfo_free(&mi);
+    free(buf);
+
+    cap = 256 + (size_t)lain_count * 48;
+    buf = malloc(cap);
+    assert(buf);
+    n = 0;
+#define PUT(...) \
+    n += (size_t)snprintf(buf + n, cap - n, __VA_ARGS__)
+    PUT("d4:infod5:filesl");
+    for (uint32_t i = 0; i < lain_count; i++)
+        PUT("d6:lengthi1e4:pathl8:file%04uee", i);
+    PUT("e4:name4:test12:piece lengthi16384e6:pieces20:");
+#undef PUT
+    memcpy(buf + n, "HHHHHHHHHHHHHHHHHHHH", 20);
+    n += 20;
+    memcpy(buf + n, "ee", 2);
+    n += 2;
+    assert(metainfo_parse((const uint8_t *)buf, n, &mi) == 1);
+    assert(mi.num_files == lain_count);
     metainfo_free(&mi);
     free(buf);
 

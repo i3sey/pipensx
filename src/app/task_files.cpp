@@ -23,7 +23,7 @@ namespace pipensx {
 namespace {
 
 constexpr int64_t kManifestVersion = 1;
-constexpr size_t kMaxManifestFiles = 4096;
+constexpr size_t kMaxManifestFiles = MAX_FILES;
 constexpr size_t kMaxPathBytes = 1024;
 constexpr size_t kMaxScanDepth = 32;
 constexpr size_t kMaxManifestBytes = 8 * 1024 * 1024;
