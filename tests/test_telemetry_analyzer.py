@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
+import contextlib
 import importlib.util
+import io
 import pathlib
 import unittest
 
@@ -14,9 +16,9 @@ assert SPEC.loader
 SPEC.loader.exec_module(MODULE)
 
 
-def line(stage, **fields):
+def line(stage, tag="test", **fields):
     values = " ".join(f"{key}={value}" for key, value in fields.items())
-    return f"[  12345] [telemetry] schema=1 stage={stage} tag=test {values}"
+    return f"[  12345] [telemetry] schema=1 stage={stage} tag={tag} {values}"
 
 
 class TelemetryAnalyzerTests(unittest.TestCase):
@@ -141,6 +143,50 @@ class TelemetryAnalyzerTests(unittest.TestCase):
         self.assertEqual(report["requests"]["released"], 5)
         self.assertEqual(report["requests"]["peer_timeout_events"], 1)
         self.assertEqual(report["requests"]["max_peer_strikes"], 2)
+
+    def test_parses_numeric_ui_durations(self):
+        records = MODULE.parse_records("\n".join([
+            line("ui", event="layout", duration_us=125),
+            line("ui", event="refresh", duration_ms=7),
+        ]))
+        self.assertEqual(records[0]["duration_us"], 125)
+        self.assertEqual(records[1]["duration_ms"], 7)
+
+    def test_percentile_handles_empty_and_p95(self):
+        self.assertEqual(MODULE.percentile([], 0.95), 0)
+        self.assertEqual(MODULE.percentile([50, 10, 40, 20, 30], 0.95), 50)
+
+    def test_groups_ui_timings_by_tag_and_event(self):
+        text = "\n".join([
+            line("ui", tag="catalog", event="refresh", duration_us=1000),
+            line("ui", tag="catalog", event="refresh", duration_ms=2),
+            line("ui", tag="metadata", event="refresh", duration_us=4000),
+        ])
+        report = MODULE.analyze(MODULE.parse_records(text))
+        self.assertEqual(report["ui"]["catalog.refresh"], {
+            "count": 2,
+            "median": 1500,
+            "p95": 2000,
+            "max": 2000,
+            "unit": "us",
+        })
+        self.assertEqual(report["ui"]["metadata.refresh"]["count"], 1)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            MODULE.print_report(report)
+        self.assertIn("UI event", output.getvalue())
+        self.assertIn("catalog.refresh", output.getvalue())
+
+    def test_ui_records_without_duration_are_ignored(self):
+        text = "\n".join([
+            line("ui", tag="catalog", event="focus"),
+            line("ui", tag="catalog", event="layout", duration_us="unknown"),
+        ])
+        report = MODULE.analyze(MODULE.parse_records(text))
+        self.assertEqual(report["records"], 2)
+        self.assertEqual(report["ui"], {})
+        with contextlib.redirect_stdout(io.StringIO()):
+            MODULE.print_report(report)
 
     def test_summarizes_always_on_diagnostics(self):
         text = "\n".join([

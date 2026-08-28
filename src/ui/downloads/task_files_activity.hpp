@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <memory>
 #include <string>
@@ -138,6 +139,13 @@ public:
     const TaskFileInfo* at(size_t index) const {
         return index < files_.size() ? &files_[index] : nullptr;
     }
+    int indexForPath(const std::string& path) const {
+        for (size_t i = 0; i < files_.size(); ++i)
+            if (files_[i].logicalPath == path)
+                return static_cast<int>(i);
+        return -1;
+    }
+    size_t fileCount() const { return files_.size(); }
 
 private:
     TaskFilesActivity* owner_;
@@ -260,6 +268,23 @@ private:
     }
 
     void applyFilter() {
+        brls::View* focused = brls::Application::getCurrentFocus();
+        bool ownsFocus = false;
+        for (brls::View* view = focused; view; view = view->getParent())
+            if (view == recycler_) {
+                ownsFocus = true;
+                break;
+            }
+        std::string focusedPath;
+        int focusedRow = 0;
+        if (ownsFocus) {
+            if (auto* cell = dynamic_cast<brls::RecyclerCell*>(focused)) {
+                focusedRow = std::max(0, cell->getIndexPath().row);
+                if (const auto* file = dataSource_->at(
+                        static_cast<size_t>(cell->getIndexPath().row)))
+                    focusedPath = file->logicalPath;
+            }
+        }
         for (const auto& item : filterButtons_)
             item.first->setStyle(item.second == filter_
                 ? &brls::BUTTONSTYLE_PRIMARY : &brls::BUTTONSTYLE_DEFAULT);
@@ -276,7 +301,27 @@ private:
                 files.push_back(file);
         }
         dataSource_->setFiles(std::move(files));
+        int restoreRow = dataSource_->indexForPath(focusedPath);
+        if (restoreRow < 0 && dataSource_->fileCount() > 0)
+            restoreRow = std::min(
+                focusedRow, static_cast<int>(dataSource_->fileCount()) - 1);
+        recycler_->setDefaultCellFocus(
+            brls::IndexPath(0, std::max(0, restoreRow)));
         recycler_->reloadData();
+        if (ownsFocus) {
+            if (dataSource_->fileCount() == 0) {
+                for (const auto& button : filterButtons_)
+                    if (button.second == filter_) {
+                        brls::Application::giveFocus(button.first);
+                        break;
+                    }
+                return;
+            }
+            recycler_->setFocusable(true);
+            brls::Application::giveFocus(recycler_);
+            recycler_->setFocusable(false);
+            brls::Application::giveFocus(recycler_);
+        }
     }
 
     std::string taskId_;

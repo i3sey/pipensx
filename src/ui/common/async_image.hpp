@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -13,6 +14,10 @@
 
 #include "app/game_metadata_service.hpp"
 #include "app/stream_install_flag.hpp"
+
+extern "C" {
+#include "core/util.h"
+}
 
 namespace pipensx::ui {
 
@@ -56,6 +61,25 @@ struct AsyncImageLifetime {
     AsyncRgbaImage* image = nullptr;
 };
 
+// All full texture uploads originate on the UI thread. Use a process-wide
+// 16 ms bucket so a burst of cache hits cannot monopolize one rendered frame.
+inline bool claimFullImageUploadBudget() {
+    struct Budget {
+        uint64_t bucket = static_cast<uint64_t>(-1);
+        unsigned uploads = 0;
+    };
+    static Budget budget;
+    const uint64_t bucket = now_us() / 16000;
+    if (budget.bucket != bucket) {
+        budget.bucket = bucket;
+        budget.uploads = 0;
+    }
+    if (budget.uploads >= 2)
+        return false;
+    ++budget.uploads;
+    return true;
+}
+
 class AsyncRgbaImage : public brls::Image {
 public:
     AsyncRgbaImage() : lifetime_(std::make_shared<AsyncImageLifetime>()) {
@@ -96,9 +120,17 @@ public:
                       width, height);
             return;
         }
+        if (!claimFullImageUploadBudget()) {
+            const size_t bytes =
+                static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
+            deferred_ = DeferredRgba{
+                std::make_shared<std::vector<uint8_t>>(pixels, pixels + bytes),
+                width, height};
+            clear();
+            return;
+        }
         deferred_.reset();
-        NVGcontext* vg = brls::Application::getNVGContext();
-        innerSetImage(nvgCreateImageRGBA(vg, width, height, 0, pixels));
+        uploadRgba(pixels, width, height, false);
     }
 
     void setRgbaAsync(std::function<void(std::function<void(
@@ -127,6 +159,22 @@ private:
         int height = 0;
     };
 
+    void uploadRgba(const uint8_t* pixels, int width, int height,
+                    bool deferred) {
+        const uint64_t startedUs = telemetry_enabled() ? now_us() : 0;
+        NVGcontext* vg = brls::Application::getNVGContext();
+        innerSetImage(nvgCreateImageRGBA(vg, width, height, 0, pixels));
+        if (startedUs)
+            telemetry_log(
+                "ui", "image",
+                "event=upload duration_us=%llu bytes=%llu deferred=%d",
+                (unsigned long long)(now_us() - startedUs),
+                (unsigned long long)(
+                    static_cast<size_t>(width) *
+                    static_cast<size_t>(height) * 4),
+                deferred ? 1 : 0);
+    }
+
     void applyRgba(std::shared_ptr<const std::vector<uint8_t>> pixels,
                    int width, int height) {
         if (!pixels || pixels->empty() || width <= 0 || height <= 0)
@@ -145,21 +193,26 @@ private:
             int ph = 0;
             nearestDownscaleRgba(pixels->data(), width, height, preview, pw,
                                  ph, kStreamInstallPreviewDim);
-            NVGcontext* vg = brls::Application::getNVGContext();
-            innerSetImage(nvgCreateImageRGBA(vg, pw, ph, 0, preview.data()));
+            uploadRgba(preview.data(), pw, ph, true);
+            return;
+        }
+        if (!claimFullImageUploadBudget()) {
+            deferred_ = DeferredRgba{std::move(pixels), width, height};
+            clear();
             return;
         }
         deferred_.reset();
-        NVGcontext* vg = brls::Application::getNVGContext();
-        innerSetImage(nvgCreateImageRGBA(vg, width, height, 0, pixels->data()));
+        uploadRgba(pixels->data(), width, height, false);
     }
 
     void flushDeferred() {
         if (!deferred_ || streamInstallActive())
             return;
+        if (!claimFullImageUploadBudget())
+            return;
         DeferredRgba held = std::move(*deferred_);
         deferred_.reset();
-        applyRgba(std::move(held.pixels), held.width, held.height);
+        uploadRgba(held.pixels->data(), held.width, held.height, true);
     }
 
     std::shared_ptr<AsyncImageLifetime> lifetime_;

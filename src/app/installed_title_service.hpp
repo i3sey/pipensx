@@ -35,6 +35,8 @@ public:
     bool containsDlc(const std::string& titleId) const;
 
     std::vector<InstalledTitle> titles() const;
+    // Normalized title-id snapshot copied under one lock for bulk lookups.
+    std::unordered_set<std::string> titleIds() const;
     std::vector<std::string> dlcTitleIds() const;
     size_t dlcCountForBase(const std::string& titleId) const;
     uint64_t generation() const;

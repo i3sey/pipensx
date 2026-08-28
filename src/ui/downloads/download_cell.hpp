@@ -78,10 +78,12 @@ public:
         right->addView(meta_);
         right->addView(progress_);
         addView(right);
+        updateActionHint(brls::BUTTON_A, tr("pipensx/common/more"));
     }
 
     void setTask(const DownloadTask& task, GameMetadataService* service,
                  const SwitchDeploySnapshot* deploy = nullptr) {
+        updateActionHint(brls::BUTTON_A, tr("pipensx/common/more"));
         const auto wanted = downloadProgressBytes(task);
         const uint64_t deployGen = deploy ? deploy->generation : 0;
         const uint64_t deployBytes = deploy && deploy->taskId == task.id

@@ -122,7 +122,7 @@ public:
         buildLeftColumn(content);
         buildRightColumn(content);
         installBytes_ = entry_.size;
-        refreshSizeMeter();
+        scheduleSizeMeterRefresh();
 
         frame_ = new brls::AppletFrame(content);
         frame_->setTitle(presentation_.title);
@@ -152,6 +152,7 @@ public:
                 cancelled_->store(true);
             return true;
         });
+        frame_->setActionAvailable(brls::BUTTON_Y, false);
         // Same hotkey as the catalog grid, and the hint is what names the
         // square ★ button above — this page has room for it where the catalog
         // does not.
@@ -169,7 +170,7 @@ public:
             // every 500ms button tick. Same cadence as the sidebar footer.
             if (++storageTick_ >= 4) {
                 storageTick_ = 0;
-                refreshSizeMeter();
+                scheduleSizeMeterRefresh();
             }
         });
         timer_.start(500);
@@ -506,9 +507,8 @@ private:
     // Find the managed task for this game, if any.
     const DownloadTask* currentTask() {
         cache_.clear();
-        auto task = manager_->snapshotUi(catalogLower(entry_.infoHash));
-        if (!task)
-            task = manager_->snapshotUi(entry_.infoHash);
+        const std::string hash = catalogLower(entry_.infoHash);
+        auto task = manager_->snapshotUi(hash);
         if (!task)
             return nullptr;
         cache_.push_back(std::move(*task));
@@ -583,28 +583,65 @@ private:
     // Repaint the install-size bar against the current free space. installBytes_
     // starts as the catalog-declared size and becomes exact once the torrent
     // metadata has been read (see finishImport).
-    void refreshSizeMeter() {
-        if (!sizeMeter_)
-            return;
-        const auto target = settings_
+    pipensx::install::InstallStorageTarget currentInstallTarget() const {
+        return settings_
             ? installTargetFor(settings_->get().installLocation)
             : manager_->installTarget();
+    }
+
+    void scheduleSizeMeterRefresh() {
+        if (!sizeMeter_)
+            return;
+        const auto target = currentInstallTarget();
         sizeMeter_->setHeader(storageMeterHeader(target));
-        const pipensx::StorageSpaceSnapshot storage =
-            pipensx::queryInstallStorageSpace(target, manager_->rootPath());
-        if (!storage.available) {
+        if (!storageMeterTargetValid_ || storageMeterTarget_ != target)
             sizeMeter_->setUnavailable();
+        if (storageQueryInFlight_) {
+            storageRefreshPending_ = true;
             return;
         }
-        sizeMeter_->setGameEstimate(storage.totalBytes, storage.freeBytes,
-                                    installBytes_,
-                                    installBytes_ > storage.freeBytes,
-                                    sizeExact_);
+        storageQueryInFlight_ = true;
+        storageQueryTarget_ = target;
+        const std::string root = manager_->rootPath();
+        auto alive = alive_;
+        brls::async([this, alive, target, root] {
+            const uint64_t startedUs = telemetry_enabled() ? now_us() : 0;
+            const pipensx::StorageSpaceSnapshot storage =
+                pipensx::queryInstallStorageSpace(target, root);
+            if (startedUs)
+                telemetry_log(
+                    "ui", "detail", "event=storage duration_us=%llu",
+                    (unsigned long long)(now_us() - startedUs));
+            brls::sync([this, alive, target, storage] {
+                if (!alive->load())
+                    return;
+                storageQueryInFlight_ = false;
+                if (storageQueryTarget_ == target &&
+                    currentInstallTarget() == target) {
+                    storageMeterTarget_ = target;
+                    storageMeterTargetValid_ = true;
+                    if (storage.available)
+                        sizeMeter_->setGameEstimate(
+                            storage.totalBytes, storage.freeBytes,
+                            installBytes_, installBytes_ > storage.freeBytes,
+                            sizeExact_);
+                    else
+                        sizeMeter_->setUnavailable();
+                } else {
+                    storageRefreshPending_ = true;
+                }
+                if (storageRefreshPending_) {
+                    storageRefreshPending_ = false;
+                    scheduleSizeMeterRefresh();
+                }
+            });
+        });
     }
 
     // Pulse Install + status while magnet/debrid resolve is in flight (#19).
     void setBusy(bool busy) {
         busy_ = busy;
+        frame_->setActionAvailable(brls::BUTTON_Y, busy);
         if (busy) {
             startBusyPulse(primary_);
             startBusyPulse(statusLabel_);
@@ -1318,7 +1355,7 @@ private:
         if (!preview.files.empty() && !sized.overflow) {
             installBytes_ = sized.requiredBytes;
             sizeExact_ = true;
-            refreshSizeMeter();
+            scheduleSizeMeterRefresh();
         }
 
         // Picker path: the per-file picker owns the temp file and unlinks it
@@ -1464,6 +1501,13 @@ private:
     uint64_t installBytes_ = 0;
     bool sizeExact_ = false;
     int storageTick_ = 0;
+    bool storageQueryInFlight_ = false;
+    bool storageRefreshPending_ = false;
+    bool storageMeterTargetValid_ = false;
+    pipensx::install::InstallStorageTarget storageQueryTarget_ =
+        pipensx::install::InstallStorageTarget::SdCard;
+    pipensx::install::InstallStorageTarget storageMeterTarget_ =
+        pipensx::install::InstallStorageTarget::SdCard;
     brls::RepeatingTimer timer_;
     std::vector<DownloadTask> cache_;
     bool busy_ = false;

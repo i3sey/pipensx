@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <functional>
 #include <memory>
@@ -210,11 +211,46 @@ public:
     }
 
     const std::vector<InstalledTitle>& updateTitles() const { return updates_; }
+    size_t titleCount() const { return updates_.size() + rest_.size(); }
+
+    std::string titleIdAt(brls::IndexPath index) const {
+        if (index.section >= sectionCount() || index.row < 0)
+            return {};
+        const auto& titles = sectionTitles(static_cast<int>(index.section));
+        return static_cast<size_t>(index.row) < titles.size()
+            ? titles[static_cast<size_t>(index.row)].titleId
+            : std::string{};
+    }
+
+    bool indexForTitle(const std::string& titleId,
+                       brls::IndexPath& result) const {
+        if (!titleId.empty()) {
+            for (size_t section = 0; section < sectionCount(); ++section) {
+                const auto& titles =
+                    sectionTitles(static_cast<int>(section));
+                for (size_t row = 0; row < titles.size(); ++row)
+                    if (titles[row].titleId == titleId) {
+                        result = brls::IndexPath(section, row);
+                        return true;
+                    }
+            }
+        }
+        return false;
+    }
+
+    brls::IndexPath fallbackIndex(brls::IndexPath preferred) const {
+        if (titleCount() == 0)
+            return brls::IndexPath(0, 0);
+        const size_t section =
+            std::min(preferred.section, sectionCount() - 1);
+        const auto& titles = sectionTitles(static_cast<int>(section));
+        const int row = std::clamp(
+            preferred.row, 0, static_cast<int>(titles.size()) - 1);
+        return brls::IndexPath(section, row);
+    }
 
     int numberOfSections(brls::RecyclerFrame*) override {
-        if (!updates_.empty() && !rest_.empty())
-            return 2;
-        return 1;
+        return static_cast<int>(sectionCount());
     }
 
     int numberOfRows(brls::RecyclerFrame*, int section) override {
@@ -254,6 +290,10 @@ public:
     }
 
 private:
+    size_t sectionCount() const {
+        return !updates_.empty() && !rest_.empty() ? 2 : 1;
+    }
+
     bool isUpdateAvailable(const std::string& titleId) const {
         if (updateService_ && updateService_->isIgnored(titleId))
             return false;
@@ -409,7 +449,10 @@ private:
         if (updates_->generation() != observedUpdateGeneration_) {
             observedUpdateGeneration_ = updates_->generation();
             reload();
+            return;
         }
+        if (pendingReload_ && !activityStackHasOverlay())
+            flushPendingReload();
     }
 
     // "Проверить всё": synchronous in-memory check of every installed
@@ -473,22 +516,25 @@ private:
         std::vector<const GameMetadata*> entries;
         if (metadata_)
             metadata_->findByTitleId(titleId, entries);
-        const std::string want = catalogLower(titleId);
         const CatalogEntry* best = nullptr;
+        for (const GameMetadata* meta : entries) {
+            if (!meta)
+                continue;
+            const CatalogEntry* candidate =
+                catalog_->findByInfoHash(meta->infoHash);
+            if (candidate &&
+                (!best || candidate->publishedAt > best->publishedAt))
+                best = candidate;
+        }
+        if (best)
+            return best;
+
+        // Metadata-backed titles use the O(1) info-hash index above. Keep the
+        // direct title-id fallback for older/custom catalogues without metadata.
+        const std::string want = catalogLower(titleId);
         for (const CatalogEntry& entry : catalog_->entries()) {
-            bool match = false;
-            if (!entry.titleId.empty() && catalogLower(entry.titleId) == want)
-                match = true;
-            if (!match) {
-                const std::string hash = catalogLower(entry.infoHash);
-                for (const GameMetadata* meta : entries) {
-                    if (catalogLower(meta->infoHash) == hash) {
-                        match = true;
-                        break;
-                    }
-                }
-            }
-            if (!match)
+            if (entry.titleId.empty() ||
+                catalogLower(entry.titleId) != want)
                 continue;
             if (!best || entry.publishedAt > best->publishedAt)
                 best = &entry;
@@ -699,17 +745,19 @@ private:
         });
     }
 
-
-    void reload() {
-        std::vector<InstalledTitle> titles = installed_->titles();
-        const size_t count = titles.size();
-        dataSource_->setTitles(std::move(titles));
+    void reloadRecycler(const std::string& focusedTitleId,
+                        brls::IndexPath previousIndex, bool ownsFocus) {
+        brls::IndexPath focusedIndex;
+        if (!dataSource_->indexForTitle(focusedTitleId, focusedIndex))
+            focusedIndex = dataSource_->fallbackIndex(previousIndex);
+        recycler_->setDefaultCellFocus(focusedIndex);
         recycler_->reloadData();
         // reloadData re-renders the focused row, whose A hint may have
         // changed state with it; neither setResult nor updateActionHint fires
         // the hints event, so repaint the bar once here — not per cell on
         // every draw (focus changes repaint it themselves).
         brls::Application::getGlobalHintsUpdateEvent()->fire();
+        const size_t count = dataSource_->titleCount();
         const bool empty = count == 0;
         if (empty)
             ensureEmptyState()->setVisibility(brls::Visibility::VISIBLE);
@@ -727,6 +775,59 @@ private:
         status_->setText(text);
         if (onUpdateCount_)
             onUpdateCount_(updateCount);
+        if (ownsFocus) {
+            if (empty) {
+                brls::Application::giveFocus(ensureEmptyState());
+            } else {
+                recycler_->selectRowAt(focusedIndex, false);
+                brls::Application::giveFocus(recycler_);
+            }
+        }
+    }
+
+    void flushPendingReload() {
+        if (!pendingReload_ || activityStackHasOverlay())
+            return;
+        pendingReload_ = false;
+        std::string focusedTitleId = std::move(pendingFocusedTitleId_);
+        const brls::IndexPath focusedIndex = pendingFocusedIndex_;
+        pendingFocusedTitleId_.clear();
+        pendingFocusedIndex_ = brls::IndexPath(0, 0);
+        reloadRecycler(focusedTitleId, focusedIndex,
+                       viewContains(this,
+                                    brls::Application::getCurrentFocus()));
+    }
+
+    void reload() {
+        brls::View* focused = brls::Application::getCurrentFocus();
+        const bool ownsFocus = viewContains(this, focused);
+        std::string focusedTitleId = pendingReload_
+            ? pendingFocusedTitleId_
+            : std::string{};
+        brls::IndexPath focusedIndex =
+            pendingReload_ ? pendingFocusedIndex_ : brls::IndexPath(0, 0);
+        if (focusedTitleId.empty()) {
+            brls::View* rowFocus =
+                ownsFocus ? focused : recycler_->getDefaultFocus();
+            if (auto* cell = dynamic_cast<brls::RecyclerCell*>(rowFocus)) {
+                focusedIndex = cell->getIndexPath();
+                focusedTitleId =
+                    dataSource_->titleIdAt(cell->getIndexPath());
+            }
+        }
+
+        dataSource_->setTitles(installed_->titles());
+        if (activityStackHasOverlay() && !ownsFocus) {
+            pendingFocusedTitleId_ = std::move(focusedTitleId);
+            pendingFocusedIndex_ = focusedIndex;
+            pendingReload_ = true;
+            return;
+        }
+
+        pendingReload_ = false;
+        pendingFocusedTitleId_.clear();
+        pendingFocusedIndex_ = brls::IndexPath(0, 0);
+        reloadRecycler(focusedTitleId, focusedIndex, ownsFocus);
     }
 
     void refresh() {
@@ -777,6 +878,9 @@ private:
     std::shared_ptr<std::atomic<bool>> alive_;
     bool refreshing_ = false;
     bool uninstallInFlight_ = false;
+    bool pendingReload_ = false;
+    std::string pendingFocusedTitleId_;
+    brls::IndexPath pendingFocusedIndex_{0, 0};
     uint64_t observedUpdateGeneration_ = 0;
     brls::RepeatingTimer updatePollTimer_;
 };

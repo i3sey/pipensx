@@ -73,6 +73,19 @@ struct GridCardInfo {
     bool favorite = false;
 };
 
+inline bool sameGridCardInfo(const GridCardInfo& left,
+                             const GridCardInfo& right) {
+    return left.entryIndex == right.entryIndex &&
+           left.infoHash == right.infoHash && left.title == right.title &&
+           left.sub == right.sub && left.subIsBadge == right.subIsBadge &&
+           left.iconUrl == right.iconUrl &&
+           left.iconPreserveAspect == right.iconPreserveAspect &&
+           left.selectionMode == right.selectionMode &&
+           left.selected == right.selected &&
+           left.selectable == right.selectable &&
+           left.favorite == right.favorite;
+}
+
 class GameCard : public brls::Box {
 public:
     using Activate = std::function<void(int)>;
@@ -173,48 +186,96 @@ public:
 
     void setCard(const GridCardInfo& info, GameMetadataService* service,
                  Activate onActivate, Focused onFocus, int shelfRow = -1) {
-        setVisibility(brls::Visibility::VISIBLE);
-        setFocusable(true);
+        const bool artworkCurrent =
+            info.iconUrl.empty() || image_->hasArtwork() ||
+            imageState_->pending.load();
+        const bool unchanged =
+            hasCard_ && shelfRow_ == shelfRow && artworkService_ == service &&
+            artworkCurrent && sameGridCardInfo(painted_, info);
         entryIndex_ = info.entryIndex;
         infoHash_ = info.infoHash;
         shelfRow_ = shelfRow;
         onActivate_ = std::move(onActivate);
         onFocus_ = std::move(onFocus);
-        name_->setText(info.title);
-        placeholder_->setText(placeholderLetter(info.title));
-        sub_->setText(info.sub);
-        sub_->setTextColor(info.subIsBadge ? theme::accent()
-                                           : theme::textTertiary());
-        markBox_->setVisibility(info.selectionMode ? brls::Visibility::VISIBLE
-                                                   : brls::Visibility::GONE);
-        favoriteBox_->setVisibility(info.favorite ? brls::Visibility::VISIBLE
-                                                  : brls::Visibility::GONE);
-        mark_->setText(!info.selectable ? "-" : info.selected ? "x" : " ");
-        mark_->setTextColor(info.selectable ? theme::accent()
-                                            : theme::textDisabled());
+        if (unchanged)
+            return;
+        if (getVisibility() != brls::Visibility::VISIBLE)
+            setVisibility(brls::Visibility::VISIBLE);
+        if (!isFocusable())
+            setFocusable(true);
+        if (name_->getFullText() != info.title)
+            name_->setText(info.title);
+        const std::string placeholder = placeholderLetter(info.title);
+        if (placeholder_->getFullText() != placeholder)
+            placeholder_->setText(placeholder);
+        if (sub_->getFullText() != info.sub)
+            sub_->setText(info.sub);
+        if (!hasCard_ || painted_.subIsBadge != info.subIsBadge)
+            sub_->setTextColor(info.subIsBadge ? theme::accent()
+                                               : theme::textTertiary());
+        const brls::Visibility markVisibility =
+            info.selectionMode ? brls::Visibility::VISIBLE
+                               : brls::Visibility::GONE;
+        if (markBox_->getVisibility() != markVisibility)
+            markBox_->setVisibility(markVisibility);
+        const brls::Visibility favoriteVisibility =
+            info.favorite ? brls::Visibility::VISIBLE : brls::Visibility::GONE;
+        if (favoriteBox_->getVisibility() != favoriteVisibility)
+            favoriteBox_->setVisibility(favoriteVisibility);
+        const std::string mark =
+            !info.selectable ? "-" : info.selected ? "x" : " ";
+        if (mark_->getFullText() != mark)
+            mark_->setText(mark);
+        if (!hasCard_ || painted_.selectable != info.selectable)
+            mark_->setTextColor(info.selectable ? theme::accent()
+                                                : theme::textDisabled());
         const bool highlight = info.selectionMode && info.selected;
-        cover_->setBorderThickness(highlight ? 4 : 0);
-        cover_->setBorderColor(highlight ? theme::accent()
-                                         : brls::TRANSPARENT);
-        iconPreserveAspect_ = info.iconPreserveAspect;
-        applyZoom(false);
-        image_->setScalingType(info.iconPreserveAspect
-            ? brls::ImageScalingType::FIT
-            : brls::ImageScalingType::FILL);
-        setArtworkUrl(image_, service, info.iconUrl, currentIconUrl_,
-                      imageState_);
+        const bool previousHighlight =
+            hasCard_ && painted_.selectionMode && painted_.selected;
+        if (!hasCard_ || previousHighlight != highlight) {
+            cover_->setBorderThickness(highlight ? 4 : 0);
+            cover_->setBorderColor(highlight ? theme::accent()
+                                             : brls::TRANSPARENT);
+        }
+        if (!hasCard_ ||
+            painted_.iconPreserveAspect != info.iconPreserveAspect) {
+            iconPreserveAspect_ = info.iconPreserveAspect;
+            applyZoom(false);
+            image_->setScalingType(info.iconPreserveAspect
+                ? brls::ImageScalingType::FIT
+                : brls::ImageScalingType::FILL);
+        }
+        if (currentIconUrl_ != info.iconUrl ||
+            (!info.iconUrl.empty() &&
+             (artworkService_ != service || !artworkCurrent))) {
+            setArtworkUrl(image_, service, info.iconUrl, currentIconUrl_,
+                          imageState_);
+        }
+        painted_ = info;
+        artworkService_ = service;
+        hasCard_ = true;
     }
 
     void setSubLine(const std::string& text, bool badge) {
+        if (hasCard_ && painted_.sub == text &&
+            painted_.subIsBadge == badge)
+            return;
         setTextIfChanged(sub_, text);
-        sub_->setTextColor(badge ? theme::accent() : theme::textTertiary());
+        if (!hasCard_ || painted_.subIsBadge != badge)
+            sub_->setTextColor(badge ? theme::accent()
+                                     : theme::textTertiary());
+        painted_.sub = text;
+        painted_.subIsBadge = badge;
     }
 
     // Unused trailing slot in a row/shelf: keeps its layout space so columns
     // stay aligned, but can neither draw nor take focus.
     void setEmpty() {
-        setVisibility(brls::Visibility::INVISIBLE);
-        setFocusable(false);
+        if (getVisibility() != brls::Visibility::INVISIBLE)
+            setVisibility(brls::Visibility::INVISIBLE);
+        if (isFocusable())
+            setFocusable(false);
+        hasCard_ = false;
         onActivate_ = nullptr;
         onFocus_ = nullptr;
     }
@@ -267,6 +328,9 @@ private:
     std::string infoHash_;
     int shelfRow_ = -1;
     bool iconPreserveAspect_ = false;
+    bool hasCard_ = false;
+    GridCardInfo painted_;
+    GameMetadataService* artworkService_ = nullptr;
     Activate onActivate_;
     Focused onFocus_;
 };
@@ -364,8 +428,13 @@ public:
     void setItems(const std::vector<GridCardInfo>& infos,
                   GameMetadataService* service, GameCard::Activate onActivate,
                   int shelfRow) {
-        active_ = static_cast<int>(
+        const int nextActive = static_cast<int>(
             std::min<size_t>(infos.size(), grid::kShelfItems));
+        bool sameItems = active_ == nextActive;
+        for (int i = 0; sameItems && i < nextActive; ++i)
+            sameItems = cards_[i]->infoHash() ==
+                        infos[static_cast<size_t>(i)].infoHash;
+        active_ = nextActive;
         for (int i = 0; i < grid::kShelfItems; ++i) {
             if (i < active_) {
                 std::shared_ptr<std::string> hash = focusHash_;
@@ -379,8 +448,10 @@ public:
                 cards_[i]->setEmpty();
             }
         }
-        offset_ = 0;
-        applyOffset();
+        if (!sameItems) {
+            offset_ = 0;
+            applyOffset();
+        }
     }
 
     void onChildFocusGained(brls::View* directChild,
@@ -496,14 +567,17 @@ public:
                   const std::vector<GridCardInfo>& infos,
                   GameMetadataService* service, GameCard::Activate onActivate,
                   int shelfRow, std::function<void()> seeAll) {
-        title_->setText(title);
+        if (title_->getFullText() != title)
+            title_->setText(title);
         seeAllAction_ = std::move(seeAll);
         const bool hasSeeAll = static_cast<bool>(seeAllAction_);
-        seeAll_->setVisibility(hasSeeAll ? brls::Visibility::VISIBLE
-                                         : brls::Visibility::GONE);
-        seeAll_->setFocusable(hasSeeAll);
+        const brls::Visibility visibility =
+            hasSeeAll ? brls::Visibility::VISIBLE : brls::Visibility::GONE;
+        if (seeAll_->getVisibility() != visibility)
+            seeAll_->setVisibility(visibility);
+        if (seeAll_->isFocusable() != hasSeeAll)
+            seeAll_->setFocusable(hasSeeAll);
         shelf_->setItems(infos, service, std::move(onActivate), shelfRow);
-        invalidate();
     }
 
 private:
@@ -574,20 +648,44 @@ public:
 
     void setHero(const GridCardInfo& info, const std::string& imageUrl,
                  GameMetadataService* service, Activate onActivate) {
+        const bool artworkCurrent =
+            imageUrl.empty() || image_->hasArtwork() ||
+            imageState_->pending.load();
+        const bool unchanged =
+            hasHero_ && artworkService_ == service && currentUrl_ == imageUrl &&
+            artworkCurrent && sameGridCardInfo(painted_, info);
         entryIndex_ = info.entryIndex;
         infoHash_ = info.infoHash;
         onActivate_ = std::move(onActivate);
-        title_->setText(info.title);
-        kicker_->setText(tr("pipensx/catalog/featured"));
-        sub_->setText(info.sub);
-        sub_->setTextColor(info.subIsBadge ? theme::accent()
-                                           : theme::textTertiary());
-        setArtworkUrl(image_, service, imageUrl, currentUrl_, imageState_);
+        if (unchanged)
+            return;
+        if (title_->getFullText() != info.title)
+            title_->setText(info.title);
+        if (sub_->getFullText() != info.sub)
+            sub_->setText(info.sub);
+        if (!hasHero_ || painted_.subIsBadge != info.subIsBadge)
+            sub_->setTextColor(info.subIsBadge ? theme::accent()
+                                               : theme::textTertiary());
+        if (currentUrl_ != imageUrl ||
+            (!imageUrl.empty() &&
+             (artworkService_ != service || !artworkCurrent))) {
+            setArtworkUrl(image_, service, imageUrl, currentUrl_, imageState_);
+        }
+        painted_ = info;
+        artworkService_ = service;
+        hasHero_ = true;
     }
 
     void setSubLine(const std::string& text, bool badge) {
+        if (hasHero_ && painted_.sub == text &&
+            painted_.subIsBadge == badge)
+            return;
         setTextIfChanged(sub_, text);
-        sub_->setTextColor(badge ? theme::accent() : theme::textTertiary());
+        if (!hasHero_ || painted_.subIsBadge != badge)
+            sub_->setTextColor(badge ? theme::accent()
+                                     : theme::textTertiary());
+        painted_.sub = text;
+        painted_.subIsBadge = badge;
     }
 
     void onFocusGained() override {
@@ -613,6 +711,9 @@ private:
         std::make_shared<ImageRequestState>();
     int entryIndex_ = -1;
     std::string infoHash_;
+    bool hasHero_ = false;
+    GridCardInfo painted_;
+    GameMetadataService* artworkService_ = nullptr;
     Activate onActivate_;
 };
 

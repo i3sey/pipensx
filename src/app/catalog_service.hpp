@@ -4,6 +4,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace pipensx {
@@ -92,10 +93,9 @@ public:
 
     const std::vector<CatalogEntry>& entries() const { return *entries_; }
 
-    // Linear scan for a catalog entry by info-hash (case-insensitive). Null
-    // when absent. Used by the game-update flow: the metadata index is
-    // catalog∩titledb, so the entry carries the magnet/info_dict for the hash
-    // the index alone cannot resolve.
+    // Case-insensitive lookup by info-hash. Null when absent. Used by the
+    // game-update flow: the metadata index is catalog∩titledb, so the entry
+    // carries the magnet/info_dict for the hash the index alone cannot resolve.
     const CatalogEntry* findByInfoHash(const std::string& infoHash) const;
 
     // Immutable shared snapshot of the live catalogue. Observers on other
@@ -134,6 +134,7 @@ public:
 private:
     bool loadFile(const std::string& path, const std::string& label,
                   std::string& error);
+    void rebuildIndex();
 
     std::string rootPath_;
     std::string catalogRoot_;
@@ -143,6 +144,7 @@ private:
     // thread (see adopt()).
     std::shared_ptr<const std::vector<CatalogEntry>> entries_ =
         std::make_shared<const std::vector<CatalogEntry>>();
+    std::unordered_map<std::string, size_t> infoHashIndex_;
     std::string sourceLabel_;
     int64_t snapshotEpochSec_ = 0;
     std::function<void(std::shared_ptr<const std::vector<CatalogEntry>>)>

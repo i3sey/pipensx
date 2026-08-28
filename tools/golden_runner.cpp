@@ -8,7 +8,8 @@
 //   golden_runner --fixtures <dir> --out <file.png> --theme light|dark
 //                 [--locale en-US|ru]
 //                 --screen catalog|shelf-scroll|shelf-header|detail|torrent-selection|
-//                          torrent-selection-scroll|downloads|downloads-back|frame|
+//                          torrent-selection-scroll|downloads|downloads-back|
+//                          downloads-reload-focus|frame|
 //                          hints-budget|installed|installed-populated|updates|
 //                          installed-bundles|
 //                          update-chooser|
@@ -16,11 +17,15 @@
 //                          storage|network-health|first-run|first-run-focus|first-run-disclaimer|debrid-link|
 //                          port-install-warning|port-install-indexing|
 //                          about|bug-report|
-//                          bug-report-detail|bug-report-focus|sidebar-touch
+//                          bug-report-detail|bug-report-focus|sidebar-touch|
+//                          sidebar-fold-roundtrip|settings-focus-roundtrip|
+//                          catalog-focus-reload|catalog-detail-return-focus
 //                 [--frames N] [--sandbox <dir>]
 //
-// downloads-back, downloads-removing, torrent-selection-scroll, hints-budget,
-// bug-report-focus, sidebar-touch, update-chooser-toggle, first-run-disclaimer,
+// downloads-back, downloads-removing, downloads-reload-focus,
+// torrent-selection-scroll, hints-budget, bug-report-focus, sidebar-touch,
+// sidebar-fold-roundtrip, settings-focus-roundtrip, catalog-focus-reload,
+// catalog-detail-return-focus, update-chooser-toggle, first-run-disclaimer,
 // port-install-indexing, installed-bundles and installed-focus-reload are
 // behaviour checks: they assert and exit non-zero instead of producing a
 // baseline.
@@ -332,6 +337,86 @@ void seedInstalledFixture(InstalledTitleService& installed) {
            "]}\n";
 }
 
+std::string writeTorrentFixture(const std::string& name, char pieceByte) {
+    fs::create_directories("download-fixtures");
+    std::string torrent =
+        "d8:announce14:http://tracker4:infod6:lengthi4e4:name";
+    torrent += std::to_string(name.size()) + ":" + name;
+    torrent += "12:piece lengthi4e6:pieces20:";
+    torrent.append(20, pieceByte);
+    torrent += "ee";
+    const std::string path = "download-fixtures/" + name + ".torrent";
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out.write(torrent.data(), static_cast<std::streamsize>(torrent.size()));
+    return path;
+}
+
+bool seedDownloadFixture(DownloadManager& manager, std::string& focusTaskId) {
+    const std::string names[] = {
+        "Focus Alpha.bin", "Focus Beta.bin", "Focus Gamma.bin"};
+    for (size_t i = 0; i < 3; ++i) {
+        std::string taskId;
+        std::string error;
+        if (!manager.importTorrent(
+                writeTorrentFixture(names[i], static_cast<char>('a' + i)),
+                pipensx::TransferMode::DownloadOnly, taskId, error)) {
+            std::fprintf(stderr, "golden_runner: download fixture: %s\n",
+                         error.c_str());
+            return false;
+        }
+        if (i == 1)
+            focusTaskId = taskId;
+    }
+    return true;
+}
+
+bool pumpFrames(int count) {
+    for (int frame = 0; frame < count; ++frame)
+        if (!brls::Application::mainLoop())
+            return false;
+    return true;
+}
+
+bool fireGamepadAction(brls::View* start,
+                       brls::ControllerButton button) {
+    for (brls::View* view = start; view; view = view->getParent()) {
+        for (const auto& action : view->getActions()) {
+            if (action->getType() != brls::ACTION_GAMEPAD ||
+                action->getButton() != button || !action->isAvailable())
+                continue;
+            if (action->getActionListener()(view))
+                return true;
+        }
+    }
+    return false;
+}
+
+template <typename T>
+T* findFirst(brls::View* node) {
+    if (!node)
+        return nullptr;
+    if (auto* found = dynamic_cast<T*>(node))
+        return found;
+    if (auto* box = dynamic_cast<brls::Box*>(node))
+        for (brls::View* child : box->getChildren())
+            if (auto* found = findFirst<T>(child))
+                return found;
+    return nullptr;
+}
+
+bool hasLabelText(brls::View* node, const std::string& text) {
+    if (!node)
+        return false;
+    if (auto* label = dynamic_cast<brls::Label*>(node))
+        if (label->getFullText() == text)
+            return true;
+    if (auto* box = dynamic_cast<brls::Box*>(node))
+        for (brls::View* child : box->getChildren())
+            if (hasLabelText(child, text))
+                return true;
+    return false;
+}
+
 int fail(const char* message) {
     std::fprintf(stderr, "golden_runner: %s\n", message);
     return 1;
@@ -499,6 +584,15 @@ int main(int argc, char** argv) {
     brls::View* focusAfterLayout = nullptr;
     MainFrame* downloadsBackFrame = nullptr;
     brls::View* downloadsBackSidebarFocus = nullptr;
+    MainFrame* sidebarFoldRoundtrip = nullptr;
+    brls::Button* sidebarFoldContent = nullptr;
+    MainFrame* settingsFocusFrame = nullptr;
+    SettingsView* settingsFocusView = nullptr;
+    CatalogView* catalogFocusReload = nullptr;
+    CatalogView* catalogDetailReturn = nullptr;
+    MainView* downloadsReloadFocus = nullptr;
+    DownloadManager* downloadsFixtureManager = nullptr;
+    std::string downloadsFocusTaskId;
     bool sidebarTouch = false;
     int torrentSelectionRows = 0;
     bool torrentSelectionScroll = false;
@@ -531,6 +625,16 @@ int main(int argc, char** argv) {
         activity = new GoldenActivity(new CatalogView(
             &manager, &catalog, &metadata, &installed, &settings, [] {},
             &favorites));
+    } else if (screen == "catalog-focus-reload") {
+        catalogFocusReload = new CatalogView(
+            &manager, &catalog, &metadata, &installed, &settings, [] {},
+            &favorites);
+        activity = new GoldenActivity(catalogFocusReload);
+    } else if (screen == "catalog-detail-return-focus") {
+        catalogDetailReturn = new CatalogView(
+            &manager, &catalog, &metadata, &installed, &settings, [] {},
+            &favorites);
+        activity = new GoldenActivity(catalogDetailReturn);
     } else if (screen == "shelf-scroll") {
         auto* content = new brls::Box(brls::Axis::COLUMN);
         content->setPadding(32, 32, 32, 32);
@@ -777,6 +881,15 @@ int main(int argc, char** argv) {
             tr("pipensx/nav/downloads"), NavIconType::Downloads,
             [downloadsView] { return downloadsView; });
         activity = new GoldenActivity(downloadsBackFrame);
+    } else if (screen == "downloads-reload-focus") {
+        downloadsFixtureManager =
+            new DownloadManager("sdmc:/switch/pipensx/download-focus", false);
+        if (!seedDownloadFixture(*downloadsFixtureManager,
+                                 downloadsFocusTaskId))
+            return fail("downloads-reload-focus could not seed tasks");
+        downloadsReloadFocus =
+            new MainView(downloadsFixtureManager, &metadata, &settings);
+        activity = new GoldenActivity(downloadsReloadFocus);
     } else if (screen == "downloads-removing") {
         pipensx::DownloadTask removing;
         removing.id = "removing-fixture";
@@ -839,6 +952,27 @@ int main(int argc, char** argv) {
                         [] { return new AboutView(); });
         tabs->attachStorageFooter(&manager);
         activity = new GoldenActivity(tabs);
+    } else if (screen == "sidebar-fold-roundtrip") {
+        sidebarFoldRoundtrip = new MainFrame();
+        auto makeContent = [](const std::string& label,
+                              brls::Button** captured = nullptr) {
+            auto* box = new brls::Box(brls::Axis::COLUMN);
+            auto* button = new brls::Button();
+            button->setText(label);
+            box->addView(button);
+            if (captured)
+                *captured = button;
+            return box;
+        };
+        sidebarFoldRoundtrip->addNavTab(
+            tr("pipensx/nav/games"), NavIconType::Catalog,
+            [makeContent] { return makeContent("Catalog fixture"); });
+        sidebarFoldRoundtrip->addNavTab(
+            tr("pipensx/nav/ports"), NavIconType::Ports,
+            [makeContent, &sidebarFoldContent] {
+                return makeContent("Ports fixture", &sidebarFoldContent);
+            });
+        activity = new GoldenActivity(sidebarFoldRoundtrip);
     } else if (screen == "sidebar-touch") {
         // Behaviour check, not a baseline: the storage dock is pinned over the
         // whole sidebar column, and a plain Box there answers the hit test
@@ -936,6 +1070,22 @@ int main(int argc, char** argv) {
         tabs->attachStorageFooter(&manager);
         installedFocusReload = tabs;
         activity = new GoldenActivity(tabs);
+    } else if (screen == "settings-focus-roundtrip") {
+        settingsFocusFrame = new MainFrame();
+        settingsFocusFrame->addNavTab(
+            tr("pipensx/nav/games"), NavIconType::Catalog, [] {
+                auto* box = new brls::Box(brls::Axis::COLUMN);
+                box->addView(new brls::Button());
+                return box;
+            });
+        settingsFocusFrame->addNavTab(
+            tr("pipensx/nav/settings"), NavIconType::Settings, [&] {
+                settingsFocusView = new SettingsView(
+                    &settings, &manager, &catalog, &metadata, &installed,
+                    nullptr);
+                return settingsFocusView;
+            });
+        activity = new GoldenActivity(settingsFocusFrame);
     } else if (screen == "settings") {
         activity = new GoldenActivity(new SettingsView(
             &settings, &manager, &catalog, &metadata, &installed, nullptr));
@@ -1118,6 +1268,281 @@ int main(int argc, char** argv) {
         if (!brls::Application::mainLoop())
             return fail("main loop ended before capture");
     }
+    if (sidebarFoldRoundtrip) {
+        auto* sidebar = findFirst<brls::Sidebar>(sidebarFoldRoundtrip);
+        if (!sidebar || sidebar->getItemsSize() != 2)
+            return fail("sidebar-fold-roundtrip: sidebar fixture is incomplete");
+        auto labelsMatch = [&](brls::Visibility visibility) {
+            for (int index = 0; index < 2; ++index) {
+                brls::Label* label =
+                    findFirst<brls::Label>(sidebar->getItem(index));
+                if (!label || label->getVisibility() != visibility)
+                    return false;
+            }
+            return true;
+        };
+        auto expanded = [&] {
+            return std::fabs(sidebar->getWidth() - kSidebarExpandedWidth) <=
+                       1.0f &&
+                   labelsMatch(brls::Visibility::VISIBLE);
+        };
+        auto collapsed = [&] {
+            return std::fabs(sidebar->getWidth() - 88.0f) <= 1.0f &&
+                   labelsMatch(brls::Visibility::GONE);
+        };
+
+        sidebarFoldRoundtrip->focusTab(0);
+        if (!pumpFrames(5))
+            return fail("sidebar-fold-roundtrip: main loop stopped");
+        brls::Application::onControllerButtonPressed(brls::BUTTON_NAV_DOWN,
+                                                     false);
+        if (!pumpFrames(5))
+            return fail("sidebar-fold-roundtrip: main loop stopped");
+        brls::SidebarItem* selected = sidebar->getItem(1);
+        if (brls::Application::getCurrentFocus() != selected ||
+            !selected->isActive() || !sidebarFoldContent || !expanded())
+            return fail("sidebar-fold-roundtrip: sidebar focus did not select "
+                        "the second tab");
+
+        brls::Application::onControllerButtonPressed(brls::BUTTON_A, false);
+        if (!pumpFrames(5))
+            return fail("sidebar-fold-roundtrip: main loop stopped");
+        if (brls::Application::getCurrentFocus() != sidebarFoldContent ||
+            !collapsed())
+            return fail("sidebar-fold-roundtrip: entering content did not fold "
+                        "the sidebar");
+
+        brls::Application::onControllerButtonPressed(brls::BUTTON_B, false);
+        if (!pumpFrames(5))
+            return fail("sidebar-fold-roundtrip: main loop stopped");
+        if (brls::Application::getCurrentFocus() != selected || !expanded())
+            return fail("sidebar-fold-roundtrip: B did not restore the "
+                        "expanded selected sidebar item");
+
+        brls::Application::onControllerButtonPressed(brls::BUTTON_A, false);
+        if (!pumpFrames(5))
+            return fail("sidebar-fold-roundtrip: main loop stopped");
+        brls::Application::onControllerButtonPressed(brls::BUTTON_NAV_LEFT,
+                                                     false);
+        if (!pumpFrames(5))
+            return fail("sidebar-fold-roundtrip: main loop stopped");
+        if (brls::Application::getCurrentFocus() != selected || !expanded())
+            return fail("sidebar-fold-roundtrip: LEFT did not restore the "
+                        "expanded selected sidebar item");
+
+        std::printf("golden_runner: sidebar focus-select, fold and B/LEFT "
+                    "round-trips preserved width, labels and focus\n");
+        manager.shutdown();
+        std::fflush(nullptr);
+        quitOk();
+    }
+
+    if (settingsFocusFrame) {
+        auto* mainSidebar = findFirst<brls::Sidebar>(settingsFocusFrame);
+        if (!mainSidebar || mainSidebar->getItemsSize() != 2)
+            return fail("settings-focus-roundtrip: main sidebar missing");
+        settingsFocusFrame->focusTab(1);
+        if (!pumpFrames(5) || !settingsFocusView)
+            return fail("settings-focus-roundtrip: Settings tab did not open");
+        brls::SidebarItem* settingsItem = mainSidebar->getItem(1);
+        if (brls::Application::getCurrentFocus() != settingsItem)
+            return fail("settings-focus-roundtrip: Settings main item not "
+                        "focused");
+
+        brls::Application::onControllerButtonPressed(brls::BUTTON_A, false);
+        if (!pumpFrames(5))
+            return fail("settings-focus-roundtrip: main loop stopped");
+        auto* downloadsItem = dynamic_cast<SettingsNavItem*>(
+            settingsFocusView->getView("settings-nav-downloads"));
+        if (!downloadsItem)
+            return fail("settings-focus-roundtrip: Downloads rail item missing");
+        brls::Application::onControllerButtonPressed(brls::BUTTON_NAV_DOWN,
+                                                     false);
+        if (!pumpFrames(5))
+            return fail("settings-focus-roundtrip: main loop stopped");
+        if (brls::Application::getCurrentFocus() != downloadsItem)
+            return fail("settings-focus-roundtrip: rail focus did not select "
+                        "Downloads");
+        const auto& settingsChildren = settingsFocusView->getChildren();
+        auto* panelHost = settingsChildren.size() > 1
+            ? dynamic_cast<brls::Box*>(settingsChildren[1]) : nullptr;
+        if (!panelHost ||
+            panelHost->getChildren().size() <=
+                static_cast<size_t>(SettingsSection::Downloads) ||
+            panelHost->getChildren()[static_cast<size_t>(
+                SettingsSection::Downloads)]->getVisibility() !=
+                brls::Visibility::VISIBLE)
+            return fail("settings-focus-roundtrip: rail focus did not show the "
+                        "Downloads panel");
+
+        brls::Application::onControllerButtonPressed(brls::BUTTON_NAV_RIGHT,
+                                                     false);
+        if (!pumpFrames(5))
+            return fail("settings-focus-roundtrip: main loop stopped");
+        if (!viewContains(panelHost, brls::Application::getCurrentFocus()))
+            return fail("settings-focus-roundtrip: RIGHT did not enter the "
+                        "selected panel");
+
+        brls::Application::onControllerButtonPressed(brls::BUTTON_B, false);
+        if (!pumpFrames(5))
+            return fail("settings-focus-roundtrip: main loop stopped");
+        if (brls::Application::getCurrentFocus() != downloadsItem)
+            return fail("settings-focus-roundtrip: panel B did not return to "
+                        "the active Settings rail item");
+
+        brls::Application::onControllerButtonPressed(brls::BUTTON_B, false);
+        if (!pumpFrames(5))
+            return fail("settings-focus-roundtrip: main loop stopped");
+        if (brls::Application::getCurrentFocus() != settingsItem ||
+            std::fabs(mainSidebar->getWidth() - kSidebarExpandedWidth) > 1.0f)
+            return fail("settings-focus-roundtrip: second B did not return to "
+                        "the expanded main sidebar");
+
+        std::printf("golden_runner: Settings rail selection and two-level B "
+                    "round-trip preserved focus\n");
+        manager.shutdown();
+        std::fflush(nullptr);
+        quitOk();
+    }
+
+    if (catalogFocusReload) {
+        GameCard* card = findFirst<GameCard>(catalogFocusReload);
+        if (!card)
+            return fail("catalog-focus-reload: no rendered catalog card");
+        brls::Application::giveFocus(card);
+        if (!pumpFrames(5))
+            return fail("catalog-focus-reload: main loop stopped");
+        const std::string hash = catalogFocusReload->focusedInfoHashForTest();
+        if (hash.empty())
+            return fail("catalog-focus-reload: card has no stable hash");
+        catalogFocusReload->rebuildEntriesForTest();
+        if (!pumpFrames(5))
+            return fail("catalog-focus-reload: main loop stopped");
+        if (catalogFocusReload->focusedInfoHashForTest() != hash)
+            return fail("catalog-focus-reload: rebuild moved card focus to a "
+                        "different hash");
+
+        const auto& children = catalogFocusReload->getChildren();
+        brls::Button* headerChip =
+            children.size() > 1 ? findFirst<brls::Button>(children[1]) : nullptr;
+        if (!headerChip)
+            return fail("catalog-focus-reload: header chip missing");
+        brls::Application::giveFocus(headerChip);
+        if (!pumpFrames(2))
+            return fail("catalog-focus-reload: main loop stopped");
+        catalogFocusReload->rebuildEntriesForTest();
+        if (!pumpFrames(5))
+            return fail("catalog-focus-reload: main loop stopped");
+        if (brls::Application::getCurrentFocus() != headerChip)
+            return fail("catalog-focus-reload: rebuild stole header focus");
+
+        std::printf("golden_runner: catalog rebuild preserved hash focus and "
+                    "left header focus untouched\n");
+        manager.shutdown();
+        std::fflush(nullptr);
+        quitOk();
+    }
+
+    if (catalogDetailReturn) {
+        GameCard* card = findFirst<GameCard>(catalogDetailReturn);
+        if (!card)
+            return fail("catalog-detail-return-focus: no rendered catalog card");
+        brls::Application::giveFocus(card);
+        if (!pumpFrames(5))
+            return fail("catalog-detail-return-focus: main loop stopped");
+        const std::string hash = catalogDetailReturn->focusedInfoHashForTest();
+        brls::Application::onControllerButtonPressed(brls::BUTTON_A, false);
+        if (!pumpFrames(30))
+            return fail("catalog-detail-return-focus: main loop stopped");
+        if (brls::Application::getActivitiesStack().size() < 2 ||
+            !dynamic_cast<GameDetailActivity*>(
+                brls::Application::getActivitiesStack().back()))
+            return fail("catalog-detail-return-focus: A did not push detail");
+        catalogDetailReturn->rebuildEntriesForTest();
+        if (!brls::Application::popActivity())
+            return fail("catalog-detail-return-focus: detail pop was rejected");
+        for (int frame = 0;
+             frame < 180 &&
+             brls::Application::getActivitiesStack().size() > 1;
+             ++frame)
+            brls::Application::mainLoop();
+        if (brls::Application::getActivitiesStack().size() != 1)
+            return fail("catalog-detail-return-focus: B did not pop detail");
+        if (!pumpFrames(10))
+            return fail("catalog-detail-return-focus: main loop stopped");
+        if (hash.empty() ||
+            catalogDetailReturn->focusedInfoHashForTest() != hash)
+            return fail("catalog-detail-return-focus: returning from detail "
+                        "did not restore the opening card");
+
+        std::printf("golden_runner: catalog detail B restored opening hash %s\n",
+                    hash.c_str());
+        manager.shutdown();
+        std::fflush(nullptr);
+        quitOk();
+    }
+
+    if (downloadsReloadFocus) {
+        std::vector<DownloadCell*> cells =
+            visibleCells<DownloadCell>(
+                findFirst<brls::RecyclerFrame>(downloadsReloadFocus));
+        if (cells.size() < 3)
+            return fail("downloads-reload-focus: seeded rows did not render");
+        DownloadCell* before = cells[1];
+        brls::Application::giveFocus(before);
+        if (!pumpFrames(5))
+            return fail("downloads-reload-focus: main loop stopped");
+        const brls::IndexPath beforePath = before->getIndexPath();
+        if (!hasLabelText(before, "Focus Beta.bin"))
+            return fail("downloads-reload-focus: wrong row focused before "
+                        "refresh");
+
+        if (!fireGamepadAction(brls::Application::getCurrentFocus(),
+                               brls::BUTTON_Y))
+            return fail("downloads-reload-focus: Downloads has no Y action");
+        const auto tasks = downloadsFixtureManager->snapshotUi();
+        auto task = std::find_if(tasks.begin(), tasks.end(),
+            [&](const pipensx::DownloadTask& candidate) {
+                return candidate.id == downloadsFocusTaskId;
+            });
+        if (task == tasks.end() ||
+            task->status != pipensx::DownloadStatus::Paused)
+            return fail("downloads-reload-focus: Y did not pause the focused "
+                        "task");
+
+        DownloadCell* after = nullptr;
+        brls::RecyclerFrame* recycler =
+            findFirst<brls::RecyclerFrame>(downloadsReloadFocus);
+        for (int frame = 0; frame < 120; ++frame) {
+            if (!brls::Application::mainLoop())
+                return fail("downloads-reload-focus: main loop stopped");
+            auto* current = dynamic_cast<DownloadCell*>(
+                brls::Application::getCurrentFocus());
+            if (current && hasLabelText(current, "Focus Beta.bin") &&
+                hasLabelText(current,
+                             downloadStatusLabel(
+                                 pipensx::DownloadStatus::Paused))) {
+                after = current;
+                break;
+            }
+        }
+        cells = visibleCells<DownloadCell>(recycler);
+        if (!after ||
+            std::find(cells.begin(), cells.end(), after) == cells.end())
+            return fail("downloads-reload-focus: production refresh left focus "
+                        "on a stale cell");
+        if (!(after->getIndexPath() == beforePath))
+            return fail("downloads-reload-focus: production refresh moved the "
+                        "focused task");
+
+        std::printf("golden_runner: downloads Y refresh preserved task %s on "
+                    "a live cell\n", downloadsFocusTaskId.c_str());
+        downloadsFixtureManager->shutdown();
+        manager.shutdown();
+        std::fflush(nullptr);
+        quitOk();
+    }
+
     if (sidebarTouch) {
         // Focus starts on the first sidebar item, so it doubles as the tap
         // target: a finger on its centre has to reach the item that owns the
@@ -1312,7 +1737,67 @@ int main(int argc, char** argv) {
             return fail("installed-focus-reload: recycled row list is "
                         "corrupt");
 
-        std::printf("golden_runner: installed focus survives reloadData\n");
+        // Drive the production overlay path too: A opens the row menu and
+        // selecting Ignore updates changes the update generation while the
+        // dropdown owns focus. reload() must defer until the overlay is gone,
+        // then restore the same title on a live cell even though it moved from
+        // the Updates section to the regular section.
+        if (!hasLabelText(after, "Pipen Odyssey"))
+            return fail("installed-focus-reload: update row fixture missing");
+        brls::Application::onControllerButtonPressed(brls::BUTTON_A, false);
+        pump(10);
+        if (brls::Application::getActivitiesStack().size() < 2)
+            return fail("installed-focus-reload: A did not open the row menu");
+        brls::Activity* menu =
+            brls::Application::getActivitiesStack().back();
+        const std::string ignoreLabel =
+            tr("pipensx/installed/ignore_updates");
+        brls::RadioCell* ignore = nullptr;
+        std::function<void(brls::View*)> findIgnore =
+            [&](brls::View* node) {
+                if (ignore)
+                    return;
+                if (auto* radio = dynamic_cast<brls::RadioCell*>(node))
+                    if (radio->title->getFullText() == ignoreLabel)
+                        ignore = radio;
+                if (auto* box = dynamic_cast<brls::Box*>(node))
+                    for (brls::View* child : box->getChildren())
+                        findIgnore(child);
+            };
+        findIgnore(menu->getContentView());
+        if (!ignore)
+            return fail("installed-focus-reload: row menu has no Ignore item");
+        brls::Application::giveFocus(ignore);
+        brls::Application::onControllerButtonPressed(brls::BUTTON_A, false);
+        for (int frame = 0;
+             frame < 180 &&
+             brls::Application::getActivitiesStack().size() > 1;
+             ++frame)
+            brls::Application::mainLoop();
+        if (brls::Application::getActivitiesStack().size() != 1)
+            return fail("installed-focus-reload: Ignore menu did not close");
+        if (!gameUpdates.isIgnored("0100000000010000"))
+            return fail("installed-focus-reload: Ignore action did not run");
+
+        InstalledCell* overlayAfter = nullptr;
+        for (int frame = 0; frame < 180; ++frame) {
+            brls::Application::mainLoop();
+            auto* current =
+                dynamic_cast<InstalledCell*>(
+                    brls::Application::getCurrentFocus());
+            if (current && hasLabelText(current, "Pipen Odyssey")) {
+                overlayAfter = current;
+                break;
+            }
+        }
+        cells = liveCells();
+        if (!overlayAfter ||
+            std::find(cells.begin(), cells.end(), overlayAfter) == cells.end())
+            return fail("installed-focus-reload: overlay reload left focus on "
+                        "a stale row");
+
+        std::printf("golden_runner: installed focus survives reloadData and "
+                    "the Ignore overlay reload\n");
         manager.shutdown();
         std::fflush(nullptr);
         quitOk();
@@ -1437,25 +1922,46 @@ int main(int argc, char** argv) {
 
         brls::View* cell =
             brls::Application::getCurrentFocus();
-        if (!dynamic_cast<TorrentSelectionCell*>(cell))
+        auto* firstCell = dynamic_cast<TorrentSelectionCell*>(cell);
+        if (!firstCell)
             return fail("update-chooser-toggle did not focus a row");
-
-        // Toggle by package-row index — not by pressing A on a cell pointer.
-        // UpdateFileChooserActivity::toggle calls reloadData(), which recycles
-        // cells; a TorrentSelectionCell* taken before a toggle can land on the
-        // wrong index path afterwards (observed as flipping mask slot 0 twice).
-        updateChooser->toggleRowForTest(0);
+        brls::RecyclerFrame* chooserRecycler =
+            findFirst<brls::RecyclerFrame>(updateChooser->getContentView());
+        const std::string firstBefore = firstCell->renderedState();
+        brls::Application::onControllerButtonPressed(brls::BUTTON_A, false);
         for (int frame = 0; frame < 5; ++frame)
             brls::Application::mainLoop();
         if (!wantMask(skip, install))
             return fail("update-chooser-toggle did not flip the first row");
-        updateChooser->toggleRowForTest(1);
+        auto live = visibleCells<TorrentSelectionCell>(chooserRecycler);
+        if (brls::Application::getCurrentFocus() != firstCell ||
+            std::find(live.begin(), live.end(), firstCell) == live.end() ||
+            firstCell->renderedState() == firstBefore)
+            return fail("update-chooser-toggle did not repaint the first row "
+                        "in place");
+
+        brls::Application::onControllerButtonPressed(brls::BUTTON_NAV_DOWN,
+                                                     false);
+        for (int frame = 0; frame < 5; ++frame)
+            brls::Application::mainLoop();
+        auto* secondCell = dynamic_cast<TorrentSelectionCell*>(
+            brls::Application::getCurrentFocus());
+        if (!secondCell || secondCell->getIndexPath().row != 1)
+            return fail("update-chooser-toggle could not focus the second row");
+        const std::string secondBefore = secondCell->renderedState();
+        brls::Application::onControllerButtonPressed(brls::BUTTON_A, false);
         for (int frame = 0; frame < 5; ++frame)
             brls::Application::mainLoop();
         // The readme occupies mask slot 1; the second row is slot 2. If the
         // row-to-index mapping was off by one, this assertion fails.
         if (!wantMask(skip, skip))
             return fail("update-chooser-toggle flipped the wrong mask slot");
+        live = visibleCells<TorrentSelectionCell>(chooserRecycler);
+        if (brls::Application::getCurrentFocus() != secondCell ||
+            std::find(live.begin(), live.end(), secondCell) == live.end() ||
+            secondCell->renderedState() == secondBefore)
+            return fail("update-chooser-toggle did not repaint the second row "
+                        "in place");
 
         // Everything off: Continue must refuse to confirm and return a mask.
         brls::Button* confirm = nullptr;
@@ -1492,6 +1998,11 @@ int main(int argc, char** argv) {
             brls::Application::mainLoop();
         if (!wantMask(install, skip))
             return fail("update-chooser-toggle re-selected the wrong row");
+        live = visibleCells<TorrentSelectionCell>(chooserRecycler);
+        if (brls::Application::getCurrentFocus() != secondCell ||
+            std::find(live.begin(), live.end(), secondCell) == live.end())
+            return fail("update-chooser-toggle off-focus update moved or "
+                        "recycled the cursor");
         // Footer CTA is the install label once a row is selected — re-find
         // the live primary button (anything that is not Cancel).
         confirm = nullptr;
@@ -1929,6 +2440,41 @@ int main(int argc, char** argv) {
             }
         }
 
+        // The package preset also repaints in place. Exercise it at the live
+        // top row before the second scroll: first move that package away from
+        // the preset with A, then X must restore it without replacing the cell.
+        auto* presetCell = dynamic_cast<TorrentSelectionCell*>(
+            brls::Application::getCurrentFocus());
+        if (!presetCell)
+            return fail("torrent-selection row 0 is not a file cell");
+        auto* presetRecycler = dynamic_cast<brls::RecyclerFrame*>(
+            presetCell->getParent()
+                ? presetCell->getParent()->getParent() : nullptr);
+        auto presetLive =
+            visibleCells<TorrentSelectionCell>(presetRecycler);
+        if (!presetRecycler ||
+            std::find(presetLive.begin(), presetLive.end(), presetCell) ==
+                presetLive.end())
+            return fail("torrent-selection row 0 focus is not live");
+        const std::string presetBefore = presetCell->renderedState();
+        if (!fireGamepadAction(presetCell, brls::BUTTON_A))
+            return fail("torrent-selection row 0 has no toggle action");
+        pump(2);
+        const std::string presetToggled = presetCell->renderedState();
+        if (brls::Application::getCurrentFocus() != presetCell ||
+            presetToggled == presetBefore)
+            return fail("torrent-selection row 0 toggle was not in place");
+        if (!fireGamepadAction(presetCell, brls::BUTTON_X))
+            return fail("torrent-selection has no package preset action");
+        presetLive = visibleCells<TorrentSelectionCell>(presetRecycler);
+        if (brls::Application::getCurrentFocus() != presetCell ||
+            std::find(presetLive.begin(), presetLive.end(), presetCell) ==
+                presetLive.end() ||
+            presetCell->renderedState() == presetToggled)
+            return fail("torrent-selection preset did not repaint the focused "
+                        "live cell in place");
+        const std::string presetRestored = presetCell->renderedState();
+
         // Toggling repaints the focused cell in place rather than reloading the
         // recycler. Two things can silently break: the repaint finds no live
         // cell and does nothing, or it reloads and throws the cursor back to
@@ -1967,10 +2513,11 @@ int main(int argc, char** argv) {
                          before.c_str());
             return fail("toggling a row did not repaint it");
         }
-
         std::printf("golden_runner: torrent-selection walked %d rows down and "
-                    "back up, and toggled row 5 in place (%s -> %s)\n",
-                    torrentSelectionRows, before.c_str(),
+                    "back up, toggled row 5 and applied the package preset "
+                    "in place (%s -> %s -> %s; row 5 %s -> %s)\n",
+                    torrentSelectionRows, presetBefore.c_str(),
+                    presetToggled.c_str(), presetRestored.c_str(), before.c_str(),
                     cell->renderedState().c_str());
         manager.shutdown();
         std::fflush(nullptr);

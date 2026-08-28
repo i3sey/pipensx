@@ -1090,11 +1090,19 @@ std::optional<DownloadTask> DownloadManager::snapshot(
 }
 
 std::vector<DownloadTask> DownloadManager::snapshotUi() const {
-    std::unique_lock<std::mutex> lock(mutex_);
+    const uint64_t startedUs = telemetry_enabled() ? now_us() : 0;
     std::vector<DownloadTask> out;
-    out.reserve(tasks_.size());
-    for (const DownloadTask& task : tasks_)
-        out.push_back(copyTaskUi(task));
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        out.reserve(tasks_.size());
+        for (const DownloadTask& task : tasks_)
+            out.push_back(copyTaskUi(task));
+    }
+    if (startedUs)
+        telemetry_log(
+            "ui", "downloads", "event=snapshot duration_us=%llu tasks=%llu",
+            (unsigned long long)(now_us() - startedUs),
+            (unsigned long long)out.size());
     return out;
 }
 

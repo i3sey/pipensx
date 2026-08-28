@@ -1197,11 +1197,12 @@ public:
         canFree_->setMarginTop(14);
         canFree_->setVisibility(brls::Visibility::GONE);
         content_->addView(canFree_);
+        meter_->setUnavailable();
+        setLoading(true);
     }
 
     void onShown() override {
-        refresh(/*wait=*/!didFirstRefresh_);
-        didFirstRefresh_ = true;
+        refresh();
     }
 
 private:
@@ -1212,10 +1213,10 @@ private:
         bool hasFinished = false;
     };
 
-    ScanPayload collectScan() const {
+    static ScanPayload collectScan(DownloadManager* manager) {
         ScanPayload payload;
-        payload.snapshot = scanStorageBreakdown(manager_->rootPath());
-        std::vector<DownloadTask> tasks = manager_->snapshot();
+        payload.snapshot = scanStorageBreakdown(manager->rootPath());
+        std::vector<DownloadTask> tasks = manager->snapshot();
         std::vector<std::string> active;
         active.reserve(tasks.size());
         for (const DownloadTask& task : tasks) {
@@ -1232,7 +1233,7 @@ private:
                         : payload.completedBytes + size;
         }
         payload.orphanBytes =
-            pipensx::orphanTorrentBytes(manager_->torrentRoot(), active);
+            pipensx::orphanTorrentBytes(manager->torrentRoot(), active);
         return payload;
     }
 
@@ -1280,23 +1281,40 @@ private:
         }
     }
 
-    // First paint is synchronous so golden (and the opening frame) see real
-    // numbers. Later refreshes walk the tree off the UI thread.
-    void refresh(bool wait = false) {
+    void setLoading(bool loading) {
+        const std::string detail =
+            loading ? tr("pipensx/settings/checking") : std::string();
+        brls::DetailCell* actions[] = {
+            clearCompleted_, clearImages_, clearTorrents_, clearTemporary_};
+        for (brls::DetailCell* action : actions) {
+            if (!action)
+                continue;
+            action->setFocusable(!loading);
+            if (loading)
+                action->setDetailText(detail);
+        }
+        if (loading && canFree_)
+            canFree_->setVisibility(brls::Visibility::GONE);
+    }
+
+    void refresh() {
         if (!manager_)
             return;
-        if (wait) {
-            applyScan(collectScan());
-            return;
-        }
         if (refreshInFlight_) {
             refreshPending_ = true;
             return;
         }
         refreshInFlight_ = true;
+        setLoading(true);
         auto alive = alive_;
-        brls::async([this, alive] {
-            ScanPayload payload = collectScan();
+        DownloadManager* manager = manager_;
+        brls::async([this, alive, manager] {
+            const uint64_t startedUs = telemetry_enabled() ? now_us() : 0;
+            ScanPayload payload = collectScan(manager);
+            if (startedUs)
+                telemetry_log(
+                    "ui", "storage", "event=scan duration_us=%llu",
+                    (unsigned long long)(now_us() - startedUs));
             brls::sync([this, alive, payload = std::move(payload)] {
                 if (!alive->load())
                     return;
@@ -1304,8 +1322,9 @@ private:
                 applyScan(payload);
                 if (refreshPending_) {
                     refreshPending_ = false;
-                    refresh(false);
-                }
+                    refresh();
+                } else
+                    setLoading(false);
             });
         });
     }
@@ -1363,6 +1382,8 @@ private:
     }
 
     void confirmClearCompleted() {
+        if (refreshInFlight_)
+            return;
         if (!hasFinished_) {
             brls::Application::notify(
                 tr("pipensx/storage/nothing_to_recover"));
@@ -1374,14 +1395,20 @@ private:
     }
 
     void confirmClearImages() {
+        if (refreshInFlight_)
+            return;
         confirmAction(snapshot_.imageCacheBytes, [this] { clearImages(); });
     }
 
     void confirmClearTorrents() {
+        if (refreshInFlight_)
+            return;
         confirmAction(orphanBytes_, [this] { clearTorrents(); });
     }
 
     void confirmClearTemporary() {
+        if (refreshInFlight_)
+            return;
         if (manager_->hasActiveTransfer()) {
             brls::Application::notify(tr("pipensx/storage/busy_transfer"));
             return;
@@ -1480,7 +1507,6 @@ private:
     uint64_t completedBytes_ = 0;
     uint64_t orphanBytes_ = 0;
     bool hasFinished_ = false;
-    bool didFirstRefresh_ = false;
     bool refreshInFlight_ = false;
     bool refreshPending_ = false;
 };

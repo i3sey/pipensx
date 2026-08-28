@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <unordered_set>
@@ -310,7 +311,8 @@ public:
     }
 
     void togglePrepared(size_t index) {
-        if (!prepared_ || index >= prepared_->items().size())
+        if (!prepared_ || enqueueValidationInFlight_ ||
+            index >= prepared_->items().size())
             return;
         prepared_->items()[index].selected =
             !prepared_->items()[index].selected;
@@ -370,6 +372,7 @@ private:
                 dataSource_->setPreparation(prepared_);
                 recyclerHost_->setVisibility(brls::Visibility::VISIBLE);
                 controls_->setVisibility(brls::Visibility::VISIBLE);
+                recycler_->setDefaultCellFocus(brls::IndexPath(0, 0));
                 recycler_->reloadData();
                 if (cancelAction_ != ACTION_NONE) {
                     unregisterAction(cancelAction_);
@@ -382,12 +385,17 @@ private:
                         return true;
                     });
                 refreshSummary();
+                refreshStorageSnapshots();
+                brls::sync([this, alive] {
+                    if (alive->load())
+                        brls::Application::giveFocus(recycler_);
+                });
             });
         });
     }
 
     void setAllPrepared(bool selected) {
-        if (!prepared_)
+        if (!prepared_ || enqueueValidationInFlight_)
             return;
         for (PreparedCatalogInstall& item : prepared_->items())
             item.selected = selected;
@@ -421,9 +429,6 @@ private:
         for (const PreparedCatalogInstall& item : prepared_->items())
             selected += item.selected ? 1 : 0;
         const auto estimate = prepared_->selectedSpace();
-        storage_ = pipensx::queryStorageSpace(manager_->rootPath());
-        packageStorage_ = pipensx::queryInstallStorageSpace(
-            manager_->installTarget(), manager_->rootPath());
         const auto check = pipensx::assessTransferSpace(
             estimate, storage_, packageStorage_);
 
@@ -444,7 +449,7 @@ private:
         meter_->setHeader(storageMeterHeader(manager_->installTarget()));
         const StorageSpaceSnapshot& meterStorage =
             estimate.packageFiles > 0 ? packageStorage_ : storage_;
-        if (meterStorage.available)
+        if (storageReady_ && meterStorage.available)
             meter_->setEstimate(
                 meterStorage.totalBytes, meterStorage.freeBytes,
                 estimate.packageFiles > 0 ? estimate.packageBytes
@@ -454,7 +459,8 @@ private:
         else
             meter_->setUnavailable();
 
-        const bool enabled = selected > 0 && !estimate.overflow &&
+        const bool enabled = storageReady_ && !enqueueValidationInFlight_ &&
+            selected > 0 && !estimate.overflow &&
             check.status != InstallSpaceCheckStatus::Insufficient;
         enqueue_->setState(enabled ? brls::ButtonState::ENABLED
                                    : brls::ButtonState::DISABLED);
@@ -462,7 +468,8 @@ private:
     }
 
     void enqueuePrepared() {
-        if (!prepared_ || enqueueFinished_)
+        if (!prepared_ || enqueueFinished_ || enqueueValidationInFlight_ ||
+            !storageReady_)
             return;
         const auto estimate = prepared_->selectedSpace();
         if (estimate.selectedFiles == 0 || estimate.overflow) {
@@ -470,17 +477,37 @@ private:
             brls::Application::notify(tr("pipensx/batch/select_one_ready"));
             return;
         }
-        storage_ = pipensx::queryStorageSpace(manager_->rootPath());
-        packageStorage_ = pipensx::queryInstallStorageSpace(
-            manager_->installTarget(), manager_->rootPath());
-        const auto check = pipensx::assessTransferSpace(
-            estimate, storage_, packageStorage_);
-        if (check.status == InstallSpaceCheckStatus::Insufficient) {
-            refreshSummary();
-            brls::Application::notify(tr("pipensx/batch/no_space"));
-            return;
-        }
+        enqueueValidationInFlight_ = true;
+        refreshSummary();
+        auto alive = alive_;
+        const std::string root = manager_->rootPath();
+        const auto target = manager_->installTarget();
+        brls::async([this, alive, root, target, estimate] {
+            const auto storage = pipensx::queryStorageSpace(root);
+            const auto packageStorage =
+                target == pipensx::install::InstallStorageTarget::SdCard
+                    ? storage
+                    : pipensx::queryInstallStorageSpace(target, root);
+            brls::sync([this, alive, estimate, storage, packageStorage] {
+                if (!alive->load() || enqueueFinished_)
+                    return;
+                enqueueValidationInFlight_ = false;
+                storage_ = storage;
+                packageStorage_ = packageStorage;
+                storageReady_ = true;
+                refreshSummary();
+                if (pipensx::assessTransferSpace(
+                        estimate, storage_, packageStorage_)
+                        .status == InstallSpaceCheckStatus::Insufficient) {
+                    brls::Application::notify(tr("pipensx/batch/no_space"));
+                    return;
+                }
+                enqueueValidated();
+            });
+        });
+    }
 
+    void enqueueValidated() {
         pipensx::BatchEnqueueResult result =
             debridMode_ && debridProvider_
                 ? installer_->enqueueViaDebrid(
@@ -527,6 +554,31 @@ private:
         }
     }
 
+    void refreshStorageSnapshots() {
+        if (storageQueryInFlight_)
+            return;
+        storageQueryInFlight_ = true;
+        auto alive = alive_;
+        const std::string root = manager_->rootPath();
+        const auto target = manager_->installTarget();
+        brls::async([this, alive, root, target] {
+            const auto storage = pipensx::queryStorageSpace(root);
+            const auto packageStorage =
+                target == pipensx::install::InstallStorageTarget::SdCard
+                    ? storage
+                    : pipensx::queryInstallStorageSpace(target, root);
+            brls::sync([this, alive, storage, packageStorage] {
+                if (!alive->load())
+                    return;
+                storageQueryInFlight_ = false;
+                storage_ = storage;
+                packageStorage_ = packageStorage;
+                storageReady_ = true;
+                refreshSummary();
+            });
+        });
+    }
+
     DownloadManager* manager_ = nullptr;
     AppSettings* settings_ = nullptr;
     std::vector<CatalogEntry> entries_;
@@ -553,6 +605,9 @@ private:
     brls::Button* resultBack_ = nullptr;
     brls::ActionIdentifier cancelAction_ = ACTION_NONE;
     brls::ActionIdentifier queueAction_ = ACTION_NONE;
+    bool storageQueryInFlight_ = false;
+    bool storageReady_ = false;
+    bool enqueueValidationInFlight_ = false;
     bool enqueueFinished_ = false;
     bool debridMode_ = false;
 };

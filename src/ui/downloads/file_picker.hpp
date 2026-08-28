@@ -3,7 +3,12 @@
 #include <dirent.h>
 #include <sys/stat.h>
 
+#include <algorithm>
+#include <atomic>
+#include <cctype>
+#include <cstdint>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -70,7 +75,8 @@ private:
 class FilePickerActivity : public brls::Activity {
 public:
     FilePickerActivity(DownloadManager* manager, AppSettings* settings)
-        : manager_(manager), settings_(settings), currentPath_("sdmc:/") {
+        : manager_(manager), settings_(settings), currentPath_("sdmc:/"),
+          alive_(std::make_shared<std::atomic<bool>>(true)) {
         recycler_ = new brls::RecyclerFrame();
         recycler_->setPadding(8, 32, 8, 32);
         recycler_->estimatedRowHeight = 64;
@@ -83,20 +89,25 @@ public:
         loadDirectory(currentPath_);
     }
 
+    ~FilePickerActivity() override {
+        alive_->store(false);
+        ++generation_;
+    }
+
     brls::View* createContentView() override {
         return frame_;
     }
 
-    const std::vector<FileEntry>& entries() const { return entries_; }
+    const std::vector<FileEntry>& entries() const {
+        return loading_ ? loadingEntries_ : entries_;
+    }
 
     void select(size_t index) {
-        if (index >= entries_.size())
+        if (loading_ || index >= entries_.size())
             return;
         const FileEntry entry = entries_[index];
         if (entry.directory) {
-            brls::sync([this, path = entry.path] {
-                loadDirectory(path);
-            });
+            loadDirectory(entry.path);
             return;
         }
 
@@ -176,55 +187,108 @@ private:
     }
 
     void loadDirectory(const std::string& path) {
-        std::vector<FileEntry> directories;
-        std::vector<FileEntry> files;
-        DIR* dir = opendir(path.c_str());
-        if (!dir) {
-            brls::Application::notify(tr("pipensx/picker/unable_to_open"));
-            return;
-        }
-        while (dirent* item = readdir(dir)) {
-            if (std::strcmp(item->d_name, ".") == 0 ||
-                std::strcmp(item->d_name, "..") == 0)
-                continue;
-            std::string child = path;
-            if (!child.empty() && child.back() != '/')
-                child += '/';
-            child += item->d_name;
-            struct stat st {};
-            if (stat(child.c_str(), &st) != 0)
-                continue;
-            if (S_ISDIR(st.st_mode))
-                directories.push_back({item->d_name, child, true});
-            else if (hasTorrentExtension(item->d_name))
-                files.push_back({item->d_name, child, false});
-        }
-        closedir(dir);
-        auto byName = [](const FileEntry& a, const FileEntry& b) {
-            return a.name < b.name;
-        };
-        std::sort(directories.begin(), directories.end(), byName);
-        std::sort(files.begin(), files.end(), byName);
-        entries_.clear();
-        if (path != "sdmc:/" && path != "/")
-            entries_.push_back({"..", parentPath(path), true});
-        entries_.insert(entries_.end(), directories.begin(), directories.end());
-        entries_.insert(entries_.end(), files.begin(), files.end());
-        currentPath_ = path;
-        frame_->setTitle(tr("pipensx/picker/frame_title", currentPath_));
-        reloadRecycler();
+        const std::string previousFocus = focusedPath();
+        const std::string restoreFocus =
+            path == currentPath_ ? previousFocus : std::string();
+        const uint64_t generation = ++generation_;
+        loading_ = true;
+        loadingEntries_ = {
+            {tr("pipensx/files/loading"), std::string(), false}};
+        reloadRecycler(std::string());
+
+        auto alive = alive_;
+        brls::async([this, alive, generation, path, previousFocus,
+                     restoreFocus] {
+            const uint64_t startedUs = telemetry_enabled() ? now_us() : 0;
+            std::vector<FileEntry> directories;
+            std::vector<FileEntry> files;
+            DIR* dir = opendir(path.c_str());
+            const bool opened = dir != nullptr;
+            if (dir) {
+                while (dirent* item = readdir(dir)) {
+                    if (std::strcmp(item->d_name, ".") == 0 ||
+                        std::strcmp(item->d_name, "..") == 0)
+                        continue;
+                    std::string child = path;
+                    if (!child.empty() && child.back() != '/')
+                        child += '/';
+                    child += item->d_name;
+                    struct stat st {};
+                    if (stat(child.c_str(), &st) != 0)
+                        continue;
+                    if (S_ISDIR(st.st_mode))
+                        directories.push_back({item->d_name, child, true});
+                    else if (hasTorrentExtension(item->d_name))
+                        files.push_back({item->d_name, child, false});
+                }
+                closedir(dir);
+            }
+            auto byName = [](const FileEntry& a, const FileEntry& b) {
+                return a.name < b.name;
+            };
+            std::sort(directories.begin(), directories.end(), byName);
+            std::sort(files.begin(), files.end(), byName);
+            std::vector<FileEntry> entries;
+            if (path != "sdmc:/" && path != "/")
+                entries.push_back({"..", parentPath(path), true});
+            entries.insert(entries.end(), directories.begin(),
+                           directories.end());
+            entries.insert(entries.end(), files.begin(), files.end());
+            if (startedUs)
+                telemetry_log(
+                    "ui", "file_picker",
+                    "event=list duration_us=%llu entries=%zu opened=%d",
+                    static_cast<unsigned long long>(now_us() - startedUs),
+                    entries.size(), opened ? 1 : 0);
+            brls::sync([this, alive, generation, path, opened,
+                        previousFocus, restoreFocus,
+                        entries = std::move(entries)]() mutable {
+                if (!alive->load() || generation != generation_)
+                    return;
+                loading_ = false;
+                if (!opened) {
+                    brls::Application::notify(
+                        tr("pipensx/picker/unable_to_open"));
+                    reloadRecycler(previousFocus);
+                    return;
+                }
+                entries_ = std::move(entries);
+                currentPath_ = path;
+                frame_->setTitle(
+                    tr("pipensx/picker/frame_title", currentPath_));
+                reloadRecycler(restoreFocus);
+            });
+        });
     }
 
-    void reloadRecycler() {
+    std::string focusedPath() const {
+        auto* cell = dynamic_cast<brls::RecyclerCell*>(
+            brls::Application::getCurrentFocus());
+        if (!cell || cell->getParentActivity() != recycler_->getParentActivity())
+            return {};
+        const int row = cell->getIndexPath().row;
+        return row >= 0 && static_cast<size_t>(row) < entries_.size()
+            ? entries_[static_cast<size_t>(row)].path
+            : std::string();
+    }
+
+    void reloadRecycler(const std::string& focusPath) {
         brls::View* focused = brls::Application::getCurrentFocus();
         bool ownsFocus = focused && recycler_->getParentActivity() &&
                          focused->getParentActivity() ==
                              recycler_->getParentActivity();
+        int focusRow = 0;
+        if (!loading_ && !focusPath.empty())
+            for (size_t i = 0; i < entries_.size(); ++i)
+                if (entries_[i].path == focusPath) {
+                    focusRow = static_cast<int>(i);
+                    break;
+                }
         if (ownsFocus) {
             recycler_->setFocusable(true);
             brls::Application::giveFocus(recycler_);
         }
-        recycler_->setDefaultCellFocus(brls::IndexPath(0, 0));
+        recycler_->setDefaultCellFocus(brls::IndexPath(0, focusRow));
         recycler_->reloadData();
         if (ownsFocus) {
             recycler_->setFocusable(false);
@@ -236,8 +300,12 @@ private:
     AppSettings* settings_;
     std::string currentPath_;
     std::vector<FileEntry> entries_;
+    std::vector<FileEntry> loadingEntries_;
+    std::shared_ptr<std::atomic<bool>> alive_;
     brls::RecyclerFrame* recycler_;
     brls::AppletFrame* frame_;
+    uint64_t generation_ = 0;
+    bool loading_ = false;
 
     friend class FileDataSource;
 };

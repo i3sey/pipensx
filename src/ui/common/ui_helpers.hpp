@@ -190,6 +190,13 @@ inline brls::Box* recyclerHost(brls::RecyclerFrame* recycler) {
     return host;
 }
 
+inline bool viewContains(brls::View* root, brls::View* needle) {
+    for (brls::View* view = needle; view; view = view->getParent())
+        if (view == root)
+            return true;
+    return false;
+}
+
 // Dialog / preview / details sit on the activity stack above the root tab.
 // Reloading a recycler while an overlay owns focus frees cells that Borealis
 // still keeps on focusStack — dismiss then UAF in giveFocus/onFocusLost.

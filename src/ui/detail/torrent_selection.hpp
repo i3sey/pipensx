@@ -1,8 +1,10 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -99,7 +101,9 @@ private:
 
 class TorrentSelectionCell : public brls::RecyclerCell {
 public:
-    TorrentSelectionCell() {
+    explicit TorrentSelectionCell(
+        std::function<bool()> inputBlocked = {})
+        : inputBlocked_(std::move(inputBlocked)) {
         setFocusable(true);
         setAxis(brls::Axis::ROW);
         setAlignItems(brls::AlignItems::CENTER);
@@ -112,6 +116,8 @@ public:
         // routes to the data source exactly as before.
         registerAction(tr("pipensx/common/toggle"), brls::BUTTON_A,
                        [this](brls::View*) {
+            if (inputBlocked_ && inputBlocked_())
+                return true;
             auto* recycler =
                 dynamic_cast<brls::RecyclerFrame*>(getParent()->getParent());
             if (recycler && recycler->getDataSource())
@@ -213,6 +219,7 @@ public:
     }
 
 private:
+    std::function<bool()> inputBlocked_;
     ThreadGuide* thread_;
     ActionIcon* icon_;
     brls::Label* name_;
@@ -224,7 +231,9 @@ private:
 // Skip/Download/(Install if every descendant is a package). Starts collapsed.
 class TorrentFolderCell : public brls::RecyclerCell {
 public:
-    TorrentFolderCell() {
+    explicit TorrentFolderCell(
+        std::function<bool()> inputBlocked = {})
+        : inputBlocked_(std::move(inputBlocked)) {
         setFocusable(true);
         setAxis(brls::Axis::ROW);
         setAlignItems(brls::AlignItems::CENTER);
@@ -233,6 +242,8 @@ public:
 
         registerAction(tr("pipensx/common/toggle"), brls::BUTTON_A,
                        [this](brls::View*) {
+            if (inputBlocked_ && inputBlocked_())
+                return true;
             auto* recycler =
                 dynamic_cast<brls::RecyclerFrame*>(getParent()->getParent());
             if (recycler && recycler->getDataSource())
@@ -326,6 +337,7 @@ public:
     }
 
 private:
+    std::function<bool()> inputBlocked_;
     ThreadGuide* thread_;
     ActionIcon* icon_;
     ActionIcon* folderIcon_;
@@ -485,8 +497,8 @@ public:
           preview_(std::move(preview)), preferred_(preferred),
           initialSelection_(initialSelection),
           initialPeers_(std::move(initialPeers)),
-          debridImport_(std::move(debridImport)), abandon_(std::move(abandon)) {
-        refreshStorageSnapshots();
+          debridImport_(std::move(debridImport)), abandon_(std::move(abandon)),
+          alive_(std::make_shared<std::atomic<bool>>(true)) {
         auto* content = new brls::Box(brls::Axis::COLUMN);
         content->setGrow(1);
         content->setPadding(18, 38, 18, 34);
@@ -544,10 +556,14 @@ public:
         recycler_->setGrow(1);
         recycler_->setPadding(6, 0, 6, 0);
         recycler_->estimatedRowHeight = 82;
-        recycler_->registerCell("FileSelect",
-                               [] { return new TorrentSelectionCell(); });
-        recycler_->registerCell("FolderSelect",
-                               [] { return new TorrentFolderCell(); });
+        recycler_->registerCell("FileSelect", [this] {
+            return new TorrentSelectionCell(
+                [this] { return validationInFlight_; });
+        });
+        recycler_->registerCell("FolderSelect", [this] {
+            return new TorrentFolderCell(
+                [this] { return validationInFlight_; });
+        });
         dataSource_ = new TorrentSelectionDataSource(this);
         recycler_->setDataSource(dataSource_);
         content->addView(recyclerHost(recycler_));
@@ -634,9 +650,11 @@ public:
 
         populateEntries();
         refreshSummary();
+        refreshStorageSnapshots();
     }
 
     ~TorrentSelectionActivity() override {
+        alive_->store(false);
         if (!finished_ && !path_.empty())
             ::unlink(path_.c_str());
         if (!finished_ && abandon_)
@@ -713,18 +731,24 @@ public:
     }
 
     void applyPreset(const std::function<void()>& mutate) {
+        if (validationInFlight_)
+            return;
         mutate();
-        recycler_->reloadData();
+        repaintVisible();
         refreshSummary();
     }
 
     void setAllSelected(bool selected) {
+        if (validationInFlight_)
+            return;
         dataSource_->setAll(selected);
         repaintVisible();
         refreshSummary();
     }
 
     void cycleFolderAtRow(int row) {
+        if (validationInFlight_)
+            return;
         const auto* vr = dataSource_->visibleAt(row);
         if (!vr ||
             vr->kind != TorrentSelectionDataSource::VisibleKind::Folder)
@@ -756,21 +780,36 @@ public:
     }
 
     void toggleFolderAtRow(int row) {
-        size_t groupIndex = 0;
-        if (const auto* before = dataSource_->visibleAt(row))
-            groupIndex = before->groupIndex;
+        if (validationInFlight_)
+            return;
+        std::string folderPrefix;
+        if (const auto* before = dataSource_->visibleAt(row)) {
+            if (before->kind ==
+                TorrentSelectionDataSource::VisibleKind::Folder) {
+                if (const auto* group =
+                        dataSource_->groupAt(before->groupIndex))
+                    folderPrefix = group->prefix;
+            }
+        }
         if (!dataSource_->toggleFolderAtVisibleRow(row))
             return;
-        // Prefer the folder header for the toggled group after the rebuild.
-        int focusRow = 0;
-        for (int i = 0; i < dataSource_->visibleRowCount(); ++i) {
-            const auto* cand = dataSource_->visibleAt(i);
-            if (!cand || cand->groupIndex != groupIndex)
-                continue;
-            focusRow = i;
-            if (cand->kind == TorrentSelectionDataSource::VisibleKind::Folder)
-                break;
-        }
+        int focusRow = std::max(
+            0, std::min(row, dataSource_->visibleRowCount() - 1));
+        if (!folderPrefix.empty())
+            for (int i = 0; i < dataSource_->visibleRowCount(); ++i) {
+                const auto* candidate = dataSource_->visibleAt(i);
+                if (!candidate ||
+                    candidate->kind !=
+                        TorrentSelectionDataSource::VisibleKind::Folder)
+                    continue;
+                const auto* group =
+                    dataSource_->groupAt(candidate->groupIndex);
+                if (group && group->prefix == folderPrefix) {
+                    focusRow = i;
+                    break;
+                }
+            }
+        recycler_->setDefaultCellFocus(brls::IndexPath(0, focusRow));
         recycler_->reloadData();
         // reloadData re-homes focus; nudge back onto the folder row once cells
         // exist. Golden and Switch both need a frame of layout first.
@@ -791,6 +830,8 @@ public:
     }
 
     void setAllFoldersExpanded(bool expanded) {
+        if (validationInFlight_)
+            return;
         dataSource_->setAllFoldersExpanded(expanded);
         recycler_->reloadData();
     }
@@ -820,10 +861,37 @@ public:
     }
 
     void refreshStorageSnapshots() {
-        downloadStorage_ =
-            pipensx::queryStorageSpace(manager_->rootPath());
-        packageStorage_ = pipensx::queryInstallStorageSpace(
-            manager_->installTarget(), manager_->rootPath());
+        if (storageQueryInFlight_)
+            return;
+        storageQueryInFlight_ = true;
+        auto alive = alive_;
+        const std::string root = manager_->rootPath();
+        const auto target = manager_->installTarget();
+        brls::async([this, alive, root, target] {
+            const uint64_t startedUs =
+                telemetry_enabled() ? now_us() : 0;
+            const auto downloadStorage =
+                pipensx::queryStorageSpace(root);
+            const auto packageStorage =
+                target == pipensx::install::InstallStorageTarget::SdCard
+                    ? downloadStorage
+                    : pipensx::queryInstallStorageSpace(target, root);
+            if (startedUs) {
+                telemetry_log(
+                    "ui", "torrent_selection",
+                    "event=storage duration_us=%llu",
+                    static_cast<unsigned long long>(now_us() - startedUs));
+            }
+            brls::sync([this, alive, downloadStorage, packageStorage] {
+                if (!alive->load())
+                    return;
+                storageQueryInFlight_ = false;
+                downloadStorage_ = downloadStorage;
+                packageStorage_ = packageStorage;
+                storageReady_ = true;
+                refreshSummary();
+            });
+        });
     }
 
     void refreshSummary() {
@@ -856,7 +924,7 @@ public:
         const StorageSpaceSnapshot& meterStorage =
             installs > 0 ? packageStorage_ : downloadStorage_;
         meter_->setHeader(storageMeterHeader(meterTarget));
-        if (meterStorage.available)
+        if (storageReady_ && meterStorage.available)
             meter_->setEstimate(
                 meterStorage.totalBytes, meterStorage.freeBytes,
                 installs > 0 ? estimate.packageBytes : estimate.downloadBytes,
@@ -878,14 +946,25 @@ public:
                 "pipensx/torrent/cta_download", downloads,
                 formatBytes(estimate.requiredBytes)));
         }
-        installSelected_->setState(selected == 0 || estimate.overflow ||
+        installSelected_->setState(!storageReady_ || validationInFlight_ ||
+                                    selected == 0 || estimate.overflow ||
                                     check.status ==
                                         InstallSpaceCheckStatus::Insufficient
             ? brls::ButtonState::DISABLED
             : brls::ButtonState::ENABLED);
+        const brls::ButtonState toggleState = validationInFlight_
+            ? brls::ButtonState::DISABLED
+            : brls::ButtonState::ENABLED;
+        selectPackages_->setState(toggleState);
+        selectDownloadAll_->setState(toggleState);
+        clearAll_->setState(toggleState);
+        if (selectPort_)
+            selectPort_->setState(toggleState);
     }
 
     void confirmSelection() {
+        if (!storageReady_ || validationInFlight_)
+            return;
         std::vector<uint8_t> actions = dataSource_->fileActions();
         if (actions.empty() && preview_.files.empty()) {
             brls::Application::notify(tr("pipensx/torrent/no_files"));
@@ -897,22 +976,56 @@ public:
             return;
         }
 
-        TransferMode mode = dataSource_->installCount() > 0
+        const size_t installs = dataSource_->installCount();
+        TransferMode mode = installs > 0
             ? TransferMode::StreamInstall
             : TransferMode::DownloadOnly;
         const auto estimate = pipensx::estimateInstallSpace(preview_, actions,
                                                             mode);
-        // Authoritative gate: the cached snapshot may be stale if a background
-        // download ate into the card while this screen was open, so re-query
-        // and keep the fresh reading for the meter.
-        refreshStorageSnapshots();
-        if (pipensx::assessTransferSpace(estimate, downloadStorage_,
-                                         packageStorage_)
-                .status == InstallSpaceCheckStatus::Insufficient) {
-            refreshSummary();
-            brls::Application::notify(tr("pipensx/torrent/no_space"));
-            return;
-        }
+        validationInFlight_ = true;
+        refreshSummary();
+        auto alive = alive_;
+        const std::string root = manager_->rootPath();
+        const auto target = manager_->installTarget();
+        brls::async([this, alive, root, target, estimate, mode, installs,
+                     actions = std::move(actions)]() mutable {
+            const uint64_t startedUs =
+                telemetry_enabled() ? now_us() : 0;
+            const auto downloadStorage =
+                pipensx::queryStorageSpace(root);
+            const auto packageStorage =
+                target == pipensx::install::InstallStorageTarget::SdCard
+                    ? downloadStorage
+                    : pipensx::queryInstallStorageSpace(target, root);
+            if (startedUs) {
+                telemetry_log(
+                    "ui", "torrent_selection",
+                    "event=storage duration_us=%llu",
+                    static_cast<unsigned long long>(now_us() - startedUs));
+            }
+            brls::sync([this, alive, estimate, mode, installs,
+                        actions = std::move(actions), downloadStorage,
+                        packageStorage]() mutable {
+                if (!alive->load() || finished_)
+                    return;
+                validationInFlight_ = false;
+                downloadStorage_ = downloadStorage;
+                packageStorage_ = packageStorage;
+                storageReady_ = true;
+                refreshSummary();
+                if (pipensx::assessTransferSpace(
+                        estimate, downloadStorage_, packageStorage_)
+                        .status == InstallSpaceCheckStatus::Insufficient) {
+                    brls::Application::notify(tr("pipensx/torrent/no_space"));
+                    return;
+                }
+                continueValidated(std::move(actions), mode, installs);
+            });
+        });
+    }
+
+    void continueValidated(std::vector<uint8_t> actions, TransferMode mode,
+                           size_t installs) {
         std::string id;
         std::string error;
         bool imported;
@@ -923,8 +1036,7 @@ public:
             DebridImport import = debridImport_;
             import.mode = mode;
             import.fileSelection = std::move(actions);
-            import.packageCount = static_cast<uint32_t>(
-                dataSource_->installCount());
+            import.packageCount = static_cast<uint32_t>(installs);
             imported = manager_->importDebrid(import, id, error);
         }
         if (!imported) {
@@ -950,9 +1062,7 @@ public:
     std::vector<uint8_t> initialPeers_;
     DebridImport debridImport_;
     std::function<void()> abandon_;
-    // Queried once at construction instead of once per A press: on Switch this
-    // is an nsGetStorageSize IPC. confirmSelection() re-queries before it
-    // commits, so a stale reading can never let an oversized install through.
+    std::shared_ptr<std::atomic<bool>> alive_;
     StorageSpaceSnapshot downloadStorage_;
     StorageSpaceSnapshot packageStorage_;
     brls::AppletFrame* frame_ = nullptr;
@@ -968,6 +1078,9 @@ public:
     brls::Button* installSelected_ = nullptr;
     brls::Button* selectPort_ = nullptr;
     std::string portRoot_;
+    bool storageQueryInFlight_ = false;
+    bool storageReady_ = false;
+    bool validationInFlight_ = false;
     bool finished_ = false;
 };
 

@@ -1,7 +1,9 @@
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <functional>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -54,7 +56,8 @@ public:
         : manager_(manager), preview_(std::move(preview)),
           actions_(std::move(actions)),
           initialPeers_(std::move(initialPeers)), onPick_(std::move(onPick)),
-          onCancel_(std::move(onCancel)) {
+          onCancel_(std::move(onCancel)),
+          alive_(std::make_shared<std::atomic<bool>>(true)) {
         auto* content = new brls::Box(brls::Axis::COLUMN);
         content->setGrow(1);
         content->setPadding(18, 38, 18, 34);
@@ -123,6 +126,7 @@ public:
     }
 
     ~UpdateFileChooserActivity() override {
+        alive_->store(false);
         // Backing out with B pops the activity without touching backOut(),
         // so the cancel contract is enforced here, like TorrentSelectionActivity.
         if (!finished_ && onCancel_)
@@ -132,24 +136,25 @@ public:
     brls::View* createContentView() override { return frame_; }
 
     void onContentAvailable() override {
+        recycler_->setDefaultCellFocus(brls::IndexPath(0, 0));
+        brls::Application::giveFocus(recycler_);
         registerAction(tr("pipensx/common/cancel"), brls::BUTTON_B,
                        [this](brls::View*) {
             backOut();
             return true;
         });
+        refreshStorageSnapshots();
     }
 
     // Golden harness: the current per-file mask the rows show.
     const std::vector<uint8_t>& selection() const { return actions_; }
 
-    // Golden harness: toggle by package-row index. Prefer this over pressing A
-    // on a TorrentSelectionCell* — reloadData() recycles cells, so a pointer
-    // taken before a toggle is not safe to click afterwards.
+    // Golden harness: toggle by package-row index.
     void toggleRowForTest(size_t row) { toggle(row); }
 
 private:
     void toggle(size_t row) {
-        if (finished_)
+        if (finished_ || validationInFlight_)
             return;
         const size_t fileIndex = dataSource_->fileIndexAt(row);
         if (fileIndex >= actions_.size())
@@ -161,12 +166,15 @@ private:
                                             : FileAction::Install);
         dataSource_->setRowAction(
             row, static_cast<FileAction>(actions_[fileIndex]));
-        recycler_->reloadData();
+        for (auto* cell : visibleCells<TorrentSelectionCell>(recycler_))
+            if (cell->getIndexPath().row == static_cast<int>(row))
+                if (const auto* entry = dataSource_->entryAt(row))
+                    cell->setEntry(*entry);
         updateConfirm();
     }
 
     void confirm() {
-        if (finished_)
+        if (finished_ || validationInFlight_ || !storageReady_)
             return;
         bool any = false;
         for (const uint8_t action : actions_)
@@ -179,6 +187,45 @@ private:
                 tr("pipensx/installed/update_nothing_selected"));
             return;
         }
+        if (!manager_) {
+            finishConfirm();
+            return;
+        }
+        validationInFlight_ = true;
+        updateConfirm();
+        auto alive = alive_;
+        const std::string root = manager_->rootPath();
+        const auto target = manager_->installTarget();
+        const auto estimate = pipensx::estimateInstallSpace(
+            preview_, actions_, TransferMode::StreamInstall);
+        brls::async([this, alive, root, target, estimate] {
+            const auto downloadStorage = pipensx::queryStorageSpace(root);
+            const auto packageStorage =
+                target == pipensx::install::InstallStorageTarget::SdCard
+                    ? downloadStorage
+                    : pipensx::queryInstallStorageSpace(target, root);
+            brls::sync([this, alive, estimate, downloadStorage,
+                        packageStorage] {
+                if (!alive->load() || finished_)
+                    return;
+                validationInFlight_ = false;
+                downloadStorage_ = downloadStorage;
+                packageStorage_ = packageStorage;
+                storageReady_ = true;
+                updateConfirm();
+                if (pipensx::assessTransferSpace(
+                        estimate, downloadStorage_, packageStorage_)
+                        .status == InstallSpaceCheckStatus::Insufficient) {
+                    brls::Application::notify(
+                        tr("pipensx/torrent/no_space"));
+                    return;
+                }
+                finishConfirm();
+            });
+        });
+    }
+
+    void finishConfirm() {
         finished_ = true;
         onPick_(std::move(actions_), std::move(initialPeers_));
         brls::Application::popActivity();
@@ -199,21 +246,14 @@ private:
                 ++installs;
         const auto estimate = pipensx::estimateInstallSpace(
             preview_, actions_, TransferMode::StreamInstall);
-        const auto downloadStorage = manager_
-            ? pipensx::queryStorageSpace(manager_->rootPath())
-            : StorageSpaceSnapshot{};
-        const auto packageStorage = manager_
-            ? pipensx::queryInstallStorageSpace(manager_->installTarget(),
-                                                 manager_->rootPath())
-            : StorageSpaceSnapshot{};
         const auto check = pipensx::assessTransferSpace(
-            estimate, downloadStorage, packageStorage);
+            estimate, downloadStorage_, packageStorage_);
         const auto target = manager_ ? manager_->installTarget()
             : pipensx::install::InstallStorageTarget::SdCard;
         meter_->setHeader(storageMeterHeader(target));
-        if (packageStorage.available)
+        if (storageReady_ && packageStorage_.available)
             meter_->setEstimate(
-                packageStorage.totalBytes, packageStorage.freeBytes,
+                packageStorage_.totalBytes, packageStorage_.freeBytes,
                 estimate.packageBytes,
                 check.status == InstallSpaceCheckStatus::Insufficient,
                 estimate.certainty == SpaceEstimateCertainty::CompressedUnknown);
@@ -229,10 +269,40 @@ private:
             installDestinationLabel(target),
             formatBytes(estimate.requiredBytes)));
         confirm_->setState(
-            estimate.overflow ||
+            !storageReady_ || validationInFlight_ || estimate.overflow ||
                     check.status == InstallSpaceCheckStatus::Insufficient
                 ? brls::ButtonState::DISABLED
                 : brls::ButtonState::ENABLED);
+    }
+
+    void refreshStorageSnapshots() {
+        if (storageQueryInFlight_)
+            return;
+        if (!manager_) {
+            storageReady_ = true;
+            updateConfirm();
+            return;
+        }
+        storageQueryInFlight_ = true;
+        auto alive = alive_;
+        const std::string root = manager_->rootPath();
+        const auto target = manager_->installTarget();
+        brls::async([this, alive, root, target] {
+            const auto downloadStorage = pipensx::queryStorageSpace(root);
+            const auto packageStorage =
+                target == pipensx::install::InstallStorageTarget::SdCard
+                    ? downloadStorage
+                    : pipensx::queryInstallStorageSpace(target, root);
+            brls::sync([this, alive, downloadStorage, packageStorage] {
+                if (!alive->load())
+                    return;
+                storageQueryInFlight_ = false;
+                downloadStorage_ = downloadStorage;
+                packageStorage_ = packageStorage;
+                storageReady_ = true;
+                updateConfirm();
+            });
+        });
     }
 
     // Rows are the torrent's package files only; A on a row toggles it
@@ -279,6 +349,10 @@ private:
                 entries_[row].action = action;
         }
 
+        const TorrentSelectionEntry* entryAt(size_t row) const {
+            return row < entries_.size() ? &entries_[row] : nullptr;
+        }
+
         int numberOfSections(brls::RecyclerFrame*) override { return 1; }
 
         int numberOfRows(brls::RecyclerFrame*, int) override {
@@ -313,12 +387,18 @@ private:
     std::vector<uint8_t> initialPeers_;
     std::function<void(std::vector<uint8_t>, std::vector<uint8_t>)> onPick_;
     std::function<void()> onCancel_;
+    std::shared_ptr<std::atomic<bool>> alive_;
+    StorageSpaceSnapshot downloadStorage_;
+    StorageSpaceSnapshot packageStorage_;
     brls::AppletFrame* frame_ = nullptr;
     brls::Label* title_ = nullptr;
     StorageMeter* meter_ = nullptr;
     brls::RecyclerFrame* recycler_ = nullptr;
     ChooserDataSource* dataSource_ = nullptr;
     brls::Button* confirm_ = nullptr;
+    bool storageQueryInFlight_ = false;
+    bool storageReady_ = false;
+    bool validationInFlight_ = false;
     bool finished_ = false;
 };
 

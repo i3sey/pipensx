@@ -129,6 +129,11 @@ std::vector<InstalledTitle> InstalledTitleService::titles() const {
     return titles_;
 }
 
+std::unordered_set<std::string> InstalledTitleService::titleIds() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return titleIds_;
+}
+
 std::vector<std::string> InstalledTitleService::dlcTitleIds() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return {dlcTitleIds_.begin(), dlcTitleIds_.end()};

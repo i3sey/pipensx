@@ -34,6 +34,14 @@ constexpr size_t kMaxCatalogBytes = 48 * 1024 * 1024;
 constexpr size_t kMaxCatalogEntries = 20000;
 constexpr size_t kMaxInfoDictBytes = 8 * 1024 * 1024;
 
+std::string lowerAscii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char c) {
+                       return static_cast<char>(std::tolower(c));
+                   });
+    return value;
+}
+
 int base64Value(char c) {
     if (c >= 'A' && c <= 'Z') return c - 'A';
     if (c >= 'a' && c <= 'z') return c - 'a' + 26;
@@ -515,6 +523,7 @@ bool CatalogService::loadFile(const std::string& path,
         return false;
     entries_ = std::make_shared<const std::vector<CatalogEntry>>(
         std::move(parsed));
+    rebuildIndex();
     sourceLabel_ = label;
     struct stat st {};
     // Wall-clock only: now_sec() is monotonic (boot-relative), useless for
@@ -542,6 +551,7 @@ bool CatalogService::load(std::string& error) {
     // A fresh public install intentionally has no bundled catalog. The UI
     // sees an empty list and starts the trusted live refresh in the background.
     entries_ = std::make_shared<const std::vector<CatalogEntry>>();
+    rebuildIndex();
     sourceLabel_.clear();
     snapshotEpochSec_ = 0;
     error.clear();
@@ -590,21 +600,17 @@ bool CatalogService::fetchLatest(std::vector<CatalogEntry>& parsed,
 
 const CatalogEntry* CatalogService::findByInfoHash(
     const std::string& infoHash) const {
-    std::string needle = infoHash;
-    std::transform(needle.begin(), needle.end(), needle.begin(),
-                   [](unsigned char c) {
-                       return static_cast<char>(std::tolower(c));
-                   });
-    for (const CatalogEntry& entry : *entries_) {
-        std::string hash = entry.infoHash;
-        std::transform(hash.begin(), hash.end(), hash.begin(),
-                       [](unsigned char c) {
-                           return static_cast<char>(std::tolower(c));
-                       });
-        if (hash == needle)
-            return &entry;
-    }
-    return nullptr;
+    const auto found = infoHashIndex_.find(lowerAscii(infoHash));
+    return found == infoHashIndex_.end()
+        ? nullptr
+        : &(*entries_)[found->second];
+}
+
+void CatalogService::rebuildIndex() {
+    infoHashIndex_.clear();
+    infoHashIndex_.reserve(entries_->size());
+    for (size_t i = 0; i < entries_->size(); ++i)
+        infoHashIndex_.emplace(lowerAscii((*entries_)[i].infoHash), i);
 }
 
 void CatalogService::adopt(std::vector<CatalogEntry> parsed,
@@ -615,6 +621,7 @@ void CatalogService::adopt(std::vector<CatalogEntry> parsed,
     // pick up the new one.
     entries_ = std::make_shared<const std::vector<CatalogEntry>>(
         std::move(parsed));
+    rebuildIndex();
     sourceLabel_ = catalogSourceLabel(sourceUrl.empty() ? kDefaultCatalogSourceUrl
                                                         : sourceUrl);
     snapshotEpochSec_ = static_cast<int64_t>(time(nullptr));

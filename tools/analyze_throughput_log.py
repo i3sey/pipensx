@@ -125,6 +125,33 @@ def stage_rate(records: list[dict], key: str) -> dict:
     }
 
 
+def analyze_ui(records: list[dict]) -> dict:
+    durations: dict[str, list[int]] = defaultdict(list)
+    for record in records:
+        event = record.get("event")
+        if not event:
+            continue
+        duration = record.get("duration_us")
+        if not isinstance(duration, int):
+            duration_ms = record.get("duration_ms")
+            if not isinstance(duration_ms, int):
+                continue
+            duration = duration_ms * 1000
+        tag = record.get("tag")
+        name = f"{tag}.{event}" if tag and tag != "-" else str(event)
+        durations[name].append(duration)
+    return {
+        name: {
+            "count": len(values),
+            "median": int(statistics.median(values)),
+            "p95": percentile(values, 0.95),
+            "max": max(values),
+            "unit": "us",
+        }
+        for name, values in sorted(durations.items())
+    }
+
+
 def busy_permille(records: list[dict], *keys: str) -> int | None:
     values = []
     for record in records:
@@ -263,6 +290,9 @@ def analyze(records: list[dict]) -> dict:
     return {
         "records": len(records),
         "rates": rates,
+        "ui": analyze_ui([
+            record for record in records if record.get("stage") == "ui"
+        ]),
         "busy_permille": {
             "decode": decode_busy,
             "writer_callback": writer_busy,
@@ -310,6 +340,16 @@ def print_report(report: dict) -> None:
             f"{format_speed(rate['median']):>10} "
             f"{format_speed(rate['peak']):>10}"
         )
+    ui = report.get("ui", {})
+    if ui:
+        print()
+        print("UI event                     count  median_us     p95_us     max_us")
+        for name, timing in ui.items():
+            print(
+                f"{name:28} {timing['count']:5d} "
+                f"{timing['median']:10d} {timing['p95']:10d} "
+                f"{timing['max']:10d}"
+            )
     print()
     print(f"Likely bottleneck: {report['bottleneck']}")
     for evidence in report["evidence"]:

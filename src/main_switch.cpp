@@ -715,16 +715,6 @@ int main(int argc, char** argv) {
                 else if (deployState.phase ==
                          pipensx::SwitchDeployPhase::Cancelled)
                     brls::Application::notify(tr("pipensx/deploy/cancelled"));
-                else if (deployState.phase ==
-                         pipensx::SwitchDeployPhase::Preparing)
-                    brls::Application::notify(tr("pipensx/deploy/phase_preparing"));
-                else if (deployState.phase ==
-                         pipensx::SwitchDeployPhase::Copying)
-                    brls::Application::notify(tr("pipensx/deploy/phase_copying"));
-                else if (deployState.phase ==
-                         pipensx::SwitchDeployPhase::Extracting)
-                    brls::Application::notify(
-                        tr("pipensx/deploy/phase_extracting"));
                 lastDeployPhase = deployState.phase;
             }
 

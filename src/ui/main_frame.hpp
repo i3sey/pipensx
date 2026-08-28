@@ -304,13 +304,21 @@ public:
     void addNavTab(const std::string& label, NavIconType icon,
                    brls::TabViewCreator creator, bool countBadge = false) {
         this->addTab(label, [this, creator = std::move(creator), icon]() -> brls::View* {
+            const uint64_t startedUs = telemetry_enabled() ? now_us() : 0;
             const char* tag = navTabTag(icon);
             const int index = navTabIndex(icon);
+            activeTabTag_ = tag;
             log_msg("[ui] tab=%s\n", tag);
             log_flush();
             if (index >= 0 && index < kNavTabCount && tabViews_[index]) {
                 log_msg("[ui] tab=%s reuse\n", tag);
                 log_flush();
+                if (startedUs)
+                    telemetry_log(
+                        "ui", "main",
+                        "event=tab_reuse duration_us=%llu tab=%s collapsed=%d",
+                        (unsigned long long)(now_us() - startedUs), tag,
+                        collapsed_ ? 1 : 0);
                 return tabViews_[index];
             }
             switch_crashlog_stage(tag);
@@ -330,6 +338,12 @@ public:
                 tabViews_[index] = view;
             log_msg("[ui] tab=%s ready\n", tag);
             log_flush();
+            if (startedUs)
+                telemetry_log(
+                    "ui", "main",
+                    "event=tab_create duration_us=%llu tab=%s collapsed=%d",
+                    (unsigned long long)(now_us() - startedUs), tag,
+                    collapsed_ ? 1 : 0);
             return view;
         });
         const int index = static_cast<int>(this->sidebar->getItemsSize()) - 1;
@@ -404,6 +418,7 @@ public:
     void setCollapsed(bool collapsed) {
         if (collapsed == collapsed_)
             return;
+        const uint64_t startedUs = telemetry_enabled() ? now_us() : 0;
         collapsed_ = collapsed;
         this->sidebar->setWidth(collapsed ? kCollapsedWidth : expandedWidth_);
         for (brls::View* label : labels_)
@@ -422,6 +437,12 @@ public:
                 webRow_->setVisibility(collapsed ? brls::Visibility::GONE
                                                  : brls::Visibility::VISIBLE);
         }
+        if (startedUs)
+            telemetry_log(
+                "ui", "main",
+                "event=sidebar_fold duration_us=%llu tab=%s collapsed=%d",
+                (unsigned long long)(now_us() - startedUs),
+                activeTabTag_.c_str(), collapsed ? 1 : 0);
     }
 
     // Free-space readout pinned to the bottom-left of the frame, over the
@@ -457,16 +478,18 @@ public:
         dock_->addView(webRow_);
         footer_ = new StorageMeter();
         footer_->setCompact(collapsed_);
+        footer_->setUnavailable();
         dock_->addView(footer_);
         addView(dock_);
-        refreshStorage();
-        refreshWebStatus();
+        const bool running = webServer_ ? webServer_->running() : true;
+        webRow_->setState(running, "");
         // The periodic refresh runs off a timer + brls::async, NOT from
         // draw(): nsGetStorageSize and nifmGetCurrentIpAddress are
         // synchronous service IPC and used to stall the frame being
         // recorded every 2 seconds.
         queryTimer_.setCallback([this] { scheduleRefresh(); });
         queryTimer_.start(2000);
+        scheduleRefresh();
     }
 
     ~MainFrame() override {
@@ -531,27 +554,6 @@ private:
         });
     }
 
-    void refreshStorage() {
-        if (!footer_ || !manager_)
-            return;
-        const pipensx::StorageSpaceSnapshot storage =
-            pipensx::queryStorageSpace(manager_->rootPath());
-        if (storage.available)
-            footer_->setStorage(storage.totalBytes, storage.freeBytes);
-        else
-            footer_->setUnavailable();
-    }
-
-    void refreshWebStatus() {
-        if (!webRow_)
-            return;
-        // A null server (golden runner) reads as "serving on the fixed fake
-        // address" so the baseline row looks like the real thing.
-        const bool running = webServer_ ? webServer_->running() : true;
-        webRow_->setState(running,
-                          running ? webCompanionUrl(webServer_, true) : "");
-    }
-
     // Wide enough for padding + the active-accent bar + the 28px icon.
     static constexpr float kCollapsedWidth = 88.0f;
     static constexpr float kFooterPad = 16.0f;
@@ -568,6 +570,7 @@ private:
     DownloadManager* manager_ = nullptr;
     pipensx::WebServer* webServer_ = nullptr;
     brls::View* tabViews_[kNavTabCount] = {};
+    std::string activeTabTag_ = "unknown";
     brls::RepeatingTimer queryTimer_;
     bool queryInFlight_ = false;
     std::shared_ptr<std::atomic<bool>> alive_ =

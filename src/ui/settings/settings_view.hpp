@@ -52,6 +52,18 @@ public:
 
         host_ = new brls::Box(brls::Axis::COLUMN);
         host_->setGrow(1);
+        host_->registerAction(
+            "", brls::BUTTON_B,
+            [this](brls::View*) {
+                if (brls::Application::getInputType() ==
+                        brls::InputType::TOUCH ||
+                    viewContains(sidebar_,
+                                 brls::Application::getCurrentFocus()))
+                    return false;
+                brls::Application::giveFocus(sidebar_->item(activeSection_));
+                return true;
+            },
+            /*hidden=*/true, /*allowRepeating=*/false, brls::SOUND_BACK);
         addView(host_);
 
         panels_[static_cast<size_t>(SettingsSection::General)] =

@@ -74,7 +74,8 @@ public:
         recycler_->registerCell("Message", [] { return new MessageCell(); });
         dataSource_ = new DownloadDataSource(this);
         recycler_->setDataSource(dataSource_);
-        addView(recycler_);
+        recyclerHost_ = recyclerHost(recycler_);
+        addView(recyclerHost_);
         refresh();
         timer_.setCallback([this] {
             refresh();
@@ -313,13 +314,6 @@ public:
     }
 
 private:
-    bool containsFocus(brls::View* focused) const {
-        for (brls::View* view = focused; view; view = view->getParent())
-            if (view == this)
-                return true;
-        return false;
-    }
-
     EmptyStateView* ensureEmptyState() {
         if (emptyState_)
             return emptyState_;
@@ -418,6 +412,19 @@ private:
     }
 
     void refresh() {
+        const uint64_t startedUs = telemetry_enabled() ? now_us() : 0;
+        auto logRefresh = [startedUs](bool structural, bool reload) {
+            if (!startedUs)
+                return;
+            const uint64_t durationUs = now_us() - startedUs;
+            if (!structural && durationUs < 1000)
+                return;
+            telemetry_log(
+                "ui", "downloads",
+                "event=refresh duration_us=%llu structural=%d reload=%d",
+                (unsigned long long)durationUs, structural ? 1 : 0,
+                reload ? 1 : 0);
+        };
         auto next = manager_->snapshotUi();
         const SwitchDeploySnapshot deployState = deploy_ ? deploy_->snapshot()
                                                          : SwitchDeploySnapshot{};
@@ -438,7 +445,8 @@ private:
                              : tr("pipensx/downloads/resume_all"));
         uint64_t settingsGeneration = settings_ ? settings_->generation() : 0;
         bool settingsChanged = settingsGeneration != settingsGeneration_;
-        bool structureChanged = !initialized_ || settingsChanged ||
+        bool structureChanged = pendingReload_ || !initialized_ ||
+                                 settingsChanged ||
                                  next.size() != tasks_.size() ||
                                  activeDeployTask != activeDeployTask_;
         bool progressChanged = deployState.generation != deployGeneration_;
@@ -465,8 +473,10 @@ private:
                     next[i].currentPackage != tasks_[i].currentPackage;
             }
         }
-        if (!structureChanged && !progressChanged)
+        if (!structureChanged && !progressChanged) {
+            logRefresh(false, false);
             return;
+        }
         // Same rows in the same order, only numbers moved: repaint the cells on
         // screen. reloadData() would recycle every cell, snap the scroll to the
         // focused row and re-home focus — once per tick that reads as a blink.
@@ -479,20 +489,16 @@ private:
                 if (const DownloadTask* task =
                         dataSource_->taskAt(cell->getIndexPath()))
                     cell->setTask(*task, metadata_, &deploySnapshot_);
+            logRefresh(false, false);
             return;
         }
         brls::View* focused = brls::Application::getCurrentFocus();
-        bool ownsFocus = containsFocus(focused);
+        bool ownsFocus = viewContains(this, focused);
         // Overlay (deploy offer dialog, details, …) pushed our cell onto
         // focusStack. reloadData() would free it and crash on dismiss/Accept.
         if (activityStackHasOverlay() && !ownsFocus) {
-            tasks_ = std::move(next);
-            deploySnapshot_ = deployState;
-            deployGeneration_ = deployState.generation;
-            activeDeployTask_ = activeDeployTask;
-            settingsGeneration_ = settingsGeneration;
-            initialized_ = true;
-            dataSource_->setTasks(tasks_, activeDeployTask);
+            pendingReload_ = true;
+            logRefresh(true, false);
             return;
         }
         auto* focusedCell = ownsFocus
@@ -508,6 +514,7 @@ private:
         activeDeployTask_ = activeDeployTask;
         settingsGeneration_ = settingsGeneration;
         initialized_ = true;
+        pendingReload_ = false;
         dataSource_->setTasks(tasks_, activeDeployTask);
         recycler_->setDefaultCellFocus(
             dataSource_->indexForTask(focusedTaskId));
@@ -517,8 +524,8 @@ private:
             ensureEmptyState()->setVisibility(brls::Visibility::VISIBLE);
         else if (emptyState_)
             emptyState_->setVisibility(brls::Visibility::GONE);
-        recycler_->setVisibility(empty ? brls::Visibility::GONE
-                                       : brls::Visibility::VISIBLE);
+        recyclerHost_->setVisibility(empty ? brls::Visibility::GONE
+                                           : brls::Visibility::VISIBLE);
         if (ownsFocus) {
             if (empty) {
                 brls::Application::giveFocus(ensureEmptyState());
@@ -529,6 +536,7 @@ private:
                 brls::Application::giveFocus(recycler_);
             }
         }
+        logRefresh(true, true);
     }
 
     DownloadManager* manager_;
@@ -538,10 +546,12 @@ private:
     EmptyStateView* emptyState_ = nullptr;
     brls::Label* summary_ = nullptr;
     brls::RecyclerFrame* recycler_;
+    brls::Box* recyclerHost_ = nullptr;
     DownloadDataSource* dataSource_;
     brls::RepeatingTimer timer_;
     std::vector<DownloadTask> tasks_;
     bool initialized_ = false;
+    bool pendingReload_ = false;
     bool fastRefresh_ = false;
     uint64_t settingsGeneration_ = 0;
     SwitchDeploySnapshot deploySnapshot_;

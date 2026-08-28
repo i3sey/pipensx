@@ -76,6 +76,59 @@ public:
     void updateStateBadges(std::vector<std::string> stateBadges) {
         stateBadges_ = std::move(stateBadges);
     }
+    bool sameStructure(
+        const std::shared_ptr<const std::vector<CatalogEntry>>& snapshot,
+        const std::vector<int>& indices,
+        const std::vector<CatalogShelf>& shelves, int heroIndex) const {
+        auto hashAt = [](const std::shared_ptr<
+                             const std::vector<CatalogEntry>>& entries,
+                         const std::vector<int>& picks, int row)
+            -> const std::string* {
+            if (!entries || row < 0 ||
+                static_cast<size_t>(row) >= picks.size())
+                return nullptr;
+            const int index = picks[static_cast<size_t>(row)];
+            if (index < 0 || static_cast<size_t>(index) >= entries->size())
+                return nullptr;
+            return &(*entries)[static_cast<size_t>(index)].infoHash;
+        };
+        if (indices_.size() != indices.size() ||
+            shelves_.size() != shelves.size() ||
+            (heroIndex_ >= 0) != (heroIndex >= 0))
+            return false;
+        for (size_t row = 0; row < indices.size(); ++row) {
+            const std::string* before =
+                hashAt(snapshot_, indices_, static_cast<int>(row));
+            const std::string* after =
+                hashAt(snapshot, indices, static_cast<int>(row));
+            if (!before || !after || *before != *after)
+                return false;
+        }
+        const std::string* beforeHero =
+            hashAt(snapshot_, indices_, heroIndex_);
+        const std::string* afterHero = hashAt(snapshot, indices, heroIndex);
+        if ((beforeHero || afterHero) &&
+            (!beforeHero || !afterHero || *beforeHero != *afterHero))
+            return false;
+        for (size_t shelfIndex = 0; shelfIndex < shelves.size();
+             ++shelfIndex) {
+            const CatalogShelf& before = shelves_[shelfIndex];
+            const CatalogShelf& after = shelves[shelfIndex];
+            if (before.title != after.title ||
+                before.items.size() != after.items.size())
+                return false;
+            for (size_t item = 0; item < after.items.size(); ++item) {
+                const std::string* beforeHash =
+                    hashAt(snapshot_, indices_, before.items[item]);
+                const std::string* afterHash =
+                    hashAt(snapshot, indices, after.items[item]);
+                if (!beforeHash || !afterHash ||
+                    *beforeHash != *afterHash)
+                    return false;
+            }
+        }
+        return true;
+    }
     GridCardInfo cardInfo(int index) const { return makeInfo(index); }
     // Shelf contents (UI_PLAN F2/F5): indices into the visible list.
     // heroIndex < 0 = no hero banner; an empty shelf list = plain grid.
@@ -132,6 +185,7 @@ public:
     }
     brls::RecyclerCell* cellForRow(brls::RecyclerFrame* recycler,
                                     brls::IndexPath index) override;
+    void repaintCell(brls::RecyclerCell* cell);
     void didSelectRowAt(brls::RecyclerFrame*, brls::IndexPath index) override;
 
 private:
@@ -327,6 +381,8 @@ public:
         filterFits_ = makeChip(tr("pipensx/catalog/filter_fits"), [this] {
             fitsOnly_ = !fitsOnly_;
             rebuildEntries();
+            if (fitsOnly_)
+                scheduleStorageRefresh();
         });
         filterPlayers_ = makeChip(tr("pipensx/catalog/filter_players"),
                                   [this] { openPlayerFilterMenu(); });
@@ -476,12 +532,15 @@ public:
         }
         timer_.setCallback([this] { refreshLiveState(); });
         timer_.start(1000);
+        scheduleStorageRefresh();
         refreshCatalogIfDue();
     }
 
     void willAppear(bool resetState) override {
         brls::Box::willAppear(resetState);
         timer_.start(1000);
+        if (pendingRebuild_)
+            rebuildEntries();
     }
 
     void willDisappear(bool resetState) override {
@@ -495,6 +554,28 @@ public:
         timer_.stop();
         stopBusyPulse(busyDot_);
     }
+
+    // Golden behavior seams: stable identity survives recycling, and tests
+    // can trigger the same rebuild path as live refreshes.
+    std::string focusedInfoHashForTest() const {
+        brls::View* focus = brls::Application::getCurrentFocus();
+        bool ownsFocus = false;
+        for (brls::View* view = focus; view; view = view->getParent()) {
+            if (view == this) {
+                ownsFocus = true;
+                break;
+            }
+        }
+        if (!ownsFocus)
+            return {};
+        if (auto* card = dynamic_cast<GameCard*>(focus))
+            return card->infoHash();
+        if (auto* hero = dynamic_cast<HeroCard*>(focus))
+            return hero->infoHash();
+        return {};
+    }
+
+    void rebuildEntriesForTest() { rebuildEntries(); }
 
     void openSearchKeyboard() {
         if (busy_)
@@ -586,6 +667,14 @@ private:
         return value;
     }
 
+    static std::string upperAscii(std::string value) {
+        std::transform(value.begin(), value.end(), value.begin(),
+                       [](unsigned char c) {
+                           return static_cast<char>(std::toupper(c));
+                       });
+        return value;
+    }
+
     EmptyStateView* ensureEmptyState() {
         if (emptyState_)
             return emptyState_;
@@ -656,6 +745,8 @@ private:
                          batchMode_ ? tr("pipensx/catalog/prepare")
                                     : tr("pipensx/common/refresh"));
         rebuildEntries();
+        if (batchMode_)
+            scheduleStorageRefresh();
     }
 
     void selectVisibleEntries() {
@@ -752,15 +843,13 @@ private:
             else
                 bytes += entry.size;
         }
-        const StorageSpaceSnapshot storage =
-            pipensx::queryStorageSpace(manager_->rootPath());
         std::string text = tr("pipensx/catalog/batch_selected",
                               selectedHashes_.size(), formatBytes(bytes));
         if (unknown)
             text += tr("pipensx/catalog/batch_unknown", unknown);
-        text += storage.available
+        text += storage_.available
             ? tr("pipensx/catalog/batch_sd_free",
-                 formatBytes(storage.freeBytes))
+                 formatBytes(storage_.freeBytes))
             : tr("pipensx/catalog/batch_sd_unavailable");
         status_->setText(text);
         const bool available = !selectedHashes_.empty();
@@ -775,21 +864,28 @@ private:
         // reloadData() recycles every cell, so remember where the focus was
         // (F2 "done when": focus survives reloadData) and restore it after.
         brls::View* focus = brls::Application::getCurrentFocus();
-        bool focusInCatalog = false;
+        bool ownsFocus = false;
+        bool focusInRecycler = false;
         for (brls::View* view = focus; view; view = view->getParent()) {
-            if (view == recycler_) {
-                focusInCatalog = true;
+            if (view == recycler_)
+                focusInRecycler = true;
+            if (view == this) {
+                ownsFocus = true;
                 break;
             }
         }
         // Same focusStack UAF as downloads: don't free cells while a dialog
         // (e.g. deploy offer) is on top of the activity stack.
-        if (activityStackHasOverlay() && !focusInCatalog)
+        if (activityStackHasOverlay() && !ownsFocus) {
+            pendingRebuild_ = true;
             return;
+        }
+        pendingRebuild_ = false;
+        const uint64_t startedUs = telemetry_enabled() ? now_us() : 0;
 
         std::string focusHash;
         int focusShelf = -1;
-        if (focusInCatalog) {
+        if (focusInRecycler) {
             if (auto* card = dynamic_cast<GameCard*>(focus)) {
                 focusHash = card->infoHash();
                 focusShelf = card->shelfRow();
@@ -809,15 +905,11 @@ private:
         auto snapshot = catalog_->sharedEntries();
         const std::vector<CatalogEntry>& all = *snapshot;
         std::vector<int> visible;
+        std::vector<const GameMetadata*> metadataByEntry(all.size(), nullptr);
         std::string needle = lowerAscii(query_);
         const bool searching = !needle.empty();
-        // One syscall per rebuild, and only when the filter is on. Rebuilds are
-        // event-driven (refreshLiveState only rebuilds when something changed),
-        // so this does not run on a timer.
-        StorageSpaceSnapshot storage;
-        if (fitsOnly_)
-            storage = queryStorageSpace(manager_->rootPath());
         const bool favoritesOnly = favoritesOnly_ && favorites_;
+        const uint64_t filterStartedUs = startedUs ? now_us() : 0;
         visible.reserve(all.size());
         for (size_t i = 0; i < all.size(); ++i) {
             const CatalogEntry& entry = all[i];
@@ -825,10 +917,11 @@ private:
                 continue;
             if (favoritesOnly && !favorites_->contains(entry.infoHash))
                 continue;
-            if (fitsOnly_ && !catalogEntryFitsFreeSpace(entry.size, storage))
+            if (fitsOnly_ && !catalogEntryFitsFreeSpace(entry.size, storage_))
                 continue;
             const GameMetadata* meta =
                 metadata_ ? metadata_->findByInfoHash(entry.infoHash) : nullptr;
+            metadataByEntry[i] = meta;
             if (!catalogEntryInSection(entry, meta, section_))
                 continue;
             // Unlike the Games filter above, this one also narrows a search:
@@ -855,6 +948,21 @@ private:
                 continue;
             visible.push_back(static_cast<int>(i));
         }
+        const uint64_t filterDurationUs =
+            filterStartedUs ? now_us() - filterStartedUs : 0;
+        const uint64_t sortStartedUs = startedUs ? now_us() : 0;
+        const bool showShelves = query_.empty() && !shelfDrilldown_ &&
+                                 !batchMode_ && !visible.empty();
+        std::vector<int> popularityEntries;
+        bool popularFallback = false;
+        if (sort_ == SortMode::Popular || showShelves) {
+            const std::vector<int> order =
+                popularityOrder(all, visible, popularFallback);
+            popularityEntries.reserve(order.size());
+            for (int index : order)
+                popularityEntries.push_back(
+                    visible[static_cast<size_t>(index)]);
+        }
         if (sort_ == SortMode::Alphabetical) {
             std::vector<std::string> keys(visible.size());
             for (size_t i = 0; i < visible.size(); ++i)
@@ -880,14 +988,7 @@ private:
         } else if (sort_ == SortMode::Popular) {
             // Peer-count sort with the F5 fallback ranking when the source
             // carries no peer data at all.
-            bool fallback = false;
-            const std::vector<int> order =
-                popularityOrder(all, visible, fallback);
-            std::vector<int> sorted;
-            sorted.reserve(visible.size());
-            for (int index : order)
-                sorted.push_back(visible[static_cast<size_t>(index)]);
-            visible = std::move(sorted);
+            visible = popularityEntries;
         } else {
             std::stable_sort(visible.begin(), visible.end(),
                 [&all](int left, int right) {
@@ -896,6 +997,8 @@ private:
                 });
         }
         applySortDirection(visible);
+        const uint64_t sortDurationUs =
+            sortStartedUs ? now_us() - sortStartedUs : 0;
 
         std::vector<std::string> stateBadges;
         std::vector<std::string> gameNames;
@@ -913,6 +1016,10 @@ private:
         selectable.reserve(visible.size());
         favorite.reserve(visible.size());
         metas.reserve(visible.size());
+        const uint64_t presentationStartedUs = startedUs ? now_us() : 0;
+        const std::unordered_set<std::string> installedIds =
+            installed_ ? installed_->titleIds()
+                       : std::unordered_set<std::string>();
         for (int snapshotIndex : visible) {
             const CatalogEntry& entry = all[static_cast<size_t>(snapshotIndex)];
             std::string hash = lowerAscii(entry.infoHash);
@@ -924,11 +1031,11 @@ private:
             } else
                 stateBadges.emplace_back();
             const GameMetadata* meta =
-                metadata_ ? metadata_->findByInfoHash(entry.infoHash) : nullptr;
+                metadataByEntry[static_cast<size_t>(snapshotIndex)];
             CatalogRowPresentation row =
                 resolveCatalogRow(entry, meta);
             if (it == added.end() && !row.titleId.empty() &&
-                installed_ && installed_->contains(row.titleId))
+                installedIds.count(upperAscii(row.titleId)))
                 stateBadges.back() = tr("pipensx/catalog/badge_installed");
             gameNames.push_back(std::move(row.title));
             iconUrls.push_back(std::move(row.iconUrl));
@@ -939,6 +1046,8 @@ private:
                                                                        : 0);
             metas.push_back(meta);
         }
+        const uint64_t presentationDurationUs =
+            presentationStartedUs ? now_us() - presentationStartedUs : 0;
 
         // Shelves 2.0 (UI_PLAN F5, supersedes the F2 pair): Popular / New /
         // Recently updated / genre shelves. Only in the default browse state —
@@ -946,14 +1055,20 @@ private:
         // Dedup: a game appears on at most one shelf (Popular wins over New,
         // over later shelves), re-releases of one title collapse by titleId
         // inside a shelf. The grid below always shows everything.
+        const uint64_t shelvesStartedUs = startedUs ? now_us() : 0;
         std::vector<CatalogShelf> shelves;
         int heroIndex = -1;
         std::string heroImage;
-        if (query_.empty() && !shelfDrilldown_ && !batchMode_ &&
-            !visible.empty()) {
-            bool popularFallback = false;
-            const std::vector<int> popular =
-                popularityOrder(all, visible, popularFallback);
+        if (showShelves) {
+            std::vector<int> visiblePositions(all.size(), -1);
+            for (size_t i = 0; i < visible.size(); ++i)
+                visiblePositions[static_cast<size_t>(visible[i])] =
+                    static_cast<int>(i);
+            std::vector<int> popular;
+            popular.reserve(popularityEntries.size());
+            for (int snapshotIndex : popularityEntries)
+                popular.push_back(
+                    visiblePositions[static_cast<size_t>(snapshotIndex)]);
             const size_t withPeers = static_cast<size_t>(std::count_if(
                 visible.begin(), visible.end(),
                 [&all](int index) {
@@ -1108,8 +1223,13 @@ private:
                 ++genreShelves;
             }
         }
+        const uint64_t shelvesDurationUs =
+            shelvesStartedUs ? now_us() - shelvesStartedUs : 0;
 
-        size_t count = visible.size();
+        const size_t count = visible.size();
+        const size_t shelfCount = shelves.size();
+        const bool structureChanged =
+            !dataSource_->sameStructure(snapshot, visible, shelves, heroIndex);
         observedCatalog_ = snapshot;
         observedMetadataGeneration_ =
             metadata_ ? metadata_->generation() : 0;
@@ -1125,9 +1245,17 @@ private:
         dataSource_->setMessage(query_.empty()
             ? tr("pipensx/catalog/empty_inline")
             : tr("pipensx/catalog/nothing_found_inline"));
-        recycler_->reloadData();
-        if (!focusInCatalog)
-            recycler_->setContentOffsetY(0, false);
+        const uint64_t reloadStartedUs = startedUs ? now_us() : 0;
+        if (structureChanged) {
+            recycler_->reloadData();
+            if (!ownsFocus)
+                recycler_->setContentOffsetY(0, false);
+        } else {
+            for (auto* cell : visibleCells<brls::RecyclerCell>(recycler_))
+                dataSource_->repaintCell(cell);
+        }
+        const uint64_t reloadDurationUs =
+            reloadStartedUs ? now_us() - reloadStartedUs : 0;
         const bool empty = count == 0;
         if (empty) {
             if (query_.empty()) {
@@ -1164,7 +1292,7 @@ private:
             emptyState_->setVisibility(brls::Visibility::GONE);
         recyclerHost_->setVisibility(empty ? brls::Visibility::GONE
                                            : brls::Visibility::VISIBLE);
-        if (focusInCatalog)
+        if (focusInRecycler && structureChanged)
             restoreFocus(focusHash, focusShelf);
 
         countText_ = query_.empty()
@@ -1178,6 +1306,30 @@ private:
         status_->setVisibility(batchMode_ ? brls::Visibility::VISIBLE
                                           : brls::Visibility::GONE);
         updateHeader();
+        if (startedUs) {
+            telemetry_log("ui", "catalog",
+                          "event=filter duration_us=%llu",
+                          static_cast<unsigned long long>(filterDurationUs));
+            telemetry_log("ui", "catalog",
+                          "event=sort duration_us=%llu",
+                          static_cast<unsigned long long>(sortDurationUs));
+            telemetry_log(
+                "ui", "catalog", "event=presentation duration_us=%llu",
+                static_cast<unsigned long long>(presentationDurationUs));
+            telemetry_log("ui", "catalog",
+                          "event=shelves duration_us=%llu",
+                          static_cast<unsigned long long>(shelvesDurationUs));
+            telemetry_log(
+                "ui", "catalog",
+                "event=reload duration_us=%llu structural=%d",
+                static_cast<unsigned long long>(reloadDurationUs),
+                structureChanged ? 1 : 0);
+            telemetry_log(
+                "ui", "catalog",
+                "event=rebuild duration_us=%llu entries=%zu visible=%zu shelves=%zu reload=%d",
+                static_cast<unsigned long long>(now_us() - startedUs),
+                all.size(), count, shelfCount, structureChanged ? 1 : 0);
+        }
     }
 
     // Sync the O2 header with the current state: search field mirrors the
@@ -1572,6 +1724,9 @@ private:
         const size_t count = dataSource_->entryCount();
         std::vector<std::string> badges;
         badges.reserve(count);
+        const std::unordered_set<std::string> installedIds =
+            installed_ ? installed_->titleIds()
+                       : std::unordered_set<std::string>();
         for (size_t i = 0; i < count; ++i) {
             const CatalogEntry* entry = dataSource_->entryAt(static_cast<int>(i));
             if (!entry) {
@@ -1587,8 +1742,8 @@ private:
             const GameMetadata* meta =
                 metadata_ ? metadata_->findByInfoHash(entry->infoHash) : nullptr;
             CatalogRowPresentation row = resolveCatalogRow(*entry, meta);
-            if (!row.titleId.empty() && installed_ &&
-                installed_->contains(row.titleId))
+            if (!row.titleId.empty() &&
+                installedIds.count(upperAscii(row.titleId)))
                 badges.back() = tr("pipensx/catalog/badge_installed");
         }
         dataSource_->updateStateBadges(std::move(badges));
@@ -1618,6 +1773,11 @@ private:
     }
 
     void refreshLiveState() {
+        scheduleStorageRefresh();
+        if (pendingRebuild_ && !activityStackHasOverlay()) {
+            rebuildEntries();
+            return;
+        }
         const bool inFlight = catalogRefreshInFlight();
         if (inFlight && !busy_)
             setBusy(true);
@@ -1662,6 +1822,39 @@ private:
         }
         if (settingsChanged)
             rebuildEntries();
+    }
+
+    void scheduleStorageRefresh() {
+        const uint64_t now = now_ms();
+        if (storageRefreshInFlight_ ||
+            (lastStorageRefreshMs_ &&
+             now - lastStorageRefreshMs_ < kStorageRefreshIntervalMs))
+            return;
+        storageRefreshInFlight_ = true;
+        lastStorageRefreshMs_ = now;
+        auto alive = alive_;
+        const std::string root = manager_->rootPath();
+        brls::async([this, alive, root] {
+            const uint64_t startedUs =
+                telemetry_enabled() ? now_us() : 0;
+            const StorageSpaceSnapshot storage =
+                pipensx::queryStorageSpace(root);
+            if (startedUs) {
+                telemetry_log(
+                    "ui", "catalog", "event=storage duration_us=%llu",
+                    static_cast<unsigned long long>(now_us() - startedUs));
+            }
+            brls::sync([this, alive, storage] {
+                if (!alive->load())
+                    return;
+                storageRefreshInFlight_ = false;
+                storage_ = storage;
+                if (fitsOnly_)
+                    rebuildEntries();
+                else if (batchMode_)
+                    refreshBatchStatus();
+            });
+        });
     }
 
     void refreshInstalledAsync() {
@@ -1953,6 +2146,7 @@ private:
     // catalog's own idea of order.
     bool sortReversed_ = false;
     bool busy_ = false;
+    bool pendingRebuild_ = false;
     bool batchMode_ = false;
     bool shelfDrilldown_ = false;
     // Session-only view filters: deliberately not persisted, so a relaunch
@@ -1971,6 +2165,10 @@ private:
     size_t shelfDiagPeers_ = 0;
     uint64_t installedRefreshSignature_ = 0;
     bool installedRefreshInFlight_ = false;
+    static constexpr uint64_t kStorageRefreshIntervalMs = 2000;
+    StorageSpaceSnapshot storage_;
+    uint64_t lastStorageRefreshMs_ = 0;
+    bool storageRefreshInFlight_ = false;
 };
 
 }  // namespace pipensx::ui
