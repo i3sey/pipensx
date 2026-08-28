@@ -539,15 +539,22 @@ bool buildTaskFileInventory(const std::string& appRoot,
             char located[1024] {};
             if (task.source == TaskSource::Torrent && haveMetainfo &&
                 record.sourceIndex < metainfo.num_files &&
-                storage_locate_file_path(&metainfo, task.dataPath.c_str(),
-                                         record.sourceIndex, located,
-                                         sizeof(located))) {
+                storage_expected_file_path(&metainfo, task.dataPath.c_str(),
+                                           record.sourceIndex, located,
+                                           sizeof(located))) {
                 file.absolutePath = located;
             } else if (!record.localPath.empty()) {
                 file.absolutePath = task.dataPath + "/" + record.localPath;
             }
-            if (file.absolutePath.empty() ||
-                !filePresentAtPath(file.absolutePath, record.size)) {
+            if (file.absolutePath.empty()) {
+                file.state = TaskFileState::Missing;
+            } else if (result.settled) {
+                /* After completion the engine just wrote these files; a
+                   second stat of thousands of them freezes deploy inspect
+                   the same way locate+access froze completion save. */
+                file.state = TaskFileState::Present;
+                result.presentBytes += record.size;
+            } else if (!filePresentAtPath(file.absolutePath, record.size)) {
                 file.state = TaskFileState::Missing;
             } else {
                 file.state = TaskFileState::Present;
@@ -586,10 +593,12 @@ bool refreshTorrentManifestLocalPaths(const std::string& appRoot,
     for (TaskFileRecord& file : manifest.files) {
         if (file.sourceIndex >= metainfo.num_files)
             continue;
+        if (file.action == TaskFileAction::Skip)
+            continue;
         char located[1024] {};
-        if (!storage_locate_file_path(&metainfo, task.dataPath.c_str(),
-                                      file.sourceIndex, located,
-                                      sizeof(located)))
+        if (!storage_expected_file_path(&metainfo, task.dataPath.c_str(),
+                                        file.sourceIndex, located,
+                                        sizeof(located)))
             continue;
         const std::string absolute = located;
         if (absolute.rfind(prefix, 0) == 0)

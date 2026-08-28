@@ -47,6 +47,11 @@ storage_t *storage_open_ex(const metainfo_t *mi, const char *outdir,
 int storage_locate_file_path(const metainfo_t *mi, const char *outdir,
                              uint32_t file_index, char *out, size_t out_size);
 
+/* Where storage would put this file. Does not stat; missing files still
+ * resolve. Use this after a completed download instead of locate+access. */
+int storage_expected_file_path(const metainfo_t *mi, const char *outdir,
+                               uint32_t file_index, char *out, size_t out_size);
+
 /*
  * Write data at the absolute torrent byte offset.
  * Returns 1 on success, 0 on error.

@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 static void init_single_file_metainfo(metainfo_t *mi, const char *name,
@@ -457,7 +458,7 @@ static void init_long_disk_path_metainfo(metainfo_t *mi) {
 
 static void test_long_disk_path_uses_short_fallback(void) {
     char outdir[] = "/tmp/pipensx-long-path-XXXXXX";
-    char path[512];
+    char located[768];
     uint8_t value = 0x5a;
     uint8_t actual = 0;
     assert(mkdtemp(outdir));
@@ -472,11 +473,209 @@ static void test_long_disk_path_uses_short_fallback(void) {
     assert(actual == value);
     storage_close(store);
 
-    snprintf(path, sizeof(path), "%s/_files/000000_payload.bin", outdir);
+    assert(storage_locate_file_path(&mi, outdir, 0, located, sizeof(located)));
+    unlink(located);
+    if (strstr(located, "/_files/") != NULL) {
+        char *slash = strrchr(located, '/');
+        if (slash) {
+            *slash = '\0';
+            rmdir(located);
+        }
+        snprintf(located, sizeof(located), "%s/_files", outdir);
+        rmdir(located);
+    }
+    rmdir(outdir);
+    free_test_metainfo(&mi);
+}
+
+static void test_bracket_path_lazy_open(void) {
+    char outdir[] = "/tmp/pipensx-bracket-XXXXXX";
+    char path[768];
+    assert(mkdtemp(outdir));
+
+    metainfo_t mi;
+    memset(&mi, 0, sizeof(mi));
+    strncpy(mi.name, "Serial Experiments Lain [NSP]", sizeof(mi.name) - 1);
+    mi.is_multi = 1;
+    mi.piece_length = 16384;
+    mi.total_length = 1;
+    mi.num_pieces = 1;
+    mi.piece_hashes = (uint8_t*)calloc(1, 20);
+    mi.num_files = 1;
+    mi.files = (mi_file_t*)calloc(1, sizeof(*mi.files));
+    assert(mi.piece_hashes && mi.files);
+    strncpy(mi.files[0].path, "switch/LainNX/media/audio/LAIN14.XA[11].mp4",
+            sizeof(mi.files[0].path) - 1);
+    mi.files[0].length = 1;
+
+    storage_t *store = storage_open(&mi, outdir);
+    assert(store);
+    uint8_t byte = 0xab;
+    assert(storage_write(store, 0, &byte, 1));
+    storage_close(store);
+
+    snprintf(path, sizeof(path),
+             "%s/Serial Experiments Lain [NSP]/switch/LainNX/media/audio/"
+             "LAIN14.XA[11].mp4",
+             outdir);
     assert(access(path, F_OK) == 0);
     unlink(path);
-    snprintf(path, sizeof(path), "%s/_files", outdir);
+    snprintf(path, sizeof(path),
+             "%s/Serial Experiments Lain [NSP]/switch/LainNX/media/audio",
+             outdir);
     rmdir(path);
+    snprintf(path, sizeof(path),
+             "%s/Serial Experiments Lain [NSP]/switch/LainNX/media", outdir);
+    rmdir(path);
+    snprintf(path, sizeof(path),
+             "%s/Serial Experiments Lain [NSP]/switch/LainNX", outdir);
+    rmdir(path);
+    snprintf(path, sizeof(path),
+             "%s/Serial Experiments Lain [NSP]/switch", outdir);
+    rmdir(path);
+    snprintf(path, sizeof(path), "%s/Serial Experiments Lain [NSP]", outdir);
+    rmdir(path);
+    rmdir(outdir);
+    free_test_metainfo(&mi);
+}
+
+static void test_lazy_open_many_files(void) {
+    const uint32_t count = 128;
+    char outdir[] = "/tmp/pipensx-lazy-XXXXXX";
+    assert(mkdtemp(outdir));
+
+    metainfo_t mi;
+    memset(&mi, 0, sizeof(mi));
+    strncpy(mi.name, "many", sizeof(mi.name) - 1);
+    mi.is_multi = 1;
+    mi.piece_length = 16384;
+    mi.total_length = count;
+    mi.num_pieces = 1;
+    mi.piece_hashes = (uint8_t*)calloc(1, 20);
+    mi.num_files = count;
+    mi.files = (mi_file_t*)calloc(count, sizeof(*mi.files));
+    assert(mi.piece_hashes && mi.files);
+    for (uint32_t i = 0; i < count; i++) {
+        snprintf(mi.files[i].path, sizeof(mi.files[i].path), "f%03u.bin", i);
+        mi.files[i].length = 1;
+        mi.files[i].offset = i;
+    }
+
+    storage_t *store = storage_open(&mi, outdir);
+    assert(store);
+    uint8_t last = 0x55;
+    assert(storage_write(store, count - 1, &last, 1));
+    storage_close(store);
+
+    char path[768];
+    snprintf(path, sizeof(path), "%s/many/f%03u.bin", outdir, count - 1);
+    assert(access(path, F_OK) == 0);
+    for (uint32_t i = 0; i < count; i++) {
+        snprintf(path, sizeof(path), "%s/many/f%03u.bin", outdir, i);
+        unlink(path);
+    }
+    snprintf(path, sizeof(path), "%s/many", outdir);
+    rmdir(path);
+    rmdir(outdir);
+    free_test_metainfo(&mi);
+}
+
+static void test_flat_layout_shards_large_torrent_files(void) {
+    char outdir[] = "/tmp/pipensx-flat-shard-XXXXXX";
+    char located[768];
+    assert(mkdtemp(outdir));
+
+    const uint32_t count = 2800;
+    const uint32_t target = 2718;
+    assert(target < count);
+
+    metainfo_t mi;
+    memset(&mi, 0, sizeof(mi));
+    strncpy(mi.name, "big-port", sizeof(mi.name) - 1);
+    mi.is_multi = 1;
+    mi.piece_length = 16384;
+    mi.total_length = count;
+    mi.num_pieces = 1;
+    mi.piece_hashes = (uint8_t*)calloc(1, 20);
+    mi.num_files = count;
+    mi.files = (mi_file_t*)calloc(count, sizeof(*mi.files));
+    assert(mi.piece_hashes && mi.files);
+    for (uint32_t i = 0; i < count; i++) {
+        mi.files[i].offset = i;
+        mi.files[i].length = 1;
+        snprintf(mi.files[i].path, sizeof(mi.files[i].path), "f%u.bin", i);
+    }
+
+    storage_t *store = storage_open(&mi, outdir);
+    assert(store);
+    uint8_t byte = 0x42;
+    assert(storage_write(store, target, &byte, 1));
+    storage_close(store);
+
+    assert(storage_locate_file_path(&mi, outdir, target, located,
+                                    sizeof(located)));
+    assert(strstr(located, "/_files/0042/002718_") != NULL);
+    unlink(located);
+    snprintf(located, sizeof(located), "%s/_files/0042", outdir);
+    rmdir(located);
+    snprintf(located, sizeof(located), "%s/_files", outdir);
+    rmdir(located);
+    rmdir(outdir);
+    free_test_metainfo(&mi);
+}
+
+static void test_expected_path_needs_no_existing_file(void) {
+    char outdir[] = "/tmp/pipensx-expected-path-XXXXXX";
+    char located[768];
+    assert(mkdtemp(outdir));
+
+    const uint32_t count = 2000;
+    const uint32_t target = 1500;
+    metainfo_t mi;
+    memset(&mi, 0, sizeof(mi));
+    strncpy(mi.name, "big-port", sizeof(mi.name) - 1);
+    mi.is_multi = 1;
+    mi.piece_length = 16384;
+    mi.total_length = count;
+    mi.num_pieces = 1;
+    mi.piece_hashes = (uint8_t*)calloc(1, 20);
+    mi.num_files = count;
+    mi.files = (mi_file_t*)calloc(count, sizeof(*mi.files));
+    assert(mi.piece_hashes && mi.files);
+    for (uint32_t i = 0; i < count; i++) {
+        mi.files[i].offset = i;
+        mi.files[i].length = 1;
+        snprintf(mi.files[i].path, sizeof(mi.files[i].path), "f%u.bin", i);
+    }
+
+    assert(storage_expected_file_path(&mi, outdir, target, located,
+                                      sizeof(located)));
+    assert(strstr(located, "/_files/0023/001500_") != NULL);
+    assert(access(located, F_OK) != 0);
+    rmdir(outdir);
+    free_test_metainfo(&mi);
+}
+
+static void test_small_file_skips_prealloc(void) {
+    char outdir[] = "/tmp/pipensx-small-prealloc-XXXXXX";
+    assert(mkdtemp(outdir));
+
+    const int64_t length = 64 * 1024;
+    metainfo_t mi;
+    init_single_file_metainfo(&mi, "tiny.bin", 16384, length);
+
+    storage_t *store = storage_open(&mi, outdir);
+    assert(store);
+    uint8_t byte = 0x7e;
+    assert(storage_write(store, 0, &byte, 1));
+    storage_close(store);
+
+    char path[512];
+    snprintf(path, sizeof(path), "%s/tiny.bin", outdir);
+    struct stat st;
+    assert(stat(path, &st) == 0);
+    assert(st.st_size == 1);
+    unlink(path);
     rmdir(outdir);
     free_test_metainfo(&mi);
 }
@@ -960,6 +1159,11 @@ int main(void) {
     test_preset_have_respects_storage_modes();
     test_stream_sink_piece_is_verified_without_disk_readback();
     test_long_disk_path_uses_short_fallback();
+    test_bracket_path_lazy_open();
+    test_lazy_open_many_files();
+    test_flat_layout_shards_large_torrent_files();
+    test_expected_path_needs_no_existing_file();
+    test_small_file_skips_prealloc();
     test_metainfo_path_safety();
     test_strict_order_advances_past_lookahead_window();
     test_strict_order_stops_at_request_gate();

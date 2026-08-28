@@ -174,6 +174,8 @@ public:
 private:
     void pollDeployOffers();
     bool considerDeployOffer(const std::string& taskId);
+    void markInspecting(const std::string& taskId);
+    void clearInspecting(const std::string& taskId);
     void run(DownloadManager::ExternalDeployLease lease,
              bool includeArchives);
     void finish(SwitchDeployPhase phase, SwitchDeployProblem problem,
@@ -189,6 +191,7 @@ private:
     std::thread pollWorker_;
     std::atomic<bool> cancelled_{false};
     std::atomic<bool> pollInFlight_{false};
+    std::atomic<bool> workerBusy_{false};
     std::mutex offerMutex_;
     std::unordered_set<std::string> offerHandled_;
     std::optional<PendingOffer> pendingOffer_;

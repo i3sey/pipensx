@@ -554,10 +554,8 @@ int main() {
         assert(manager.importTorrentActions(
             selectiveSource, actions, selectiveTaskId, error));
         const std::string dataPath = manager.snapshot()[0].dataPath + "/selection";
-        const std::string selected = dataPath + "/selected.7z";
-        for (int i = 0; i < 500 && access(selected.c_str(), F_OK) != 0; ++i)
-            usleep(10000);
-        assert(access(selected.c_str(), F_OK) == 0);
+        // Disk files are created on first write (lazy open). This torrent
+        // has no seeds; skipped files must still never be touched.
         assert(access((dataPath + "/unselected-a.bin").c_str(), F_OK) != 0);
         assert(access((dataPath + "/unselected-b.bin").c_str(), F_OK) != 0);
         manager.shutdown();
@@ -600,7 +598,6 @@ int main() {
         assert(task.wantedTotalBytes == 8);
         assert(task.wantedCompletedBytes == 0);
         const std::string dataPath = task.dataPath + "/selective-scan";
-        assert(access((dataPath + "/selected.bin").c_str(), F_OK) == 0);
         assert(access((dataPath + "/unselected.bin").c_str(), F_OK) != 0);
         manager.shutdown();
         assert(manager.remove(scanTaskId, true, error));

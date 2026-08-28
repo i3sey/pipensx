@@ -462,6 +462,7 @@ int main() {
     assert(offered->taskId == autoId);
     assert(!offered->autoStart);
     assert(offered->inspection.canStart());
+    assert(!autoDeploy.snapshot().active());
     autoDeploy.dismissDeployOffer(autoId);
     assert(!autoDeploy.takePendingDeployOffer());
     // Copy only after explicit confirmation (user accepted the prompt).
@@ -503,9 +504,14 @@ int main() {
     assert(oneTapOffer->taskId == oneTapId);
     assert(oneTapOffer->autoStart);
     assert(oneTapOffer->inspection.canStart());
+    assert(oneTapDeploy.snapshot().phase == SwitchDeployPhase::Preparing);
+    assert(oneTapDeploy.snapshot().taskId == oneTapId);
+    assert(oneTapDeploy.start(oneTapId, error, false));
     oneTapDeploy.dismissDeployOffer(oneTapId);
-    oneTapDeploy.clearAutoCopy(oneTapId);
-    assert(!oneTapDeploy.autoCopyArmed(oneTapId));
+    assert(oneTapDeploy.snapshot().active());
+    for (int i = 0; i < 500 && oneTapDeploy.snapshot().active(); ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    assert(oneTapDeploy.snapshot().phase == SwitchDeployPhase::Completed);
     oneTapDeploy.shutdown();
 
     // Deleting the installed files must not restart the copy. A one-tap
@@ -907,6 +913,46 @@ int main() {
     }
 
     {
+        const std::string cosmoRoot = root + "-cosmo";
+        const std::string cosmoTarget = cosmoRoot + "/sd/switch";
+        const std::string cosmoData = cosmoRoot + "/downloads/lain";
+        fs::remove_all(cosmoRoot);
+        fs::create_directories(cosmoTarget);
+        const std::string cosmoNro = nroBytes();
+        writeFile(cosmoData + "/_files/000001_LainNX.nro", cosmoNro);
+        TaskFileInventory cosmoInventory;
+        cosmoInventory.taskId = "lain-cosmo";
+        cosmoInventory.rootPath = cosmoData;
+        cosmoInventory.settled = true;
+        cosmoInventory.completeManifest = true;
+        TaskFileInfo ghost;
+        ghost.logicalPath =
+            "Lain [NSP]/switch/LainNX/.cosmo";
+        ghost.localPath = "_files/000000_.cosmo";
+        ghost.absolutePath = cosmoData + "/_files/000000_.cosmo";
+        ghost.size = 0;
+        ghost.action = TaskFileAction::Download;
+        ghost.state = TaskFileState::Present;
+        cosmoInventory.files.push_back(std::move(ghost));
+        TaskFileInfo nro;
+        nro.logicalPath = "Lain [NSP]/switch/LainNX/LainNX.nro";
+        nro.localPath = "_files/000001_LainNX.nro";
+        nro.absolutePath = cosmoData + "/_files/000001_LainNX.nro";
+        nro.size = cosmoNro.size();
+        nro.action = TaskFileAction::Download;
+        nro.state = TaskFileState::Present;
+        cosmoInventory.files.push_back(std::move(nro));
+        SwitchDeployInspection cosmoInspection =
+            inspectSwitchDeploy(std::move(cosmoInventory), cosmoTarget);
+        assert(cosmoInspection.canStart());
+        assert(cosmoInspection.plan.files.size() == 1);
+        assert(cosmoInspection.plan.ignoredFiles == 1);
+        assert(cosmoInspection.plan.files[0].destinationRelativePath ==
+               "LainNX/LainNX.nro");
+        fs::remove_all(cosmoRoot);
+    }
+
+    {
         TaskFileInventory nszInventory;
         nszInventory.taskId = "nsz-only";
         nszInventory.rootPath = data;
@@ -924,6 +970,32 @@ int main() {
         SwitchDeployInspection nszInspection =
             inspectSwitchDeploy(std::move(nszInventory), target);
         assert(nszInspection.problem == SwitchDeployProblem::NotAPort);
+    }
+
+    {
+        TaskFileInventory mixedInventory;
+        mixedInventory.taskId = "nsp-plus-data";
+        mixedInventory.rootPath = data;
+        mixedInventory.settled = true;
+        mixedInventory.completeManifest = true;
+        TaskFileInfo nspFile;
+        nspFile.logicalPath = "Laingame.nsp";
+        nspFile.localPath = "_files/000000_Laingame.nsp";
+        nspFile.size = 4096;
+        nspFile.package = true;
+        nspFile.action = TaskFileAction::Install;
+        nspFile.state = TaskFileState::Installed;
+        mixedInventory.files.push_back(std::move(nspFile));
+        TaskFileInfo dataFile;
+        dataFile.logicalPath = "roms/LAIN.BIN";
+        dataFile.localPath = "_files/000001_LAIN.BIN";
+        dataFile.size = 1024;
+        dataFile.action = TaskFileAction::Download;
+        dataFile.state = TaskFileState::Present;
+        mixedInventory.files.push_back(std::move(dataFile));
+        SwitchDeployInspection mixedInspection =
+            inspectSwitchDeploy(std::move(mixedInventory), target);
+        assert(mixedInspection.problem == SwitchDeployProblem::LayoutNotFound);
     }
 
     setStorageSpaceOverride(nullptr);

@@ -216,6 +216,7 @@ struct torrent {
        on disk: the resume path then skips the final verification pass, which
        would re-read and re-hash the exact same bytes a second time. */
     int      startup_verified_all;
+    int      fast_resume_preset;
     uint32_t final_verify_index;
     int      final_verifying;
     int      fatal_error;
@@ -1229,6 +1230,19 @@ static int check_completion(torrent_t *t) {
         return 0;
     }
 
+    /* Fresh (or hash-scanned) download: every kept piece was SHA-1'd in RAM
+       before the write. Flush stdio buffers and skip a second disk pass.
+       Fast-resume bitfields were not hashed — those still need the pass. */
+    if (!t->fast_resume_preset) {
+        if (!storage_flush(t->store)) {
+            log_msg("[torrent] final storage flush failed\n");
+            return 1;
+        }
+        log_msg("[torrent] final verification skipped (live hashes)\n");
+        storage_finalize(t->store);
+        return 0;
+    }
+
     if (!t->final_verifying) {
         if (!storage_flush(t->store)) {
             log_msg("[torrent] final storage flush failed\n");
@@ -1431,6 +1445,7 @@ torrent_t *torrent_create_ex(const metainfo_t *mi,
             piece_mgr_preset_have(t->pm, options->have_bitfield,
                                   options->have_bitfield_len);
             t->startup_verifying = 0;
+            t->fast_resume_preset = t->pm->num_done > 0;
             log_msg("[torrent] fast-resume: %u/%u pieces preset\n",
                     t->pm->num_done, t->pm->num_pieces);
         }
@@ -1869,7 +1884,6 @@ int torrent_tick(torrent_t *t) {
             t->expired_requests += (uint32_t)expired;
             t->telemetry_expired_requests += (uint32_t)expired;
             p->telemetry_expired_requests += (uint32_t)expired;
-            p->last_expiry_ms = now2;
             /* A peer that delivered a block within the grace window is
                working through its queue; the expired requests were just
                queued too deep. Release them without a strike — the

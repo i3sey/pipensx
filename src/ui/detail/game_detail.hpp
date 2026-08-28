@@ -515,6 +515,13 @@ private:
         return &cache_.front();
     }
 
+    static float deployFill(const SwitchDeploySnapshot& deploy) {
+        if (!deploy.totalBytes)
+            return 0.0f;
+        return std::min(1.0f, static_cast<float>(deploy.bytesCopied) /
+                                  static_cast<float>(deploy.totalBytes));
+    }
+
     static std::string installButtonLabel(const DownloadTask& task) {
         switch (task.status) {
             case DownloadStatus::Queued:
@@ -697,16 +704,27 @@ private:
         if (busy_)
             return;
         const DownloadTask* task = currentTask();
+        const SwitchDeploySnapshot deployState =
+            deploy_ ? deploy_->snapshot() : SwitchDeploySnapshot{};
+        const bool deploying = task && deployState.active() &&
+                               deployState.taskId == task->id;
         if (task) {
             operationMessage_.clear();
             // O5: the button is the status surface — it stays vivid (enabled)
             // and shows a progress fill instead of greying out. Paused/Error
             // become an actionable "Resume".
-            bool actionable = task->status == DownloadStatus::Paused ||
-                              task->status == DownloadStatus::Error;
+            bool actionable = !deploying &&
+                              (task->status == DownloadStatus::Paused ||
+                               task->status == DownloadStatus::Error);
             if (actionable) {
                 setTextIfChanged(primary_, tr("pipensx/common/resume"));
                 primary_->setProgress(-1.0f);
+            } else if (deploying) {
+                const float fill = deployFill(deployState);
+                setTextIfChanged(
+                    primary_,
+                    tr("pipensx/detail/status_installing", percentOf(fill)));
+                primary_->setProgress(fill);
             } else {
                 setTextIfChanged(primary_, installButtonLabel(*task));
                 primary_->setProgress(progressForButton(*task));

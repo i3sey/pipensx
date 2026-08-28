@@ -485,10 +485,84 @@ static void test_late_piece_after_expire_is_not_a_strike(void) {
     assert(expired.count == 1);
 
     fill_piece(message, 3);
+    send_all(sockets[1], message, sizeof(message));
     block_capture_t capture = {0};
     assert(peer_recv(&peer, &context, capture_block, NULL, NULL, &capture) == 0);
     assert(capture.count == 0);
     assert(peer.unsolicited_piece_strikes == 0);
+
+    peer_fini(&peer);
+    close(sockets[0]);
+    close(sockets[1]);
+}
+
+/* A 16-slot ring forgot the first of 17 expired requests; the late PIECE
+   was scored unsolicited and disconnected the only peer. */
+static void test_late_piece_after_mass_expire_is_not_a_strike(void) {
+    int sockets[2];
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
+    assert(net_set_nonblock(sockets[0]));
+
+    enum { MESSAGE_SIZE = 4 + 1 + 8 + 8192 };
+    enum { EXPIRED = 17 };
+    uint8_t message[MESSAGE_SIZE];
+
+    peer_t peer;
+    memset(&peer, 0, sizeof(peer));
+    peer.fd = sockets[0];
+    peer.state = PS_ACTIVE;
+    peer_ctx_t context;
+    memset(&context, 0, sizeof(context));
+    context.num_pieces = 32;
+
+    peer.pipeline_len = EXPIRED;
+    for (int i = 0; i < EXPIRED; i++)
+        peer.pipeline[i] = (block_req_t){i, 0, 8192, 1};
+    assert(peer_expire_requests(&peer, 10000, 1000, NULL, NULL) == EXPIRED);
+    assert(peer.pipeline_len == 0);
+
+    fill_piece(message, 0);
+    send_all(sockets[1], message, sizeof(message));
+    block_capture_t capture = {0};
+    assert(peer_recv(&peer, &context, capture_block, NULL, NULL, &capture) == 0);
+    assert(capture.count == 0);
+    assert(peer.unsolicited_piece_strikes == 0);
+    assert(peer.state != PS_DEAD);
+
+    peer_fini(&peer);
+    close(sockets[0]);
+    close(sockets[1]);
+}
+
+static void test_unsolicited_during_expiry_grace_is_not_a_strike(void) {
+    int sockets[2];
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
+    assert(net_set_nonblock(sockets[0]));
+
+    enum { MESSAGE_SIZE = 4 + 1 + 8 + 8192 };
+    uint8_t message[MESSAGE_SIZE];
+
+    peer_t peer;
+    memset(&peer, 0, sizeof(peer));
+    peer.fd = sockets[0];
+    peer.state = PS_ACTIVE;
+    peer_ctx_t context;
+    memset(&context, 0, sizeof(context));
+    context.num_pieces = 8;
+
+    fill_piece(message, 0);
+    peer.last_expiry_ms = now_ms();
+    send_all(sockets[1], message, sizeof(message));
+    block_capture_t capture = {0};
+    assert(peer_recv(&peer, &context, capture_block, NULL, NULL, &capture) == 0);
+    assert(capture.count == 0);
+    assert(peer.unsolicited_piece_strikes == 0);
+
+    peer.last_expiry_ms = now_ms() - (LATE_PIECE_GRACE_MS + 1);
+    send_all(sockets[1], message, sizeof(message));
+    assert(peer_recv(&peer, &context, capture_block, NULL, NULL, &capture) == 0);
+    assert(capture.count == 0);
+    assert(peer.unsolicited_piece_strikes == 1);
 
     peer_fini(&peer);
     close(sockets[0]);
@@ -691,6 +765,8 @@ int main(void) {
     test_recv_reassembles_message_split_across_reads();
     test_piece_receipt_samples_block_latency();
     test_late_piece_after_expire_is_not_a_strike();
+    test_late_piece_after_mass_expire_is_not_a_strike();
+    test_unsolicited_during_expiry_grace_is_not_a_strike();
     test_late_piece_after_cancel_is_not_a_strike();
     test_utp_loopback_transfers_ordered_stream();
     puts("peer tests passed");

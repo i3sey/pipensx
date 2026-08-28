@@ -327,6 +327,8 @@ int peer_expire_requests(peer_t *p, uint64_t now, uint64_t timeout_ms,
         p->pipeline[kept++] = req;
     }
     p->pipeline_len = kept;
+    if (expired > 0)
+        p->last_expiry_ms = now;
     return expired;
 }
 
@@ -486,6 +488,13 @@ static int process_message(peer_t *p, const peer_ctx_t *ctx,
             if (!take_pipeline_request(p, (int)idx, (int)off, (int)blen,
                                        &requested_ms)) {
                 if (was_recently_dropped(p, (int)idx, (int)off, (int)blen))
+                    break;
+                /* Mass-expire can still overflow the ring if we refill and
+                   drop more than MAX_PIPELINE unique blocks; skip strikes
+                   while that flush is in flight. */
+                uint64_t now = now_ms();
+                if (p->last_expiry_ms && now >= p->last_expiry_ms &&
+                    now - p->last_expiry_ms < LATE_PIECE_GRACE_MS)
                     break;
                 if (++p->unsolicited_piece_strikes >= MAX_UNSOLICITED_PIECES) {
                     log_msg("[peer] too many unsolicited PIECE frames\n");

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <memory>
 #include <string>
@@ -495,44 +496,64 @@ private:
             frameTitle_ = task->name;
             frame_->setTitle(frameTitle_);
         }
-        setTextIfChanged(status_, tr("pipensx/downloads/status_line",
-                                     downloadStatusLabel(task->status)));
-        status_->setTextColor(statusColor(task->status));
-
         const bool installing = task->status == DownloadStatus::Installing ||
                                 task->status == DownloadStatus::Committing;
         const bool fetching = task->status == DownloadStatus::Fetching;
+        const SwitchDeploySnapshot deployState =
+            deploy_ ? deploy_->snapshot() : SwitchDeploySnapshot{};
+        const bool deploying =
+            deployState.active() && deployState.taskId == taskId_;
+        if (deploying) {
+            const char* phaseKey =
+                deployState.phase == SwitchDeployPhase::Preparing
+                    ? "pipensx/deploy/phase_preparing"
+                    : deployState.phase == SwitchDeployPhase::Extracting
+                          ? "pipensx/deploy/phase_extracting"
+                          : "pipensx/deploy/phase_copying";
+            setTextIfChanged(status_, tr("pipensx/downloads/status_line",
+                                         tr(phaseKey)));
+            status_->setTextColor(theme::accent());
+        } else {
+            setTextIfChanged(status_, tr("pipensx/downloads/status_line",
+                                         downloadStatusLabel(task->status)));
+            status_->setTextColor(statusColor(task->status));
+        }
+
         float progress;
-        if (fetching)
-            progress = std::clamp(static_cast<float>(task->fetchProgress),
-                                  0.0f, 1.0f);
-        else if (task->mode == TransferMode::StreamInstall)
-            progress = streamInstallProgressOf(*task);
-        else if (installing)
-            progress = installProgressOf(*task);
-        else
-            progress = progressOf(*task);
-        progressBar_->setProgress(progress);
-        // Installing phases: the bar and the byte line track the same
-        // per-package install numbers. Fetching: the bar tracks the debrid
-        // service's own cache-fill fraction (no local bytes yet). Otherwise
-        // the byte line follows the wanted (selection-aware) range.
         uint64_t doneBytes = 0;
         uint64_t totalBytes = 0;
-        if (fetching) {
+        if (deploying) {
+            progress = deployState.totalBytes
+                ? std::min(1.0f, static_cast<float>(deployState.bytesCopied) /
+                                     static_cast<float>(deployState.totalBytes))
+                : 0.0f;
+            doneBytes = deployState.bytesCopied;
+            totalBytes = deployState.totalBytes;
+        } else if (fetching) {
+            progress = std::clamp(static_cast<float>(task->fetchProgress),
+                                  0.0f, 1.0f);
             totalBytes = task->totalBytes;
             doneBytes = totalBytes
                 ? static_cast<uint64_t>(static_cast<double>(totalBytes) *
                                        task->fetchProgress)
                 : 0;
-        } else if (installing) {
-            doneBytes = task->installedBytes;
-            totalBytes = task->installTotalBytes;
         } else {
-            const auto wanted = downloadProgressBytes(*task);
-            doneBytes = wanted.first;
-            totalBytes = wanted.second;
+            if (task->mode == TransferMode::StreamInstall)
+                progress = streamInstallProgressOf(*task);
+            else if (installing)
+                progress = installProgressOf(*task);
+            else
+                progress = progressOf(*task);
+            if (installing) {
+                doneBytes = task->installedBytes;
+                totalBytes = task->installTotalBytes;
+            } else {
+                const auto wanted = downloadProgressBytes(*task);
+                doneBytes = wanted.first;
+                totalBytes = wanted.second;
+            }
         }
+        progressBar_->setProgress(progress);
         setTextIfChanged(progress_, tr("pipensx/downloads/progress_line",
                                        percentOf(progress),
                                        formatBytes(doneBytes),

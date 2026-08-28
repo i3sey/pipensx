@@ -185,6 +185,22 @@ std::string parentPath(const std::string& path) {
     return slash == std::string::npos ? std::string() : path.substr(0, slash);
 }
 
+// Sidecar next to the destination, not a shared ".hidden" name in the folder.
+// Horizon's SD FAT rejects some leading-dot names, and one temp per directory
+// made the second file in the same folder fail O_EXCL.
+std::string copyTemporaryPath(const std::string& destination,
+                              const std::string& taskId) {
+    const std::string suffix =
+        ".pipensx-part-" + taskId.substr(0, std::min<size_t>(8, taskId.size()));
+    std::string temporary = destination + suffix;
+    const size_t slash = temporary.find_last_of('/');
+    const size_t base = slash == std::string::npos ? 0 : slash + 1;
+    if (temporary.size() - base <= 255)
+        return temporary;
+    return parentPath(destination) + "/pipensx-part-" +
+           taskId.substr(0, std::min<size_t>(8, taskId.size()));
+}
+
 std::string bstr(const std::string& value) {
     return std::to_string(value.size()) + ":" + value;
 }
@@ -418,22 +434,28 @@ bool copyFile(const SwitchDeployEntry& entry, const std::string& appRoot,
         error = "Unable to create the destination directory.";
         return false;
     }
-    const std::string temporary = parent + "/.pipensx-part-" +
-        taskId.substr(0, std::min<size_t>(8, taskId.size()));
+    const std::string temporary =
+        copyTemporaryPath(entry.destinationPath, taskId);
     if (!saveJob(appRoot, taskId, temporary)) {
         error = "Unable to save the copy recovery journal.";
         return false;
     }
     std::FILE* input = std::fopen(entry.sourcePath.c_str(), "rb");
     if (!input) {
-        error = "Unable to open a file for copying.";
+        error = std::string("Unable to open a file for copying (") +
+                std::strerror(errno) + ").";
         return false;
     }
-    const int outputFd = open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL,
-                              0644);
+    int outputFd = open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0644);
+    if (outputFd < 0 && errno == EEXIST) {
+        std::remove(temporary.c_str());
+        outputFd = open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0644);
+    }
     if (outputFd < 0) {
+        const int createdErrno = errno;
         std::fclose(input);
-        error = "Unable to create the temporary copy file.";
+        error = std::string("Unable to create the temporary copy file (") +
+                std::strerror(createdErrno) + ").";
         return false;
     }
     std::FILE* output = fdopen(outputFd, "wb");
@@ -635,13 +657,20 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
     }
     if (roots.empty() && result.plan.archives.empty()) {
         bool hasPackagePayload = false;
+        bool hasLooseFiles = false;
         for (const TaskFileInfo& file : result.inventory.files) {
             if (file.package &&
                 (file.action == TaskFileAction::Download ||
                  file.action == TaskFileAction::Install))
                 hasPackagePayload = true;
+            if (!file.package && !file.cartridge &&
+                file.action == TaskFileAction::Download &&
+                (file.state == TaskFileState::Present ||
+                 file.state == TaskFileState::Installed) &&
+                !isPortArchiveName(file.logicalPath))
+                hasLooseFiles = true;
         }
-        if (hasPackagePayload) {
+        if (hasPackagePayload && !hasLooseFiles) {
             setProblem(result, SwitchDeployProblem::NotAPort,
                        "This download contains native packages only.");
         } else {
@@ -698,9 +727,16 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
         }
         if (file.state != TaskFileState::Present ||
             !sourceFileSafe(result.inventory, file)) {
-            setProblem(result, SwitchDeployProblem::MissingSource,
-                       file.logicalPath);
-            return result;
+            /* 0-byte / dotfiles (LainNX `.cosmo`) are never created on disk.
+               Aborting the whole port for one of those leaves the NRO
+               uncopied. Skip anything that is not the NRO itself. */
+            if (hasNroExtension(file.logicalPath)) {
+                setProblem(result, SwitchDeployProblem::MissingSource,
+                           file.logicalPath);
+                return result;
+            }
+            ++result.plan.ignoredFiles;
+            continue;
         }
         const std::string destinationRelative =
             joinPath(parts, switchIndex + 1, parts.size());
@@ -874,9 +910,25 @@ bool SwitchDeployService::inventory(const std::string& taskId,
 bool SwitchDeployService::start(const std::string& taskId,
                                 std::string& error,
                                 bool includeArchives) {
+    if (workerBusy_.load()) {
+        error = "Another /switch copy is already active.";
+        return false;
+    }
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (snapshot_.active()) {
+        const bool inspectOnly =
+            snapshot_.phase == SwitchDeployPhase::Preparing &&
+            snapshot_.taskId == taskId;
+        if (snapshot_.active() && !inspectOnly) {
+            error = "Another /switch copy is already active.";
+            return false;
+        }
+    }
+    if (pollInFlight_.load()) {
+        std::lock_guard<std::mutex> lock(offerMutex_);
+        const bool offerReady =
+            pendingOffer_ && pendingOffer_->taskId == taskId;
+        if (!offerReady) {
             error = "Another /switch copy is already active.";
             return false;
         }
@@ -884,8 +936,10 @@ bool SwitchDeployService::start(const std::string& taskId,
     if (worker_.joinable())
         worker_.join();
     auto lease = manager_.beginExternalDeploy(taskId, error);
-    if (!lease)
+    if (!lease) {
+        clearInspecting(taskId);
         return false;
+    }
     cancelled_.store(false, std::memory_order_relaxed);
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -894,6 +948,12 @@ bool SwitchDeployService::start(const std::string& taskId,
         snapshot_.taskId = taskId;
         ++snapshot_.generation;
     }
+    {
+        std::lock_guard<std::mutex> lock(offerMutex_);
+        if (pendingOffer_ && pendingOffer_->taskId == taskId)
+            pendingOffer_.reset();
+    }
+    workerBusy_.store(true);
     worker_ = std::thread([this, lease = std::move(*lease),
                            includeArchives]() mutable {
         run(std::move(lease), includeArchives);
@@ -1014,6 +1074,8 @@ void SwitchDeployService::run(DownloadManager::ExternalDeployLease lease,
         };
         if (!copyFile(entry, appRoot_, plan.taskId, cancelled_, progress,
                       entry.sha256, error)) {
+            if (!entry.destinationRelativePath.empty())
+                error += " (" + entry.destinationRelativePath + ")";
             if (cancelled_.load(std::memory_order_relaxed))
                 finish(SwitchDeployPhase::Cancelled,
                        SwitchDeployProblem::None, {});
@@ -1110,6 +1172,7 @@ void SwitchDeployService::finish(SwitchDeployPhase phase,
             pendingOffer_.reset();
         offerHandled_.insert(std::move(taskId));
     }
+    workerBusy_.store(false);
 }
 
 void SwitchDeployService::cancel() {
@@ -1122,6 +1185,7 @@ void SwitchDeployService::shutdown() {
         pollWorker_.join();
     if (worker_.joinable())
         worker_.join();
+    workerBusy_.store(false);
 }
 
 SwitchDeploySnapshot SwitchDeployService::snapshot() const {
@@ -1174,6 +1238,34 @@ bool SwitchDeployService::autoCopyArmed(const std::string& taskId) const {
            S_ISREG(st.st_mode);
 }
 
+void SwitchDeployService::markInspecting(const std::string& taskId) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (snapshot_.active() && snapshot_.phase != SwitchDeployPhase::Preparing)
+        return;
+    snapshot_.phase = SwitchDeployPhase::Preparing;
+    snapshot_.taskId = taskId;
+    snapshot_.problem = SwitchDeployProblem::None;
+    snapshot_.currentPath.clear();
+    snapshot_.detail.clear();
+    snapshot_.bytesCopied = 0;
+    snapshot_.totalBytes = 0;
+    snapshot_.filesCopied = 0;
+    snapshot_.totalFiles = 0;
+    ++snapshot_.generation;
+}
+
+void SwitchDeployService::clearInspecting(const std::string& taskId) {
+    if (workerBusy_.load())
+        return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (snapshot_.phase != SwitchDeployPhase::Preparing ||
+        snapshot_.taskId != taskId)
+        return;
+    const uint64_t generation = snapshot_.generation + 1;
+    snapshot_ = {};
+    snapshot_.generation = generation;
+}
+
     bool SwitchDeployService::considerDeployOffer(const std::string& taskId) {
         {
             std::lock_guard<std::mutex> lock(offerMutex_);
@@ -1197,18 +1289,30 @@ bool SwitchDeployService::autoCopyArmed(const std::string& taskId) const {
             offerHandled_.insert(taskId);
             return false;
         }
+        markInspecting(taskId);
         SwitchDeployInspection inspection = inspect(taskId);
+        log_msg("[deploy] inspect %s problem=%d can_start=%d files=%zu "
+                "archives=%zu: %s\n",
+                taskId.c_str(), static_cast<int>(inspection.problem),
+                inspection.canStart() ? 1 : 0, inspection.plan.files.size(),
+                inspection.plan.archives.size(),
+                inspection.detail.empty() ? "-" : inspection.detail.c_str());
         if (autoArmed) {
             const bool missingLayout =
                 inspection.problem == SwitchDeployProblem::LayoutNotFound ||
                 inspection.problem == SwitchDeployProblem::AmbiguousLayout;
             if (!inspection.canStart() &&
-                !switchDeployOffersCopy(inspection.problem) && !missingLayout)
+                !switchDeployOffersCopy(inspection.problem) && !missingLayout) {
+                clearInspecting(taskId);
                 return false;
+            }
             if (inspection.problem == SwitchDeployProblem::NotAPort) {
                 clearAutoCopy(taskId);
-                std::lock_guard<std::mutex> lock(offerMutex_);
-                offerHandled_.insert(taskId);
+                {
+                    std::lock_guard<std::mutex> lock(offerMutex_);
+                    offerHandled_.insert(taskId);
+                }
+                clearInspecting(taskId);
                 return false;
             }
             if (inspection.canStart()) {
@@ -1219,21 +1323,31 @@ bool SwitchDeployService::autoCopyArmed(const std::string& taskId) const {
                 }
                 if (looseBytes == 0 && inspection.plan.archives.empty()) {
                     clearAutoCopy(taskId);
-                    std::lock_guard<std::mutex> lock(offerMutex_);
-                    offerHandled_.insert(taskId);
+                    {
+                        std::lock_guard<std::mutex> lock(offerMutex_);
+                        offerHandled_.insert(taskId);
+                    }
+                    clearInspecting(taskId);
                     return false;
                 }
             }
+            bool collide = false;
             {
                 std::lock_guard<std::mutex> lock(offerMutex_);
                 if (offerHandled_.count(taskId) || pendingOffer_)
-                    return false;
-                pendingOffer_ = PendingOffer{taskId, std::move(inspection),
-                                             true};
+                    collide = true;
+                else
+                    pendingOffer_ = PendingOffer{taskId, std::move(inspection),
+                                                 true};
+            }
+            if (collide) {
+                clearInspecting(taskId);
+                return false;
             }
             log_msg("[deploy] auto-copy ready %s\n", taskId.c_str());
             return true;
         }
+        clearInspecting(taskId);
         if (!inspection.canStart())
             return false;
         uint64_t looseBytes = 0;
@@ -1284,10 +1398,13 @@ void SwitchDeployService::pollDeployOffers() {
     }
 
     void SwitchDeployService::dismissDeployOffer(const std::string& taskId) {
-        std::lock_guard<std::mutex> lock(offerMutex_);
-        offerHandled_.insert(taskId);
-        if (pendingOffer_ && pendingOffer_->taskId == taskId)
-            pendingOffer_.reset();
+        {
+            std::lock_guard<std::mutex> lock(offerMutex_);
+            offerHandled_.insert(taskId);
+            if (pendingOffer_ && pendingOffer_->taskId == taskId)
+                pendingOffer_.reset();
+        }
+        clearInspecting(taskId);
         log_msg("[deploy] offer dismissed %s\n", taskId.c_str());
     }
 

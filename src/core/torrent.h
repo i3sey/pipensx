@@ -24,7 +24,8 @@ typedef struct {
      * (num_pieces+7)/8; copied during create, need not outlive the call.
      * Skips the startup hash scan entirely; the final verification pass at
      * completion still re-hashes everything, so a wrong bitfield self-heals
-     * at the cost of serving unverified pieces until then.
+     * at the cost of serving unverified pieces until then. Live downloads
+     * (no bitfield) skip that pass: pieces were already hashed in RAM.
      */
     const uint8_t *have_bitfield;
     uint32_t have_bitfield_len;

@@ -2249,8 +2249,10 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
                 task->resumeBitfield = std::move(teardownBitfield);
             persistState(lock);
             if (finished) {
+                DownloadTask done = *task;
+                lock.unlock();
                 std::string manifestError;
-                if (!refreshTorrentManifestLocalPaths(rootPath_, *task,
+                if (!refreshTorrentManifestLocalPaths(rootPath_, done,
                                                       manifestError))
                     diagnostic_error("task_files", "refresh_paths",
                                      "task=%s error=%s", activeId.c_str(),

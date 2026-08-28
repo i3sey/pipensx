@@ -9,8 +9,13 @@
 /* Disconnect after this many unsolicited / wrong-length PIECE frames. */
 #define MAX_UNSOLICITED_PIECES 8
 /* Remember recently expired/cancelled requests so their late PIECE frames
-   are dropped without a strike (hedge CANCEL and FIRST_BLOCK timeout). */
-#define RECENT_DROPPED_REQUESTS 16
+   are dropped without a strike. Sized to MAX_PIPELINE so a mass-expire of a
+   full in-flight window still matches late answers (a 16-slot ring wrapped
+   and disconnected the only peer). */
+#define RECENT_DROPPED_REQUESTS MAX_PIPELINE
+/* After we expire requests, unmatched PIECE is assumed late — not probing —
+   for this long. Keep equal to REQUEST_TIMEOUT_MS in torrent.c. */
+#define LATE_PIECE_GRACE_MS 15000
 #define BT_HANDSHAKE_LEN 68
 #define PEER_BUF_SIZE (4 + 1 + (1<<14) + 9)  /* enough for one piece msg */
 #define PEER_RECV_BUFFER_SIZE ((256 * 1024) + 4) /* max payload + length */
@@ -129,8 +134,8 @@ typedef struct peer {
        length). Excess disconnects the peer so a malicious sender cannot keep
        probing without cost. */
     uint32_t unsolicited_piece_strikes;
-    /* Last time any of this peer's requests expired; gates the
-       window-binding growth in sample_peer_rates. */
+    /* Last time any of this peer's requests expired; gates window-binding
+       growth in sample_peer_rates and the late-PIECE strike grace. */
     uint64_t last_expiry_ms;
     uint32_t telemetry_expired_requests;
     uint32_t telemetry_hedged_requests;
