@@ -109,13 +109,13 @@ done
 # comes from the wall clock (borealis animation.cpp, updateHighlightAnimation),
 # so the highlight border differs between any two runs — the wider the focused
 # row, the longer that border and the more pixels drift. The torrent-selection
-# rows are the widest in the app and land at 15-22k against a 25000 default,
-# close enough that an unlucky phase would fail the run for no reason. They get
-# their own ceiling instead of pushing everyone else's up. (Fixing the cause
-# would mean patching borealis, which is a pinned submodule.)
+# rows are the widest in the app; with the 14-file golden fixture they drift
+# ~37-44k against a reference, so 40000 was too tight on CI. They get their
+# own ceiling instead of pushing everyone else's up. (Fixing the cause would
+# mean patching borealis, which is a pinned submodule.)
 budget_for() {
     case "$1" in
-        torrent-selection-*|ru-torrent-selection-*|update-chooser-*|ru-update-chooser-*) echo 40000 ;;
+        torrent-selection-*|ru-torrent-selection-*|update-chooser-*|ru-update-chooser-*) echo 50000 ;;
         *) echo "$MAX_DIFF" ;;
     esac
 }
