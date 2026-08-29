@@ -5,11 +5,18 @@ name: switch-release
 # review before it goes public.
 
 on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
   workflow_dispatch:
     inputs:
       version:
-        description: "Release tag (e.g. v0.3.0)"
+        description: "Release tag (e.g. 1.4.4)"
         required: true
+        type: string
+      notes:
+        description: "Optional release notes (overrides releases/<version>-notes.md)"
+        required: false
         type: string
 
 permissions:
@@ -22,6 +29,7 @@ jobs:
     container:
       image: devkitpro/devkita64:latest
     env:
+      RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
       DEVKITPRO: /opt/devkitpro
       # ubuntu-latest is 2-core/7GB; even 2 concurrent heavy TUs from this
       # template-heavy C++ tree (borealis/nanovg) exceed available RAM and
@@ -97,7 +105,7 @@ jobs:
 
       - name: Build pipensx.nro
         env:
-          PIPENSX_VERSION: ${{ inputs.version }}
+          PIPENSX_VERSION: ${{ env.RELEASE_VERSION }}
         run: |
           PIPENSX_VERSION="${PIPENSX_VERSION#v}" make switch
           sha256sum build-switch/pipensx.nro > build-switch/pipensx.nro.sha256
@@ -136,15 +144,32 @@ jobs:
           name: pipensx-nro
           path: dist
 
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          sparse-checkout: releases
+          sparse-checkout-cone-mode: false
+
       - name: Create draft release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+          DISPATCH_NOTES: ${{ github.event_name == 'workflow_dispatch' && inputs.notes || '' }}
         run: |
-          gh release create "${{ inputs.version }}" \
+          set -eu
+          version="${RELEASE_VERSION#v}"
+          notes_file="releases/${version}-notes.md"
+          notes_args="--generate-notes"
+          if [ -n "${DISPATCH_NOTES}" ]; then
+            printf '%s\n' "${DISPATCH_NOTES}" > /tmp/release-notes.md
+            notes_args="--notes-file /tmp/release-notes.md"
+          elif [ -f "${notes_file}" ]; then
+            notes_args="--notes-file ${notes_file}"
+          fi
+          gh release create "${version}" \
             dist/pipensx.nro \
             dist/pipensx.nro.sha256 \
             dist/SDOut.zip \
             --repo "${{ github.repository }}" \
-            --title "${{ inputs.version }}" \
+            --title "${version}" \
             --draft \
-            --generate-notes
+            ${notes_args}
