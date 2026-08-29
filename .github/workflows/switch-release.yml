@@ -139,15 +139,15 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: pipensx-nro
-          path: dist
-
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           sparse-checkout: releases
           sparse-checkout-cone-mode: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: pipensx-nro
+          path: dist
 
       - name: Create draft release
         env:
@@ -158,18 +158,32 @@ jobs:
           set -eu
           version="${RELEASE_VERSION#v}"
           notes_file="releases/${version}-notes.md"
-          notes_args="--generate-notes"
           if [ -n "${DISPATCH_NOTES}" ]; then
             printf '%s\n' "${DISPATCH_NOTES}" > /tmp/release-notes.md
-            notes_args="--notes-file /tmp/release-notes.md"
+            gh release create "${version}" \
+              dist/pipensx.nro \
+              dist/pipensx.nro.sha256 \
+              dist/SDOut.zip \
+              --repo "${{ github.repository }}" \
+              --title "${version}" \
+              --draft \
+              --notes-file /tmp/release-notes.md
           elif [ -f "${notes_file}" ]; then
-            notes_args="--notes-file ${notes_file}"
+            gh release create "${version}" \
+              dist/pipensx.nro \
+              dist/pipensx.nro.sha256 \
+              dist/SDOut.zip \
+              --repo "${{ github.repository }}" \
+              --title "${version}" \
+              --draft \
+              --notes-file "${notes_file}"
+          else
+            gh release create "${version}" \
+              dist/pipensx.nro \
+              dist/pipensx.nro.sha256 \
+              dist/SDOut.zip \
+              --repo "${{ github.repository }}" \
+              --title "${version}" \
+              --draft \
+              --generate-notes
           fi
-          gh release create "${version}" \
-            dist/pipensx.nro \
-            dist/pipensx.nro.sha256 \
-            dist/SDOut.zip \
-            --repo "${{ github.repository }}" \
-            --title "${version}" \
-            --draft \
-            ${notes_args}
