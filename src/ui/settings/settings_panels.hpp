@@ -430,7 +430,8 @@ public:
              tr("pipensx/settings/language_pt_br"),
              tr("pipensx/settings/language_fr"),
              tr("pipensx/settings/language_es"),
-             tr("pipensx/settings/language_zh")},
+             tr("pipensx/settings/language_zh"),
+             tr("pipensx/settings/language_it")},
             languageIndex(settings_->get().language),
             [this](int selected) {
                 AppSettingsData values = settings_->get();

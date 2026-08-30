@@ -98,7 +98,7 @@ struct AppSettingsData {
 // selector lists them. Anything else is rejected at parse time, so a hand-edited
 // settings.json cannot leave the app pointing at a locale we do not ship.
 inline constexpr const char* kLanguageValues[] = {
-    "auto", "en-US", "ru", "pt-BR", "fr", "es", "zh-CN"};
+    "auto", "en-US", "ru", "pt-BR", "fr", "es", "zh-CN", "it"};
 
 bool isSupportedLanguage(const std::string& value);
 
