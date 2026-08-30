@@ -2,7 +2,9 @@
   "app": {
     "title": "pipensx",
     "exit": "Exit",
-    "web_qr": "Web QR"
+    "web_qr": "Web QR",
+    "exit_confirm_title": "Exit pipensx?",
+    "exit_confirm_body": "Are you sure you want to exit?"
   },
   "web": {
     "off": "Web off"
@@ -550,6 +552,8 @@
     "install_sd": "SD card",
     "install_nand": "System memory",
     "show_completed": "Show completed downloads",
+    "confirm_exit": "Confirm exit",
+    "confirm_exit_detail": "Ask before closing from home screen",
     "check_updates": "Check for updates at launch",
     "check_update_now": "Check for pipensx update",
     "check_update_detail": "Current version {}",

@@ -2,7 +2,9 @@
   "app": {
     "title": "pipensx",
     "exit": "退出",
-    "web_qr": "Web 二维码"
+    "web_qr": "Web 二维码",
+    "exit_confirm_title": "退出 pipensx？",
+    "exit_confirm_body": "确定要退出吗？"
   },
   "web": {
     "off": "Web 已关闭"
@@ -550,6 +552,8 @@
     "install_sd": "SD 卡",
     "install_nand": "系统内存",
     "show_completed": "显示已完成的下载",
+    "confirm_exit": "确认退出",
+    "confirm_exit_detail": "在主屏幕关闭前询问",
     "check_updates": "启动时检查更新",
     "check_update_now": "检查 pipensx 更新",
     "check_update_detail": "当前版本 {}",

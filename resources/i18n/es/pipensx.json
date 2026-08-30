@@ -2,7 +2,9 @@
   "app": {
     "title": "pipensx",
     "exit": "Salir",
-    "web_qr": "QR web"
+    "web_qr": "QR web",
+    "exit_confirm_title": "¿Salir de pipensx?",
+    "exit_confirm_body": "¿Seguro que quieres salir?"
   },
   "web": {
     "off": "Web desactivada"
@@ -531,6 +533,8 @@
     "language_ru": "Русский",
     "language_pt_br": "Português (Brasil)",
     "language_fr": "Français",
+    "language_es": "Español",
+    "language_zh": "简体中文",
     "language_it": "Italiano",
     "language_restart": "Reinicia pipensx para aplicar el idioma.",
     "auto_refresh": "Actualización automática diaria",
@@ -548,6 +552,8 @@
     "install_sd": "Tarjeta SD",
     "install_nand": "Memoria del sistema",
     "show_completed": "Mostrar descargas completadas",
+    "confirm_exit": "Confirmar salida",
+    "confirm_exit_detail": "Preguntar antes de cerrar desde la pantalla principal",
     "check_updates": "Buscar actualizaciones al iniciar",
     "check_update_now": "Buscar actualización de pipensx",
     "check_update_detail": "Versión actual {}",
@@ -612,8 +618,6 @@
     "proxy_detail": "socks5://192.168.1.2:10808 — déjalo vacío para conexión directa",
     "proxy_invalid": "Usa scheme://host:port con http, https, socks4, socks5 o socks5h.",
     "proxy_note": "Enruta catálogo, carátulas, actualizaciones y descargas del servidor a través de un proxy en tu red. El tráfico punto a punto no lo usa.",
-    "language_es": "Español",
-    "language_zh": "简体中文",
     "section_source": "Fuente",
     "section_system": "Sistema",
     "section_launch": "Arranque",
