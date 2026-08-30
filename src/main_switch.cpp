@@ -259,6 +259,8 @@ public:
                     dialog->addButton(tr("pipensx/deploy/cancel_and_exit"),
                                       [this] {
                         deploy_->cancel();
+                        if (manager_ && manager_->hasActiveTransfer())
+                            manager_->pauseAll();
                         brls::Application::quit();
                     });
                     dialog->open();
@@ -269,12 +271,16 @@ public:
                     auto* dialog = new brls::Dialog(
                         tr("pipensx/app/exit_active_download_body"));
                     dialog->addButton(tr("pipensx/common/cancel"), [] {});
-                    dialog->addButton(tr("pipensx/app/exit"), [] {
+                    dialog->addButton(tr("pipensx/app/exit"), [this] {
+                        if (manager_ && manager_->hasActiveTransfer())
+                            manager_->pauseAll();
                         brls::Application::quit();
                     });
                     dialog->open();
                     return true;
                 }
+                if (manager_ && manager_->hasActiveTransfer())
+                    manager_->pauseAll();
                 brls::Application::quit();
                 return true;
             }, /*hidden=*/true);
@@ -292,12 +298,16 @@ public:
                     dialog->addButton(tr("pipensx/deploy/cancel_and_exit"),
                                       [this] {
                         deploy_->cancel();
+                        if (manager_ && manager_->hasActiveTransfer())
+                            manager_->pauseAll();
                         brls::Application::quit();
                     });
                     dialog->open();
                     return true;
                 }
                 if (!settings_ || !settings_->get().confirmExit) {
+                    if (manager_ && manager_->hasActiveTransfer())
+                        manager_->pauseAll();
                     brls::Application::quit();
                     return true;
                 }
@@ -308,7 +318,9 @@ public:
                         ? "pipensx/app/exit_active_download_body"
                         : "pipensx/app/exit_confirm_body"));
                 dialog->addButton(tr("pipensx/common/cancel"), [] {});
-                dialog->addButton(tr("pipensx/app/exit"), [] {
+                dialog->addButton(tr("pipensx/app/exit"), [this] {
+                    if (manager_ && manager_->hasActiveTransfer())
+                        manager_->pauseAll();
                     brls::Application::quit();
                 });
                 dialog->open();

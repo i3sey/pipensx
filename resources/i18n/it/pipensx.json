@@ -232,7 +232,7 @@
     "copy_skipped": "Download terminato. Potrebbe servire una configurazione extra per installare questo porting."
   },
   "downloads": {
-    "import": "Importa torrent",
+    "import": "Importa",
     "import_action": "Importa .torrent",
     "empty_cell": "Nessun download. Premi X per aggiungere un file .torrent.",
     "empty_title": "Download vuoti",
@@ -248,7 +248,7 @@
     "move_down": "Sposta giù",
     "pause_all": "Pausa tutto",
     "resume_all": "Riprendi tutto",
-    "clear_completed": "Pulisci completati",
+    "clear_completed": "Pulisci",
     "clear_completed_none": "Nessun download completato.",
     "clear_completed_question": "Rimuovere i download completati da pipensx?",
     "summary_counts": "{0} in download · {1} in coda · {2} in installazione",

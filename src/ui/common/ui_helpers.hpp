@@ -382,8 +382,17 @@ inline std::string taskStatusText(const DownloadTask& task) {
                                percentOf(
                                    static_cast<float>(task.fetchProgress)));
         case DownloadStatus::Checking:
-        case DownloadStatus::Downloading:
         case DownloadStatus::Verifying:
+            if (task.piecesTotal)
+                return withPercent(
+                    downloadStatusLabel(task.status),
+                    percentOf(static_cast<float>(task.piecesDone) /
+                              static_cast<float>(task.piecesTotal)));
+            return withPercent(downloadStatusLabel(task.status),
+                               percentOf(task.mode == TransferMode::StreamInstall
+                                             ? streamInstallProgressOf(task)
+                                             : progressOf(task)));
+        case DownloadStatus::Downloading:
             return withPercent(downloadStatusLabel(task.status),
                                percentOf(task.mode == TransferMode::StreamInstall
                                              ? streamInstallProgressOf(task)
