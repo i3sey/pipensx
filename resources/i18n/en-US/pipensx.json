@@ -533,6 +533,7 @@
     "language_fr": "Français",
     "language_es": "Español",
     "language_zh": "简体中文",
+    "language_it": "Italiano",
     "language_restart": "Restart pipensx to apply the language.",
     "auto_refresh": "Auto-refresh daily",
     "catalog_source": "Catalog source",

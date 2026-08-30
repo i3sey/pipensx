@@ -45,3 +45,5 @@ bug-reports
 
 # Runtime artifact of tests/test_manager
 /dht.cache
+.DS_Store
+resources/.DS_Store
