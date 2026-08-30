@@ -123,7 +123,11 @@ public:
             return true;
         });
         verifyButton_->registerClickAction([this](brls::View*) {
-            manager_->verify(taskId_);
+            if (manager_->verify(taskId_)) {
+                brls::Application::notify("Verification started");
+            } else {
+                brls::Application::notify("Verification not available");
+            }
             refresh();
             return true;
         });
@@ -661,10 +665,7 @@ private:
                                               : tr("pipensx/common/pause"));
         setButtonAvailable(pauseButton_, !leased && (paused || active));
 
-        bool canVerify = task.status == DownloadStatus::Paused ||
-                         task.status == DownloadStatus::Error ||
-                         task.status == DownloadStatus::Completed ||
-                         task.status == DownloadStatus::Installed;
+        bool canVerify = task.status == DownloadStatus::Completed;
         setButtonAvailable(verifyButton_, !leased && canVerify);
         setButtonAvailable(removeButton_,
                            !leased && task.status != DownloadStatus::Removing);
