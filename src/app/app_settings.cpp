@@ -126,6 +126,8 @@ bool parseSettings(const std::string& text, AppSettingsData& values,
         !readBool(root, "check_for_updates_on_launch",
                   values.checkForUpdatesOnLaunch, error) ||
         !readBool(root, "confirm_exit", values.confirmExit, error) ||
+        !readBool(root, "warn_on_active_download",
+                  values.warnOnActiveDownload, error) ||
         !readBool(root, "catalog_disclaimer_ack",
                   values.catalogDisclaimerAcknowledged, error) ||
         !readBool(root, "web_server_enabled", values.webServerEnabled,
@@ -191,6 +193,10 @@ bool parseSettings(const std::string& text, AppSettingsData& values,
     if (fileVersion < 3)
         values.torrentingEnabled = true;
 
+    // Exit warning dependency: no confirm -> no download warning.
+    if (!values.confirmExit)
+        values.warnOnActiveDownload = false;
+
     if (!isSupportedLanguage(values.language)) {
         error = "Setting 'language' has an unknown value.";
         return false;
@@ -237,6 +243,7 @@ std::string serializeSettings(const AppSettingsData& values) {
     root["extended_telemetry"] = values.extendedTelemetry;
     root["check_for_updates_on_launch"] = values.checkForUpdatesOnLaunch;
     root["confirm_exit"] = values.confirmExit;
+    root["warn_on_active_download"] = values.warnOnActiveDownload;
     root["catalog_disclaimer_ack"] = values.catalogDisclaimerAcknowledged;
     root["web_server_enabled"] = values.webServerEnabled;
     root["web_server_pin"] = values.webServerPin;
@@ -382,6 +389,7 @@ bool AppSettingsData::operator==(const AppSettingsData& other) const {
            extendedTelemetry == other.extendedTelemetry &&
            checkForUpdatesOnLaunch == other.checkForUpdatesOnLaunch &&
            confirmExit == other.confirmExit &&
+           warnOnActiveDownload == other.warnOnActiveDownload &&
            catalogDisclaimerAcknowledged ==
                other.catalogDisclaimerAcknowledged &&
            webServerEnabled == other.webServerEnabled &&

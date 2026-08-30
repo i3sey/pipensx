@@ -4,7 +4,8 @@
     "exit": "Exit",
     "web_qr": "Web QR",
     "exit_confirm_title": "Exit pipensx?",
-    "exit_confirm_body": "Are you sure you want to exit?"
+    "exit_confirm_body": "Are you sure you want to exit?",
+    "exit_active_download_body": "A download is still in progress.\nExit anyway?"
   },
   "web": {
     "off": "Web off"
@@ -555,6 +556,8 @@
     "show_completed": "Show completed downloads",
     "confirm_exit": "Confirm exit",
     "confirm_exit_detail": "Ask before closing from home screen",
+    "warn_active_download": "Warn on active download",
+    "warn_active_download_detail": "Also warn when a download is in progress",
     "check_updates": "Check for updates at launch",
     "check_update_now": "Check for pipensx update",
     "check_update_detail": "Current version {}",
@@ -622,6 +625,7 @@
     "section_source": "Source",
     "section_system": "System",
     "section_launch": "Startup",
+    "section_exit": "Exit",
     "section_install": "Installation",
     "section_reset": "Reset",
     "section_updates": "pipensx updates",

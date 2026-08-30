@@ -4,7 +4,8 @@
     "exit": "退出",
     "web_qr": "Web 二维码",
     "exit_confirm_title": "退出 pipensx？",
-    "exit_confirm_body": "确定要退出吗？"
+    "exit_confirm_body": "确定要退出吗？",
+    "exit_active_download_body": "仍有下载正在进行。\n确定要退出吗？"
   },
   "web": {
     "off": "Web 已关闭"
@@ -555,6 +556,8 @@
     "show_completed": "显示已完成的下载",
     "confirm_exit": "确认退出",
     "confirm_exit_detail": "在主屏幕关闭前询问",
+    "warn_active_download": "下载时提醒",
+    "warn_active_download_detail": "下载进行时也显示提醒",
     "check_updates": "启动时检查更新",
     "check_update_now": "检查 pipensx 更新",
     "check_update_detail": "当前版本 {}",
@@ -622,6 +625,7 @@
     "section_source": "来源",
     "section_system": "系统",
     "section_launch": "启动",
+    "section_exit": "退出",
     "section_install": "安装",
     "section_reset": "重置",
     "section_updates": "pipensx 更新",

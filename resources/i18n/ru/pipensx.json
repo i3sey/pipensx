@@ -4,7 +4,8 @@
     "exit": "Выход",
     "web_qr": "Веб QR",
     "exit_confirm_title": "Выйти из pipensx?",
-    "exit_confirm_body": "Вы уверены, что хотите выйти?"
+    "exit_confirm_body": "Вы уверены, что хотите выйти?",
+    "exit_active_download_body": "Идёт загрузка.\nВсё равно выйти?"
   },
   "web": {
     "off": "Веб выкл"
@@ -555,6 +556,8 @@
     "show_completed": "Показывать завершённые",
     "confirm_exit": "Подтверждение выхода",
     "confirm_exit_detail": "Спрашивать перед закрытием с главного экрана",
+    "warn_active_download": "Предупреждать при загрузке",
+    "warn_active_download_detail": "Показывать предупреждение, когда идёт загрузка",
     "check_updates": "Проверять обновления при запуске",
     "check_update_now": "Проверить обновление pipensx",
     "check_update_detail": "Текущая версия {}",
@@ -622,6 +625,7 @@
     "section_source": "Источник",
     "section_system": "Система",
     "section_launch": "Запуск",
+    "section_exit": "Выход",
     "section_install": "Установка",
     "section_reset": "Сброс",
     "section_updates": "Обновление pipensx",
