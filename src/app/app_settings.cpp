@@ -125,6 +125,7 @@ bool parseSettings(const std::string& text, AppSettingsData& values,
                   error) ||
         !readBool(root, "check_for_updates_on_launch",
                   values.checkForUpdatesOnLaunch, error) ||
+        !readBool(root, "confirm_exit", values.confirmExit, error) ||
         !readBool(root, "catalog_disclaimer_ack",
                   values.catalogDisclaimerAcknowledged, error) ||
         !readBool(root, "web_server_enabled", values.webServerEnabled,
@@ -235,6 +236,7 @@ std::string serializeSettings(const AppSettingsData& values) {
     root["show_completed_downloads"] = values.showCompletedDownloads;
     root["extended_telemetry"] = values.extendedTelemetry;
     root["check_for_updates_on_launch"] = values.checkForUpdatesOnLaunch;
+    root["confirm_exit"] = values.confirmExit;
     root["catalog_disclaimer_ack"] = values.catalogDisclaimerAcknowledged;
     root["web_server_enabled"] = values.webServerEnabled;
     root["web_server_pin"] = values.webServerPin;
@@ -379,6 +381,7 @@ bool AppSettingsData::operator==(const AppSettingsData& other) const {
            showCompletedDownloads == other.showCompletedDownloads &&
            extendedTelemetry == other.extendedTelemetry &&
            checkForUpdatesOnLaunch == other.checkForUpdatesOnLaunch &&
+           confirmExit == other.confirmExit &&
            catalogDisclaimerAcknowledged ==
                other.catalogDisclaimerAcknowledged &&
            webServerEnabled == other.webServerEnabled &&

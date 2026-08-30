@@ -459,12 +459,25 @@ public:
                     checkForUpdates_->setOn(previous, false);
             });
         content_->addView(checkForUpdates_);
+
+        confirmExit_ = new brls::BooleanCell();
+        confirmExit_->init(tr("pipensx/settings/confirm_exit"),
+            settings_->get().confirmExit,
+            [this](bool enabled) {
+                AppSettingsData values = settings_->get();
+                bool previous = values.confirmExit;
+                values.confirmExit = enabled;
+                if (!persistSettings(settings_, values, "confirm_exit"))
+                    confirmExit_->setOn(previous, false);
+            });
+        content_->addView(confirmExit_);
     }
 
     void applyValues() override {
         const AppSettingsData& values = settings_->get();
         language_->setSelection(languageIndex(values.language), true);
         checkForUpdates_->setOn(values.checkForUpdatesOnLaunch, false);
+        confirmExit_->setOn(values.confirmExit, false);
     }
 
 private:
@@ -481,6 +494,7 @@ private:
     AppSettings* settings_;
     brls::SelectorCell* language_ = nullptr;
     brls::BooleanCell* checkForUpdates_ = nullptr;
+    brls::BooleanCell* confirmExit_ = nullptr;
 };
 
 // --- Downloads: queue behaviour + install target -------------------------

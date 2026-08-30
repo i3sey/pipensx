@@ -2,7 +2,9 @@
   "app": {
     "title": "pipensx",
     "exit": "Выход",
-    "web_qr": "Веб QR"
+    "web_qr": "Веб QR",
+    "exit_confirm_title": "Выйти из pipensx?",
+    "exit_confirm_body": "Вы уверены, что хотите выйти?"
   },
   "web": {
     "off": "Веб выкл"
@@ -551,6 +553,8 @@
     "install_sd": "SD-карта",
     "install_nand": "Память консоли",
     "show_completed": "Показывать завершённые",
+    "confirm_exit": "Подтверждение выхода",
+    "confirm_exit_detail": "Спрашивать перед закрытием с главного экрана",
     "check_updates": "Проверять обновления при запуске",
     "check_update_now": "Проверить обновление pipensx",
     "check_update_detail": "Текущая версия {}",

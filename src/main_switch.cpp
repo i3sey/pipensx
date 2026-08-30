@@ -267,6 +267,38 @@ public:
                 brls::Application::quit();
                 return true;
             }, /*hidden=*/true);
+        // B on home: confirm exit when enabled, otherwise quit directly.
+        // Only handle when MainActivity is the only activity (home), so B
+        // inside a detail/file-picker still acts as back.
+        registerAction("", brls::BUTTON_B,
+            [this](brls::View*) {
+                if (brls::Application::getActivitiesStack().size() != 1)
+                    return false;
+                if (deploy_ && deploy_->snapshot().active()) {
+                    auto* dialog = new brls::Dialog(
+                        tr("pipensx/deploy/exit_question"));
+                    dialog->addButton(tr("pipensx/common/cancel"), [] {});
+                    dialog->addButton(tr("pipensx/deploy/cancel_and_exit"),
+                                      [this] {
+                        deploy_->cancel();
+                        brls::Application::quit();
+                    });
+                    dialog->open();
+                    return true;
+                }
+                if (!settings_ || !settings_->get().confirmExit) {
+                    brls::Application::quit();
+                    return true;
+                }
+                auto* dialog = new brls::Dialog(
+                    tr("pipensx/app/exit_confirm_body"));
+                dialog->addButton(tr("pipensx/common/cancel"), [] {});
+                dialog->addButton(tr("pipensx/app/exit"), [] {
+                    brls::Application::quit();
+                });
+                dialog->open();
+                return true;
+            }, /*hidden=*/true);
         // Visible on every screen: the web companion QR is the whole pairing
         // story, so it must not stay buried three levels deep in Settings.
         registerAction(tr("pipensx/app/web_qr"), brls::BUTTON_BACK,
