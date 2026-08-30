@@ -157,11 +157,12 @@ BatchPreparation CatalogBatchInstaller::prepare(
             continue;
         }
 
-        TransferMode mode = TransferMode::StreamInstall;
+        TransferMode mode = defaultTransferMode(
+            preview, TransferMode::StreamInstall);
         std::vector<uint8_t> mask = defaultInstallSelection(
             preview, mode, selection);
         InstallSpaceEstimate space = estimateInstallSpace(preview, mask, mode);
-        if (space.packageFiles == 0) {
+        if (space.packageFiles == 0 && mode != TransferMode::PortInstall) {
             if (selection == StreamSelection::PackagesOnly) {
                 ::unlink(path.c_str());
                 result.failures_.push_back(
@@ -286,12 +287,14 @@ BatchPreparation CatalogBatchInstaller::prepareViaDebrid(
         }
         if (p.ready) {
             TorrentPreview preview = previewFromDebrid(p.info);
-            TransferMode mode = TransferMode::StreamInstall;
+            TransferMode mode = defaultTransferMode(
+                preview, TransferMode::StreamInstall);
             std::vector<uint8_t> mask =
                 defaultInstallSelection(preview, mode, selection);
             InstallSpaceEstimate space =
                 estimateInstallSpace(preview, mask, mode);
-            if (space.packageFiles == 0) {
+            if (space.packageFiles == 0 &&
+                mode != TransferMode::PortInstall) {
                 if (selection == StreamSelection::PackagesOnly) {
                     std::string ignored; provider.remove(p.id, ignored);
                     result.failures_.push_back(
@@ -364,8 +367,10 @@ BatchEnqueueResult CatalogBatchInstaller::enqueueViaDebrid(
         import.provider = providerKind;
         import.mode = item.mode;
         import.fileSelection = item.selection;
-        import.packageCount = item.mode == TransferMode::StreamInstall
-                                  ? item.space.packageFiles : 0;
+        import.packageCount =
+            (item.mode == TransferMode::StreamInstall ||
+             item.mode == TransferMode::PortInstall)
+                ? item.space.packageFiles : 0;
         std::string taskId, error;
         if (manager.importDebrid(import, taskId, error)) {
             result.taskIds.push_back(std::move(taskId));

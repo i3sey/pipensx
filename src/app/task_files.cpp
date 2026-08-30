@@ -215,7 +215,8 @@ bool taskReadyForSwitchDeploy(const DownloadTask& task) {
         task.status != DownloadStatus::Installed)
         return false;
     return task.mode == TransferMode::DownloadOnly ||
-           task.mode == TransferMode::StreamInstall;
+           task.mode == TransferMode::StreamInstall ||
+           task.mode == TransferMode::PortInstall;
 }
 
 bool taskFilePathIsSafe(const std::string& path) {

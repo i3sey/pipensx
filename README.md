@@ -35,8 +35,8 @@ DOWNLOAD LATEST - [pipensx.nro](https://github.com/i3sey/pipensx/releases/latest
   [`Langegen/switch-games`](https://github.com/Langegen/switch-games) source
 - offline magnet resolution when the catalog provides a verified info dictionary
 - download-only mode and sequential NSP/NSZ installation while pieces arrive
-- downloaded-file inventory and safe, previewed copying of recognized
-  homebrew-port `switch/` layouts into `SD:/switch/`
+- unified homebrew-port installs: NRO application folders and ZIP/7z payloads
+  are deployed safely to `SD:/switch/` before local NSP/NSZ forwarders install
 - Application, Patch, and AddOnContent packages with installed-version checks
 - optional debrid fetch via TorBox or a self-hosted TorrServer (no Real-Debrid)
 - optional HTTPS/SOCKS proxy for catalog, artwork, and debrid HTTPS traffic

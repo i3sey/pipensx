@@ -10,6 +10,7 @@
 #include "debrid_transfer.hpp"
 #include "package_coordinator.hpp"
 #include "nx_file_types.hpp"
+#include "port_selection.hpp"
 #include "../install/install_backend.hpp"
 #include "../install/install_journal.hpp"
 #include "../install/package_stream.hpp"
@@ -311,11 +312,15 @@ std::string persistedStatus(DownloadStatus status) {
 }
 
 TransferMode persistedMode(const std::string& value) {
+    if (value == "port")
+        return TransferMode::PortInstall;
     return value == "install" ? TransferMode::StreamInstall
                               : TransferMode::DownloadOnly;
 }
 
 const char* persistedMode(TransferMode mode) {
+    if (mode == TransferMode::PortInstall)
+        return "port";
     return mode == TransferMode::StreamInstall ? "install" : "download";
 }
 
@@ -580,9 +585,13 @@ bool DownloadManager::importTorrentActions(
     }
 
     std::vector<uint8_t> selection = fileActions;
+    if (selection.empty() && torrentPortLayoutDetected(preview))
+        selection = selectPortInstallActions(preview);
     bool useSelection = !selection.empty();
     uint32_t installPackageCount = 0;
+    uint32_t selectedPackageCount = 0;
     bool hasSelectedFiles = false;
+    bool selectedPortPayload = false;
     for (size_t i = 0; i < preview.files.size(); ++i) {
         uint8_t action = useSelection
             ? selection[i]
@@ -591,23 +600,42 @@ bool DownloadManager::importTorrentActions(
             error = "Selected file action is invalid.";
             return false;
         }
-        if (action != actionValue(FileAction::Skip))
+        if (action != actionValue(FileAction::Skip)) {
             hasSelectedFiles = true;
+            const std::string logical = torrentLogicalPath(preview,
+                                                            preview.files[i]);
+            selectedPortPayload = selectedPortPayload ||
+                (!preview.files[i].package && !preview.files[i].cartridge &&
+                 (hasNroExtension(logical) || isPortArchiveName(logical)));
+            if (preview.files[i].package)
+                ++selectedPackageCount;
+        }
         if (action == actionValue(FileAction::Install)) {
-            if (!preview.files[i].package) {
-                error = "Only NSP/NSZ package files can be installed.";
-                return false;
-            }
-            ++installPackageCount;
+            if (preview.files[i].package)
+                ++installPackageCount;
+        }
+        if (action == actionValue(FileAction::Install) &&
+            !preview.files[i].package) {
+            error = "Only NSP/NSZ package files can be installed.";
+            return false;
         }
     }
     if (!hasSelectedFiles) {
         error = "Select at least one file.";
         return false;
     }
-    TransferMode mode = installPackageCount > 0
-        ? TransferMode::StreamInstall
-        : TransferMode::DownloadOnly;
+    const bool portInstall = selectedPortPayload;
+    if (portInstall && useSelection) {
+        // Packages are retained on disk for the post-deploy install stage.
+        for (size_t i = 0; i < selection.size(); ++i)
+            if (preview.files[i].package &&
+                selection[i] != actionValue(FileAction::Skip))
+                selection[i] = actionValue(FileAction::Download);
+    }
+    TransferMode mode = portInstall
+        ? TransferMode::PortInstall
+        : installPackageCount > 0 ? TransferMode::StreamInstall
+                                  : TransferMode::DownloadOnly;
 
     std::unique_lock<std::mutex> lock(mutex_);
     if (findLocked(preview.infoHash)) {
@@ -636,7 +664,8 @@ bool DownloadManager::importTorrentActions(
     task.totalBytes = preview.totalBytes;
     task.status = DownloadStatus::Queued;
     task.mode = mode;
-    task.packageCount = installPackageCount;
+    task.packageCount = portInstall ? selectedPackageCount
+                                    : installPackageCount;
     task.fileSelection = std::move(selection);
     task.initialPeers = initialPeers;
     // Fast resume: a genuinely fresh download has nothing on disk to find,
@@ -679,9 +708,49 @@ bool DownloadManager::importDebrid(const DebridImport& import,
         error = "Invalid torrent hash for the debrid task.";
         return false;
     }
-    if (!import.fileSelection.empty()) {
+    TransferMode importMode = import.mode;
+    std::vector<uint8_t> importSelection = import.fileSelection;
+    uint32_t importPackageCount = import.packageCount;
+    if (!import.torrentPath.empty()) {
+        TorrentPreview preview;
+        std::string previewError;
+        if (previewTorrent(import.torrentPath, preview, previewError)) {
+            if (!importSelection.empty() &&
+                importSelection.size() != preview.files.size()) {
+                error = "Selected file actions do not match torrent contents.";
+                return false;
+            }
+            if (importSelection.empty() && torrentPortLayoutDetected(preview))
+                importSelection = selectPortInstallActions(preview);
+            bool selectedPortPayload = false;
+            importPackageCount = 0;
+            for (size_t i = 0; i < preview.files.size(); ++i) {
+                const uint8_t action = importSelection.empty()
+                    ? actionValue(FileAction::Download) : importSelection[i];
+                if (action == actionValue(FileAction::Skip))
+                    continue;
+                const std::string logical = torrentLogicalPath(
+                    preview, preview.files[i]);
+                selectedPortPayload = selectedPortPayload ||
+                    (!preview.files[i].package &&
+                     !preview.files[i].cartridge &&
+                     (hasNroExtension(logical) ||
+                      isPortArchiveName(logical)));
+                if (preview.files[i].package)
+                    ++importPackageCount;
+            }
+            if (selectedPortPayload) {
+                importMode = TransferMode::PortInstall;
+                for (size_t i = 0; i < importSelection.size(); ++i)
+                    if (preview.files[i].package &&
+                        importSelection[i] != actionValue(FileAction::Skip))
+                        importSelection[i] = actionValue(FileAction::Download);
+            }
+        }
+    }
+    if (!importSelection.empty()) {
         bool hasSelectedFile = false;
-        for (uint8_t action : import.fileSelection) {
+        for (uint8_t action : importSelection) {
             if (!isValidFileAction(action)) {
                 error = "Selected file action is invalid.";
                 return false;
@@ -723,13 +792,15 @@ bool DownloadManager::importDebrid(const DebridImport& import,
     task.dataPath = dataPath;
     task.totalBytes = import.totalBytes;
     task.status = DownloadStatus::Queued;
-    task.mode = import.mode;
+    task.mode = importMode;
     task.source = TaskSource::Debrid;
     task.debridProvider = import.provider;
     task.debridId = import.debridId;
-    task.packageCount = import.mode == TransferMode::StreamInstall
-                        ? import.packageCount : 0;
-    task.fileSelection = import.fileSelection;
+    task.packageCount =
+        (importMode == TransferMode::StreamInstall ||
+         importMode == TransferMode::PortInstall)
+            ? importPackageCount : 0;
+    task.fileSelection = importSelection;
     tasks_.push_back(std::move(task));
     taskId = import.infoHash;
 
@@ -749,7 +820,7 @@ bool DownloadManager::importDebrid(const DebridImport& import,
                 actions.reserve(preview.files.size());
                 for (const TorrentPreview::File& file : preview.files) {
                     actions.push_back(static_cast<uint8_t>(
-                        import.mode == TransferMode::StreamInstall &&
+                        importMode == TransferMode::StreamInstall &&
                                 file.package
                             ? FileAction::Install : FileAction::Download));
                 }
@@ -1148,6 +1219,42 @@ DownloadManager::beginExternalDeploy(const std::string& taskId,
     return ExternalDeployLease(this, *task);
 }
 
+void DownloadManager::updateExternalPortInstall(
+    const std::string& taskId, uint32_t packagesInstalled,
+    const std::string& currentPackage, uint64_t installedBytes,
+    uint64_t installTotalBytes, DownloadStatus status) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    if (externalDeployTaskId_ != taskId)
+        return;
+    DownloadTask* task = findLocked(taskId);
+    if (!task || task->mode != TransferMode::PortInstall)
+        return;
+    const bool packageCommitted = task->packagesInstalled != packagesInstalled;
+    task->packagesInstalled = packagesInstalled;
+    task->currentPackage = currentPackage;
+    updateTaskInstallProgress(*task, installedBytes, installTotalBytes, status,
+                              now_ms());
+    if (packageCommitted)
+        persistState(lock);
+}
+
+void DownloadManager::finishExternalPortInstall(
+    const std::string& taskId, bool success, const std::string& error) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    if (externalDeployTaskId_ != taskId)
+        return;
+    DownloadTask* task = findLocked(taskId);
+    if (!task || task->mode != TransferMode::PortInstall)
+        return;
+    task->status = success ? DownloadStatus::Installed
+                           : DownloadStatus::Completed;
+    task->error = success ? std::string() : error;
+    task->currentPackage.clear();
+    task->installedBytes = 0;
+    task->installTotalBytes = 0;
+    persistState(lock);
+}
+
 bool DownloadManager::externalDeployActive() const {
     std::unique_lock<std::mutex> lock(mutex_);
     return !externalDeployTaskId_.empty();
@@ -1235,7 +1342,7 @@ std::string DownloadManager::serializeStateLocked() const {
         state << "e";
     }
     state << "e";
-    state << "7:versioni6e";
+    state << "7:versioni7e";
     state << "e";
     return state.str();
 }
@@ -1320,7 +1427,8 @@ void DownloadManager::load() {
                      &version) ||
         version.type != BE_INT ||
         (version.ival != 1 && version.ival != 2 && version.ival != 3 &&
-         version.ival != 4 && version.ival != 5 && version.ival != 6))
+         version.ival != 4 && version.ival != 5 && version.ival != 6 &&
+         version.ival != 7))
         return;
 
     be_node_t list;

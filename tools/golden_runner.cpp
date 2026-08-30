@@ -802,7 +802,8 @@ int main(int argc, char** argv) {
             selection.selectPortFiles(preview, preview.name + "/switch");
             const std::vector<uint8_t> actions = selection.fileActions();
             for (size_t i = 0; i < actions.size(); ++i) {
-                const auto expected = i == 11 ? pipensx::FileAction::Download
+                const bool payload = i == 7 || i == 8 || i == 9 || i == 11;
+                const auto expected = payload ? pipensx::FileAction::Download
                                               : pipensx::FileAction::Skip;
                 if (actions[i] != static_cast<uint8_t>(expected))
                     portSelectionOk = false;

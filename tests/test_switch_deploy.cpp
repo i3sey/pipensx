@@ -37,10 +37,38 @@ std::string nroBytes() {
     return bytes;
 }
 
+void append32(std::string& out, uint32_t value) {
+    for (unsigned i = 0; i < 4; ++i)
+        out.push_back(static_cast<char>(value >> (i * 8)));
+}
+
+void append64(std::string& out, uint64_t value) {
+    for (unsigned i = 0; i < 8; ++i)
+        out.push_back(static_cast<char>(value >> (i * 8)));
+}
+
+std::string makeTestNsp(const std::string& nca) {
+    const std::string name = "00112233445566778899aabbccddeeff.nca";
+    std::string out = "PFS0";
+    append32(out, 1);
+    append32(out, static_cast<uint32_t>(name.size() + 1));
+    append32(out, 0);
+    append64(out, 0);
+    append64(out, nca.size());
+    append32(out, 0);
+    append32(out, 0);
+    out += name;
+    out.push_back('\0');
+    out += nca;
+    return out;
+}
+
 void writeCompletedQueue(const std::string& root, const std::string& taskId,
                          const std::string& dataPath, uint64_t total,
                          const std::string& mode = "download",
-                         const std::string& status = "completed") {
+                         const std::string& status = "completed",
+                         uint32_t packageCount = 0,
+                         uint32_t packagesDone = 0) {
     std::string queue = "d5:tasksl";
     queue += "d9:completed" + std::string("i") + std::to_string(total) + "e";
     queue += "4:data" + bstr(dataPath);
@@ -50,7 +78,8 @@ void writeCompletedQueue(const std::string& root, const std::string& taskId,
     queue += "8:metainfo" + bstr("");
     queue += "4:mode" + bstr(mode);
     queue += "4:name" + bstr("Port release");
-    queue += "13:package-counti0e13:packages-donei0e";
+    queue += "13:package-counti" + std::to_string(packageCount) +
+             "e13:packages-donei" + std::to_string(packagesDone) + "e";
     queue += "11:pieces-donei0e12:pieces-totali0e";
     queue += "8:provider" + bstr("torbox");
     queue += "9:selection" + bstr(std::string(2, '\1'));
@@ -172,7 +201,7 @@ int main() {
     assert(isPortArchiveName("switch.7z"));
     assert(isPortArchiveName("path/to/switch.7z"));
     assert(isPortArchiveName("SWITCH.ZIP"));
-    assert(!isPortArchiveName("myswitch.7z"));
+    assert(isPortArchiveName("myswitch.7z"));
     assert(!isPortArchiveName("switch.rar"));
 
     {
@@ -201,7 +230,7 @@ int main() {
         };
         assert(torrentHasPortArchive(preview));
         const auto mask = selectPortInstallActions(preview);
-        assert(mask[0] == static_cast<uint8_t>(FileAction::Install));
+        assert(mask[0] == static_cast<uint8_t>(FileAction::Download));
         assert(mask[1] == static_cast<uint8_t>(FileAction::Download));
         assert(mask[2] == static_cast<uint8_t>(FileAction::Skip));
     }
@@ -363,8 +392,10 @@ int main() {
                data + "/Release/switch/MyPort/MyPort.nro", nro.size());
     addPresent(ambiguous, "Other/switch/Other/Other.nro",
                data + "/Other/switch/Other/Other.nro", nro.size());
-    assert(inspectSwitchDeploy(std::move(ambiguous), target).problem ==
-           SwitchDeployProblem::AmbiguousLayout);
+    SwitchDeployInspection multiPort =
+        inspectSwitchDeploy(std::move(ambiguous), target);
+    assert(multiPort.canStart());
+    assert(multiPort.plan.files.size() == 2);
 
     // Restore the sidecar's source before the real copy.
     writeFile(data + "/Release/switch/MyPort/data.bin", asset);
@@ -953,6 +984,21 @@ int main() {
     }
 
     {
+        const std::string bonusArchive = data + "/bonus.zip";
+        writeFile(bonusArchive, "not a port archive");
+        TaskFileInventory archiveInventory;
+        archiveInventory.taskId = "archive-without-port";
+        archiveInventory.rootPath = data;
+        archiveInventory.settled = true;
+        archiveInventory.completeManifest = true;
+        addPresent(archiveInventory, "bonus.zip", bonusArchive,
+                   fs::file_size(bonusArchive));
+        SwitchDeployInspection archiveInspection =
+            inspectSwitchDeploy(std::move(archiveInventory), target);
+        assert(archiveInspection.problem == SwitchDeployProblem::NotAPort);
+    }
+
+    {
         TaskFileInventory nszInventory;
         nszInventory.taskId = "nsz-only";
         nszInventory.rootPath = data;
@@ -996,6 +1042,75 @@ int main() {
         SwitchDeployInspection mixedInspection =
             inspectSwitchDeploy(std::move(mixedInventory), target);
         assert(mixedInspection.problem == SwitchDeployProblem::LayoutNotFound);
+    }
+
+    // Unified port transaction: packages are downloaded to disk, payload is
+    // committed first, and only then is the local NSP fed to the installer.
+    {
+        const std::string txRoot = root + "/transaction";
+        const std::string txData = txRoot + "/downloads/task";
+        const std::string txTarget = txRoot + "/sd/switch";
+        const std::string txId =
+            "1234512345123451234512345123451234512345";
+        fs::create_directories(txTarget);
+        const std::string txNro = nroBytes();
+        const std::string txPackage = makeTestNsp(std::string(4096, 'N'));
+        const std::string badPackage(txPackage.size(), 'X');
+        writeFile(txData + "/Release/Game/Game.nro", txNro);
+        writeFile(txData + "/Release/Forwarder.nsp", badPackage);
+        writeCompletedQueue(txRoot, txId, txData,
+                            txNro.size() + txPackage.size(),
+                            "port", "completed", 1, 0);
+        TaskFileManifest txManifest;
+        txManifest.taskId = txId;
+        TaskFileRecord txNroFile;
+        txNroFile.logicalPath = "Release/Game/Game.nro";
+        txNroFile.localPath = txNroFile.logicalPath;
+        txNroFile.size = txNro.size();
+        txManifest.files.push_back(txNroFile);
+        TaskFileRecord txPackageFile;
+        txPackageFile.logicalPath = "Release/Forwarder.nsp";
+        txPackageFile.localPath = txPackageFile.logicalPath;
+        txPackageFile.size = txPackage.size();
+        txPackageFile.package = true;
+        txPackageFile.action = TaskFileAction::Download;
+        txManifest.files.push_back(txPackageFile);
+        assert(saveTaskFileManifest(txRoot, txManifest, error));
+        DownloadManager txManager(txRoot, false);
+        assert(txManager.snapshot(txId)->mode == TransferMode::PortInstall);
+        SwitchDeployService txDeploy(txManager, txRoot, txTarget);
+        SwitchDeployInspection txInspection = txDeploy.inspect(txId);
+        assert(txInspection.canStart());
+        assert(txInspection.plan.packages.size() == 1);
+
+        // Package failure keeps the deployed payload and its receipt. A retry
+        // must skip payload deployment and resume at the package stage.
+        assert(txDeploy.start(txId, error));
+        for (int i = 0; i < 500 && txDeploy.snapshot().active(); ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        assert(txDeploy.snapshot().phase == SwitchDeployPhase::Failed);
+        auto txTask = txManager.snapshot(txId);
+        assert(txTask && txTask->status == DownloadStatus::Completed);
+        assert(txTask->packagesInstalled == 0);
+        assert(!txTask->error.empty());
+        assert(fs::exists(txTarget + "/Game/Game.nro"));
+        assert(txDeploy.receiptState(txId) == SwitchDeployReceiptState::Valid);
+
+        writeFile(txData + "/Release/Forwarder.nsp", txPackage);
+        txInspection = txDeploy.inspect(txId);
+        assert(txInspection.canStart());
+        assert(txInspection.plan.files.empty());
+        assert(txInspection.plan.archives.empty());
+        assert(txInspection.plan.packages.size() == 1);
+        assert(txDeploy.start(txId, error));
+        for (int i = 0; i < 500 && txDeploy.snapshot().active(); ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        assert(txDeploy.snapshot().phase == SwitchDeployPhase::Completed);
+        txTask = txManager.snapshot(txId);
+        assert(txTask && txTask->status == DownloadStatus::Installed);
+        assert(txTask->packagesInstalled == 1);
+        txDeploy.shutdown();
+        txManager.shutdown();
     }
 
     setStorageSpaceOverride(nullptr);

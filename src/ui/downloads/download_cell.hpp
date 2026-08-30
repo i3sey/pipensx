@@ -178,7 +178,13 @@ public:
                         ? "pipensx/deploy/phase_preparing"
                         : deploy->phase == SwitchDeployPhase::Extracting
                               ? "pipensx/deploy/phase_extracting"
-                              : "pipensx/deploy/phase_copying";
+                              : deploy->phase ==
+                                        SwitchDeployPhase::CommittingPackage
+                                    ? "pipensx/downloads/status_committing"
+                                    : deploy->phase ==
+                                              SwitchDeployPhase::InstallingPackages
+                                          ? "pipensx/downloads/status_installing"
+                                          : "pipensx/deploy/phase_copying";
                 setTextIfChanged(status_, tr(phaseKey));
                 status_->setTextColor(theme::accent());
                 progress_->setProgress(deploy->totalBytes

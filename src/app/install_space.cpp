@@ -1,6 +1,7 @@
 #include "install_space.hpp"
 
 #include "nx_file_types.hpp"
+#include "port_selection.hpp"
 
 #include <cerrno>
 #include <cstdio>
@@ -27,10 +28,20 @@ void addBytes(uint64_t& target, uint64_t value, bool& overflow) {
 
 } // namespace
 
+TransferMode defaultTransferMode(const TorrentPreview& preview,
+                                 TransferMode requestedMode) {
+    if (torrentPortLayoutDetected(preview))
+        return TransferMode::PortInstall;
+    return requestedMode;
+}
+
 std::vector<uint8_t> defaultInstallSelection(
     const TorrentPreview& preview,
     TransferMode mode,
     StreamSelection selection) {
+    if (selection == StreamSelection::PackagesOnly &&
+        torrentPortLayoutDetected(preview))
+        return selectPortInstallActions(preview);
     if (mode != TransferMode::StreamInstall ||
         selection == StreamSelection::AllFiles) {
         return {};
@@ -83,12 +94,19 @@ InstallSpaceEstimate estimateInstallSpace(
         }
         ++result.selectedFiles;
         addBytes(result.selectedBytes, file.length, result.overflow);
-        if (action == static_cast<uint8_t>(FileAction::Install) &&
-            mode == TransferMode::StreamInstall && file.package) {
+        const bool packageInstall = file.package &&
+            ((mode == TransferMode::StreamInstall &&
+              action == static_cast<uint8_t>(FileAction::Install)) ||
+             mode == TransferMode::PortInstall);
+        if (packageInstall) {
             ++result.packageFiles;
             streamedPackage = true;
             compressedPackage = compressedPackage || file.compressed;
             addBytes(result.packageBytes, file.length, result.overflow);
+            // Deferred port packages must also remain as local files until
+            // payload deployment succeeds; stream installs do not.
+            if (mode == TransferMode::PortInstall)
+                addBytes(result.downloadBytes, file.length, result.overflow);
         } else {
             addBytes(result.downloadBytes, file.length, result.overflow);
         }
@@ -121,6 +139,34 @@ InstallSpaceCheck assessTransferSpace(
     }
     uint64_t shortfall = 0;
     bool checked = false;
+    const bool sharedPool = downloadStorage.available &&
+        packageStorage.available &&
+        downloadStorage.totalBytes == packageStorage.totalBytes &&
+        downloadStorage.freeBytes == packageStorage.freeBytes;
+    if (sharedPool) {
+        uint64_t combined = estimate.downloadBytes;
+        uint64_t packageNeed = estimate.packageBytes;
+        if (estimate.certainty == SpaceEstimateCertainty::CompressedUnknown &&
+            packageNeed != 0) {
+            constexpr uint64_t kCompressedExpansionMin = 3;
+            if (packageNeed > std::numeric_limits<uint64_t>::max() /
+                                  kCompressedExpansionMin)
+                packageNeed = std::numeric_limits<uint64_t>::max();
+            else
+                packageNeed *= kCompressedExpansionMin;
+        }
+        if (combined > std::numeric_limits<uint64_t>::max() - packageNeed)
+            combined = std::numeric_limits<uint64_t>::max();
+        else
+            combined += packageNeed;
+        if (combined > downloadStorage.freeBytes) {
+            result.status = InstallSpaceCheckStatus::Insufficient;
+            result.shortfallBytes = combined - downloadStorage.freeBytes;
+            return result;
+        }
+        result.status = InstallSpaceCheckStatus::Enough;
+        return result;
+    }
     auto checkPool = [&](uint64_t need, const StorageSpaceSnapshot& storage) {
         if (need == 0)
             return;

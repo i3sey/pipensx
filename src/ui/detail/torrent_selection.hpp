@@ -542,7 +542,7 @@ public:
 
         portRoot_ = pipensx::candidatePortRoot(preview_);
         const bool portLayout =
-            !portRoot_.empty() || pipensx::torrentHasPortArchive(preview_);
+            pipensx::torrentPortLayoutDetected(preview_);
         if (portLayout) {
             portHint_ = new brls::Label();
             portHint_->setFontSize(theme::kFontCaption);
@@ -702,22 +702,47 @@ public:
         row->addView(label);
     }
 
+    bool selectedPortTransaction(const std::vector<uint8_t>& actions,
+                                 size_t& packageCount) const {
+        packageCount = 0;
+        bool payload = false;
+        for (size_t i = 0; i < actions.size() && i < preview_.files.size(); ++i) {
+            if (actions[i] == static_cast<uint8_t>(FileAction::Skip))
+                continue;
+            const auto& file = preview_.files[i];
+            if (file.package) {
+                ++packageCount;
+            } else if (!file.cartridge &&
+                       (hasNroExtension(file.path) ||
+                        isPortArchiveName(file.path))) {
+                payload = true;
+            }
+        }
+        return payload;
+    }
+
     void populateEntries() {
+        std::vector<uint8_t> portDefaults;
+        if (preferred_ == TransferMode::StreamInstall &&
+            initialSelection_ == StreamSelection::PackagesOnly &&
+            torrentPortLayoutDetected(preview_))
+            portDefaults = selectPortInstallActions(preview_);
+
         std::vector<TorrentSelectionEntry> entries;
         entries.reserve(preview_.files.size());
-        for (const auto& file : preview_.files) {
+        for (size_t i = 0; i < preview_.files.size(); ++i) {
+            const auto& file = preview_.files[i];
             TorrentSelectionEntry entry;
             entry.path = file.path;
             entry.length = file.length;
             entry.package = file.package;
             entry.compressed = file.compressed;
             entry.cartridge = file.cartridge;
-            if (preferred_ == TransferMode::StreamInstall && file.package) {
-                entry.action = FileAction::Install;
+            if (!portDefaults.empty()) {
+                entry.action = static_cast<FileAction>(portDefaults[i]);
             } else if (preferred_ == TransferMode::StreamInstall &&
-                       initialSelection_ == StreamSelection::PackagesOnly &&
-                       !file.cartridge && isPortPayloadName(file.path)) {
-                entry.action = FileAction::Download;
+                       file.package) {
+                entry.action = FileAction::Install;
             } else if (initialSelection_ == StreamSelection::AllFiles ||
                        preferred_ != TransferMode::StreamInstall) {
                 entry.action = FileAction::Download;
@@ -899,9 +924,25 @@ public:
         size_t installs = dataSource_->installCount();
         size_t downloads = dataSource_->downloadCount();
         std::vector<uint8_t> actions = dataSource_->fileActions();
-        const TransferMode mode = installs > 0
+        TransferMode mode = installs > 0
             ? TransferMode::StreamInstall
             : TransferMode::DownloadOnly;
+        size_t portPackages = 0;
+        if (selectedPortTransaction(actions, portPackages)) {
+            mode = TransferMode::PortInstall;
+            installs = portPackages;
+            downloads = 0;
+            for (size_t i = 0; i < actions.size() &&
+                               i < preview_.files.size(); ++i) {
+                if (preview_.files[i].package &&
+                    actions[i] != static_cast<uint8_t>(FileAction::Skip)) {
+                    actions[i] = static_cast<uint8_t>(FileAction::Download);
+                } else if (actions[i] ==
+                           static_cast<uint8_t>(FileAction::Download)) {
+                    ++downloads;
+                }
+            }
+        }
         const auto estimate = pipensx::estimateInstallSpace(preview_, actions,
                                                             mode);
         const auto check = pipensx::assessTransferSpace(
@@ -976,10 +1017,20 @@ public:
             return;
         }
 
-        const size_t installs = dataSource_->installCount();
+        size_t installs = dataSource_->installCount();
         TransferMode mode = installs > 0
             ? TransferMode::StreamInstall
             : TransferMode::DownloadOnly;
+        size_t portPackages = 0;
+        if (selectedPortTransaction(actions, portPackages)) {
+            mode = TransferMode::PortInstall;
+            installs = portPackages;
+            for (size_t i = 0; i < actions.size() &&
+                               i < preview_.files.size(); ++i)
+                if (preview_.files[i].package &&
+                    actions[i] != static_cast<uint8_t>(FileAction::Skip))
+                    actions[i] = static_cast<uint8_t>(FileAction::Download);
+        }
         const auto estimate = pipensx::estimateInstallSpace(preview_, actions,
                                                             mode);
         validationInFlight_ = true;
@@ -1026,6 +1077,16 @@ public:
 
     void continueValidated(std::vector<uint8_t> actions, TransferMode mode,
                            size_t installs) {
+        size_t portPackages = 0;
+        if (selectedPortTransaction(actions, portPackages)) {
+            mode = TransferMode::PortInstall;
+            installs = portPackages;
+            for (size_t i = 0; i < actions.size() &&
+                               i < preview_.files.size(); ++i)
+                if (preview_.files[i].package &&
+                    actions[i] != static_cast<uint8_t>(FileAction::Skip))
+                    actions[i] = static_cast<uint8_t>(FileAction::Download);
+        }
         std::string id;
         std::string error;
         bool imported;

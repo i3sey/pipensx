@@ -77,38 +77,141 @@ bool endsWithCi(const std::string& value, const char* suffix) {
     return true;
 }
 
-// path → destination relative to /switch, or empty if no switch segment /
-// nothing after it / unsafe.
-std::string switchRelativeDestination(const std::string& memberPath) {
-    std::string normalized = memberPath;
-    for (char& ch : normalized)
+struct RawArchiveFile {
+    std::string path;
+    uint64_t size = 0;
+};
+
+std::string normalizeArchivePath(std::string path) {
+    for (char& ch : path)
         if (ch == '\\')
             ch = '/';
-    while (!normalized.empty() && normalized.front() == '/')
-        normalized.erase(normalized.begin());
-    const std::string folded = lowerAscii(normalized);
-    size_t pos = 0;
-    while (pos < folded.size()) {
-        const size_t slash = folded.find('/', pos);
-        const size_t end = slash == std::string::npos ? folded.size() : slash;
-        if (folded.compare(pos, end - pos, "switch") == 0) {
-            if (slash == std::string::npos)
-                return {};
-            const std::string relative = normalized.substr(slash + 1);
-            if (relative.empty() || !taskFilePathIsSafe(relative) ||
-                !taskFilePathIsFatCompatible(relative))
-                return {};
-            const size_t first = relative.find('/');
-            const std::string top =
-                first == std::string::npos ? relative : relative.substr(0, first);
-            if (lowerAscii(top) == "pipensx")
-                return {};
-            return relative;
-        }
-        if (slash == std::string::npos)
-            break;
-        pos = slash + 1;
+    while (!path.empty() && path.front() == '/')
+        path.erase(path.begin());
+    return taskFilePathIsFatCompatible(path) ? path : std::string();
+}
+
+std::string parentPathOf(const std::string& path) {
+    const size_t slash = path.find_last_of('/');
+    return slash == std::string::npos ? std::string() : path.substr(0, slash);
+}
+
+std::string basenamePath(const std::string& path) {
+    const size_t slash = path.find_last_of('/');
+    return slash == std::string::npos ? path : path.substr(slash + 1);
+}
+
+bool pathInside(const std::string& path, const std::string& root) {
+    if (root.empty())
+        return true;
+    const std::string foldedPath = lowerAscii(path);
+    const std::string foldedRoot = lowerAscii(root);
+    return foldedPath == foldedRoot ||
+           foldedPath.rfind(foldedRoot + "/", 0) == 0;
+}
+
+// Build the one authoritative archive mapping. Each directory that directly
+// contains an NRO becomes a top-level /switch application directory; files
+// are assigned to the nearest such ancestor, so nested helper applications do
+// not get copied twice. A legacy switch/ root remains a fallback for mixed
+// releases where the NRO is loose and an archive contains only extra data.
+bool buildArchiveMapping(const std::vector<RawArchiveFile>& raw,
+                         PortArchiveProbe& out) {
+    std::vector<std::string> roots;
+    for (const RawArchiveFile& file : raw) {
+        const std::string normalized = normalizeArchivePath(file.path);
+        if (normalized.empty() || !hasNroExtension(normalized))
+            continue;
+        const std::string root = parentPathOf(normalized);
+        const std::string folded = lowerAscii(root);
+        bool seen = false;
+        for (const std::string& existing : roots)
+            seen = seen || lowerAscii(existing) == folded;
+        if (!seen)
+            roots.push_back(root);
     }
+    auto legacyDestination = [](const std::string& source) {
+        size_t start = 0;
+        while (start < source.size()) {
+            const size_t slash = source.find('/', start);
+            const size_t end = slash == std::string::npos
+                ? source.size() : slash;
+            if (lowerAscii(source.substr(start, end - start)) == "switch") {
+                if (slash == std::string::npos)
+                    return std::string();
+                return source.substr(slash + 1);
+            }
+            if (slash == std::string::npos)
+                break;
+            start = slash + 1;
+        }
+        return std::string();
+    };
+    std::vector<std::string> foldedDestinations;
+    for (const RawArchiveFile& file : raw) {
+        const std::string source = normalizeArchivePath(file.path);
+        if (source.empty())
+            continue;
+        std::string destination;
+        if (roots.empty()) {
+            destination = legacyDestination(source);
+        } else {
+            const std::string* selected = nullptr;
+            for (const std::string& root : roots) {
+                if (!pathInside(source, root))
+                    continue;
+                if (!selected || root.size() > selected->size())
+                    selected = &root;
+            }
+            if (!selected)
+                continue;
+            if (selected->empty()) {
+                destination = source;
+            } else {
+                destination = basenamePath(*selected);
+                destination += source.substr(selected->size());
+            }
+        }
+        if (destination.empty() ||
+            !taskFilePathIsFatCompatible(destination))
+            continue;
+        const std::string top = destination.substr(0, destination.find('/'));
+        if (lowerAscii(top) == "pipensx") {
+            out.error = "Writing inside the pipensx application directory is forbidden.";
+            return false;
+        }
+        const std::string folded = lowerAscii(destination);
+        if (std::find(foldedDestinations.begin(), foldedDestinations.end(),
+                      folded) != foldedDestinations.end()) {
+            out.error = "Archive destination paths collide on FAT.";
+            return false;
+        }
+        if (out.files.size() >= kMaxProbeFiles) {
+            out.error = "The archive contains too many port files.";
+            return false;
+        }
+        foldedDestinations.push_back(folded);
+        out.sourceFiles.push_back(source);
+        out.files.push_back(destination);
+        ++out.switchFiles;
+        out.unpackBytes += file.size;
+    }
+    if (out.files.empty()) {
+        out.error = roots.empty()
+            ? "The archive has neither an NRO payload nor a switch directory."
+            : "The archive has no files in an NRO application directory.";
+        return false;
+    }
+    return true;
+}
+
+std::string archiveDestination(const PortArchiveProbe& probe,
+                               const std::string& memberPath) {
+    const std::string normalized = normalizeArchivePath(memberPath);
+    for (size_t i = 0; i < probe.sourceFiles.size() &&
+                       i < probe.files.size(); ++i)
+        if (probe.sourceFiles[i] == normalized)
+            return probe.files[i];
     return {};
 }
 
@@ -132,12 +235,18 @@ bool writeBytes(const std::string& path, const uint8_t* data, size_t size,
                 const std::atomic<bool>& cancelled,
                 const std::function<void(uint64_t)>& progress,
                 std::string& error) {
+    struct stat existing {};
+    if (lstat(path.c_str(), &existing) == 0 || errno != ENOENT) {
+        error = "An extracted destination file already exists.";
+        return false;
+    }
     const std::string parent = path.substr(0, path.find_last_of('/'));
     if (!parent.empty() && !mkdirs(parent)) {
         error = "Unable to create destination directories.";
         return false;
     }
     const std::string temporary = path + ".pipensx-part";
+    std::remove(temporary.c_str());
     std::FILE* out = std::fopen(temporary.c_str(), "wb");
     if (!out) {
         error = "Unable to create extracted file.";
@@ -168,7 +277,11 @@ bool writeBytes(const std::string& path, const uint8_t* data, size_t size,
         error = "Unable to flush extracted file.";
         return false;
     }
-    std::remove(path.c_str());
+    if (lstat(path.c_str(), &existing) == 0 || errno != ENOENT) {
+        std::remove(temporary.c_str());
+        error = "An extracted destination file appeared during extraction.";
+        return false;
+    }
     if (std::rename(temporary.c_str(), path.c_str()) != 0) {
         std::remove(temporary.c_str());
         error = "Unable to commit extracted file.";
@@ -189,6 +302,7 @@ uint16_t readU16le(const uint8_t* p) {
 }
 
 bool extractZip(const std::string& archivePath, const std::string& targetRoot,
+                const PortArchiveProbe& probe,
                 const std::atomic<bool>& cancelled,
                 const std::function<void(uint64_t)>& progress,
                 const std::function<void(const std::string&)>& currentFile,
@@ -237,7 +351,7 @@ bool extractZip(const std::string& archivePath, const std::string& targetRoot,
         const std::string member(reinterpret_cast<char*>(name.data()), nameLen);
         const bool isDir = !member.empty() && member.back() == '/';
         const std::string relative =
-            isDir ? std::string() : switchRelativeDestination(member);
+            isDir ? std::string() : archiveDestination(probe, member);
         if (compSize > 0) {
             compressed.resize(compSize);
             if (std::fread(compressed.data(), 1, compSize, file) != compSize) {
@@ -313,6 +427,7 @@ bool probeZip(const std::string& archivePath, PortArchiveProbe& out) {
     }
     std::vector<uint8_t> local(30);
     std::vector<uint8_t> name;
+    std::vector<RawArchiveFile> raw;
     while (true) {
         if (std::fread(local.data(), 1, 30, file) != 30) {
             if (std::feof(file))
@@ -347,17 +462,11 @@ bool probeZip(const std::string& archivePath, PortArchiveProbe& out) {
         }
         const std::string member(reinterpret_cast<char*>(name.data()), nameLen);
         const bool isDir = !member.empty() && member.back() == '/';
-        const std::string relative =
-            isDir ? std::string() : switchRelativeDestination(member);
-        if (relative.empty())
-            continue;
-        ++out.switchFiles;
-        out.unpackBytes += uncompSize;
-        if (out.files.size() < kMaxProbeFiles)
-            out.files.push_back(relative);
+        if (!isDir)
+            raw.push_back({member, uncompSize});
     }
     std::fclose(file);
-    return true;
+    return buildArchiveMapping(raw, out);
 }
 
 std::string utf16ToUtf8(const UInt16* src, size_t len) {
@@ -421,7 +530,13 @@ struct FolderByteSink {
             error = "Unable to create destination directories.";
             return false;
         }
+        struct stat existing {};
+        if (lstat(range.absolute.c_str(), &existing) == 0 || errno != ENOENT) {
+            error = "An extracted destination file already exists.";
+            return false;
+        }
         const std::string temporary = range.absolute + ".pipensx-part";
+        std::remove(temporary.c_str());
         out = std::fopen(temporary.c_str(), "wb");
         if (!out) {
             error = "Unable to create extracted file.";
@@ -445,7 +560,13 @@ struct FolderByteSink {
         }
         std::fclose(out);
         out = nullptr;
-        std::remove(ranges[active].absolute.c_str());
+        struct stat existing {};
+        if (lstat(ranges[active].absolute.c_str(), &existing) == 0 ||
+            errno != ENOENT) {
+            std::remove(temporary.c_str());
+            error = "An extracted destination file appeared during extraction.";
+            return false;
+        }
         if (std::rename(temporary.c_str(), ranges[active].absolute.c_str()) !=
             0) {
             std::remove(temporary.c_str());
@@ -865,6 +986,7 @@ bool streamFolderDecode(const CSzArEx& db, UInt32 folderIndex,
 
 bool extract7zRam(CSzArEx& db, ILookInStreamPtr inStream,
                   const std::string& targetRoot,
+                  const PortArchiveProbe& probe,
                   const std::atomic<bool>& cancelled,
                   const std::function<void(uint64_t)>& progress,
                   const std::function<void(const std::string&)>& currentFile,
@@ -888,7 +1010,7 @@ bool extract7zRam(CSzArEx& db, ILookInStreamPtr inStream,
         nameBuf.resize(nameLen);
         SzArEx_GetFileNameUtf16(&db, i, nameBuf.data());
         const std::string member = utf16ToUtf8(nameBuf.data(), nameLen);
-        const std::string relative = switchRelativeDestination(member);
+        const std::string relative = archiveDestination(probe, member);
         if (relative.empty())
             continue;
         if (currentFile)
@@ -922,6 +1044,7 @@ bool extract7zRam(CSzArEx& db, ILookInStreamPtr inStream,
 }
 
 bool extract7z(const std::string& archivePath, const std::string& targetRoot,
+               const PortArchiveProbe& probe,
                const std::atomic<bool>& cancelled,
                const std::function<void(uint64_t)>& progress,
                const std::function<void(const std::string&)>& currentFile,
@@ -980,7 +1103,7 @@ bool extract7z(const std::string& archivePath, const std::string& targetRoot,
         nameBuf.resize(nameLen);
         SzArEx_GetFileNameUtf16(&db, i, nameBuf.data());
         const std::string member = utf16ToUtf8(nameBuf.data(), nameLen);
-        const std::string relative = switchRelativeDestination(member);
+        const std::string relative = archiveDestination(probe, member);
         if (relative.empty())
             continue;
         const UInt32 folderIndex = db.FileToFolder[i];
@@ -1001,8 +1124,9 @@ bool extract7z(const std::string& archivePath, const std::string& targetRoot,
         error = "The archive has no switch/ files to extract.";
         ok = false;
     } else if (!preferStream) {
-        ok = extract7zRam(db, &lookStream.vt, targetRoot, cancelled, progress,
-                          currentFile, &allocImp, &allocTempImp, error);
+        ok = extract7zRam(db, &lookStream.vt, targetRoot, probe, cancelled,
+                          progress, currentFile, &allocImp, &allocTempImp,
+                          error);
     } else {
         std::sort(files.begin(), files.end(),
                   [](const WantedFile& a, const WantedFile& b) {
@@ -1045,7 +1169,7 @@ bool extract7z(const std::string& archivePath, const std::string& targetRoot,
                     const std::string member =
                         utf16ToUtf8(nameBuf.data(), nameLen);
                     const std::string relative =
-                        switchRelativeDestination(member);
+                        archiveDestination(probe, member);
                     if (relative.empty())
                         continue;
                     if (currentFile)
@@ -1124,25 +1248,21 @@ bool probe7z(const std::string& archivePath, PortArchiveProbe& out) {
             out.maxSolidBlockBytes = unpack;
     }
     std::vector<UInt16> nameBuf;
+    std::vector<RawArchiveFile> raw;
     for (UInt32 i = 0; i < db.NumFiles; ++i) {
         if (SzArEx_IsDir(&db, i))
             continue;
         const size_t nameLen = SzArEx_GetFileNameUtf16(&db, i, nullptr);
         nameBuf.resize(nameLen);
         SzArEx_GetFileNameUtf16(&db, i, nameBuf.data());
-        const std::string member = utf16ToUtf8(nameBuf.data(), nameLen);
-        const std::string relative = switchRelativeDestination(member);
-        if (relative.empty())
-            continue;
-        ++out.switchFiles;
-        out.unpackBytes += SzArEx_GetFileSize(&db, i);
-        if (out.files.size() < kMaxProbeFiles)
-            out.files.push_back(relative);
+        raw.push_back({utf16ToUtf8(nameBuf.data(), nameLen),
+                       SzArEx_GetFileSize(&db, i)});
     }
+    const bool mapped = buildArchiveMapping(raw, out);
     SzArEx_Free(&db, &allocImp);
     ISzAlloc_Free(&allocImp, lookStream.buf);
     File_Close(&archiveStream.file);
-    return true;
+    return mapped;
 }
 
 } // namespace
@@ -1174,12 +1294,17 @@ bool extractPortArchive(const std::string& archivePath,
                         const std::function<void(uint64_t)>& progress,
                         const std::function<void(const std::string&)>& currentFile,
                         std::string& error) {
+    PortArchiveProbe probe;
+    if (!probePortArchive(archivePath, probe)) {
+        error = probe.error;
+        return false;
+    }
     const std::string base = lowerAscii(basenameOf(archivePath));
     if (base == "switch.zip" || endsWithCi(archivePath, ".zip"))
-        return extractZip(archivePath, targetRoot, cancelled, progress,
+        return extractZip(archivePath, targetRoot, probe, cancelled, progress,
                           currentFile, error);
     if (base == "switch.7z" || endsWithCi(archivePath, ".7z"))
-        return extract7z(archivePath, targetRoot, cancelled, progress,
+        return extract7z(archivePath, targetRoot, probe, cancelled, progress,
                          currentFile, error);
     error = "Unsupported port archive type.";
     return false;

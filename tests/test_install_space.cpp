@@ -57,23 +57,43 @@ int main() {
             {"switch/game/config.json", 128, false, false, false},
             {"readme.txt", 64, false, false, false},
         };
+        const TransferMode mode = defaultTransferMode(
+            preview, TransferMode::StreamInstall);
+        assert(mode == TransferMode::PortInstall);
         std::vector<uint8_t> selection = defaultInstallSelection(
-            preview, TransferMode::StreamInstall,
-            StreamSelection::PackagesOnly);
+            preview, mode, StreamSelection::PackagesOnly);
         assert((selection == std::vector<uint8_t>{
-            static_cast<uint8_t>(FileAction::Install),
+            static_cast<uint8_t>(FileAction::Download),
             static_cast<uint8_t>(FileAction::Download),
             static_cast<uint8_t>(FileAction::Download),
             static_cast<uint8_t>(FileAction::Skip),
         }));
 
         InstallSpaceEstimate estimate = estimateInstallSpace(
-            preview, selection, TransferMode::StreamInstall);
+            preview, selection, TransferMode::PortInstall);
         assert(estimate.selectedFiles == 3);
         assert(estimate.packageFiles == 1);
-        assert(estimate.downloadBytes == 384);
+        assert(estimate.downloadBytes == 1408);
         assert(estimate.packageBytes == 1024);
-        assert(estimate.requiredBytes == 1408);
+        assert(estimate.requiredBytes == 2432);
+    }
+
+    {
+        TorrentPreview preview;
+        preview.files = {
+            {"game.nsp", 1024, true, false, false},
+            {"Game/Game.nro", 256, false, false, false},
+        };
+        const std::vector<uint8_t> actions = {
+            static_cast<uint8_t>(FileAction::Download),
+            static_cast<uint8_t>(FileAction::Download),
+        };
+        InstallSpaceEstimate estimate = estimateInstallSpace(
+            preview, actions, TransferMode::PortInstall);
+        assert(estimate.packageFiles == 1);
+        assert(estimate.downloadBytes == 1280);
+        assert(estimate.packageBytes == 1024);
+        assert(estimate.requiredBytes == 2304);
     }
 
     {
@@ -82,10 +102,15 @@ int main() {
             {"game.nsp", 1024, true, false, false},
             {"switch.7z", 512, false, false, false},
         };
+        const TransferMode mode = defaultTransferMode(
+            preview, TransferMode::StreamInstall);
+        assert(mode == TransferMode::PortInstall);
         std::vector<uint8_t> selection = defaultInstallSelection(
-            preview, TransferMode::StreamInstall,
-            StreamSelection::PackagesOnly);
-        assert(selection.empty());
+            preview, mode, StreamSelection::PackagesOnly);
+        assert((selection == std::vector<uint8_t>{
+            static_cast<uint8_t>(FileAction::Download),
+            static_cast<uint8_t>(FileAction::Download),
+        }));
     }
 
     {

@@ -266,9 +266,11 @@ void WebAddQueue::runJob(const std::string& jobId) {
     TransferMode mode = data.requestedMode;
     std::vector<uint8_t> mask;
     if (mode == TransferMode::StreamInstall) {
+        mode = defaultTransferMode(preview, mode);
         mask = defaultInstallSelection(preview, mode, data.selection);
         InstallSpaceEstimate space = estimateInstallSpace(preview, mask, mode);
-        if (space.packageFiles == 0) mode = TransferMode::DownloadOnly;
+        if (space.packageFiles == 0 && mode != TransferMode::PortInstall)
+            mode = TransferMode::DownloadOnly;
     }
 
     std::string taskId;

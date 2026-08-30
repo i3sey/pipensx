@@ -3,6 +3,8 @@
 #include "install_space.hpp"
 #include "nx_file_types.hpp"
 #include "port_archive.hpp"
+#include "../install/install_backend.hpp"
+#include "../install/package_stream.hpp"
 
 extern "C" {
 #include "../core/bencode.h"
@@ -530,6 +532,99 @@ bool copyFile(const SwitchDeployEntry& entry, const std::string& appRoot,
     return true;
 }
 
+bool installLocalPackage(
+    install::InstallBackend& backend, const std::string& taskId,
+    const SwitchDeployPackage& package, std::atomic<bool>& cancelled,
+    const std::function<void(uint64_t, uint64_t, DownloadStatus)>& progress,
+    std::string& error) {
+    if (!backend.beginPackage(taskId, package.sourceRelativePath)) {
+        error = backend.error();
+        return false;
+    }
+    install::PackageCallbacks callbacks;
+    callbacks.skipFile = [&backend](const std::string& name) {
+        return backend.shouldSkipFile(name);
+    };
+    callbacks.beginFile = [&backend, &error](const std::string& name,
+                                              uint64_t size) {
+        if (backend.beginFile(name, size))
+            return true;
+        error = backend.error();
+        return false;
+    };
+    callbacks.setFileSize = [&backend, &error](uint64_t size) {
+        if (backend.setFileSize(size))
+            return true;
+        error = backend.error();
+        return false;
+    };
+    callbacks.writeFile = [&backend, &cancelled, &progress,
+                           &error](const uint8_t* bytes, size_t size) {
+        if (cancelled.load(std::memory_order_relaxed))
+            return false;
+        if (!backend.writeFile(bytes, size)) {
+            error = backend.error();
+            return false;
+        }
+        if (progress)
+            progress(backend.installedBytes(), backend.expectedBytes(),
+                     DownloadStatus::Installing);
+        return true;
+    };
+    callbacks.endFile = [&backend, &error] {
+        if (backend.endFile())
+            return true;
+        error = backend.error();
+        return false;
+    };
+    install::PackageStream stream(package.compressed, std::move(callbacks),
+                                  taskId);
+    std::FILE* input = std::fopen(package.sourcePath.c_str(), "rb");
+    if (!input) {
+        backend.rollbackPackage();
+        error = "Unable to open the downloaded package.";
+        return false;
+    }
+    std::vector<uint8_t> buffer(1u << 20);
+    uint64_t consumed = 0;
+    bool ok = true;
+    while (!cancelled.load(std::memory_order_relaxed)) {
+        const size_t count = std::fread(buffer.data(), 1, buffer.size(), input);
+        if (count == 0)
+            break;
+        consumed += count;
+        if (!stream.write(buffer.data(), count)) {
+            ok = false;
+            break;
+        }
+    }
+    ok = std::ferror(input) == 0 && consumed == package.size && ok;
+    if (std::fclose(input) != 0)
+        ok = false;
+    if (cancelled.load(std::memory_order_relaxed)) {
+        backend.rollbackPackage();
+        error = "Cancelled.";
+        return false;
+    }
+    if (!ok || !stream.finish()) {
+        if (error.empty())
+            error = stream.error().empty() ? "Unable to read the complete package."
+                                           : stream.error();
+        backend.rollbackPackage();
+        return false;
+    }
+    if (progress)
+        progress(backend.installedBytes(), backend.expectedBytes(),
+                 DownloadStatus::Committing);
+    bool alreadyInstalled = false;
+    if (!backend.commitPackage(alreadyInstalled)) {
+        error = backend.error();
+        backend.rollbackPackage();
+        return false;
+    }
+    return true;
+}
+
 std::string receiptTopFolder(const std::string& relative) {
     const size_t slash = relative.find('/');
     return slash == std::string::npos ? relative : relative.substr(0, slash);
@@ -610,7 +705,11 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
         }
     }
 
-    std::set<std::string> roots;
+    // Unified loose-payload discovery: every directory that directly owns a
+    // valid NRO is an application root. The old implementation searched for
+    // one ancestor literally named `switch`, which made equivalent folder and
+    // archive layouts behave differently and rejected multi-port releases.
+    std::map<std::string, std::string> roots;
     for (const TaskFileInfo& file : result.inventory.files) {
         if (file.action != TaskFileAction::Download || file.package ||
             file.cartridge || file.state != TaskFileState::Present ||
@@ -619,13 +718,26 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
             !validNro(file.absolutePath))
             continue;
         const std::vector<std::string> parts = splitPath(file.logicalPath);
-        for (size_t i = 0; i < parts.size(); ++i) {
-            if (asciiEqual(parts[i], "switch")) {
-                roots.insert(lowerAscii(joinPath(parts, 0, i + 1)));
-                break;
-            }
-        }
+        if (parts.empty())
+            continue;
+        const std::string root = joinPath(parts, 0, parts.size() - 1);
+        roots.emplace(lowerAscii(root), root);
     }
+    for (const TaskFileInfo& file : result.inventory.files) {
+        if (!file.package || file.action != TaskFileAction::Download ||
+            file.state != TaskFileState::Present ||
+            !sourceFileSafe(result.inventory, file))
+            continue;
+        SwitchDeployPackage package;
+        package.sourcePath = file.absolutePath;
+        package.sourceRelativePath = file.logicalPath;
+        package.size = file.size;
+        package.compressed = file.compressed ||
+                             isCompressedName(file.logicalPath);
+        result.plan.packages.push_back(std::move(package));
+    }
+
+    std::map<std::string, std::string> plannedFiles;
     for (const TaskFileInfo& file : result.inventory.files) {
         if (file.action != TaskFileAction::Download || file.package ||
             file.cartridge || file.state != TaskFileState::Present ||
@@ -641,7 +753,31 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
             archive.unpackBytes = probe.unpackBytes;
             archive.maxSolidBlockBytes = probe.maxSolidBlockBytes;
             archive.switchFiles = probe.switchFiles;
+            archive.destinationRelativePaths = probe.files;
             archive.extractable = true;
+            for (const std::string& relative : probe.files) {
+                const std::string folded = lowerAscii(relative);
+                auto duplicate = plannedFiles.find(folded);
+                if (duplicate != plannedFiles.end()) {
+                    setProblem(result, SwitchDeployProblem::UnsafePath,
+                               "Payload destination paths collide on FAT.");
+                    return result;
+                }
+                plannedFiles.emplace(folded, relative);
+                if (!destinationParentsSafe(targetRoot, relative)) {
+                    setProblem(result, SwitchDeployProblem::UnsafePath,
+                               relative);
+                    return result;
+                }
+                struct stat destination {};
+                if (lstat((targetRoot + "/" + relative).c_str(),
+                          &destination) == 0) {
+                    ++result.plan.conflictFiles;
+                } else if (errno != ENOENT) {
+                    setProblem(result, SwitchDeployProblem::Io, relative);
+                    return result;
+                }
+            }
         } else {
             archive.extractable = false;
             archive.detail = probe.error;
@@ -655,7 +791,10 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
             result.plan.bytesToCopy += need;
         }
     }
-    if (roots.empty() && result.plan.archives.empty()) {
+    const bool hasExtractableArchive = std::any_of(
+        result.plan.archives.begin(), result.plan.archives.end(),
+        [](const SwitchDeployArchive& archive) { return archive.extractable; });
+    if (roots.empty() && !hasExtractableArchive) {
         bool hasPackagePayload = false;
         bool hasLooseFiles = false;
         for (const TaskFileInfo& file : result.inventory.files) {
@@ -673,18 +812,22 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
         if (hasPackagePayload && !hasLooseFiles) {
             setProblem(result, SwitchDeployProblem::NotAPort,
                        "This download contains native packages only.");
+        } else if (!hasLooseFiles && !result.plan.archives.empty()) {
+            setProblem(result, SwitchDeployProblem::NotAPort,
+                       "The selected archives contain no NRO port payload.");
         } else {
             setProblem(result, SwitchDeployProblem::LayoutNotFound,
-                       "A switch directory with a valid NRO was not found.");
+                       "A downloadable application directory with a valid "
+                       "NRO was not found.");
         }
         return result;
     }
-    if (roots.size() > 1) {
-        setProblem(result, SwitchDeployProblem::AmbiguousLayout,
-                   "More than one switch directory contains an NRO.");
-        return result;
-    }
     if (roots.empty()) {
+        if (result.plan.conflictFiles != 0) {
+            setProblem(result, SwitchDeployProblem::Conflict,
+                       "Existing destination files differ from the download.");
+            return result;
+        }
         const StorageSpaceSnapshot storage = queryStorageSpace(targetRoot);
         if (!storage.available) {
             setProblem(result, SwitchDeployProblem::Io, storage.error);
@@ -698,7 +841,6 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
         }
         return result;
     }
-    const std::string selectedRoot = *roots.begin();
     struct LayoutPath {
         std::string spelling;
         bool file = false;
@@ -706,15 +848,17 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
     std::map<std::string, LayoutPath> layoutPaths;
     for (const TaskFileInfo& file : result.inventory.files) {
         const std::vector<std::string> parts = splitPath(file.logicalPath);
-        size_t switchIndex = parts.size();
-        for (size_t i = 0; i < parts.size(); ++i) {
-            if (asciiEqual(parts[i], "switch") &&
-                lowerAscii(joinPath(parts, 0, i + 1)) == selectedRoot) {
-                switchIndex = i;
-                break;
-            }
+        const std::string foldedLogical = lowerAscii(file.logicalPath);
+        const std::pair<const std::string, std::string>* selectedRoot = nullptr;
+        for (const auto& root : roots) {
+            const bool inside = root.first.empty() ||
+                foldedLogical == root.first ||
+                foldedLogical.rfind(root.first + "/", 0) == 0;
+            if (inside && (!selectedRoot ||
+                           root.first.size() > selectedRoot->first.size()))
+                selectedRoot = &root;
         }
-        if (switchIndex == parts.size()) {
+        if (!selectedRoot) {
             if (file.action == TaskFileAction::Download &&
                 !isPortArchiveName(file.logicalPath))
                 ++result.plan.ignoredFiles;
@@ -738,8 +882,20 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
             ++result.plan.ignoredFiles;
             continue;
         }
-        const std::string destinationRelative =
-            joinPath(parts, switchIndex + 1, parts.size());
+        const std::vector<std::string> rootParts =
+            splitPath(selectedRoot->second);
+        const size_t sourceBegin = selectedRoot->second.empty()
+            ? 0 : rootParts.size();
+        std::string destinationRelative;
+        if (selectedRoot->second.empty()) {
+            destinationRelative = joinPath(parts, 0, parts.size());
+        } else {
+            destinationRelative = rootParts.back();
+            const std::string suffix = joinPath(parts, sourceBegin,
+                                                parts.size());
+            if (!suffix.empty())
+                destinationRelative += "/" + suffix;
+        }
         if (!taskFilePathIsFatCompatible(destinationRelative)) {
             setProblem(result, SwitchDeployProblem::UnsafePath,
                        file.logicalPath);
@@ -779,6 +935,15 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
                                     LayoutPath{layoutPath, isFile});
             }
         }
+
+        const std::string foldedDestination = lowerAscii(destinationRelative);
+        auto planned = plannedFiles.find(foldedDestination);
+        if (planned != plannedFiles.end()) {
+            setProblem(result, SwitchDeployProblem::UnsafePath,
+                       "Payload destination paths collide on FAT.");
+            return result;
+        }
+        plannedFiles.emplace(foldedDestination, destinationRelative);
 
         SwitchDeployEntry entry;
         entry.sourcePath = file.absolutePath;
@@ -827,7 +992,8 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
     }
     if (result.plan.files.empty() && result.plan.archives.empty()) {
         setProblem(result, SwitchDeployProblem::LayoutNotFound,
-                   "The switch directory has no downloadable files.");
+                   "The NRO application directories have no downloadable "
+                   "files.");
         return result;
     }
     if (result.plan.conflictFiles != 0) {
@@ -893,7 +1059,32 @@ SwitchDeployInspection SwitchDeployService::inspect(
         result.detail = std::move(error);
         return result;
     }
-    return inspectSwitchDeploy(std::move(inventory), targetRoot_);
+    SwitchDeployInspection inspection =
+        inspectSwitchDeploy(std::move(inventory), targetRoot_);
+    if (task->mode == TransferMode::PortInstall &&
+        receiptState(taskId) == SwitchDeployReceiptState::Valid) {
+        inspection.problem = SwitchDeployProblem::None;
+        inspection.detail.clear();
+        inspection.plan.files.clear();
+        inspection.plan.archives.clear();
+        inspection.plan.bytesToCopy = 0;
+        inspection.plan.totalBytes = 0;
+        inspection.plan.conflictFiles = 0;
+    } else if (task->mode == TransferMode::PortInstall &&
+               inspection.problem == SwitchDeployProblem::NotAPort &&
+               !inspection.plan.packages.empty()) {
+        inspection.problem = SwitchDeployProblem::None;
+        inspection.detail.clear();
+    }
+    if (task->mode != TransferMode::PortInstall) {
+        inspection.plan.packages.clear();
+    } else if (task->packagesInstalled != 0) {
+        const size_t done = std::min<size_t>(task->packagesInstalled,
+                                             inspection.plan.packages.size());
+        inspection.plan.packages.erase(inspection.plan.packages.begin(),
+                                       inspection.plan.packages.begin() + done);
+    }
+    return inspection;
 }
 
 bool SwitchDeployService::inventory(const std::string& taskId,
@@ -984,8 +1175,33 @@ void SwitchDeployService::run(DownloadManager::ExternalDeployLease lease,
                     if (seen.insert(id).second)
                         receiptTitleIds.push_back(id);
     }
+    const bool portTransaction =
+        lease.task().mode == TransferMode::PortInstall;
+    const bool payloadReceiptValid =
+        portTransaction &&
+        receiptState(lease.task().id) == SwitchDeployReceiptState::Valid;
     SwitchDeployInspection inspection = inspectSwitchDeploy(
         std::move(inventory), targetRoot_);
+    if (payloadReceiptValid) {
+        // A failed package stage retries from the durable payload receipt.
+        // Do not re-extract archives (which would now correctly conflict with
+        // their own files); only the remaining local packages are retried.
+        inspection.problem = SwitchDeployProblem::None;
+        inspection.detail.clear();
+        inspection.plan.files.clear();
+        inspection.plan.archives.clear();
+        inspection.plan.bytesToCopy = 0;
+        inspection.plan.totalBytes = 0;
+        inspection.plan.conflictFiles = 0;
+    } else if (portTransaction &&
+               inspection.problem == SwitchDeployProblem::NotAPort &&
+               !inspection.plan.packages.empty()) {
+        // An arbitrary ZIP/7z candidate can prove not to be a port after its
+        // header probe. Fall back to installing its downloaded packages
+        // rather than stranding a native release as a false-positive port.
+        inspection.problem = SwitchDeployProblem::None;
+        inspection.detail.clear();
+    }
     if (!inspection.canStart()) {
         finish(SwitchDeployPhase::Failed, inspection.problem,
                std::move(inspection.detail));
@@ -1026,7 +1242,10 @@ void SwitchDeployService::run(DownloadManager::ExternalDeployLease lease,
             ++snapshot_.generation;
         }
     }
-    if (plan.files.empty() && plan.archives.empty()) {
+    if (plan.files.empty() && plan.archives.empty() &&
+        (!portTransaction || plan.packages.empty())) {
+        if (portTransaction)
+            manager_.finishExternalPortInstall(plan.taskId, true);
         finish(SwitchDeployPhase::Completed, SwitchDeployProblem::None,
                std::move(completionDetail));
         return;
@@ -1050,7 +1269,11 @@ void SwitchDeployService::run(DownloadManager::ExternalDeployLease lease,
                                            ? SwitchDeployPhase::Copying
                                            : SwitchDeployPhase::Extracting);
         snapshot_.totalBytes = plan.bytesToCopy;
-        snapshot_.totalFiles = copyFiles + plan.archives.size();
+        const size_t remainingPackages = portTransaction &&
+                plan.packages.size() > lease.task().packagesInstalled
+            ? plan.packages.size() - lease.task().packagesInstalled : 0;
+        snapshot_.totalFiles = copyFiles + plan.archives.size() +
+                               remainingPackages;
         snapshot_.identicalFiles = plan.identicalFiles;
         ++snapshot_.generation;
     }
@@ -1134,10 +1357,71 @@ void SwitchDeployService::run(DownloadManager::ExternalDeployLease lease,
         ++snapshot_.filesCopied;
         ++snapshot_.generation;
     }
-    if (!saveReceipt(appRoot_, plan, unpacked, receiptTitleIds)) {
+    if (!payloadReceiptValid &&
+        (!plan.files.empty() || !plan.archives.empty() || portTransaction) &&
+        !saveReceipt(appRoot_, plan, unpacked, receiptTitleIds)) {
         finish(SwitchDeployPhase::Completed, SwitchDeployProblem::Io,
                "Files were copied, but the deployment receipt was not saved.");
         return;
+    }
+
+    if (portTransaction) {
+        std::unique_ptr<install::InstallBackend> backend =
+            install::createInstallBackend(appRoot_, manager_.installTarget());
+        uint32_t completed = lease.task().packagesInstalled;
+        for (size_t i = 0; i < plan.packages.size(); ++i) {
+            if (i < completed)
+                continue;
+            if (cancelled_.load(std::memory_order_relaxed)) {
+                manager_.finishExternalPortInstall(plan.taskId, false,
+                                                   "Cancelled.");
+                finish(SwitchDeployPhase::Cancelled,
+                       SwitchDeployProblem::None, {});
+                return;
+            }
+            const SwitchDeployPackage& package = plan.packages[i];
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                snapshot_.phase = SwitchDeployPhase::InstallingPackages;
+                snapshot_.currentPath = package.sourceRelativePath;
+                ++snapshot_.generation;
+            }
+            auto progress = [this, &plan, &completed, &package](
+                                uint64_t installed, uint64_t total,
+                                DownloadStatus status) {
+                manager_.updateExternalPortInstall(
+                    plan.taskId, completed, package.sourceRelativePath,
+                    installed, total, status);
+                std::lock_guard<std::mutex> lock(mutex_);
+                snapshot_.phase = status == DownloadStatus::Committing
+                    ? SwitchDeployPhase::CommittingPackage
+                    : SwitchDeployPhase::InstallingPackages;
+                snapshot_.bytesCopied = installed;
+                snapshot_.totalBytes = total;
+                ++snapshot_.generation;
+            };
+            if (!installLocalPackage(*backend, plan.taskId, package,
+                                     cancelled_, progress, error)) {
+                manager_.finishExternalPortInstall(plan.taskId, false, error);
+                if (cancelled_.load(std::memory_order_relaxed))
+                    finish(SwitchDeployPhase::Cancelled,
+                           SwitchDeployProblem::None, {});
+                else
+                    finish(SwitchDeployPhase::Failed,
+                           SwitchDeployProblem::Io, std::move(error));
+                return;
+            }
+            ++completed;
+            manager_.updateExternalPortInstall(
+                plan.taskId, completed, package.sourceRelativePath, 0, 0,
+                DownloadStatus::Installing);
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                ++snapshot_.filesCopied;
+                ++snapshot_.generation;
+            }
+        }
+        manager_.finishExternalPortInstall(plan.taskId, true);
     }
     finish(SwitchDeployPhase::Completed, SwitchDeployProblem::None,
            std::move(completionDetail));
@@ -1275,15 +1559,19 @@ void SwitchDeployService::clearInspecting(const std::string& taskId) {
         const std::optional<DownloadTask> task = manager_.snapshot(taskId);
         if (!task || !taskReadyForSwitchDeploy(*task))
             return false;
-        const bool autoArmed = autoCopyArmed(taskId);
+        const bool markerArmed = autoCopyArmed(taskId);
+        const bool autoArmed = markerArmed ||
+                               task->mode == TransferMode::PortInstall;
         if (task->mode != TransferMode::StreamInstall && !autoArmed)
             return false;
         // A saved receipt means this task was already copied to /switch once.
         // Do not offer it again — if the user deleted or changed the installed
         // files afterwards, restoring them is a deliberate manual action
         // (Details → Install port), not something to silently restart.
-        if (receiptState(taskId) != SwitchDeployReceiptState::None) {
-            if (autoArmed)
+        if (receiptState(taskId) != SwitchDeployReceiptState::None &&
+            !(task->mode == TransferMode::PortInstall &&
+              task->packagesInstalled < task->packageCount)) {
+            if (markerArmed)
                 clearAutoCopy(taskId);
             std::lock_guard<std::mutex> lock(offerMutex_);
             offerHandled_.insert(taskId);
@@ -1321,7 +1609,8 @@ void SwitchDeployService::clearInspecting(const std::string& taskId) {
                     if (entry.state == SwitchDeployEntryState::Missing)
                         looseBytes += entry.size;
                 }
-                if (looseBytes == 0 && inspection.plan.archives.empty()) {
+                if (looseBytes == 0 && inspection.plan.archives.empty() &&
+                    inspection.plan.packages.empty()) {
                     clearAutoCopy(taskId);
                     {
                         std::lock_guard<std::mutex> lock(offerMutex_);

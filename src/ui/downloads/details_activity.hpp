@@ -442,7 +442,12 @@ private:
                     ? "pipensx/deploy/phase_preparing"
                     : state.phase == SwitchDeployPhase::Extracting
                           ? "pipensx/deploy/phase_extracting"
-                          : "pipensx/deploy/phase_copying";
+                          : state.phase == SwitchDeployPhase::CommittingPackage
+                                ? "pipensx/downloads/status_committing"
+                                : state.phase ==
+                                          SwitchDeployPhase::InstallingPackages
+                                      ? "pipensx/downloads/status_installing"
+                                      : "pipensx/deploy/phase_copying";
             setTextIfChanged(deployPhase_, tr(phaseKey));
             deployPhase_->setTextColor(theme::accent());
             setTextIfChanged(
@@ -509,7 +514,13 @@ private:
                     ? "pipensx/deploy/phase_preparing"
                     : deployState.phase == SwitchDeployPhase::Extracting
                           ? "pipensx/deploy/phase_extracting"
-                          : "pipensx/deploy/phase_copying";
+                          : deployState.phase ==
+                                    SwitchDeployPhase::CommittingPackage
+                                ? "pipensx/downloads/status_committing"
+                                : deployState.phase ==
+                                          SwitchDeployPhase::InstallingPackages
+                                      ? "pipensx/downloads/status_installing"
+                                      : "pipensx/deploy/phase_copying";
             setTextIfChanged(status_, tr("pipensx/downloads/status_line",
                                          tr(phaseKey)));
             status_->setTextColor(theme::accent());
@@ -572,7 +583,8 @@ private:
                              tr("pipensx/downloads/cell_fetching",
                                 percentOf(progress)));
             setTextIfChanged(currentPackage_, "");
-        } else if (task->mode == TransferMode::StreamInstall &&
+        } else if ((task->mode == TransferMode::StreamInstall ||
+                    task->mode == TransferMode::PortInstall) &&
                    task->packageCount) {
             const bool hasCurrent = !task->currentPackage.empty() &&
                                     task->packagesInstalled < task->packageCount;
@@ -598,7 +610,8 @@ private:
                           tr("pipensx/downloads/speed_download",
                              formatSpeed(task->speedBytesPerSecond)));
         const uint64_t installSpeed = currentInstallSpeed(*task, now);
-        if (task->mode == TransferMode::StreamInstall) {
+        if (task->mode == TransferMode::StreamInstall ||
+            task->mode == TransferMode::PortInstall) {
             installSpeedItem_->setVisibility(brls::Visibility::VISIBLE);
             setTextIfChanged(installSpeed_,
                              tr("pipensx/downloads/speed_install",
@@ -697,7 +710,8 @@ private:
     void recordSpeedSample(const DownloadTask& task, uint64_t now) {
         appendSpeedSample(downloadSpeedSamples_, task.speedBytesPerSecond);
 
-        if (task.mode == TransferMode::StreamInstall) {
+        if (task.mode == TransferMode::StreamInstall ||
+            task.mode == TransferMode::PortInstall) {
             appendSpeedSample(installSpeedSamples_,
                               currentInstallSpeed(task, now));
         } else {

@@ -57,6 +57,9 @@ enum class TaskSource { Torrent, Debrid };
 enum class TransferMode {
     DownloadOnly,
     StreamInstall,
+    // Unified port transaction: download every selected file to disk first;
+    // SwitchDeployService then deploys NRO payloads and installs packages.
+    PortInstall,
 };
 
 enum class FileAction : uint8_t {
@@ -302,6 +305,16 @@ public:
     std::optional<DownloadTask> snapshotUi(const std::string& id) const;
     std::optional<ExternalDeployLease> beginExternalDeploy(
         const std::string& taskId, std::string& error);
+    // Progress/final state published by the post-download port transaction
+    // while it owns an ExternalDeployLease.
+    void updateExternalPortInstall(const std::string& taskId,
+                                   uint32_t packagesInstalled,
+                                   const std::string& currentPackage,
+                                   uint64_t installedBytes,
+                                   uint64_t installTotalBytes,
+                                   DownloadStatus status);
+    void finishExternalPortInstall(const std::string& taskId, bool success,
+                                   const std::string& error = {});
     bool externalDeployActive() const;
     std::string externalDeployTaskId() const;
     bool save(std::string& error) const;

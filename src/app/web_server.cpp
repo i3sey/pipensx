@@ -54,6 +54,8 @@ HttpResponse jsonError(int status, const std::string& message) {
 }
 
 const char* modeName(TransferMode mode) {
+    if (mode == TransferMode::PortInstall)
+        return "port";
     return mode == TransferMode::StreamInstall ? "install" : "download";
 }
 
@@ -679,9 +681,11 @@ HttpResponse WebServer::handleAddTorrent(const HttpRequest& req) {
             std::lock_guard<std::mutex> lock(configMutex_);
             selection = streamSelection_;
         }
+        mode = defaultTransferMode(preview, mode);
         mask = defaultInstallSelection(preview, mode, selection);
         InstallSpaceEstimate space = estimateInstallSpace(preview, mask, mode);
-        if (space.packageFiles == 0) mode = TransferMode::DownloadOnly;
+        if (space.packageFiles == 0 && mode != TransferMode::PortInstall)
+            mode = TransferMode::DownloadOnly;
     }
     std::string taskId;
     bool ok = manager_.importTorrent(path, mode, mask, taskId, error);

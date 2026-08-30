@@ -72,6 +72,24 @@ static std::string makeSelectiveTorrent(const std::string& directory) {
     return path;
 }
 
+static std::string makePortTorrent(const std::string& directory) {
+    const std::string payload = "NSPPNRO0DATA";
+    uint8_t digest[20];
+    sha1(reinterpret_cast<const uint8_t*>(payload.data()), payload.size(),
+         digest);
+    std::string torrent = "d8:announce14:http://tracker4:infod5:filesl";
+    torrent += "d6:lengthi4e4:pathl13:forwarder.nspee";
+    torrent += "d6:lengthi4e4:pathl4:Game8:Game.nroee";
+    torrent += "d6:lengthi4e4:pathl4:Game8:data.bineee";
+    torrent += "4:name11:port-bundle12:piece lengthi12e6:pieces20:";
+    torrent.append(reinterpret_cast<const char*>(digest), 20);
+    torrent += "ee";
+    const std::string path = directory + "/port-bundle.torrent";
+    std::ofstream output(path, std::ios::binary);
+    output.write(torrent.data(), static_cast<std::streamsize>(torrent.size()));
+    return path;
+}
+
 // Two files, one piece each (piece length = file length): the skipped file's
 // piece is fully inside a STORAGE_FILE_SKIP range, so the startup scan can
 // pre-mark it done without downloading. Used to prove a skipped file is not
@@ -476,6 +494,7 @@ int main() {
     std::string fastResumeRoot = std::string(root) + "/fast-resume-app";
     std::string selectiveSource = makeSelectiveTorrent(root);
     std::string selectiveScanSource = makeSelectiveScanTorrent(root);
+    std::string portSource = makePortTorrent(root);
 
     std::string taskId;
     std::string error;
@@ -543,6 +562,54 @@ int main() {
     }
 
     {
+        const std::string portRoot = std::string(root) + "/port-import-app";
+        DownloadManager manager(portRoot, false);
+        std::string portTaskId;
+        assert(manager.importTorrent(portSource, TransferMode::StreamInstall,
+                                     portTaskId, error));
+        const auto task = manager.snapshot()[0];
+        assert(task.mode == TransferMode::PortInstall);
+        assert(task.packageCount == 1);
+        assert((task.fileSelection == std::vector<uint8_t>{
+            static_cast<uint8_t>(FileAction::Download),
+            static_cast<uint8_t>(FileAction::Download),
+            static_cast<uint8_t>(FileAction::Download),
+        }));
+        assert(manager.remove(portTaskId, true, error));
+        removeAll(portRoot);
+    }
+
+    {
+        // A debrid picker selection remains authoritative: explicitly
+        // selecting only the forwarder must not silently add the port payload.
+        const std::string debridRoot =
+            std::string(root) + "/port-debrid-selection-app";
+        DownloadManager manager(debridRoot, false);
+        pipensx::TorrentPreview preview;
+        assert(DownloadManager::previewTorrent(portSource, preview, error));
+        pipensx::DebridImport import;
+        import.infoHash = preview.infoHash;
+        import.name = preview.name;
+        import.totalBytes = preview.totalBytes;
+        import.debridId = "port-selection";
+        import.torrentPath = portSource;
+        import.mode = TransferMode::StreamInstall;
+        import.fileSelection = {
+            static_cast<uint8_t>(FileAction::Install),
+            static_cast<uint8_t>(FileAction::Skip),
+            static_cast<uint8_t>(FileAction::Skip),
+        };
+        std::string debridTaskId;
+        assert(manager.importDebrid(import, debridTaskId, error));
+        const auto task = manager.snapshot()[0];
+        assert(task.mode == TransferMode::StreamInstall);
+        assert(task.packageCount == 1);
+        assert(task.fileSelection == import.fileSelection);
+        assert(manager.remove(debridTaskId, true, error));
+        removeAll(debridRoot);
+    }
+
+    {
         DownloadManager manager(activeRoot, true);
         manager.setTorrentingEnabled(true);  // torrenting is off by default
         std::vector<uint8_t> actions{
@@ -553,6 +620,7 @@ int main() {
         std::string selectiveTaskId;
         assert(manager.importTorrentActions(
             selectiveSource, actions, selectiveTaskId, error));
+        assert(manager.snapshot()[0].mode == TransferMode::PortInstall);
         const std::string dataPath = manager.snapshot()[0].dataPath + "/selection";
         // Disk files are created on first write (lazy open). This torrent
         // has no seeds; skipped files must still never be touched.

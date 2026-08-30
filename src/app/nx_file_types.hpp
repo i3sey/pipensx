@@ -35,17 +35,19 @@ inline bool isCompressedName(const std::string& name) {
     return hasFileExtension(name, ".nsz");
 }
 
-// Port payload archive sitting next to NSP forwarders: switch.7z / switch.zip.
-// "switch.7z" is 9 chars — do not gate on length or it is silently dropped.
+// Supported port payload archives. Releases use both the conventional
+// switch.zip/switch.7z names and game-specific names, so classification is by
+// supported extension; the post-download probe confirms that the archive
+// actually contains an NRO payload before anything is deployed.
 inline bool isPortArchiveName(const std::string& path) {
-    const size_t slash = path.find_last_of("/\\");
-    const std::string base =
-        slash == std::string::npos ? path : path.substr(slash + 1);
-    std::string lower = base;
-    for (char& ch : lower)
-        if (ch >= 'A' && ch <= 'Z')
-            ch = static_cast<char>(ch - 'A' + 'a');
-    return lower == "switch.7z" || lower == "switch.zip";
+    if (hasFileExtension(path, ".zip"))
+        return true;
+    if (path.size() < 3)
+        return false;
+    const size_t base = path.size() - 3;
+    return path[base] == '.' && path[base + 1] == '7' &&
+           static_cast<char>(std::tolower(
+               static_cast<unsigned char>(path[base + 2]))) == 'z';
 }
 
 inline bool hasNroExtension(const std::string& path) {

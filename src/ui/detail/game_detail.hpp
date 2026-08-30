@@ -1154,13 +1154,13 @@ private:
         if (pending.debridMode) {
             pending.debrid.fileSelection = mask;
             pending.debrid.packageCount = 0;
-            for (uint8_t action : mask) {
-                if (action == static_cast<uint8_t>(FileAction::Install))
+            for (size_t i = 0; i < mask.size() &&
+                               i < pending.preview.files.size(); ++i) {
+                if (pending.preview.files[i].package &&
+                    mask[i] != static_cast<uint8_t>(FileAction::Skip))
                     ++pending.debrid.packageCount;
             }
-            pending.debrid.mode = pending.debrid.packageCount > 0
-                ? TransferMode::StreamInstall
-                : TransferMode::DownloadOnly;
+            pending.debrid.mode = TransferMode::PortInstall;
             ok = manager_->importDebrid(pending.debrid, id, err);
             if (!ok && !pending.debridId.empty())
                 removeDebridTransferAsync(pending.providerKind,

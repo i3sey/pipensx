@@ -57,8 +57,16 @@ struct SwitchDeployArchive {
     uint64_t unpackBytes = 0;
     uint64_t maxSolidBlockBytes = 0;
     size_t switchFiles = 0;
+    std::vector<std::string> destinationRelativePaths;
     bool extractable = true;
     std::string detail;
+};
+
+struct SwitchDeployPackage {
+    std::string sourcePath;
+    std::string sourceRelativePath;
+    uint64_t size = 0;
+    bool compressed = false;
 };
 
 struct SwitchDeployPlan {
@@ -66,6 +74,7 @@ struct SwitchDeployPlan {
     std::string targetRoot;
     std::vector<SwitchDeployEntry> files;
     std::vector<SwitchDeployArchive> archives;
+    std::vector<SwitchDeployPackage> packages;
     uint64_t totalBytes = 0;
     uint64_t bytesToCopy = 0;
     uint64_t freeBytes = 0;
@@ -83,8 +92,9 @@ struct SwitchDeployInspection {
     bool canStart() const { return problem == SwitchDeployProblem::None; }
 };
 
-// Copy-to-/switch is offered for a real port layout, including recoverable
-// destination problems. LayoutNotFound is the normal NSP/NSZ case — not an error.
+// Deployment to /switch is offered for a real port payload, including
+// recoverable destination problems. LayoutNotFound is the normal NSP/NSZ case
+// — not an error.
 inline bool switchDeployOffersCopy(SwitchDeployProblem problem) {
     return problem == SwitchDeployProblem::None ||
            problem == SwitchDeployProblem::Conflict ||
@@ -98,9 +108,12 @@ inline bool switchDeployOffersCopy(SwitchDeployProblem problem) {
 inline bool switchDeployFullyInstalled(
     const SwitchDeployInspection& inspection) {
     return inspection.problem == SwitchDeployProblem::None &&
-           !inspection.plan.files.empty() &&
-           inspection.plan.identicalFiles == inspection.plan.files.size() &&
-           inspection.plan.archives.empty();
+           inspection.plan.bytesToCopy == 0 &&
+           inspection.plan.conflictFiles == 0 &&
+           inspection.plan.archives.empty() &&
+           inspection.plan.packages.empty() &&
+           (inspection.plan.files.empty() ||
+            inspection.plan.identicalFiles == inspection.plan.files.size());
 }
 
 enum class SwitchDeployPhase {
@@ -108,6 +121,8 @@ enum class SwitchDeployPhase {
     Preparing,
     Copying,
     Extracting,
+    InstallingPackages,
+    CommittingPackage,
     Completed,
     Failed,
     Cancelled,
@@ -129,7 +144,9 @@ struct SwitchDeploySnapshot {
     bool active() const {
         return phase == SwitchDeployPhase::Preparing ||
                phase == SwitchDeployPhase::Copying ||
-               phase == SwitchDeployPhase::Extracting;
+               phase == SwitchDeployPhase::Extracting ||
+               phase == SwitchDeployPhase::InstallingPackages ||
+               phase == SwitchDeployPhase::CommittingPackage;
     }
 };
 
@@ -156,9 +173,9 @@ public:
     void shutdown();
     SwitchDeploySnapshot snapshot() const;
     SwitchDeployReceiptState receiptState(const std::string& taskId) const;
-    // Background scan for ports ready to copy. Stream-install tasks without
-    // an auto-copy marker become a UI prompt. Armed one-tap ports set
-    // autoStart so the UI can start the copy without a second question.
+    // Background scan for ports ready to deploy. Legacy stream-install tasks
+    // without an auto-copy marker become a UI prompt. Unified port
+    // transactions auto-start after their download completes.
     struct PendingOffer {
         std::string taskId;
         SwitchDeployInspection inspection;
