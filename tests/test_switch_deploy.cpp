@@ -242,6 +242,37 @@ int main() {
         assert(mask.size() == 1);
         assert(mask[0] == static_cast<uint8_t>(FileAction::Download));
     }
+    {
+        TorrentPreview preview;
+        preview.multi = true;
+        preview.name = "GTA V port";
+        preview.files = {
+            {"atmosphere/contents/0100B00B51230000/romfs/common.rpf",
+             100, false, false, false},
+            {"atmosphere/contents/0100B00B51230000/romfs/switch/x64.rpf",
+             200, false, false, false},
+            {"atmosphere/contents/0100B00B51230000/exefs/main.npdm",
+             10, false, false, false},
+            {"Grand Theft Auto V [0100b00b51230000].nsp",
+             50, true, false, false},
+            {"readme.txt", 5, false, false, false},
+        };
+        assert(torrentHasLayeredFsPayload(preview));
+        assert(torrentPortLayoutDetected(preview));
+        const auto mask = selectPortInstallActions(preview);
+        assert(mask.size() == 5);
+        assert(mask[0] == static_cast<uint8_t>(FileAction::Download));
+        assert(mask[1] == static_cast<uint8_t>(FileAction::Download));
+        assert(mask[2] == static_cast<uint8_t>(FileAction::Skip));
+        assert(mask[3] == static_cast<uint8_t>(FileAction::Download));
+        assert(mask[4] == static_cast<uint8_t>(FileAction::Skip));
+        assert(isLayeredFsRomfsPath(
+            "prefix/atmosphere/contents/0100b00b51230000/romfs/a"));
+        assert(!isLayeredFsRomfsPath(
+            "atmosphere/contents/not-a-title/romfs/a"));
+        assert(!isLayeredFsRomfsPath(
+            "atmosphere/contents/0100b00b51230000/exefs/a"));
+    }
 
     assert(portArchiveSolidFitsRam(0, 0));
     assert(portArchiveSolidFitsRam(100, kPortArchiveSolidRamReserveBytes + 100));
@@ -1113,6 +1144,202 @@ int main() {
         txManager.shutdown();
     }
 
+    // FAT32 stores logical files above 4 GiB as DBI split folders. The
+    // LayeredFS planner accepts the folder as one payload file (the atomic
+    // rename preserves Horizon's archive attribute) rather than rejecting it
+    // as a directory or deploying its 00/01 parts as separate RomFS files.
+    {
+        constexpr uint64_t splitPart = 0xFFFF0000u;
+        constexpr uint64_t splitSize = 0x100000000ull;
+        const std::string splitRoot = root + "/layered-split";
+        const std::string splitTarget = splitRoot + "/sd/switch";
+        const std::string splitSource = splitRoot +
+            "/downloads/task/Release/atmosphere/contents/"
+            "0100B00B51230000/romfs/common.rpf";
+        fs::create_directories(splitSource);
+        writeFile(splitSource + "/00", "");
+        writeFile(splitSource + "/01", "");
+        fs::resize_file(splitSource + "/00", splitPart);
+        fs::resize_file(splitSource + "/01", splitSize - splitPart);
+        fs::create_directories(splitTarget);
+        TaskFileInventory splitInventory;
+        splitInventory.taskId = "layered-split";
+        splitInventory.rootPath = splitRoot + "/downloads/task";
+        splitInventory.settled = true;
+        splitInventory.completeManifest = true;
+        addPresent(splitInventory,
+                   "Release/atmosphere/contents/0100B00B51230000/"
+                   "romfs/common.rpf",
+                   splitSource, splitSize);
+        SwitchDeployInspection splitInspection =
+            inspectSwitchDeploy(std::move(splitInventory), splitTarget);
+        assert(splitInspection.canStart());
+        assert(splitInspection.plan.files.size() == 1);
+        assert(splitInspection.plan.files[0].moveSource);
+        assert(splitInspection.plan.bytesToMove == splitSize);
+        fs::remove_all(splitRoot);
+    }
+
+    // Atmosphere LayeredFS + NSP transaction: every RomFS member is selected,
+    // moved (not copied) to the SD root, tied to the package CNMT title id,
+    // and recorded with its destination root for exact uninstall.
+    {
+        const std::string layeredRoot = root + "/layered";
+        const std::string layeredData = layeredRoot + "/downloads/task";
+        const std::string layeredTarget = layeredRoot + "/sd/switch";
+        const std::string layeredSd = layeredRoot + "/sd";
+        const std::string layeredId =
+            "9876598765987659876598765987659876598765";
+        const std::string titleId = "0100B00B51230000";
+        const std::string common = "COMMON-RPF";
+        const std::string switchAsset = "SWITCH-ASSET";
+        const std::string layeredPackage =
+            makeTestNsp(std::string(1024, 'L'));
+        fs::create_directories(layeredTarget);
+        writeFile(layeredData +
+                      "/Release/atmosphere/contents/" + titleId +
+                      "/romfs/common.rpf",
+                  common);
+        writeFile(layeredData +
+                      "/Release/atmosphere/contents/" + titleId +
+                      "/romfs/switch/data.rpf",
+                  switchAsset);
+        writeFile(layeredData + "/GTA V [" + titleId + "].nsp",
+                  layeredPackage);
+        writeCompletedQueue(layeredRoot, layeredId, layeredData,
+                            common.size() + switchAsset.size() +
+                                layeredPackage.size(),
+                            "port", "completed", 1, 0);
+        TaskFileManifest layeredManifest;
+        layeredManifest.taskId = layeredId;
+        auto addLayered = [&](const std::string& logical, uint64_t size,
+                              bool packageFile = false) {
+            TaskFileRecord record;
+            record.logicalPath = logical;
+            record.localPath = logical;
+            record.size = size;
+            record.package = packageFile;
+            record.action = TaskFileAction::Download;
+            layeredManifest.files.push_back(std::move(record));
+        };
+        addLayered("Release/atmosphere/contents/" + titleId +
+                       "/romfs/common.rpf",
+                   common.size());
+        addLayered("Release/atmosphere/contents/" + titleId +
+                       "/romfs/switch/data.rpf",
+                   switchAsset.size());
+        addLayered("GTA V [" + titleId + "].nsp",
+                   layeredPackage.size(), true);
+        assert(saveTaskFileManifest(layeredRoot, layeredManifest, error));
+        writeFile(layeredSd + "/config/sys-clk/config.ini",
+                  "[0100B00B51230000]\nhandheld_cpu=1785\n");
+
+        DownloadManager layeredManager(layeredRoot, false);
+        SwitchDeployService layeredDeploy(layeredManager, layeredRoot,
+                                           layeredTarget);
+        PortUninstallService layeredUninstall(layeredManager, layeredRoot,
+                                               layeredTarget);
+        storage.freeBytes = 0; // Moving needs no second payload-sized pool.
+        setStorageSpaceOverride(&storage);
+        SwitchDeployInspection layeredInspection =
+            layeredDeploy.inspect(layeredId);
+        assert(layeredInspection.canStart());
+        assert(layeredInspection.plan.layeredFs);
+        assert(layeredInspection.plan.files.size() == 2);
+        assert(layeredInspection.plan.bytesToCopy == 0);
+        assert(layeredInspection.plan.bytesToMove ==
+               common.size() + switchAsset.size());
+        assert(layeredInspection.plan.performanceToolDetected);
+        assert(layeredInspection.plan.performanceProfileDetected);
+        for (const SwitchDeployEntry& entry : layeredInspection.plan.files) {
+            assert(entry.target == SwitchDeployTarget::SdRoot);
+            assert(entry.moveSource);
+            assert(entry.destinationRelativePath.rfind(
+                       "atmosphere/contents/" + titleId + "/romfs/", 0) == 0);
+        }
+
+        // Unknown files mean a mixed LayeredFS version/mod set. Installation
+        // is blocked rather than deleting user mods or merging versions.
+        const std::string unknown = layeredSd + "/atmosphere/contents/" +
+            titleId + "/romfs/user-mod.rpf";
+        writeFile(unknown, "KEEP-MOD");
+        layeredInspection = layeredDeploy.inspect(layeredId);
+        assert(layeredInspection.problem == SwitchDeployProblem::Conflict);
+        fs::remove(unknown);
+
+        assert(layeredDeploy.start(layeredId, error));
+        for (int i = 0; i < 500 && layeredDeploy.snapshot().active(); ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        assert(layeredDeploy.snapshot().phase == SwitchDeployPhase::Completed);
+        const std::string deployedCommon =
+            layeredSd + "/atmosphere/contents/" + titleId +
+            "/romfs/common.rpf";
+        const std::string deployedSwitch =
+            layeredSd + "/atmosphere/contents/" + titleId +
+            "/romfs/switch/data.rpf";
+        assert(fs::exists(deployedCommon));
+        assert(fs::exists(deployedSwitch));
+        assert(!fs::exists(layeredData +
+                           "/Release/atmosphere/contents/" + titleId +
+                           "/romfs/common.rpf"));
+        assert(fs::exists(layeredData + "/GTA V [" + titleId + "].nsp"));
+        assert(layeredDeploy.receiptState(layeredId) ==
+               SwitchDeployReceiptState::Valid);
+        const auto layeredTask = layeredManager.snapshot(layeredId);
+        assert(layeredTask && layeredTask->status == DownloadStatus::Installed);
+        assert(layeredTask->packagesInstalled == 1);
+
+        PortUninstallPlan layeredPlan;
+        assert(layeredUninstall.plan(titleId, {}, layeredPlan));
+        assert(layeredPlan.switchFiles.empty());
+        assert(layeredPlan.sdRootFiles.size() == 2);
+        assert(layeredPlan.sdRootBytes == common.size() + switchAsset.size());
+        writeFile(layeredSd + "/atmosphere/contents/" + titleId +
+                      "/romfs/user-mod.rpf",
+                  "KEEP-MOD");
+        PortUninstallReport layeredReport;
+        assert(layeredUninstall.uninstallPort(
+            layeredPlan, [](std::string&) { return true; }, layeredReport));
+        assert(layeredReport.complete());
+        assert(!fs::exists(deployedCommon));
+        assert(!fs::exists(deployedSwitch));
+        assert(fs::exists(layeredSd + "/atmosphere/contents/" + titleId +
+                          "/romfs/user-mod.rpf"));
+        layeredDeploy.shutdown();
+        layeredManager.shutdown();
+    }
+
+    // Crash recovery reverses an atomic move that landed before its receipt.
+    {
+        const std::string recoveryRoot = root + "/move-recovery";
+        const std::string recoveryTarget = recoveryRoot + "/sd/switch";
+        const std::string recoverySource =
+            recoveryRoot + "/downloads/task/Release/file.rpf";
+        const std::string recoveryDestination =
+            recoveryRoot + "/sd/atmosphere/contents/0100B00B51230000/"
+                           "romfs/file.rpf";
+        fs::create_directories(recoveryTarget);
+        writeFile(recoveryDestination, "RECOVER");
+        std::string moveJob = "d5:filesl";
+        moveJob += "d4:dest" + bstr(recoveryDestination);
+        moveJob += "4:sizei7e";
+        moveJob += "6:source" + bstr(recoverySource) + "ee";
+        moveJob += "4:task" + bstr("move-recovery");
+        moveJob += "7:versioni1ee";
+        writeFile(recoveryRoot + "/deploy-move-job.bencode", moveJob);
+        DownloadManager recoveryManager(recoveryRoot, false);
+        {
+            SwitchDeployService recovery(recoveryManager, recoveryRoot,
+                                         recoveryTarget);
+            assert(fs::exists(recoverySource));
+            assert(!fs::exists(recoveryDestination));
+            assert(!fs::exists(recoveryRoot +
+                               "/deploy-move-job.bencode"));
+        }
+        recoveryManager.shutdown();
+    }
+
+    storage.freeBytes = 1024 * 1024;
     setStorageSpaceOverride(nullptr);
     fs::remove_all(root);
     std::cout << "switch deploy tests passed\n";

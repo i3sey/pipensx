@@ -39,6 +39,11 @@ enum class SwitchDeployEntryState {
     ExistingConflict,
 };
 
+enum class SwitchDeployTarget : uint8_t {
+    SwitchDirectory,
+    SdRoot,
+};
+
 struct SwitchDeployEntry {
     std::string sourcePath;
     std::string sourceRelativePath;
@@ -47,7 +52,9 @@ struct SwitchDeployEntry {
     uint64_t size = 0;
     SwitchDeployEntryState state = SwitchDeployEntryState::Missing;
     std::array<uint8_t, 32> sha256 {};
+    SwitchDeployTarget target = SwitchDeployTarget::SwitchDirectory;
     bool nro = false;
+    bool moveSource = false;
 };
 
 struct SwitchDeployArchive {
@@ -77,10 +84,15 @@ struct SwitchDeployPlan {
     std::vector<SwitchDeployPackage> packages;
     uint64_t totalBytes = 0;
     uint64_t bytesToCopy = 0;
+    uint64_t bytesToMove = 0;
     uint64_t freeBytes = 0;
     size_t ignoredFiles = 0;
     size_t identicalFiles = 0;
     size_t conflictFiles = 0;
+    bool layeredFs = false;
+    bool performanceToolDetected = false;
+    bool performanceProfileDetected = false;
+    std::vector<std::string> layeredTitleIds;
 };
 
 struct SwitchDeployInspection {
@@ -140,6 +152,11 @@ struct SwitchDeploySnapshot {
     size_t totalFiles = 0;
     size_t identicalFiles = 0;
     uint64_t generation = 0;
+    // LayeredFS transactions surface their performance-tool findings so the
+    // completion UI can warn once, after a successful install.
+    bool layeredFs = false;
+    bool performanceToolDetected = false;
+    bool performanceProfileDetected = false;
 
     bool active() const {
         return phase == SwitchDeployPhase::Preparing ||
@@ -220,10 +237,15 @@ private:
 struct PortUninstallPlan {
     std::string titleId;
     std::vector<std::string> taskIds;
-    // Exact mode: destination-relative paths under /switch to delete
-    // (receipt copies plus unpacked archive members).
+    // Exact mode: destination-relative paths under /switch and the SD root
+    // to delete (receipt copies plus unpacked archive members).
     std::vector<std::string> switchFiles;
+    std::vector<std::string> sdRootFiles;
+    // Subset of the lists above stored as DBI split folders on FAT32.
+    std::vector<std::string> switchSplitFiles;
+    std::vector<std::string> sdRootSplitFiles;
     uint64_t switchBytes = 0;
+    uint64_t sdRootBytes = 0;
     // Folder mode: a v1 receipt whose archive is gone from the task data, so
     // the unpacked list cannot be rebuilt — these top-level folders under
     // /switch are removed entirely instead.

@@ -65,6 +65,13 @@ public:
     virtual uint64_t installedBytes() const = 0;
     virtual uint64_t expectedBytes() const = 0;
     virtual const std::string& error() const = 0;
+
+    // Base application id parsed from the package CNMT after the package
+    // stream has finished, but before commit. Zero means it is not available.
+    // LayeredFS transactions use this to reject an NSP for a different title
+    // before any title metadata is committed. Declared last so adding it does
+    // not shift the vtable slots of any pre-existing virtual.
+    virtual uint64_t packageApplicationId() const { return 0; }
 };
 
 std::unique_ptr<InstallBackend> createInstallBackend(

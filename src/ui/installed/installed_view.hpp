@@ -655,6 +655,11 @@ private:
                        plan.switchFiles.size(),
                        formatBytes(plan.switchBytes)),
                     false);
+        if (!plan.sdRootFiles.empty())
+            addLine(tr("pipensx/installed/uninstall_layered_files",
+                       plan.sdRootFiles.size(),
+                       formatBytes(plan.sdRootBytes)),
+                    false);
         for (const std::string& folder : plan.wholeFolders)
             addLine(tr("pipensx/installed/uninstall_port_folder", folder),
                     false);

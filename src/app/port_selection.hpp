@@ -92,9 +92,18 @@ inline bool torrentHasPortArchive(const TorrentPreview& preview) {
     return false;
 }
 
+inline bool torrentHasLayeredFsPayload(const TorrentPreview& preview) {
+    for (const TorrentPreview::File& file : preview.files)
+        if (!file.package && !file.cartridge &&
+            isLayeredFsRomfsPath(torrentLogicalPath(preview, file)))
+            return true;
+    return false;
+}
+
 inline bool torrentPortLayoutDetected(const TorrentPreview& preview) {
     return !candidatePortPayloadRoots(preview).empty() ||
-           torrentHasPortArchive(preview);
+           torrentHasPortArchive(preview) ||
+           torrentHasLayeredFsPayload(preview);
 }
 
 inline std::vector<uint8_t> selectPortPayloadActions(
@@ -109,7 +118,8 @@ inline std::vector<uint8_t> selectPortPayloadActions(
         if (file.package || file.cartridge)
             continue;
         const std::string logical = torrentLogicalPath(preview, file);
-        bool selected = isPortArchiveName(logical);
+        bool selected = isPortArchiveName(logical) ||
+                        isLayeredFsRomfsPath(logical);
         for (const std::string& root : roots)
             selected = selected || pathUnderPortRoot(logical, root);
         if (selected)

@@ -1053,9 +1053,11 @@ private:
                 pending->peers = std::move(initialPeers);
                 setPortInstallReady(
                     *host,
-                    torrentPortLayoutDetected(pending->preview)
-                        ? tr("pipensx/port_install/layout_detected")
-                        : tr("pipensx/port_install/layout_missing"));
+                    torrentHasLayeredFsPayload(pending->preview)
+                        ? tr("pipensx/port_install/layout_layered")
+                        : torrentPortLayoutDetected(pending->preview)
+                            ? tr("pipensx/port_install/layout_detected")
+                            : tr("pipensx/port_install/layout_missing"));
             });
         });
     }
@@ -1138,9 +1140,11 @@ private:
                 pending->debrid.debridId = debridId;
                 setPortInstallReady(
                     *host,
-                    torrentPortLayoutDetected(pending->preview)
-                        ? tr("pipensx/port_install/layout_detected")
-                        : tr("pipensx/port_install/layout_missing"));
+                    torrentHasLayeredFsPayload(pending->preview)
+                        ? tr("pipensx/port_install/layout_layered")
+                        : torrentPortLayoutDetected(pending->preview)
+                            ? tr("pipensx/port_install/layout_detected")
+                            : tr("pipensx/port_install/layout_missing"));
             });
         });
     }

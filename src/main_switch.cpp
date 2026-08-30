@@ -677,6 +677,23 @@ int main(int argc, char** argv) {
                         ? tr("pipensx/deploy/completed")
                         : tr("pipensx/deploy/completed_warning",
                              deployState.detail));
+                    // LayeredFS ports deploy to /atmosphere and frequently
+                    // depend on overclocking. Warn once after a successful
+                    // install; pipensx only detects sys-clk, it never applies
+                    // clock changes on its own.
+                    if (deployState.layeredFs) {
+                        const char* overclockKey =
+                            deployState.performanceProfileDetected
+                                ? "pipensx/deploy/overclock_profile_found"
+                                : deployState.performanceToolDetected
+                                    ? "pipensx/deploy/overclock_profile_missing"
+                                    : "pipensx/deploy/overclock_tool_missing";
+                        auto* overclockDialog =
+                            new brls::Dialog(tr(overclockKey));
+                        overclockDialog->addButton(
+                            tr("pipensx/common/ok"), [] {});
+                        overclockDialog->open();
+                    }
                     // The port now lives in /switch, so the downloaded
                     // files only waste SD space. Offer to delete them.
                     const auto deployed =

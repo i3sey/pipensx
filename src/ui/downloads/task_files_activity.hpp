@@ -378,9 +378,12 @@ public:
     }
 
     void setEntry(const SwitchDeployEntry& entry) {
-        destination_->setText("/switch/" + entry.destinationRelativePath);
+        destination_->setText(
+            (entry.target == SwitchDeployTarget::SdRoot ? "/" : "/switch/") +
+            entry.destinationRelativePath);
         const char* key = entry.state == SwitchDeployEntryState::Missing
-            ? "pipensx/deploy/state_copy"
+            ? (entry.moveSource ? "pipensx/deploy/state_move"
+                                : "pipensx/deploy/state_copy")
             : entry.state == SwitchDeployEntryState::ExistingIdentical
                 ? "pipensx/deploy/state_identical"
                 : "pipensx/deploy/state_conflict";
@@ -414,7 +417,8 @@ public:
         content->setPadding(12, 32, 12, 32);
         uint64_t looseCopyBytes = 0;
         for (const SwitchDeployEntry& entry : inspection_.plan.files) {
-            if (entry.state == SwitchDeployEntryState::Missing)
+            if (entry.state == SwitchDeployEntryState::Missing &&
+                !entry.moveSource)
                 looseCopyBytes += entry.size;
         }
         auto* summary = new brls::Label();
@@ -422,7 +426,8 @@ public:
         summary->setMarginBottom(6);
         summary->setText(tr("pipensx/deploy/summary",
                             inspection_.plan.files.size(),
-                            formatBytes(looseCopyBytes),
+                            formatBytes(looseCopyBytes +
+                                        inspection_.plan.bytesToMove),
                             inspection_.plan.identicalFiles,
                             inspection_.plan.conflictFiles,
                             inspection_.plan.ignoredFiles));
@@ -469,9 +474,19 @@ public:
         warning->setFontSize(theme::kFontSmall);
         warning->setTextColor(inspection_.problem == SwitchDeployProblem::None
                                   ? theme::textSecondary() : theme::error());
-        warning->setText(inspection_.problem == SwitchDeployProblem::None
-            ? tr("pipensx/deploy/warning")
-            : deployProblemText(inspection_.problem, inspection_.detail));
+        if (inspection_.problem != SwitchDeployProblem::None) {
+            warning->setText(
+                deployProblemText(inspection_.problem, inspection_.detail));
+        } else if (inspection_.plan.layeredFs) {
+            const char* key = inspection_.plan.performanceProfileDetected
+                ? "pipensx/deploy/layered_profile_found"
+                : inspection_.plan.performanceToolDetected
+                    ? "pipensx/deploy/layered_profile_missing"
+                    : "pipensx/deploy/layered_tool_missing";
+            warning->setText(tr(key));
+        } else {
+            warning->setText(tr("pipensx/deploy/warning"));
+        }
         warning->setMarginBottom(8);
         content->addView(warning);
 
@@ -508,7 +523,9 @@ public:
             else
                 copy->setText(tr("pipensx/deploy/copy"));
         } else {
-            copy->setText(tr("pipensx/deploy/copy"));
+            copy->setText(tr(inspection_.plan.layeredFs
+                ? "pipensx/deploy/install_port"
+                : "pipensx/deploy/copy"));
         }
         copy->setState(inspection_.canStart() && deploy_
                            ? brls::ButtonState::ENABLED

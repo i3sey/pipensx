@@ -695,6 +695,14 @@ public:
         return true;
     }
 
+    uint64_t packageApplicationId() const override {
+        if (!earlyMetaValid_)
+            return 0;
+        return baseApplicationId(
+            earlyMeta_.header.id,
+            static_cast<NcmContentMetaType>(earlyMeta_.header.type));
+    }
+
     bool commitPackage(bool& alreadyInstalled) override {
         uint64_t commitStartedUs = telemetry_enabled() ? now_us() : 0;
         alreadyInstalled = false;

@@ -36,6 +36,31 @@ std::string safeName(const std::string& value) {
     return result.empty() ? "package" : result;
 }
 
+uint64_t titleIdInName(const std::string& value) {
+    for (size_t i = 0; i + 16 <= value.size(); ++i) {
+        uint64_t id = 0;
+        bool valid = true;
+        for (size_t j = 0; j < 16; ++j) {
+            const unsigned char ch = value[i + j];
+            unsigned digit = 0;
+            if (ch >= '0' && ch <= '9')
+                digit = ch - '0';
+            else if (ch >= 'a' && ch <= 'f')
+                digit = ch - 'a' + 10;
+            else if (ch >= 'A' && ch <= 'F')
+                digit = ch - 'A' + 10;
+            else {
+                valid = false;
+                break;
+            }
+            id = (id << 4) | digit;
+        }
+        if (valid)
+            return id;
+    }
+    return 0;
+}
+
 // F-B journal blob helpers: little-endian, length-prefixed.
 void putU64(std::string& out, uint64_t value) {
     for (int i = 0; i < 8; ++i)
@@ -89,6 +114,7 @@ public:
     bool beginPackage(const std::string& taskId,
                       const std::string& packageName) override {
         rollbackPackage();
+        packageApplicationId_ = titleIdInName(packageName);
         directory_ = root_ + "/install-sim/" + taskId + "-" +
                      safeName(packageName);
         if (!makeDirectories(directory_)) {
@@ -160,6 +186,10 @@ public:
         return true;
     }
 
+    uint64_t packageApplicationId() const override {
+        return packageApplicationId_;
+    }
+
     void rollbackPackage() override {
         if (file_) {
             std::fclose(file_);
@@ -172,6 +202,7 @@ public:
         filePath_.clear();
         expected_ = 0;
         installed_ = 0;
+        packageApplicationId_ = 0;
     }
 
     std::string checkpointPackage() override {
@@ -284,6 +315,7 @@ private:
     uint64_t writtenFile_ = 0;
     uint64_t expected_ = 0;
     uint64_t installed_ = 0;
+    uint64_t packageApplicationId_ = 0;
     bool active_ = false;
 };
 

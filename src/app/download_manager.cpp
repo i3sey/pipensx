@@ -606,7 +606,8 @@ bool DownloadManager::importTorrentActions(
                                                             preview.files[i]);
             selectedPortPayload = selectedPortPayload ||
                 (!preview.files[i].package && !preview.files[i].cartridge &&
-                 (hasNroExtension(logical) || isPortArchiveName(logical)));
+                 (hasNroExtension(logical) || isPortArchiveName(logical) ||
+                  isLayeredFsRomfsPath(logical)));
             if (preview.files[i].package)
                 ++selectedPackageCount;
         }
@@ -735,7 +736,8 @@ bool DownloadManager::importDebrid(const DebridImport& import,
                     (!preview.files[i].package &&
                      !preview.files[i].cartridge &&
                      (hasNroExtension(logical) ||
-                      isPortArchiveName(logical)));
+                      isPortArchiveName(logical) ||
+                      isLayeredFsRomfsPath(logical)));
                 if (preview.files[i].package)
                     ++importPackageCount;
             }
