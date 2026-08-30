@@ -460,17 +460,40 @@ public:
             });
         content_->addView(checkForUpdates_);
 
+        addSection(content_, tr("pipensx/settings/section_exit"));
         confirmExit_ = new brls::BooleanCell();
         confirmExit_->init(tr("pipensx/settings/confirm_exit"),
             settings_->get().confirmExit,
             [this](bool enabled) {
                 AppSettingsData values = settings_->get();
-                bool previous = values.confirmExit;
+                bool previousConfirm = values.confirmExit;
+                bool previousWarn = values.warnOnActiveDownload;
                 values.confirmExit = enabled;
-                if (!persistSettings(settings_, values, "confirm_exit"))
-                    confirmExit_->setOn(previous, false);
+                if (!enabled)
+                    values.warnOnActiveDownload = false;
+                if (!persistSettings(settings_, values, "confirm_exit")) {
+                    confirmExit_->setOn(previousConfirm, false);
+                    return;
+                }
+                if (!enabled) {
+                    warnActiveDownload_->setOn(false, false);
+                }
+                warnActiveDownload_->setEnabled(enabled);
             });
         content_->addView(confirmExit_);
+
+        warnActiveDownload_ = new brls::BooleanCell();
+        warnActiveDownload_->init(tr("pipensx/settings/warn_active_download"),
+            settings_->get().warnOnActiveDownload,
+            [this](bool enabled) {
+                AppSettingsData values = settings_->get();
+                bool previous = values.warnOnActiveDownload;
+                values.warnOnActiveDownload = enabled;
+                if (!persistSettings(settings_, values, "warn_active_download"))
+                    warnActiveDownload_->setOn(previous, false);
+            });
+        warnActiveDownload_->setEnabled(settings_->get().confirmExit);
+        content_->addView(warnActiveDownload_);
     }
 
     void applyValues() override {
@@ -478,6 +501,8 @@ public:
         language_->setSelection(languageIndex(values.language), true);
         checkForUpdates_->setOn(values.checkForUpdatesOnLaunch, false);
         confirmExit_->setOn(values.confirmExit, false);
+        warnActiveDownload_->setOn(values.warnOnActiveDownload, false);
+        warnActiveDownload_->setEnabled(values.confirmExit);
     }
 
 private:
@@ -495,6 +520,7 @@ private:
     brls::SelectorCell* language_ = nullptr;
     brls::BooleanCell* checkForUpdates_ = nullptr;
     brls::BooleanCell* confirmExit_ = nullptr;
+    brls::BooleanCell* warnActiveDownload_ = nullptr;
 };
 
 // --- Downloads: queue behaviour + install target -------------------------

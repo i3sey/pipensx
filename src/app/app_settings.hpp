@@ -49,6 +49,7 @@ struct AppSettingsData {
     bool extendedTelemetry = false;
     bool checkForUpdatesOnLaunch = true;
     bool confirmExit = true;
+    bool warnOnActiveDownload = true;
     // First-run disclaimer: catalog comes from a third party. Shown once.
     bool catalogDisclaimerAcknowledged = false;
     // Web companion LAN server (plain HTTP, port 8080). The PIN gates

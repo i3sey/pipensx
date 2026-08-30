@@ -264,6 +264,17 @@ public:
                     dialog->open();
                     return true;
                 }
+                if (settings_ && settings_->get().warnOnActiveDownload &&
+                    manager_ && manager_->hasActiveTransfer()) {
+                    auto* dialog = new brls::Dialog(
+                        tr("pipensx/app/exit_active_download_body"));
+                    dialog->addButton(tr("pipensx/common/cancel"), [] {});
+                    dialog->addButton(tr("pipensx/app/exit"), [] {
+                        brls::Application::quit();
+                    });
+                    dialog->open();
+                    return true;
+                }
                 brls::Application::quit();
                 return true;
             }, /*hidden=*/true);
@@ -290,8 +301,12 @@ public:
                     brls::Application::quit();
                     return true;
                 }
-                auto* dialog = new brls::Dialog(
-                    tr("pipensx/app/exit_confirm_body"));
+                const bool warnDownload =
+                    settings_->get().warnOnActiveDownload && manager_ &&
+                    manager_->hasActiveTransfer();
+                auto* dialog = new brls::Dialog(tr(warnDownload
+                        ? "pipensx/app/exit_active_download_body"
+                        : "pipensx/app/exit_confirm_body"));
                 dialog->addButton(tr("pipensx/common/cancel"), [] {});
                 dialog->addButton(tr("pipensx/app/exit"), [] {
                     brls::Application::quit();

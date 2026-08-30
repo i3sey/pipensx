@@ -4,7 +4,8 @@
     "exit": "Salir",
     "web_qr": "QR web",
     "exit_confirm_title": "¿Salir de pipensx?",
-    "exit_confirm_body": "¿Seguro que quieres salir?"
+    "exit_confirm_body": "¿Seguro que quieres salir?",
+    "exit_active_download_body": "Hay una descarga en curso.\n¿Salir de todos modos?"
   },
   "web": {
     "off": "Web desactivada"
@@ -554,6 +555,8 @@
     "show_completed": "Mostrar descargas completadas",
     "confirm_exit": "Confirmar salida",
     "confirm_exit_detail": "Preguntar antes de cerrar desde la pantalla principal",
+    "warn_active_download": "Avisar con descarga activa",
+    "warn_active_download_detail": "Mostrar aviso cuando haya una descarga en curso",
     "check_updates": "Buscar actualizaciones al iniciar",
     "check_update_now": "Buscar actualización de pipensx",
     "check_update_detail": "Versión actual {}",
@@ -621,6 +624,7 @@
     "section_source": "Fuente",
     "section_system": "Sistema",
     "section_launch": "Arranque",
+    "section_exit": "Salida",
     "section_install": "Instalación",
     "section_reset": "Restablecer",
     "section_updates": "Actualizaciones de pipensx",
