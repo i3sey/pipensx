@@ -88,8 +88,8 @@ did not think you touched.
 
 ## 3. Behaviour screens are not screenshots
 
-`GOLDEN_BEHAVIOR_SCREENS` (`downloads-back`, `torrent-selection-scroll`,
-`hints-budget`, `hints-budget:ru`, `bug-report-focus`, `sidebar-touch`) assert inside the
+`GOLDEN_BEHAVIOR_SCREENS` (`downloads-reload-focus`, `torrent-selection-scroll`,
+`hints-budget:ru`, `bug-report-focus`, `sidebar-touch`) assert inside the
 runner and exit non-zero. They are never compared against `tests/golden/`,
 so there is no diff to triage and no baseline to update — the failure detail
 is in `build-golden/golden-out/<name>-behavior.log`. Read that log, not the
@@ -106,7 +106,7 @@ row, the longer the border and the more pixels drift. This is why
 Hence `budget_for()` in `scripts/golden.sh:104`: `torrent-selection-*` and
 `ru-torrent-selection-*` get 40000, everything else the 25000 default. If a
 screen starts flirting with its ceiling, give it its own case there rather
-than raising `GOLDEN_MAX_DIFF` for all 38 images.
+than raising `GOLDEN_MAX_DIFF` for all 25 images.
 
 ## 5. When `update` is right
 

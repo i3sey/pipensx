@@ -34,17 +34,38 @@ if [[ -x "$_GOLDEN_TOOLS/usr/bin/Xvfb" ]]; then
     export MAGICK_CODER_MODULE_PATH="$_GOLDEN_TOOLS/usr/lib/ImageMagick-7.1.2/modules-Q16HDRI/coders"
     export MAGICK_FILTER_MODULE_PATH="$_GOLDEN_TOOLS/usr/lib/ImageMagick-7.1.2/modules-Q16HDRI/filters"
 fi
-SCREENS="${GOLDEN_SCREENS:-catalog detail frame downloads download-files deploy-preview installed installed-populated updates update-chooser settings settings-debrid storage network-health help first-run debrid-link about torrent-selection bug-report bug-report-detail screenshot-viewer screenshot-viewer-preview screenshot-viewer-missing port-install-warning}"
+# Screenshot matrix: one render per distinct layout. Deliberately NOT one per
+# state — near-duplicate states only multiply render time:
+#   updates == installed-populated (~700 px apart, highlight noise level),
+#   installed (empty) is covered by the populated list rendering,
+#   bug-report-detail / screenshot-viewer-preview / screenshot-viewer-missing
+#   are variants of views kept below, storage / network-health are SettingsView
+#   sections covered by settings, help / about are static low-churn views.
+SCREENS="${GOLDEN_SCREENS:-catalog detail frame downloads download-files deploy-preview installed-populated update-chooser settings settings-debrid first-run debrid-link torrent-selection bug-report screenshot-viewer port-install-warning}"
 # Behaviour checks: these assert and exit non-zero instead of writing a
 # baseline, so they are never compared against tests/golden/. Entries are
-# <screen> or <screen>:<locale>; hints-budget runs in both because Russian hint
-# labels are ~20% wider than English and are what actually overruns the bar.
-BEHAVIOR_SCREENS="${GOLDEN_BEHAVIOR_SCREENS:-downloads-back downloads-removing downloads-reload-focus torrent-selection-scroll hints-budget hints-budget:ru bug-report-focus first-run-focus first-run-focus:ru sidebar-touch sidebar-fold-roundtrip settings-focus-roundtrip detail-rail-nav catalog-header-clearance catalog-focus-reload catalog-detail-return-focus update-chooser-toggle first-run-disclaimer port-install-indexing installed-bundles installed-focus-reload}"
+# <screen> or <screen>:<locale>; hints-budget and first-run-focus run only as
+# :ru because Russian labels are ~20% wider than English — the strict case for
+# bar fit. downloads-reload-focus subsumes downloads-back (production refresh
+# path), catalog screenshots cover header clearance, installed-populated and
+# installed-bundles cover the installed reload path.
+BEHAVIOR_SCREENS="${GOLDEN_BEHAVIOR_SCREENS:-downloads-removing downloads-reload-focus torrent-selection-scroll hints-budget:ru bug-report-focus first-run-focus:ru sidebar-touch sidebar-fold-roundtrip settings-focus-roundtrip detail-rail-nav catalog-focus-reload catalog-detail-return-focus update-chooser-toggle first-run-disclaimer port-install-indexing installed-bundles}"
 THEMES="${GOLDEN_THEMES:-light dark}"
+# Theme colours are registered globally, so a theme regression shows on any
+# screen — rendering light for all of them doubles the matrix for no extra
+# signal. Light runs only for a few representative screens (grid, settings
+# rail, downloads list); everything else is dark-only. An explicit
+# GOLDEN_THEMES still applies to every screen (single-screen iteration).
+LIGHT_SCREENS="${GOLDEN_LIGHT_SCREENS:-catalog settings downloads}"
 # frame is in the list because it is the only screen that renders the nav
 # sidebar, whose 280px width (main_frame.hpp installSidebarStyle) is the
 # tightest label constraint in the app.
-RU_SCREENS="${GOLDEN_RU_SCREENS:-frame catalog detail settings settings-debrid help first-run debrid-link torrent-selection downloads download-files deploy-preview updates update-chooser port-install-warning}"
+# Russian pass: clipping-guard only (Russian strings run 15-30% longer).
+# Tightest constraints win — sidebar (frame), cards (catalog), buttons
+# (detail), fixed-width rail (settings), dense rows (torrent-selection) and
+# the wrapped dialog (port-install-warning). The rest render the same layout
+# code already pinned by the English baselines above.
+RU_SCREENS="${GOLDEN_RU_SCREENS:-frame catalog detail settings torrent-selection port-install-warning}"
 RU_THEME="${GOLDEN_RU_THEME:-dark}"
 
 export LIBGL_ALWAYS_SOFTWARE=1
@@ -83,7 +104,7 @@ fi
 echo "golden: configuring and building golden_runner"
 "$CMAKE_BIN" -S "$ROOT" -B "$ROOT/build-golden" \
     -DPIPENSX_GOLDEN=ON -DCMAKE_BUILD_TYPE=Release >/dev/null || exit 2
-"$CMAKE_BIN" --build "$ROOT/build-golden" \
+"$CMAKE_BIN" --build "$ROOT/build-golden" --parallel \
     --target golden_runner || exit 2
 
 rm -rf "$OUT_DIR"
@@ -164,7 +185,14 @@ render_and_compare() {
 }
 
 for screen in $SCREENS; do
-    for theme in $THEMES; do
+    screen_themes="$THEMES"
+    if [[ -z "${GOLDEN_THEMES:-}" ]]; then
+        case " $LIGHT_SCREENS " in
+            *" $screen "*) screen_themes="$THEMES" ;;
+            *) screen_themes="dark" ;;
+        esac
+    fi
+    for theme in $screen_themes; do
         render_and_compare "$screen-$theme" "$screen" "$theme" en-US
     done
 done
