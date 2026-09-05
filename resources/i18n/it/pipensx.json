@@ -297,7 +297,9 @@
     "eta_hours": "{}h {}m",
     "eta_days": "{}g {}h",
     "status_fetching": "Recupero",
-    "cell_fetching": "Il server sta recuperando questo   {}%"
+    "cell_fetching": "Il server sta recuperando questo   {}%",
+    "verify_started": "Verifica avviata",
+    "verify_unavailable": "Verifica non disponibile"
   },
   "files": {
     "title": "File scaricati",
@@ -503,6 +505,7 @@
     "clear_completed": "Cancella download completati",
     "clear_images": "Cancella cache immagini",
     "clear_torrents": "Cancella metadati torrent",
+    "clear_orphan_downloads": "Cancella download orfani",
     "clear_temporary": "Cancella file temporanei",
     "nothing_to_recover": "Niente da recuperare",
     "recoverable": "Recuperabile {}",

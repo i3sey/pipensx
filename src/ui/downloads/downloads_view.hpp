@@ -209,9 +209,9 @@ public:
         if (!leased && task.status == DownloadStatus::Completed)
             add(tr("pipensx/common/verify"), [this, taskId] {
                 if (manager_->verify(taskId)) {
-                    brls::Application::notify("Verification started");
+                    brls::Application::notify(tr("pipensx/downloads/verify_started"));
                 } else {
-                    brls::Application::notify("Verification not available");
+                    brls::Application::notify(tr("pipensx/downloads/verify_unavailable"));
                 }
                 startRefreshing(true);
             });

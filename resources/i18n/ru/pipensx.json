@@ -297,7 +297,9 @@
     "eta_hours": "{} ч {} мин",
     "eta_days": "{} дн {} ч",
     "status_fetching": "Загрузка на сервисе",
-    "cell_fetching": "Сервис загружает раздачу   {}%"
+    "cell_fetching": "Сервис загружает раздачу   {}%",
+    "verify_started": "Проверка запущена",
+    "verify_unavailable": "Проверка недоступна"
   },
   "files": {
     "title": "Загруженные файлы",

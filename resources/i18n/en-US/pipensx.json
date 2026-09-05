@@ -297,7 +297,9 @@
     "eta_hours": "{}h {}m",
     "eta_days": "{}d {}h",
     "status_fetching": "Fetching",
-    "cell_fetching": "The server is fetching this   {}%"
+    "cell_fetching": "The server is fetching this   {}%",
+    "verify_started": "Verification started",
+    "verify_unavailable": "Verification not available"
   },
   "files": {
     "title": "Downloaded files",

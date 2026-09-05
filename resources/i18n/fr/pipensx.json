@@ -297,7 +297,9 @@
     "eta_hours": "{}h {}m",
     "eta_days": "{}j {}h",
     "status_fetching": "Récupération",
-    "cell_fetching": "Le serveur récupère ce contenu   {}%"
+    "cell_fetching": "Le serveur récupère ce contenu   {}%",
+    "verify_started": "Vérification démarrée",
+    "verify_unavailable": "Vérification indisponible"
   },
   "files": {
     "title": "Fichiers téléchargés",

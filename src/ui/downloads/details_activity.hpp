@@ -124,9 +124,9 @@ public:
         });
         verifyButton_->registerClickAction([this](brls::View*) {
             if (manager_->verify(taskId_)) {
-                brls::Application::notify("Verification started");
+                brls::Application::notify(tr("pipensx/downloads/verify_started"));
             } else {
-                brls::Application::notify("Verification not available");
+                brls::Application::notify(tr("pipensx/downloads/verify_unavailable"));
             }
             refresh();
             return true;

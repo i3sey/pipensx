@@ -297,7 +297,9 @@
     "eta_hours": "{}h {}m",
     "eta_days": "{}d {}h",
     "status_fetching": "Obtendo",
-    "cell_fetching": "O servidor está obtendo isto   {}%"
+    "cell_fetching": "O servidor está obtendo isto   {}%",
+    "verify_started": "Verificação iniciada",
+    "verify_unavailable": "Verificação indisponível"
   },
   "files": {
     "title": "Arquivos baixados",
