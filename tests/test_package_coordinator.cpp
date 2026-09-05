@@ -137,6 +137,42 @@ int main() {
         assert(coordinator.finish());
     }
 
+    // B4: a non-package download must fail naming the offending file and
+    // its size, not with a bare "not a PFS0 NSP/NSZ".
+    {
+        const std::string badRoot = root + "-bad-package";
+        std::filesystem::remove_all(badRoot);
+        std::filesystem::create_directories(badRoot);
+        const std::vector<uint8_t> garbage(64 * 1024, '<');
+        metainfo_t badMi =
+            makeSingleFileMetainfo("broken-pack.nsp", garbage.size());
+        const std::string badTaskId =
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        pipensx::StreamBudgetArbiter badArbiter;
+        pipensx::PackageCoordinator badCoordinator(
+            badMi, badTaskId, badRoot, true, {}, 0,
+            pipensx::install::InstallStorageTarget::SdCard,
+            badArbiter, nullptr);
+        assert(badCoordinator.error().empty());
+        feedRange(badCoordinator, garbage, 0, garbage.size());
+        bool errorSeen = false;
+        for (int spins = 0; spins < 3000; ++spins) {
+            if (!badCoordinator.error().empty()) {
+                errorSeen = true;
+                break;
+            }
+            usleep(10000);
+        }
+        assert(errorSeen);
+        const std::string message = badCoordinator.error();
+        assert(message.find("broken-pack.nsp") != std::string::npos);
+        assert(message.find(std::to_string(garbage.size())) !=
+               std::string::npos);
+        assert(!badCoordinator.finish());
+        metainfo_free(&badMi);
+        std::filesystem::remove_all(badRoot);
+    }
+
     struct stat st{};
     std::string committed = root + "/install-sim/" + taskId + "-game.nsp";
     assert(stat(committed.c_str(), &st) == 0);

@@ -710,7 +710,7 @@ private:
             if (cancelRequested_)
                 return false;
             if (error().empty())
-                setError(stream_->error());
+                setError(describeStreamError(stream_->error()));
             log_msg("[install] stream error package='%s' offset=%lld: %s\n",
                     currentPackage_.c_str(),
                     static_cast<long long>(chunk.fileOffset), error().c_str());
@@ -731,7 +731,7 @@ private:
             }
             if (!stream_->finish()) {
                 if (error().empty())
-                    setError(stream_->error());
+                    setError(describeStreamError(stream_->error()));
                 log_msg("[install] finalize error package='%s': %s\n",
                         currentPackage_.c_str(), error().c_str());
                 backend_->rollbackPackage();
@@ -767,6 +767,20 @@ private:
     bool setError(const std::string& message) {
         std::lock_guard<std::mutex> lock(queueMutex_);
         return setErrorLocked(message, false);
+    }
+
+    // B4: a bare stream error ("not a PFS0 NSP/NSZ") tells the user nothing
+    // when the torrent holds several packages — name the offending file and
+    // its size so the broken download is identifiable without guessing.
+    std::string describeStreamError(const std::string& streamError) const {
+        if (activeFileIndex_ == UINT32_MAX ||
+            activeFileIndex_ >= metainfo_.num_files)
+            return streamError;
+        const mi_file_t& file = metainfo_.files[activeFileIndex_];
+        return "Package '" + std::string(file.path) + "' (" +
+               std::to_string(
+                   static_cast<unsigned long long>(file.length)) +
+               " bytes): " + streamError;
     }
 
     bool setErrorLocked(const std::string& message, bool recoverable) {
