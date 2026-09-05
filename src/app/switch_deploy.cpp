@@ -185,6 +185,22 @@ bool destinationParentsSafe(const std::string& root,
     return true;
 }
 
+// One mkdir level where EEXIST only counts when the name is already a
+// directory — a regular file holding a directory's name must fail here with
+// ENOTDIR, not deeper with a cryptic ENOENT (B2).
+bool mkdirOne(char* path) {
+    struct stat st {};
+    if (mkdir(path, 0755) == 0)
+        return true;
+    if (errno != EEXIST)
+        return false;
+    if (stat(path, &st) != 0)
+        return false;
+    if (!S_ISDIR(st.st_mode))
+        errno = ENOTDIR;
+    return S_ISDIR(st.st_mode) != 0;
+}
+
 bool mkdirs(const std::string& path) {
     if (path.empty() || path.size() >= 1024)
         return false;
@@ -194,11 +210,12 @@ bool mkdirs(const std::string& path) {
         if (*p != '/')
             continue;
         *p = '\0';
-        if (mkdir(buffer, 0755) != 0 && errno != EEXIST)
-            return false;
+        const bool ok = mkdirOne(buffer);
         *p = '/';
+        if (!ok)
+            return false;
     }
-    return mkdir(buffer, 0755) == 0 || errno == EEXIST;
+    return mkdirOne(buffer);
 }
 
 std::string parentPath(const std::string& path) {

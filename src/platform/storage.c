@@ -78,6 +78,23 @@ static void set_path_errno(storage_t *s, const char *path, const char *what) {
              strerror(errno));
 }
 
+/* One mkdir level where EEXIST only counts when the name is already a
+   directory. A regular file holding a directory's name used to pass as
+   success here and fail deeper with a cryptic ENOENT (B2: Tomodachi Life
+   port, `.../contents/английская озв`) — report the blocker as ENOTDIR. */
+static int mkdir_one(char *path) {
+    struct stat st;
+    if (mkdir(path, 0755) == 0)
+        return 1;
+    if (errno != EEXIST)
+        return 0;
+    if (stat(path, &st) != 0)
+        return 0;
+    if (!S_ISDIR(st.st_mode))
+        errno = ENOTDIR;
+    return S_ISDIR(st.st_mode) != 0;
+}
+
 /* mkdir -p. Skip a "device:" prefix — mkdir("sdmc:") fails with a
    non-EEXIST errno on libnx (see game_metadata_service makeDirectories). */
 static int mkdirs(const char *path) {
@@ -95,13 +112,13 @@ static int mkdirs(const char *path) {
         if (*p != '/')
             continue;
         *p = 0;
-        if (mkdir(tmp, 0755) != 0 && errno != EEXIST) {
+        if (!mkdir_one(tmp)) {
             *p = '/';
             return 0;
         }
         *p = '/';
     }
-    return mkdir(tmp, 0755) == 0 || errno == EEXIST;
+    return mkdir_one(tmp);
 }
 
 static int mkdirs_parent(const char *file_path) {
@@ -438,13 +455,15 @@ static int ensure_disk_file_open(struct file_handle *fh, storage_t *s) {
     if (fh->fp || fh->split)
         return 1;
 
-    if (!mkdirs_parent(fh->path)) {
-        if (s)
-            set_path_errno(s, fh->path, "cannot mkdir for");
-        return 0;
+    // A nested original path can fail mkdirs on the target FS (Switch path
+    // limits, a file holding a directory's name) while the short sanitized
+    // _files/ fallback below still fits — try it before giving up (B2).
+    if (mkdirs_parent(fh->path)) {
+        if (open_disk_file(fh, s))
+            return 1;
+    } else if (s) {
+        set_path_errno(s, fh->path, "cannot mkdir for");
     }
-    if (open_disk_file(fh, s))
-        return 1;
 
     if (strstr(fh->path, "/_files/") || !s || !s->mi || !s->outdir ||
         use_flat_file_layout(s->mi))

@@ -539,6 +539,128 @@ static void test_bracket_path_lazy_open(void) {
     free_test_metainfo(&mi);
 }
 
+// B2 (Tomodachi Life port, photo_149): a nested non-ASCII mod path with
+// spaces, dots and parens must materialize through the engine instead of
+// failing with `cannot mkdir ...: No such file or directory`.
+static void test_unicode_nested_path_lazy_open(void) {
+    char outdir[] = "/tmp/pipensx-unicode-XXXXXX";
+    char path[768];
+    assert(mkdtemp(outdir));
+
+    metainfo_t mi;
+    memset(&mi, 0, sizeof(mi));
+    strncpy(mi.name, "Tomodachi Life", sizeof(mi.name) - 1);
+    mi.is_multi = 1;
+    mi.piece_length = 16384;
+    mi.total_length = 1;
+    mi.num_pieces = 1;
+    mi.piece_hashes = (uint8_t*)calloc(1, 20);
+    mi.num_files = 1;
+    mi.files = (mi_file_t*)calloc(1, sizeof(*mi.files));
+    assert(mi.piece_hashes && mi.files);
+    strncpy(mi.files[0].path,
+            "Russian Machine Translation 0.9 (Text)/atmosphere/contents/"
+            "английская озв/romfs.bin",
+            sizeof(mi.files[0].path) - 1);
+    mi.files[0].length = 1;
+
+    storage_t *store = storage_open(&mi, outdir);
+    assert(store);
+    uint8_t byte = 0xab;
+    assert(storage_write(store, 0, &byte, 1));
+    storage_close(store);
+
+    snprintf(path, sizeof(path),
+             "%s/Tomodachi Life/Russian Machine Translation 0.9 (Text)/"
+             "atmosphere/contents/английская озв/romfs.bin",
+             outdir);
+    assert(access(path, F_OK) == 0);
+    unlink(path);
+    snprintf(path, sizeof(path),
+             "%s/Tomodachi Life/Russian Machine Translation 0.9 (Text)/"
+             "atmosphere/contents/английская озв",
+             outdir);
+    rmdir(path);
+    snprintf(path, sizeof(path),
+             "%s/Tomodachi Life/Russian Machine Translation 0.9 (Text)/"
+             "atmosphere/contents",
+             outdir);
+    rmdir(path);
+    snprintf(path, sizeof(path),
+             "%s/Tomodachi Life/Russian Machine Translation 0.9 (Text)/"
+             "atmosphere",
+             outdir);
+    rmdir(path);
+    snprintf(path, sizeof(path),
+             "%s/Tomodachi Life/Russian Machine Translation 0.9 (Text)",
+             outdir);
+    rmdir(path);
+    snprintf(path, sizeof(path), "%s/Tomodachi Life", outdir);
+    rmdir(path);
+    rmdir(outdir);
+    free_test_metainfo(&mi);
+}
+
+// B2: a regular file holding an intermediate directory's name must not kill
+// the download with `cannot mkdir ...: No such file or directory` — the
+// engine remaps that file to the short sanitized _files/ fallback, which
+// storage_locate_file_path then finds.
+static void test_blocked_directory_falls_back_to_short_path(void) {
+    char outdir[] = "/tmp/pipensx-blocked-dir-XXXXXX";
+    char located[768];
+    char path[768];
+    assert(mkdtemp(outdir));
+
+    metainfo_t mi;
+    memset(&mi, 0, sizeof(mi));
+    strncpy(mi.name, "blocked-port", sizeof(mi.name) - 1);
+    mi.is_multi = 1;
+    mi.piece_length = 16384;
+    mi.total_length = 1;
+    mi.num_pieces = 1;
+    mi.piece_hashes = (uint8_t*)calloc(1, 20);
+    mi.num_files = 1;
+    mi.files = (mi_file_t*)calloc(1, sizeof(*mi.files));
+    assert(mi.piece_hashes && mi.files);
+    strncpy(mi.files[0].path, "mods/английская озв/payload.bin",
+            sizeof(mi.files[0].path) - 1);
+    mi.files[0].length = 1;
+
+    // Plant a regular file where the engine must create `mods`.
+    snprintf(path, sizeof(path), "%s/blocked-port", outdir);
+    assert(mkdir(path, 0755) == 0);
+    snprintf(path, sizeof(path), "%s/blocked-port/mods", outdir);
+    FILE *blocker = fopen(path, "wb");
+    assert(blocker);
+    assert(fputc(0, blocker) == 0);
+    assert(fclose(blocker) == 0);
+
+    storage_t *store = storage_open(&mi, outdir);
+    assert(store);
+    uint8_t value = 0x5a;
+    uint8_t actual = 0;
+    assert(storage_write(store, 0, &value, 1));
+    assert(storage_read(store, 0, &actual, 1) == 1);
+    assert(actual == value);
+    storage_close(store);
+
+    assert(storage_locate_file_path(&mi, outdir, 0, located,
+                                    sizeof(located)));
+    assert(strstr(located, "/_files/") != NULL);
+    assert(access(located, F_OK) == 0);
+    unlink(located);
+    snprintf(path, sizeof(path), "%s/_files/0000", outdir);
+    rmdir(path);
+    snprintf(path, sizeof(path), "%s/_files", outdir);
+    rmdir(path);
+    snprintf(path, sizeof(path), "%s/blocked-port/mods", outdir);
+    unlink(path);
+    snprintf(path, sizeof(path), "%s/blocked-port", outdir);
+    rmdir(path);
+    rmdir(outdir);
+    free_test_metainfo(&mi);
+}
+
 static void test_lazy_open_many_files(void) {
     const uint32_t count = 128;
     char outdir[] = "/tmp/pipensx-lazy-XXXXXX";
@@ -1160,6 +1282,8 @@ int main(void) {
     test_stream_sink_piece_is_verified_without_disk_readback();
     test_long_disk_path_uses_short_fallback();
     test_bracket_path_lazy_open();
+    test_unicode_nested_path_lazy_open();
+    test_blocked_directory_falls_back_to_short_path();
     test_lazy_open_many_files();
     test_flat_layout_shards_large_torrent_files();
     test_expected_path_needs_no_existing_file();
