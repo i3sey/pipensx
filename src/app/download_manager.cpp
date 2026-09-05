@@ -1774,8 +1774,8 @@ void DownloadManager::schedulerMain() {
         claim.fileSelection = task->fileSelection;
         claim.initialPeers = task->initialPeers;
         // Fast resume: consume the trusted bitfield and persist the disarmed
-        // state before the engine touches anything — a crash from here on
-        // must fall back to a full scan.
+        // state before the engine touches anything — a crash before the
+        // first checkpoint below falls back to a full scan.
         claim.resumeBitfield = std::move(task->resumeBitfield);
         task->resumeBitfield.clear();
         persistState(lock);
@@ -1942,7 +1942,14 @@ void DownloadManager::runDebridTask(const ClaimedTask& claim) {
         return !task || task->status == DownloadStatus::Paused ||
                task->status == DownloadStatus::Removing;
     };
-    auto onProgress = [this, &activeId](const DebridProgress& p) {
+    // Crash checkpoint (B1): per-chunk progress used to stay in-memory until
+    // a package boundary — a kill mid-package reopened the bar from stale
+    // bytes. A throttled persist bounds the loss to one interval.
+    constexpr uint64_t kDebridCheckpointMs = 5000;
+    uint64_t lastDebridPersistMs = 0;
+    uint64_t lastDebridPersistedBytes = 0;
+    auto onProgress = [this, &activeId, &lastDebridPersistMs,
+                       &lastDebridPersistedBytes](const DebridProgress& p) {
         std::unique_lock<std::mutex> lock(mutex_);
         DownloadTask* task = findLocked(activeId);
         if (!task || task->status == DownloadStatus::Removing ||
@@ -1958,9 +1965,14 @@ void DownloadManager::runDebridTask(const ClaimedTask& claim) {
         task->currentPackage = p.currentPackage;
         updateTaskInstallProgress(*task, p.installedBytes,
                                   p.installTotalBytes, p.status, now_ms());
-        // Only package boundaries hit the state file; the per-chunk progress
-        // above is in-memory until then.
-        if (packageCommitted) {
+        // Package boundaries always hit the state file; per-chunk progress
+        // additionally checkpoints on a throttle.
+        const uint64_t progressNowMs = now_ms();
+        if (packageCommitted ||
+            (task->completedBytes != lastDebridPersistedBytes &&
+             progressNowMs - lastDebridPersistMs >= kDebridCheckpointMs)) {
+            lastDebridPersistMs = progressNowMs;
+            lastDebridPersistedBytes = task->completedBytes;
             persistState(lock);
         }
     };
@@ -2181,6 +2193,18 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
     }
 
     bool finished = false;
+    // Crash checkpoint (B1): the claim above consumed the trusted bitfield,
+    // and the tick loop below only kept progress in memory until a
+    // pause/error/finish teardown — a kill mid-transfer lost both, so the
+    // next boot did a full rehash with the bar rebuilt from stale bytes.
+    // Re-arm a fresh bitfield and persist progress on a throttle: one small
+    // queue-file write every few seconds is nothing next to torrent I/O,
+    // and it bounds post-crash resume work to a single interval.
+    constexpr uint64_t kResumeCheckpointMs = 5000;
+    uint64_t lastCheckpointMs = now_ms();
+    uint32_t lastCheckpointPieces = 0;
+    uint64_t lastCheckpointBytes = 0;
+    bool downloadingSeen = false;
     while (!stopping_) {
         {
             std::unique_lock<std::mutex> lock(mutex_);
@@ -2276,6 +2300,15 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
                 else
                     task->status = DownloadStatus::Downloading;
             }
+            // Start the checkpoint interval when the transfer first reaches
+            // Downloading: the claim disarmed the bitfield, and the test
+            // suite (plus any UI polling) must observe that disarmed state
+            // before the first checkpoint re-arms it.
+            if (task->status == DownloadStatus::Downloading &&
+                !downloadingSeen) {
+                downloadingSeen = true;
+                lastCheckpointMs = now_ms();
+            }
             if (running < 0) {
                 task->status = DownloadStatus::Error;
                 task->error = !installError.empty()
@@ -2283,6 +2316,37 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
                 if (coordinator && installError.empty())
                     coordinator->markRecoverableError(task->error);
                 task->speedBytesPerSecond = 0;
+            }
+        }
+        // Throttled crash checkpoint: snapshot the have-bitfield off the
+        // engine lock (same seam as the teardown below) and persist it with
+        // the in-memory progress, so a kill loses at most one interval.
+        // An error teardown re-arms right after this, so skip it there.
+        if (running > 0 && now_ms() - lastCheckpointMs >= kResumeCheckpointMs) {
+            std::vector<uint8_t> checkpointBitfield;
+            if (uint32_t need =
+                    torrent_copy_have_bitfield(torrent, nullptr, 0)) {
+                checkpointBitfield.resize(need);
+                if (!torrent_copy_have_bitfield(
+                        torrent, checkpointBitfield.data(), need))
+                    checkpointBitfield.clear();
+            }
+            std::unique_lock<std::mutex> lock(mutex_);
+            if (DownloadTask* task = findLocked(activeId)) {
+                const bool progressAdvanced =
+                    task->piecesDone != lastCheckpointPieces ||
+                    task->completedBytes != lastCheckpointBytes;
+                if (!checkpointBitfield.empty() || progressAdvanced) {
+                    // An empty bitfield means the startup scan is still
+                    // running: the bytes alone still rescue the bar, and the
+                    // scan result arms the bitfield on the next interval.
+                    if (!checkpointBitfield.empty())
+                        task->resumeBitfield = checkpointBitfield;
+                    lastCheckpointMs = now_ms();
+                    lastCheckpointPieces = task->piecesDone;
+                    lastCheckpointBytes = task->completedBytes;
+                    persistState(lock);
+                }
             }
         }
         if (running < 0)

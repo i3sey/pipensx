@@ -835,6 +835,47 @@ int main() {
         assert(manager.remove(frId, true, error));
     }
 
+    // Crash checkpoint (B1): while a transfer is running, the manager
+    // re-arms the resume bitfield on a throttle, so a kill mid-transfer
+    // (no pause/shutdown teardown) still resumes without a full rescan.
+    // Armed-while-Downloading is the assertion — the orderly shutdown below
+    // would arm the bitfield on its own, so observing it beforehand proves
+    // the periodic checkpoint fired.
+    {
+        std::string crashRoot = std::string(root) + "/crash-checkpoint-app";
+        DownloadManager manager(crashRoot, true);
+        manager.setTorrentingEnabled(true);  // torrenting is off by default
+        std::string crashId;
+        assert(manager.importTorrent(downloadOnlySource,
+                                     TransferMode::DownloadOnly, crashId,
+                                     error));
+        for (int i = 0; i < 500; ++i) {
+            auto task = manager.snapshot()[0];
+            if (task.status == DownloadStatus::Downloading)
+                break;
+            usleep(10000);
+        }
+        assert(manager.snapshot()[0].status == DownloadStatus::Downloading);
+        bool checkpointed = false;
+        for (int i = 0; i < 1500; ++i) {
+            auto task = manager.snapshot()[0];
+            if (task.status == DownloadStatus::Downloading &&
+                !task.resumeBitfield.empty()) {
+                checkpointed = true;
+                break;
+            }
+            usleep(10000);
+        }
+        assert(checkpointed);
+        manager.shutdown();
+        {
+            DownloadManager reloaded(crashRoot, false);
+            assert(reloaded.snapshot()[0].resumeBitfield ==
+                   std::vector<uint8_t>(1, 0));
+        }
+        assert(manager.remove(crashId, true, error));
+    }
+
     // Pause must keep the progress bar across an app restart. v5 only
     // persisted resume-bf; the UI reads completed/wanted bytes, so a paused
     // task used to reopen at 0% even when the bitfield was intact.
