@@ -83,6 +83,14 @@ OOM piece buffer, место под NSZ, краш Dying Light, апдейтер 
   1. мультипакет: какой именно файл не PFS0 — в ошибку (имя+размер), а не общий текст;
   2. DLC-докачка после базы без удаления загрузки;
   3. #75: либо убрать метод Torrserver, либо добавить тоггл, на который ссылается ошибка.
+- Статус 06.09 (ветка `fix/b1-resume-garbage`): п.1 закрыт `783a84a`
+  (`Package '<path>' (<bytes> bytes): <error>` в PackageCoordinator и
+  debrid attemptStreamInstall + тест webpage-as-NSP); п.3 закрыт `dc0684a`
+  (ошибка называет точный тоггл «Direct BitTorrent», Settings/Download
+  source; убирать TorrServer не стали). П.2 отложен как фича:
+  смены fileSelection после импорта нет ни в менеджере, ни в UI — нужен
+  отдельный дизайн (torrent re-check vs debrid re-fetch). Проверки:
+  `make -f Makefile.pc test`, `make switch` — зелёные.
 - Проверка: Diablo 3 (7 файлов) и база+DLC по шагам; `make -f Makefile.pc test`.
 
 ## B5. Сон/скринсейвер убивает закачку, бывают зависания системы
