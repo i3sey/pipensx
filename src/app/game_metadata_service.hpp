@@ -118,6 +118,16 @@ public:
     // caller chooses among bundles; returns false when the title has none.
     bool findByTitleId(const std::string& titleId,
                        std::vector<const GameMetadata*>& out) const;
+    // B3: among same-title bundles, find the one carrying the update
+    // check's found version. The Updates hub used the newest-published
+    // bundle even when it was the base game, so "install update"
+    // downloaded the whole game. Returns the first numeric match (entries
+    // from findByTitleId arrive newest-version-first); nullptr when the
+    // wanted version is empty/unparseable or no bundle carries it — the
+    // caller keeps its legacy pick then.
+    static const GameMetadata* preferVersionMatch(
+        const std::vector<const GameMetadata*>& entries,
+        const std::string& foundVersion);
     // IUpdateMetadataSource: candidate update versions for a title id.
     bool collectLatestVersions(const std::string& titleId,
                                std::vector<std::string>& out) const override;

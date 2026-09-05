@@ -156,16 +156,23 @@ private:
     // exists for when an update is available, so it must never be pushed off
     // the end. The 16-hex title ID was dropped — nothing on screen can act on
     // it, and on long publishers it was the first thing to get clipped.
+    // B3: raw decimal title versions ("v327680") read as garbage — show
+    // the eShop x.y.z form ("v5.0.0"), keeping the raw text when it is
+    // not a decimal version.
+    static std::string prettyVersion(const std::string& decimal) {
+        const std::string formatted = formatTitleVersion(decimal);
+        return formatted.empty() ? decimal : formatted;
+    }
     void updateSubtitle() {
         std::string subtitle;
         if (!publisher_.empty())
             subtitle = publisher_ + " · ";
         if (!version_.empty()) {
-            subtitle += "v" + version_;
+            subtitle += "v" + prettyVersion(version_);
             if (!ignored_ &&
                 currentState_ == GameUpdateState::UpdateAvailable &&
                 !currentFoundVersion_.empty())
-                subtitle += " → v" + currentFoundVersion_;
+                subtitle += " → v" + prettyVersion(currentFoundVersion_);
         }
         subtitle_->setText(subtitle);
     }
@@ -482,7 +489,10 @@ private:
             if (it != updates_->results().end() &&
                 it->second.state == GameUpdateState::UpdateAvailable)
                 add(tr("pipensx/installed/update_action"),
-                    [this, titleId = title.titleId] { installUpdate(titleId); });
+                    [this, titleId = title.titleId,
+                     foundVersion = it->second.foundVersion] {
+                        installUpdate(titleId, foundVersion);
+                    });
         }
         add(tr("pipensx/installed/open_in_catalog"),
             [this, titleId = title.titleId] { openInCatalog(titleId); });
@@ -510,12 +520,26 @@ private:
         brls::Application::pushActivity(new brls::Activity(dropdown));
     }
 
-    const CatalogEntry* catalogEntryForTitle(const std::string& titleId) const {
+    const CatalogEntry* catalogEntryForTitle(
+        const std::string& titleId,
+        const std::string& foundVersion = {}) const {
         if (!catalog_)
             return nullptr;
         std::vector<const GameMetadata*> entries;
         if (metadata_)
             metadata_->findByTitleId(titleId, entries);
+        // B3: the update check names the wanted version — open the bundle
+        // carrying it, not the newest-published one (usually the base
+        // game), so "install update" does not download the whole game.
+        if (!foundVersion.empty() && metadata_) {
+            if (const GameMetadata* match =
+                    GameMetadataService::preferVersionMatch(entries,
+                                                           foundVersion)) {
+                if (const CatalogEntry* direct =
+                        catalog_->findByInfoHash(match->infoHash))
+                    return direct;
+            }
+        }
         const CatalogEntry* best = nullptr;
         for (const GameMetadata* meta : entries) {
             if (!meta)
@@ -542,8 +566,10 @@ private:
         return best;
     }
 
-    void openCatalogPage(const std::string& titleId, bool autoInstall) {
-        const CatalogEntry* catalogEntry = catalogEntryForTitle(titleId);
+    void openCatalogPage(const std::string& titleId, bool autoInstall,
+                         const std::string& foundVersion = {}) {
+        const CatalogEntry* catalogEntry =
+            catalogEntryForTitle(titleId, foundVersion);
         if (!catalogEntry) {
             brls::Application::notify(
                 tr("pipensx/installed/update_no_bundle"));
@@ -568,12 +594,13 @@ private:
         openCatalogPage(titleId, false);
     }
 
-    void installUpdate(const std::string& titleId) {
+    void installUpdate(const std::string& titleId,
+                       const std::string& foundVersion = {}) {
         if (refreshing_ || uninstallInFlight_)
             return;
         if (updates_->isIgnored(titleId))
             return;
-        openCatalogPage(titleId, true);
+        openCatalogPage(titleId, true, foundVersion);
     }
 
     void confirmUninstall(InstalledTitle title) {

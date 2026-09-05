@@ -818,6 +818,37 @@ bool GameMetadataService::findByTitleId(
     return !out.empty();
 }
 
+const GameMetadata* GameMetadataService::preferVersionMatch(
+    const std::vector<const GameMetadata*>& entries,
+    const std::string& foundVersion) {
+    if (entries.empty())
+        return nullptr;
+    // Strict decimal: strtoull accepts "12abc" as 12 and "" as 0 —
+    // neither may select a bundle. An empty/unparseable found version keeps
+    // the legacy newest-first pick below.
+    uint64_t wanted = 0;
+    bool wantedValid = !foundVersion.empty();
+    for (unsigned char c : foundVersion) {
+        if (c < '0' || c > '9') {
+            wantedValid = false;
+            break;
+        }
+        wanted = wanted * 10 + static_cast<uint64_t>(c - '0');
+    }
+    if (wantedValid && wanted != 0) {
+        for (const GameMetadata* entry : entries) {
+            if (!entry || entry->latestVersion.empty())
+                continue;
+            char* end = nullptr;
+            const unsigned long long v = strtoull(
+                entry->latestVersion.c_str(), &end, 10);
+            if (end && *end == '\0' && v == wanted)
+                return entry;
+        }
+    }
+    return nullptr;
+}
+
 bool GameMetadataService::collectLatestVersions(
     const std::string& titleId, std::vector<std::string>& out) const {
     std::string key = titleId;
