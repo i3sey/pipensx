@@ -1189,7 +1189,7 @@ int main() {
         for (int i = 0; i < 100 && !sawError; ++i) {
             for (const DownloadTask& t : manager.snapshot())
                 if (t.id == id && t.status == DownloadStatus::Error &&
-                    t.error.find("Torrenting disabled") != std::string::npos)
+                    t.error.find("Direct BitTorrent") != std::string::npos)
                     sawError = true;
             if (!sawError)
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));

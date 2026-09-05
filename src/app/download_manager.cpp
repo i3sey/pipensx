@@ -2039,12 +2039,14 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
     // Both branches below happen before the arbiter registration: a debrid
     // task runs no engine, so reserving engine RAM for it would starve the
     // torrent slots for nothing.
+    // B4 (#75): the old text pointed at a toggle the user could not find —
+    // the setting is called "Direct BitTorrent" under Download source.
     if (claim.source == TaskSource::Torrent && !torrentingEnabled_.load()) {
         std::unique_lock<std::mutex> lock(mutex_);
         if (DownloadTask* task = findLocked(claim.id)) {
             task->status = DownloadStatus::Error;
-            task->error =
-                "Torrenting disabled — enable it in Settings to retry.";
+            task->error = "Torrenting is off — enable Direct BitTorrent "
+                            "in Settings (Download source) to retry.";
             task->speedBytesPerSecond = 0;
             persistState(lock);
         }
@@ -2216,8 +2218,8 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
             // peers on the next tick rather than at the end of the download.
             if (!torrentingEnabled_.load()) {
                 task->status = DownloadStatus::Error;
-                task->error =
-                    "Torrenting disabled — enable it in Settings to retry.";
+                task->error = "Torrenting is off — enable Direct BitTorrent "
+                                "in Settings (Download source) to retry.";
                 task->speedBytesPerSecond = 0;
                 persistState(lock);
                 break;
