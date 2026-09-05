@@ -65,6 +65,15 @@ OOM piece buffer, место под NSZ, краш Dying Light, апдейтер 
   `src/app/game_update_install.*`, экран Installed/Updates.
 - Починить: маппинг installed titleID → catalog version (не путать тайтлы);
   smart-install «только апдейт» по умолчанию; тест на 3 игры выше.
+- Статус 06.09 (ветка `fix/b1-resume-garbage`): закрыт `5cdb60d`.
+  `catalogEntryForTitle` брал newest-published бандл (часто базу) без учёта
+  версии — теперь `preferVersionMatch` выбирает бандл с foundVersion чека
+  (иначе legacy-пик); foundVersion тянут из меню строки. С правильным
+  бандлом smart-маска предвыбирает только апдейт. Строки хаба показывают
+  x.y.z (`v5.0.0`) вместо сырого decimal (`v327680`) с фолбэком на raw.
+  Тест: 3 тайтла × (база+апдейт), per-title таргеты. Проверки:
+  `make -f Makefile.pc test`, `make golden` (без ре-бейзлайна, в бюджете),
+  `make switch`, `scripts/check_i18n.py` — зелёные.
 - Проверка: FF4/FF5/Pokémon показывают разные target; `make golden` (Installed/Updates).
 
 ## B4. Мультифайл/DLC/debrid ставится через раз
