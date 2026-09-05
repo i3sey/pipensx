@@ -55,4 +55,21 @@ uint64_t orphanTorrentBytes(
     const std::string& torrentRoot,
     const std::vector<std::string>& activeInfoHashes);
 
+// Total bytes of orphaned download-data entries directly under `downloadsRoot`
+// (B1: `downloads/<name>-<hash8>` left behind by a crash, a power-off or an
+// interrupted remove). `activeDataPaths` are the full task dataPaths from a
+// DownloadManager snapshot; a direct child is kept when its full path — or,
+// defensively, its basename — matches an active task. Anything else (stale
+// task directories and stray files) counts as orphaned.
+uint64_t orphanDownloadBytes(
+    const std::string& downloadsRoot,
+    const std::vector<std::string>& activeDataPaths);
+
+// Removes the orphaned download-data entries orphanDownloadBytes would count.
+// Never touches an active task directory. A missing downloads directory is
+// success with 0 recovered. Returns recovered bytes in `recovered`.
+bool clearOrphanDownloads(const std::string& downloadsRoot,
+                          const std::vector<std::string>& activeDataPaths,
+                          std::string& error, uint64_t& recovered);
+
 } // namespace pipensx

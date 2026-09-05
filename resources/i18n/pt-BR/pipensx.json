@@ -500,6 +500,7 @@
     "clear_completed": "Limpar downloads concluídos",
     "clear_images": "Limpar cache de imagens",
     "clear_torrents": "Limpar metadados de torrent",
+    "clear_orphan_downloads": "Limpar downloads órfãos",
     "clear_temporary": "Limpar arquivos temporários",
     "nothing_to_recover": "Nada a recuperar",
     "recoverable": "Recuperar {}",

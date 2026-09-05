@@ -83,6 +83,31 @@ bool isTempTorrentName(const std::string& name) {
            name.rfind("_catalog_tmp_", 0) == 0;
 }
 
+std::string baseName(const std::string& path) {
+    const size_t slash = path.find_last_of('/');
+    return slash == std::string::npos ? path : path.substr(slash + 1);
+}
+
+// True when `childPath` (a direct child of the downloads root) belongs to a
+// live task. Full-path match is authoritative; the basename fallback keeps a
+// task directory alive when the app root moved (SD swap) but the leaf name
+// survived. Errs toward keeping: an ambiguous entry is never orphaned.
+bool isActiveDownload(const std::string& childPath,
+                      const std::vector<std::string>& activeDataPaths) {
+    const std::string childBase = baseName(childPath);
+    if (childBase.empty())
+        return true;
+    for (const std::string& active : activeDataPaths) {
+        if (active.empty())
+            continue;
+        if (active == childPath)
+            return true;
+        if (!baseName(active).empty() && baseName(active) == childBase)
+            return true;
+    }
+    return false;
+}
+
 } // namespace
 
 bool directorySize(const std::string& path, uint64_t& out) {
@@ -214,6 +239,69 @@ bool clearOrphanTorrents(const std::string& torrentRoot,
             addBytes(recovered, size);
     }
     closedir(dir);
+    return true;
+}
+
+uint64_t orphanDownloadBytes(
+    const std::string& downloadsRoot,
+    const std::vector<std::string>& activeDataPaths) {
+    uint64_t total = 0;
+    if (downloadsRoot.empty())
+        return 0;
+    DIR* dir = opendir(downloadsRoot.c_str());
+    if (!dir)
+        return 0;
+    while (dirent* entry = readdir(dir)) {
+        const std::string name = entry->d_name;
+        if (name == "." || name == "..")
+            continue;
+        const std::string path = downloadsRoot + "/" + name;
+        if (isActiveDownload(path, activeDataPaths))
+            continue;
+        accumulateSize(path, total);
+    }
+    closedir(dir);
+    return total;
+}
+
+bool clearOrphanDownloads(const std::string& downloadsRoot,
+                          const std::vector<std::string>& activeDataPaths,
+                          std::string& error, uint64_t& recovered) {
+    error.clear();
+    recovered = 0;
+    if (downloadsRoot.empty()) {
+        error = "Unable to list downloads.";
+        return false;
+    }
+    DIR* dir = opendir(downloadsRoot.c_str());
+    if (!dir) {
+        // No downloads directory yet: nothing orphaned.
+        if (errno == ENOENT)
+            return true;
+        error = "Unable to list downloads.";
+        return false;
+    }
+    std::vector<std::string> orphans;
+    while (dirent* entry = readdir(dir)) {
+        const std::string name = entry->d_name;
+        if (name == "." || name == "..")
+            continue;
+        const std::string path = downloadsRoot + "/" + name;
+        if (isActiveDownload(path, activeDataPaths))
+            continue;
+        orphans.push_back(path);
+    }
+    closedir(dir);
+    // Size first: a child that vanishes mid-sweep still counts what was
+    // measured, matching the estimate the UI showed before confirming.
+    for (const std::string& path : orphans)
+        accumulateSize(path, recovered);
+    for (const std::string& path : orphans) {
+        if (!removeTree(path)) {
+            error = "Unable to remove orphaned download data.";
+            return false;
+        }
+    }
     return true;
 }
 

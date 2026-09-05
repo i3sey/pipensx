@@ -500,6 +500,7 @@
     "clear_completed": "Удалить завершённые загрузки",
     "clear_images": "Очистить кэш изображений",
     "clear_torrents": "Очистить метаданные торрентов",
+    "clear_orphan_downloads": "Очистить оборванные загрузки",
     "clear_temporary": "Очистить временные файлы",
     "nothing_to_recover": "Нечего освобождать",
     "recoverable": "Освободить {}",
