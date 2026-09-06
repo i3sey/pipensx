@@ -13,6 +13,7 @@ extern "C" {
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <dirent.h>
 #include <fstream>
 #include <memory>
 #include <sys/stat.h>
@@ -66,6 +67,32 @@ bool writeIconIfMissing(const std::string& path, const uint8_t* bytes,
 }
 
 } // namespace
+
+bool directoryHasEntries(const std::string& path) {
+    if (path.empty())
+        return false;
+    DIR* dir = opendir(path.c_str());
+    if (!dir)
+        return false;
+    bool found = false;
+    while (dirent* entry = readdir(dir)) {
+        const char* name = entry->d_name;
+        if (!std::strcmp(name, ".") || !std::strcmp(name, ".."))
+            continue;
+        found = true;
+        break;
+    }
+    closedir(dir);
+    return found;
+}
+
+bool titleHasLayeredFsMods(const std::string& sdRoot,
+                            const std::string& titleId) {
+    const std::string dir = layeredFsModDirForTitle(sdRoot, titleId);
+    if (dir.empty())
+        return false;
+    return directoryHasEntries(dir);
+}
 
 InstalledTitleService::InstalledTitleService(std::string rootPath)
     : rootPath_(std::move(rootPath)),
@@ -351,6 +378,10 @@ bool InstalledTitleService::refresh(std::string& error) {
                 !name.empty())
                 title.name = std::move(name);
             title.publisher = std::move(author);
+            // B6: remember what is installed before an update replaces it.
+            title.displayVersion = nacpDisplayVersionString(
+                control->nacp.display_version,
+                sizeof(control->nacp.display_version));
             size_t iconSize = actualSize > sizeof(NacpStruct)
                 ? static_cast<size_t>(actualSize - sizeof(NacpStruct)) : 0;
             iconSize = std::min(iconSize, sizeof(control->icon));
@@ -361,6 +392,10 @@ bool InstalledTitleService::refresh(std::string& error) {
             diagnostic_error("installed", title.titleId.c_str(),
                              "event=control_data result=0x%08x", rc);
         }
+        // LayeredFS mods live on the SD card outside ncm, so a plain
+        // opendir is enough on both builds (PC path just misses -> false).
+        title.hasLayeredFsMods =
+            titleHasLayeredFsMods("sdmc:/", title.titleId);
         next.push_back(std::move(title));
     }
 
