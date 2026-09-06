@@ -906,7 +906,11 @@ private:
         const std::vector<CatalogEntry>& all = *snapshot;
         std::vector<int> visible;
         std::vector<const GameMetadata*> metadataByEntry(all.size(), nullptr);
-        std::string needle = lowerAscii(query_);
+        // Fold once per rebuild: the predicate folds each haystack, so a
+        // Russian query matches titles in either case (ASCII-only folding
+        // broke this) and also matches the catalogue's own genre string,
+        // which half the entries need (no metadata join).
+        const std::string needle = catalogFoldForSearch(query_);
         const bool searching = !needle.empty();
         const bool favoritesOnly = favoritesOnly_ && favorites_;
         const uint64_t filterStartedUs = startedUs ? now_us() : 0;
@@ -931,19 +935,7 @@ private:
                 !catalogEntryMatchesPlayerFilter(meta, playerFilter_))
                 continue;
             bool matches = !searching ||
-                lowerAscii(entry.title).find(needle) != std::string::npos ||
-                (meta && lowerAscii(meta->name).find(needle) !=
-                             std::string::npos);
-            // Genre shelves (F5) hand off to search, so categories match too.
-            if (!matches && meta) {
-                for (const std::string& category : meta->categories) {
-                    if (lowerAscii(category).find(needle) !=
-                            std::string::npos) {
-                        matches = true;
-                        break;
-                    }
-                }
-            }
+                catalogEntryMatchesSearch(entry, meta, needle);
             if (!matches)
                 continue;
             visible.push_back(static_cast<int>(i));
@@ -966,7 +958,8 @@ private:
         if (sort_ == SortMode::Alphabetical) {
             std::vector<std::string> keys(visible.size());
             for (size_t i = 0; i < visible.size(); ++i)
-                keys[i] = lowerAscii(all[static_cast<size_t>(visible[i])].title);
+                keys[i] = catalogFoldForSearch(
+                    all[static_cast<size_t>(visible[i])].title);
             std::vector<int> order(visible.size());
             std::iota(order.begin(), order.end(), 0);
             std::stable_sort(order.begin(), order.end(),
@@ -1366,30 +1359,38 @@ private:
 
     // Top-right freshness badge. Bundled dumps do not count: only a successful
     // network refresh stamps lastCatalogRefreshWallSec. Green = refreshed
-    // today, red = never / not today, orange = in flight.
+    // today, red = never / not today, orange = in flight. The Kind decision
+    // lives in resolveCatalogFreshness (unit-tested); this only renders it.
     void updateFreshnessLabel() {
         if (!freshness_)
             return;
-        if (busy_ || catalogRefreshInFlight()) {
-            freshness_->setText(tr("pipensx/catalog/freshness_updating"));
-            freshness_->setTextColor(theme::warning());
-            return;
-        }
         const uint64_t wallSec =
             settings_ ? settings_->get().lastCatalogRefreshWallSec : 0;
-        if (wallSec == 0) {
-            freshness_->setText(tr("pipensx/catalog/freshness_never"));
-            freshness_->setTextColor(theme::error());
-            return;
-        }
-        const int64_t epoch = static_cast<int64_t>(wallSec);
-        const std::string date = formatEpochDateUtc(epoch);
-        if (isLocalToday(epoch)) {
-            freshness_->setText(tr("pipensx/catalog/freshness_ok", date));
-            freshness_->setTextColor(theme::success());
-        } else {
-            freshness_->setText(tr("pipensx/catalog/freshness_stale", date));
-            freshness_->setTextColor(theme::error());
+        const int64_t snapshot = catalog_ ? catalog_->snapshotEpochSec() : 0;
+        const bool hasEntries = catalog_ && !catalog_->entries().empty();
+        const CatalogFreshness state = resolveCatalogFreshness(
+            busy_ || catalogRefreshInFlight(), wallSec, snapshot, hasEntries,
+            wallSec != 0 &&
+                isLocalToday(static_cast<int64_t>(wallSec)));
+        switch (state.kind) {
+            case CatalogFreshness::Kind::Updating:
+                freshness_->setText(tr("pipensx/catalog/freshness_updating"));
+                freshness_->setTextColor(theme::warning());
+                return;
+            case CatalogFreshness::Kind::Never:
+                freshness_->setText(tr("pipensx/catalog/freshness_never"));
+                freshness_->setTextColor(theme::error());
+                return;
+            case CatalogFreshness::Kind::Ok:
+                freshness_->setText(tr("pipensx/catalog/freshness_ok",
+                                         formatEpochDateUtc(state.epochSec)));
+                freshness_->setTextColor(theme::success());
+                return;
+            case CatalogFreshness::Kind::Stale:
+                freshness_->setText(tr("pipensx/catalog/freshness_stale",
+                                         formatEpochDateUtc(state.epochSec)));
+                freshness_->setTextColor(theme::error());
+                return;
         }
     }
 

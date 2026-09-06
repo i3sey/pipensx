@@ -55,6 +55,11 @@ using pipensx::MagnetResolver;
 using pipensx::MagnetSpec;
 using pipensx::mergeScreenshotUrls;
 using pipensx::resolveCatalogPresentation;
+using pipensx::catalogFoldForSearch;
+using pipensx::catalogFoldedContains;
+using pipensx::catalogEntryMatchesSearch;
+using pipensx::CatalogFreshness;
+using pipensx::resolveCatalogFreshness;
 
 namespace {
 
@@ -1078,6 +1083,229 @@ void testCatalogBrowseMatchFilterRequiresTitleIdMetadata() {
     assert(!catalogEntryHasMatchedTitle(&invalidMetadata));
 }
 
+// B7: the grid search folded ASCII only, so a Russian query in one case
+// never matched a title in the other ("filtering stopped working").
+void testCatalogFoldForSearchHandlesRussianCase() {
+    assert(catalogFoldForSearch("Action") == "action");
+    assert(catalogFoldForSearch("action") == "action");
+    // Full Cyrillic alphabet, upper → lower (А-П same lead, Р-Я crosses
+    // the D0/D1 UTF-8 boundary, Ё lives in the Ѐ-Џ block).
+    assert(catalogFoldForSearch("АБВГДЕЖЗИЙКЛМНОП") ==
+           "абвгдежзийклмноп");
+    assert(catalogFoldForSearch("РСТУФХЦЧШЩЪЫЬЭЮЯ") ==
+           "рстуфхцчшщъыьэюя");
+    assert(catalogFoldForSearch("Ё") == "ё");
+    assert(catalogFoldForSearch("ВЕДЬМАК") == "ведьмак");
+    assert(catalogFoldForSearch("Ведьмак 3 [NSZ][RUS]") ==
+           "ведьмак 3 [nsz][rus]");
+    // Already folded text is stable.
+    assert(catalogFoldForSearch("ведьмак") == "ведьмак");
+    assert(catalogFoldForSearch("") == "");
+    // Invalid UTF-8 passes through byte by byte, never dropped.
+    const std::string broken("\xff\xfe" "abc", 5);
+    assert(catalogFoldForSearch(broken) == broken);
+    // A truncated lead byte at the end survives too.
+    const std::string truncated("abc\xd0", 4);
+    assert(catalogFoldForSearch(truncated) == truncated);
+}
+
+void testCatalogFoldedContains() {
+    assert(catalogFoldedContains("anything", ""));
+    assert(catalogFoldedContains("Ведьмак 3", catalogFoldForSearch("ведьмак")));
+    assert(catalogFoldedContains("ВЕДЬМАК 3", catalogFoldForSearch("Ведьмак")));
+    assert(!catalogFoldedContains("Ведьмак 3", catalogFoldForSearch("шутер")));
+}
+
+// B7: search also ignored the catalogue's own genre string, so the half of
+// the Langegen dump without a metadata join never matched a genre query
+// (and a genre shelf "See all" dropped those releases silently).
+void testCatalogEntryMatchesSearch() {
+    CatalogEntry entry;
+    entry.title = "Ведьмак 3 [NSZ][RUS]";
+    entry.genre = "Role-Playing, Adventure";
+    // Russian title, either case, without any metadata.
+    assert(catalogEntryMatchesSearch(entry, nullptr,
+                                     catalogFoldForSearch("ведьмак")));
+    assert(catalogEntryMatchesSearch(entry, nullptr,
+                                     catalogFoldForSearch("ВЕДЬМАК")));
+    // Catalogue genre matches with no metadata join.
+    assert(catalogEntryMatchesSearch(entry, nullptr,
+                                     catalogFoldForSearch("adventure")));
+    assert(catalogEntryMatchesSearch(entry, nullptr,
+                                     catalogFoldForSearch("ROLE")));
+    assert(!catalogEntryMatchesSearch(entry, nullptr,
+                                      catalogFoldForSearch("шутер")));
+    assert(!catalogEntryMatchesSearch(entry, nullptr,
+                                      catalogFoldForSearch("zelda")));
+    // Empty needle matches everything.
+    assert(catalogEntryMatchesSearch(entry, nullptr, ""));
+
+    GameMetadata meta;
+    meta.name = "eShop Name";
+    meta.categories = {"Action"};
+    assert(catalogEntryMatchesSearch(entry, &meta,
+                                     catalogFoldForSearch("eshop")));
+    assert(catalogEntryMatchesSearch(entry, &meta,
+                                     catalogFoldForSearch("ACTION")));
+    // Title still matches when metadata is present.
+    assert(catalogEntryMatchesSearch(entry, &meta,
+                                     catalogFoldForSearch("ведьмак")));
+    assert(!catalogEntryMatchesSearch(entry, &meta,
+                                      catalogFoldForSearch("puzzle")));
+}
+
+// B7 goal 1: the freshness badge decision. Only a successful network refresh
+// stamps wallSec; a cache/bundle snapshot dates the data when this console
+// never fetched, instead of the bare "never" badge.
+void testResolveCatalogFreshness() {
+    using Kind = CatalogFreshness::Kind;
+    // In-flight wins over every stored stamp.
+    assert(resolveCatalogFreshness(true, 1700000000, 1700000000, true, true)
+               .kind == Kind::Updating);
+    assert(resolveCatalogFreshness(true, 0, 0, false, false).kind ==
+           Kind::Updating);
+    // Stamped refresh: green today, red otherwise, both dated by the stamp.
+    {
+        const CatalogFreshness ok =
+            resolveCatalogFreshness(false, 1700000000, 0, true, true);
+        assert(ok.kind == Kind::Ok && ok.epochSec == 1700000000);
+        const CatalogFreshness stale =
+            resolveCatalogFreshness(false, 1700000000, 0, true, false);
+        assert(stale.kind == Kind::Stale && stale.epochSec == 1700000000);
+    }
+    // Never fetched, but a snapshot is on disk: date the data, stay red.
+    {
+        const CatalogFreshness dated =
+            resolveCatalogFreshness(false, 0, 1699999999, true, false);
+        assert(dated.kind == Kind::Stale && dated.epochSec == 1699999999);
+    }
+    // Truly empty: bare "never" (snapshot without entries, or nothing).
+    assert(resolveCatalogFreshness(false, 0, 0, false, false).kind ==
+           Kind::Never);
+    assert(resolveCatalogFreshness(false, 0, 1699999999, false, false).kind ==
+           Kind::Never);
+    assert(resolveCatalogFreshness(false, 0, 0, true, false).kind ==
+           Kind::Never);
+}
+
+// B7 goal 3: adopting the same metadata index twice must not evict the
+// decoded cover cache (every visible card would re-decode and flicker);
+// a genuinely new index still invalidates it.
+void testAdoptKeepsImageCacheWhenIndexUnchanged() {
+    const std::string root = "/tmp/pipensx-adopt-cache-" +
+        std::to_string(static_cast<long long>(getpid()));
+    const std::string images = root + "/catalog/images";
+    mkdir(root.c_str(), 0755);
+    mkdir((root + "/catalog").c_str(), 0755);
+    mkdir(images.c_str(), 0755);
+
+    const std::string url = "https://example.invalid/adopt-cover.jpg";
+    uint8_t digest[20];
+    sha1(url.data(), url.size(), digest);
+    static const char digits[] = "0123456789abcdef";
+    std::string cacheName(40, '0');
+    for (size_t i = 0; i < 20; ++i) {
+        cacheName[i * 2] = digits[digest[i] >> 4];
+        cacheName[i * 2 + 1] = digits[digest[i] & 15];
+    }
+    const std::vector<uint8_t> png{
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+        0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+        0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+        0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+        0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41,
+        0x54, 0x08, 0xd7, 0x63, 0xf8, 0xcf, 0xc0, 0xf0,
+        0x1f, 0x00, 0x05, 0x00, 0x01, 0xff, 0x89, 0x99,
+        0x3d, 0x1d, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45,
+        0x4e, 0x44, 0xae, 0x42, 0x60, 0x82};
+    {
+        std::ofstream output(images + "/" + cacheName + ".img",
+                             std::ios::binary | std::ios::trunc);
+        output.write(reinterpret_cast<const char*>(png.data()),
+                     static_cast<std::streamsize>(png.size()));
+        assert(output.good());
+    }
+
+    const std::string indexA =
+        "[{\"infoHash\":\"E21269D03D34B557F63CE915DEA14F765C9C9798\","
+        "\"titleId\":\"0100230005A52000\",\"name\":\"Runtime\"}]";
+    const std::string manifestA =
+        "{\"schemaVersion\":1,\"generatedAt\":\"2026-07-09T00:00:00Z\","
+        "\"langegenCommit\":\"a\",\"titledbCommit\":\"b\",\"index\":{"
+        "\"url\":\"https://raw.githubusercontent.com/i3sey/"
+        "pipensx-metadata/data/game_metadata_index.json\",\"bytes\":103,"
+        "\"sha256\":\"75b92238836d44279c24060d060e49f5"
+        "b76e8049ca7fade0b736078433c4de80\",\"entries\":1}}";
+    const std::string indexB =
+        "[{\"infoHash\":\"E21269D03D34B557F63CE915DEA14F765C9C9798\","
+        "\"titleId\":\"0100230005A52000\",\"name\":\"Runtime v2\"}]";
+    const std::string manifestB =
+        "{\"schemaVersion\":1,\"generatedAt\":\"2026-07-10T00:00:00Z\","
+        "\"langegenCommit\":\"a\",\"titledbCommit\":\"b\",\"index\":{"
+        "\"url\":\"https://raw.githubusercontent.com/i3sey/"
+        "pipensx-metadata/data/game_metadata_index.json\",\"bytes\":106,"
+        "\"sha256\":\"57ba725e403f2875746f08554d382056031f1e943793355bf"
+        "1714b3c7533c4f7\",\"entries\":1}}";
+
+    auto waitCached = [](GameMetadataService& service, const std::string& u) {
+        GameMetadataService::ImageData cached;
+        for (int i = 0; i < 500 && !cached; ++i) {
+            cached = service.cachedImage(u);
+            if (!cached)
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        return cached;
+    };
+
+    {
+        CatalogService catalog(root, "");
+        GameMetadataService metadata(root, root + "/missing-index.json");
+        metadata.setImageNetwork(GameMetadataService::ImageNetwork::Off);
+        std::string error;
+
+        MetadataSnapshot snapA;
+        assert(GameMetadataService::prepareSnapshot(manifestA, indexA, snapA,
+                                                    error));
+        CatalogRefreshBatch first;
+        first.metadataOk = true;
+        first.metadata = std::move(snapA);
+        adoptCatalogRefresh(catalog, metadata, std::move(first));
+        assert(metadata.size() == 1);
+
+        // Warm the decoded cache from the disk copy.
+        metadata.prefetchImage(url);
+        assert(waitCached(metadata, url));
+
+        // Same index again: the decode survives the adopt.
+        MetadataSnapshot snapA2;
+        assert(GameMetadataService::prepareSnapshot(manifestA, indexA, snapA2,
+                                                    error));
+        CatalogRefreshBatch same;
+        same.metadataOk = true;
+        same.metadata = std::move(snapA2);
+        adoptCatalogRefresh(catalog, metadata, std::move(same));
+        assert(metadata.size() == 1);
+        assert(waitCached(metadata, url));
+
+        // A new index invalidates it.
+        MetadataSnapshot snapB;
+        assert(GameMetadataService::prepareSnapshot(manifestB, indexB, snapB,
+                                                    error));
+        CatalogRefreshBatch changed;
+        changed.metadataOk = true;
+        changed.metadata = std::move(snapB);
+        adoptCatalogRefresh(catalog, metadata, std::move(changed));
+        assert(metadata.size() == 1);
+        assert(!metadata.cachedImage(url));
+    }
+    std::remove((images + "/" + cacheName + ".img").c_str());
+    rmdir(images.c_str());
+    rmdir((root + "/catalog/metadata").c_str());
+    rmdir((root + "/catalog/images").c_str());
+    rmdir((root + "/catalog").c_str());
+    rmdir(root.c_str());
+}
+
 void testAsyncImageDiskCache() {
     std::string root = "/tmp/pipensx-image-test-" +
                        std::to_string(static_cast<long long>(getpid()));
@@ -1609,6 +1837,11 @@ int main() {
     testCatalogDescriptionPrefixIsTrimmed();
     testCatalogGameFilterKeepsUnmatchedSwitchReleases();
     testCatalogBrowseMatchFilterRequiresTitleIdMetadata();
+    testCatalogFoldForSearchHandlesRussianCase();
+    testCatalogFoldedContains();
+    testCatalogEntryMatchesSearch();
+    testResolveCatalogFreshness();
+    testAdoptKeepsImageCacheWhenIndexUnchanged();
     testAsyncImageDiskCache();
     testImageMemoryCache();
     testImageSizeClassesCacheSeparately();
