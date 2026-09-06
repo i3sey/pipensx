@@ -53,6 +53,19 @@ HttpResponse jsonError(int status, const std::string& message) {
     return HttpResponse::text(status, dumpJson(j));
 }
 
+const char* catalogHealthName(CatalogHealth health) {
+    switch (health) {
+        case CatalogHealth::Ok: return "ok";
+        case CatalogHealth::NoPeers: return "noPeers";
+        case CatalogHealth::MetadataTimeout: return "metadataTimeout";
+        case CatalogHealth::TrackerNotRegistered: return "notRegistered";
+        case CatalogHealth::Replaced: return "replaced";
+        case CatalogHealth::Dead: return "dead";
+        case CatalogHealth::Unknown: return "unknown";
+    }
+    return "unknown";
+}
+
 const char* modeName(TransferMode mode) {
     if (mode == TransferMode::PortInstall)
         return "port";
@@ -257,9 +270,11 @@ bool WebServer::authorized(const HttpRequest& req) const {
 
 std::string WebServer::buildStateJson() {
     Json state;
+    state["version"] = version_;
+    std::vector<DownloadTask> snapshot = manager_.snapshotUi();
     Json tasks = Json::array();
     uint64_t now = nowMs();
-    for (const DownloadTask& t : manager_.snapshotUi()) {
+    for (const DownloadTask& t : snapshot) {
         Json j;
         j["id"] = t.id;
         j["name"] = t.name;
@@ -319,6 +334,23 @@ std::string WebServer::buildStateJson() {
     storage["freeBytes"] = storageCache_.freeBytes;
     storage["available"] = storageCache_.available;
     state["storage"] = std::move(storage);
+
+    // Queue summary for the downloads dashboard: counts per status plus
+    // aggregate throughput and drain ETA. Computed from the same snapshot
+    // so the header never disagrees with the card list.
+    const QueueSummary summary = summarizeQueue(snapshot, now);
+    Json q;
+    q["downloading"] = summary.downloading;
+    q["queued"] = summary.queued;
+    q["installing"] = summary.installing;
+    q["paused"] = summary.paused;
+    q["completed"] = summary.completed;
+    q["errors"] = summary.errors;
+    q["downloadSpeedBps"] = summary.downloadSpeedBps;
+    q["installSpeedBps"] = summary.installSpeedBps;
+    q["remainingBytes"] = summary.totalRemainingBytes;
+    q["etaSeconds"] = summary.etaSeconds;
+    state["summary"] = std::move(q);
     return dumpJson(state);
 }
 
@@ -437,6 +469,29 @@ HttpResponse WebServer::routeApi(const HttpRequest& req) {
         return HttpResponse::empty(204);
     if (parts[0] == "tasks" && parts.size() == 3)
         return handleTaskCommand(parts[1], parts[2], req);
+    if (parts[0] == "queue" && parts.size() == 2) {
+        if (parts[1] == "pause-all") {
+            manager_.pauseAll();
+            return HttpResponse::empty(204);
+        }
+        if (parts[1] == "resume-all") {
+            manager_.resumeAll();
+            return HttpResponse::empty(204);
+        }
+        if (parts[1] == "clear-completed") {
+            bool deleteData = false;
+            if (!req.body.empty()) {
+                Json body = Json::parse(req.body, nullptr, false);
+                if (body.is_discarded())
+                    return jsonError(400, "invalid JSON body");
+                deleteData = body.value("deleteData", false);
+            }
+            std::string error;
+            if (!manager_.clearCompleted(deleteData, error))
+                return jsonError(409, error.empty() ? "rejected" : error);
+            return HttpResponse::empty(204);
+        }
+    }
     if (parts[0] == "jobs" && parts.size() == 3 && parts[2] == "cancel")
         return addQueue_.cancel(parts[1]) ? HttpResponse::empty(204)
                                           : jsonError(404, "unknown job");
@@ -519,6 +574,22 @@ HttpResponse WebServer::handleCatalog(const HttpRequest& req) {
             j["publisher"] = e.publisher;
             j["posterUrl"] = e.posterUrl;
             j["description"] = e.description;
+            // Rich detail-card fields for the game-store UI. All optional
+            // on the client — old cached app.js simply ignores the extras.
+            j["titleId"] = e.titleId;
+            j["performance"] = e.performance;
+            j["multiplayer"] = e.multiplayer;
+            j["interfaceLang"] = e.interfaceLang;
+            j["voiceLang"] = e.voiceLang;
+            j["topicId"] = e.topicId;
+            j["publishedAt"] = e.publishedAt;
+            j["peerCount"] = e.peerCount;
+            j["health"] = catalogHealthName(e.health);
+            j["trackerUrl"] = e.trackerUrl;
+            Json shots = Json::array();
+            for (size_t i = 0; i < e.screenshots.size() && i < 6; ++i)
+                shots.push_back(e.screenshots[i]);
+            j["screenshots"] = std::move(shots);
             list.push_back(std::move(j));
         }
         std::string compressed = gzipCompress(dumpJson(list));
@@ -565,6 +636,12 @@ HttpResponse WebServer::handleTaskCommand(const std::string& id,
         error = "task cannot be verified right now";
     } else if (command == "move-front") {
         ok = manager_.moveToFront(id, error);
+    } else if (command == "move-up") {
+        ok = manager_.moveTask(id, true, error);
+        if (ok) error.clear();
+    } else if (command == "move-down") {
+        ok = manager_.moveTask(id, false, error);
+        if (ok) error.clear();
     } else if (command == "remove") {
         bool deleteData = false;
         if (!req.body.empty()) {

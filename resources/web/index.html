@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#101418">
+<meta name="theme-color" content="#0b0f14">
 <title>pipensx</title>
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/icon-192.png">
@@ -11,70 +11,191 @@
 <link rel="stylesheet" href="/app.css">
 </head>
 <body>
+<div class="bg-glow" aria-hidden="true"></div>
+
 <header class="topbar">
-  <div class="brand"><span class="brand-dot"></span>pipensx</div>
-  <div id="conn" class="conn" title="connection">●</div>
+  <div class="brand">
+    <span class="brand-logo" aria-hidden="true">
+      <svg viewBox="0 0 32 32" width="26" height="26"><rect x="2" y="2" width="28" height="28" rx="8" fill="#00c3e3"/><path d="M10 22V10h5.2c3.1 0 5 1.7 5 4.2 0 2.2-1.5 3.7-3.8 4.1l4 3.7h-3.6l-3.5-3.4h-1v3.4H10zm2.3-5.4h2.6c1.7 0 2.7-.9 2.7-2.2s-1-2.2-2.7-2.2h-2.6v4.4z" fill="#04252b"/></svg>
+    </span>
+    <span class="brand-name">pipensx</span>
+    <span id="ver-badge" class="ver-badge" hidden></span>
+  </div>
+  <div class="top-actions">
+    <button id="theme-btn" class="icon-btn" title="Theme">🌙</button>
+    <button id="lang-btn" class="icon-btn" title="Language">EN</button>
+    <div id="conn" class="conn" title="connection"><span class="conn-dot"></span><span id="conn-text">offline</span></div>
+  </div>
 </header>
 
-<nav class="tabs">
-  <a href="#downloads" data-tab="downloads" class="tab">Downloads</a>
-  <a href="#catalog" data-tab="catalog" class="tab">Catalog</a>
-  <a href="#add" data-tab="add" class="tab">Add</a>
-  <a href="#settings" data-tab="settings" class="tab">Settings</a>
+<nav class="tabs" role="tablist">
+  <a href="#downloads" data-tab="downloads" class="tab" role="tab"><span class="tab-ico">⤓</span><span data-i18n="tabs.downloads">Downloads</span><span id="dl-count" class="tab-badge" hidden></span></a>
+  <a href="#catalog" data-tab="catalog" class="tab" role="tab"><span class="tab-ico">🎮</span><span data-i18n="tabs.catalog">Catalog</span></a>
+  <a href="#add" data-tab="add" class="tab" role="tab"><span class="tab-ico">＋</span><span data-i18n="tabs.add">Add</span></a>
+  <a href="#settings" data-tab="settings" class="tab" role="tab"><span class="tab-ico">⚙</span><span data-i18n="tabs.settings">Settings</span></a>
 </nav>
 
 <main>
+  <!-- DOWNLOADS -->
   <section id="view-downloads" class="view">
-    <div id="storage" class="storage" hidden>
-      <div class="storage-bar"><div id="storage-fill" class="storage-fill"></div></div>
-      <div id="storage-text" class="storage-text"></div>
+    <div id="dash" class="dash">
+      <div class="stat-card stat-speed">
+        <div class="stat-label" data-i18n="dash.speed">Speed</div>
+        <div class="stat-value" id="stat-speed">—</div>
+        <div class="stat-sub" id="stat-peers">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label" data-i18n="dash.queue">Queue</div>
+        <div class="stat-value" id="stat-queue">—</div>
+        <div class="stat-sub" id="stat-queue-sub">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label" data-i18n="dash.remaining">Remaining</div>
+        <div class="stat-value" id="stat-remaining">—</div>
+        <div class="stat-sub" id="stat-eta">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label" data-i18n="dash.storage">SD storage</div>
+        <div class="stat-value" id="stat-storage">—</div>
+        <div class="storage-bar"><div id="storage-fill" class="storage-fill"></div></div>
+        <div class="stat-sub" id="storage-text">—</div>
+      </div>
     </div>
-    <div id="notify-row" class="notify-row">
-      <button id="alerts-btn" class="btn btn-ghost">🔔 Alerts: on</button>
-      <button id="notify-btn" class="btn btn-ghost" hidden>Enable notifications</button>
+
+    <div class="card chart-card" id="chart-card" hidden>
+      <div class="chart-head">
+        <span data-i18n="dash.traffic">Traffic</span>
+        <span id="chart-legend" class="chart-legend"></span>
+      </div>
+      <canvas id="speed-chart" height="64"></canvas>
     </div>
+
+    <div class="toolbar">
+      <div class="toolbar-row">
+        <input id="task-search" type="search" data-i18n-ph="downloads.search" placeholder="Search downloads…" autocomplete="off">
+        <select id="task-filter">
+          <option value="all" data-i18n="downloads.all">All</option>
+          <option value="active" data-i18n="downloads.active">Active</option>
+          <option value="Downloading">Downloading</option>
+          <option value="Installing">Installing</option>
+          <option value="Queued">Queued</option>
+          <option value="Paused">Paused</option>
+          <option value="Completed">Completed</option>
+          <option value="Installed">Installed</option>
+          <option value="Error">Error</option>
+        </select>
+        <select id="task-sort">
+          <option value="recent" data-i18n="sort.recent">Recent</option>
+          <option value="name" data-i18n="sort.name">Name</option>
+          <option value="progress" data-i18n="sort.progress">Progress</option>
+          <option value="speed" data-i18n="sort.speed">Speed</option>
+          <option value="eta" data-i18n="sort.eta">ETA</option>
+        </select>
+      </div>
+      <div class="toolbar-row toolbar-bulk">
+        <button id="bulk-pause" class="btn btn-ghost" data-i18n="downloads.pauseAll">Pause all</button>
+        <button id="bulk-resume" class="btn btn-ghost" data-i18n="downloads.resumeAll">Resume all</button>
+        <button id="bulk-clear" class="btn btn-ghost" data-i18n="downloads.clearDone">Clear done</button>
+        <span class="spacer"></span>
+        <button id="alerts-btn" class="btn btn-ghost">🔔 <span data-i18n="downloads.alerts">Alerts</span>: <span id="alerts-state">on</span></button>
+        <button id="notify-btn" class="btn btn-ghost" hidden data-i18n="downloads.enableNotify">Enable notifications</button>
+      </div>
+    </div>
+
     <div id="jobs"></div>
     <div id="tasks"></div>
     <div id="tasks-empty" class="empty" hidden>
-      <div class="empty-icon">⤓</div>
-      <p>No downloads yet.<br>Add a magnet link or pick something from the catalog.</p>
+      <div class="empty-art" aria-hidden="true">🎮</div>
+      <p data-i18n="downloads.empty">No downloads yet.</p>
+      <p class="empty-sub" data-i18n="downloads.emptySub">Add a magnet link or pick something from the catalog.</p>
+      <button class="btn btn-primary" id="empty-browse" data-i18n="downloads.browse">Browse catalog</button>
     </div>
   </section>
 
+  <!-- CATALOG -->
   <section id="view-catalog" class="view" hidden>
-    <div class="search-row">
-      <input id="search" type="search" placeholder="Search 4000+ games…" autocomplete="off">
+    <div class="catalog-hero">
+      <div>
+        <h1 data-i18n="catalog.title">Game catalog</h1>
+        <p id="catalog-count" class="hero-sub"></p>
+      </div>
+    </div>
+    <div class="filter-bar">
+      <input id="search" type="search" data-i18n-ph="catalog.search" placeholder="Search 4000+ games…" autocomplete="off">
+      <div class="filter-row">
+        <select id="flt-genre"><option value="" data-i18n="catalog.allGenres">All genres</option></select>
+        <select id="flt-year"><option value="" data-i18n="catalog.allYears">All years</option></select>
+        <select id="flt-size">
+          <option value="" data-i18n="catalog.anySize">Any size</option>
+          <option value="small" data-i18n="catalog.small">&lt; 4 GiB</option>
+          <option value="medium" data-i18n="catalog.medium">4–10 GiB</option>
+          <option value="large" data-i18n="catalog.large">&gt; 10 GiB</option>
+        </select>
+        <select id="flt-sort">
+          <option value="title" data-i18n="sort.name">Name</option>
+          <option value="year-desc" data-i18n="catalog.newest">Newest</option>
+          <option value="size-desc" data-i18n="catalog.biggest">Biggest</option>
+          <option value="size-asc" data-i18n="catalog.smallest">Smallest</option>
+          <option value="recent" data-i18n="catalog.recentlyAdded">Recently added</option>
+        </select>
+        <button id="flt-reset" class="btn btn-ghost" data-i18n="catalog.reset">Reset</button>
+      </div>
     </div>
     <div id="catalog-status" class="empty" hidden></div>
     <div id="catalog-grid" class="grid"></div>
     <div id="catalog-sentinel"></div>
   </section>
 
+  <!-- ADD -->
   <section id="view-add" class="view" hidden>
-    <div class="card form-card">
-      <h2>Magnet link</h2>
+    <div class="card form-card add-hero">
+      <h2 data-i18n="add.magnet">Magnet link</h2>
+      <p class="card-sub" data-i18n="add.magnetSub">Paste a magnet URI — the Switch resolves it.</p>
       <textarea id="magnet-input" rows="3" placeholder="magnet:?xt=urn:btih:…"></textarea>
-      <div class="mode-row" id="magnet-mode">
-        <label><input type="radio" name="magnet-mode" value="install" checked> Install</label>
-        <label><input type="radio" name="magnet-mode" value="download"> Download only</label>
+      <div class="mode-row segmented" id="magnet-mode" role="radiogroup">
+        <label class="seg"><input type="radio" name="magnet-mode" value="install" checked><span data-i18n="add.install">Install</span></label>
+        <label class="seg"><input type="radio" name="magnet-mode" value="download" ><span data-i18n="add.download">Download only</span></label>
       </div>
-      <button id="magnet-btn" class="btn btn-primary">Add magnet</button>
+      <button id="magnet-btn" class="btn btn-primary btn-block" data-i18n="add.addMagnet">Add magnet</button>
     </div>
     <div class="card form-card">
-      <h2>.torrent file</h2>
-      <input id="torrent-file" type="file" accept=".torrent,application/x-bittorrent">
-      <div class="mode-row" id="torrent-mode">
-        <label><input type="radio" name="torrent-mode" value="install" checked> Install</label>
-        <label><input type="radio" name="torrent-mode" value="download"> Download only</label>
+      <h2 data-i18n="add.torrent">.torrent file</h2>
+      <p class="card-sub" data-i18n="add.torrentSub">Upload a .torrent — or drop it anywhere on this tab.</p>
+      <label id="dropzone" class="dropzone">
+        <input id="torrent-file" type="file" accept=".torrent,application/x-bittorrent" hidden>
+        <span class="drop-ico">📦</span>
+        <span class="drop-text" data-i18n="add.drop">Drop .torrent here or click to choose</span>
+        <span id="drop-name" class="drop-name"></span>
+      </label>
+      <div class="mode-row segmented" id="torrent-mode" role="radiogroup">
+        <label class="seg"><input type="radio" name="torrent-mode" value="install" checked><span data-i18n="add.install">Install</span></label>
+        <label class="seg"><input type="radio" name="torrent-mode" value="download"><span data-i18n="add.download">Download only</span></label>
       </div>
-      <button id="torrent-btn" class="btn btn-primary">Upload torrent</button>
+      <button id="torrent-btn" class="btn btn-primary btn-block" data-i18n="add.upload">Upload torrent</button>
     </div>
   </section>
 
+  <!-- SETTINGS -->
   <section id="view-settings" class="view" hidden>
     <div class="card form-card">
-      <h2>Downloads</h2>
-      <label class="field">Concurrent downloads
+      <h2 data-i18n="settings.appearance">Appearance</h2>
+      <label class="field"><span data-i18n="settings.theme">Theme</span>
+        <select id="set-theme">
+          <option value="dark" data-i18n="settings.dark">Dark</option>
+          <option value="light" data-i18n="settings.light">Light</option>
+          <option value="auto" data-i18n="settings.auto">System</option>
+        </select>
+      </label>
+      <label class="field"><span data-i18n="settings.language">Language</span>
+        <select id="set-lang">
+          <option value="en">English</option>
+          <option value="ru">Русский</option>
+        </select>
+      </label>
+    </div>
+    <div class="card form-card">
+      <h2 data-i18n="settings.downloads">Downloads</h2>
+      <label class="field"><span data-i18n="settings.concurrent">Concurrent downloads</span>
         <select id="set-max-active">
           <option value="1">1</option>
           <option value="2">2</option>
@@ -82,13 +203,13 @@
           <option value="4">4</option>
         </select>
       </label>
-      <label class="field">Stream selection
+      <label class="field"><span data-i18n="settings.stream">Stream selection</span>
         <select id="set-stream">
-          <option value="allFiles">All files</option>
-          <option value="packagesOnly">Packages only</option>
+          <option value="allFiles" data-i18n="settings.allFiles">All files</option>
+          <option value="packagesOnly" data-i18n="settings.packagesOnly">Packages only</option>
         </select>
       </label>
-      <label class="field">Install location
+      <label class="field"><span data-i18n="settings.location">Install location</span>
         <select id="set-install">
           <option value="sdCard">SD Card</option>
           <option value="systemMemory">System Memory</option>
@@ -97,41 +218,43 @@
     </div>
     <div class="card form-card">
       <h2>Debrid</h2>
-      <label class="field">Provider
+      <label class="field"><span>Provider</span>
         <select id="set-debrid">
           <option value="torbox">TorBox</option>
           <option value="torrserver">TorrServer</option>
           <option value="realdebrid">Real-Debrid</option>
         </select>
       </label>
-      <label class="field">TorBox API key
+      <label class="field"><span>TorBox API key</span>
         <input id="set-torbox" type="password" autocomplete="off" placeholder="">
       </label>
-      <label class="field">Real-Debrid API token
+      <label class="field"><span>Real-Debrid API token</span>
         <input id="set-realdebrid" type="password" autocomplete="off" placeholder="">
       </label>
-      <label class="field">TorrServer URL
+      <label class="field"><span>TorrServer URL</span>
         <input id="set-torrserver" type="url" placeholder="http://192.168.1.10:8090">
       </label>
     </div>
     <div class="card form-card">
-      <h2>Network</h2>
-      <label class="field">Proxy URL
+      <h2 data-i18n="settings.network">Network</h2>
+      <label class="field"><span>Proxy URL</span>
         <input id="set-proxy" type="url" placeholder="socks5://host:1080">
       </label>
     </div>
     <div class="card form-card">
-      <h2>Catalog</h2>
-      <label class="field">Catalog source URL
+      <h2 data-i18n="settings.catalog">Catalog</h2>
+      <label class="field"><span data-i18n="settings.catalogUrl">Catalog source URL</span>
         <input id="set-catalog-url" type="url" placeholder="https://…/switch_games.json">
       </label>
       <label class="field check">
-        <input id="set-catalog-refresh" type="checkbox"> Refresh catalog on launch
+        <input id="set-catalog-refresh" type="checkbox"><span data-i18n="settings.refresh">Refresh catalog on launch</span>
       </label>
     </div>
-    <button id="settings-save" class="btn btn-primary">Save settings</button>
+    <button id="settings-save" class="btn btn-primary btn-block" data-i18n="settings.save">Save settings</button>
   </section>
 </main>
+
+<footer class="foot"><span id="foot-ver"></span></footer>
 
 <dialog id="modal"></dialog>
 <div id="toast" class="toast" hidden></div>
