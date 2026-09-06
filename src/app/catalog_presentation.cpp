@@ -174,4 +174,103 @@ bool catalogEntryMatchesPlayerFilter(const GameMetadata* metadata,
     return true;
 }
 
+std::string catalogFoldForSearch(const std::string& text) {
+    std::string out;
+    out.reserve(text.size());
+    for (size_t i = 0; i < text.size();) {
+        const unsigned char c = static_cast<unsigned char>(text[i]);
+        if (c < 0x80) {
+            const char folded = (c >= 'A' && c <= 'Z')
+                ? static_cast<char>(c + ('a' - 'A')) : text[i];
+            out.push_back(folded);
+            ++i;
+            continue;
+        }
+        // Cyrillic capitals (two-byte sequences with a 0xD0 lead):
+        //   U+0400-U+040F (D0 80-8F, incl. Ё=U+0401) → U+0450-U+045F
+        //   U+0410-U+041F (D0 90-9F, А-П) → U+0430-U+043F (same lead)
+        //   U+0420-U+042F (D0 A0-AF, Р-Я) → U+0440-U+044F (lead D0→D1)
+        // The Р-Я range crosses the D0/D1 UTF-8 boundary, so a plain
+        // "+0x20 on the trail byte" would emit invalid bytes.
+        if (c == 0xD0 && i + 1 < text.size()) {
+            const unsigned char d = static_cast<unsigned char>(text[i + 1]);
+            if (d >= 0x80 && d <= 0x8F) {
+                out.push_back(static_cast<char>(0xD1));
+                out.push_back(static_cast<char>(d + 0x10));
+                i += 2;
+                continue;
+            }
+            if (d >= 0x90 && d <= 0x9F) {
+                out.push_back(static_cast<char>(c));
+                out.push_back(static_cast<char>(d + 0x20));
+                i += 2;
+                continue;
+            }
+            if (d >= 0xA0 && d <= 0xAF) {
+                out.push_back(static_cast<char>(0xD1));
+                out.push_back(static_cast<char>(d - 0x20));
+                i += 2;
+                continue;
+            }
+        }
+        // Any other multi-byte sequence (or truncation): copy the lead byte
+        // and let the continuation bytes flow through below.
+        out.push_back(text[i]);
+        ++i;
+    }
+    return out;
+}
+
+bool catalogFoldedContains(const std::string& haystack,
+                           const std::string& needleFolded) {
+    if (needleFolded.empty())
+        return true;
+    return catalogFoldForSearch(haystack).find(needleFolded) !=
+           std::string::npos;
+}
+
+bool catalogEntryMatchesSearch(const CatalogEntry& entry,
+                               const GameMetadata* metadata,
+                               const std::string& needleFolded) {    if (needleFolded.empty())
+        return true;
+    if (catalogFoldedContains(entry.title, needleFolded))
+        return true;
+    if (!entry.genre.empty() &&
+        catalogFoldedContains(entry.genre, needleFolded))
+        return true;
+    if (!metadata)
+        return false;
+    if (!metadata->name.empty() &&
+        catalogFoldedContains(metadata->name, needleFolded))
+        return true;
+    for (const std::string& category : metadata->categories) {
+        if (catalogFoldedContains(category, needleFolded))
+            return true;
+    }
+    return false;
+}
+
+CatalogFreshness resolveCatalogFreshness(bool refreshing, uint64_t wallSec,
+                                          int64_t snapshotSec, bool hasEntries,
+                                          bool isToday) {
+    CatalogFreshness out;
+    if (refreshing) {
+        out.kind = CatalogFreshness::Kind::Updating;
+        return out;
+    }
+    if (wallSec != 0) {
+        out.kind = isToday ? CatalogFreshness::Kind::Ok
+                           : CatalogFreshness::Kind::Stale;
+        out.epochSec = static_cast<int64_t>(wallSec);
+        return out;
+    }
+    if (snapshotSec > 0 && hasEntries) {
+        out.kind = CatalogFreshness::Kind::Stale;
+        out.epochSec = snapshotSec;
+        return out;
+    }
+    out.kind = CatalogFreshness::Kind::Never;
+    return out;
+}
+
 } // namespace pipensx

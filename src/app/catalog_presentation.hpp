@@ -101,4 +101,48 @@ bool catalogEntryHasMatchedTitle(const GameMetadata* metadata);
 bool catalogEntryMatchesPlayerFilter(const GameMetadata* metadata,
                                      PlayerFilter filter);
 
+// UTF-8 aware folding for search: ASCII A-Z → a-z plus Cyrillic capitals
+// (А-Я → а-я, Ѐ-Џ → ѐ-џ so Ё → ё). The old search folded
+// ASCII only, so a Russian query in one case never matched a title in the
+// other (Konstantin 29.08: "filtering stopped working"). Invalid UTF-8
+// passes through byte by byte, never dropped.
+std::string catalogFoldForSearch(const std::string& text);
+
+// True when the already-folded needle occurs in haystack (folded here).
+// An empty needle matches everything, so the grid's empty-query fast path
+// and this predicate agree.
+bool catalogFoldedContains(const std::string& haystack,
+                           const std::string& needleFolded);
+
+// Grid search predicate: title, metadata name, metadata categories and the
+// catalogue's own genre string. The genre clause matters because only about
+// half the Langegen entries join the metadata index; without it a genre
+// "See all" shelf hand-off silently drops every unmatched release.
+bool catalogEntryMatchesSearch(const CatalogEntry& entry,
+                               const GameMetadata* metadata,
+                               const std::string& needleFolded);
+
+// Honest freshness badge decision (B7 goal 1), pure so unit tests cover it.
+// Only a successful network refresh stamps wallSec; a cache/bundle snapshot
+// still dates the data on screen when this console never fetched (wallSec 0
+// but a snapshot exists), instead of the bare "never" badge. A truly empty
+// catalogue keeps Never. `isToday` is injected (isLocalToday at the call
+// site) to keep this clock-free.
+struct CatalogFreshness {
+    enum class Kind {
+        Updating,
+        Never,
+        Ok,
+        Stale,
+    };
+    Kind kind = Kind::Never;
+    // Wall second when kind is Ok/Stale (refresh stamp, else the snapshot
+    // fallback); 0 for Updating/Never. The view renders the date.
+    int64_t epochSec = 0;
+};
+
+CatalogFreshness resolveCatalogFreshness(bool refreshing, uint64_t wallSec,
+                                          int64_t snapshotSec, bool hasEntries,
+                                          bool isToday);
+
 } // namespace pipensx

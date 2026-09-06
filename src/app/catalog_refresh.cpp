@@ -23,8 +23,14 @@ CatalogRefreshAdoption adoptCatalogRefresh(
         result.catalogChanged = true;
     }
     if (batch.metadataOk) {
+        // Covers are keyed by URL, so a refresh that delivers the same index
+        // (same manifest SHA) must not evict the 96 MB decoded cache: every
+        // visible card would re-decode and flicker on the next scroll.
+        const std::string incomingSha = batch.metadata.manifest.indexSha256;
+        const std::string currentSha = metadata.manifest().indexSha256;
         metadata.adopt(std::move(batch.metadata));
-        metadata.dropMemoryImageCache();
+        if (incomingSha.empty() || incomingSha != currentSha)
+            metadata.dropMemoryImageCache();
         result.metadataChanged = true;
     }
     return result;
