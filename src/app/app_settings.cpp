@@ -121,6 +121,8 @@ bool parseSettings(const std::string& text, AppSettingsData& values,
         !readString(root, "install_location", install, error) ||
         !readBool(root, "show_completed_downloads",
                   values.showCompletedDownloads, error) ||
+        !readBool(root, "screen_saver_enabled",
+                  values.screenSaverEnabled, error) ||
         !readBool(root, "extended_telemetry", values.extendedTelemetry,
                   error) ||
         !readBool(root, "check_for_updates_on_launch",
@@ -240,6 +242,7 @@ std::string serializeSettings(const AppSettingsData& values) {
     root["stream_selection"] = streamSelectionName(values.streamSelection);
     root["install_location"] = installLocationName(values.installLocation);
     root["show_completed_downloads"] = values.showCompletedDownloads;
+    root["screen_saver_enabled"] = values.screenSaverEnabled;
     root["extended_telemetry"] = values.extendedTelemetry;
     root["check_for_updates_on_launch"] = values.checkForUpdatesOnLaunch;
     root["confirm_exit"] = values.confirmExit;
@@ -386,6 +389,7 @@ bool AppSettingsData::operator==(const AppSettingsData& other) const {
            streamSelection == other.streamSelection &&
            installLocation == other.installLocation &&
            showCompletedDownloads == other.showCompletedDownloads &&
+           screenSaverEnabled == other.screenSaverEnabled &&
            extendedTelemetry == other.extendedTelemetry &&
            checkForUpdatesOnLaunch == other.checkForUpdatesOnLaunch &&
            confirmExit == other.confirmExit &&

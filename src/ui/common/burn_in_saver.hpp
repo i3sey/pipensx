@@ -11,9 +11,14 @@ namespace pipensx::ui {
 
 // Full-screen OLED burn-in guard: pure black plus one slowly drifting dim
 // marker so static UI chrome (sidebars, progress bars) does not sit on the
-// same pixels for hours. Dismissal is owned by main_switch's idle loop —
-// any controller button or touch there pops this activity — so D-pad and
-// touch work the same as face buttons without racing double-pops.
+// same pixels for hours. Dismissal and the panel are owned by main_switch's
+// idle loop — any controller button or touch there pops this activity AND
+// switches the backlight back on through lbl, without touching the download
+// queue — so D-pad and touch work the same as face buttons without racing
+// double-pops, and the wake press can never kill a transfer. The loop also
+// runs a heartbeat watchdog that forces the panel back on if the UI thread
+// ever stalls while the screen is off, so a hang presents as a frozen UI
+// with a log line instead of a dead black panel.
 class BurnInSaverView : public brls::Box {
 public:
     BurnInSaverView() {
