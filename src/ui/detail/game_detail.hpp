@@ -410,9 +410,12 @@ private:
                        ? tr("pipensx/detail/install_state_installed")
                        : tr("pipensx/detail/install_state_not_installed"));
         addFactRow(table, tr("pipensx/detail/fact_installed_version"),
-                   formatTitleVersion(installedVersionForTitle()));
+                   installedVersionLabel());
         addFactRow(table, tr("pipensx/detail/fact_available_version"),
                    formatTitleVersion(latestVersionForEntry()));
+        // B6: mods live outside ncm — name the folder so a stale mod stops
+        // being a guess when an update breaks the launch.
+        addFactRow(table, tr("pipensx/detail/fact_mods"), modsFact());
         addFactRow(table, tr("pipensx/detail/fact_developer"),
                    presentation_.developer);
         addFactRow(table, tr("pipensx/detail/fact_publisher"),
@@ -734,8 +737,12 @@ private:
             secondary_->setState(brls::ButtonState::ENABLED);
             if (installContract_)
                 installContract_->setVisibility(brls::Visibility::GONE);
+            // B6: an install/update failure used to leave only the raw
+            // backend line; append the actionable hint (mods / firmware /
+            // sigpatches) so a post-update "won't boot" names the fix.
             if (task->status == DownloadStatus::Error && !task->error.empty())
-                setTextIfChanged(statusLabel_, task->error);
+                setTextIfChanged(statusLabel_,
+                                 withUpdateFailureHint(task->error));
         } else {
             setTextIfChanged(primary_, tr("pipensx/common/install"));
             primary_->setProgress(-1.0f);
@@ -747,6 +754,15 @@ private:
             if (!operationMessage_.empty())
                 setTextIfChanged(statusLabel_, operationMessage_);
             else if (installed_ && installed_->contains(titleId_)) {
+                // B6: an installed title with LayeredFS mods keeps a
+                // standing warning — the update may have been what broke
+                // the launch, and the fix is the mods folder, not a
+                // reinstall.
+                if (hasModsForTitle() && !titleId_.empty())
+                    setTextIfChanged(
+                        statusLabel_,
+                        tr("pipensx/detail/update_mods_warning", titleId_));
+                else {
                 const std::string latestXyz =
                     formatTitleVersion(latestVersionForEntry());
                 if (!latestXyz.empty() &&
@@ -758,6 +774,7 @@ private:
                 else
                     setTextIfChanged(statusLabel_,
                                      tr("pipensx/detail/installed_hint"));
+                }
             } else
                 setTextIfChanged(statusLabel_,
                                  tr("pipensx/detail/install_hint"));
@@ -1475,6 +1492,70 @@ private:
                 return title.version;
         }
         return {};
+    }
+
+    bool installedTitleCopy(InstalledTitle& out) const {
+        if (!installed_ || titleId_.empty())
+            return false;
+        for (const InstalledTitle& title : installed_->titles()) {
+            if (catalogLower(title.titleId) == catalogLower(titleId_)) {
+                out = title;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // B6: "5.0.0 (1.26.30)" — decimal patch plus NACP display_version.
+    std::string installedVersionLabel() const {
+        InstalledTitle current;
+        if (!installedTitleCopy(current))
+            return {};
+        return formatInstalledVersionLabel(current.version,
+                                            current.displayVersion);
+    }
+
+    bool hasModsForTitle() const {
+        InstalledTitle current;
+        return installedTitleCopy(current) && current.hasLayeredFsMods;
+    }
+
+    // B6: mods row for the facts table; empty (hidden) when none.
+    std::string modsFact() const {
+        if (!hasModsForTitle() || titleId_.empty())
+            return {};
+        return tr("pipensx/detail/mods_detected", titleId_);
+    }
+
+    // B6: append the actionable hint to a raw backend error. Signature-
+    // patch markers win (they name the fix); installed mods come next
+    // (BOTW-style stale-mod break); firmware/system wording falls back to
+    // the HOS hint. Unknown errors pass through unchanged.
+    std::string withUpdateFailureHint(const std::string& error) const {
+        if (error.empty() || titleId_.empty())
+            return error;
+        const std::string lower = catalogLower(error);
+        const bool sigPatch =
+            lower.find("0291") != std::string::npos ||
+            lower.find("0x291") != std::string::npos ||
+            lower.find("sys-patch") != std::string::npos ||
+            lower.find("syspatch") != std::string::npos ||
+            lower.find("sigpatch") != std::string::npos ||
+            lower.find("sig-patch") != std::string::npos ||
+            lower.find("signature patch") != std::string::npos;
+        if (sigPatch)
+            return error + "\n" +
+                   tr("pipensx/detail/update_failure_sigpatch_hint");
+        if (hasModsForTitle())
+            return error + "\n" +
+                   tr("pipensx/detail/update_failure_mods_hint", titleId_);
+        if (lower.find("firmware") != std::string::npos ||
+            lower.find("system update") != std::string::npos ||
+            lower.find("required_system") != std::string::npos ||
+            lower.find("required system") != std::string::npos)
+            return error + "\n" +
+                   tr("pipensx/detail/update_failure_hos_hint");
+        return error;
     }
 
     std::string latestVersionForEntry() const {

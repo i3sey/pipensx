@@ -354,4 +354,116 @@ std::string updateMagnetFor(const std::string& infoHash,
            "&tr=http://bt.t-ru.org/ann?magnet";
 }
 
+UpdatePreflight describeUpdatePreflight(const InstalledTitle& installed,
+                                         const std::string& latestVersion,
+                                         bool titleInstalled) {
+    UpdatePreflight pre;
+    pre.titleInstalled = titleInstalled;
+    pre.installedXyz = formatTitleVersion(installed.version);
+    pre.targetXyz = formatTitleVersion(latestVersion);
+    pre.displayVersion = installed.displayVersion;
+    pre.hasMods = installed.hasLayeredFsMods;
+    return pre;
+}
+
+std::string formatRequiredHosVersion(uint32_t requiredSystemVersion) {
+    if (requiredSystemVersion == 0)
+        return {};
+    const unsigned major =
+        static_cast<unsigned>((requiredSystemVersion >> 26) & 0x3f);
+    const unsigned minor =
+        static_cast<unsigned>((requiredSystemVersion >> 20) & 0x3f);
+    const unsigned micro =
+        static_cast<unsigned>((requiredSystemVersion >> 16) & 0xfu);
+    return std::to_string(major) + "." + std::to_string(minor) + "." +
+           std::to_string(micro);
+}
+
+uint32_t makeRequiredSystemVersion(unsigned major, unsigned minor,
+                                   unsigned micro) {
+    return ((static_cast<uint32_t>(major) & 0x3fu) << 26) |
+           ((static_cast<uint32_t>(minor) & 0x3fu) << 20) |
+           ((static_cast<uint32_t>(micro) & 0xfu) << 16);
+}
+
+bool updateRequiresNewerHos(uint32_t requiredSystemVersion,
+                             unsigned hosMajor, unsigned hosMinor,
+                             unsigned hosMicro) {
+    if (requiredSystemVersion == 0)
+        return false;
+    const unsigned needMajor =
+        static_cast<unsigned>((requiredSystemVersion >> 26) & 0x3f);
+    const unsigned needMinor =
+        static_cast<unsigned>((requiredSystemVersion >> 20) & 0x3f);
+    const unsigned needMicro =
+        static_cast<unsigned>((requiredSystemVersion >> 16) & 0xfu);
+    if (needMajor != hosMajor)
+        return needMajor > hosMajor;
+    if (needMinor != hosMinor)
+        return needMinor > hosMinor;
+    return needMicro > hosMicro;
+}
+
+UpdateFailureHint classifyUpdateFailure(const std::string& installError,
+                                        bool hasMods,
+                                        uint32_t requiredSystemVersion,
+                                        unsigned hosMajor, unsigned hosMinor,
+                                        unsigned hosMicro) {
+    std::string lower = installError;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c) {
+                       return static_cast<char>(std::tolower(c));
+                   });
+    // "0x00000291" (ticket) contains "0291"; "0x291" is the short form.
+    if (lower.find("0291") != std::string::npos ||
+        lower.find("0x291") != std::string::npos ||
+        lower.find("sys-patch") != std::string::npos ||
+        lower.find("syspatch") != std::string::npos ||
+        lower.find("sigpatch") != std::string::npos ||
+        lower.find("sig-patch") != std::string::npos ||
+        lower.find("signature patch") != std::string::npos)
+        return UpdateFailureHint::SigPatches;
+    if (updateRequiresNewerHos(requiredSystemVersion, hosMajor, hosMinor,
+                               hosMicro))
+        return UpdateFailureHint::NeedsNewHos;
+    if (hasMods)
+        return UpdateFailureHint::ModConflict;
+    return UpdateFailureHint::None;
+}
+
+std::string formatUpdateFailureHint(UpdateFailureHint hint,
+                                    const std::string& targetXyz,
+                                    uint32_t requiredSystemVersion) {
+    switch (hint) {
+    case UpdateFailureHint::ModConflict: {
+        std::string text =
+            "If the game closes on launch after this update, remove the "
+            "mods in atmosphere/contents/ for this title (or update the "
+            "mods to match the new version) and try again.";
+        if (!targetXyz.empty())
+            text = "Update v" + targetXyz + " may conflict with the "
+                     "installed mods. " + text;
+        return text;
+    }
+    case UpdateFailureHint::NeedsNewHos: {
+        const std::string need =
+            formatRequiredHosVersion(requiredSystemVersion);
+        if (!need.empty() && !targetXyz.empty())
+            return "Update v" + targetXyz + " requires system " + need +
+                   ". Update the firmware before launching it.";
+        if (!need.empty())
+            return "This update requires system " + need +
+                   ". Update the firmware before launching it.";
+        return "This update needs newer firmware. Update the firmware "
+               "before launching it.";
+    }
+    case UpdateFailureHint::SigPatches:
+        return "Title ticket import failed (0x291). Update sys-patch / "
+               "sigpatches for this firmware, then reinstall the update.";
+    case UpdateFailureHint::None:
+    default:
+        return {};
+    }
+}
+
 } // namespace pipensx
