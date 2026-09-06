@@ -8,6 +8,7 @@
 #include "app/switch_deploy.hpp"
 #include "app/update_service.hpp"
 #include "app/web_server.hpp"
+#include "platform/switch_backlight.hpp"
 #include "platform/switch_crashlog.h"
 #include "platform/switch_performance.hpp"
 
@@ -21,6 +22,7 @@ extern "C" {
 #include <switch.h>
 #include <switch-ipcext.h>
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <csignal>
@@ -696,6 +698,56 @@ int main(int argc, char** argv) {
         startupStage("first main loop");
         bool firstFrame = true;
         uint64_t lastInputMs = now_ms();
+        // Screen-off state (B5): the guard restores the panel on any exit
+        // path — including an exception unwind — so the console can never be
+        // left on a black panel that reads as a hung system. `backlightOff`
+        // mirrors guard.isOff() on this thread; the watchdog below only ever
+        // calls switchBacklightOn() directly (idempotent) and never touches
+        // the guard, so there is no cross-thread state to race on.
+        pipensx::SwitchBacklightGuard backlightGuard;
+        bool backlightOff = false;
+        // Watchdog against hanging the system (B5): the UI thread pets
+        // `uiHeartbeat` every frame; this thread only logs a stall and
+        // forces the panel back on so a hang can never present as a dead
+        // black screen (cf. Max 05.09 "emunand won't boot"). It never pops
+        // activities or touches the download queue — dismissal stays on the
+        // UI thread in the idle block below.
+        std::atomic<uint64_t> uiHeartbeat{now_ms()};
+        std::atomic<bool> watchdogStop{false};
+        std::thread watchdogThread([&] {
+            bool stallActive = false;
+            while (!watchdogStop.load(std::memory_order_relaxed)) {
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+                if (watchdogStop.load(std::memory_order_relaxed))
+                    break;
+                const uint64_t heartbeat =
+                    uiHeartbeat.load(std::memory_order_relaxed);
+                const uint64_t now = now_ms();
+                if (now - heartbeat > 10000) {
+                    if (!stallActive) {
+                        stallActive = true;
+                        log_msg("[watchdog] main loop stall %llums, "
+                                "forcing backlight on\n",
+                                (unsigned long long)(now - heartbeat));
+                        // Fail-safe only: a hung UI thread may have left the
+                        // panel off. Idempotent — the UI thread's turnOn()
+                        // afterwards is a harmless second call.
+                        pipensx::switchBacklightOn();
+                    }
+                } else {
+                    stallActive = false;
+                }
+            }
+        });
+        struct WatchdogJoiner {
+            std::atomic<bool>* stop;
+            std::thread* thread;
+            ~WatchdogJoiner() {
+                stop->store(true, std::memory_order_relaxed);
+                if (thread->joinable())
+                    thread->join();
+            }
+        } watchdogJoiner{&watchdogStop, &watchdogThread};
         uint64_t lastDeployOfferPollMs = now_ms();
         pipensx::SwitchDeployPhase lastDeployPhase =
             pipensx::SwitchDeployPhase::Idle;
@@ -928,11 +980,19 @@ int main(int argc, char** argv) {
                 }
             }
 
-            // OLED burn-in guard: after five minutes without a button/touch,
-            // cover the UI with a drifting black saver. Any input dismisses it
-            // (including D-pad and touch) and resets the idle clock. Open state
+            // OLED burn-in + screen-off guard (B5): after five idle minutes
+            // cover the UI with the drifting black saver AND switch the panel
+            // off through lbl — the torrent engine keeps running because the
+            // console never auto-sleeps mid-transfer
+            // (SwitchPerformanceController) and the app never suspends
+            // (borealis NoSuspend). Any controller button or touch dismisses
+            // the saver and switches the panel back on; the wake press only
+            // resets the idle clock here and is absorbed by the covering
+            // activity, so it can never reach the download queue. Open state
             // is derived from the activity stack so a dismiss cannot desync a
-            // bool and stack another saver on the next idle period.
+            // bool and stack another saver on the next idle period. When the
+            // toggle is off, an already-open saver is popped and the panel
+            // restored instead of pushing a new one.
             brls::ControllerState pad {};
             std::vector<brls::RawTouchState> touches;
             auto* input = brls::Application::getPlatform()->getInputManager();
@@ -946,18 +1006,43 @@ int main(int argc, char** argv) {
                 }
             }
             const bool saverOpen = pipensx::ui::burnInSaverIsTop();
+            const bool saverEnabled = settings.get().screenSaverEnabled;
             if (pipensx::ui::controllerHasButtonDown(pad) || touched) {
                 lastInputMs = now_ms();
-                if (saverOpen)
+                if (saverOpen) {
                     brls::Application::popActivity(
                         brls::TransitionAnimation::NONE);
+                    log_msg("[saver] dismissed by input\n");
+                }
+                if (backlightOff) {
+                    backlightGuard.turnOn();
+                    backlightOff = false;
+                    log_msg("[saver] backlight on\n");
+                }
+            } else if (!saverEnabled) {
+                if (saverOpen) {
+                    brls::Application::popActivity(
+                        brls::TransitionAnimation::NONE);
+                    log_msg("[saver] disabled while open, dismissed\n");
+                }
+                if (backlightOff) {
+                    backlightGuard.turnOn();
+                    backlightOff = false;
+                    log_msg("[saver] backlight on\n");
+                }
             } else if (!saverOpen &&
                        now_ms() - lastInputMs >= pipensx::ui::kBurnInIdleMs) {
                 brls::Application::pushActivity(
                     new pipensx::ui::BurnInSaverActivity(),
                     brls::TransitionAnimation::NONE);
+                log_msg("[saver] idle %llums, screen off (transfers keep "
+                        "running)\n",
+                        (unsigned long long)pipensx::ui::kBurnInIdleMs);
+                if (backlightGuard.turnOff())
+                    backlightOff = true;
                 lastInputMs = now_ms();
             }
+            uiHeartbeat.store(now_ms(), std::memory_order_relaxed);
 
             if (firstFrame) {
                 startupStage("main loop running");
@@ -978,6 +1063,17 @@ int main(int argc, char** argv) {
         }
 
         startupStage("manager shutdown");
+        // Stop the watchdog first: nothing below pumps the heartbeat, and a
+        // late stall log mid-teardown would only confuse a crash triage.
+        watchdogStop.store(true, std::memory_order_relaxed);
+        if (watchdogThread.joinable())
+            watchdogThread.join();
+        // Visible again before teardown: quitting from behind a switched-off
+        // panel looks exactly like a hang.
+        if (backlightOff) {
+            backlightGuard.turnOn();
+            backlightOff = false;
+        }
         // The startup title scan references `installed`, which lives on this
         // stack frame — join before anything here is torn down.
         if (installedScanner.thread.joinable())

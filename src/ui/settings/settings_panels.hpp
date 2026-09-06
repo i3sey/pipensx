@@ -609,6 +609,24 @@ public:
                         installTargetFor(values.installLocation));
             });
         content_->addView(installLocation_);
+
+        // Screen-off guard (B5): idle minutes cover the UI and switch the
+        // panel off through lbl while the engine keeps running. Lives here
+        // rather than General so the settings screenshot baseline (which
+        // pins the General panel) keeps rendering byte-identical.
+        addSection(content_, tr("pipensx/settings/section_display"));
+        screenSaver_ = new brls::BooleanCell();
+        screenSaver_->init(tr("pipensx/settings/screen_saver"),
+            settings_->get().screenSaverEnabled,
+            [this](bool enabled) {
+                AppSettingsData values = settings_->get();
+                bool previous = values.screenSaverEnabled;
+                values.screenSaverEnabled = enabled;
+                if (!persistSettings(settings_, values, "screen_saver"))
+                    screenSaver_->setOn(previous, false);
+            });
+        content_->addView(screenSaver_);
+        addNote(content_, tr("pipensx/settings/screen_saver_note"));
     }
 
     void applyValues() override {
@@ -619,6 +637,7 @@ public:
         maxActiveDownloads_->setSelection(
             static_cast<int>(values.maxActiveDownloads) - 1, true);
         showCompleted_->setOn(values.showCompletedDownloads, false);
+        screenSaver_->setOn(values.screenSaverEnabled, false);
         installLocation_->setSelection(
             values.installLocation == InstallLocation::SystemMemory ? 1 : 0,
             true);
@@ -633,6 +652,7 @@ private:
     brls::SelectorCell* streamSelection_ = nullptr;
     brls::SelectorCell* maxActiveDownloads_ = nullptr;
     brls::BooleanCell* showCompleted_ = nullptr;
+    brls::BooleanCell* screenSaver_ = nullptr;
     brls::SelectorCell* installLocation_ = nullptr;
 };
 
