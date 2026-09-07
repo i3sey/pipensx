@@ -91,7 +91,8 @@ int main() {
 
     metainfo_t mi = makeSingleFileMetainfo("game.nsp", nsp.size());
     const std::string taskId = "00112233445566778899aabbccddeeff00112233";
-    const std::string journalPath = pipensx::installJournalPath(root, taskId);
+    const std::string journalPath =
+        pipensx::install::installJournalPath(root, taskId);
 
     pipensx::install::InstallJournal saved;
     {

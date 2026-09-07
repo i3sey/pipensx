@@ -6,6 +6,7 @@
 #include "nx_file_types.hpp"
 #include "stream_ram_budget.hpp"
 #include "../install/install_backend.hpp"
+#include "../install/install_journal.hpp"
 #include "../install/package_stream.hpp"
 
 #include <curl/curl.h>
@@ -1036,18 +1037,94 @@ Step attemptStreamInstall(RunContext& ctx, const DebridFile& file,
         ctx.backend = install::createInstallBackend(ctx.spec.workingRoot,
                                                     ctx.spec.installTarget);
     install::InstallBackend* backend = ctx.backend.get();
-    if (!backend->beginPackage(ctx.spec.taskId, displayName)) {
-        ctx.error = backend->error();
-        return Step::Failed;
-    }
+    const std::string journalPath =
+        install::installJournalPath(ctx.spec.workingRoot, ctx.spec.taskId);
+    constexpr uint64_t kJournalIntervalBytes = 32ull * 1024 * 1024;
+    const bool compressed = isCompressedName(file.path);
+    uint64_t fetchOffset = 0;
+    uint64_t journalConsumed = 0;
+
+    auto clearJournal = [&] {
+        install::removeInstallJournal(journalPath);
+        journalConsumed = 0;
+    };
+
     StreamRamBudget budget = detectStreamRamBudget(1 * 1024 * 1024);
     const size_t maximumBuffered = budget.valid
         ? budget.maxBufferedBytes : 64 * 1024 * 1024;
     InstallPacer pacer(maximumBuffered);
-    pacer.beginPackage(isCompressedName(file.path));
-    install::PackageStream stream(
-        isCompressedName(file.path),
-        makeCallbacks(ctx, backend, displayName, pacer), ctx.spec.taskId);
+    pacer.beginPackage(compressed);
+
+    auto makeStream = [&] {
+        return std::make_unique<install::PackageStream>(
+            compressed, makeCallbacks(ctx, backend, displayName, pacer),
+            ctx.spec.taskId);
+    };
+    std::unique_ptr<install::PackageStream> stream;
+
+    install::InstallJournal saved;
+    bool resumed = false;
+    if (install::loadInstallJournal(journalPath, saved)) {
+        if (saved.packageId == file.path && saved.packageSize == file.bytes &&
+            saved.compressed == compressed && saved.state.consumed > 0 &&
+            saved.state.consumed < file.bytes && !saved.backendState.empty() &&
+            backend->resumePackage(ctx.spec.taskId, displayName,
+                                   saved.backendState)) {
+            stream = makeStream();
+            if (stream->restore(saved.state)) {
+                resumed = true;
+                fetchOffset = saved.state.consumed;
+                journalConsumed = saved.state.consumed;
+                ctx.packageDownloadedBytes = fetchOffset;
+                log_msg("[debrid] resuming package='%s' at %llu of %llu bytes\n",
+                        file.path.c_str(),
+                        (unsigned long long)saved.state.consumed,
+                        (unsigned long long)file.bytes);
+            } else {
+                backend->rollbackPackage();
+                clearJournal();
+                stream.reset();
+            }
+        } else {
+            clearJournal();
+        }
+    }
+    if (!resumed) {
+        if (!backend->beginPackage(ctx.spec.taskId, displayName)) {
+            ctx.error = backend->error();
+            return Step::Failed;
+        }
+        stream = makeStream();
+    }
+
+    auto maybeCheckpoint = [&](bool force) {
+        if (!stream)
+            return;
+        const uint64_t consumed = stream->consumed();
+        if (!force && consumed < journalConsumed + kJournalIntervalBytes)
+            return;
+        if (force && consumed <= journalConsumed)
+            return;
+        install::InstallJournal journal;
+        if (!stream->checkpoint(journal.state) || journal.state.consumed == 0)
+            return;
+        journal.backendState = backend->checkpointPackage();
+        if (journal.backendState.empty())
+            return;
+        journal.packageId = file.path;
+        journal.packageSize = file.bytes;
+        journal.compressed = compressed;
+        std::string journalError;
+        if (!install::saveInstallJournal(journalPath, journal, &journalError)) {
+            log_msg("[debrid] journal write failed '%s': %s\n",
+                    journalPath.c_str(),
+                    journalError.empty() ? "unknown error"
+                                         : journalError.c_str());
+            return;
+        }
+        journalConsumed = consumed;
+    };
+
     DebridStreamQueue queue(maximumBuffered, pacer, *ctx.shouldStop);
     std::string fetchError;
     bool fetchOk = false;
@@ -1056,8 +1133,8 @@ Step attemptStreamInstall(RunContext& ctx, const DebridFile& file,
             ctx.packageDownloadedBytes.fetch_add(n);
             return queue.push(data, n);
         };
-        fetchOk = fetchSequential(ctx.fetcher, url, 0, sink, *ctx.shouldStop,
-                                  fetchError);
+        fetchOk = fetchSequential(ctx.fetcher, url, fetchOffset, sink,
+                                  *ctx.shouldStop, fetchError);
         queue.finish();
     });
 
@@ -1068,26 +1145,28 @@ Step attemptStreamInstall(RunContext& ctx, const DebridFile& file,
     auto flushBatch = [&]() -> bool {
         if (batch.empty())
             return true;
-        if (!stream.write(batch.data(), batch.size())) {
+        if (!stream->write(batch.data(), batch.size())) {
             streamOk = false;
             queue.stop();
             batch.clear();
             return false;
         }
-        pacer.observeConsumed(stream.consumed(), backend->installedBytes(),
+        pacer.observeConsumed(stream->consumed(), backend->installedBytes(),
                               now_ms());
+        maybeCheckpoint(false);
         batch.clear();
         return true;
     };
     while (queue.pop(chunk)) {
         if (batch.empty() && chunk.size() >= kInstallBatchBytes) {
-            if (!stream.write(chunk.data(), chunk.size())) {
+            if (!stream->write(chunk.data(), chunk.size())) {
                 streamOk = false;
                 queue.stop();
                 break;
             }
-            pacer.observeConsumed(stream.consumed(), backend->installedBytes(),
+            pacer.observeConsumed(stream->consumed(), backend->installedBytes(),
                                   now_ms());
+            maybeCheckpoint(false);
         } else {
             batch.insert(batch.end(), chunk.begin(), chunk.end());
             if (batch.size() >= kInstallBatchBytes && !flushBatch())
@@ -1099,12 +1178,16 @@ Step attemptStreamInstall(RunContext& ctx, const DebridFile& file,
     queue.stop();
     producer.join();
     if (!fetchOk || !streamOk) {
-        backend->rollbackPackage();
-        if (ctx.stop())
+        if (ctx.stop()) {
+            maybeCheckpoint(true);
+            backend->suspendPackage();
             return Step::Stopped;
+        }
+        backend->rollbackPackage();
+        clearJournal();
         if (ctx.error.empty())
-            ctx.error = !stream.error().empty()
-                ? describeStreamError(file, displayName, stream.error())
+            ctx.error = !stream->error().empty()
+                ? describeStreamError(file, displayName, stream->error())
                 : (fetchError.empty() ? "Package download failed."
                                       : fetchError);
         return Step::Failed;
@@ -1121,19 +1204,22 @@ Step attemptStreamInstall(RunContext& ctx, const DebridFile& file,
     committing.installTotalBytes = backend->expectedBytes();
     ctx.emit(committing);
 
-    if (!stream.finish()) {
-        ctx.error = stream.error().empty()
+    if (!stream->finish()) {
+        ctx.error = stream->error().empty()
             ? "Package finalize failed."
-            : describeStreamError(file, displayName, stream.error());
+            : describeStreamError(file, displayName, stream->error());
         backend->rollbackPackage();
+        clearJournal();
         return Step::Failed;
     }
     bool alreadyInstalled = false;
     if (!backend->commitPackage(alreadyInstalled)) {
         ctx.error = backend->error();
         backend->rollbackPackage();
+        clearJournal();
         return Step::Failed;
     }
+    clearJournal();
     ctx.packagesInstalled += 1;
     DebridProgress done;
     done.status = DownloadStatus::Installing;

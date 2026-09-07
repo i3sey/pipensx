@@ -31,12 +31,6 @@ extern "C" {
 
 namespace pipensx {
 
-// IMPROVEMENT_PLAN F-B: one journal file per task next to the queue state.
-inline std::string installJournalPath(const std::string& root,
-                                      const std::string& taskId) {
-    return root + "/install-journal-" + taskId + ".bencode";
-}
-
 class PackageCoordinator {
 public:
     using Progress = std::function<void(
@@ -121,7 +115,7 @@ public:
             : 4 * 1024 * 1024;
         buildPieceOrder();
         if (streamInstall_ && error_.empty() && packageCount_ > completedPackages_) {
-            journalPath_ = installJournalPath(workingRoot, taskId_);
+            journalPath_ = install::installJournalPath(workingRoot, taskId_);
             tryResume();
             StreamRamBudget budget;
             arbiterLease_ = arbiter_->acquire(

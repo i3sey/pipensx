@@ -1612,7 +1612,8 @@ bool DownloadManager::removeLocked(std::unique_lock<std::mutex>& lock,
         }
         if (!it->metainfoPath.empty())
             unlink(it->metainfoPath.c_str());
-        install::removeInstallJournal(installJournalPath(rootPath_, it->id));
+        install::removeInstallJournal(
+            install::installJournalPath(rootPath_, it->id));
         removeTaskFileManifest(rootPath_, it->id);
         tasks_.erase(it);
         return persist ? persistState(lock, error) : true;
@@ -1952,17 +1953,21 @@ void DownloadManager::runDebridTask(const ClaimedTask& claim) {
                        &lastDebridPersistedBytes](const DebridProgress& p) {
         std::unique_lock<std::mutex> lock(mutex_);
         DownloadTask* task = findLocked(activeId);
-        if (!task || task->status == DownloadStatus::Removing ||
-            task->status == DownloadStatus::Paused)
+        if (!task || task->status == DownloadStatus::Removing)
             return;
         bool packageCommitted = p.packagesInstalled != task->packagesInstalled;
+        task->packagesInstalled = p.packagesInstalled;
+        task->currentPackage = p.currentPackage;
+        if (task->status == DownloadStatus::Paused) {
+            if (packageCommitted)
+                persistState(lock);
+            return;
+        }
         updateTaskDownloadProgress(*task, p.completedBytes, now_ms());
         if (p.totalBytes)
             task->totalBytes = p.totalBytes;
         task->speedBytesPerSecond = p.speedBytesPerSecond;
         task->fetchProgress = p.fetchProgress;
-        task->packagesInstalled = p.packagesInstalled;
-        task->currentPackage = p.currentPackage;
         updateTaskInstallProgress(*task, p.installedBytes,
                                   p.installTotalBytes, p.status, now_ms());
         // Package boundaries always hit the state file; per-chunk progress
@@ -2099,13 +2104,17 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
                              DownloadStatus status) {
                 std::unique_lock<std::mutex> lock(mutex_);
                 DownloadTask* task = findLocked(activeId);
-                if (!task || task->status == DownloadStatus::Removing ||
-                    task->status == DownloadStatus::Paused)
+                if (!task || task->status == DownloadStatus::Removing)
                     return;
                 bool packageCommitted =
                     completed != task->packagesInstalled;
                 task->packagesInstalled = completed;
                 task->currentPackage = package;
+                if (task->status == DownloadStatus::Paused) {
+                    if (packageCommitted)
+                        persistState(lock);
+                    return;
+                }
                 updateTaskInstallProgress(*task, installed, expected, status,
                                           now_ms());
                 if (packageCommitted) {

@@ -2,8 +2,10 @@
 #include "app/realdebrid_provider.hpp"
 #include "app/torbox_provider.hpp"
 #include "app/torrserver_provider.hpp"
+#include "install/install_journal.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <cstdint>
@@ -368,6 +370,107 @@ void testStreamInstallCommitsPackage() {
                             "-Example_game.nsp";
     struct stat st {};
     assert(stat(committed.c_str(), &st) == 0);
+}
+
+void testStreamInstallStopResumesFromJournal() {
+    const std::string root = "/tmp/pipensx-torbox-stream-pause-test";
+    system(("rm -rf " + root).c_str());
+    mkdir(root.c_str(), 0755);
+    const std::string data = root + "/data";
+    mkdir(data.c_str(), 0755);
+
+    std::vector<uint8_t> nca(2 * 1024 * 1024, 0x5a);
+    for (size_t i = 0; i < nca.size(); ++i)
+        nca[i] = static_cast<uint8_t>((i * 7) ^ (i >> 3));
+    std::vector<uint8_t> nsp =
+        makePfs0({{"00112233445566778899aabbccddeeff.nca", nca}});
+    std::string content(nsp.begin(), nsp.end());
+
+    std::vector<uint64_t> seenOffsets;
+    RangeFetcher fetcher = [&content, &seenOffsets](
+        const std::string&, uint64_t offset, uint64_t,
+        const std::function<bool(const uint8_t*, size_t)>& sink,
+        const std::function<bool()>& cancelled, std::string&) {
+        seenOffsets.push_back(offset);
+        uint64_t pos = offset;
+        const uint64_t haltAt = content.size() / 2;
+        while (pos < content.size()) {
+            if (cancelled())
+                return false;
+            size_t n = std::min<size_t>(64 * 1024, content.size() - pos);
+            if (!sink(reinterpret_cast<const uint8_t*>(content.data() +
+                                                       static_cast<size_t>(pos)),
+                      n))
+                return false;
+            pos += n;
+            if (offset == 0 && pos >= haltAt) {
+                while (!cancelled())
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                return false;
+            }
+        }
+        return true;
+    };
+
+    TorboxTransport transport = [&content](const TorboxHttpRequest& request,
+                                           TorboxHttpResponse& response,
+                                           std::string&) {
+        response.status = 200;
+        if (request.url.find("mylist") != std::string::npos)
+            response.body = infoReadyJson("Example/game.nsp", content.size());
+        else if (request.url.find("requestdl") != std::string::npos)
+            response.body = "{\"success\":true,\"data\":\"https://x/dl\"}";
+        else
+            response.body = "{}";
+        return true;
+    };
+    TorboxProvider provider("k", transport);
+    DebridTransfer transfer(provider, fetcher);
+
+    DebridTaskSpec spec;
+    spec.taskId = "aabbccddaabbccddaabbccddaabbccddaabbccdd";
+    spec.debridId = "42";
+    spec.dataPath = data;
+    spec.workingRoot = root;
+    spec.mode = TransferMode::StreamInstall;
+
+    std::atomic<bool> stop{false};
+    std::string debridId;
+    std::string error;
+    DebridRunResult result = transfer.run(
+        spec, [&stop] { return stop.load(); },
+        [&stop](const DebridProgress& p) {
+            if (p.status == DownloadStatus::Installing && p.installedBytes > 0)
+                stop.store(true);
+        },
+        debridId, error);
+    assert(result == DebridRunResult::Stopped);
+
+    const std::string journalPath =
+        pipensx::install::installJournalPath(root, spec.taskId);
+    pipensx::install::InstallJournal journal;
+    assert(pipensx::install::loadInstallJournal(journalPath, journal));
+    assert(journal.state.consumed > 0);
+    assert(journal.packageId == "Example/game.nsp");
+
+    const std::string ncaPath =
+        root + "/install-sim/" + spec.taskId +
+        "-Example_game.nsp/00112233445566778899aabbccddeeff.nca";
+    struct stat st {};
+    assert(stat(ncaPath.c_str(), &st) == 0);
+
+    stop.store(false);
+    result = transfer.run(
+        spec, [] { return false; }, [](const DebridProgress&) {}, debridId,
+        error);
+    assert(result == DebridRunResult::Finished);
+    bool sawResumeOffset = false;
+    for (uint64_t offset : seenOffsets) {
+        if (offset > 0)
+            sawResumeOffset = true;
+    }
+    assert(sawResumeOffset);
+    assert(!pipensx::install::loadInstallJournal(journalPath, journal));
 }
 
 void testPartialStreamFailureRetriesWithoutPacerDeadlock() {
@@ -1138,6 +1241,7 @@ int main() {
     testStopRequestedReturnsStopped();
     testFetchProgressEmittedWhilePolling();
     testStreamInstallCommitsPackage();
+    testStreamInstallStopResumesFromJournal();
     testPartialStreamFailureRetriesWithoutPacerDeadlock();
     testSelectionPathsPicksOneFile();
     testSelectionPathsNoMatchReturnsFailed();

@@ -36,4 +36,10 @@ bool loadInstallJournal(const std::string& path, InstallJournal& journal);
 // True when the journal no longer exists (including "never existed").
 bool removeInstallJournal(const std::string& path);
 
+// One journal file per task, next to the queue state.
+inline std::string installJournalPath(const std::string& root,
+                                      const std::string& taskId) {
+    return root + "/install-journal-" + taskId + ".bencode";
+}
+
 } // namespace pipensx::install
