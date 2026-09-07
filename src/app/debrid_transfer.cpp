@@ -239,6 +239,32 @@ bool selected(const DebridTaskSpec& spec, size_t index,
            (index < spec.fileSelection.size() && spec.fileSelection[index]);
 }
 
+size_t kthSelectedIndex(const DebridTaskSpec& spec,
+                        const std::vector<DebridFile>& files, size_t index) {
+    size_t k = 0;
+    for (size_t i = 0; i < index; ++i)
+        if (selected(spec, i, files[i]))
+            ++k;
+    return k;
+}
+
+std::vector<size_t> selectedFileOrder(const DebridTaskSpec& spec,
+                                      const std::vector<DebridFile>& files) {
+    std::vector<size_t> order;
+    for (size_t i = 0; i < files.size(); ++i)
+        if (selected(spec, i, files[i]))
+            order.push_back(i);
+    std::stable_sort(order.begin(), order.end(),
+                     [&](size_t a, size_t b) {
+                         const int ra = packageInstallRank(files[a].path);
+                         const int rb = packageInstallRank(files[b].path);
+                         if (ra != rb)
+                             return ra < rb;
+                         return a < b;
+                     });
+    return order;
+}
+
 bool installs(const DebridTaskSpec& spec, size_t index,
               const DebridFile& file) {
     if (spec.mode != TransferMode::StreamInstall || !isPackageName(file.path))
@@ -1183,14 +1209,23 @@ DebridRunResult DebridTransfer::run(
         return DebridRunResult::Failed;
     }
 
-    size_t kthSelected = 0;
+    if (std::strcmp(ctx.provider.name(), "realdebrid") == 0 &&
+        selectedCount > 0 && ctx.selectedLinks.size() != selectedCount) {
+        error = "Real-Debrid returned " +
+                std::to_string(ctx.selectedLinks.size()) + " download" +
+                (ctx.selectedLinks.size() == 1 ? "" : "s") + " for " +
+                std::to_string(selectedCount) +
+                " selected files (likely a zip). Delete the torrent on "
+                "Real-Debrid and retry.";
+        return DebridRunResult::Failed;
+    }
+
     uint32_t packageOrdinal = 0;
-    for (size_t i = 0; i < ctx.files.size(); ++i) {
-        if (!selected(spec, i, ctx.files[i]))
-            continue;
+    for (size_t i : selectedFileOrder(spec, ctx.files)) {
         if (ctx.stop())
             return DebridRunResult::Stopped;
         const DebridFile& file = ctx.files[i];
+        const size_t kthSelected = kthSelectedIndex(spec, ctx.files, i);
         Step fs = Step::Ok;
         if (installs(ctx.spec, i, file)) {
             if (packageOrdinal >= spec.packagesInstalled)
@@ -1199,7 +1234,6 @@ DebridRunResult DebridTransfer::run(
         } else {
             fs = downloadPlainFile(ctx, kthSelected, file);
         }
-        ++kthSelected;
         if (fs == Step::Stopped)
             return DebridRunResult::Stopped;
         if (fs == Step::Failed) {

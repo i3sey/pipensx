@@ -257,7 +257,7 @@ bool RdClient::parseInfo(const std::string& json, RdTorrentInfo& info,
     return true;
 }
 
-bool RdClient::parseUnrestrict(const std::string& json, std::string& url,
+bool RdClient::parseUnrestrict(const std::string& json, RdUnrestrict& out,
                                std::string& error) {
     Json root;
     if (!parseJson(json, root, error))
@@ -266,16 +266,19 @@ bool RdClient::parseUnrestrict(const std::string& json, std::string& url,
         error = "Real-Debrid returned an invalid unrestrict response.";
         return false;
     }
-    if (root.contains("download") && root["download"].is_string()) {
-        url = root["download"].get<std::string>();
-        return true;
+    out = RdUnrestrict{};
+    if (root.contains("download") && root["download"].is_string())
+        out.url = root["download"].get<std::string>();
+    else if (root.contains("link") && root["link"].is_string())
+        out.url = root["link"].get<std::string>();
+    if (out.url.empty()) {
+        error = "Real-Debrid did not return a download link.";
+        return false;
     }
-    if (root.contains("link") && root["link"].is_string()) {
-        url = root["link"].get<std::string>();
-        return true;
-    }
-    error = "Real-Debrid did not return a download link.";
-    return false;
+    readStringField(root, "filename", out.filename);
+    readStringField(root, "mimeType", out.mimeType);
+    readNumberField(root, "filesize", out.filesize);
+    return true;
 }
 
 bool RdClient::validateKey(std::string& error) {
@@ -366,7 +369,7 @@ bool RdClient::selectFiles(const std::string& torrentId,
     return true;
 }
 
-bool RdClient::unrestrictLink(const std::string& link, std::string& url,
+bool RdClient::unrestrictLink(const std::string& link, RdUnrestrict& out,
                               std::string& error) {
     char* escaped = curl_easy_escape(nullptr, link.c_str(),
                                      static_cast<int>(link.size()));
@@ -385,7 +388,7 @@ bool RdClient::unrestrictLink(const std::string& link, std::string& url,
         return false;
     if (!checkAuthError(response.body, response.status, error))
         return false;
-    return parseUnrestrict(response.body, url, error);
+    return parseUnrestrict(response.body, out, error);
 }
 
 bool RdClient::remove(const std::string& torrentId, std::string& error) {

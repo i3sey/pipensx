@@ -37,8 +37,15 @@ struct RdHttpResponse {
     std::string body;
 };
 
+struct RdUnrestrict {
+    std::string url;
+    std::string filename;
+    uint64_t filesize = 0;
+    std::string mimeType;
+};
+
 using RdTransport = std::function<bool(const RdHttpRequest&,
-    RdHttpResponse&, std::string&)>;
+                                       RdHttpResponse&, std::string&)>;
 
 class RdClient {
 public:
@@ -53,7 +60,7 @@ public:
     bool selectFiles(const std::string& torrentId,
                      const std::vector<std::string>& fileIds,
                      std::string& error);
-    bool unrestrictLink(const std::string& link, std::string& url,
+    bool unrestrictLink(const std::string& link, RdUnrestrict& out,
                         std::string& error);
     bool remove(const std::string& torrentId, std::string& error);
     const std::string& apiKey() const;
@@ -67,7 +74,7 @@ public:
                                         std::string& error);
     static bool parseInfo(const std::string& json, RdTorrentInfo& info,
                           std::string& error);
-    static bool parseUnrestrict(const std::string& json, std::string& url,
+    static bool parseUnrestrict(const std::string& json, RdUnrestrict& out,
                                 std::string& error);
 
 private:

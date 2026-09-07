@@ -142,12 +142,16 @@ void testParseInfo() {
 }
 
 void testParseUnrestrict() {
-    std::string url, error;
-    assert(RdClient::parseUnrestrict(kUnrestrictOk, url, error));
-    assert(url == "https://rd.dl1.real-debrid.com/dl/abcdef/game.nsp");
-    assert(!RdClient::parseUnrestrict("{not json", url, error));
+    pipensx::RdUnrestrict got;
+    std::string error;
+    assert(RdClient::parseUnrestrict(kUnrestrictOk, got, error));
+    assert(got.url == "https://rd.dl1.real-debrid.com/dl/abcdef/game.nsp");
+    assert(got.filename == "game.nsp");
+    assert(got.filesize == 900000000);
+    assert(got.mimeType == "application/octet-stream");
+    assert(!RdClient::parseUnrestrict("{not json", got, error));
     assert(!error.empty());
-    assert(!RdClient::parseUnrestrict("{}", url, error));
+    assert(!RdClient::parseUnrestrict("{}", got, error));
     assert(!error.empty());
 }
 

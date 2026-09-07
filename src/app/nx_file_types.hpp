@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cctype>
+#include <cstdint>
 #include <string>
 
 namespace pipensx {
@@ -155,6 +156,61 @@ inline bool isLayeredFsRomfsPath(const std::string& path,
 inline bool isPortPayloadName(const std::string& path) {
     return isPortArchiveName(path) || pathContainsSwitchComponent(path) ||
            isLayeredFsRomfsPath(path);
+}
+
+inline bool isRarName(const std::string& name) {
+    return hasFileExtension(name, ".rar");
+}
+
+inline bool isCompressedArchiveName(const std::string& name) {
+    return isPortArchiveName(name) || isRarName(name);
+}
+
+// Patch NSPs are tagged [vN] with N>0, named update/patch, or carry the
+// …800 title id. Lower rank installs first so a dump that lists the patch
+// before the [v0] base still commits the application package first.
+inline bool pathLooksLikeUpdatePackage(const std::string& path) {
+    std::string lower;
+    lower.resize(path.size());
+    for (size_t i = 0; i < path.size(); ++i)
+        lower[i] = static_cast<char>(
+            std::tolower(static_cast<unsigned char>(path[i])));
+    if (lower.find("update") != std::string::npos ||
+        lower.find("patch") != std::string::npos)
+        return true;
+    for (size_t i = 0; i + 2 < lower.size(); ++i) {
+        if (lower[i] == '[' && lower[i + 1] == 'v' &&
+            lower[i + 2] >= '1' && lower[i + 2] <= '9')
+            return true;
+    }
+    for (size_t i = 0; i + 16 <= path.size(); ++i) {
+        uint64_t id = 0;
+        bool hex = true;
+        for (size_t j = 0; j < 16; ++j) {
+            const unsigned char ch = static_cast<unsigned char>(path[i + j]);
+            unsigned digit = 0;
+            if (ch >= '0' && ch <= '9')
+                digit = ch - '0';
+            else if (ch >= 'a' && ch <= 'f')
+                digit = 10 + (ch - 'a');
+            else if (ch >= 'A' && ch <= 'F')
+                digit = 10 + (ch - 'A');
+            else {
+                hex = false;
+                break;
+            }
+            id = (id << 4) | digit;
+        }
+        if (hex && (id & 0xFFFULL) == 0x800ULL)
+            return true;
+    }
+    return false;
+}
+
+inline int packageInstallRank(const std::string& path) {
+    if (!isPackageName(path))
+        return 2;
+    return pathLooksLikeUpdatePackage(path) ? 1 : 0;
 }
 
 } // namespace pipensx

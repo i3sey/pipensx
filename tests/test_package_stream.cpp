@@ -363,6 +363,32 @@ void testRejectsWebpagePayload() {
     assert(!stream.write(reinterpret_cast<const uint8_t*>(html.data()),
                          html.size()));
     assert(stream.error().find("webpage") != std::string::npos);
+    assert(stream.error().find("magic=") != std::string::npos);
+}
+
+void testRejectsZipMagic() {
+    std::vector<uint8_t> zip(32, 0);
+    zip[0] = 'P';
+    zip[1] = 'K';
+    zip[2] = 0x03;
+    zip[3] = 0x04;
+    Capture capture;
+    PackageStream stream(false, capture.callbacks());
+    assert(!stream.write(zip.data(), zip.size()));
+    assert(stream.error().find("ZIP") != std::string::npos);
+    assert(stream.error().find("magic=504b") != std::string::npos);
+}
+
+void testRejectsZstdMagic() {
+    std::vector<uint8_t> zstd(32, 0);
+    zstd[0] = 0x28;
+    zstd[1] = 0xB5;
+    zstd[2] = 0x2F;
+    zstd[3] = 0xFD;
+    Capture capture;
+    PackageStream stream(false, capture.callbacks());
+    assert(!stream.write(zstd.data(), zstd.size()));
+    assert(stream.error().find("zstd") != std::string::npos);
 }
 
 void testNsp() {
@@ -829,6 +855,8 @@ void testNszSmallWorkerStack() {
 int main() {
     testRejectsXciMagic();
     testRejectsWebpagePayload();
+    testRejectsZipMagic();
+    testRejectsZstdMagic();
     testNsp();
     testNsz();
     testNszUsesFourMiBOutputChunks();

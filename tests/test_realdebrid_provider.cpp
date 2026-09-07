@@ -59,6 +59,38 @@ int main() {
 
     std::string url;
     assert(p.resolveDownloadUrl(id, info, 0, info.files[0], url, err));
+    assert(url.find("game.nsp") != std::string::npos);
+
+    info.files[0].bytes = 900000;
+    RdTransport zipT =
+        [](const RdHttpRequest& r, RdHttpResponse& res, std::string&) {
+            res.status = 200;
+            if (r.url.find("/unrestrict/link") != std::string::npos)
+                res.body =
+                    "{\"filename\":\"game.zip\",\"mimeType\":\"application/zip\","
+                    "\"filesize\":900000,\"download\":\"https://rd.example/x.zip\"}";
+            else
+                res.body = "{}";
+            return true;
+        };
+    RealdebridProvider zipP("key", zipT);
+    assert(!zipP.resolveDownloadUrl(id, info, 0, info.files[0], url, err));
+    assert(err.find("archive") != std::string::npos);
+
+    RdTransport sizeT =
+        [](const RdHttpRequest& r, RdHttpResponse& res, std::string&) {
+            res.status = 200;
+            if (r.url.find("/unrestrict/link") != std::string::npos)
+                res.body =
+                    "{\"filename\":\"game.nsp\",\"filesize\":1,"
+                    "\"download\":\"https://rd.example/game.nsp\"}";
+            else
+                res.body = "{}";
+            return true;
+        };
+    RealdebridProvider sizeP("key", sizeT);
+    assert(!sizeP.resolveDownloadUrl(id, info, 0, info.files[0], url, err));
+    assert(err.find("file size") != std::string::npos);
 
     assert(p.remove(id, err));
 

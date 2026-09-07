@@ -828,6 +828,134 @@ void testRealdebridDownloadOnlyUsesSequentialFetch() {
     assert(written == content);
 }
 
+void testRealdebridRejectsLinkCountMismatch() {
+    const std::string root = "/tmp/pipensx-rd-link-mismatch-test";
+    system(("rm -rf " + root).c_str());
+    mkdir(root.c_str(), 0755);
+
+    RdTransport transport = [](const RdHttpRequest& request,
+                               RdHttpResponse& response, std::string&) {
+        response.status = 200;
+        if (request.url.find("/torrents/info/") != std::string::npos)
+            response.body =
+                "{\"id\":\"abc123\",\"filename\":\"Minecraft [NSP]\","
+                "\"bytes\":200,\"progress\":100,\"status\":\"downloaded\","
+                "\"files\":["
+                "{\"id\":\"1\",\"path\":\"/Minecraft [0100D71004694800][v10420224].nsp\","
+                "\"bytes\":100,\"selected\":1},"
+                "{\"id\":\"2\",\"path\":\"/Minecraft [0100D71004694000][v0].nsp\","
+                "\"bytes\":100,\"selected\":1}],"
+                "\"links\":[\"https://rd.to/dl/only-one\"]}";
+        else
+            response.body = "{}";
+        return true;
+    };
+    RealdebridProvider provider("k", transport);
+    DebridTransfer transfer(provider, memoryFetcher(std::string(16, 'x')));
+
+    DebridTaskSpec spec;
+    spec.taskId = "aabbccddaabbccddaabbccddaabbccddaabbccdd";
+    spec.debridId = "abc123";
+    spec.dataPath = root;
+    spec.workingRoot = root;
+    spec.mode = TransferMode::StreamInstall;
+
+    std::string debridId;
+    std::string error;
+    DebridRunResult result = transfer.run(
+        spec, [] { return false; }, [](const DebridProgress&) {}, debridId,
+        error);
+    assert(result == DebridRunResult::Failed);
+    assert(error.find("1 download") != std::string::npos);
+    assert(error.find("2 selected") != std::string::npos);
+}
+
+void testRealdebridInstallsBaseBeforeUpdate() {
+    const std::string root = "/tmp/pipensx-rd-base-first-test";
+    system(("rm -rf " + root).c_str());
+    mkdir(root.c_str(), 0755);
+
+    std::vector<uint8_t> nca(64, 0x11);
+    std::vector<uint8_t> baseNsp =
+        makePfs0({{"00112233445566778899aabbccddeeff.nca", nca}});
+    std::vector<uint8_t> updateNca(64, 0x22);
+    std::vector<uint8_t> updateNsp =
+        makePfs0({{"ffeeddccbbaa99887766554433221100.nca", updateNca}});
+    const std::string baseContent(baseNsp.begin(), baseNsp.end());
+    const std::string updateContent(updateNsp.begin(), updateNsp.end());
+
+    std::vector<std::string> fetched;
+    RangeFetcher fetcher = [&](const std::string& url, uint64_t offset,
+                               uint64_t,
+                               const std::function<bool(const uint8_t*, size_t)>&
+                                   sink,
+                               const std::function<bool()>&, std::string&) {
+        fetched.push_back(url);
+        const std::string& body =
+            url.find("base") != std::string::npos ? baseContent : updateContent;
+        if (offset >= body.size())
+            return false;
+        return sink(reinterpret_cast<const uint8_t*>(body.data() + offset),
+                    body.size() - static_cast<size_t>(offset));
+    };
+
+    RdTransport transport = [&](const RdHttpRequest& request,
+                                RdHttpResponse& response, std::string&) {
+        response.status = 200;
+        if (request.url.find("/torrents/info/") != std::string::npos) {
+            response.body =
+                "{\"id\":\"abc123\",\"filename\":\"Minecraft [NSP]\","
+                "\"bytes\":" +
+                std::to_string(updateContent.size() + baseContent.size()) +
+                ",\"progress\":100,\"status\":\"downloaded\","
+                "\"files\":["
+                "{\"id\":\"1\",\"path\":\"/Minecraft [0100D71004694800][v10420224].nsp\","
+                "\"bytes\":" +
+                std::to_string(updateContent.size()) +
+                ",\"selected\":1},"
+                "{\"id\":\"2\",\"path\":\"/Minecraft [0100D71004694000][v0].nsp\","
+                "\"bytes\":" +
+                std::to_string(baseContent.size()) +
+                ",\"selected\":1}],"
+                "\"links\":[\"https://rd.to/dl/update\",\"https://rd.to/dl/base\"]}";
+        } else if (request.url.find("/unrestrict/link") != std::string::npos) {
+            const bool base = request.body.find("base") != std::string::npos;
+            const std::string name =
+                base ? "Minecraft [0100D71004694000][v0].nsp"
+                     : "Minecraft [0100D71004694800][v10420224].nsp";
+            const size_t size =
+                base ? baseContent.size() : updateContent.size();
+            const std::string host = base ? "https://cdn.example/base.nsp"
+                                          : "https://cdn.example/update.nsp";
+            response.body = "{\"filename\":\"" + name +
+                            "\",\"filesize\":" + std::to_string(size) +
+                            ",\"download\":\"" + host + "\"}";
+        } else {
+            response.body = "{}";
+        }
+        return true;
+    };
+    RealdebridProvider provider("k", transport);
+    DebridTransfer transfer(provider, fetcher);
+
+    DebridTaskSpec spec;
+    spec.taskId = "aabbccddaabbccddaabbccddaabbccddaabbccdd";
+    spec.debridId = "abc123";
+    spec.dataPath = root;
+    spec.workingRoot = root;
+    spec.mode = TransferMode::StreamInstall;
+
+    std::string debridId;
+    std::string error;
+    DebridRunResult result = transfer.run(
+        spec, [] { return false; }, [](const DebridProgress&) {}, debridId,
+        error);
+    assert(result == DebridRunResult::Finished);
+    assert(fetched.size() >= 2);
+    assert(fetched[0].find("base") != std::string::npos);
+    assert(fetched[1].find("update") != std::string::npos);
+}
+
 void testFilesResolvedStripsLeadingSlash() {
     const std::string root = "/tmp/pipensx-torbox-slash-path-test";
     system(("rm -rf " + root).c_str());
@@ -900,6 +1028,8 @@ int main() {
     testStreamInstallCoalescesTinyChunks();
     testStreamInstallLargeFileUsesSequentialFetch();
     testRealdebridDownloadOnlyUsesSequentialFetch();
+    testRealdebridRejectsLinkCountMismatch();
+    testRealdebridInstallsBaseBeforeUpdate();
     testFilesResolvedStripsLeadingSlash();
     testBuildRichMagnet();
     std::printf("test_debrid_transfer ok\n");

@@ -1,4 +1,5 @@
 #include "app/game_update_install.hpp"
+#include "app/nx_file_types.hpp"
 
 #include <cassert>
 #include <cstdio>
@@ -610,6 +611,15 @@ void testNacpDisplayVersionString() {
            std::string(16, 'A'));
 }
 
+void testPackageInstallRank() {
+    using pipensx::packageInstallRank;
+    assert(packageInstallRank(
+               "Minecraft [0100D71004694000][v0].nsp") == 0);
+    assert(packageInstallRank(
+               "Minecraft [0100D71004694800][v10420224].nsp") == 1);
+    assert(packageInstallRank("readme.txt") == 2);
+}
+
 } // namespace
 
 int main() {
@@ -654,6 +664,7 @@ int main() {
     testInstalledVersionLabel();
     testLayeredFsModDir();
     testNacpDisplayVersionString();
+    testPackageInstallRank();
     std::puts("update file selection tests passed");
     return 0;
 }

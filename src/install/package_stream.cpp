@@ -1165,13 +1165,31 @@ private:
             return true;
         uint64_t parseStartedUs = telemetry_enabled() ? now_us() : 0;
         if (std::memcmp(pending_.data(), "PFS0", 4) != 0) {
+            static const uint8_t zstdMagic[4] = {0x28, 0xB5, 0x2F, 0xFD};
+            static const uint8_t sevenZMagic[6] = {0x37, 0x7A, 0xBC, 0xAF,
+                                                   0x27, 0x1C};
+            const size_t magicLen = std::min<size_t>(8, pending_.size());
+            const std::string magic = hexCompact(pending_.data(), magicLen);
             if (std::memcmp(pending_.data(), "HEAD", 4) == 0)
                 error_ = "Package is an XCI cartridge dump, not an NSP/NSZ.";
             else if (pending_[0] == '<' || pending_[0] == '{')
                 error_ =
                     "Package is not a PFS0 NSP/NSZ (the download was a webpage).";
+            else if (pending_[0] == 'P' && pending_[1] == 'K')
+                error_ = "Package is a ZIP archive, not a PFS0 NSP/NSZ.";
+            else if (pending_.size() >= 4 &&
+                     std::memcmp(pending_.data(), "Rar!", 4) == 0)
+                error_ = "Package is a RAR archive, not a PFS0 NSP/NSZ.";
+            else if (pending_.size() >= 6 &&
+                     std::memcmp(pending_.data(), sevenZMagic, 6) == 0)
+                error_ = "Package is a 7z archive, not a PFS0 NSP/NSZ.";
+            else if (std::memcmp(pending_.data(), zstdMagic, 4) == 0)
+                error_ =
+                    "Package is zstd-compressed, not a PFS0 NSP/NSZ.";
             else
                 error_ = "Package is not a PFS0 NSP/NSZ.";
+            error_ += " magic=" + magic;
+            log_msg("[install] rejected package magic=%s\n", magic.c_str());
             return fail();
         }
         uint32_t count = read32(pending_.data() + 4);

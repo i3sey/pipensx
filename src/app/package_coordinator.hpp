@@ -66,7 +66,7 @@ public:
             return;
         }
         configs_.resize(metainfo_.num_files);
-        uint32_t ordinal = 0;
+        std::vector<uint32_t> installOrder;
         for (uint32_t i = 0; i < metainfo_.num_files; ++i) {
             FileAction action = streamInstall_ &&
                                       isPackageName(metainfo_.files[i].path)
@@ -95,14 +95,27 @@ public:
                 error_ = "Only NSP/NSZ package files can be installed.";
                 return;
             }
+            installOrder.push_back(i);
+        }
+        std::stable_sort(installOrder.begin(), installOrder.end(),
+                         [this](uint32_t a, uint32_t b) {
+                             const int ra =
+                                 packageInstallRank(metainfo_.files[a].path);
+                             const int rb =
+                                 packageInstallRank(metainfo_.files[b].path);
+                             if (ra != rb)
+                                 return ra < rb;
+                             return a < b;
+                         });
+        for (uint32_t ordinal = 0; ordinal < installOrder.size(); ++ordinal) {
+            const uint32_t i = installOrder[ordinal];
             packageOrdinals_[i] = ordinal;
             configs_[i].mode = ordinal < completedPackages_
                              ? STORAGE_FILE_SKIP : STORAGE_FILE_SINK;
             configs_[i].sink = &PackageCoordinator::sinkThunk;
             configs_[i].user = this;
-            ++ordinal;
         }
-        packageCount_ = ordinal;
+        packageCount_ = static_cast<uint32_t>(installOrder.size());
         pieceLengthBytes_ = metainfo_.piece_length > 0
             ? static_cast<uint64_t>(metainfo_.piece_length)
             : 4 * 1024 * 1024;
@@ -1008,13 +1021,21 @@ private:
     void buildPieceOrder() {
         std::vector<uint8_t> added(metainfo_.num_pieces, 0);
         pieceGates_.assign(metainfo_.num_pieces, PieceGate {});
+        std::vector<uint32_t> byOrdinal(packageCount_, UINT32_MAX);
         for (const auto& item : packageOrdinals_) {
-            if (item.second < completedPackages_)
+            if (item.second < byOrdinal.size())
+                byOrdinal[item.second] = item.first;
+        }
+        for (uint32_t ordinal = 0; ordinal < packageCount_; ++ordinal) {
+            if (ordinal < completedPackages_)
                 continue;
-            const mi_file_t& file = metainfo_.files[item.first];
+            const uint32_t fileIndex = byOrdinal[ordinal];
+            if (fileIndex == UINT32_MAX)
+                continue;
+            const mi_file_t& file = metainfo_.files[fileIndex];
             if (file.length <= 0)
                 continue;
-            markPieceGate(item.first, item.second);
+            markPieceGate(fileIndex, ordinal);
             uint32_t first = static_cast<uint32_t>(
                 file.offset / pieceLengthBytes_);
             uint32_t last = static_cast<uint32_t>(
