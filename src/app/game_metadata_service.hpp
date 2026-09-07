@@ -84,10 +84,12 @@ public:
     using ImageData = std::shared_ptr<const DecodedImage>;
     using ImageCallback = std::function<void(ImageData)>;
 
-    // Decode size classes. The same source URL can be held twice: once shrunk
-    // for grid/rail art, once near-native for the fullscreen viewer. The
-    // memory cache keys on url+class; the on-disk byte cache stays per URL, so
-    // the second class costs a decode, never a download.
+    // Decode size classes. The memory cache keys on url+class; the on-disk
+    // byte cache stays per URL, so a second class costs a decode, never a
+    // download. Grid matches the 180px catalog slot (360px GPU uploads blow
+    // Horizon's ~4 MB mapping slack). Card is detail/hero/list art. Full is
+    // the screenshot viewer.
+    static constexpr int kImageDimGrid = 180;
     static constexpr int kImageDimCard = 360;
     static constexpr int kImageDimFull = 1280;
 

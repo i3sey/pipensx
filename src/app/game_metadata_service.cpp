@@ -361,11 +361,10 @@ uint64_t monotonicMilliseconds() {
                                       .time_since_epoch()).count());
 }
 
-// Shrink a decode to the requested size class. Covers render at 180px, so the
-// card class (360) caches source art near 2x display size: the working set
-// survives shelf scrolling instead of thrashing the 96 MB LRU. The fullscreen
-// viewer asks for kImageDimFull instead, because upscaling a 360px decode over
-// the whole screen is what "screenshots open in low resolution" looks like.
+// Shrink a decode to the requested size class. Catalog tiles ask for
+// kImageDimGrid (the 180px slot). Detail/hero keep kImageDimCard. The
+// fullscreen viewer asks for kImageDimFull, because upscaling a card decode
+// over the whole screen is what "screenshots open in low resolution" looks like.
 void downscaleRgba(std::vector<uint8_t>& pixels, int& width, int& height,
                    int maxDim) {
     const int longEdge = std::max(width, height);

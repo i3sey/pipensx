@@ -249,7 +249,7 @@ public:
             (!info.iconUrl.empty() &&
              (artworkService_ != service || !artworkCurrent))) {
             setArtworkUrl(image_, service, info.iconUrl, currentIconUrl_,
-                          imageState_);
+                          imageState_, GameMetadataService::kImageDimGrid);
         }
         painted_ = info;
         artworkService_ = service;

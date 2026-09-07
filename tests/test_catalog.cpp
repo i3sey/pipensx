@@ -1458,9 +1458,9 @@ void testImageMemoryCache() {
     rmdir(root.c_str());
 }
 
-// One source, two decode classes. The fullscreen viewer needs pixels the card
-// class throws away, so the memory cache has to hold both at once instead of
-// handing the viewer the 360px cover decode.
+// One source, three decode classes. Grid tiles must not share the 360px card
+// decode (that upload blows Switch mapping slack), and the fullscreen viewer
+// must not inherit either smaller class.
 void testImageSizeClassesCacheSeparately() {
     char cwd[4096];
     assert(getcwd(cwd, sizeof(cwd)));
@@ -1489,6 +1489,11 @@ void testImageSizeClassesCacheSeparately() {
             return result;
         };
 
+        GameMetadataService::ImageData grid =
+            decode(GameMetadataService::kImageDimGrid);
+        assert(grid);
+        assert(grid->width == 160 && grid->height == 90);
+
         GameMetadataService::ImageData card =
             decode(GameMetadataService::kImageDimCard);
         assert(card);
@@ -1499,9 +1504,12 @@ void testImageSizeClassesCacheSeparately() {
         assert(full);
         assert(full->width == 1280 && full->height == 720);
 
-        // Both survive: the viewer's decode must not evict the rail's, and the
-        // default class stays the card one for every existing call site.
+        // All three survive: opening a game must not evict the grid tile, and
+        // the default class stays the card one for existing call sites.
         assert(service.cachedImage(source).get() == card.get());
+        assert(service.cachedImage(source,
+                                   GameMetadataService::kImageDimGrid).get() ==
+               grid.get());
         assert(service.cachedImage(source,
                                    GameMetadataService::kImageDimFull).get() ==
                full.get());

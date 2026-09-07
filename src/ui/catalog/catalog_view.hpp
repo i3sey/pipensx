@@ -225,7 +225,8 @@ private:
         const int end = std::min(start + grid::kColumns,
                                  static_cast<int>(iconUrls_.size()));
         for (int i = start; i < end; ++i)
-            metadata_->prefetchImage(iconUrls_[static_cast<size_t>(i)]);
+            metadata_->prefetchImage(iconUrls_[static_cast<size_t>(i)],
+                                     GameMetadataService::kImageDimGrid);
     }
 
     CatalogView* owner_;
