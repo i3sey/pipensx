@@ -1,6 +1,7 @@
 #include "app/debrid_transfer.hpp"
 #include "app/realdebrid_provider.hpp"
 #include "app/torbox_provider.hpp"
+#include "app/torrserver_provider.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -828,6 +829,124 @@ void testRealdebridDownloadOnlyUsesSequentialFetch() {
     assert(written == content);
 }
 
+void testTorrserverDownloadOnlySequentialAndRemoves() {
+    const std::string root = "/tmp/pipensx-ts-download-seq-test";
+    system(("rm -rf " + root).c_str());
+    mkdir(root.c_str(), 0755);
+    const std::string data = root + "/data";
+    mkdir(data.c_str(), 0755);
+
+    const size_t size = 10 * 1024 * 1024;
+    std::string content(size, 'T');
+    int rangedCalls = 0;
+    int sequentialCalls = 0;
+    RangeFetcher fetcher = [&](const std::string&, uint64_t offset,
+                               uint64_t endExclusive,
+                               const std::function<bool(const uint8_t*, size_t)>&
+                                   sink,
+                               const std::function<bool()>&, std::string& error) {
+        if (endExclusive != 0) {
+            ++rangedCalls;
+            error = kDebridRangeNotSupported;
+            return false;
+        }
+        ++sequentialCalls;
+        std::string slice = content.substr(static_cast<size_t>(offset));
+        return sink(reinterpret_cast<const uint8_t*>(slice.data()),
+                    slice.size());
+    };
+
+    std::vector<TsHttpRequest> seen;
+    std::vector<std::pair<long, std::string>> replies = {
+        {200, "{\"name\":\"Example\",\"hash\":\"abc\",\"stat\":3,"
+              "\"stat_string\":\"Torrent working\",\"torrent_size\":" +
+                  std::to_string(size) +
+                  ",\"file_stats\":[{\"id\":1,\"path\":\"Example/file.bin\","
+                  "\"length\":" +
+                  std::to_string(size) + "}]}"},
+        {200, ""},
+    };
+    size_t next = 0;
+    TsTransport transport = [&](const TsHttpRequest& request,
+                                TsHttpResponse& response, std::string&) {
+        seen.push_back(request);
+        assert(next < replies.size());
+        response.status = replies[next].first;
+        response.body = replies[next].second;
+        ++next;
+        return true;
+    };
+    TorrserverProvider provider("http://box:8090", transport);
+    DebridTransfer transfer(provider, fetcher);
+
+    DebridTaskSpec spec;
+    spec.taskId = "aabbccddaabbccddaabbccddaabbccddaabbccdd";
+    spec.debridId = "abc";
+    spec.dataPath = data;
+    spec.workingRoot = root;
+    spec.mode = TransferMode::DownloadOnly;
+
+    std::string debridId;
+    std::string error;
+    DebridRunResult result = transfer.run(
+        spec, [] { return false; }, [](const DebridProgress&) {}, debridId,
+        error);
+    assert(result == DebridRunResult::Finished);
+    assert(rangedCalls == 0);
+    assert(sequentialCalls >= 1);
+    assert(seen.size() == 2);
+    assert(seen[0].body.find("\"action\":\"add\"") != std::string::npos);
+    assert(seen[1].body.find("\"action\":\"rem\"") != std::string::npos);
+    assert(seen[1].body.find("\"hash\":\"abc\"") != std::string::npos);
+
+    std::ifstream check(data + "/file.bin", std::ios::binary);
+    std::string written((std::istreambuf_iterator<char>(check)),
+                        std::istreambuf_iterator<char>());
+    assert(written == content);
+}
+
+void testTorrserverStopDoesNotRemove() {
+    std::vector<TsHttpRequest> seen;
+    std::vector<std::pair<long, std::string>> replies = {
+        {200, "{\"name\":\"E\",\"hash\":\"abc\",\"stat\":1,"
+              "\"stat_string\":\"Torrent getting info\"}"},
+    };
+    size_t next = 0;
+    TsTransport transport = [&](const TsHttpRequest& request,
+                                TsHttpResponse& response, std::string&) {
+        seen.push_back(request);
+        assert(next < replies.size());
+        response.status = replies[next].first;
+        response.body = replies[next].second;
+        ++next;
+        return true;
+    };
+    TorrserverProvider provider("http://box:8090", transport);
+    DebridTransfer transfer(provider, memoryFetcher(""));
+    DebridTaskSpec spec;
+    spec.taskId = "aabbccddaabbccddaabbccddaabbccddaabbccdd";
+    spec.debridId = "abc";
+    spec.dataPath = "/tmp";
+    spec.workingRoot = "/tmp";
+    bool stop = false;
+    int fetches = 0;
+    std::string debridId;
+    std::string error;
+    DebridRunResult result = transfer.run(
+        spec, [&stop] { return stop; },
+        [&stop, &fetches](const DebridProgress& p) {
+            if (p.status == DownloadStatus::Fetching) {
+                ++fetches;
+                if (fetches >= 2)
+                    stop = true;
+            }
+        },
+        debridId, error);
+    assert(result == DebridRunResult::Stopped);
+    for (const TsHttpRequest& request : seen)
+        assert(request.body.find("\"action\":\"rem\"") == std::string::npos);
+}
+
 void testRealdebridRejectsLinkCountMismatch() {
     const std::string root = "/tmp/pipensx-rd-link-mismatch-test";
     system(("rm -rf " + root).c_str());
@@ -1028,6 +1147,8 @@ int main() {
     testStreamInstallCoalescesTinyChunks();
     testStreamInstallLargeFileUsesSequentialFetch();
     testRealdebridDownloadOnlyUsesSequentialFetch();
+    testTorrserverDownloadOnlySequentialAndRemoves();
+    testTorrserverStopDoesNotRemove();
     testRealdebridRejectsLinkCountMismatch();
     testRealdebridInstallsBaseBeforeUpdate();
     testFilesResolvedStripsLeadingSlash();

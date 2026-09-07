@@ -290,6 +290,29 @@ bool sleepSlices(const std::function<bool()>& shouldStop, int totalMs) {
     return true;
 }
 
+bool sequentialHttp(const DebridProvider& provider) {
+    const char* name = provider.name();
+    return std::strcmp(name, "realdebrid") == 0 ||
+           std::strcmp(name, "torrserver") == 0;
+}
+
+int pollWaitMs(const DebridProvider& provider) {
+    return std::strcmp(provider.name(), "torrserver") == 0 ? 1000 : 5000;
+}
+
+void remTorrserverIfFinished(DebridProvider& provider, const std::string& id,
+                             DebridRunResult result) {
+    if (result != DebridRunResult::Finished || id.empty() ||
+        std::strcmp(provider.name(), "torrserver") != 0)
+        return;
+    std::string error;
+    if (!provider.remove(id, error))
+        log_msg("[debrid] torrserver rem failed id=%s: %s\n", id.c_str(),
+                error.c_str());
+    else
+        log_msg("[debrid] torrserver rem id=%s\n", id.c_str());
+}
+
 constexpr size_t kInstallBatchBytes = 1u << 20;
 constexpr unsigned kRangeWorkers = 4;
 constexpr uint64_t kRangeSegmentBytes = 4ull << 20;
@@ -538,7 +561,7 @@ Step pollUntilReady(RunContext& ctx) {
                                         : err;
                 return Step::Failed;
             }
-            if (!sleepSlices(*ctx.shouldStop, 5000))
+            if (!sleepSlices(*ctx.shouldStop, pollWaitMs(ctx.provider)))
                 return Step::Stopped;
             continue;
         }
@@ -632,7 +655,7 @@ Step pollUntilReady(RunContext& ctx) {
                 continue;
             }
         }
-        if (!sleepSlices(*ctx.shouldStop, 5000))
+        if (!sleepSlices(*ctx.shouldStop, pollWaitMs(ctx.provider)))
             return Step::Stopped;
     }
 }
@@ -863,8 +886,9 @@ Step fetchAppend(RunContext& ctx, const std::string& url,
     StreamRamBudget budget = detectStreamRamBudget(1 * 1024 * 1024);
     const size_t maximumBuffered = budget.valid
         ? budget.maxBufferedBytes : 64 * 1024 * 1024;
-    // TorBox/TorrServer still pipeline Range workers; RD's CDN does not.
-    bool ok = std::strcmp(ctx.provider.name(), "realdebrid") == 0
+    // RD CDN corrupts parallel 206s; TorrServer's cache is a sequential
+    // reader with readahead — Range workers thrash it.
+    bool ok = sequentialHttp(ctx.provider)
         ? fetchSequential(ctx.fetcher, url, offset, sink, *ctx.shouldStop, err)
         : fetchOrdered(ctx.fetcher, url, offset, fileBytes,
                        maximumBuffered / 2, sink, *ctx.shouldStop, err);
@@ -1251,6 +1275,8 @@ DebridRunResult DebridTransfer::run(
     fin.totalBytes = ctx.totalBytes;
     fin.packagesInstalled = ctx.packagesInstalled;
     ctx.emit(fin);
+    remTorrserverIfFinished(ctx.provider, ctx.debridId,
+                            DebridRunResult::Finished);
     return DebridRunResult::Finished;
 }
 

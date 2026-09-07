@@ -44,6 +44,11 @@ bool curlTransport(const TsHttpRequest& request, TsHttpResponse& response,
         curl_mimepart* part = curl_mime_addpart(mime);
         curl_mime_name(part, "file");
         curl_mime_filedata(part, request.uploadFilePath.c_str());
+        // Same persistence as magnet add's save_to_db: pause/resume can
+        // reload the torrent. DebridTransfer rem's it when the job finishes.
+        curl_mimepart* save = curl_mime_addpart(mime);
+        curl_mime_name(save, "save");
+        curl_mime_data(save, "true", CURL_ZERO_TERMINATED);
         curl_easy_setopt(curl, CURLOPT_MIMEPOST, mime);
     } else if (!request.body.empty()) {
         headers = curl_slist_append(headers, "Content-Type: application/json");
@@ -214,6 +219,8 @@ bool TorrserverProvider::resolveDownloadUrl(const std::string& id,
         error = "TorrServer file index missing.";
         return false;
     }
+    // /play streams immediately (sequential reader + readahead). /stream with
+    // preload would block until cache fill — worse for NSP install.
     url = base_ + "/play/" + id + "/" + file.id;
     return true;
 }

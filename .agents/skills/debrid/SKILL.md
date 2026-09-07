@@ -44,7 +44,9 @@ returns pre-baked JSON.
 When a debrid task is removed, `DownloadManager::removeFromDebridAsync` fires
 a detached thread that calls `makeProvider(…)->remove(id)` to clean the account.
 A detached thread is used because the caller must never block on the HTTPS
-round-trip — `mutex_` may be held.
+round-trip — `mutex_` may be held. TorrServer also `rem`s the torrent (memory +
+DB + disk cache) from `DebridTransfer` when the job **finishes**, so completed
+downloads do not sit in the LAN server's list until the user clears the queue.
 
 ## Settings and state versioning
 

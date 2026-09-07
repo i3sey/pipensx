@@ -77,6 +77,7 @@ void testCreatePollResolveRemove() {
     assert(id == "abc");
     assert(rec.seen[0].url == "http://box:8090/torrents");
     assert(rec.seen[0].body.find("\"action\":\"add\"") != std::string::npos);
+    assert(rec.seen[0].body.find("\"save_to_db\":true") != std::string::npos);
     // The magnet must survive JSON encoding intact — '&' and ':' and all.
     assert(rec.seen[0].body.find("magnet:?xt=urn:btih:abc&dn=x") !=
            std::string::npos);
@@ -112,6 +113,17 @@ void testCreatePollResolveRemove() {
     assert(rec.seen.size() == 4);
 }
 
+void testCreateFromFileUploads() {
+    Recorder rec;
+    rec.replies = {{200, kGettingInfo}};
+    TorrserverProvider provider("box:8090", scripted(&rec));
+    std::string id, error;
+    assert(provider.createFromFile("/tmp/x.torrent", id, error));
+    assert(id == "abc");
+    assert(rec.seen[0].url == "http://box:8090/torrent/upload");
+    assert(rec.seen[0].uploadFilePath == "/tmp/x.torrent");
+}
+
 void testServerErrorsSurface() {
     Recorder rec;
     rec.replies = {{500, "boom"}, {200, "not json"}};
@@ -130,6 +142,7 @@ int main() {
     testNormalizeBaseUrl();
     testValidate();
     testCreatePollResolveRemove();
+    testCreateFromFileUploads();
     testServerErrorsSurface();
     std::puts("torrserver provider ok");
     return 0;

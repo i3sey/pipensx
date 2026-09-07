@@ -52,6 +52,8 @@ public:
     bool resolveDownloadUrl(const std::string& id, const DebridInfo& info,
                             size_t kthSelected, const DebridFile& file,
                             std::string& url, std::string& error) override;
+    // POST /torrents action=rem: drop from memory, delete the TorrServer DB
+    // row, and wipe on-disk cache for that hash.
     bool remove(const std::string& id, std::string& error) override;
     const char* name() const override { return "torrserver"; }
     // The user typed this address; a LAN TorrServer speaks plain HTTP.
