@@ -706,6 +706,8 @@ int main(int argc, char** argv) {
         // the guard, so there is no cross-thread state to race on.
         pipensx::SwitchBacklightGuard backlightGuard;
         bool backlightOff = false;
+        uint64_t saverShownMs = 0;
+        bool screenOffAttempted = false;
         // Watchdog against hanging the system (B5): the UI thread pets
         // `uiHeartbeat` every frame; this thread only logs a stall and
         // forces the panel back on so a hang can never present as a dead
@@ -981,12 +983,13 @@ int main(int argc, char** argv) {
             }
 
             // OLED burn-in + screen-off guard (B5): after five idle minutes
-            // cover the UI with the drifting black saver AND switch the panel
+            // cover the UI with a warning overlay; 15s later switch the panel
             // off through lbl — the torrent engine keeps running because the
             // console never auto-sleeps mid-transfer
             // (SwitchPerformanceController) and the app never suspends
             // (borealis NoSuspend). Any controller button or touch dismisses
-            // the saver and switches the panel back on; the wake press only
+            // the saver and switches the panel back on. Power is not in the
+            // pad map (Horizon sleep, not our wake). The wake press only
             // resets the idle clock here and is absorbed by the covering
             // activity, so it can never reach the download queue. Open state
             // is derived from the activity stack so a dismiss cannot desync a
@@ -1019,6 +1022,7 @@ int main(int argc, char** argv) {
                     backlightOff = false;
                     log_msg("[saver] backlight on\n");
                 }
+                screenOffAttempted = false;
             } else if (!saverEnabled) {
                 if (saverOpen) {
                     brls::Application::popActivity(
@@ -1030,17 +1034,30 @@ int main(int argc, char** argv) {
                     backlightOff = false;
                     log_msg("[saver] backlight on\n");
                 }
+                screenOffAttempted = false;
             } else if (!saverOpen &&
                        now_ms() - lastInputMs >= pipensx::ui::kBurnInIdleMs) {
                 brls::Application::pushActivity(
                     new pipensx::ui::BurnInSaverActivity(),
                     brls::TransitionAnimation::NONE);
-                log_msg("[saver] idle %llums, screen off (transfers keep "
+                saverShownMs = now_ms();
+                screenOffAttempted = false;
+                log_msg("[saver] idle %llums, warning (transfers keep "
                         "running)\n",
                         (unsigned long long)pipensx::ui::kBurnInIdleMs);
-                if (backlightGuard.turnOff())
-                    backlightOff = true;
                 lastInputMs = now_ms();
+            } else if (saverOpen && !backlightOff && !screenOffAttempted &&
+                       now_ms() - saverShownMs >=
+                           pipensx::ui::kScreenOffWarnMs) {
+                screenOffAttempted = true;
+                if (backlightGuard.turnOff()) {
+                    if (auto* saver = pipensx::ui::burnInSaverTop())
+                        saver->setPanelOff(true);
+                    backlightOff = true;
+                    log_msg("[saver] screen off (transfers keep running)\n");
+                } else {
+                    log_msg("[saver] backlight off failed, keeping warning\n");
+                }
             }
             uiHeartbeat.store(now_ms(), std::memory_order_relaxed);
 

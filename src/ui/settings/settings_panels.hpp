@@ -610,7 +610,7 @@ public:
             });
         content_->addView(installLocation_);
 
-        // Screen-off guard (B5): idle minutes cover the UI and switch the
+        // Screen-off guard (B5): idle minutes show a warning, then switch the
         // panel off through lbl while the engine keeps running. Lives here
         // rather than General so the settings screenshot baseline (which
         // pins the General panel) keeps rendering byte-identical.

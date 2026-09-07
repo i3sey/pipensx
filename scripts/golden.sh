@@ -41,7 +41,7 @@ fi
 #   bug-report-detail / screenshot-viewer-preview / screenshot-viewer-missing
 #   are variants of views kept below, storage / network-health are SettingsView
 #   sections covered by settings, help / about are static low-churn views.
-SCREENS="${GOLDEN_SCREENS:-catalog detail frame downloads download-files deploy-preview installed-populated update-chooser settings settings-debrid first-run debrid-link torrent-selection bug-report screenshot-viewer port-install-warning}"
+SCREENS="${GOLDEN_SCREENS:-catalog detail frame downloads download-files deploy-preview installed-populated update-chooser settings settings-debrid first-run debrid-link torrent-selection bug-report screenshot-viewer port-install-warning screen-off-warning}"
 # Behaviour checks: these assert and exit non-zero instead of writing a
 # baseline, so they are never compared against tests/golden/. Entries are
 # <screen> or <screen>:<locale>; hints-budget and first-run-focus run only as
@@ -65,7 +65,7 @@ LIGHT_SCREENS="${GOLDEN_LIGHT_SCREENS:-catalog settings downloads}"
 # (detail), fixed-width rail (settings), dense rows (torrent-selection) and
 # the wrapped dialog (port-install-warning). The rest render the same layout
 # code already pinned by the English baselines above.
-RU_SCREENS="${GOLDEN_RU_SCREENS:-frame catalog detail settings torrent-selection port-install-warning}"
+RU_SCREENS="${GOLDEN_RU_SCREENS:-frame catalog detail settings torrent-selection port-install-warning screen-off-warning}"
 RU_THEME="${GOLDEN_RU_THEME:-dark}"
 
 export LIBGL_ALWAYS_SOFTWARE=1

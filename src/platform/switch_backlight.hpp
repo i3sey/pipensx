@@ -4,10 +4,10 @@
 //
 // The console's own auto-sleep suspends sockets, so a download that is alive
 // when the screen dims comes back as an error. The idle loop in
-// main_switch.cpp instead covers the UI with BurnInSaverActivity and switches
-// the panel off through lbl — the torrent engine keeps running the whole
-// time. Any controller button or touch dismisses the saver and switches the
-// panel back on; the wake press never touches the download queue.
+// main_switch.cpp instead covers the UI with BurnInSaverActivity (a warning,
+// then black) and switches the panel off through lbl — the torrent engine
+// keeps running the whole time. Any controller button or touch dismisses the
+// saver and switches the panel back on; Power is Horizon sleep, not our wake.
 //
 // lbl is initialized and torn down by borealis' switch_wrapper
 // (userAppInit/userAppExit), so this unit only issues the on/off commands.

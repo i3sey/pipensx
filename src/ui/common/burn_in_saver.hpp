@@ -1,51 +1,124 @@
 #pragma once
 
-#include <cmath>
+#include <algorithm>
 #include <cstdint>
 
 #include <borealis.hpp>
 
+#include "ui/i18n.hpp"
 #include "ui/theme.hpp"
 
 namespace pipensx::ui {
 
-// Full-screen OLED burn-in guard: pure black plus one slowly drifting dim
-// marker so static UI chrome (sidebars, progress bars) does not sit on the
-// same pixels for hours. Dismissal and the panel are owned by main_switch's
-// idle loop — any controller button or touch there pops this activity AND
-// switches the backlight back on through lbl, without touching the download
-// queue — so D-pad and touch work the same as face buttons without racing
-// double-pops, and the wake press can never kill a transfer. The loop also
-// runs a heartbeat watchdog that forces the panel back on if the UI thread
-// ever stalls while the screen is off, so a hang presents as a frozen UI
-// with a log line instead of a dead black panel.
-class BurnInSaverView : public brls::Box {
+// Static crescent so the warning is a picture, not a screensaver, and so
+// golden frames do not depend on the wall clock.
+class ScreenOffGlyph : public brls::View {
 public:
-    BurnInSaverView() {
-        setFocusable(true);
-        setGrow(1.f);
-        setBackgroundColor(theme::burnInBackdrop());
+    ScreenOffGlyph() {
+        setWidth(kSize);
+        setHeight(kSize);
+        setAlignSelf(brls::AlignSelf::CENTER);
+        setFocusable(false);
     }
 
     void draw(NVGcontext* vg, float x, float y, float width, float height,
-              brls::Style style, brls::FrameContext* ctx) override {
-        brls::Box::draw(vg, x, y, width, height, style, ctx);
-        const float t = static_cast<float>(brls::getCPUTimeUsec()) * 1e-6f;
-        const float marker = 48.f;
-        const float px = x + (width - marker) * (0.5f + 0.45f * std::sin(t * 0.07f));
-        const float py = y + (height - marker) * (0.5f + 0.45f * std::cos(t * 0.05f));
+              brls::Style, brls::FrameContext*) override {
+        const float side = std::min(width, height);
+        const float scale = side / kGlyph;
+        nvgSave(vg);
+        nvgTranslate(vg, x + (width - side) / 2.0f, y + (height - side) / 2.0f);
+        nvgScale(vg, scale, scale);
         nvgBeginPath(vg);
-        nvgRect(vg, px, py, marker, marker);
-        nvgFillColor(vg, theme::burnInMarker());
+        nvgCircle(vg, 12.0f, 12.0f, 9.0f);
+        nvgCircle(vg, 16.0f, 9.0f, 7.0f);
+        nvgPathWinding(vg, NVG_HOLE);
+        nvgFillColor(vg, theme::textPrimary());
         nvgFill(vg);
+        nvgRestore(vg);
     }
 
+private:
+    static constexpr float kSize = 96.0f;
+    static constexpr float kGlyph = 24.0f;
+};
+
+// Idle cover: a dim warning that the panel will go dark, then (once lbl
+// succeeds) opaque black so OLED chrome is not left on. Dismissal and the
+// backlight live in main_switch's idle loop — any controller button or touch
+// pops this activity AND switches the panel back on through lbl, without
+// touching the download queue. Power is Horizon sleep, not our wake, and is
+// not in the pad map. The loop also runs a heartbeat watchdog that forces
+// the panel back on if the UI thread stalls while the screen is off.
+class BurnInSaverView : public brls::Box {
+public:
+    BurnInSaverView() : brls::Box(brls::Axis::COLUMN) {
+        setFocusable(true);
+        setHideHighlight(true);
+        setGrow(1.f);
+        setJustifyContent(brls::JustifyContent::CENTER);
+        setAlignItems(brls::AlignItems::CENTER);
+        setBackgroundColor(theme::overlay());
+
+        content_ = new brls::Box(brls::Axis::COLUMN);
+        content_->setWidth(720.0f);
+        content_->setAlignItems(brls::AlignItems::CENTER);
+        addView(content_);
+
+        auto* glyph = new ScreenOffGlyph();
+        glyph->setMarginBottom(24.0f);
+        content_->addView(glyph);
+
+        auto* title = new brls::Label();
+        title->setText(tr("pipensx/settings/screen_off_title"));
+        title->setFontSize(theme::kFontTitle);
+        title->setTextColor(theme::textPrimary());
+        title->setHorizontalAlign(brls::HorizontalAlign::CENTER);
+        title->setWidth(720.0f);
+        title->setMarginBottom(12.0f);
+        content_->addView(title);
+
+        auto* hint = new brls::Label();
+        hint->setText(tr("pipensx/settings/screen_off_hint"));
+        hint->setFontSize(theme::kFontSmall);
+        hint->setTextColor(theme::textSecondary());
+        hint->setHorizontalAlign(brls::HorizontalAlign::CENTER);
+        hint->setSingleLine(false);
+        hint->setWidth(720.0f);
+        content_->addView(hint);
+    }
+
+    void setPanelOff(bool off) {
+        if (panelOff_ == off)
+            return;
+        panelOff_ = off;
+        setBackgroundColor(off ? theme::burnInBackdrop() : theme::overlay());
+        content_->setVisibility(off ? brls::Visibility::GONE
+                                    : brls::Visibility::VISIBLE);
+    }
+
+    bool isTranslucent() override { return !panelOff_; }
+
     brls::View* getDefaultFocus() override { return this; }
+
+private:
+    brls::Box* content_ = nullptr;
+    bool panelOff_ = false;
 };
 
 class BurnInSaverActivity : public brls::Activity {
 public:
-    brls::View* createContentView() override { return new BurnInSaverView(); }
+    brls::View* createContentView() override {
+        view_ = new BurnInSaverView();
+        return view_;
+    }
+
+    void setPanelOff(bool off) {
+        if (view_)
+            view_->setPanelOff(off);
+    }
+
+private:
+    BurnInSaverView* view_ = nullptr;
 };
 
 inline bool controllerHasButtonDown(const brls::ControllerState& state) {
@@ -56,14 +129,19 @@ inline bool controllerHasButtonDown(const brls::ControllerState& state) {
     return false;
 }
 
-inline bool burnInSaverIsTop() {
+inline BurnInSaverActivity* burnInSaverTop() {
     const auto stack = brls::Application::getActivitiesStack();
-    return !stack.empty() &&
-           dynamic_cast<BurnInSaverActivity*>(stack.back()) != nullptr;
+    if (stack.empty())
+        return nullptr;
+    return dynamic_cast<BurnInSaverActivity*>(stack.back());
 }
+
+inline bool burnInSaverIsTop() { return burnInSaverTop() != nullptr; }
 
 // Five minutes of no button/touch input — long enough for a download screen
 // to sit idle, short enough to protect OLED panels that stay on a static UI.
 constexpr uint64_t kBurnInIdleMs = 5ull * 60ull * 1000ull;
+// Grace overlay after idle, before lbl actually kills the panel.
+constexpr uint64_t kScreenOffWarnMs = 15ull * 1000ull;
 
 } // namespace pipensx::ui

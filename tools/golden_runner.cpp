@@ -16,6 +16,7 @@
 //                          update-chooser-toggle|settings|settings-debrid|help|
 //                          storage|network-health|first-run|first-run-focus|first-run-disclaimer|debrid-link|
 //                          port-install-warning|port-install-indexing|
+//                          screen-off-warning|
 //                          about|bug-report|
 //                          bug-report-detail|bug-report-focus|sidebar-touch|
 //                          sidebar-fold-roundtrip|settings-focus-roundtrip|
@@ -69,6 +70,7 @@
 #include "app/install_space.hpp"
 #include "app/installed_title_service.hpp"
 #include "ui/catalog/catalog_view.hpp"
+#include "ui/common/burn_in_saver.hpp"
 #include "ui/common/ui_helpers.hpp"
 #include "ui/detail/game_detail.hpp"
 #include "ui/detail/port_install_dialog.hpp"
@@ -615,6 +617,7 @@ int main(int argc, char** argv) {
     std::vector<uint8_t> updateChooserMask;
     bool disclaimerOkFired = false;
     bool portInstallContinued = false;
+    bool screenOffWarning = false;
     const std::string setupDiagnosticFixture =
         "cut-off secret body api_key=DO_NOT_SHOW\n"
         "[  13010] [diagnostic] schema=1 level=error stage=net "
@@ -1087,6 +1090,12 @@ int main(int argc, char** argv) {
                 return settingsFocusView;
             });
         activity = new GoldenActivity(settingsFocusFrame);
+    } else if (screen == "screen-off-warning") {
+        auto* under = new brls::Box();
+        under->setGrow(1.f);
+        under->setBackgroundColor(theme::surface());
+        activity = new GoldenActivity(under);
+        screenOffWarning = true;
     } else if (screen == "settings") {
         activity = new GoldenActivity(new SettingsView(
             &settings, &manager, &catalog, &metadata, &installed, nullptr));
@@ -1201,6 +1210,11 @@ int main(int argc, char** argv) {
     }
 
     brls::Application::pushActivity(activity);
+    if (screenOffWarning) {
+        brls::Application::pushActivity(
+            new pipensx::ui::BurnInSaverActivity(),
+            brls::TransitionAnimation::NONE);
+    }
     if (screen == "first-run-disclaimer")
         pipensx::ui::showCatalogDisclaimer(
             &settings, [&disclaimerOkFired] { disclaimerOkFired = true; });
