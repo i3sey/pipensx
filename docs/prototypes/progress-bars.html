@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pipensx — варианты прогрессбара</title>
+<style>
+:root {
+  --accent: #00c3e3;
+  --on-accent: #0c2228;
+  --error: #ff4554;
+  --success: #60dc82;
+  --warning: #e69650;
+  --text: #f5f5fa;
+  --text2: #b9b9c3;
+  --text3: #9696a0;
+  --bg: #2d2d2d;
+  --surface: #3a3a42;
+  --overlay: rgba(35,35,40,.92);
+  --sidebar: #323232;
+  --sidebar-w: 240px;
+  --header-h: 72px;
+  --tv-w: 1280px;
+  --tv-h: 720px;
+  --track: rgba(128,128,128,.27);
+  --meter-track: #18181b;
+  --paused: #73737d;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; min-height: 100%; background: #151518; color: var(--text);
+  font: 15px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+.page { display: grid; grid-template-columns: 280px 1fr; min-height: 100vh; }
+.picker { background: #1b1b1f; border-right: 1px solid #2a2a30; padding: 16px 12px 32px;
+  position: sticky; top: 0; height: 100vh; overflow: auto; }
+.picker h1 { font-size: 18px; font-weight: 650; margin: 0 0 6px; }
+.picker .lead { color: var(--text3); font-size: 13px; margin: 0 0 16px; }
+.picker button { display: block; width: 100%; text-align: left; background: transparent;
+  border: 1px solid transparent; color: var(--text2); padding: 8px 10px; border-radius: 6px;
+  cursor: pointer; font: inherit; margin-bottom: 4px; }
+.picker button:hover { background: #25252c; color: var(--text); }
+.picker button.on { background: rgba(0,195,227,.12); border-color: rgba(0,195,227,.45); color: var(--text); }
+.picker button small { display: block; color: var(--text3); font-size: 11px; margin-top: 2px; }
+.note { margin-top: 18px; padding: 12px; background: #222228; border-radius: 8px; font-size: 13px; color: var(--text2); }
+.note h2 { margin: 0 0 6px; font-size: 13px; color: var(--accent); font-weight: 650; }
+.stage-wrap { padding: 16px 20px 32px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.tv-meta { display: flex; justify-content: space-between; align-items: baseline; color: var(--text3); font-size: 13px; }
+.tv-frame { width: 100%; overflow: hidden; border-radius: 4px; box-shadow: 0 24px 80px rgba(0,0,0,.55); }
+.tv { width: var(--tv-w); height: var(--tv-h); background: var(--bg); overflow: hidden; display: flex;
+  transform-origin: top left; }
+.side { width: var(--sidebar-w); background: var(--sidebar); padding: 18px 12px; display: flex;
+  flex-direction: column; gap: 4px; flex-shrink: 0; }
+.side .brand { font-size: 13px; letter-spacing: .08em; color: var(--text3); padding: 4px 10px 16px; }
+.nav { padding: 10px 12px; border-radius: 6px; color: var(--text2); }
+.nav.on { background: rgba(0,195,227,.1); color: var(--text); box-shadow: inset 3px 0 0 var(--accent); }
+.main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.head { height: var(--header-h); display: flex; align-items: center; gap: 12px; padding: 0 20px;
+  border-bottom: 1px solid #3a3a40; flex-shrink: 0; }
+.head h2 { margin: 0; font-size: 25px; font-weight: 600; flex: 1; }
+.chip { background: var(--surface); color: var(--text2); padding: 6px 10px; border-radius: 6px; font-size: 13px; }
+.body { flex: 1; display: flex; min-height: 0; }
+.list { width: 500px; flex-shrink: 0; border-right: 1px solid #3a3a40; overflow: hidden; }
+.cell { height: 108px; display: flex; align-items: center; padding: 12px 20px; gap: 16px; cursor: pointer; }
+.cell.on { background: var(--surface); box-shadow: inset 3px 0 0 var(--accent); }
+.thumb { width: 72px; height: 72px; border-radius: 6px; flex-shrink: 0; display: grid; place-items: center;
+  font-size: 30px; color: var(--text2); font-weight: 650; }
+.cell-body { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; }
+.cell-top { display: flex; align-items: center; gap: 8px; }
+.cell-top .title { flex: 1; font-size: 22px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.st { font-size: 17px; white-space: nowrap; }
+.st.accent { color: var(--accent); }
+.st.success { color: var(--success); }
+.st.error { color: var(--error); }
+.st.paused { color: var(--text2); }
+.st.warn { color: var(--warning); }
+.cell-meta { margin-top: 6px; margin-bottom: 9px; font-size: 16px; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.details { flex: 1; display: flex; padding: 24px 20px 24px 16px; gap: 16px; min-width: 0; }
+.cards { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; overflow: hidden; }
+.d-status { font-size: 25px; margin-bottom: 2px; }
+.card { background: var(--surface); border-radius: 8px; padding: 12px 16px; }
+.card .h { font-size: 15px; color: var(--text2); margin-bottom: 8px; }
+.card .line { font-size: 21px; margin-bottom: 4px; }
+.card .sub { font-size: 17px; color: var(--text2); margin-bottom: 4px; }
+.actions { width: 220px; flex-shrink: 0; background: var(--surface); border-radius: 8px; padding: 16px;
+  display: flex; flex-direction: column; gap: 8px; }
+.btn { padding: 10px 12px; border-radius: 6px; text-align: center; font-weight: 650; font-size: 15px; }
+.btn.primary { background: var(--accent); color: var(--on-accent); }
+.btn.ghost { background: #2e2e34; color: var(--text); }
+.hint { position: absolute; right: 12px; bottom: 8px; color: var(--text3); font-size: 12px; pointer-events: none; }
+.picker .group { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--text3);
+  margin: 14px 10px 6px; }
+
+.bar { position: relative; overflow: hidden; }
+.bar > i, .bar .seg, .bar .buf { display: block; height: 100%; }
+.row-bar { display: flex; align-items: center; gap: 8px; }
+.pct { font-size: 15px; font-weight: 650; min-width: 38px; text-align: right; color: var(--text); flex-shrink: 0; }
+.axis { font-size: 13px; color: var(--text3); margin-bottom: 3px; }
+.stack { display: flex; flex-direction: column; gap: 6px; }
+.legend { display: flex; gap: 12px; margin-top: 8px; font-size: 13px; color: var(--text2); }
+.legend b { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px;
+  vertical-align: -1px; }
+.pill-pct { position: absolute; top: 50%; transform: translateY(-50%); font-size: 13px; font-weight: 700;
+  pointer-events: none; white-space: nowrap; }
+.graph { height: 48px; border-radius: 6px; background: rgba(30,31,36,.75); margin-top: 6px;
+  background-image: repeating-linear-gradient(to top, transparent 0 11px, rgba(180,180,190,.12) 11px 12px),
+    linear-gradient(180deg, transparent 20%, rgba(0,195,227,.35) 100%); }
+
+@keyframes slide {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(420%); }
+}
+.indet { position: relative; overflow: hidden; }
+.indet > i { position: absolute; top: 0; left: 0; height: 100%; width: 32%;
+  animation: slide 1.25s ease-in-out infinite; }
+</style>
+</head>
+<body>
+<div class="page">
+  <aside class="picker">
+    <h1>Прогрессбар</h1>
+    <p class="lead">Макет Switch 1280×720. Кликни строку слева — справа откроются детали. Это только прототип — код приложения не меняется.</p>
+    <div id="list"></div>
+    <div class="note" id="note"></div>
+  </aside>
+  <div class="stage-wrap">
+    <div class="tv-meta">
+      <span id="tv-title">Текущий</span>
+      <span>ТВ · 1280×720 · тёмная тема</span>
+    </div>
+    <div class="tv-frame" id="frame"><div class="tv" id="tv"></div></div>
+  </div>
+</div>
+<script>
+const TASKS = [
+  {
+    id: "dl", title: "Hades II", letter: "H", hue: 340,
+    status: "Загрузка 42%", tone: "accent",
+    dl: 42, inst: 0, copy: 0, avail: 71,
+    meta: "3.4 ГБ / 8.0 ГБ   1.2 МБ/с   пиров: 70   осталось 1 ч 4 мин",
+    dStatus: "Статус: Загрузка",
+    progressLine: "42%  ·  3.4 ГБ / 8.0 ГБ",
+    package: "", eta: "Осталось 1 ч 4 мин",
+    speed: "Загрузка: 1.2 МБ/с",
+    peers: "Пиры: 70   DHT: 12 годных / 4 сомнительных",
+    files: null, error: "",
+    pause: "Пауза",
+  },
+  {
+    id: "check", title: "Celeste", letter: "C", hue: 200,
+    status: "Проверка 0%", tone: "accent",
+    dl: 0, inst: 0, copy: 0, avail: 0, indet: true,
+    meta: "0 Б / 1.2 ГБ",
+    dStatus: "Статус: Проверка",
+    progressLine: "0%  ·  0 Б / 1.2 ГБ",
+    package: "", eta: "",
+    speed: "Загрузка: 0 Б/с",
+    peers: "Пиры: 0   DHT: 0 годных / 0 сомнительных",
+    files: null, error: "",
+    pause: "Пауза",
+  },
+  {
+    id: "inst", title: "Hollow Knight", letter: "K", hue: 220,
+    status: "Установка 18%", tone: "accent",
+    dl: 91, inst: 18, copy: 0, avail: 91,
+    meta: "Пакет 1 / 3   hollow-knight.nsp   осталось 12 мин",
+    dStatus: "Статус: Установка",
+    progressLine: "18%  ·  210 МБ / 1.1 ГБ",
+    package: "Пакет 1 из 3", pkgName: "hollow-knight.nsp",
+    eta: "Осталось 12 мин",
+    speed: "Загрузка: 0 Б/с",
+    installSpeed: "Установка: 1.8 МБ/с",
+    peers: "Пиры: 88   DHT: 9 годных / 2 сомнительных",
+    files: null, error: "",
+    pause: "Пауза",
+  },
+  {
+    id: "copy", title: "Stardew Valley", letter: "S", hue: 110,
+    status: "Развёртывание файлов порта", tone: "accent",
+    dl: 100, inst: 100, copy: 34, avail: 100,
+    meta: "34% · 1200 / 3500 файлов · 180 МБ / 520 МБ   /switch/StardewValley.nro",
+    dStatus: "Статус: Развёртывание файлов порта",
+    progressLine: "34%  ·  180 МБ / 520 МБ",
+    package: "", eta: "",
+    speed: "Загрузка: 0 Б/с",
+    peers: "",
+    files: { phase: "Развёртывание файлов порта", line: "34% · 1200 / 3500 файлов · 180 МБ / 520 МБ\n/switch/StardewValley.nro" },
+    error: "",
+    pause: "Отменить копирование",
+  },
+  {
+    id: "err", title: "Dead Cells", letter: "D", hue: 350,
+    status: "Ошибка 67%", tone: "error",
+    dl: 67, inst: 0, copy: 0, avail: 67,
+    meta: "0.5 ГБ / 0.8 ГБ   Unable to create the temporary copy file",
+    dStatus: "Статус: Ошибка",
+    progressLine: "67%  ·  0.5 ГБ / 0.8 ГБ",
+    package: "", eta: "",
+    speed: "Загрузка: 0 Б/с",
+    peers: "Пиры: 0",
+    files: null, error: "Ошибка: Unable to create the temporary copy file",
+    pause: "Продолжить",
+  },
+  {
+    id: "pause", title: "Ori and the Blind Forest", letter: "O", hue: 170,
+    status: "Пауза 55%", tone: "paused",
+    dl: 55, inst: 0, copy: 0, avail: 80,
+    meta: "4.5 ГБ / 8.2 ГБ",
+    dStatus: "Статус: Пауза",
+    progressLine: "55%  ·  4.5 ГБ / 8.2 ГБ",
+    package: "", eta: "",
+    speed: "Загрузка: 0 Б/с",
+    peers: "Пиры: 19   DHT: 4 годных / 1 сомнительных",
+    files: null, error: "",
+    pause: "Продолжить",
+  },
+];
+
+function art(t) {
+  return `background:linear-gradient(160deg,hsl(${t.hue} 55% 42%),hsl(${(t.hue+40)%360} 40% 18%))`;
+}
+function clamp(n) { return Math.max(0, Math.min(100, n)); }
+function fill(pct, color) {
+  return `<i style="width:${clamp(pct)}%;background:${color};border-radius:inherit"></i>`;
+}
+function toneColor(t) {
+  return { accent: "var(--accent)", success: "var(--success)", error: "var(--error)",
+           paused: "var(--paused)", warn: "var(--warning)" }[t.tone] || "var(--accent)";
+}
+function shownPct(t) {
+  if (t.copy) return t.copy;
+  if (t.inst) return t.inst;
+  return t.dl;
+}
+
+function barCurrent(t, where) {
+  const h = where === "cell" ? 7 : 14;
+  return `<div class="bar" style="height:${h}px;border-radius:${h/2}px;background:var(--track)">${fill(shownPct(t), "var(--accent)")}</div>`;
+}
+function barReadable(t, where) {
+  const h = where === "cell" ? 12 : 14;
+  const color = t.indet ? "var(--accent)" : toneColor(t);
+  const inner = t.indet
+    ? `<div class="bar indet" style="height:${h}px;border-radius:${h/2}px;background:var(--meter-track);flex:1"><i style="background:${color};border-radius:inherit"></i></div>`
+    : `<div class="bar" style="height:${h}px;border-radius:${h/2}px;background:var(--meter-track);flex:1">${fill(shownPct(t), color)}</div>`;
+  return `<div class="row-bar">${inner}<span class="pct">${t.indet ? "…" : shownPct(t) + "%"}</span></div>`;
+}
+function barFat(t, where) {
+  const h = where === "cell" ? 22 : 22;
+  const color = t.indet ? "var(--accent)" : toneColor(t);
+  const pct = shownPct(t);
+  const inside = pct >= 32;
+  const label = t.indet ? "…" : pct + "%";
+  const ink = inside ? "var(--on-accent)" : "var(--text)";
+  const left = inside ? `left:12px` : `left:calc(${pct}% + 8px)`;
+  const body = t.indet
+    ? `<div class="bar indet" style="height:${h}px;border-radius:${h/2}px;background:var(--meter-track)"><i style="background:${color};border-radius:inherit"></i><span class="pill-pct" style="left:12px;color:var(--text)">…</span></div>`
+    : `<div class="bar" style="height:${h}px;border-radius:${h/2}px;background:var(--meter-track)">${fill(pct, color)}<span class="pill-pct" style="${left};color:${ink}">${label}</span></div>`;
+  return body;
+}
+function dualPair(t) {
+  const second = t.copy ? { label: "Копия в /switch", pct: t.copy, color: "var(--success)" }
+    : { label: "Установка", pct: t.inst, color: "var(--success)" };
+  const first = { label: "Скачивание", pct: t.dl, color: "var(--accent)", indet: t.indet };
+  return [first, second];
+}
+function thin(pct, color, h, indet) {
+  if (indet)
+    return `<div class="bar indet" style="height:${h}px;border-radius:${h/2}px;background:var(--meter-track)"><i style="background:${color};border-radius:inherit"></i></div>`;
+  return `<div class="bar" style="height:${h}px;border-radius:${h/2}px;background:var(--meter-track)">${fill(pct, color)}</div>`;
+}
+function barDual(t, where) {
+  const [a, b] = dualPair(t);
+  if (where === "cell") {
+    return `<div class="stack" style="gap:4px">${thin(a.pct, a.color, 6, a.indet)}${thin(b.pct, b.color, 6, false)}</div>`;
+  }
+  return `<div class="stack">
+    <div><div class="axis">${a.label}${a.indet ? "" : " · " + a.pct + "%"}</div>${thin(a.pct, a.color, 10, a.indet)}</div>
+    <div><div class="axis">${b.label} · ${b.pct}%</div>${thin(b.pct, b.color, 10, false)}</div>
+  </div>`;
+}
+function segments(t) {
+  const installed = t.copy ? t.copy : t.inst;
+  const downloaded = Math.max(t.dl, installed);
+  const leftover = Math.max(0, downloaded - installed);
+  const rest = Math.max(0, 100 - downloaded);
+  return { installed, leftover, rest };
+}
+function barSegmented(t, where) {
+  const h = where === "cell" ? 12 : 16;
+  if (t.indet) return thin(0, "var(--accent)", h, true);
+  const s = segments(t);
+  const instColor = t.tone === "error" ? "var(--error)" : "var(--success)";
+  const dlColor = t.tone === "error" ? "var(--error)" : t.tone === "paused" ? "var(--paused)" : "var(--accent)";
+  const bar = `<div class="bar" style="height:${h}px;border-radius:${h/2}px;background:var(--meter-track);display:flex">
+    <i class="seg" style="width:${s.installed}%;background:${instColor}"></i>
+    <i class="seg" style="width:${s.leftover}%;background:${dlColor}"></i>
+  </div>`;
+  if (where === "cell") return bar;
+  return `${bar}<div class="legend">
+    <span><b style="background:${instColor}"></b>Готово ${s.installed}%</span>
+    <span><b style="background:${dlColor}"></b>Скачано ${s.leftover}%</span>
+    <span><b style="background:#333"></b>Осталось ${s.rest}%</span>
+  </div>`;
+}
+function barBuffer(t, where) {
+  const h = where === "cell" ? 10 : 14;
+  const color = t.indet ? "var(--accent)" : toneColor(t);
+  if (t.indet) return thin(0, color, h, true);
+  const buf = Math.max(t.avail, shownPct(t));
+  return `<div class="bar" style="height:${h}px;border-radius:${h/2}px;background:var(--meter-track)">
+    <i class="buf" style="position:absolute;left:0;top:0;width:${buf}%;background:${color};opacity:.28;border-radius:inherit"></i>
+    ${fill(shownPct(t), color)}
+  </div>`;
+}
+
+const V = [
+  {
+    id: "current", name: "0 · Как сейчас",
+    blurb: "7px cyan на слабом track. Процент только в мета-строке.",
+    extra: "С дивана полоска почти не видна. Один бар по очереди значит «скачано / установлено / скопировано» — у Hollow Knight 18%, хотя на диске уже 91%.",
+    render: barCurrent,
+    cellNote: null,
+  },
+  {
+    id: "readable", name: "1 · Читаемый",
+    blurb: "12px, тёмный track как у StorageMeter, % справа, цвет по статусу.",
+    extra: "Рекомендация для списка: мало места, зато с дивана читается цифра и фаза (ошибка красная, пауза серая). Ось по-прежнему одна.",
+    render: barReadable,
+  },
+  {
+    id: "fat", name: "2 · Толстый с цифрой",
+    blurb: "Таблетка 22px, процент внутри заливки.",
+    extra: "Как eShop / Windows. На ячейке 108px уже тесно — мета почти упирается в бар. На деталях места хватает.",
+    render: barFat,
+  },
+  {
+    id: "dual", name: "3 · Два бара",
+    blurb: "Скачивание (accent) + установка/копия (success), у каждого подпись.",
+    extra: "Рекомендация для деталей. На ячейке две тонкие полоски без подписи; на карточке Progress — две оси. Copy больше не подменяет download.",
+    render: barDual,
+  },
+  {
+    id: "seg", name: "4 · Сегменты",
+    blurb: "Один бар: готово | скачано | осталось, как StorageMeter.",
+    extra: "Hollow Knight: 18% зелёным (поставлено), 73% cyan (скачано, ещё не стоит), 9% пусто. Одна ось на 100%.",
+    render: barSegmented,
+  },
+  {
+    id: "buf", name: "5 · Буфер + pulse",
+    blurb: "Готово сплошным, «есть у пиров» полупрозрачным хвостом; Checking — бегущая полоска.",
+    extra: "Hades: 42% скачано, хвост до 71% (пиры). Celeste не выглядит мёртвым нулём — indeterminate. Не объясняет установку vs копию.",
+    render: barBuffer,
+  },
+];
+
+let selectedTask = "inst";
+let currentVariant = "current";
+
+function cellHtml(t, v) {
+  const on = t.id === selectedTask ? " on" : "";
+  const metaMb = (v.id === "fat" || v.id === "dual") ? "4px" : "9px";
+  return `<div class="cell${on}" data-id="${t.id}" tabindex="0">
+    <div class="thumb" style="${art(t)}">${t.letter}</div>
+    <div class="cell-body">
+      <div class="cell-top"><div class="title">${t.title}</div><div class="st ${t.tone}">${t.status}</div></div>
+      <div class="cell-meta" style="margin-bottom:${metaMb}">${t.meta}</div>
+      ${v.render(t, "cell")}
+    </div>
+  </div>`;
+}
+
+function detailsHtml(t, v) {
+  const bar = v.render(t, "details");
+  const progressLine = v.id === "dual"
+    ? `Скачивание ${t.dl}% · установка ${t.inst}%${t.copy ? " · копия " + t.copy + "%" : ""}`
+    : v.id === "seg"
+      ? (() => { const s = segments(t); return `Готово ${s.installed}%  ·  скачано ${s.leftover}%  ·  осталось ${s.rest}%`; })()
+      : t.progressLine;
+  const files = t.files ? `<div class="card">
+      <div class="h">Файлы</div>
+      <div class="line">${t.files.phase}</div>
+      ${v.id === "current" ? v.render({ ...t, inst: 0, dl: t.copy, copy: t.copy, tone: "accent", indet: false }, "details") : ""}
+      <div class="sub" style="white-space:pre-line">${t.files.line}</div>
+    </div>` : "";
+  const err = t.error ? `<div class="sub" style="color:var(--error)">${t.error}</div>` : "";
+  return `<div class="details">
+    <div class="cards">
+      <div class="d-status st ${t.tone}">${t.dStatus}</div>
+      <div class="card">
+        <div class="h">Прогресс</div>
+        <div style="margin-bottom:8px">${bar}</div>
+        <div class="line">${progressLine}</div>
+        ${t.package ? `<div class="sub">${t.package}</div>` : ""}
+        ${t.pkgName ? `<div class="sub">${t.pkgName}</div>` : ""}
+        ${t.eta ? `<div class="sub">${t.eta}</div>` : ""}
+      </div>
+      <div class="card">
+        <div class="h">Скорость</div>
+        <div class="sub"><span style="color:var(--accent)">●</span> ${t.speed}${t.installSpeed ? ` &nbsp; <span style="color:var(--success)">●</span> ${t.installSpeed}` : ""}</div>
+        <div class="graph"></div>
+      </div>
+      ${t.peers ? `<div class="card"><div class="h">Сеть</div><div class="line" style="font-size:17px">${t.peers}</div></div>` : ""}
+      ${files}
+      ${err}
+    </div>
+    <div class="actions">
+      <div class="btn primary">${t.pause}</div>
+      <div class="btn ghost">Проверить</div>
+      <div class="btn ghost">Удалить</div>
+      ${t.files ? `<div class="btn ghost" style="margin-top:8px">Просмотреть файлы</div>` : ""}
+    </div>
+  </div>`;
+}
+
+function chrome(v) {
+  const cells = TASKS.map(t => cellHtml(t, v)).join("");
+  const task = TASKS.find(x => x.id === selectedTask) || TASKS[2];
+  return `<nav class="side">
+      <div class="brand">PIPENSX</div>
+      <div class="nav">Каталог</div>
+      <div class="nav on">Загрузки</div>
+      <div class="nav">Установки</div>
+      <div class="nav">Настройки</div>
+    </nav>
+    <section class="main">
+      <header class="head"><h2>Загрузки</h2>
+        <div class="chip">3 качается · 1 в очереди</div>
+        <div class="chip">1.2 МБ/с ↓</div>
+      </header>
+      <div class="body">
+        <div class="list">${cells}</div>
+        ${detailsHtml(task, v)}
+      </div>
+    </section>`;
+}
+
+const list = document.getElementById("list");
+const tv = document.getElementById("tv");
+const frame = document.getElementById("frame");
+const note = document.getElementById("note");
+const title = document.getElementById("tv-title");
+
+function fit() {
+  const s = Math.min(1, frame.clientWidth / 1280);
+  tv.style.transform = `scale(${s})`;
+  frame.style.height = `${720 * s}px`;
+}
+new ResizeObserver(fit).observe(frame);
+
+function show(id) {
+  const v = V.find(x => x.id === id) || V[0];
+  currentVariant = v.id;
+  location.hash = v.id;
+  list.querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.id === v.id));
+  title.textContent = v.name;
+  note.innerHTML = `<h2>${v.name}</h2><p>${v.blurb}</p><p>${v.extra}</p>
+    <p>Для списка лучше <b>1</b>, для деталей — <b>3</b>. Можно смешать.</p>`;
+  tv.innerHTML = chrome(v);
+  fit();
+}
+
+V.forEach(v => {
+  const b = document.getElementById("list");
+  const btn = document.createElement("button");
+  btn.dataset.id = v.id;
+  btn.innerHTML = `${v.name}<small>${v.blurb}</small>`;
+  btn.onclick = () => show(v.id);
+  b.appendChild(btn);
+});
+
+tv.addEventListener("click", (e) => {
+  const cell = e.target.closest(".cell");
+  if (!cell) return;
+  selectedTask = cell.dataset.id;
+  show(currentVariant);
+});
+tv.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" && e.key !== " ") return;
+  const cell = e.target.closest(".cell");
+  if (!cell) return;
+  selectedTask = cell.dataset.id;
+  show(currentVariant);
+  e.preventDefault();
+});
+
+document.addEventListener("keydown", (e) => {
+  const cells = [...tv.querySelectorAll(".cell")];
+  const i = cells.findIndex(c => c.classList.contains("on"));
+  if (e.key === "ArrowDown" && cells[i + 1]) {
+    selectedTask = cells[i + 1].dataset.id;
+    show(currentVariant);
+    e.preventDefault();
+  }
+  if (e.key === "ArrowUp" && cells[i - 1]) {
+    selectedTask = cells[i - 1].dataset.id;
+    show(currentVariant);
+    e.preventDefault();
+  }
+});
+
+show((location.hash || "#current").slice(1));
+</script>
+</body>
+</html>

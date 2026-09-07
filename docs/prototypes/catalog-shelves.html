@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pipensx — варианты полок каталога</title>
+<style>
+:root {
+  --accent: #00c3e3;
+  --on-accent: #0c2228;
+  --error: #ff4554;
+  --success: #60dc82;
+  --text: #f5f5fa;
+  --text2: #b9b9c3;
+  --text3: #9696a0;
+  --bg: #2d2d2d;
+  --surface: #3a3a42;
+  --overlay: rgba(35,35,40,.92);
+  --sidebar: #323232;
+  --sidebar-w: 240px;
+  --header-h: 72px;
+  --tv-w: 1280px;
+  --tv-h: 720px;
+  --card-w: 180px;
+  --cover-h: 180px;
+  --radius: 8px;
+  --gap: 16px;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; min-height: 100%; background: #151518; color: var(--text);
+  font: 15px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+a { color: var(--accent); }
+.page { display: grid; grid-template-columns: 280px 1fr; min-height: 100vh; }
+.picker { background: #1b1b1f; border-right: 1px solid #2a2a30; padding: 16px 12px 32px;
+  position: sticky; top: 0; height: 100vh; overflow: auto; }
+.picker h1 { font-size: 18px; font-weight: 650; margin: 0 0 6px; }
+.picker .lead { color: var(--text3); font-size: 13px; margin: 0 0 16px; }
+.picker button { display: block; width: 100%; text-align: left; background: transparent;
+  border: 1px solid transparent; color: var(--text2); padding: 8px 10px; border-radius: 6px;
+  cursor: pointer; font: inherit; margin-bottom: 4px; }
+.picker button:hover { background: #25252c; color: var(--text); }
+.picker button.on { background: rgba(0,195,227,.12); border-color: rgba(0,195,227,.45); color: var(--text); }
+.picker button small { display: block; color: var(--text3); font-size: 11px; margin-top: 2px; }
+.note { margin-top: 18px; padding: 12px; background: #222228; border-radius: 8px; font-size: 13px; color: var(--text2); }
+.note h2 { margin: 0 0 6px; font-size: 13px; color: var(--accent); font-weight: 650; }
+.stage-wrap { padding: 16px 20px 32px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.tv-meta { display: flex; justify-content: space-between; align-items: baseline; color: var(--text3); font-size: 13px; }
+.tv-frame { width: 100%; overflow: hidden; border-radius: 4px; box-shadow: 0 24px 80px rgba(0,0,0,.55); }
+.tv { width: var(--tv-w); height: var(--tv-h); background: var(--bg); overflow: hidden; display: flex;
+  transform-origin: top left; }
+.side { width: var(--sidebar-w); background: var(--sidebar); padding: 18px 12px; display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; }
+.side .brand { font-size: 13px; letter-spacing: .08em; color: var(--text3); padding: 4px 10px 16px; }
+.nav { padding: 10px 12px; border-radius: 6px; color: var(--text2); }
+.nav.on { background: rgba(0,195,227,.1); color: var(--text); box-shadow: inset 3px 0 0 var(--accent); }
+.main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.head { height: var(--header-h); display: flex; align-items: center; gap: 12px; padding: 0 20px;
+  border-bottom: 1px solid #3a3a40; }
+.search { flex: 1; background: var(--surface); border-radius: 6px; padding: 8px 12px; color: var(--text3); font-size: 15px; }
+.chip { background: var(--surface); color: var(--text2); padding: 6px 10px; border-radius: 6px; font-size: 13px; }
+.chip.on { background: rgba(0,195,227,.18); color: var(--text); }
+.scroll { flex: 1; overflow: auto; padding: 16px 20px 28px; }
+.scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+.scroll::-webkit-scrollbar-thumb { background: #555; border-radius: 4px; }
+.shelf-h { display: flex; align-items: baseline; justify-content: space-between; margin: 4px 0 8px; }
+.shelf-h h3 { margin: 0; font-size: 21px; font-weight: 600; }
+.see { color: var(--text3); font-size: 15px; }
+.rail { display: flex; gap: var(--gap); overflow: hidden; }
+.card { width: var(--card-w); flex: 0 0 var(--card-w); cursor: pointer; }
+.cover { width: var(--card-w); height: var(--cover-h); border-radius: var(--radius); background: var(--surface);
+  display: flex; align-items: center; justify-content: center; position: relative; overflow: hidden; }
+.cover .art { width: 112px; height: 180px; border-radius: 4px; display: flex; align-items: flex-end;
+  padding: 8px; font-size: 12px; font-weight: 700; line-height: 1.15; text-shadow: 0 1px 4px #000; }
+.name { margin-top: 6px; font-size: 17px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sub { margin-top: 2px; font-size: 15px; color: var(--text3); white-space: nowrap; overflow: hidden; }
+.card:focus, .card:focus-visible, .hero:focus, .wide:focus, .tile:focus, .poster:focus, .row:focus, .orb:focus { outline: none; }
+.card:focus .cover, .hero:focus, .wide:focus, .poster:focus, .tile:focus, .row:focus, .orb:focus {
+  outline: 3px solid var(--accent); outline-offset: 2px; }
+.pill { position: absolute; left: 8px; top: 8px; background: var(--overlay); color: var(--accent);
+  font-size: 12px; padding: 2px 6px; border-radius: 6px; }
+.star { position: absolute; left: 8px; bottom: 8px; background: var(--overlay); width: 28px; height: 28px;
+  border-radius: 6px; display: grid; place-items: center; color: var(--accent); font-size: 14px; }
+.grid { display: grid; grid-template-columns: repeat(5, var(--card-w)); gap: 16px var(--gap); margin-top: 20px; }
+.hero { height: 280px; border-radius: 12px; background: var(--surface); position: relative; overflow: hidden;
+  margin-bottom: 16px; display: flex; align-items: flex-end; }
+.hero .cap { width: 100%; background: var(--overlay); padding: 16px 24px; }
+.hero .k, .k { color: var(--accent); font-size: 15px; }
+.hero h2 { margin: 2px 0 0; font-size: 25px; font-weight: 600; }
+.section { margin-bottom: 18px; }
+.grid-label { color: var(--text3); font-size: 15px; margin: 8px 0; }
+
+/* portrait dense */
+.v-portrait { --card-w: 112px; --cover-h: 180px; --gap: 12px; }
+.v-portrait .cover .art { width: 112px; }
+.v-portrait .grid { grid-template-columns: repeat(8, var(--card-w)); }
+
+/* ranked */
+.rank { position: absolute; left: 6px; bottom: 4px; font-size: 42px; font-weight: 800; color: #fff;
+  text-shadow: 0 2px 8px #000; line-height: 1; }
+
+/* magazine */
+.mag { display: grid; grid-template-columns: 340px 1fr; gap: 16px; height: 300px; margin-bottom: 18px; }
+.poster { border-radius: 12px; overflow: hidden; height: 100%; display: flex; align-items: flex-end; }
+.poster .cap, .tile .cap { width: 100%; background: linear-gradient(transparent, #111); padding: 12px 14px; }
+.poster .cap h2 { margin: 2px 0 0; font-size: 25px; }
+.mag-rail { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 12px; }
+.mag .cell, .tile { border-radius: 8px; overflow: hidden; display: flex; align-items: flex-end; min-height: 0; }
+.tile b { display: block; font-size: 16px; }
+.tile span { display: block; font-size: 12px; color: var(--text2); margin-top: 2px; }
+
+/* tabs */
+.tabs { display: flex; gap: 8px; margin-bottom: 10px; }
+.tab { padding: 6px 14px; border-radius: 999px; background: var(--surface); color: var(--text2); font-size: 15px; }
+.tab.on { background: var(--accent); color: var(--on-accent); font-weight: 650; }
+
+/* dual row */
+.dual { display: grid; grid-auto-flow: column; grid-template-rows: auto auto; gap: 12px 16px;
+  overflow: hidden; }
+
+/* cover-only */
+.v-bare .name, .v-bare .sub { display: none; }
+.v-bare .card:focus .name, .v-bare .card:focus .sub { display: block; }
+
+/* meta */
+.meta { display: flex; gap: 8px; margin-top: 4px; }
+.tag { font-size: 11px; background: var(--surface); color: var(--text2); padding: 2px 6px; border-radius: 4px; }
+.tag.ok { color: var(--success); }
+.tag.warn { color: #e69650; }
+
+/* bento */
+.bento { display: grid; grid-template-columns: 2fr 1fr 1fr; grid-template-rows: 140px 140px; gap: 12px;
+  height: 292px; margin-bottom: 18px; }
+.bento .wide { grid-row: 1 / 3; border-radius: 12px; overflow: hidden; display: flex; align-items: flex-end; }
+.bento .cell { border-radius: 8px; overflow: hidden; display: flex; align-items: flex-end; }
+.bento .cap { width: 100%; background: linear-gradient(transparent, #111c); padding: 10px; font-size: 15px; }
+
+/* overlap */
+.overlap { display: flex; padding-left: 8px; }
+.overlap .card { margin-left: -36px; transition: transform .15s, margin .15s; z-index: 1; }
+.overlap .card:first-child { margin-left: 0; }
+.overlap .card:focus { transform: translateY(-8px) scale(1.06); z-index: 3; margin-right: 12px; }
+
+/* continue */
+.progress { position: absolute; left: 0; right: 0; bottom: 0; height: 4px; background: #0006; }
+.progress > i { display: block; height: 100%; background: var(--accent); }
+
+.hint { position: absolute; right: 16px; bottom: 10px; color: var(--text3); font-size: 13px; pointer-events: none; }
+
+.picker .group { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--text3);
+  margin: 14px 10px 6px; }
+
+/* store layouts */
+.steam { display: grid; grid-template-columns: 1.6fr 1fr; gap: 10px; height: 280px; margin-bottom: 16px; }
+.steam-stack { display: grid; grid-template-rows: 1fr 1fr; gap: 10px; }
+.steam-row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; height: 118px; margin-bottom: 16px; }
+
+.ps5 { height: 430px; border-radius: 12px; display: flex; flex-direction: column; justify-content: flex-end;
+  padding: 24px; margin-bottom: 12px; position: relative; overflow: hidden; }
+.ps5 h2 { margin: 0; font-size: 40px; font-weight: 650; }
+.ps5 .cta, .cta { display: inline-block; margin-top: 10px; background: var(--accent); color: var(--on-accent);
+  padding: 8px 18px; border-radius: 6px; font-weight: 650; font-size: 15px; }
+.ps5-thumbs { display: flex; gap: 10px; margin-top: 18px; }
+.ps5-thumbs .tile { width: 140px; height: 78px; flex: 0 0 140px; }
+
+.xbox { display: grid; grid-template-columns: 2fr 1fr 1fr; grid-template-rows: 150px 150px; gap: 10px;
+  height: 310px; margin-bottom: 16px; }
+.xbox .bill { grid-column: 1; grid-row: 1 / 3; border-radius: 12px; }
+
+.epic { display: grid; grid-template-columns: 1.4fr 1fr; gap: 16px; height: 260px; margin-bottom: 14px; }
+.epic-copy { display: flex; flex-direction: column; justify-content: flex-end; padding: 8px 4px 12px; }
+.epic-copy h2 { margin: 4px 0; font-size: 28px; }
+.epic-copy p { margin: 0; color: var(--text2); font-size: 15px; }
+.epic-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; height: 150px; }
+
+.eshop-bill { height: 200px; border-radius: 12px; margin-bottom: 14px; display: flex; align-items: flex-end; }
+.dots { display: flex; gap: 6px; justify-content: center; margin: -8px 0 14px; }
+.dots i { width: 8px; height: 8px; border-radius: 50%; background: #666; display: block; }
+.dots i.on { background: var(--accent); }
+.orbs { display: flex; gap: 18px; margin-bottom: 16px; }
+.orb { width: 72px; height: 72px; border-radius: 50%; display: grid; place-items: center; font-size: 12px;
+  text-align: center; padding: 8px; font-weight: 650; }
+.eshop-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; height: 140px; }
+
+.today { display: grid; gap: 12px; }
+.story { height: 210px; border-radius: 16px; display: flex; align-items: flex-end; overflow: hidden; }
+.story .cap { padding: 16px 20px; }
+.story small { color: var(--accent); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; }
+.story h2 { margin: 4px 0 0; font-size: 24px; }
+
+.netflix { height: 340px; border-radius: 4px; display: flex; flex-direction: column; justify-content: flex-end;
+  padding: 28px; margin-bottom: 14px; }
+.netflix h2 { margin: 0; font-size: 44px; }
+.netflix-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; height: 96px; }
+
+.gog { display: grid; grid-template-columns: 340px 1fr; gap: 14px; height: 480px; }
+.gog-list { display: flex; flex-direction: column; gap: 4px; overflow: hidden; }
+.row { display: flex; gap: 10px; align-items: center; padding: 8px; border-radius: 8px; background: transparent; }
+.row.on, .row:focus { background: var(--surface); }
+.row .mini { width: 48px; height: 64px; border-radius: 4px; flex-shrink: 0; }
+.gog-hero { border-radius: 12px; display: flex; align-items: flex-end; }
+
+.itch { columns: 4; column-gap: 10px; }
+.itch .tile { break-inside: avoid; margin-bottom: 10px; width: 100%; display: flex; }
+
+.humble-banner { height: 120px; border-radius: 8px; margin-bottom: 12px; display: flex; align-items: center;
+  padding: 20px 24px; }
+.humble-banner h2 { margin: 0; font-size: 22px; }
+.deal { display: grid; grid-template-columns: 72px 1fr auto; gap: 12px; align-items: center;
+  padding: 8px 0; border-bottom: 1px solid #3a3a42; }
+.deal .mini { height: 72px; border-radius: 6px; }
+
+.play-feat { height: 160px; border-radius: 12px; margin-bottom: 12px; display: flex; align-items: flex-end; }
+.play-list .row .mini { width: 56px; height: 56px; border-radius: 12px; }
+
+.ps3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; height: 220px; margin-bottom: 16px; }
+
+.steam .tile, .xbox .tile, .epic > .tile, .epic-3 .tile, .steam-row .tile,
+.ps3 .tile, .eshop-2 .tile, .netflix-row .tile, .mag-rail .tile, .bento .tile { height: 100%; }
+</style>
+</head>
+<body>
+<div class="page">
+  <aside class="picker">
+    <h1>Полки каталога</h1>
+    <p class="lead">Макет Switch 1280×720. Кликни карточку или листай стрелками. Это только прототип — код приложения не меняется.</p>
+    <div id="list"></div>
+    <div class="note" id="note"></div>
+  </aside>
+  <div class="stage-wrap">
+    <div class="tv-meta">
+      <span id="tv-title">Текущий</span>
+      <span>ТВ · 1280×720 · тёмная тема</span>
+    </div>
+    <div class="tv-frame" id="frame"><div class="tv" id="tv"></div></div>
+  </div>
+</div>
+<script>
+const GAMES = [
+  ["Hades", "1.4 ГБ · 62 пира", "Action", 8, 1],
+  ["Celeste", "1.2 ГБ · 41 пир", "Platformer", 200, 1],
+  ["Hollow Knight", "1.1 ГБ · 88 пиров", "Metroidvania", 220, 0],
+  ["Stardew Valley", "0.5 ГБ · 120 пиров", "Sim", 110, 1],
+  ["Dead Cells", "0.8 ГБ · 33 пира", "Roguelike", 350, 0],
+  ["Ori and the Blind Forest", "8.2 ГБ · 19 пиров", "Platformer", 170, 0],
+  ["Cuphead", "4.1 ГБ · 27 пиров", "Action", 30, 0],
+  ["The Binding of Isaac", "0.7 ГБ · 55 пиров", "Roguelike", 280, 1],
+  ["Katana ZERO", "0.3 ГБ · 14 пиров", "Action", 0, 0],
+  ["Shovel Knight", "0.6 ГБ · 9 пиров", "Platformer", 40, 0],
+  ["A Short Hike", "0.2 ГБ · 7 пиров", "Adventure", 90, 0],
+  ["Vampire Survivors", "0.4 ГБ · 91 пир", "Action", 320, 1],
+  ["Into the Breach", "0.3 ГБ · 11 пиров", "Strategy", 190, 0],
+  ["Slay the Spire", "1.0 ГБ · 44 пира", "Roguelike", 260, 0],
+  ["Outer Wilds", "6.4 ГБ · 22 пира", "Adventure", 45, 0],
+  ["Disco Elysium", "20 ГБ · 18 пиров", "RPG", 15, 0],
+  ["Hades II", "8.0 ГБ · 70 пиров", "Action", 340, 0],
+  ["Balatro", "0.2 ГБ · 102 пира", "Cards", 48, 1],
+  ["Tunic", "2.3 ГБ · 16 пиров", "Adventure", 140, 0],
+  ["Celeste 64", "0.1 ГБ · 5 пиров", "Platformer", 205, 0],
+];
+
+function art(i, w, h, title) {
+  const hue = GAMES[i][3];
+  return `<div class="art" style="width:${w}px;height:${h}px;background:
+    linear-gradient(160deg,hsl(${hue} 55% 42%),hsl(${(hue+40)%360} 40% 18%))">${title}</div>`;
+}
+function card(i, extra="") {
+  const [t, sub, , , fav] = GAMES[i];
+  return `<div class="card" tabindex="0">${extra}
+    <div class="cover">${art(i,112,180,t)}${fav?`<div class="star">★</div>`:""}</div>
+    <div class="name">${t}</div><div class="sub">${sub}</div></div>`;
+}
+function chrome(body, cls="") {
+  return `<nav class="side">
+      <div class="brand">PIPENSX</div>
+      <div class="nav on">Каталог</div>
+      <div class="nav">Загрузки</div>
+      <div class="nav">Установки</div>
+      <div class="nav">Настройки</div>
+    </nav>
+    <section class="main">
+      <header class="head">
+        <div class="search">Поиск по каталогу</div>
+        <div class="chip on">Игры</div>
+        <div class="chip">Порты</div>
+        <div class="chip">Популярное</div>
+      </header>
+      <div class="scroll ${cls}">${body}<div class="hint">↑↓ полки · ←→ карточки</div></div>
+    </section>`;
+}
+function shelfHead(title) {
+  return `<div class="shelf-h"><h3>${title}</h3><span class="see">Все</span></div>`;
+}
+function tile(i, cls="") {
+  const [t, sub, , hue] = GAMES[i];
+  return `<div class="tile ${cls}" tabindex="0" style="background:linear-gradient(160deg,hsl(${hue} 52% 40%),hsl(${(hue+48)%360} 38% 14%))">
+    <div class="cap"><b>${t}</b><span>${sub}</span></div></div>`;
+}
+function bg(i, extra="") {
+  const hue = GAMES[i][3];
+  return `background:linear-gradient(155deg,hsl(${hue} 50% 36%),hsl(${(hue+55)%360} 32% 12%));${extra}`;
+}
+function grid(from, n) {
+  return `<div class="grid-label">Все релизы</div><div class="grid">${
+    Array.from({length:n},(_,k)=>card(from+k)).join("")}</div>`;
+}
+function rail(ids) { return `<div class="rail">${ids.map(i=>card(i)).join("")}</div>`; }
+
+const V = [
+  {
+    group: "Оставили",
+    id: "current", name: "0 · Как сейчас",
+    blurb: "Стопка одинаковых полок — база для сравнения.",
+    extra: "Четыре горизонтальные ленты 180px. Именно это ощущается однотипным.",
+    draw() {
+      return chrome(`
+        ${shelfHead("Популярное")}${rail([0,1,2,3,4,5])}
+        <div class="section"></div>
+        ${shelfHead("Новинки")}${rail([6,7,8,9,10,11])}
+        ${grid(0,5)}`);
+    }
+  },
+  {
+    group: "Оставили",
+    id: "magazine", name: "4 · Журнальный блок",
+    blurb: "Слева постер, справа 2×2. Близко к витрине eShop / media.",
+    extra: "Герой + 4 хита без горизонтального скролла верхней полки.",
+    draw() {
+      return chrome(`
+        <div class="mag">
+          <div class="poster" tabindex="0" style="${bg(16)}">
+            <div class="cap"><div class="k">Рекомендуем</div><h2>Hades II</h2></div>
+          </div>
+          <div class="mag-rail">${tile(0)}${tile(1)}${tile(2)}${tile(3)}</div>
+        </div>
+        ${shelfHead("Новинки")}${rail([6,7,8,9])}
+        ${grid(12,5)}`);
+    }
+  },
+  {
+    group: "Оставили",
+    id: "bento", name: "9 · Бенто / мозаика",
+    blurb: "Разные площади, иерархия размером, не рядом.",
+    extra: "Полок нет. Фокус по сетке сложнее ровной ленты.",
+    draw() {
+      return chrome(`
+        <div class="bento">${tile(16,"wide")}${tile(0,"cell")}${tile(1,"cell")}${tile(2,"cell")}${tile(3,"cell")}</div>
+        ${grid(4,10)}`);
+    }
+  },
+  {
+    group: "Магазины",
+    id: "steam", name: "Steam · Featured",
+    blurb: "Главный капсульный блок: 2/3 слева + две акции справа, внизу три ландшафта.",
+    extra: "Витрина store.steampowered.com. Обложки 16:9, не портрет Nintendo.",
+    draw() {
+      return chrome(`
+        <div class="steam">
+          ${tile(16)}
+          <div class="steam-stack">${tile(0)}${tile(17)}</div>
+        </div>
+        <div class="steam-row">${tile(1)}${tile(2)}${tile(11)}</div>
+        ${grid(4,5)}`);
+    }
+  },
+  {
+    group: "Магазины",
+    id: "ps5", name: "PS5 · Home",
+    blurb: "Один киношный герой на весь кадр, снизу ряд превью как на PS5.",
+    extra: "Каталог как «сейчас играет / рекомендуем», сетка уезжает вниз. Сильный фокус на одной игре.",
+    draw() {
+      return chrome(`
+        <div class="ps5" tabindex="0" style="${bg(16)}">
+          <div class="k">Рекомендуем</div>
+          <h2>Hades II</h2>
+          <div>8.0 ГБ · 70 пиров · Action</div>
+          <span class="cta">Установить</span>
+          <div class="ps5-thumbs">${[0,1,2,3].map(i=>tile(i)).join("")}</div>
+        </div>`);
+    }
+  },
+  {
+    group: "Магазины",
+    id: "xbox", name: "Xbox · Billboard",
+    blurb: "Высокий билборд + мозаика 2×2 справа, как Microsoft Store / Game Pass.",
+    extra: "Близко к вашему бенто, но ландшафт и «рекламный» левый столбец.",
+    draw() {
+      return chrome(`
+        <div class="xbox">
+          ${tile(16,"bill")}
+          ${tile(0)}${tile(1)}${tile(11)}${tile(7)}
+        </div>
+        ${grid(4,5)}`);
+    }
+  },
+  {
+    group: "Магазины",
+    id: "epic", name: "Epic · Spotlight",
+    blurb: "Картинка + текст сбоку (не подпись на арте), три карточки ниже.",
+    extra: "epicgames.com: описание читается с дивана. У нас сейчас текст только 17px под карточкой.",
+    draw() {
+      return chrome(`
+        <div class="epic">
+          ${tile(16)}
+          <div class="epic-copy">
+            <div class="k">Spotlight</div>
+            <h2>Hades II</h2>
+            <p>Сиквел рогалика Supergiant. В каталоге с пирами — можно ставить сразу, без полки Popular.</p>
+            <span class="cta" style="margin-top:12px;align-self:flex-start">Подробнее</span>
+          </div>
+        </div>
+        <div class="epic-3">${tile(0)}${tile(1)}${tile(2)}</div>`);
+    }
+  },
+  {
+    group: "Магазины",
+    id: "eshop", name: "eShop · Billboard + orbs",
+    blurb: "Карусель 16:9, круглые жанры, две широкие акции — реальный Nintendo eShop, не полки.",
+    extra: "Жанровые полки F5 заменяются орбами. L/R на билборде, орбы — отдельный ряд фокуса.",
+    draw() {
+      return chrome(`
+        <div class="eshop-bill poster" tabindex="0" style="${bg(16)}">
+          <div class="cap"><div class="k">Featured</div><h2>Hades II</h2></div>
+        </div>
+        <div class="dots"><i class="on"></i><i></i><i></i><i></i></div>
+        <div class="orbs">
+          ${[["Action",8],["Roguelike",280],["Platformer",200],["RPG",15],["Adventure",45],["Sim",110]].map(([n,h])=>
+            `<div class="orb" tabindex="0" style="background:hsl(${h} 45% 32%)">${n}</div>`).join("")}
+        </div>
+        <div class="eshop-2">${tile(0)}${tile(17)}</div>`);
+    }
+  },
+  {
+    group: "Магазины",
+    id: "today", name: "App Store · Today",
+    blurb: "Две редакционные истории на весь экран, как вкладка Today.",
+    extra: "Не каталог-сетка: кураторство. Нужны тексты/баннеры, не только box-art.",
+    draw() {
+      return chrome(`
+        <div class="today">
+          <div class="story" tabindex="0" style="${bg(16)}">
+            <div class="cap"><small>Рекомендуем</small><h2>Hades II уже в каталоге</h2>
+            <span>8 ГБ · 70 пиров</span></div>
+          </div>
+          <div class="story" tabindex="0" style="${bg(11)}">
+            <div class="cap"><small>Коллекция</small><h2>Рогалики, которые качают</h2>
+            <span>Vampire Survivors · Dead Cells · Isaac</span></div>
+          </div>
+        </div>`);
+    }
+  },
+  {
+    group: "Магазины",
+    id: "netflix", name: "Netflix · Billboard",
+    blurb: "Огромный постер с логотипом, ряд ландшафтных превью под ним.",
+    extra: "Первый экран = одна игра. Остальное — 16:9 капсулы, не портреты.",
+    draw() {
+      return chrome(`
+        <div class="netflix" tabindex="0" style="${bg(16)}">
+          <div class="k">Сейчас в каталоге</div>
+          <h2>HADES II</h2>
+          <span class="cta">Установить</span>
+        </div>
+        <div class="netflix-row">${tile(0)}${tile(1)}${tile(2)}${tile(11)}</div>`);
+    }
+  },
+  {
+    group: "Магазины",
+    id: "gog", name: "GOG · Список + герой",
+    blurb: "Слева чарт списком, справа большой арт выбранного — Galaxy / GOG.com.",
+    extra: "Фокус вверх/вниз по списку, не влево/вправо по полке. С дивана читаются названия.",
+    draw() {
+      const rows = [16,0,1,2,11,7,17,3].map((i,n) => {
+        const [t, sub] = GAMES[i];
+        return `<div class="row${n===0?" on":""}" tabindex="0">
+          <div class="mini" style="${bg(i)}"></div>
+          <div><b>${n+1}. ${t}</b><div class="sub">${sub}</div></div></div>`;
+      }).join("");
+      return chrome(`
+        <div class="gog">
+          <div class="gog-list">${rows}</div>
+          <div class="gog-hero" tabindex="0" style="${bg(16)}">
+            <div class="cap"><div class="k">#1 · Популярное</div><h2>Hades II</h2>
+            <span>8.0 ГБ · 70 пиров</span></div>
+          </div>
+        </div>`);
+    }
+  },
+  {
+    group: "Магазины",
+    id: "itch", name: "itch.io · Masonry",
+    blurb: "Кирпичная кладка скриншотов разной высоты, как витрина itch.",
+    extra: "Максимум плотности, минимум иерархии. На геймпаде навигация хуже бенто.",
+    draw() {
+      const hs = [168, 220, 140, 190, 160, 240, 150, 200, 130, 210, 170, 155];
+      const tiles = hs.map((h, n) => {
+        const [t, sub, , hue] = GAMES[n];
+        return `<div class="tile" tabindex="0" style="height:${h}px;background:linear-gradient(160deg,hsl(${hue} 52% 40%),hsl(${(hue+48)%360} 38% 14%))">
+          <div class="cap"><b>${t}</b><span>${sub}</span></div></div>`;
+      }).join("");
+      return chrome(`<div class="itch">${tiles}</div>`);
+    }
+  },
+  {
+    group: "Магазины",
+    id: "humble", name: "Humble · Бандл + сделки",
+    blurb: "Широкий баннер акции и список строк, как Humble / Fanatical.",
+    extra: "Строка = обложка + мета + размер. Удобно сравнивать пиры/гигабайты, плохо для арта.",
+    draw() {
+      const deals = [16,0,11,17,1,2].map(i => {
+        const [t, sub, g] = GAMES[i];
+        return `<div class="deal" tabindex="0">
+          <div class="mini" style="${bg(i)}"></div>
+          <div><b>${t}</b><div class="sub">${g} · ${sub}</div></div>
+          <div style="color:var(--accent);font-weight:650">${sub.split("·")[0]}</div></div>`;
+      }).join("");
+      return chrome(`
+        <div class="humble-banner" tabindex="0" style="${bg(16)}">
+          <div><div class="k">Сборка недели</div><h2>Roguelike pack · 4 игры</h2></div>
+        </div>${deals}`);
+    }
+  },
+  {
+    group: "Магазины",
+    id: "play", name: "Play Store · Список",
+    blurb: "Баннер + нумерованный список с квадратными иконками, как Google Play.",
+    extra: "Ещё плотнее GOG. Хорошо, если важен текст (размер, пиры), не обложки Switch.",
+    draw() {
+      const rows = [0,1,2,11,7,17,3].map((i,n) => {
+        const [t, sub, g] = GAMES[i];
+        return `<div class="row" tabindex="0">
+          <div style="width:24px;color:var(--text3)">${n+1}</div>
+          <div class="mini" style="${bg(i)}"></div>
+          <div><b>${t}</b><div class="sub">${g} · ${sub}</div></div></div>`;
+      }).join("");
+      return chrome(`
+        <div class="play-feat poster" tabindex="0" style="${bg(16)}">
+          <div class="cap"><div class="k">Редакция</div><h2>Hades II</h2></div>
+        </div>
+        <div class="play-list">${rows}</div>`);
+    }
+  },
+  {
+    group: "Магазины",
+    id: "psstore", name: "PS Store · Три тайла",
+    blurb: "Три равных 16:9 на первом экране — веб-витрина PlayStation Store.",
+    extra: "Проще журнального блока: нет главной колонки. Фокус влево/вправо по трём.",
+    draw() {
+      return chrome(`
+        <div class="ps3">${tile(16)}${tile(0)}${tile(11)}</div>
+        <div class="steam-row">${tile(1)}${tile(2)}${tile(17)}</div>`);
+    }
+  },
+  {
+    group: "Магазины",
+    id: "deck", name: "Steam Library · 3 колонки",
+    blurb: "Библиотека колодами 16:9, без полок вообще.",
+    extra: "Как сетка каталога, но ландшафт (капсула Steam), не портрет. Чипы фильтра сверху.",
+    draw() {
+      return chrome(`
+        <div class="tabs"><span class="tab on">Все</span><span class="tab">Action</span>
+          <span class="tab">Roguelike</span><span class="tab">Порты</span></div>
+        <div class="deck-grid">${[16,0,1,2,11,7,17,3,4].map(i=>tile(i)).join("")}</div>`);
+    }
+  },
+];
+
+
+const list = document.getElementById("list");
+const tv = document.getElementById("tv");
+const frame = document.getElementById("frame");
+const note = document.getElementById("note");
+const title = document.getElementById("tv-title");
+
+function fit() {
+  const s = Math.min(1, frame.clientWidth / 1280);
+  tv.style.transform = `scale(${s})`;
+  frame.style.height = `${720 * s}px`;
+}
+new ResizeObserver(fit).observe(frame);
+
+function show(id) {
+  const v = V.find(x => x.id === id) || V[0];
+  location.hash = v.id;
+  list.querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.id === v.id));
+  title.textContent = v.name;
+  note.innerHTML = `<h2>${v.name}</h2><p>${v.blurb}</p><p>${v.extra}</p>`;
+  tv.innerHTML = v.draw();
+  fit();
+}
+
+let lastGroup = "";
+V.forEach(v => {
+  if (v.group && v.group !== lastGroup) {
+    const g = document.createElement("div");
+    g.className = "group";
+    g.textContent = v.group;
+    list.appendChild(g);
+    lastGroup = v.group;
+  }
+  const b = document.createElement("button");
+  b.dataset.id = v.id;
+  b.innerHTML = `${v.name}<small>${v.blurb}</small>`;
+  b.onclick = () => show(v.id);
+  list.appendChild(b);
+});
+
+document.addEventListener("keydown", (e) => {
+  const cards = [...tv.querySelectorAll("[tabindex]")];
+  const i = cards.indexOf(document.activeElement);
+  if (i < 0) return;
+  if (e.key === "ArrowRight" && cards[i+1]) { cards[i+1].focus(); e.preventDefault(); }
+  if (e.key === "ArrowLeft" && cards[i-1]) { cards[i-1].focus(); e.preventDefault(); }
+  if (e.key === "ArrowDown") {
+    const n = V.findIndex(x => x.id === (location.hash.slice(1) || "current"));
+    if (e.altKey && V[n+1]) show(V[n+1].id);
+  }
+  if (e.key === "ArrowUp" && e.altKey) {
+    const n = V.findIndex(x => x.id === (location.hash.slice(1) || "current"));
+    if (V[n-1]) show(V[n-1].id);
+  }
+});
+
+show((location.hash || "#magazine").slice(1));
+</script>
+</body>
+</html>

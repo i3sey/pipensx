@@ -1,4 +1,5 @@
 #include "realdebrid_provider.hpp"
+#include "nx_file_types.hpp"
 
 #include <cctype>
 #include <string>
@@ -72,17 +73,79 @@ bool RealdebridProvider::selectFiles(const std::string& id,
     return client_.selectFiles(id, fileIds, error);
 }
 
+namespace {
+
+std::string rdBaseName(const std::string& path) {
+    size_t slash = path.find_last_of("/\\");
+    std::string name = slash == std::string::npos ? path : path.substr(slash + 1);
+    while (!name.empty() && name.front() == '/')
+        name.erase(name.begin());
+    return name;
+}
+
+bool sameName(const std::string& a, const std::string& b) {
+    const std::string left = rdBaseName(a);
+    const std::string right = rdBaseName(b);
+    if (left.size() != right.size())
+        return false;
+    for (size_t i = 0; i < left.size(); ++i) {
+        if (std::tolower(static_cast<unsigned char>(left[i])) !=
+            std::tolower(static_cast<unsigned char>(right[i])))
+            return false;
+    }
+    return true;
+}
+
+bool mimeLooksLikeArchive(const std::string& mime) {
+    std::string lower;
+    lower.resize(mime.size());
+    for (size_t i = 0; i < mime.size(); ++i)
+        lower[i] = static_cast<char>(
+            std::tolower(static_cast<unsigned char>(mime[i])));
+    return lower.find("zip") != std::string::npos ||
+           lower.find("rar") != std::string::npos ||
+           lower.find("7z") != std::string::npos ||
+           lower.find("x-7z") != std::string::npos;
+}
+
+} // namespace
+
 bool RealdebridProvider::resolveDownloadUrl(const std::string& /*id*/,
                                             const DebridInfo& info,
                                             size_t kthSelected,
-                                            const DebridFile& /*file*/,
+                                            const DebridFile& file,
                                             std::string& url,
                                             std::string& error) {
     if (kthSelected >= info.links.size()) {
         error = "No download link for the selected file.";
         return false;
     }
-    return client_.unrestrictLink(info.links[kthSelected], url, error);
+    RdUnrestrict got;
+    if (!client_.unrestrictLink(info.links[kthSelected], got, error))
+        return false;
+    if (isCompressedArchiveName(got.filename) ||
+        mimeLooksLikeArchive(got.mimeType)) {
+        error = "Real-Debrid returned an archive ('" +
+                (got.filename.empty() ? got.mimeType : got.filename) +
+                "'), not the NSP. Delete the torrent on Real-Debrid and retry.";
+        return false;
+    }
+    if (got.filesize > 0 && file.bytes > 0 && got.filesize != file.bytes) {
+        error = "Real-Debrid file size (" + std::to_string(got.filesize) +
+                ") does not match '" + rdBaseName(file.path) + "' (" +
+                std::to_string(file.bytes) +
+                " bytes). Delete the torrent on Real-Debrid and retry.";
+        return false;
+    }
+    if (!got.filename.empty() && isPackageName(file.path) &&
+        !isPackageName(got.filename) && !sameName(got.filename, file.path)) {
+        error = "Real-Debrid returned '" + rdBaseName(got.filename) +
+                "' instead of '" + rdBaseName(file.path) +
+                "'. Delete the torrent on Real-Debrid and retry.";
+        return false;
+    }
+    url = std::move(got.url);
+    return true;
 }
 
 bool RealdebridProvider::remove(const std::string& id, std::string& error) {
