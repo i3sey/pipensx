@@ -86,7 +86,7 @@
     "freshness_never": "Catalogue non mis à jour",
     "freshness_updating": "Mise à jour du catalogue…",
     "empty_inline": "Le catalogue est vide. Appuyez sur R pour actualiser.",
-    "nothing_found_inline": "Rien trouvé. Touchez la loupe ou appuyez sur X pour modifier la recherche.",
+    "nothing_found_inline": "Rien trouvé. Touchez la loupe ou appuyez sur Y pour modifier la recherche.",
     "empty_title": "Catalogue vide",
     "empty_body": "Actualisez le catalogue pour charger les dernières sorties sur cette console.",
     "empty_action": "Actualiser le catalogue",

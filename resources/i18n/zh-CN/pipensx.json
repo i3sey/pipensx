@@ -86,7 +86,7 @@
     "freshness_never": "目录尚未更新",
     "freshness_updating": "目录更新中…",
     "empty_inline": "目录为空。按 R 刷新。",
-    "nothing_found_inline": "未找到任何内容。点按放大镜或按 X 修改查询。",
+    "nothing_found_inline": "未找到任何内容。点按放大镜或按 Y 修改查询。",
     "empty_title": "目录为空",
     "empty_body": "刷新目录以在本机加载最新版本。",
     "empty_action": "刷新目录",

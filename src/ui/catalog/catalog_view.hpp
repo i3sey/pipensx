@@ -497,12 +497,12 @@ public:
         // hotkeys keep working, and both are duplicated by focusable header
         // controls — the magnifier button for search, the four sort chips for
         // sort — so nothing here becomes unreachable.
-        registerAction(tr("pipensx/common/search"), brls::BUTTON_X,
+        registerAction(tr("pipensx/common/sort"), brls::BUTTON_X,
                        [this](brls::View*) {
-            openSearchKeyboard();
+            cycleSort();
             return true;
         }, /*hidden=*/true);
-        registerSortAction(false);
+        registerYAction(false);
         registerAction(tr("pipensx/common/refresh"), brls::BUTTON_RB,
                        [this](brls::View*) {
             if (batchMode_)
@@ -1666,27 +1666,27 @@ private:
         restoreFocus(hash, shelfRow);
     }
 
-    // Y sorts while idle and cancels during a refresh. The sort half is hidden
-    // to keep the bottom bar within its width (see the registration block in
-    // the constructor), but the cancel half has to be visible or a refresh
-    // looks unstoppable — and Action::hidden is fixed at construction, so the
-    // swap re-registers. registerAction replaces the entry for a button it
-    // already holds, which is what makes this safe to call repeatedly.
-    void registerSortAction(bool busy) {
+    // Y searches while idle and cancels during a refresh. The search half is
+    // hidden to keep the bottom bar within its width (see the registration
+    // block in the constructor), but the cancel half has to be visible or a
+    // refresh looks unstoppable — and Action::hidden is fixed at construction,
+    // so the swap re-registers. registerAction replaces the entry for a button
+    // it already holds, which is what makes this safe to call repeatedly.
+    void registerYAction(bool busy) {
         registerAction(busy ? tr("pipensx/common/stop")
-                            : tr("pipensx/common/sort"),
+                            : tr("pipensx/common/search"),
                        brls::BUTTON_Y, [this](brls::View*) {
             if (busy_)
                 cancelled_->store(true);
             else
-                cycleSort();
+                openSearchKeyboard();
             return true;
         }, /*hidden=*/!busy);
     }
 
     void setBusy(bool busy) {
         busy_ = busy;
-        registerSortAction(busy);
+        registerYAction(busy);
         if (busyDot_) {
             if (busy) {
                 busyDot_->setVisibility(brls::Visibility::VISIBLE);
@@ -1917,7 +1917,7 @@ private:
         return "";
     }
 
-    // Y hotkey: cycle through the sort modes; the header chips (O2) reflect
+    // X hotkey: cycle through the sort modes; the header chips (O2) reflect
     // the result, so no toast is needed.
     void cycleSort() {
         setSort(sort_ == SortMode::Latest        ? SortMode::Popular

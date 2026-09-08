@@ -86,7 +86,7 @@
     "freshness_never": "Catálogo no actualizado",
     "freshness_updating": "Actualizando catálogo…",
     "empty_inline": "El catálogo está vacío. Pulsa R para actualizar.",
-    "nothing_found_inline": "No se encontró nada. Toca la lupa o pulsa X para cambiar la búsqueda.",
+    "nothing_found_inline": "No se encontró nada. Toca la lupa o pulsa Y para cambiar la búsqueda.",
     "empty_title": "Catálogo vacío",
     "empty_body": "Actualiza el catálogo para cargar los últimos lanzamientos en esta consola.",
     "empty_action": "Actualizar catálogo",

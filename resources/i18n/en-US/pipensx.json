@@ -86,7 +86,7 @@
     "freshness_never": "Catalog not updated",
     "freshness_updating": "Catalog updating…",
     "empty_inline": "Catalog is empty. Press R to refresh.",
-    "nothing_found_inline": "Nothing found. Tap the magnifier or press X to change the query.",
+    "nothing_found_inline": "Nothing found. Tap the magnifier or press Y to change the query.",
     "empty_title": "Catalog is empty",
     "empty_body": "Refresh the catalog to load the latest releases on this console.",
     "empty_action": "Refresh catalog",
