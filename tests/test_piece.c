@@ -902,6 +902,30 @@ static void test_strict_order_prefers_requestable_pending_piece(void) {
     free_test_metainfo(&mi);
 }
 
+static void test_non_strict_pick_skips_fully_requested_pending(void) {
+    metainfo_t mi;
+    init_single_file_metainfo(&mi, "endgame.bin", BLOCK_SIZE,
+                              3 * BLOCK_SIZE);
+    piece_mgr_t *pm = piece_mgr_create_ex(&mi, NULL, 0, NULL, 0);
+    assert(pm);
+
+    /* Endgame: every remaining piece is already in flight. */
+    pm->slots[0].state = PS_PENDING;
+    pm->slots[1].state = PS_PENDING;
+    uint8_t peer_bf[1] = {0};
+    bf_set(peer_bf, 0);
+    bf_set(peer_bf, 1);
+
+    piece_mgr_mark_block_requested(pm, 0, 0);
+    assert(piece_mgr_pick(pm, peer_bf, sizeof(peer_bf)) == 1);
+
+    piece_mgr_mark_block_requested(pm, 1, 0);
+    assert(piece_mgr_pick(pm, peer_bf, sizeof(peer_bf)) == (uint32_t)-1);
+
+    piece_mgr_destroy(pm);
+    free_test_metainfo(&mi);
+}
+
 /* BEP-19 url-list parsing: a single-file torrent carrying one web seed. */
 static void test_metainfo_web_seeds_parse(void) {
     uint8_t pieces[20];
@@ -1293,6 +1317,7 @@ int main(void) {
     test_strict_order_stops_at_request_gate();
     test_request_reference_counts();
     test_strict_order_prefers_requestable_pending_piece();
+    test_non_strict_pick_skips_fully_requested_pending();
     test_metainfo_web_seeds_parse();
     test_async_hash_defers_completion_until_drain();
     test_async_hash_mismatch_resets_and_redownloads();

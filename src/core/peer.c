@@ -46,6 +46,8 @@ static int peer_send_plain(peer_t *p, const uint8_t *data, uint32_t len) {
    handshake bytes themselves go out before mse_active is set, so they are sent
    in the clear (the request's encrypted region is already ciphertext). */
 static int peer_send_raw(peer_t *p, const uint8_t *data, uint32_t len) {
+    if (len > 0)
+        p->last_send_ms = now_ms();
     if (!p->mse_active || len == 0)
         return peer_send_plain(p, data, len);
     uint8_t enc[4096];
@@ -129,6 +131,7 @@ static peer_t *peer_alloc(struct sockaddr_in addr, const peer_ctx_t *ctx) {
     p->bitfield = (uint8_t*)calloc(1, ctx->bf_bytes);
     p->connect_time_ms = now_ms();
     p->last_recv_ms    = p->connect_time_ms;
+    p->last_send_ms    = p->connect_time_ms;
     p->mse_enabled     = ctx->use_mse;
     return p;
 }
@@ -264,6 +267,20 @@ int peer_send_bitfield(peer_t *p, const uint8_t *bf, uint32_t bf_bytes) {
 int peer_send_interested(peer_t *p) {
     p->am_interested = 1;
     return send_byte_msg(p, MSG_INTERESTED);
+}
+
+int peer_send_have(peer_t *p, uint32_t index) {
+    uint8_t buf[5];
+    buf[0] = MSG_HAVE;
+    buf[1] = (uint8_t)((index >> 24) & 0xFF);
+    buf[2] = (uint8_t)((index >> 16) & 0xFF);
+    buf[3] = (uint8_t)((index >> 8) & 0xFF);
+    buf[4] = (uint8_t)(index & 0xFF);
+    return send_msg(p, buf, sizeof(buf));
+}
+
+int peer_send_keepalive(peer_t *p) {
+    return send_msg(p, NULL, 0);
 }
 
 /* --- request block --- */

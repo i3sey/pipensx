@@ -56,7 +56,8 @@ typedef struct {
 /*
  * Create torrent engine.
  * Starts network (tracker, DHT) automatically.
- * listen_port: port for incoming peers and DHT.
+ * listen_port: TCP port advertised to the swarm and bound for incoming
+ * peers (plaintext). DHT uses a separate shared UDP socket.
  * outdir: where to write downloaded files.
  */
 torrent_t *torrent_create(const metainfo_t *mi,

@@ -707,11 +707,16 @@ uint32_t piece_mgr_pick(const piece_mgr_t *pm,
                 return i;
         }
     }
-    /* Second pass: allow re-requesting PENDING pieces (from a different peer) */
+    /* Second pass: fill remaining blocks of PENDING pieces. Skip a piece
+       whose leftover blocks are already requested — otherwise the scheduler
+       queues nothing and stops filling this peer. */
     for (uint32_t i = 0; i < pm->num_pieces; i++) {
         if (!request_allowed(pm, i)) continue;
         if (pm->slots[i].state == PS_DONE ||
             pm->slots[i].state == PS_HASHING) continue;
+        if (pm->slots[i].state == PS_PENDING &&
+            !slot_has_requestable_block(&pm->slots[i]))
+            continue;
         if (!bf_has(pm->have_bf, i)) {
             if (i / 8 < bf_bytes && bf_has(peer_bf, i))
                 return i;

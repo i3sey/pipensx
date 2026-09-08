@@ -5,6 +5,12 @@
 
 typedef int (*tracker_cancel_cb)(void *user);
 
+/* BEP-15 event codes, also used as HTTP `event=` (none sends no event). */
+#define TRACKER_EVENT_NONE      0
+#define TRACKER_EVENT_COMPLETED 1
+#define TRACKER_EVENT_STARTED   2
+#define TRACKER_EVENT_STOPPED   3
+
 /*
  * Announce to trackers and collect compact peer list.
  * Called synchronously (blocking, with timeout).
@@ -31,7 +37,7 @@ uint32_t tracker_announce_with_event(const metainfo_t *mi,
                                      int64_t        left,
                                      uint8_t       *compact_out,
                                      uint32_t       max_peers,
-                                     int started_event,
+                                     int event,
                                      tracker_cancel_cb cancel,
                                      void          *cancel_user);
 
@@ -71,3 +77,10 @@ uint32_t tracker_announce_url_ex_cancel(
     uint8_t *compact_out, uint32_t max_peers,
     tracker_announce_result_t *result, tracker_cancel_cb cancel,
     void *cancel_user);
+
+uint32_t tracker_announce_url_ex_cancel_event(
+    const char *url, const uint8_t *info_hash, const uint8_t *peer_id,
+    uint16_t listen_port, int64_t downloaded, int64_t left,
+    uint8_t *compact_out, uint32_t max_peers,
+    tracker_announce_result_t *result, int event,
+    tracker_cancel_cb cancel, void *cancel_user);

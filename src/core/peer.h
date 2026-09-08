@@ -113,8 +113,12 @@ typedef struct peer {
 
     uint64_t connect_time_ms;
     uint64_t last_recv_ms;
+    uint64_t last_send_ms;
     uint64_t last_piece_ms;
     uint64_t downloaded;
+
+    /* Incoming TCP (plaintext responder). Skip MSE and the TCP→μTP retry. */
+    int      incoming;
 
     /* Request scheduler health (single-owner torrent thread). */
     uint64_t request_cooldown_until_ms;
@@ -238,6 +242,12 @@ int peer_send_bitfield(peer_t *p, const uint8_t *bf, uint32_t bf_bytes);
 
 /* Send interested */
 int peer_send_interested(peer_t *p);
+
+/* Send HAVE for a newly verified piece */
+int peer_send_have(peer_t *p, uint32_t index);
+
+/* BT keepalive (length-prefixed empty message) */
+int peer_send_keepalive(peer_t *p);
 
 /* Send BEP10 extension handshake */
 int peer_send_ext_handshake(peer_t *p, uint16_t listen_port);

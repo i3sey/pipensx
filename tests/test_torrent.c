@@ -510,13 +510,67 @@ static void test_started_event_only_on_first_announce(void) {
     torrent_t torrent = {0};
 
     /* No trackers keeps this lifecycle test local and network-free. */
-    announce_start(&torrent, 0, 1);
-    assert(torrent.announce_started_event == 1);
+    announce_start(&torrent, 0, 1, TRACKER_EVENT_NONE);
+    assert(torrent.announce_event == TRACKER_EVENT_STARTED);
     assert(torrent.tracker_started_event_sent == 1);
 
-    announce_start(&torrent, 0, 1);
-    assert(torrent.announce_started_event == 0);
+    announce_start(&torrent, 0, 1, TRACKER_EVENT_NONE);
+    assert(torrent.announce_event == TRACKER_EVENT_NONE);
     assert(torrent.tracker_started_event_sent == 1);
+}
+
+static void test_accept_incoming_plaintext(void) {
+    torrent_t t = {0};
+    piece_mgr_t pm = {0};
+    uint8_t have_bf[1] = {0};
+    pm.available_bf = have_bf;
+    t.pm = &pm;
+    t.mi.num_pieces = 1;
+    memcpy(t.peer_id, "-PN0001-testxxxx", 16);
+
+    t.listen_fd = net_tcp_listen(0, 4);
+    assert(t.listen_fd != INVALID_SOCK);
+    t.listen_port = net_local_port(t.listen_fd);
+    assert(t.listen_port != 0);
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = htons(t.listen_port);
+    socket_t client = net_tcp_connect(&addr);
+    assert(client != INVALID_SOCK);
+
+    struct pollfd pfd = { client, POLLOUT, 0 };
+    poll(&pfd, 1, 1000);
+    pfd.fd = t.listen_fd;
+    pfd.events = POLLIN;
+    pfd.revents = 0;
+    assert(poll(&pfd, 1, 1000) > 0);
+
+    assert(try_accept(&t) >= 1);
+    assert(t.num_peers == 1);
+    assert(t.peers[0] != NULL);
+    assert(t.peers[0]->incoming);
+    assert(t.peers[0]->mse_enabled == 0);
+    assert(t.peers[0]->state == PS_HANDSHAKE);
+
+    uint8_t hs[BT_HANDSHAKE_LEN];
+    ssize_t n = recv(client, hs, sizeof(hs), MSG_DONTWAIT);
+    if (n < 0) {
+        pfd.fd = client;
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+        assert(poll(&pfd, 1, 1000) > 0);
+        n = recv(client, hs, sizeof(hs), 0);
+    }
+    assert(n == BT_HANDSHAKE_LEN);
+    assert(hs[0] == 19);
+    assert(memcmp(hs + 1, "BitTorrent protocol", 19) == 0);
+
+    peer_destroy(t.peers[0]);
+    net_close(client);
+    net_close(t.listen_fd);
 }
 
 int main(void) {
@@ -531,6 +585,7 @@ int main(void) {
     test_blocklist_cooldown_and_wrap();
     test_initial_peers_keep_verified_order();
     test_started_event_only_on_first_announce();
+    test_accept_incoming_plaintext();
     test_bencode_rejects_deep_nesting();
     test_metainfo_path_join_bounds();
     test_metainfo_rejects_bad_numbers();

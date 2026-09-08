@@ -290,6 +290,22 @@ static void test_handshake_applies_large_receive_buffer(void) {
     close(sockets[1]);
 }
 
+static void test_keepalive_is_empty_length_prefix(void) {
+    int sockets[2];
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
+    peer_t peer;
+    memset(&peer, 0, sizeof(peer));
+    peer.fd = sockets[0];
+    peer.state = PS_ACTIVE;
+    assert(peer_send_keepalive(&peer));
+    peer_flush(&peer);
+    uint8_t frame[4];
+    assert(recv(sockets[1], frame, sizeof(frame), 0) == 4);
+    assert(frame[0] == 0 && frame[1] == 0 && frame[2] == 0 && frame[3] == 0);
+    close(sockets[0]);
+    close(sockets[1]);
+}
+
 static void test_recv_drains_socket_until_would_block(void) {
     int sockets[2];
     assert(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
@@ -760,6 +776,7 @@ int main(void) {
     test_tcp_connect_defers_large_receive_buffer();
     test_receive_buffer_falls_back_after_enobufs();
     test_handshake_applies_large_receive_buffer();
+    test_keepalive_is_empty_length_prefix();
     test_recv_drains_socket_until_would_block();
     test_receive_buffer_holds_256_kib();
     test_recv_reassembles_message_split_across_reads();
