@@ -8,12 +8,11 @@ package installer. C11/C++ with borealis UI and vendored libutp, zstd and dht.
 ```sh
 make switch  # aarch64 NRO, CMake
 make test    # PC assert-based test suite, Makefile.pc
-make golden  # PC UI screenshots and behaviour checks, CMake
 make pc      # portable CLI, Makefile.pc
 ```
 
-`CORE_SOURCES`, `APP_SERVICE_SOURCES`, and `UI_SOURCES` build in both Switch
-`pipensx` and PC `golden_runner`. `Makefile.pc` also compiles `src/app/*.cpp`.
+`CORE_SOURCES`, `APP_SERVICE_SOURCES`, and `UI_SOURCES` build in Switch
+`pipensx`. `Makefile.pc` also compiles `src/app/*.cpp` for unit tests.
 CMake uses C++20 but shared `src/core` and `src/app` code must compile as
 C++17. Verify every affected build; a Switch build alone is insufficient for
 platform-specific changes.
@@ -26,13 +25,9 @@ platform-specific changes.
   needs; claim-time `Checking` does not mean the torrent was polled.
   `test_manager` runs last in the suite — it boots DHT against live routers, and
   ordering it last keeps a bad network from hiding the other tests.
-- For UI, theme, Borealis-widget, or locale changes, load the `golden` skill
-  from `.agents/skills/golden/`. Never re-baseline an unexplained diff. Run
-  full `make golden` before considering a UI change done.
 - A task is not done until its checks pass: run `make -f Makefile.pc test` for
-  shared/core changes, `make golden` for UI changes, and the affected build
-  (`make switch` for Switch code, `make pc` for the portable CLI) — never only
-  the one you edited in.
+  shared/core changes, and the affected build (`make switch` for Switch code,
+  `make pc` for the portable CLI) — never only the one you edited in.
 - Adding or changing locale strings must pass `scripts/check_i18n.py`. It
   validates placeholder counts across all supported languages. Add new keys to
   `en-US` first (the fallback), then mirror to `ru`, `pt-BR`, and `fr`.
@@ -56,10 +51,7 @@ When triaging a user bug report from a QR screenshot or photo, load the
 - `pipensx.log` is a multi-thousand-line runtime log. Never read it whole;
   grep it by tag (`[torrent]`, `[dht]`, `[status]`, ...) when you need it.
 - Do not open images, binaries, or build output: `resources/*.jpg|png`,
-  `tests/golden/*.png`, `tests/fixtures/golden/*.png`, `pipensx.nro`,
-  `build-golden/**`, `build-switch/**`, anything under `bug-reports/`.
-  Golden diffs are triaged by the numbers (AE, bbox, density) from the
-  `golden` skill — never by viewing the PNG.
+  `pipensx.nro`, `build-switch/**`, anything under `bug-reports/`.
 - Do not read `resources/catalog/*.json` (tens of MB). Grep or sample if a
   catalog-parser change needs a fixture.
 
@@ -73,12 +65,11 @@ When triaging a user bug report from a QR screenshot or photo, load the
   after changing source lists or flags:
 ```sh
  make -f Makefile.pc clean && bear -- make -f Makefile.pc test
- cmake -S . -B build-golden -DPIPENSX_GOLDEN=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
  ```
  PC objects and test binaries go under `build-pc/` (never next to `src/` /
  `tests/` sources).
-- Branch from `main`; merge with `--ff-only`. CI requires `make test`, gitleaks,
-  and golden checks.
+- Branch from `main`; merge with `--ff-only`. CI requires `make test` and
+  gitleaks.
 
 ## Agent skills
 

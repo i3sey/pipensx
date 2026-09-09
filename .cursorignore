@@ -20,7 +20,7 @@ dht.cache
 *.log
 bug-reports/
 
-# Pixels and binaries — triage goldens by AE/bbox, do not read PNGs
+# Pixels and binaries — do not read PNGs/JPEGs in agent context
 *.png
 *.jpg
 *.jpeg

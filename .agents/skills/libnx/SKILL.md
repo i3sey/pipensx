@@ -41,9 +41,11 @@ semantics, and the NCA/CNMT/ticket formats behind `package_stream.cpp`. The head
 ## 2. Most sources compile twice, and the second build is easy to forget
 
 `CORE_SOURCES`, `APP_SERVICE_SOURCES` and `UI_SOURCES` in `CMakeLists.txt` are
-linked into **both** `pipensx` (aarch64, real libnx) and `golden_runner` (PC,
-no libnx at all). Only `src/main_switch.cpp`, `src/install/install_backend_switch.cpp`,
-`src/platform/switch_*` and the vendored ipcext are Switch-only.
+linked into **Switch `pipensx`** (aarch64, real libnx). Only
+`src/main_switch.cpp`, `src/install/install_backend_switch.cpp`,
+`src/platform/switch_*` and the vendored ipcext are Switch-only. PC unit tests
+via `Makefile.pc` compile shared app/core code with `install_backend_pc.cpp` and
+the PC shim under `src/platform/pc/`.
 
 So a libnx call in shared code has to pick one of three existing patterns —
 do not invent a fourth:
@@ -53,15 +55,15 @@ already do it (`src/app/install_space.cpp`, `src/app/stream_ram_budget.cpp`,
 `src/app/update_service.cpp`, `src/ui/settings/settings_view.hpp`,
 `src/core/util.c`, `src/install/package_stream.cpp`, …). `__SWITCH__` is set
 by `target_compile_definitions(pipensx PRIVATE __SWITCH__)` and is absent for
-`golden_runner`.
+PC test builds.
 
 **b. Unconditional `#include <switch.h>`, resolved by the PC shim.** Only
 `src/app/installed_title_service.cpp` and `src/ui/common/ui_helpers.hpp` do
 this. `src/platform/pc/switch.h` (a hand-written 182-line stand-in) is first on
-`golden_runner`'s include path and supplies stubs. **Adding a libnx symbol to
-one of these two files without adding a stub there leaves the Switch build
-green and breaks `make golden`.** Stub behaviour is chosen for deterministic
-rendering, not realism — read the header comment before adding to it.
+the PC test include path and supplies stubs. **Adding a libnx symbol to one of
+these two files without adding a stub there leaves the Switch build green and
+breaks `make test`.** Stub behaviour is chosen for deterministic PC tests, not
+realism — read the header comment before adding to it.
 
 **c. Behind `src/install/install_backend.hpp`.** The heavy content-install
 surface (ncm, es, fs placeholders, CNMT) lives here, with
@@ -87,8 +89,8 @@ on pattern (a).
 ## 4. Verify with both builds
 
 ```
-make            # Switch: build-switch/pipensx.nro
-make golden     # PC: compiles the shared sources against the shim, then renders
+make switch    # Switch: build-switch/pipensx.nro
+make test      # PC: compiles shared sources against the shim and install backend
 ```
 
 A missing shim stub only shows up in the second. Run both before calling a

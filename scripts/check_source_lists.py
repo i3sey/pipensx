@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Cross-check CORE_SOURCES between Makefile.pc and CMakeLists.txt.
 
-A drift here means the PC CLI/tests and the Switch/golden builds compile
+A drift here means the PC CLI/tests and the Switch build compile
 different cores. APP_SERVICE_SOURCES / UI_SOURCES live only in CMake
-(Switch + golden_runner); Makefile.pc pulls those in per-test.
+(Switch); Makefile.pc pulls those in per-test.
 """
 from __future__ import annotations
 

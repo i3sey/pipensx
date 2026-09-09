@@ -1,7 +1,6 @@
 # pipensx
 
 [![CI](https://github.com/i3sey/pipensx/actions/workflows/ci.yml/badge.svg)](https://github.com/i3sey/pipensx/actions/workflows/ci.yml)
-[![Golden screenshots](https://github.com/i3sey/pipensx/actions/workflows/golden.yml/badge.svg)](https://github.com/i3sey/pipensx/actions/workflows/golden.yml)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 
 Native BitTorrent download manager and streaming package installer for
@@ -69,7 +68,7 @@ make switch
 ```
 
 The resulting application is `build-switch/pipensx.nro`. See
-[BUILD.md](BUILD.md) for dependency installation, golden tests, optional
+[BUILD.md](BUILD.md) for dependency installation, optional
 metadata input, and deployment helpers.
 
 ## Install on Nintendo Switch

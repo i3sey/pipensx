@@ -7,7 +7,7 @@ NRO_SRC ?= $(CURDIR)/build-switch/pipensx.nro
 PIPENSX_DAEMON_HEAP_MB ?= 32
 DEPLOY_CLEAN ?= 0
 
-.PHONY: help pc test switch probe daemon golden clean audit deploy
+.PHONY: help pc test switch probe daemon clean audit deploy
 
 help:
 	@echo "pipensx build targets:"
@@ -16,10 +16,9 @@ help:
 	@echo "  make switch   Build build-switch/pipensx.nro"
 	@echo "  make probe    Build the sysmodule probe (src/probe/README.md)"
 	@echo "  make daemon   Build the pipensx daemon sysmodule (src/daemon/)"
-	@echo "  make golden   Run deterministic UI screenshot tests"
 	@echo "  make audit    Scan the complete Git history with gitleaks"
 	@echo "  make deploy MTP_DIR='mtp://...' [DEPLOY_CLEAN=1]"
-	@echo "  make clean    Remove PC, Switch, and golden build outputs"
+	@echo "  make clean    Remove PC and Switch build outputs"
 
 pc:
 	$(MAKE) -f Makefile.pc
@@ -48,9 +47,6 @@ daemon: switch
 	$(CMAKE_BIN) --build build-switch --target pipensx_daemon_nsp --parallel
 	@echo "Daemon SD layout: $(CURDIR)/build-switch/daemon/"
 
-golden:
-	CMAKE_BIN="$(CMAKE_BIN)" scripts/golden.sh check
-
 audit:
 	@command -v gitleaks >/dev/null || { \
 		echo "gitleaks is required: https://github.com/gitleaks/gitleaks" >&2; \
@@ -65,4 +61,3 @@ deploy:
 clean:
 	$(MAKE) -f Makefile.pc clean
 	$(MAKE) -f Makefile.switch clean
-	rm -rf build-golden

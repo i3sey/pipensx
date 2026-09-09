@@ -157,7 +157,6 @@ UI-only or happened before logging was enabled.
 
 - `bug-reports/` may live **outside the repo** (e.g. `~/bug-reports/`). Use
   absolute paths; the folder is cursorignored in-repo.
-- Do **not** open golden PNGs or multi-MB catalog JSON while triaging.
+- Do **not** open multi-MB catalog JSON while triaging.
 - Changing the wire format or QR UI requires `make -f Makefile.pc test`
-  (`test_bug_report`, `test_bug_report_decode.py`) and likely `make golden`
-  (`bug-report`, `bug-report-detail`, `bug-report-focus` screens).
+  (`test_bug_report`, `test_bug_report_decode.py`).

@@ -1,12 +1,5 @@
 cmake_minimum_required(VERSION 3.13)
 
-# PIPENSX_GOLDEN=ON builds the PC golden-screenshot runner (SDL2 desktop,
-# docs/plans/UI_PLAN.md F4) instead of the Switch homebrew. Use a separate
-# build directory.
-# SDL2 (not GLFW): the vendored borealis GLFWInputManager misses the 5-arg
-# sendRumble override and does not compile; the SDL backend is complete.
-option(PIPENSX_GOLDEN
-    "Build the PC golden-screenshot runner instead of the Switch app" OFF)
 set(PIPENSX_CATALOG_SNAPSHOT
     "${CMAKE_CURRENT_SOURCE_DIR}/resources/catalog/switch_games.json"
     CACHE FILEPATH "Bundled Langegen catalog snapshot for offline first launch")
@@ -15,25 +8,10 @@ set(PIPENSX_METADATA_INDEX
     CACHE FILEPATH "Bundled game metadata index snapshot for offline first launch")
 
 set(BOREALIS_LIBRARY ${CMAKE_CURRENT_SOURCE_DIR}/vendor/borealis/library)
-if (PIPENSX_GOLDEN)
-    set(PLATFORM_DESKTOP ON CACHE BOOL "" FORCE)
-    set(PLATFORM_SWITCH OFF CACHE BOOL "" FORCE)
-    set(USE_DEKO3D OFF CACHE BOOL "" FORCE)
-    set(USE_GLFW OFF CACHE BOOL "" FORCE)
-    set(USE_SDL2 ON CACHE BOOL "" FORCE)
-    # System SDL2: avoids initializing the bundled SDL submodule.
-    set(USE_SYSTEM_SDL2 ON CACHE BOOL "" FORCE)
-    # toolchain.cmake forces USE_GLFW=ON when "NOT USE_GLFW AND NOT SDL2";
-    # define SDL2 so the desktop branch keeps the SDL backend.
-    set(SDL2 ON)
-    # Absolute resources path: golden_runner chdirs into a scratch sandbox.
-    set(BRLS_RESOURCES_DIR ${CMAKE_BINARY_DIR})
-else ()
-    set(PLATFORM_SWITCH ON CACHE BOOL "" FORCE)
-    set(USE_DEKO3D ON CACHE BOOL "" FORCE)
-    set(USE_GLFW OFF CACHE BOOL "" FORCE)
-    set(USE_SDL2 OFF CACHE BOOL "" FORCE)
-endif ()
+set(PLATFORM_SWITCH ON CACHE BOOL "" FORCE)
+set(USE_DEKO3D ON CACHE BOOL "" FORCE)
+set(USE_GLFW OFF CACHE BOOL "" FORCE)
+set(USE_SDL2 OFF CACHE BOOL "" FORCE)
 set(USE_SYSTEM_FMT OFF CACHE BOOL "" FORCE)
 set(USE_SYSTEM_TINYXML2 OFF CACHE BOOL "" FORCE)
 set(USE_SYSTEM_TWEENY OFF CACHE BOOL "" FORCE)
@@ -79,7 +57,7 @@ target_include_directories(pipensx_zstd PUBLIC
 )
 # ZSTD_DISABLE_ASM: the source glob only picks up *.c, so the x86-64 BMI2
 # asm loops (huf_decompress_amd64.S) are never assembled; without this the
-# PC golden build fails to link. No effect on the aarch64 Switch build.
+# PC test build fails to link. No effect on the aarch64 Switch build.
 target_compile_definitions(pipensx_zstd PRIVATE ZSTD_MULTITHREAD=0 ZSTD_DISABLE_ASM)
 
 # Public-domain 7z ANSI-C decoder (LZMA SDK) for port archive extraction.
@@ -134,7 +112,7 @@ target_compile_options(pipensx_utp PRIVATE
     -fpermissive -fno-exceptions -fno-rtti -Wno-sign-compare
 )
 
-# Platform-neutral sources (also compiled by Makefile.pc / golden runner).
+# Platform-neutral sources (also compiled by Makefile.pc).
 set(CORE_SOURCES
     src/core/sha1.c
     src/core/sha256.c
@@ -205,8 +183,6 @@ set(UI_SOURCES
     src/ui/settings/about_view.cpp
     src/ui/settings/bug_report_view.cpp
 )
-
-if (NOT PIPENSX_GOLDEN)
 
 program_target(pipensx_updater
     "src/update_helper.c;src/app/update_transaction.c;src/core/sha256.c")
@@ -540,71 +516,3 @@ add_custom_target(pipensx.nro ALL
     BYPRODUCTS pipensx.nacp pipensx.nro
     VERBATIM
 )
-
-else () # PIPENSX_GOLDEN
-
-find_package(CURL REQUIRED)
-find_package(ZLIB REQUIRED)
-find_package(Threads REQUIRED)
-
-add_executable(golden_runner
-    ${CORE_SOURCES}
-    ${APP_SERVICE_SOURCES}
-    ${UI_SOURCES}
-    src/platform/pc/switch_shim.cpp
-    src/install/install_backend_pc.cpp
-    vendor/qrcodegen/qrcodegen.cpp
-    tools/golden_runner.cpp
-)
-set_target_properties(golden_runner PROPERTIES
-    C_STANDARD 11
-    CXX_STANDARD 20
-    CXX_STANDARD_REQUIRED ON
-)
-target_include_directories(golden_runner PRIVATE
-    src/platform/pc # PC stand-in for <switch.h>, must come first
-    src
-    src/core
-    src/platform
-    vendor
-    vendor/borealis/library/include
-    vendor/zstd/lib
-    vendor/libutp
-)
-target_compile_definitions(golden_runner PRIVATE
-    _GNU_SOURCE
-    PIPENSX_VERSION="${PROJECT_VERSION}"
-)
-target_compile_options(golden_runner PRIVATE
-    -Wall
-    -Wextra
-    -Wno-unused-parameter
-)
-target_link_libraries(golden_runner PRIVATE
-    borealis
-    pipensx_zstd
-    pipensx_lzma
-    pipensx_utp
-    CURL::libcurl
-    ZLIB::ZLIB
-    crypto
-    Threads::Threads
-    m
-)
-
-# Borealis loads fonts/i18n/material from ${BRLS_RESOURCES_DIR}/resources/.
-file(COPY
-    ${CMAKE_CURRENT_SOURCE_DIR}/vendor/borealis/resources
-    DESTINATION ${CMAKE_BINARY_DIR}
-)
-# Layered on top: without en-US/pipensx.json the runner renders raw key names
-# and every golden baseline diffs.
-add_custom_target(sync_i18n ALL
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_CURRENT_SOURCE_DIR}/resources/i18n"
-        "${CMAKE_BINARY_DIR}/resources/i18n"
-    VERBATIM
-)
-add_dependencies(golden_runner sync_i18n)
-
-endif ()

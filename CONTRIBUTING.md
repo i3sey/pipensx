@@ -11,9 +11,9 @@ src/app/        Application services and state (C++20)
 src/install/    Streaming NSP/NSZ parsers and install backends
 src/platform/   Platform integration and crash/performance support
 src/ui/         Borealis views and activities
-tests/          Unit, integration, fixture, and golden screenshot tests
-scripts/        Build, deploy, and golden-test helpers
-tools/          Developer diagnostics and the golden runner
+tests/          Unit, integration, and fixture tests
+scripts/        Build and deploy helpers
+tools/          Developer diagnostics
 docs/plans/     Archived implementation plans, not an active roadmap
 vendor/         Pinned source and Git submodule dependencies
 ```
@@ -28,7 +28,6 @@ Initialize dependencies, then use the public top-level targets:
 ```bash
 git submodule update --init --recursive
 make test
-make golden
 ```
 
 Changes affecting Switch-only code must also produce
@@ -57,7 +56,7 @@ rationale in the body.
 - Include tests and the commands used to validate the change.
 - Keep public interfaces and persisted data backward compatible, or document
   the migration explicitly.
-- Do not hide failures by weakening assertions, golden thresholds, or compiler
+- Do not hide failures by weakening assertions or compiler
   diagnostics.
 - Report vulnerabilities through the private process in
   [SECURITY.md](SECURITY.md), never in a public issue.

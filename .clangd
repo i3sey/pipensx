@@ -1,8 +1,2 @@
 CompileFlags:
-  CompilationDatabase: .
-
----
-If:
-  PathMatch: src/ui/.*
-CompileFlags:
-  CompilationDatabase: build-golden
+  CompilationDatabase: build-pc

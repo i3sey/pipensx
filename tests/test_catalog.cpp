@@ -979,7 +979,7 @@ void testCatalogPresentationPrefersCatalogNativeText() {
     assert(resolveCatalogPresentation(entry, &metadata).description ==
            "eShop description");
 
-    // 26 real entries and every golden fixture carry no description, so the
+    // 26 real entries and test fixtures carry no description, so the
     // native mode must still fall back rather than render an empty card.
     CatalogEntry noDescription = entry;
     noDescription.description.clear();
