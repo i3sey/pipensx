@@ -56,6 +56,9 @@ struct AppSettingsData {
     bool checkForUpdatesOnLaunch = true;
     bool confirmExit = true;
     bool warnOnActiveDownload = true;
+    // Home tab is experimental; off until the user turns it on. Additive
+    // key — older files keep this default.
+    bool showHomeTab = false;
     // First-run disclaimer: catalog comes from a third party. Shown once.
     bool catalogDisclaimerAcknowledged = false;
     // Web companion LAN server (plain HTTP, port 8080). The PIN gates

@@ -11,6 +11,7 @@
     "off": "Web 已关闭"
   },
   "nav": {
+    "home": "主页",
     "games": "游戏",
     "ports": "移植",
     "downloads": "下载",
@@ -56,7 +57,13 @@
     "sort_alpha": "A-Z",
     "sort_size": "大小",
     "filter_fits": "适配",
+    "filter_favorites": "收藏",
+    "filter_genres": "类型",
+    "filter_reset": "重置",
     "filter_players": "玩家",
+    "genres_all": "全部类型",
+    "genres_title": "类型",
+    "sort_title": "排序",
     "players_title": "一起游玩",
     "players_any": "任意",
     "players_split": "分屏",
@@ -85,7 +92,7 @@
     "freshness_stale": "目录已过时 · {}",
     "freshness_never": "目录尚未更新",
     "freshness_updating": "目录更新中…",
-    "empty_inline": "目录为空。按 R 刷新。",
+    "empty_inline": "目录为空。",
     "nothing_found_inline": "未找到任何内容。点按放大镜或按 Y 修改查询。",
     "empty_title": "目录为空",
     "empty_body": "刷新目录以在本机加载最新版本。",
@@ -550,6 +557,8 @@
     "language_zh": "简体中文",
     "language_it": "意大利语",
     "language_restart": "重启 pipensx 以应用语言。",
+    "show_home": "主页标签",
+    "show_home_note": "精选内容单独成页。默认关闭。",
     "auto_refresh": "每日自动刷新",
     "catalog_source": "目录来源",
     "catalog_source_default": "默认（Langegen）",
@@ -785,5 +794,19 @@
     "install_completed": "{} 已安装。",
     "download_failed": "{} 下载失败。",
     "install_failed": "{} 安装失败。"
+  },
+  "help": {
+    "home_title": "主页",
+    "home_body": "轮播热门与新上架的游戏和移植，配大图和简介。按 A 打开。",
+    "tabs_title": "L / R",
+    "tabs_body": "肩键切换分页。",
+    "grid_title": "游戏与移植",
+    "grid_body": "六列网格。按 A 打开游戏。",
+    "search_title": "Y 与 ZR",
+    "search_body": "Y 打开搜索。ZR 将焦点游戏加入或移出收藏。",
+    "web_title": "减号",
+    "web_body": "显示网页伴侣二维码。",
+    "exit_title": "加号",
+    "exit_body": "退出 pipensx。"
   }
 }

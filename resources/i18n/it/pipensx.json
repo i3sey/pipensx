@@ -11,6 +11,7 @@
     "off": "Web disattivato"
   },
   "nav": {
+    "home": "Home",
     "games": "Giochi",
     "ports": "Porting",
     "downloads": "Download",
@@ -56,7 +57,13 @@
     "sort_alpha": "A-Z",
     "sort_size": "Dimensioni",
     "filter_fits": "Installabili",
+    "filter_favorites": "Preferiti",
+    "filter_genres": "Generi",
+    "filter_reset": "Reimposta",
     "filter_players": "Giocatori",
+    "genres_all": "Tutti i generi",
+    "genres_title": "Generi",
+    "sort_title": "Ordina",
     "players_title": "Gioca insieme",
     "players_any": "Qualsiasi",
     "players_split": "Schermo condiviso",
@@ -85,7 +92,7 @@
     "freshness_stale": "Catalogo obsoleto · {}",
     "freshness_never": "Catalogo mai aggiornato",
     "freshness_updating": "Aggiornamento catalogo…",
-    "empty_inline": "Catalogo vuoto. Premi R per aggiornare.",
+    "empty_inline": "Il catalogo è vuoto.",
     "nothing_found_inline": "Nessun risultato. Tocca la lente o premi Y per cambiare ricerca.",
     "empty_title": "Catalogo vuoto",
     "empty_body": "Aggiorna il catalogo per caricare le ultime uscite su questa console.",
@@ -550,6 +557,8 @@
     "language_zh": "简体中文",
     "language_it": "Italiano",
     "language_restart": "Riavvia pipensx per applicare la lingua.",
+    "show_home": "Scheda Home",
+    "show_home_note": "In evidenza in una scheda propria. Disattivata di default.",
     "auto_refresh": "Aggiornamento automatico giornaliero",
     "catalog_source": "Sorgente catalogo",
     "catalog_source_default": "Predefinito (Langegen)",
@@ -785,5 +794,19 @@
     "install_completed": "{} installato.",
     "download_failed": "{} download fallito.",
     "install_failed": "{} installazione fallita."
+  },
+  "help": {
+    "home_title": "Home",
+    "home_body": "Un focus a rotazione di giochi e port popolari e nuovi, con artwork e una breve descrizione. A apre la scheda.",
+    "tabs_title": "L / R",
+    "tabs_body": "I pulsanti laterali cambiano scheda.",
+    "grid_title": "Giochi e Port",
+    "grid_body": "Griglia a sei colonne. A apre il gioco.",
+    "search_title": "Y e ZR",
+    "search_body": "Y apre la ricerca. ZR aggiunge o toglie il gioco dai Preferiti.",
+    "web_title": "Meno",
+    "web_body": "Mostra il QR del companion web.",
+    "exit_title": "Più",
+    "exit_body": "Esce da pipensx."
   }
 }

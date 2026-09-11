@@ -1,17 +1,16 @@
 #pragma once
 
-/* PC stand-in for libnx <switch.h> — desktop/golden builds only.
+/* PC stand-in for libnx <switch.h> — PC test builds only.
  *
  * This header is picked up instead of the real libnx header when the build
- * adds -Isrc/platform/pc (see PIPENSX_GOLDEN in CMakeLists.txt). It provides
- * the minimal surface consumed by src/ui and src/app so the UI compiles
- * unmodified off-console:
+ * adds -Isrc/platform/pc (see Makefile.pc). It provides the minimal surface
+ * consumed by src/ui and src/app so shared code compiles off-console:
  *   - ui/common/ui_helpers.hpp: applet type/main loop, console, pad input
  *   - ui/settings/settings_view.hpp: hosversionGet + HOSVER_* macros,
  *     appletGetOperationMode
  *   - app/installed_title_service.cpp: ns application records + NACP
  *
- * Behaviour is chosen for deterministic golden rendering:
+ * Behaviour is chosen for deterministic PC tests:
  *   - applet type reports Application (isApplicationMode() passes)
  *   - nsListApplicationRecord succeeds with zero records (empty library)
  *   - padGetButtonsDown reports Plus so any blocking console loop exits

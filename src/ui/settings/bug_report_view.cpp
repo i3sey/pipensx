@@ -262,7 +262,7 @@ std::uint16_t makeSessionId() {
     rand_bytes(bytes, sizeof(bytes));
     return static_cast<std::uint16_t>((bytes[0] << 8) | bytes[1]);
 #else
-    // Deterministic on PC so the golden screenshot of this screen is stable.
+    // Deterministic on PC so this screen renders stably in tests.
     return 0x5A5A;
 #endif
 }

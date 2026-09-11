@@ -420,7 +420,9 @@ protected:
 
 class GeneralPanel : public SettingsPanel {
 public:
-    explicit GeneralPanel(AppSettings* settings) : settings_(settings) {
+    explicit GeneralPanel(AppSettings* settings,
+                          std::function<void(bool)> onShowHomeTab = {})
+        : settings_(settings), onShowHomeTab_(std::move(onShowHomeTab)) {
         addSection(content_, tr("pipensx/settings/language"));
         language_ = new brls::SelectorCell();
         language_->init(tr("pipensx/settings/language"),
@@ -446,6 +448,23 @@ public:
                     tr("pipensx/settings/language_restart"));
             });
         content_->addView(language_);
+
+        showHomeTab_ = new brls::BooleanCell();
+        showHomeTab_->init(tr("pipensx/settings/show_home"),
+            settings_->get().showHomeTab,
+            [this](bool enabled) {
+                AppSettingsData values = settings_->get();
+                bool previous = values.showHomeTab;
+                values.showHomeTab = enabled;
+                if (!persistSettings(settings_, values, "show_home_tab")) {
+                    showHomeTab_->setOn(previous, false);
+                    return;
+                }
+                if (onShowHomeTab_)
+                    onShowHomeTab_(enabled);
+            });
+        content_->addView(showHomeTab_);
+        addNote(content_, tr("pipensx/settings/show_home_note"));
 
         addSection(content_, tr("pipensx/settings/section_launch"));
         checkForUpdates_ = new brls::BooleanCell();
@@ -499,6 +518,7 @@ public:
     void applyValues() override {
         const AppSettingsData& values = settings_->get();
         language_->setSelection(languageIndex(values.language), true);
+        showHomeTab_->setOn(values.showHomeTab, false);
         checkForUpdates_->setOn(values.checkForUpdatesOnLaunch, false);
         confirmExit_->setOn(values.confirmExit, false);
         warnActiveDownload_->setOn(values.warnOnActiveDownload, false);
@@ -517,7 +537,9 @@ private:
     }
 
     AppSettings* settings_;
+    std::function<void(bool)> onShowHomeTab_;
     brls::SelectorCell* language_ = nullptr;
+    brls::BooleanCell* showHomeTab_ = nullptr;
     brls::BooleanCell* checkForUpdates_ = nullptr;
     brls::BooleanCell* confirmExit_ = nullptr;
     brls::BooleanCell* warnActiveDownload_ = nullptr;
@@ -671,8 +693,7 @@ public:
                 if (onChangeSource_)
                     onChangeSource_();
             });
-        // Same id as the old debrid-link cell so the golden runner keeps a
-        // stable way to scroll this section into view.
+        // Same id as the old debrid-link cell for stable test ids.
         downloadSource_->setId("settings-debrid-link");
         content_->addView(downloadSource_);
         addNote(content_, tr("pipensx/settings/source_hint"));

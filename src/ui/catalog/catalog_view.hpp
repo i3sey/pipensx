@@ -23,11 +23,9 @@
 #include "app/game_metadata_service.hpp"
 #include "app/install_space.hpp"
 #include "app/installed_title_service.hpp"
-#include "ui/catalog/batch_install.hpp"
 #include "ui/catalog/catalog_grid.hpp"
 #include "ui/catalog/catalog_helpers.hpp"
 #include "ui/i18n.hpp"
-#include "ui/common/busy_pulse.hpp"
 #include "ui/common/message_cells.hpp"
 #include "ui/common/ui_helpers.hpp"
 #include "ui/detail/game_detail.hpp"
@@ -36,14 +34,6 @@
 namespace pipensx::ui {
 
 class CatalogView;
-
-// One horizontal shelf above the grid (UI_PLAN F5): title, entry indices,
-// optional "See all" action (null = no link).
-struct CatalogShelf {
-    std::string title;
-    std::vector<int> items;
-    std::function<void()> seeAll;
-};
 
 class CatalogDataSource : public brls::RecyclerDataSource {
 public:
@@ -58,8 +48,7 @@ public:
                     std::vector<uint8_t> selected,
                     std::vector<uint8_t> selectable,
                     std::vector<uint8_t> favorite,
-                    GameMetadataService* metadata,
-                    bool selectionMode) {
+                    GameMetadataService* metadata) {
         snapshot_ = snapshot ? std::move(snapshot)
                              : std::make_shared<const std::vector<CatalogEntry>>();
         indices_ = std::move(indices);
@@ -71,15 +60,14 @@ public:
         selectable_ = std::move(selectable);
         favorite_ = std::move(favorite);
         metadata_ = metadata;
-        selectionMode_ = selectionMode;
+        selectionMode_ = false;
     }
     void updateStateBadges(std::vector<std::string> stateBadges) {
         stateBadges_ = std::move(stateBadges);
     }
     bool sameStructure(
         const std::shared_ptr<const std::vector<CatalogEntry>>& snapshot,
-        const std::vector<int>& indices,
-        const std::vector<CatalogShelf>& shelves, int heroIndex) const {
+        const std::vector<int>& indices) const {
         auto hashAt = [](const std::shared_ptr<
                              const std::vector<CatalogEntry>>& entries,
                          const std::vector<int>& picks, int row)
@@ -92,9 +80,7 @@ public:
                 return nullptr;
             return &(*entries)[static_cast<size_t>(index)].infoHash;
         };
-        if (indices_.size() != indices.size() ||
-            shelves_.size() != shelves.size() ||
-            (heroIndex_ >= 0) != (heroIndex >= 0))
+        if (indices_.size() != indices.size())
             return false;
         for (size_t row = 0; row < indices.size(); ++row) {
             const std::string* before =
@@ -104,40 +90,9 @@ public:
             if (!before || !after || *before != *after)
                 return false;
         }
-        const std::string* beforeHero =
-            hashAt(snapshot_, indices_, heroIndex_);
-        const std::string* afterHero = hashAt(snapshot, indices, heroIndex);
-        if ((beforeHero || afterHero) &&
-            (!beforeHero || !afterHero || *beforeHero != *afterHero))
-            return false;
-        for (size_t shelfIndex = 0; shelfIndex < shelves.size();
-             ++shelfIndex) {
-            const CatalogShelf& before = shelves_[shelfIndex];
-            const CatalogShelf& after = shelves[shelfIndex];
-            if (before.title != after.title ||
-                before.items.size() != after.items.size())
-                return false;
-            for (size_t item = 0; item < after.items.size(); ++item) {
-                const std::string* beforeHash =
-                    hashAt(snapshot_, indices_, before.items[item]);
-                const std::string* afterHash =
-                    hashAt(snapshot, indices, after.items[item]);
-                if (!beforeHash || !afterHash ||
-                    *beforeHash != *afterHash)
-                    return false;
-            }
-        }
         return true;
     }
     GridCardInfo cardInfo(int index) const { return makeInfo(index); }
-    // Shelf contents (UI_PLAN F2/F5): indices into the visible list.
-    // heroIndex < 0 = no hero banner; an empty shelf list = plain grid.
-    void setShelves(std::vector<CatalogShelf> shelves, int heroIndex,
-                    std::string heroImageUrl) {
-        shelves_ = std::move(shelves);
-        heroIndex_ = heroIndex;
-        heroImage_ = std::move(heroImageUrl);
-    }
     void setMessage(const std::string& message) { message_ = message; }
     const CatalogEntry* entryAt(int row) const {
         if (!snapshot_ || row < 0 ||
@@ -155,11 +110,8 @@ public:
                selectable_[static_cast<size_t>(row)] != 0;
     }
 
-    // Recycler row layout: [top inset][hero?][shelves][grid rows of cards].
-    int headerRowCount() const {
-        return 1 + (heroIndex_ >= 0 ? 1 : 0) +
-               static_cast<int>(shelves_.size());
-    }
+    // Recycler row layout: [top inset][grid rows of cards].
+    int headerRowCount() const { return 1; }
     int rowForEntry(int index) const {
         return headerRowCount() + index / grid::kColumns;
     }
@@ -178,10 +130,7 @@ public:
             return grid::kTopInsetHeight;
         if (indices_.empty())
             return 100;
-        if (heroIndex_ >= 0 && index.row == 1)
-            return grid::kHeroHeight;
-        return index.row < headerRowCount() ? grid::kShelfHeight
-                                            : grid::kRowHeight;
+        return grid::kRowHeight;
     }
     brls::RecyclerCell* cellForRow(brls::RecyclerFrame* recycler,
                                     brls::IndexPath index) override;
@@ -240,9 +189,6 @@ private:
     std::vector<uint8_t> selected_;
     std::vector<uint8_t> selectable_;
     std::vector<uint8_t> favorite_;
-    std::vector<CatalogShelf> shelves_;
-    int heroIndex_ = -1;
-    std::string heroImage_;
     GameMetadataService* metadata_ = nullptr;
     std::string message_;
     bool selectionMode_ = false;
@@ -275,7 +221,7 @@ public:
     }
 
 private:
-    NVGcolor iconColor_ = nvgRGB(255, 255, 255);
+    NVGcolor iconColor_ = theme::textPrimary();
 };
 class CatalogView : public brls::Box {
 public:
@@ -294,91 +240,55 @@ public:
           openDownloads_(std::move(openDownloads)),
           openGames_(std::move(openGames)),
           onSourcesRefreshed_(std::move(onSourcesRefreshed)), section_(section),
+          freshnessBadge_(new CatalogFreshnessBadge()),
           alive_(std::make_shared<std::atomic<bool>>(true)),
           cancelled_(std::make_shared<std::atomic<bool>>(false)) {
         recycler_ = new brls::RecyclerFrame();
         recycler_->setGrow(1);
-        recycler_->setPadding(6, 32, 6, 32);
+        recycler_->setPadding(6, 28, 6, 28);
         recycler_->estimatedRowHeight = grid::kRowHeight;
         recycler_->registerCell("TopInset", [] { return new TopInsetCell(); });
         recycler_->registerCell("GridRow", [column = focusColumn_] {
             return new GridRowCell(column);
         });
-        recycler_->registerCell("Shelf", [hash = shelfFocusHash_] {
-            return new ShelfCell(hash);
-        });
-        recycler_->registerCell("Hero", [] { return new HeroCell(); });
         recycler_->registerCell("Message",
             [] { return new TextMessageCell(); });
         dataSource_ = new CatalogDataSource(this);
         recycler_->setDataSource(dataSource_);
 
-        // Persistent catalog header (UI_PLAN O2): sort + filter chips, a
-        // result counter and a compact magnifier button in the right corner.
-        // X/Y hotkeys still work; the chips make the current state visible
-        // and touch-reachable. Single row: with the search field collapsed
-        // to a 40px icon everything fits at 1280 without clipping.
-        //
-        // Freshness lives ABOVE this row, top-right — never in the chip row,
-        // where it shoved the magnifier off-screen once the sidebar folded.
-        freshnessRow_ = new brls::Box(brls::Axis::ROW);
-        freshnessRow_->setHeight(28);
-        freshnessRow_->setShrink(0.0f);
-        freshnessRow_->setMarginTop(6);
-        freshnessRow_->setMarginBottom(0);
-        freshnessRow_->setMarginLeft(34);
-        freshnessRow_->setMarginRight(34);
-        freshnessRow_->setJustifyContent(brls::JustifyContent::FLEX_END);
-        freshnessRow_->setAlignItems(brls::AlignItems::CENTER);
-        freshnessRow_->setFocusable(false);
-        auto* freshnessSpacer = new brls::Box();
-        freshnessSpacer->setGrow(1.0f);
-        freshnessSpacer->setFocusable(false);
-        freshnessRow_->addView(freshnessSpacer);
-        // Pulsing dot while a refresh/batch resolve is in flight — text alone
-        // reads as a frozen badge for multi-second waits (#19).
-        busyDot_ = new brls::Label();
-        busyDot_->setText("●");
-        busyDot_->setFontSize(theme::kFontCaption);
-        busyDot_->setTextColor(theme::warning());
-        busyDot_->setMarginRight(6);
-        busyDot_->setFocusable(false);
-        busyDot_->setShrink(0.0f);
-        busyDot_->setVisibility(brls::Visibility::GONE);
-        freshnessRow_->addView(busyDot_);
-        freshness_ = new brls::Label();
-        freshness_->setFontSize(theme::kFontCaption);
-        freshness_->setSingleLine(true);
-        freshness_->setFocusable(false);
-        freshness_->setShrink(0.0f);
-        freshnessRow_->addView(freshness_);
-
         header_ = new brls::Box(brls::Axis::ROW);
-        header_->setHeight(40);
+        header_->setHeight(44);
         header_->setShrink(0.0f);
         header_->setMarginTop(6);
         header_->setMarginBottom(10);
-        header_->setMarginLeft(34);
-        header_->setMarginRight(34);
-        sortLatest_ = makeChip(tr("pipensx/catalog/sort_latest"),
-                               [this] { setSort(SortMode::Latest); });
-        sortPopular_ = makeChip(tr("pipensx/catalog/sort_popular"),
-                                [this] { setSort(SortMode::Popular); });
-        sortAlpha_ = makeChip(tr("pipensx/catalog/sort_alpha"),
-                              [this] { setSort(SortMode::Alphabetical); });
-        sortSize_ = makeChip(tr("pipensx/catalog/sort_size"),
-                             [this] { setSort(SortMode::Largest); });
-        sortLatest_->setMarginLeft(0);
-        header_->addView(sortLatest_);
-        header_->addView(sortPopular_);
-        header_->addView(sortAlpha_);
-        header_->addView(sortSize_);
-        // Session-only view filters. Sections live in the sidebar, so there
-        // is no All/Games pair here.
-        filterFavorites_ = makeChip("★", [this] {
+        header_->setMarginLeft(28);
+        header_->setMarginRight(28);
+        header_->setAlignItems(brls::AlignItems::CENTER);
+        sortButton_ = makeChip(tr("pipensx/catalog/sort_latest"),
+                               [this] { openSortSheet(); });
+        sortButton_->setMarginLeft(0);
+        header_->addView(sortButton_);
+        auto* split = new brls::Box();
+        split->setWidth(1);
+        split->setHeight(22);
+        split->setFocusable(false);
+        split->setBackgroundColor(theme::track());
+        split->setMarginLeft(8);
+        split->setMarginRight(8);
+        split->setShrink(0.0f);
+        header_->addView(split);
+        auto* filters = new brls::Box(brls::Axis::ROW);
+        filters->setAlignItems(brls::AlignItems::CENTER);
+        filters->setPadding(4, 4, 4, 4);
+        filters->setCornerRadius(10);
+        filters->setBackgroundColor(theme::panel());
+        filters->setShrink(0.0f);
+        filterFavorites_ = makeChip(tr("pipensx/catalog/filter_favorites"),
+                                    [this] {
             favoritesOnly_ = !favoritesOnly_;
             rebuildEntries();
         });
+        filterFavorites_->setMarginLeft(0);
         filterFits_ = makeChip(tr("pipensx/catalog/filter_fits"), [this] {
             fitsOnly_ = !fitsOnly_;
             rebuildEntries();
@@ -387,102 +297,49 @@ public:
         });
         filterPlayers_ = makeChip(tr("pipensx/catalog/filter_players"),
                                   [this] { openPlayerFilterMenu(); });
-        filterFavorites_->setMarginLeft(16);
-        header_->addView(filterFavorites_);
-        header_->addView(filterFits_);
-        header_->addView(filterPlayers_);
+        filterGenres_ = makeChip(tr("pipensx/catalog/filter_genres"),
+                                 [this] { openGenreSheet(); });
+        filters->addView(filterFavorites_);
+        filters->addView(filterFits_);
+        filters->addView(filterPlayers_);
+        filters->addView(filterGenres_);
+        header_->addView(filters);
         if (!favorites_)
             filterFavorites_->setVisibility(brls::Visibility::GONE);
-        // Hidden until a metadata index that carries player data is loaded, so
-        // the chip never offers a menu that can only answer "nothing found".
         updatePlayerChipVisibility();
         auto* headerSpacer = new brls::Box();
         headerSpacer->setGrow(1.0f);
         headerSpacer->setShrink(1.0f);
         header_->addView(headerSpacer);
+        freshnessBadge_->setMarginLeft(8);
+        header_->addView(freshnessBadge_);
         count_ = new brls::Label();
         count_->setFontSize(theme::kFontCaption);
         count_->setTextColor(theme::textTertiary());
-        count_->setMarginLeft(16);
-        count_->setMarginTop(12);
+        count_->setMarginLeft(8);
         count_->setShrink(0.0f);
         header_->addView(count_);
-        clearSearch_ = makeChip(tr("pipensx/common/clear"), [this] {
-            if (query_.empty() && !shelfDrilldown_)
-                return;
-            query_.clear();
-            shelfDrilldown_ = false;
-            rebuildEntries();
+        clearSearch_ = makeChip(tr("pipensx/catalog/filter_reset"), [this] {
+            resetFilters();
         });
-        clearSearch_->setMarginLeft(16);
+        clearSearch_->setMarginLeft(8);
         header_->addView(clearSearch_);
         searchField_ = new SearchIconButton();
         searchField_->setStyle(&brls::BUTTONSTYLE_DEFAULT);
-        searchField_->setWidth(40);
-        searchField_->setHeight(40);
+        searchField_->setWidth(44);
+        searchField_->setHeight(44);
         searchField_->setShrink(0.0f);
         searchField_->setMarginLeft(8);
         searchField_->setText("");
-        searchField_->registerClickAction([this](brls::View*) {
+        searchField_->registerAction("", brls::BUTTON_A, [this](brls::View*) {
             openSearchKeyboard();
             return true;
-        });
+        }, /*hidden=*/true);
+        searchField_->addGestureRecognizer(
+            new brls::TapGestureRecognizer(searchField_));
         header_->addView(searchField_);
 
-        // Batch-mode summary line; hidden while browsing.
-        status_ = new brls::Label();
-        status_->setFontSize(15);
-        status_->setMarginTop(10);
-        status_->setMarginLeft(34);
-        status_->setMarginBottom(2);
-        status_->setTextColor(theme::textTertiary());
-        status_->setVisibility(brls::Visibility::GONE);
-
-        batchControls_ = new brls::Box(brls::Axis::ROW);
-        batchControls_->setMarginTop(8);
-        batchControls_->setMarginLeft(34);
-        batchControls_->setMarginRight(34);
-        batchControls_->setVisibility(brls::Visibility::GONE);
-        auto* selectVisible = new brls::Button();
-        selectVisible->setStyle(&brls::BUTTONSTYLE_DEFAULT);
-        selectVisible->setGrow(1);
-        selectVisible->setHeight(44);
-        selectVisible->setMarginRight(8);
-        selectVisible->setText(tr("pipensx/catalog/select_visible"));
-        selectVisible->registerClickAction([this](brls::View*) {
-            selectVisibleEntries();
-            return true;
-        });
-        batchControls_->addView(selectVisible);
-        auto* clearSelection = new brls::Button();
-        clearSelection->setStyle(&brls::BUTTONSTYLE_DEFAULT);
-        clearSelection->setGrow(1);
-        clearSelection->setHeight(44);
-        clearSelection->setMarginRight(8);
-        clearSelection->setText(tr("pipensx/common/clear"));
-        clearSelection->registerClickAction([this](brls::View*) {
-            selectedHashes_.clear();
-            rebuildEntries();
-            return true;
-        });
-        batchControls_->addView(clearSelection);
-        prepareBatch_ = new brls::Button();
-        prepareBatch_->setStyle(&brls::BUTTONSTYLE_PRIMARY);
-        prepareBatch_->setGrow(1);
-        prepareBatch_->setHeight(44);
-        prepareBatch_->setText(tr("pipensx/catalog/prepare"));
-        prepareBatch_->registerClickAction([this](brls::View*) {
-            prepareSelectedEntries();
-            return true;
-        });
-        batchControls_->addView(prepareBatch_);
-
-        addView(freshnessRow_);
         addView(header_);
-        addView(status_);
-        addView(batchControls_);
-        // Visibility toggles on the host, not the recycler: the host is the
-        // grow(1) box, so hiding only the recycler would leave its slot behind.
         recyclerHost_ = recyclerHost(recycler_);
         addView(recyclerHost_);
         if (catalogRefreshInFlight())
@@ -490,32 +347,17 @@ public:
         rebuildEntries();
         updateFreshnessLabel();
 
-        // X and Y carry no hint. This view stacks more gamepad actions than the
-        // bottom bar can render: on hardware the bar also holds the frame's
-        // Plus action plus the clock, battery and wireless widgets, and the
-        // Russian labels then overrun the row and collide with the clock. Both
-        // hotkeys keep working, and both are duplicated by focusable header
-        // controls — the magnifier button for search, the four sort chips for
-        // sort — so nothing here becomes unreachable.
-        registerAction(tr("pipensx/common/sort"), brls::BUTTON_X,
+        // X hotkey: toggle the "fits on SD" filter. Same predicate as the
+        // header chip, so the button and the chip never disagree.
+        registerAction(tr("pipensx/catalog/filter_fits"), brls::BUTTON_X,
                        [this](brls::View*) {
-            cycleSort();
+            fitsOnly_ = !fitsOnly_;
+            rebuildEntries();
+            if (fitsOnly_)
+                scheduleStorageRefresh();
             return true;
-        }, /*hidden=*/true);
+        }, /*hidden=*/false);
         registerYAction(false);
-        registerAction(tr("pipensx/common/refresh"), brls::BUTTON_RB,
-                       [this](brls::View*) {
-            if (batchMode_)
-                prepareSelectedEntries();
-            else
-                refreshCatalog();
-            return true;
-        });
-        registerAction(tr("pipensx/catalog/action_batch"), brls::BUTTON_LB,
-                       [this](brls::View*) {
-            toggleBatchMode();
-            return true;
-        });
         if (favorites_) {
             registerAction(tr("pipensx/catalog/action_favorite"),
                            brls::BUTTON_RT, [this](brls::View*) {
@@ -553,7 +395,7 @@ public:
         alive_->store(false);
         cancelled_->store(true);
         timer_.stop();
-        stopBusyPulse(busyDot_);
+        freshnessBadge_->setBusy(false);
     }
 
     // Golden behavior seams: stable identity survives recycling, and tests
@@ -571,8 +413,6 @@ public:
             return {};
         if (auto* card = dynamic_cast<GameCard*>(focus))
             return card->infoHash();
-        if (auto* hero = dynamic_cast<HeroCard*>(focus))
-            return hero->infoHash();
         return {};
     }
 
@@ -584,7 +424,6 @@ public:
         brls::Application::getImeManager()->openForText(
             [this](std::string text) {
                 query_ = std::move(text);
-                shelfDrilldown_ = false;
                 rebuildEntries();
             },
             tr("pipensx/catalog/search_placeholder"), "", 256, query_,
@@ -595,17 +434,6 @@ public:
         const CatalogEntry* picked = dataSource_->entryAt(row);
         if (!picked || busy_)
             return;
-        if (batchMode_) {
-            if (!dataSource_->selectableAt(row)) {
-                brls::Application::notify(tr("pipensx/catalog/already_in_downloads"));
-                return;
-            }
-            const std::string hash = lowerAscii(picked->infoHash);
-            if (selectedHashes_.erase(hash) == 0)
-                selectedHashes_.insert(hash);
-            rebuildEntries();
-            return;
-        }
         CatalogEntry entry = *picked;
         auto it = catalogFailures_.find(lowerAscii(entry.infoHash));
         std::string lastFailure =
@@ -641,9 +469,6 @@ public:
         if (auto* card = dynamic_cast<GameCard*>(focus)) {
             if (card->entryIndex() == row)
                 returnFocusShelf_ = card->shelfRow();
-        } else if (auto* hero = dynamic_cast<HeroCard*>(focus)) {
-            if (hero->infoHash() == picked->infoHash)
-                returnFocusShelf_ = 1;  // row 0 is the top inset
         }
         auto onClose = [this, alive = alive_] {
             if (alive->load())
@@ -693,8 +518,6 @@ private:
         std::string hash;
         if (auto* card = dynamic_cast<GameCard*>(focus))
             hash = card->infoHash();
-        else if (auto* hero = dynamic_cast<HeroCard*>(focus))
-            hash = hero->infoHash();
         if (hash.empty())
             return;
 
@@ -733,134 +556,6 @@ private:
         rebuildEntries();
     }
 
-    void toggleBatchMode() {
-        if (busy_)
-            return;
-        batchMode_ = !batchMode_;
-        batchControls_->setVisibility(batchMode_ ? brls::Visibility::VISIBLE
-                                                 : brls::Visibility::GONE);
-        updateActionHint(brls::BUTTON_LB,
-                         batchMode_ ? tr("pipensx/catalog/action_batch_close")
-                                    : tr("pipensx/catalog/action_batch"));
-        updateActionHint(brls::BUTTON_RB,
-                         batchMode_ ? tr("pipensx/catalog/prepare")
-                                    : tr("pipensx/common/refresh"));
-        rebuildEntries();
-        if (batchMode_)
-            scheduleStorageRefresh();
-    }
-
-    void selectVisibleEntries() {
-        if (!batchMode_)
-            return;
-        for (size_t row = 0; row < dataSource_->entryCount(); ++row) {
-            if (dataSource_->selectableAt(static_cast<int>(row))) {
-                const CatalogEntry* entry =
-                    dataSource_->entryAt(static_cast<int>(row));
-                if (entry)
-                    selectedHashes_.insert(lowerAscii(entry->infoHash));
-            }
-        }
-        rebuildEntries();
-    }
-
-    void prepareSelectedEntries() {
-        if (!batchMode_ || selectedHashes_.empty() || busy_)
-            return;
-        if (debridModeActive(settings_) &&
-            !ensureDebridLinked(settings_, manager_))
-            return;
-
-        std::unordered_set<std::string> managed;
-        for (const DownloadTask& task : manager_->snapshotUi())
-            managed.insert(lowerAscii(task.id));
-
-        std::vector<CatalogEntry> entries;
-        for (const CatalogEntry& entry : catalog_->entries()) {
-            const std::string hash = lowerAscii(entry.infoHash);
-            if (selectedHashes_.count(hash) && !managed.count(hash))
-                entries.push_back(entry);
-        }
-        if (sort_ == SortMode::Alphabetical) {
-            std::stable_sort(entries.begin(), entries.end(),
-                [](const CatalogEntry& left, const CatalogEntry& right) {
-                    return lowerAscii(left.title) < lowerAscii(right.title);
-                });
-        } else if (sort_ == SortMode::Largest) {
-            std::stable_sort(entries.begin(), entries.end(),
-                [](const CatalogEntry& left, const CatalogEntry& right) {
-                    return left.size > right.size;
-                });
-        } else if (sort_ == SortMode::Popular) {
-            std::stable_sort(entries.begin(), entries.end(),
-                [](const CatalogEntry& left, const CatalogEntry& right) {
-                    if (left.peerCount != right.peerCount)
-                        return left.peerCount > right.peerCount;
-                    return left.publishedAt > right.publishedAt;
-                });
-        } else {
-            std::stable_sort(entries.begin(), entries.end(),
-                [](const CatalogEntry& left, const CatalogEntry& right) {
-                    return left.publishedAt > right.publishedAt;
-                });
-        }
-        applySortDirection(entries);
-        for (const std::string& hash : managed)
-            selectedHashes_.erase(hash);
-        if (entries.empty()) {
-            rebuildEntries();
-            brls::Application::notify(tr("pipensx/catalog/select_one_game"));
-            return;
-        }
-
-        auto alive = alive_;
-        auto completion = [this, alive](
-                              const std::unordered_set<std::string>& remaining) {
-            if (!alive->load())
-                return;
-            selectedHashes_ = remaining;
-            rebuildEntries();
-        };
-        const StreamSelection selection = settings_
-            ? settings_->get().streamSelection
-            : StreamSelection::AllFiles;
-        brls::Application::pushActivity(new BatchInstallActivity(
-            manager_, settings_, std::move(entries), selection,
-            std::move(completion), openDownloads_));
-    }
-
-    void refreshBatchStatus() {
-        uint64_t bytes = 0;
-        size_t unknown = 0;
-        for (const CatalogEntry& entry : catalog_->entries()) {
-            if (!selectedHashes_.count(lowerAscii(entry.infoHash)))
-                continue;
-            if (!entry.size) {
-                ++unknown;
-                continue;
-            }
-            if (entry.size > std::numeric_limits<uint64_t>::max() - bytes)
-                bytes = std::numeric_limits<uint64_t>::max();
-            else
-                bytes += entry.size;
-        }
-        std::string text = tr("pipensx/catalog/batch_selected",
-                              selectedHashes_.size(), formatBytes(bytes));
-        if (unknown)
-            text += tr("pipensx/catalog/batch_unknown", unknown);
-        text += storage_.available
-            ? tr("pipensx/catalog/batch_sd_free",
-                 formatBytes(storage_.freeBytes))
-            : tr("pipensx/catalog/batch_sd_unavailable");
-        status_->setText(text);
-        const bool available = !selectedHashes_.empty();
-        prepareBatch_->setState(available ? brls::ButtonState::ENABLED
-                                          : brls::ButtonState::DISABLED);
-        prepareBatch_->setText(tr("pipensx/catalog/prepare_n",
-                                  selectedHashes_.size()));
-        setActionAvailable(brls::BUTTON_RB, available);
-    }
-
     void rebuildEntries() {
         // reloadData() recycles every cell, so remember where the focus was
         // (F2 "done when": focus survives reloadData) and restore it after.
@@ -890,9 +585,6 @@ private:
             if (auto* card = dynamic_cast<GameCard*>(focus)) {
                 focusHash = card->infoHash();
                 focusShelf = card->shelfRow();
-            } else if (auto* hero = dynamic_cast<HeroCard*>(focus)) {
-                focusHash = hero->infoHash();
-                focusShelf = 1;  // row 0 is the top inset
             }
         }
 
@@ -935,6 +627,9 @@ private:
             if (playerFilter_ != PlayerFilter::Any &&
                 !catalogEntryMatchesPlayerFilter(meta, playerFilter_))
                 continue;
+            if (!genreFilters_.empty() &&
+                !entryMatchesGenres(entry, meta))
+                continue;
             bool matches = !searching ||
                 catalogEntryMatchesSearch(entry, meta, needle);
             if (!matches)
@@ -944,18 +639,6 @@ private:
         const uint64_t filterDurationUs =
             filterStartedUs ? now_us() - filterStartedUs : 0;
         const uint64_t sortStartedUs = startedUs ? now_us() : 0;
-        const bool showShelves = query_.empty() && !shelfDrilldown_ &&
-                                 !batchMode_ && !visible.empty();
-        std::vector<int> popularityEntries;
-        bool popularFallback = false;
-        if (sort_ == SortMode::Popular || showShelves) {
-            const std::vector<int> order =
-                popularityOrder(all, visible, popularFallback);
-            popularityEntries.reserve(order.size());
-            for (int index : order)
-                popularityEntries.push_back(
-                    visible[static_cast<size_t>(index)]);
-        }
         if (sort_ == SortMode::Alphabetical) {
             std::vector<std::string> keys(visible.size());
             for (size_t i = 0; i < visible.size(); ++i)
@@ -980,9 +663,15 @@ private:
                            all[static_cast<size_t>(right)].size;
                 });
         } else if (sort_ == SortMode::Popular) {
-            // Peer-count sort with the F5 fallback ranking when the source
-            // carries no peer data at all.
-            visible = popularityEntries;
+            bool popularFallback = false;
+            const std::vector<int> order =
+                catalogPopularityOrder(all, visible, popularFallback);
+            std::vector<int> sorted;
+            sorted.reserve(order.size());
+            for (int index : order)
+                sorted.push_back(visible[static_cast<size_t>(index)]);
+            visible = std::move(sorted);
+            (void)popularFallback;
         } else {
             std::stable_sort(visible.begin(), visible.end(),
                 [&all](int left, int right) {
@@ -1001,7 +690,6 @@ private:
         std::vector<uint8_t> selected;
         std::vector<uint8_t> selectable;
         std::vector<uint8_t> favorite;
-        std::vector<const GameMetadata*> metas;
         stateBadges.reserve(visible.size());
         gameNames.reserve(visible.size());
         iconUrls.reserve(visible.size());
@@ -1009,7 +697,6 @@ private:
         selected.reserve(visible.size());
         selectable.reserve(visible.size());
         favorite.reserve(visible.size());
-        metas.reserve(visible.size());
         const uint64_t presentationStartedUs = startedUs ? now_us() : 0;
         const std::unordered_set<std::string> installedIds =
             installed_ ? installed_->titleIds()
@@ -1038,192 +725,13 @@ private:
             selectable.push_back(canSelect ? 1 : 0);
             favorite.push_back(favorites_ && favorites_->contains(hash) ? 1
                                                                        : 0);
-            metas.push_back(meta);
         }
         const uint64_t presentationDurationUs =
             presentationStartedUs ? now_us() - presentationStartedUs : 0;
 
-        // Shelves 2.0 (UI_PLAN F5, supersedes the F2 pair): Popular / New /
-        // Recently updated / genre shelves. Only in the default browse state —
-        // a search or batch mode wants the plain grid.
-        // Dedup: a game appears on at most one shelf (Popular wins over New,
-        // over later shelves), re-releases of one title collapse by titleId
-        // inside a shelf. The grid below always shows everything.
-        const uint64_t shelvesStartedUs = startedUs ? now_us() : 0;
-        std::vector<CatalogShelf> shelves;
-        int heroIndex = -1;
-        std::string heroImage;
-        if (showShelves) {
-            std::vector<int> visiblePositions(all.size(), -1);
-            for (size_t i = 0; i < visible.size(); ++i)
-                visiblePositions[static_cast<size_t>(visible[i])] =
-                    static_cast<int>(i);
-            std::vector<int> popular;
-            popular.reserve(popularityEntries.size());
-            for (int snapshotIndex : popularityEntries)
-                popular.push_back(
-                    visiblePositions[static_cast<size_t>(snapshotIndex)]);
-            const size_t withPeers = static_cast<size_t>(std::count_if(
-                visible.begin(), visible.end(),
-                [&all](int index) {
-                    return all[static_cast<size_t>(index)].peerCount > 0;
-                }));
-            // F5.1 diagnostics: make a silent peer_count outage observable.
-            if (shelfDiagTotal_ != visible.size() ||
-                shelfDiagPeers_ != withPeers) {
-                shelfDiagTotal_ = visible.size();
-                shelfDiagPeers_ = withPeers;
-                telemetry_log("catalog", "-",
-                              "event=popular_shelf entries=%zu with_peers=%zu "
-                              "mode=%s",
-                              visible.size(), withPeers,
-                              popularFallback ? "fallback" : "peers");
-            }
-
-            auto visibleEntry = [&](int index) -> const CatalogEntry& {
-                return all[static_cast<size_t>(
-                    visible[static_cast<size_t>(index)])];
-            };
-            // Dedup key: titleId when known (metadata or catalogue field),
-            // info-hash otherwise.
-            auto keyOf = [&](int index) {
-                const size_t i = static_cast<size_t>(index);
-                const GameMetadata* meta = metas[i];
-                if (meta && !meta->titleId.empty())
-                    return std::string("t:") + meta->titleId;
-                const CatalogEntry& entry = visibleEntry(index);
-                if (!entry.titleId.empty())
-                    return std::string("t:") + entry.titleId;
-                return "h:" + lowerAscii(entry.infoHash);
-            };
-            std::unordered_set<std::string> used;
-
-            // Take up to kShelfItems unique, not-yet-used titles; commit the
-            // keys only when the shelf is actually shown.
-            auto buildShelf = [&](const std::vector<int>& candidates,
-                                  size_t minItems) {
-                std::vector<int> items;
-                std::vector<std::string> keys;
-                std::unordered_set<std::string> local;
-                for (int index : candidates) {
-                    if (items.size() >= grid::kShelfItems)
-                        break;
-                    std::string key = keyOf(index);
-                    if (used.count(key) || local.count(key))
-                        continue;
-                    local.insert(key);
-                    keys.push_back(std::move(key));
-                    items.push_back(index);
-                }
-                if (items.size() < minItems)
-                    return std::vector<int>();
-                used.insert(keys.begin(), keys.end());
-                return items;
-            };
-
-            // Popular: peered entries, or the full fallback ranking when the
-            // source carries no peer data. Never hidden silently (F5.1) —
-            // if dedup drained it, refill from the overall ranking.
-            std::vector<int> popularCandidates;
-            for (int index : popular) {
-                if (popularFallback ||
-                    visibleEntry(index).peerCount > 0)
-                    popularCandidates.push_back(index);
-            }
-            std::vector<int> items = buildShelf(popularCandidates, 1);
-            if (items.empty() && visible.size() > 1)
-                items = buildShelf(popular, 1);
-            if (!items.empty())
-                shelves.push_back({tr("pipensx/catalog/shelf_popular"), std::move(items),
-                           [this] {
-                    openShelfDrilldown(SortMode::Popular);
-                    focusGrid();
-                }});
-
-            // New: by published_at, minus everything already shown above.
-            std::vector<int> byDate(visible.size());
-            std::iota(byDate.begin(), byDate.end(), 0);
-            std::stable_sort(byDate.begin(), byDate.end(),
-                [&](int left, int right) {
-                    return visibleEntry(left).publishedAt >
-                           visibleEntry(right).publishedAt;
-                });
-            items = buildShelf(byDate, grid::kMinShelfItems);
-            if (!items.empty())
-                shelves.push_back({tr("pipensx/catalog/shelf_new"), std::move(items),
-                           [this] {
-                    openShelfDrilldown(SortMode::Latest);
-                    focusGrid();
-                }});
-
-            // Recently updated: source updated after the original release.
-            std::vector<int> updated;
-            for (size_t i = 0; i < visible.size(); ++i) {
-                const CatalogEntry& entry = visibleEntry(static_cast<int>(i));
-                if (entry.sourceUpdatedAt > entry.publishedAt)
-                    updated.push_back(static_cast<int>(i));
-            }
-            std::stable_sort(updated.begin(), updated.end(),
-                [&](int left, int right) {
-                    return visibleEntry(left).sourceUpdatedAt >
-                           visibleEntry(right).sourceUpdatedAt;
-                });
-            items = buildShelf(updated, grid::kMinShelfItems);
-            if (!items.empty())
-                shelves.push_back({tr("pipensx/catalog/shelf_updated"), std::move(items),
-                                   std::function<void()>()});
-
-            // Genre picks from GameMetadataService categories: the two
-            // biggest genres that still have enough unused titles. "See all"
-            // hands the genre to search (categories match the query above).
-            std::unordered_map<std::string, int> genreCounts;
-            for (const GameMetadata* meta : metas) {
-                if (!meta)
-                    continue;
-                for (const std::string& category : meta->categories)
-                    ++genreCounts[category];
-            }
-            std::vector<std::pair<std::string, int>> genres(
-                genreCounts.begin(), genreCounts.end());
-            std::sort(genres.begin(), genres.end(),
-                [](const auto& left, const auto& right) {
-                    if (left.second != right.second)
-                        return left.second > right.second;
-                    return left.first < right.first;
-                });
-            int genreShelves = 0;
-            for (const auto& genre : genres) {
-                if (genreShelves == 2)
-                    break;
-                std::vector<int> candidates;
-                for (int index : popular) {
-                    const GameMetadata* meta =
-                        metas[static_cast<size_t>(index)];
-                    if (meta && std::find(meta->categories.begin(),
-                                          meta->categories.end(),
-                                          genre.first) !=
-                                    meta->categories.end())
-                        candidates.push_back(index);
-                }
-                items = buildShelf(candidates, grid::kMinShelfItems);
-                if (items.empty())
-                    continue;
-                shelves.push_back({genre.first, std::move(items),
-                                   [this, category = genre.first] {
-                    query_ = category;
-                    rebuildEntries();
-                    focusGrid();
-                }});
-                ++genreShelves;
-            }
-        }
-        const uint64_t shelvesDurationUs =
-            shelvesStartedUs ? now_us() - shelvesStartedUs : 0;
-
         const size_t count = visible.size();
-        const size_t shelfCount = shelves.size();
         const bool structureChanged =
-            !dataSource_->sameStructure(snapshot, visible, shelves, heroIndex);
+            !dataSource_->sameStructure(snapshot, visible);
         observedCatalog_ = snapshot;
         observedMetadataGeneration_ =
             metadata_ ? metadata_->generation() : 0;
@@ -1233,9 +741,7 @@ private:
                                 std::move(iconPreserveAspect),
                                 std::move(selected), std::move(selectable),
                                 std::move(favorite),
-                                metadata_, batchMode_);
-        dataSource_->setShelves(std::move(shelves), heroIndex,
-                                std::move(heroImage));
+                                metadata_);
         dataSource_->setMessage(query_.empty()
             ? tr("pipensx/catalog/empty_inline")
             : tr("pipensx/catalog/nothing_found_inline"));
@@ -1272,10 +778,7 @@ private:
                     tr("pipensx/catalog/no_match_title"),
                     tr("pipensx/catalog/no_match_body"),
                     tr("pipensx/catalog/no_match_action"), [this] {
-                        if (query_.empty() && !shelfDrilldown_)
-                            return;
                         query_.clear();
-                        shelfDrilldown_ = false;
                         rebuildEntries();
                     });
             }
@@ -1292,13 +795,6 @@ private:
         countText_ = query_.empty()
             ? tr("pipensx/catalog/count_releases", withThousands(count))
             : tr("pipensx/catalog/count_matches", withThousands(count));
-        if (!busy_ && batchMode_) {
-            refreshBatchStatus();
-        } else if (!busy_) {
-            setActionAvailable(brls::BUTTON_RB, true);
-        }
-        status_->setVisibility(batchMode_ ? brls::Visibility::VISIBLE
-                                          : brls::Visibility::GONE);
         updateHeader();
         if (startedUs) {
             telemetry_log("ui", "catalog",
@@ -1310,9 +806,6 @@ private:
             telemetry_log(
                 "ui", "catalog", "event=presentation duration_us=%llu",
                 static_cast<unsigned long long>(presentationDurationUs));
-            telemetry_log("ui", "catalog",
-                          "event=shelves duration_us=%llu",
-                          static_cast<unsigned long long>(shelvesDurationUs));
             telemetry_log(
                 "ui", "catalog",
                 "event=reload duration_us=%llu structural=%d",
@@ -1320,9 +813,9 @@ private:
                 structureChanged ? 1 : 0);
             telemetry_log(
                 "ui", "catalog",
-                "event=rebuild duration_us=%llu entries=%zu visible=%zu shelves=%zu reload=%d",
+                "event=rebuild duration_us=%llu entries=%zu visible=%zu reload=%d",
                 static_cast<unsigned long long>(now_us() - startedUs),
-                all.size(), count, shelfCount, structureChanged ? 1 : 0);
+                all.size(), count, structureChanged ? 1 : 0);
         }
     }
 
@@ -1333,82 +826,33 @@ private:
         // The magnifier lights up (primary style, white icon) while a query
         // is active; the Clear chip is the visible reminder + escape hatch.
         searchField_->setIconColor(query_.empty() ? theme::textPrimary()
-                                                  : nvgRGB(255, 255, 255));
+                                                  : theme::onAccent());
         styleChip(searchField_, !query_.empty());
         clearSearch_->setVisibility(
-            query_.empty() && !shelfDrilldown_ ? brls::Visibility::GONE
-                                               : brls::Visibility::VISIBLE);
-        styleSortChip(sortLatest_, SortMode::Latest,
-                      tr("pipensx/catalog/sort_latest"));
-        styleSortChip(sortPopular_, SortMode::Popular,
-                      tr("pipensx/catalog/sort_popular"));
-        styleSortChip(sortAlpha_, SortMode::Alphabetical,
-                      tr("pipensx/catalog/sort_alpha"));
-        styleSortChip(sortSize_, SortMode::Largest,
-                      tr("pipensx/catalog/sort_size"));
+            filtersDirty() ? brls::Visibility::VISIBLE : brls::Visibility::GONE);
+        const bool descending = naturalDescending(sort_) != sortReversed_;
+        sortButton_->setText(sortLabel(sort_) + (descending ? " ↓" : " ↑"));
+        styleChip(sortButton_, true);
         styleChip(filterFavorites_, favoritesOnly_);
         styleChip(filterFits_, fitsOnly_);
-        // The chip carries the active choice, so the header states the filter
-        // in force without opening the menu.
         filterPlayers_->setText(playerFilter_ == PlayerFilter::Any
             ? tr("pipensx/catalog/filter_players")
             : ui::playerFilterLabel(playerFilter_));
         styleChip(filterPlayers_, playerFilter_ != PlayerFilter::Any);
+        filterGenres_->setText(genreFilterLabel());
+        styleChip(filterGenres_, !genreFilters_.empty());
         count_->setText(countText_);
         updateFreshnessLabel();
     }
 
-    // Top-right freshness badge. Bundled dumps do not count: only a successful
-    // network refresh stamps lastCatalogRefreshWallSec. Green = refreshed
-    // today, red = never / not today, orange = in flight. The Kind decision
-    // lives in resolveCatalogFreshness (unit-tested); this only renders it.
+    // Header freshness badge, left of the release count. Bundled dumps do
+    // not count: only a successful network refresh stamps
+    // lastCatalogRefreshWallSec. Green = refreshed today, red = never / not
+    // today, orange = in flight. The Kind decision lives in
+    // resolveCatalogFreshness (unit-tested); this only renders it.
     void updateFreshnessLabel() {
-        if (!freshness_)
-            return;
-        const uint64_t wallSec =
-            settings_ ? settings_->get().lastCatalogRefreshWallSec : 0;
-        const int64_t snapshot = catalog_ ? catalog_->snapshotEpochSec() : 0;
-        const bool hasEntries = catalog_ && !catalog_->entries().empty();
-        const CatalogFreshness state = resolveCatalogFreshness(
-            busy_ || catalogRefreshInFlight(), wallSec, snapshot, hasEntries,
-            wallSec != 0 &&
-                isLocalToday(static_cast<int64_t>(wallSec)));
-        switch (state.kind) {
-            case CatalogFreshness::Kind::Updating:
-                freshness_->setText(tr("pipensx/catalog/freshness_updating"));
-                freshness_->setTextColor(theme::warning());
-                return;
-            case CatalogFreshness::Kind::Never:
-                freshness_->setText(tr("pipensx/catalog/freshness_never"));
-                freshness_->setTextColor(theme::error());
-                return;
-            case CatalogFreshness::Kind::Ok:
-                freshness_->setText(tr("pipensx/catalog/freshness_ok",
-                                         formatEpochDateUtc(state.epochSec)));
-                freshness_->setTextColor(theme::success());
-                return;
-            case CatalogFreshness::Kind::Stale:
-                freshness_->setText(tr("pipensx/catalog/freshness_stale",
-                                         formatEpochDateUtc(state.epochSec)));
-                freshness_->setTextColor(theme::error());
-                return;
-        }
-    }
-
-    // Only the active chip carries an arrow: the direction belongs to the sort
-    // in force, and four arrows would read as four independent switches. The
-    // arrow is ascending/descending of that chip's own key, so A-Z is up while
-    // newest/most-seeded/largest are down.
-    void styleSortChip(brls::Button* chip, SortMode mode,
-                       const std::string& label) {
-        const bool active = sort_ == mode;
-        if (active) {
-            const bool descending = naturalDescending(mode) != sortReversed_;
-            chip->setText(label + (descending ? " ↓" : " ↑"));
-        } else {
-            chip->setText(label);
-        }
-        styleChip(chip, active);
+        freshnessBadge_->update(busy_, catalogRefreshInFlight(), settings_,
+                                catalog_);
     }
 
     static void styleChip(brls::Button* chip, bool active) {
@@ -1431,11 +875,13 @@ private:
         chip->setPaddingLeft(14);
         chip->setPaddingRight(14);
         chip->setText(text);
-        chip->registerClickAction(
+        chip->registerAction("", brls::BUTTON_A,
             [onClick = std::move(onClick)](brls::View*) {
                 onClick();
                 return true;
-            });
+            },
+            /*hidden=*/true);
+        chip->addGestureRecognizer(new brls::TapGestureRecognizer(chip));
         return chip;
     }
 
@@ -1456,14 +902,258 @@ private:
         rebuildEntries();
     }
 
-    void openShelfDrilldown(SortMode mode) {
+    std::string sortLabel(SortMode mode) const {
+        switch (mode) {
+            case SortMode::Popular: return tr("pipensx/catalog/sort_popular");
+            case SortMode::Alphabetical: return tr("pipensx/catalog/sort_alpha");
+            case SortMode::Largest: return tr("pipensx/catalog/sort_size");
+            case SortMode::Latest:
+            default: return tr("pipensx/catalog/sort_latest");
+        }
+    }
+
+    bool filtersDirty() const {
+        return !query_.empty() || favoritesOnly_ || fitsOnly_ ||
+               playerFilter_ != PlayerFilter::Any || !genreFilters_.empty();
+    }
+
+    void resetFilters() {
+        query_.clear();
+        favoritesOnly_ = false;
+        fitsOnly_ = false;
+        playerFilter_ = PlayerFilter::Any;
+        genreFilters_.clear();
+        rebuildEntries();
+    }
+
+    void openSortSheet() {
         if (busy_)
             return;
-        query_.clear();
-        shelfDrilldown_ = true;
-        sort_ = mode;
-        sortReversed_ = false;
+        const std::vector<SortMode> modes = {
+            SortMode::Latest, SortMode::Popular, SortMode::Alphabetical,
+            SortMode::Largest};
+        std::vector<std::string> labels;
+        int selected = 0;
+        for (size_t i = 0; i < modes.size(); ++i) {
+            labels.push_back(sortLabel(modes[i]));
+            if (sort_ == modes[i])
+                selected = static_cast<int>(i);
+        }
+        auto* dropdown = new brls::Dropdown(
+            tr("pipensx/catalog/sort_title"), labels, [](int) {}, selected,
+            [this, modes](int index) {
+                if (index < 0 || index >= static_cast<int>(modes.size()))
+                    return;
+                setSort(modes[static_cast<size_t>(index)]);
+            });
+        brls::Application::pushActivity(new brls::Activity(dropdown));
+    }
+
+    bool entryMatchesGenres(const CatalogEntry& entry,
+                            const GameMetadata* meta) const {
+        if (genreFilters_.empty())
+            return true;
+        if (meta) {
+            for (const std::string& category : meta->categories) {
+                if (genreFilters_.count(category))
+                    return true;
+            }
+        }
+        return !entry.genre.empty() && genreFilters_.count(entry.genre);
+    }
+
+    std::vector<std::string> availableGenres() const {
+        std::unordered_set<std::string> names;
+        if (!catalog_)
+            return {};
+        for (const CatalogEntry& entry : catalog_->entries()) {
+            if (entry.isHiddenByDefault())
+                continue;
+            const GameMetadata* meta =
+                metadata_ ? metadata_->findByInfoHash(entry.infoHash) : nullptr;
+            if (!catalogEntryInSection(entry, meta, section_))
+                continue;
+            if (meta) {
+                for (const std::string& category : meta->categories)
+                    if (!category.empty())
+                        names.insert(category);
+            } else if (!entry.genre.empty()) {
+                names.insert(entry.genre);
+            }
+        }
+        std::vector<std::string> out(names.begin(), names.end());
+        std::sort(out.begin(), out.end());
+        return out;
+    }
+
+    std::string genreFilterLabel() const {
+        if (genreFilters_.empty())
+            return tr("pipensx/catalog/filter_genres");
+        if (genreFilters_.size() == 1)
+            return *genreFilters_.begin();
+        return tr("pipensx/catalog/filter_genres") + " · " +
+               std::to_string(genreFilters_.size());
+    }
+
+    // Virtualized genre rows: the catalog holds ~2k distinct genre combos
+    // and instantiating a cell per genre overflows the 128KB deko3d command
+    // buffer mid-frame (atmosphere User Break in renderFlush). RadioCell is
+    // display-only (no self-toggle, no event subscriptions), so recycled
+    // cells are safe to rebind; A-presses arrive via didSelectRowAt.
+    class GenreSheetDataSource : public brls::RecyclerDataSource {
+    public:
+        explicit GenreSheetDataSource(CatalogView* owner) : owner_(owner) {}
+
+        int numberOfRows(brls::RecyclerFrame*, int) override {
+            return static_cast<int>(owner_->genreSheetGenres_.size()) + 1;
+        }
+
+        brls::RecyclerCell* cellForRow(brls::RecyclerFrame* recycler,
+                                       brls::IndexPath index) override {
+            auto* cell = static_cast<brls::RadioCell*>(
+                recycler->dequeueReusableCell("GenreRow"));
+            bindRow(cell, index.row);
+            return cell;
+        }
+
+        void didSelectRowAt(brls::RecyclerFrame*,
+                            brls::IndexPath index) override {
+            owner_->toggleGenreRow(index.row);
+        }
+
+        void repaintCell(brls::RecyclerCell* cell) {
+            if (!cell)
+                return;
+            bindRow(static_cast<brls::RadioCell*>(cell),
+                    cell->getIndexPath().row);
+        }
+
+    private:
+        void bindRow(brls::RadioCell* cell, int row) {
+            if (row <= 0) {
+                cell->title->setText(tr("pipensx/catalog/genres_all"));
+                cell->setSelected(owner_->genreFilters_.empty());
+                return;
+            }
+            const size_t i = static_cast<size_t>(row) - 1;
+            if (i >= owner_->genreSheetGenres_.size())
+                return;
+            const std::string& name = owner_->genreSheetGenres_[i];
+            cell->title->setText(name);
+            cell->setSelected(owner_->genreFilters_.count(name) != 0);
+        }
+
+        CatalogView* owner_;
+    };
+
+    void toggleGenreRow(int row) {
+        if (!genreSheet_)
+            return;
+        if (row <= 0) {
+            genreFilters_.clear();
+        } else {
+            const size_t i = static_cast<size_t>(row) - 1;
+            if (i >= genreSheetGenres_.size())
+                return;
+            const std::string name = genreSheetGenres_[i];
+            if (genreFilters_.count(name))
+                genreFilters_.erase(name);
+            else
+                genreFilters_.insert(name);
+        }
         rebuildEntries();
+        syncGenreSheet();
+    }
+
+    // In-place rebind: reloadData() would recycle the focused row out from
+    // under the d-pad, so only the visible checkmarks are repainted.
+    void syncGenreSheet() {
+        if (!genreRecycler_ || !genreDataSource_)
+            return;
+        for (auto* cell : visibleCells<brls::RadioCell>(genreRecycler_))
+            genreDataSource_->repaintCell(cell);
+    }
+
+    void closeGenreSheet() {
+        if (!genreSheet_)
+            return;
+        removeView(genreSheet_);
+        genreSheet_ = nullptr;
+        genreRecycler_ = nullptr;
+        // Owned by the recycler (setDataSource(..., true)): removeView freed
+        // both, so deleting here would be a double free.
+        genreDataSource_ = nullptr;
+        genreSheetGenres_.clear();
+        if (filterGenres_)
+            brls::Application::giveFocus(filterGenres_);
+    }
+
+    void openGenreSheet() {
+        if (busy_ || genreSheet_)
+            return;
+        genreSheet_ = new brls::Box();
+        genreSheet_->setPositionType(brls::PositionType::ABSOLUTE);
+        genreSheet_->setPositionTop(0);
+        genreSheet_->setPositionLeft(0);
+        genreSheet_->setWidthPercentage(100);
+        genreSheet_->setHeightPercentage(100);
+        genreSheet_->setAlignItems(brls::AlignItems::CENTER);
+        genreSheet_->setJustifyContent(brls::JustifyContent::CENTER);
+        genreSheet_->registerAction(tr("pipensx/common/close"), brls::BUTTON_B,
+            [this](brls::View*) {
+                closeGenreSheet();
+                return true;
+            });
+
+        auto* backdrop = new brls::Box();
+        backdrop->setPositionType(brls::PositionType::ABSOLUTE);
+        backdrop->setPositionTop(0);
+        backdrop->setPositionLeft(0);
+        backdrop->setWidthPercentage(100);
+        backdrop->setHeightPercentage(100);
+        backdrop->setBackgroundColor(theme::overlay());
+        backdrop->setFocusable(false);
+        backdrop->addGestureRecognizer(new brls::TapGestureRecognizer(
+            [this](brls::TapGestureStatus status, brls::Sound*) {
+                if (status.state == brls::GestureState::END)
+                    closeGenreSheet();
+            }));
+        genreSheet_->addView(backdrop);
+
+        auto* panel = new brls::Box(brls::Axis::COLUMN);
+        panel->setWidth(520);
+        panel->setHeight(560);
+        panel->setBackgroundColor(theme::panel());
+        panel->setCornerRadius(theme::kRadiusLarge);
+        panel->setPadding(16, 16, 16, 16);
+        auto* title = new brls::Label();
+        title->setText(tr("pipensx/catalog/genres_title"));
+        title->setFontSize(theme::kFontBody);
+        title->setMarginBottom(12);
+        panel->addView(title);
+        genreSheetGenres_ = availableGenres();
+        auto* recycler = new brls::RecyclerFrame();
+        recycler->setGrow(1);
+        recycler->estimatedRowHeight =
+            brls::Application::getStyle()["brls/dropdown/listItemHeight"];
+        recycler->registerCell("GenreRow",
+                               [] { return new brls::RadioCell(); });
+        genreDataSource_ = new GenreSheetDataSource(this);
+        // Explicit single ownership: the recycler deletes the source on
+        // teardown (this matches CatalogDataSource above).
+        recycler->setDataSource(genreDataSource_, true);
+        panel->addView(recycler);
+        genreRecycler_ = recycler;
+        genreSheet_->addView(panel);
+        addView(genreSheet_);
+        genreRecycler_->reloadData();
+        genreRecycler_->selectRowAt(brls::IndexPath(0, 0), false);
+        brls::Application::giveFocus(genreRecycler_);
+    }
+
+    bool playerFilterUsable() const {
+        return section_ != CatalogSection::Ports && metadata_ &&
+               metadata_->hasPlayerData();
     }
 
     // Which way each sort runs when it has not been flipped: newest, most
@@ -1480,69 +1170,6 @@ private:
     void applySortDirection(std::vector<T>& order) const {
         if (sortReversed_)
             std::reverse(order.begin(), order.end());
-    }
-
-    // "See all" target (F5): land the focus on the first grid row. In
-    // drill-down mode shelves are hidden, so this is the top of the result.
-    void focusGrid() {
-        if (dataSource_->entryCount() == 0)
-            return;
-        *focusColumn_ = 0;
-        recycler_->selectRowAt(
-            brls::IndexPath(0, dataSource_->headerRowCount()), false);
-        brls::Application::giveFocus(recycler_);
-    }
-
-    // Popularity ranking (F5.1). With peer data: peer_count desc. Without
-    // any peers in the whole set (source outage), fall back to a rank sum of
-    // freshness and size instead of hiding the shelf.
-    static std::vector<int> popularityOrder(
-        const std::vector<CatalogEntry>& all, const std::vector<int>& visible,
-        bool& usedFallback) {
-        std::vector<int> order(visible.size());
-        std::iota(order.begin(), order.end(), 0);
-        auto entry = [&](int visIndex) -> const CatalogEntry& {
-            return all[static_cast<size_t>(
-                visible[static_cast<size_t>(visIndex)])];
-        };
-        usedFallback = std::none_of(visible.begin(), visible.end(),
-            [&all](int snapshotIndex) {
-                return all[static_cast<size_t>(snapshotIndex)].peerCount > 0;
-            });
-        if (!usedFallback) {
-            std::stable_sort(order.begin(), order.end(),
-                [&](int left, int right) {
-                    const auto& l = entry(left);
-                    const auto& r = entry(right);
-                    if (l.peerCount != r.peerCount)
-                        return l.peerCount > r.peerCount;
-                    return l.publishedAt > r.publishedAt;
-                });
-            return order;
-        }
-        std::vector<size_t> score(visible.size(), 0);
-        std::vector<int> ranked = order;
-        std::stable_sort(ranked.begin(), ranked.end(),
-            [&](int left, int right) {
-                return entry(left).publishedAt > entry(right).publishedAt;
-            });
-        for (size_t pos = 0; pos < ranked.size(); ++pos)
-            score[static_cast<size_t>(ranked[pos])] += pos;
-        std::stable_sort(ranked.begin(), ranked.end(),
-            [&](int left, int right) {
-                return entry(left).size > entry(right).size;
-            });
-        for (size_t pos = 0; pos < ranked.size(); ++pos)
-            score[static_cast<size_t>(ranked[pos])] += pos;
-        std::stable_sort(order.begin(), order.end(),
-            [&](int left, int right) {
-                if (score[static_cast<size_t>(left)] !=
-                    score[static_cast<size_t>(right)])
-                    return score[static_cast<size_t>(left)] <
-                           score[static_cast<size_t>(right)];
-                return entry(left).publishedAt > entry(right).publishedAt;
-            });
-        return order;
     }
 
     // The menu lists Any plus every mode the loaded index actually has data
@@ -1624,17 +1251,9 @@ private:
     // scrolls the row in and marks it as the content box's last-focused
     // child, so giving focus to the recycler lands on the row's
     // getDefaultFocus(), which honors focusColumn_.
-    void restoreFocus(const std::string& hash, int shelfRow) {
+    void restoreFocus(const std::string& hash, int) {
         if (dataSource_->entryCount() == 0) {
             brls::Application::giveFocus(ensureEmptyState());
-            return;
-        }
-        if (shelfRow >= 0 && shelfRow < dataSource_->headerRowCount()) {
-            // O12: the shelf's getDefaultFocus() reads this back, so the
-            // focus lands on the same card at its position inside the shelf.
-            *shelfFocusHash_ = hash;
-            recycler_->selectRowAt(brls::IndexPath(0, shelfRow), false);
-            brls::Application::giveFocus(recycler_);
             return;
         }
         int index = 0;
@@ -1681,21 +1300,13 @@ private:
             else
                 openSearchKeyboard();
             return true;
-        }, /*hidden=*/!busy);
+        }, /*hidden=*/false);
     }
 
     void setBusy(bool busy) {
         busy_ = busy;
         registerYAction(busy);
-        if (busyDot_) {
-            if (busy) {
-                busyDot_->setVisibility(brls::Visibility::VISIBLE);
-                startBusyPulse(busyDot_);
-            } else {
-                stopBusyPulse(busyDot_);
-                busyDot_->setVisibility(brls::Visibility::GONE);
-            }
-        }
+        freshnessBadge_->setBusy(busy);
         updateFreshnessLabel();
         // Neither registerAction nor updateActionHint fires this, so without it
         // the bar keeps the stale hint until some unrelated focus change
@@ -1756,13 +1367,6 @@ private:
                 if (card->entryIndex() >= 0) {
                     GridCardInfo info = dataSource_->cardInfo(card->entryIndex());
                     card->setSubLine(info.sub, info.subIsBadge);
-                }
-                return;
-            }
-            if (auto* hero = dynamic_cast<HeroCard*>(view)) {
-                if (hero->entryIndex() >= 0) {
-                    GridCardInfo info = dataSource_->cardInfo(hero->entryIndex());
-                    hero->setSubLine(info.sub, info.subIsBadge);
                 }
                 return;
             }
@@ -1853,8 +1457,6 @@ private:
                 storage_ = storage;
                 if (fitsOnly_)
                     rebuildEntries();
-                else if (batchMode_)
-                    refreshBatchStatus();
             });
         });
     }
@@ -1915,15 +1517,6 @@ private:
                 return tr("pipensx/downloads/status_removing");
         }
         return "";
-    }
-
-    // X hotkey: cycle through the sort modes; the header chips (O2) reflect
-    // the result, so no toast is needed.
-    void cycleSort() {
-        setSort(sort_ == SortMode::Latest        ? SortMode::Popular
-              : sort_ == SortMode::Popular      ? SortMode::Alphabetical
-              : sort_ == SortMode::Alphabetical ? SortMode::Largest
-                                                 : SortMode::Latest);
     }
 
     void refreshCatalog() {
@@ -2061,8 +1654,6 @@ private:
                 if (!alive->load())
                     return;
                 setBusy(false);
-                if (batchMode_)
-                    status_->setTextColor(theme::textTertiary());
                 if (fetchCatalog && !catalogOk) {
                     diagnostic_error("catalog", "refresh", "error=%s",
                                      catalogError.c_str());
@@ -2109,32 +1700,23 @@ private:
     brls::Box* recyclerHost_ = nullptr;
     CatalogDataSource* dataSource_;
     brls::Box* header_ = nullptr;
-    brls::Box* freshnessRow_ = nullptr;
-    brls::Label* busyDot_ = nullptr;
-    brls::Label* freshness_ = nullptr;
+    CatalogFreshnessBadge* freshnessBadge_ = nullptr;
     SearchIconButton* searchField_ = nullptr;
     brls::Button* clearSearch_ = nullptr;
-    brls::Button* sortLatest_ = nullptr;
-    brls::Button* sortPopular_ = nullptr;
-    brls::Button* sortAlpha_ = nullptr;
-    brls::Button* sortSize_ = nullptr;
+    brls::Button* sortButton_ = nullptr;
     brls::Button* filterFavorites_ = nullptr;
     brls::Button* filterFits_ = nullptr;
     brls::Button* filterPlayers_ = nullptr;
+    brls::Button* filterGenres_ = nullptr;
     brls::Label* count_ = nullptr;
-    brls::Label* status_;
-    brls::Box* batchControls_ = nullptr;
-    brls::Button* prepareBatch_ = nullptr;
+    brls::Box* genreSheet_ = nullptr;
+    brls::RecyclerFrame* genreRecycler_ = nullptr;
+    GenreSheetDataSource* genreDataSource_ = nullptr;
+    std::vector<std::string> genreSheetGenres_;
     EmptyStateView* emptyState_ = nullptr;
     std::shared_ptr<std::atomic<bool>> alive_;
     std::shared_ptr<std::atomic<bool>> cancelled_;
-    // Column the user last focused in the grid; grid rows read it in
-    // getDefaultFocus() so vertical navigation keeps the column.
     std::shared_ptr<int> focusColumn_ = std::make_shared<int>(0);
-    // O12: info-hash of the last-focused shelf card, shared with every
-    // ShelfCell/HorizontalShelf so it survives cell recycling.
-    std::shared_ptr<std::string> shelfFocusHash_ =
-        std::make_shared<std::string>();
     // O12: where to put the focus back when the game page closes.
     std::string returnFocusHash_;
     int returnFocusShelf_ = -1;
@@ -2142,29 +1724,25 @@ private:
     std::unordered_set<std::string> selectedHashes_;
     std::string query_;
     std::string countText_;
-    SortMode sort_ = SortMode::Latest;
+    SortMode sort_ = SortMode::Popular;
     // Flips the active sort's natural direction (see naturalDescending).
     // Session-only, like the view filters: a relaunch comes back to the
     // catalog's own idea of order.
     bool sortReversed_ = false;
     bool busy_ = false;
     bool pendingRebuild_ = false;
-    bool batchMode_ = false;
-    bool shelfDrilldown_ = false;
     // Session-only view filters: deliberately not persisted, so a relaunch
     // always comes back to the full catalog.
     bool favoritesOnly_ = false;
     bool fitsOnly_ = false;
     PlayerFilter playerFilter_ = PlayerFilter::Any;
+    std::unordered_set<std::string> genreFilters_;
     brls::RepeatingTimer timer_;
     uint64_t observedSettingsGeneration_ = 0;
     std::shared_ptr<const std::vector<CatalogEntry>> observedCatalog_;
     uint64_t observedMetadataGeneration_ = 0;
     uint64_t taskSignature_ = 0;
     uint64_t taskIdSignature_ = 0;
-    // Last logged popular-shelf diagnostics (F5.1): entry/peer counts.
-    size_t shelfDiagTotal_ = static_cast<size_t>(-1);
-    size_t shelfDiagPeers_ = 0;
     uint64_t installedRefreshSignature_ = 0;
     bool installedRefreshInFlight_ = false;
     static constexpr uint64_t kStorageRefreshIntervalMs = 2000;

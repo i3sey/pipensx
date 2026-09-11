@@ -82,6 +82,7 @@ void testMissingFileUsesSafeDefaults() {
     assert(values.showCompletedDownloads);
     assert(!values.extendedTelemetry);
     assert(values.checkForUpdatesOnLaunch);
+    assert(!values.showHomeTab);
     assert(values.maxActiveDownloads == 1);
     // "auto" keeps the console's system language, so a Russian Switch gets a
     // Russian UI on first launch with no user action.
@@ -117,6 +118,7 @@ void testUpdatePersistsEveryPublicSetting() {
     changed.showCompletedDownloads = false;
     changed.extendedTelemetry = true;
     changed.checkForUpdatesOnLaunch = false;
+    changed.showHomeTab = true;
     changed.webServerEnabled = false;
     changed.webServerPin = "12345678";
     changed.maxActiveDownloads = 3;
@@ -159,6 +161,7 @@ void testOldSettingsJsonDefaultsRefreshTimes() {
     assert(settings.get().lastMetadataRefreshMs == 0);
     assert(settings.get().catalogDisclaimerAcknowledged);
     assert(settings.get().checkForUpdatesOnLaunch);
+    assert(!settings.get().showHomeTab);
 }
 
 void testInvalidFileFailsClosedToDefaults() {

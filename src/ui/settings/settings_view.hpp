@@ -6,8 +6,8 @@
 // Storage Manager and Network Health sub-pages, whose logic now lives in the
 // panels (settings_panels.hpp) — moved, not changed.
 //
-// Deliberately not a nested brls::TabFrame: the main MainFrame already folds
-// its own sidebar by focus, and a second TabFrame fights it for lifecycle.
+// B from a panel returns to this rail; a second B is consumed by MainFrame
+// and lands on the Settings top tab.
 
 #include <atomic>
 #include <functional>
@@ -38,6 +38,7 @@ public:
                  InstalledTitleService* installed, UpdateService* updater = nullptr,
                  WebServer* webServer = nullptr,
                  std::function<void()> onMetadataRefreshed = {},
+                 std::function<void(bool)> onShowHomeTab = {},
                  std::string ipAddress = {})
         : brls::Box(brls::Axis::ROW), settings_(settings), manager_(manager),
           onMetadataRefreshed_(std::move(onMetadataRefreshed)),
@@ -67,7 +68,7 @@ public:
         addView(host_);
 
         panels_[static_cast<size_t>(SettingsSection::General)] =
-            new GeneralPanel(settings_);
+            new GeneralPanel(settings_, std::move(onShowHomeTab));
         panels_[static_cast<size_t>(SettingsSection::Downloads)] =
             new DownloadsPanel(settings_, manager_);
         panels_[static_cast<size_t>(SettingsSection::Source)] =
@@ -107,7 +108,7 @@ public:
     }
 
     // Switch to a section as if its rail item had been focused (used by the
-    // golden runner to pin the non-default panels).
+    // PC tests to pin the non-default panels).
     void selectSection(SettingsSection section) {
         showSection(section);
         brls::Application::giveFocus(sidebar_->item(section));

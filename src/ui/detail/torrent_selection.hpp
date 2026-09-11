@@ -188,7 +188,7 @@ public:
     }
 
     // What this cell is showing right now, as opposed to what the data source
-    // holds. The golden harness uses it to prove a toggle actually repainted
+    // holds. PC tests use it to prove a toggle actually repainted
     // the live cell instead of silently doing nothing.
     std::string renderedState() const {
         switch (icon_->kind()) {
@@ -678,11 +678,6 @@ public:
             toggleFolderAtFocus();
             return true;
         });
-        registerAction(tr("pipensx/common/continue"), brls::BUTTON_RB,
-                       [this](brls::View*) {
-                           confirmSelection();
-                           return true;
-                       });
     }
 
     // One "<glyph> Label" pair of the icon key. Same glyphs the rows draw, so

@@ -1,16 +1,11 @@
 #pragma once
 
-// UI: collapsible navigation frame.
+// UI: Switch-style top navigation frame.
 //
-// Wraps brls::TabFrame to (1) draw an icon next to every sidebar label and
-// (2) fold the sidebar down to a slim icon rail while the user is browsing a
-// tab's content, so the catalogue grid gets almost the whole screen. The rail
-// re-expands the moment focus returns to the menu (B / left). No extra button:
-// the fold is driven purely by focus.
-//
-// Everything lives here, in-tree — the vendored borealis submodule is left
-// untouched. We reach the private sidebar bits we need through the public
-// Sidebar::getItem() / Box::getChildren() surface.
+// Replaces brls::TabFrame. A 72px top bar carries the wordmark
+// and icon tabs (the active tab expands to show its label; L/R cycle
+// them). Content fills the rest. Tab views are created lazily and kept
+// alive across switches so a stream-install is not torn down mid-flight.
 
 #include <atomic>
 #include <exception>
@@ -24,20 +19,20 @@
 #include "app/download_manager.hpp"
 #include "app/install_space.hpp"
 #include "app/web_server.hpp"
-#include "ui/common/storage_meter.hpp"
+#include "ui/common/footer_storage.hpp"
 #include "ui/common/ui_helpers.hpp"
-#include "ui/common/web_qr.hpp"
 #include "ui/i18n.hpp"
 #include "ui/theme.hpp"
 
 namespace pipensx::ui {
 
 enum class NavIconType {
-    Catalog, Ports, Downloads, Installed, Settings, Help, About
+    Home, Catalog, Ports, Downloads, Installed, Settings, Help, About
 };
 
 inline const char* navTabTag(NavIconType icon) {
     switch (icon) {
+        case NavIconType::Home: return "home";
         case NavIconType::Catalog: return "games";
         case NavIconType::Ports: return "ports";
         case NavIconType::Downloads: return "downloads";
@@ -49,447 +44,458 @@ inline const char* navTabTag(NavIconType icon) {
     return "unknown";
 }
 
-inline constexpr int kNavTabCount = 7;
+inline constexpr int kNavTabCount = 8;
+inline constexpr float kTopbarHeight = 72.0f;
 
 inline int navTabIndex(NavIconType icon) {
     return static_cast<int>(icon);
 }
 
-// Expanded column is wide enough for ru «Мои игры» plus the updates badge.
-// Item/separator/padding metrics keep all seven tabs above the IP+storage
-// dock so the sidebar does not scroll on 720p. Style metrics back a shared
-// global table, so this must run once after Application::init() and BEFORE
-// the first TabFrame/Sidebar is constructed (both read these at inflate time).
-inline constexpr float kSidebarExpandedWidth = 280.0f;
-inline constexpr float kSidebarDockReserve = 96.0f;
+// No-op kept so older call sites compile until they are deleted.
+inline void installSidebarStyle() {}
 
-inline void installSidebarStyle() {
-    brls::Style style = brls::Application::getStyle();
-    style.addMetric("brls/tab_frame/sidebar_width", kSidebarExpandedWidth);
-    style.addMetric("brls/sidebar/padding_left", 22.0f);   // was 80
-    style.addMetric("brls/sidebar/padding_right", 16.0f);  // was 40
-    style.addMetric("brls/sidebar/padding_top", 16.0f);
-    style.addMetric("brls/sidebar/padding_bottom", kSidebarDockReserve);
-    style.addMetric("brls/sidebar/item_height", 54.0f);      // was 70
-    style.addMetric("brls/sidebar/separator_height", 8.0f);  // was 30
-}
+class TopTab;
 
-// Box that reports no hit at all, so touches fall through to whatever sits
-// under it. setFocusable(false) is not enough: Box::hitTest claims any point
-// inside its frame regardless, and unlike a focus request a touch does not
-// walk on to the next sibling once a view has answered.
-class TouchThroughBox : public brls::Box {
-public:
-    using brls::Box::Box;
-
-    brls::View* hitTest(brls::Point) override { return nullptr; }
-};
-
-// Decorative glyph shown to the left of a sidebar label. Non-focusable; its
-// colour tracks the owning item's active state so it lights up with the accent
-// when its tab is selected — matching the label the sidebar already recolours.
 class NavIcon : public brls::View {
 public:
-    NavIcon(NavIconType type, brls::SidebarItem* owner)
+    NavIcon(NavIconType type, TopTab* owner)
         : type_(type), owner_(owner) {
-        this->setWidth(28.0f);
-        this->setHeight(28.0f);
+        this->setWidth(24.0f);
+        this->setHeight(24.0f);
         this->setAlignSelf(brls::AlignSelf::CENTER);
         this->setFocusable(false);
-        this->setMarginRight(12.0f);
     }
 
     void draw(NVGcontext* vg, float x, float y, float width, float height,
-              brls::Style style, brls::FrameContext* ctx) override {
-        const NVGcolor c = (owner_ && owner_->isActive())
-                               ? theme::accent()
-                               : theme::textSecondary();
-        nvgStrokeColor(vg, c);
-        nvgFillColor(vg, c);
-        nvgStrokeWidth(vg, 2.0f);
-        nvgLineCap(vg, NVG_ROUND);
-        nvgLineJoin(vg, NVG_ROUND);
-
-        const float s = 24.0f;                    // glyph box side
-        const float gx = x + (width - s) / 2.0f;  // glyph origin
-        const float gy = y + (height - s) / 2.0f;
-        switch (type_) {
-            case NavIconType::Catalog:   drawCatalog(vg, gx, gy, s); break;
-            case NavIconType::Ports:     drawPorts(vg, gx, gy, s); break;
-            case NavIconType::Downloads: drawDownloads(vg, gx, gy, s); break;
-            case NavIconType::Installed: drawInstalled(vg, gx, gy, s); break;
-            case NavIconType::Settings:    drawSettings(vg, gx, gy, s); break;
-            case NavIconType::Help:        drawPulse(vg, gx, gy, s); break;
-            case NavIconType::About:       drawAbout(vg, gx, gy, s); break;
-        }
-    }
+              brls::Style, brls::FrameContext*) override;
 
 private:
-    // 2x2 grid of rounded squares.
-    static void drawCatalog(NVGcontext* vg, float gx, float gy, float s) {
-        const float cell = 9.0f;
-        const float step = s - cell;  // 15 -> 6px gap
-        for (int i = 0; i < 4; i++) {
-            const float px = gx + (i % 2) * step;
-            const float py = gy + (i / 2) * step;
-            nvgBeginPath(vg);
-            nvgRoundedRect(vg, px, py, cell, cell, 2.0f);
-            nvgStroke(vg);
-        }
-    }
-
-    // Game cartridge: body plus a left-edge notch.
-    static void drawPorts(NVGcontext* vg, float gx, float gy, float s) {
-        nvgBeginPath(vg);
-        nvgRoundedRect(vg, gx + 4.0f, gy + 2.0f, s - 8.0f, s - 4.0f, 3.0f);
-        nvgStroke(vg);
-        nvgBeginPath(vg);
-        nvgMoveTo(vg, gx + 8.0f, gy + 2.0f);
-        nvgLineTo(vg, gx + 8.0f, gy + s - 2.0f);
-        nvgStroke(vg);
-    }
-
-    // Down arrow dropping into a tray.
-    static void drawDownloads(NVGcontext* vg, float gx, float gy, float s) {
-        const float cx = gx + s / 2.0f;
-        nvgBeginPath(vg);
-        nvgMoveTo(vg, cx, gy + 1.0f);
-        nvgLineTo(vg, cx, gy + 14.0f);
-        nvgStroke(vg);
-        nvgBeginPath(vg);
-        nvgMoveTo(vg, cx - 5.0f, gy + 9.0f);
-        nvgLineTo(vg, cx, gy + 14.0f);
-        nvgLineTo(vg, cx + 5.0f, gy + 9.0f);
-        nvgStroke(vg);
-        nvgBeginPath(vg);
-        nvgMoveTo(vg, gx + 3.0f, gy + 15.0f);
-        nvgLineTo(vg, gx + 3.0f, gy + 21.0f);
-        nvgLineTo(vg, gx + s - 3.0f, gy + 21.0f);
-        nvgLineTo(vg, gx + s - 3.0f, gy + 15.0f);
-        nvgStroke(vg);
-    }
-
-    // Rounded square with a checkmark.
-    static void drawInstalled(NVGcontext* vg, float gx, float gy, float s) {
-        nvgBeginPath(vg);
-        nvgRoundedRect(vg, gx + 1.0f, gy + 1.0f, s - 2.0f, s - 2.0f, 4.0f);
-        nvgStroke(vg);
-        nvgBeginPath(vg);
-        nvgMoveTo(vg, gx + 6.0f, gy + 12.0f);
-        nvgLineTo(vg, gx + 10.0f, gy + 16.0f);
-        nvgLineTo(vg, gx + 17.0f, gy + 8.0f);
-        nvgStroke(vg);
-    }
-
-    // Three fader lines with offset knobs.
-    static void drawSettings(NVGcontext* vg, float gx, float gy, float s) {
-        const float ys[3] = {gy + 5.0f, gy + 12.0f, gy + 19.0f};
-        const float knob[3] = {gx + 8.0f, gx + 16.0f, gx + 11.0f};
-        for (int i = 0; i < 3; i++) {
-            nvgBeginPath(vg);
-            nvgMoveTo(vg, gx + 2.0f, ys[i]);
-            nvgLineTo(vg, gx + s - 2.0f, ys[i]);
-            nvgStroke(vg);
-            nvgBeginPath(vg);
-            nvgCircle(vg, knob[i], ys[i], 2.6f);
-            nvgFill(vg);
-        }
-    }
-
-    // Info circle: dot over a stem.
-    static void drawAbout(NVGcontext* vg, float gx, float gy, float s) {
-        const float cx = gx + s / 2.0f;
-        const float cy = gy + s / 2.0f;
-        nvgBeginPath(vg);
-        nvgCircle(vg, cx, cy, s / 2.0f - 1.0f);
-        nvgStroke(vg);
-        nvgBeginPath(vg);
-        nvgCircle(vg, cx, gy + 7.0f, 1.3f);
-        nvgFill(vg);
-        nvgBeginPath(vg);
-        nvgMoveTo(vg, cx, gy + 11.0f);
-        nvgLineTo(vg, cx, gy + 17.0f);
-        nvgStroke(vg);
-    }
-
-    // ECG pulse: a flat trace with one sharp spike — diagnostics.
-    static void drawPulse(NVGcontext* vg, float gx, float gy, float s) {
-        nvgBeginPath(vg);
-        nvgMoveTo(vg, gx + 2.0f, gy + 15.0f);
-        nvgLineTo(vg, gx + 9.0f, gy + 15.0f);
-        nvgLineTo(vg, gx + 11.0f, gy + 7.0f);
-        nvgLineTo(vg, gx + 13.0f, gy + 19.0f);
-        nvgLineTo(vg, gx + 15.0f, gy + 15.0f);
-        nvgLineTo(vg, gx + s - 2.0f, gy + 15.0f);
-        nvgStroke(vg);
-    }
+    static void drawHome(NVGcontext* vg, float gx, float gy, float s);
+    static void drawCatalog(NVGcontext* vg, float gx, float gy, float s);
+    static void drawPorts(NVGcontext* vg, float gx, float gy, float s);
+    static void drawDownloads(NVGcontext* vg, float gx, float gy, float s);
+    static void drawInstalled(NVGcontext* vg, float gx, float gy, float s);
+    static void drawSettings(NVGcontext* vg, float gx, float gy, float s);
+    static void drawAbout(NVGcontext* vg, float gx, float gy, float s);
+    static void drawPulse(NVGcontext* vg, float gx, float gy, float s);
 
     NavIconType type_;
-    brls::SidebarItem* owner_;
+    TopTab* owner_;
 };
 
-// One line of web-companion status for the sidebar footer: a state dot
-// (accent = serving, muted = off) and the reachable address. Non-focusable —
-// the QR/action surface is the global Minus hint, this is just the readout.
-class WebStatusRow : public brls::Box {
+class TopTab : public brls::Box {
 public:
-    WebStatusRow() : brls::Box(brls::Axis::ROW) {
-        setFocusable(false);
+    TopTab(const std::string& label, NavIconType icon,
+           std::function<void()> onSelect, std::function<void()> onEnter,
+           std::function<brls::View*()> nextDown = {})
+        : brls::Box(brls::Axis::ROW), onSelect_(std::move(onSelect)),
+          onEnter_(std::move(onEnter)), nextDown_(std::move(nextDown)) {
+        setFocusable(true);
+        setHeight(48.0f);
+        setMinWidth(44.0f);
         setAlignItems(brls::AlignItems::CENTER);
-        setMarginBottom(8);
-        setClipsToBounds(true);
-        dot_ = new Dot();
-        addView(dot_);
+        setJustifyContent(brls::JustifyContent::CENTER);
+        setCornerRadius(24.0f);
+        setPadding(0, 8, 0, 8);
+        setShrink(0.0f);
+        iconWrap_ = new brls::Box();
+        iconWrap_->setFocusable(false);
+        iconWrap_->setWidth(24.0f);
+        iconWrap_->setHeight(24.0f);
+        iconWrap_->setShrink(0.0f);
+        iconWrap_->setAlignSelf(brls::AlignSelf::CENTER);
+        iconWrap_->addView(new NavIcon(icon, this));
+        dot_ = new brls::Box();
+        dot_->setFocusable(false);
+        dot_->setWidth(8.0f);
+        dot_->setHeight(8.0f);
+        dot_->setCornerRadius(4.0f);
+        dot_->setBackgroundColor(theme::accent());
+        dot_->setPositionType(brls::PositionType::ABSOLUTE);
+        dot_->setPositionTop(0);
+        dot_->setPositionRight(0);
+        dot_->setVisibility(brls::Visibility::GONE);
+        iconWrap_->addView(dot_);
+        addView(iconWrap_);
         label_ = new brls::Label();
-        label_->setSingleLine(true);
-        label_->setFontSize(theme::kFontCaption);
-        label_->setTextColor(theme::textSecondary());
+        label_->setText(label);
+        label_->setFontSize(theme::kFontSmall);
+        label_->setMarginLeft(8);
+        label_->setVisibility(brls::Visibility::GONE);
         addView(label_);
+        registerAction("", brls::BUTTON_A,
+                       [this](brls::View*) {
+                           if (onEnter_)
+                               onEnter_();
+                           return true;
+                       },
+                       /*hidden=*/true);
+        addGestureRecognizer(new brls::TapGestureRecognizer(this));
     }
 
-    void setState(bool running, const std::string& url) {
-        dot_->running = running;
-        if (!running) {
-            setTextIfChanged(label_, tr("pipensx/web/off"));
-            label_->setTextColor(theme::textTertiary());
-        } else if (url.empty()) {
-            setTextIfChanged(label_, tr("pipensx/settings/web_address_none"));
-            label_->setTextColor(theme::textTertiary());
-        } else {
-            // Drop the scheme: the footer column is ~242px, every pixel counts.
-            setTextIfChanged(label_, url.rfind("http://", 0) == 0
-                                         ? url.substr(7)
-                                         : url);
-            label_->setTextColor(theme::textSecondary());
+    bool isTabActive() const { return active_; }
+
+    void setTabActive(bool active) {
+        active_ = active;
+        // Active tab needs no focus frame: the accent pill is the indicator.
+        setHideHighlight(active);
+        label_->setVisibility(active ? brls::Visibility::VISIBLE
+                                     : brls::Visibility::GONE);
+        label_->setTextColor(active ? theme::accent()
+                                    : theme::textSecondary());
+        setBackgroundColor(active ? theme::sidebarActive()
+                                  : brls::TRANSPARENT);
+        setPadding(0, active ? 16 : 8, 0, active ? 16 : 8);
+    }
+
+    // Update indicator is a small dot in the icon corner, not a number:
+    // any non-zero count shows the dot, zero hides it.
+    void setBadgeCount(size_t count) {
+        dot_->setVisibility(count == 0 ? brls::Visibility::GONE
+                                       : brls::Visibility::VISIBLE);
+    }
+
+    void onFocusGained() override {
+        brls::Box::onFocusGained();
+        if (onSelect_)
+            onSelect_();
+    }
+
+    brls::View* getNextFocus(brls::FocusDirection direction,
+                             brls::View* current) override {
+        if (direction == brls::FocusDirection::DOWN && nextDown_) {
+            if (brls::View* down = nextDown_())
+                return down;
         }
+        return brls::Box::getNextFocus(direction, current);
     }
 
 private:
-    class Dot : public brls::View {
-    public:
-        Dot() {
-            setWidth(10);
-            setHeight(10);
-            setMarginRight(8);
-            setFocusable(false);
-            setAlignSelf(brls::AlignSelf::CENTER);
-        }
-        void draw(NVGcontext* vg, float x, float y, float width, float height,
-                  brls::Style, brls::FrameContext*) override {
-            nvgBeginPath(vg);
-            nvgCircle(vg, x + width / 2.0f, y + height / 2.0f, 4.0f);
-            nvgFillColor(vg, running ? theme::accent()
-                                     : theme::textTertiary());
-            nvgFill(vg);
-        }
-        bool running = false;
-    };
-
-    Dot* dot_ = nullptr;
     brls::Label* label_ = nullptr;
+    brls::Box* iconWrap_ = nullptr;
+    brls::Box* dot_ = nullptr;
+    std::function<void()> onSelect_;
+    std::function<void()> onEnter_;
+    std::function<brls::View*()> nextDown_;
+    bool active_ = false;
 };
 
-// TabFrame that carries icons and folds to an icon rail while a tab is focused.
-class MainFrame : public brls::TabFrame {
+inline void NavIcon::draw(NVGcontext* vg, float x, float y, float width,
+                          float height, brls::Style, brls::FrameContext*) {
+    const NVGcolor c = (owner_ && owner_->isTabActive())
+                           ? theme::accent()
+                           : theme::textSecondary();
+    nvgStrokeColor(vg, c);
+    nvgFillColor(vg, c);
+    nvgStrokeWidth(vg, 2.0f);
+    nvgLineCap(vg, NVG_ROUND);
+    nvgLineJoin(vg, NVG_ROUND);
+    const float s = 24.0f;
+    const float gx = x + (width - s) / 2.0f;
+    const float gy = y + (height - s) / 2.0f;
+    switch (type_) {
+        case NavIconType::Home:      drawHome(vg, gx, gy, s); break;
+        case NavIconType::Catalog:   drawCatalog(vg, gx, gy, s); break;
+        case NavIconType::Ports:     drawPorts(vg, gx, gy, s); break;
+        case NavIconType::Downloads: drawDownloads(vg, gx, gy, s); break;
+        case NavIconType::Installed: drawInstalled(vg, gx, gy, s); break;
+        case NavIconType::Settings:  drawSettings(vg, gx, gy, s); break;
+        case NavIconType::Help:      drawPulse(vg, gx, gy, s); break;
+        case NavIconType::About:     drawAbout(vg, gx, gy, s); break;
+    }
+}
+
+inline void NavIcon::drawHome(NVGcontext* vg, float gx, float gy, float s) {
+    nvgBeginPath(vg);
+    nvgMoveTo(vg, gx + 3.0f, gy + 11.0f);
+    nvgLineTo(vg, gx + s / 2.0f, gy + 3.0f);
+    nvgLineTo(vg, gx + s - 3.0f, gy + 11.0f);
+    nvgStroke(vg);
+    nvgBeginPath(vg);
+    nvgMoveTo(vg, gx + 5.5f, gy + 10.2f);
+    nvgLineTo(vg, gx + 5.5f, gy + s - 3.0f);
+    nvgLineTo(vg, gx + s - 5.5f, gy + s - 3.0f);
+    nvgLineTo(vg, gx + s - 5.5f, gy + 10.2f);
+    nvgStroke(vg);
+    nvgBeginPath(vg);
+    nvgMoveTo(vg, gx + 10.0f, gy + s - 3.0f);
+    nvgLineTo(vg, gx + 10.0f, gy + 14.0f);
+    nvgLineTo(vg, gx + 14.0f, gy + 14.0f);
+    nvgLineTo(vg, gx + 14.0f, gy + s - 3.0f);
+    nvgStroke(vg);
+}
+
+inline void NavIcon::drawCatalog(NVGcontext* vg, float gx, float gy, float s) {
+    const float cell = 9.0f;
+    const float step = s - cell;
+    for (int i = 0; i < 4; i++) {
+        nvgBeginPath(vg);
+        nvgRoundedRect(vg, gx + (i % 2) * step, gy + (i / 2) * step, cell,
+                       cell, 2.0f);
+        nvgStroke(vg);
+    }
+}
+
+inline void NavIcon::drawPorts(NVGcontext* vg, float gx, float gy, float s) {
+    nvgBeginPath(vg);
+    nvgRoundedRect(vg, gx + 4.0f, gy + 2.0f, s - 8.0f, s - 4.0f, 3.0f);
+    nvgStroke(vg);
+    nvgBeginPath(vg);
+    nvgMoveTo(vg, gx + 8.0f, gy + 2.0f);
+    nvgLineTo(vg, gx + 8.0f, gy + s - 2.0f);
+    nvgStroke(vg);
+}
+
+inline void NavIcon::drawDownloads(NVGcontext* vg, float gx, float gy, float s) {
+    const float cx = gx + s / 2.0f;
+    nvgBeginPath(vg);
+    nvgMoveTo(vg, cx, gy + 1.0f);
+    nvgLineTo(vg, cx, gy + 14.0f);
+    nvgStroke(vg);
+    nvgBeginPath(vg);
+    nvgMoveTo(vg, cx - 5.0f, gy + 9.0f);
+    nvgLineTo(vg, cx, gy + 14.0f);
+    nvgLineTo(vg, cx + 5.0f, gy + 9.0f);
+    nvgStroke(vg);
+    nvgBeginPath(vg);
+    nvgMoveTo(vg, gx + 3.0f, gy + 15.0f);
+    nvgLineTo(vg, gx + 3.0f, gy + 21.0f);
+    nvgLineTo(vg, gx + s - 3.0f, gy + 21.0f);
+    nvgLineTo(vg, gx + s - 3.0f, gy + 15.0f);
+    nvgStroke(vg);
+}
+
+inline void NavIcon::drawInstalled(NVGcontext* vg, float gx, float gy, float s) {
+    nvgBeginPath(vg);
+    nvgRoundedRect(vg, gx + 1.0f, gy + 1.0f, s - 2.0f, s - 2.0f, 4.0f);
+    nvgStroke(vg);
+    nvgBeginPath(vg);
+    nvgMoveTo(vg, gx + 6.0f, gy + 12.0f);
+    nvgLineTo(vg, gx + 10.0f, gy + 16.0f);
+    nvgLineTo(vg, gx + 17.0f, gy + 8.0f);
+    nvgStroke(vg);
+}
+
+inline void NavIcon::drawSettings(NVGcontext* vg, float gx, float gy, float s) {
+    const float ys[3] = {gy + 5.0f, gy + 12.0f, gy + 19.0f};
+    const float knob[3] = {gx + 8.0f, gx + 16.0f, gx + 11.0f};
+    for (int i = 0; i < 3; i++) {
+        nvgBeginPath(vg);
+        nvgMoveTo(vg, gx + 2.0f, ys[i]);
+        nvgLineTo(vg, gx + s - 2.0f, ys[i]);
+        nvgStroke(vg);
+        nvgBeginPath(vg);
+        nvgCircle(vg, knob[i], ys[i], 2.6f);
+        nvgFill(vg);
+    }
+}
+
+inline void NavIcon::drawAbout(NVGcontext* vg, float gx, float gy, float s) {
+    const float cx = gx + s / 2.0f;
+    nvgBeginPath(vg);
+    nvgCircle(vg, cx, gy + s / 2.0f, s / 2.0f - 1.0f);
+    nvgStroke(vg);
+    nvgBeginPath(vg);
+    nvgCircle(vg, cx, gy + 7.0f, 1.3f);
+    nvgFill(vg);
+    nvgBeginPath(vg);
+    nvgMoveTo(vg, cx, gy + 11.0f);
+    nvgLineTo(vg, cx, gy + 17.0f);
+    nvgStroke(vg);
+}
+
+inline void NavIcon::drawPulse(NVGcontext* vg, float gx, float gy, float s) {
+    nvgBeginPath(vg);
+    nvgMoveTo(vg, gx + 2.0f, gy + 15.0f);
+    nvgLineTo(vg, gx + 9.0f, gy + 15.0f);
+    nvgLineTo(vg, gx + 11.0f, gy + 7.0f);
+    nvgLineTo(vg, gx + 13.0f, gy + 19.0f);
+    nvgLineTo(vg, gx + 15.0f, gy + 15.0f);
+    nvgLineTo(vg, gx + s - 2.0f, gy + 15.0f);
+    nvgStroke(vg);
+}
+
+class MainFrame : public brls::Box {
 public:
-    MainFrame() {
-        expandedWidth_ =
-            brls::Application::getStyle()["brls/tab_frame/sidebar_width"];
-        if (expandedWidth_ < 1.0f)
-            expandedWidth_ = kSidebarExpandedWidth;
+    MainFrame() : brls::Box(brls::Axis::COLUMN) {
+        setGrow(1);
+
+        topbar_ = new brls::Box(brls::Axis::ROW);
+        topbar_->setHeight(kTopbarHeight);
+        topbar_->setShrink(0.0f);
+        topbar_->setAlignItems(brls::AlignItems::CENTER);
+        topbar_->setPadding(0, 16, 0, 22);
+        topbar_->setBackgroundColor(theme::sidebar());
+        topbar_->setLineColor(theme::track());
+        topbar_->setLineBottom(1.0f);
+
+        auto* brand = new brls::Box(brls::Axis::ROW);
+        brand->setFocusable(false);
+        brand->setAlignItems(brls::AlignItems::CENTER);
+        brand->setShrink(0.0f);
+        brand->setMarginRight(8);
+        auto* wordmark = new brls::Label();
+        wordmark->setText(tr("pipensx/app/title"));
+        wordmark->setFontSize(20.0f);
+        wordmark->setLineHeight(1.0f);
+        wordmark->setSingleLine(true);
+        brand->addView(wordmark);
+        topbar_->addView(brand);
+
+        auto* navWrap = new brls::Box(brls::Axis::ROW);
+        navWrap->setGrow(1.0f);
+        navWrap->setAlignItems(brls::AlignItems::CENTER);
+        navWrap->setJustifyContent(brls::JustifyContent::CENTER);
+        nav_ = new brls::Box(brls::Axis::ROW);
+        nav_->setAlignItems(brls::AlignItems::CENTER);
+        nav_->setMinWidth(0);
+        navWrap->addView(nav_);
+        topbar_->addView(navWrap);
+
+        addView(topbar_);
+
+        contentHost_ = new brls::Box(brls::Axis::COLUMN);
+        contentHost_->setGrow(1.0f);
+        contentHost_->registerAction(
+            "", brls::BUTTON_B,
+            [this](brls::View*) {
+                if (focusInTopbar())
+                    return false;
+                if (active_ < 0 || active_ >= static_cast<int>(tabs_.size()))
+                    return false;
+                brls::Application::giveFocus(tabs_[static_cast<size_t>(active_)].item);
+                return true;
+            },
+            /*hidden=*/true, /*allowRepeating=*/false, brls::SOUND_BACK);
+        addView(contentHost_);
+
+        registerAction("", brls::BUTTON_LB,
+                       [this](brls::View*) {
+                           cycleTab(-1);
+                           return true;
+                       },
+                       /*hidden=*/true, /*allowRepeating=*/true);
+        registerAction("", brls::BUTTON_RB,
+                       [this](brls::View*) {
+                           cycleTab(1);
+                           return true;
+                       },
+                       /*hidden=*/true, /*allowRepeating=*/true);
     }
 
-    // Like TabFrame::addTab, but also plants an icon between the active-accent
-    // bar and the label, and remembers the label so it can be folded away.
     void addNavTab(const std::string& label, NavIconType icon,
                    brls::TabViewCreator creator, bool countBadge = false) {
-        this->addTab(label, [this, creator = std::move(creator), icon]() -> brls::View* {
-            const uint64_t startedUs = telemetry_enabled() ? now_us() : 0;
-            const char* tag = navTabTag(icon);
-            const int index = navTabIndex(icon);
-            activeTabTag_ = tag;
-            log_msg("[ui] tab=%s\n", tag);
-            log_flush();
-            if (index >= 0 && index < kNavTabCount && tabViews_[index]) {
-                log_msg("[ui] tab=%s reuse\n", tag);
-                log_flush();
-                if (startedUs)
-                    telemetry_log(
-                        "ui", "main",
-                        "event=tab_reuse duration_us=%llu tab=%s collapsed=%d",
-                        (unsigned long long)(now_us() - startedUs), tag,
-                        collapsed_ ? 1 : 0);
-                return tabViews_[index];
-            }
-            switch_crashlog_stage(tag);
-            brls::View* view = nullptr;
-            try {
-                view = creator();
-            } catch (const std::exception& error) {
-                log_msg("[ui] tab=%s failed: %s\n", tag, error.what());
-                log_flush();
-                view = new brls::Box();
-            } catch (...) {
-                log_msg("[ui] tab=%s failed: unknown exception\n", tag);
-                log_flush();
-                view = new brls::Box();
-            }
-            if (index >= 0 && index < kNavTabCount)
-                tabViews_[index] = view;
-            log_msg("[ui] tab=%s ready\n", tag);
-            log_flush();
-            if (startedUs)
-                telemetry_log(
-                    "ui", "main",
-                    "event=tab_create duration_us=%llu tab=%s collapsed=%d",
-                    (unsigned long long)(now_us() - startedUs), tag,
-                    collapsed_ ? 1 : 0);
-            return view;
-        });
-        const int index = static_cast<int>(this->sidebar->getItemsSize()) - 1;
-        brls::SidebarItem* item = this->sidebar->getItem(index);
-        if (!item)
-            return;
+        const int display = static_cast<int>(tabs_.size());
+        auto* item = new TopTab(
+            label, icon,
+            [this, display] { selectTab(display, false); },
+            [this, display] { selectTab(display, true); },
+            [this, display] {
+                selectTab(display, false);
+                if (!content_)
+                    return static_cast<brls::View*>(nullptr);
+                brls::View* target = content_->getDefaultFocus();
+                return target ? target : content_;
+            });
+        item->setMarginLeft(1);
+        item->setMarginRight(1);
+        nav_->addView(item);
+        TabEntry entry;
+        entry.icon = icon;
+        entry.creator = std::move(creator);
+        entry.item = item;
+        entry.countBadge = countBadge;
+        tabs_.push_back(std::move(entry));
+        if (countBadge)
+            badgeTab_ = item;
+        if (tabs_.size() == 1)
+            item->setTabActive(true);
+    }
 
-        // Item children start as [accent, label]; capture the label before we
-        // splice the icon in at index 1 -> [accent, icon, label].
-        std::vector<brls::View*>& kids = item->getChildren();
-        brls::View* labelView = kids.size() >= 2 ? kids[1] : nullptr;
-        item->addView(new NavIcon(icon, item), 1);
-        if (labelView) {
-            labels_.push_back(labelView);
-            if (collapsed_)
-                labelView->setVisibility(brls::Visibility::GONE);
-        }
-        if (countBadge) {
-            updateBadge_ = new brls::Box();
-            updateBadge_->setFocusable(false);
-            updateBadge_->setHeight(24);
-            updateBadge_->setCornerRadius(theme::kRadiusSmall);
-            updateBadge_->setBackgroundColor(theme::accent());
-            updateBadge_->setPadding(0, 8, 0, 8);
-            updateBadge_->setMarginLeft(8);
-            updateBadge_->setMarginRight(8);
-            updateBadge_->setShrink(0.0f);
-            updateBadge_->setAlignSelf(brls::AlignSelf::CENTER);
-            updateBadge_->setAlignItems(brls::AlignItems::CENTER);
-            updateBadge_->setJustifyContent(brls::JustifyContent::CENTER);
-            updateBadge_->setVisibility(brls::Visibility::GONE);
-            updateBadgeLabel_ = new brls::Label();
-            updateBadgeLabel_->setFontSize(theme::kFontCaption);
-            updateBadgeLabel_->setTextColor(theme::onAccent());
-            updateBadge_->addView(updateBadgeLabel_);
-            item->addView(updateBadge_);
+    void addSeparator() {
+        auto* sep = new brls::Box();
+        sep->setWidth(1.0f);
+        sep->setHeight(28.0f);
+        sep->setFocusable(false);
+        sep->setBackgroundColor(theme::track());
+        sep->setMarginLeft(9);
+        sep->setMarginRight(9);
+        sep->setShrink(0.0f);
+        nav_->addView(sep);
+    }
+
+    void focusTab(int position) {
+        if (position < 0 || position >= static_cast<int>(tabs_.size()))
+            return;
+        brls::Application::giveFocus(tabs_[static_cast<size_t>(position)].item);
+    }
+
+    void focusTab(NavIconType icon) {
+        for (size_t i = 0; i < tabs_.size(); ++i) {
+            if (tabs_[i].icon == icon) {
+                focusTab(static_cast<int>(i));
+                return;
+            }
         }
     }
 
-    // TabFrame destroys the outgoing tab on every sidebar focus change.
-    // Recreating catalog/ports next to a stream-install (or while Borealis still
-    // holds lastFocusedView into that tree) is the crash on the way to Downloads.
-    void removeView(brls::View* view, bool free = true) override {
-        int index = -1;
-        for (int i = 0; i < kNavTabCount; ++i) {
-            if (tabViews_[i] == view) {
-                index = i;
-                break;
-            }
-        }
-        if (index >= 0) {
-            log_msg("[ui] keep tab=%s\n", navTabTag(static_cast<NavIconType>(index)));
-            log_flush();
-            brls::TabFrame::removeView(view, false);
+    TopTab* navItem(int position) {
+        if (position < 0 || position >= static_cast<int>(tabs_.size()))
+            return nullptr;
+        return tabs_[static_cast<size_t>(position)].item;
+    }
+
+    int navTabCount() const { return static_cast<int>(tabs_.size()); }
+
+    brls::View* tabView(NavIconType icon) {
+        const int index = navTabIndex(icon);
+        if (index < 0 || index >= kNavTabCount)
+            return nullptr;
+        return tabViews_[index];
+    }
+
+    void setNavTabVisible(NavIconType icon, bool visible) {
+        for (size_t i = 0; i < tabs_.size(); ++i) {
+            if (tabs_[i].icon != icon)
+                continue;
+            tabs_[i].item->setVisibility(
+                visible ? brls::Visibility::VISIBLE : brls::Visibility::GONE);
+            tabs_[i].item->setFocusable(visible);
+            if (!visible && active_ == static_cast<int>(i))
+                selectTab(firstVisibleDisplay(), false);
             return;
         }
-        brls::TabFrame::removeView(view, free);
     }
 
     void setUpdateCountBadge(size_t count) {
-        updateBadgeCount_ = count;
-        if (!updateBadge_ || !updateBadgeLabel_)
-            return;
-        if (count == 0 || collapsed_) {
-            updateBadge_->setVisibility(brls::Visibility::GONE);
-            return;
-        }
-        updateBadgeLabel_->setText(count > 99 ? "99+" : std::to_string(count));
-        updateBadge_->setVisibility(brls::Visibility::VISIBLE);
+        if (badgeTab_)
+            badgeTab_->setBadgeCount(count);
     }
 
-    void setCollapsed(bool collapsed) {
-        if (collapsed == collapsed_)
-            return;
-        const uint64_t startedUs = telemetry_enabled() ? now_us() : 0;
-        collapsed_ = collapsed;
-        this->sidebar->setWidth(collapsed ? kCollapsedWidth : expandedWidth_);
-        for (brls::View* label : labels_)
-            label->setVisibility(collapsed ? brls::Visibility::GONE
-                                           : brls::Visibility::VISIBLE);
-        if (updateBadge_)
-            updateBadge_->setVisibility(
-                collapsed || updateBadgeCount_ == 0
-                    ? brls::Visibility::GONE
-                    : brls::Visibility::VISIBLE);
-        if (dock_) {
-            dock_->setWidth(collapsed ? kCollapsedWidth : expandedWidth_);
-            footer_->setCompact(collapsed);
-            // The rail is 88px — no room for an address line.
-            if (webRow_)
-                webRow_->setVisibility(collapsed ? brls::Visibility::GONE
-                                                 : brls::Visibility::VISIBLE);
-        }
-        if (startedUs)
-            telemetry_log(
-                "ui", "main",
-                "event=sidebar_fold duration_us=%llu tab=%s collapsed=%d",
-                (unsigned long long)(now_us() - startedUs),
-                activeTabTag_.c_str(), collapsed ? 1 : 0);
-    }
-
-    // Free-space readout pinned to the bottom-left of the frame, over the
-    // sidebar area. Absolute + non-focusable so it never disturbs the sidebar's
-    // scroll or the focus-driven fold logic.
-    //
-    // The meter itself is *not* the absolute node: an absolute box with only
-    // left/bottom set forces Yoga to solve its top edge from a height that
-    // comes out of a Label measure func, which put the widget below the content
-    // area with nothing to clip it. The dock pins top+bottom instead, so its
-    // height is definite, justifyContent flex-end parks the meter on the floor
-    // whatever it measures, and clipsToBounds is the backstop.
+    // The SD indicator lives in the AppletFrame bottom bar where the clock
+    // was: installFooterWidget hides the time label and docks a much smaller
+    // FooterStorage (pill + "SD: 72GB") into the same right-hand cluster.
+    // Called after the AppletFrame wrapping this frame exists.
     void attachStorageFooter(DownloadManager* manager,
-                             pipensx::WebServer* webServer = nullptr) {
+                             brls::AppletFrame* frame = nullptr) {
         manager_ = manager;
-        webServer_ = webServer;
-        // Pinned over the full height of the sidebar column, so it has to be
-        // touch-transparent or it eats every tap aimed at the tab items.
-        dock_ = new TouchThroughBox(brls::Axis::COLUMN);
-        dock_->setFocusable(false);
-        dock_->setPositionType(brls::PositionType::ABSOLUTE);
-        dock_->setPositionTop(0);
-        dock_->setPositionBottom(0);
-        dock_->setPositionLeft(0);
-        dock_->setWidth(collapsed_ ? kCollapsedWidth : expandedWidth_);
-        dock_->setJustifyContent(brls::JustifyContent::FLEX_END);
-        dock_->setPadding(0, kFooterPad, kFooterPad, kFooterPad);
-        dock_->setClipsToBounds(true);
-
-        webRow_ = new WebStatusRow();
-        webRow_->setVisibility(collapsed_ ? brls::Visibility::GONE
-                                          : brls::Visibility::VISIBLE);
-        dock_->addView(webRow_);
-        footer_ = new StorageMeter();
-        footer_->setCompact(collapsed_);
-        footer_->setUnavailable();
-        dock_->addView(footer_);
-        addView(dock_);
-        const bool running = webServer_ ? webServer_->running() : true;
-        webRow_->setState(running, "");
-        // The periodic refresh runs off a timer + brls::async, NOT from
-        // draw(): nsGetStorageSize and nifmGetCurrentIpAddress are
-        // synchronous service IPC and used to stall the frame being
-        // recorded every 2 seconds.
+        if (frame)
+            installFooterWidget(frame);
         queryTimer_.setCallback([this] { scheduleRefresh(); });
         queryTimer_.start(2000);
         scheduleRefresh();
+    }
+
+    void willAppear(bool resetState) override {
+        brls::Box::willAppear(resetState);
+        if (active_ < 0 && !tabs_.empty())
+            selectTab(firstVisibleDisplay(), false);
+        for (brls::View* node = this; node; node = node->getParent()) {
+            if (dynamic_cast<brls::AppletFrame*>(node)) {
+                setShellHintStyle(node);
+                break;
+            }
+        }
     }
 
     ~MainFrame() override {
@@ -499,21 +505,35 @@ public:
             dropDetachedTab(tabViews_[i]);
     }
 
-protected:
-    // Focus in the sidebar -> expanded menu; focus in a tab's content -> icon
-    // rail. Both subtrees are direct children of this frame, so this fires on
-    // every menu<->content crossing.
-    void onChildFocusGained(brls::View* directChild,
-                            brls::View* focusedView) override {
-        brls::TabFrame::onChildFocusGained(directChild, focusedView);
-        setCollapsed(!(this->sidebar == directChild));
+private:
+    struct TabEntry {
+        NavIconType icon = NavIconType::Home;
+        brls::TabViewCreator creator;
+        TopTab* item = nullptr;
+        bool countBadge = false;
+    };
+
+    int firstVisibleDisplay() const {
+        for (size_t i = 0; i < tabs_.size(); ++i) {
+            if (tabs_[i].item->getVisibility() != brls::Visibility::GONE)
+                return static_cast<int>(i);
+        }
+        return 0;
     }
 
-private:
+    bool focusInTopbar() const {
+        brls::View* focus = brls::Application::getCurrentFocus();
+        for (brls::View* view = focus; view; view = view->getParent()) {
+            if (view == topbar_)
+                return true;
+        }
+        return false;
+    }
+
     bool isDirectChild(brls::View* view) {
         if (!view)
             return false;
-        for (brls::View* child : getChildren()) {
+        for (brls::View* child : contentHost_->getChildren()) {
             if (child == view)
                 return true;
         }
@@ -528,47 +548,134 @@ private:
         slot = nullptr;
     }
 
+    brls::View* ensureView(int display) {
+        TabEntry& entry = tabs_[static_cast<size_t>(display)];
+        const int index = navTabIndex(entry.icon);
+        const char* tag = navTabTag(entry.icon);
+        if (index >= 0 && index < kNavTabCount && tabViews_[index])
+            return tabViews_[index];
+        const uint64_t startedUs = telemetry_enabled() ? now_us() : 0;
+        log_msg("[ui] tab=%s\n", tag);
+        log_flush();
+        switch_crashlog_stage(tag);
+        brls::View* view = nullptr;
+        try {
+            view = entry.creator();
+        } catch (const std::exception& error) {
+            log_msg("[ui] tab=%s failed: %s\n", tag, error.what());
+            log_flush();
+            view = new brls::Box();
+        } catch (...) {
+            log_msg("[ui] tab=%s failed: unknown exception\n", tag);
+            log_flush();
+            view = new brls::Box();
+        }
+        if (!view)
+            view = new brls::Box();
+        view->setGrow(1.0f);
+        if (index >= 0 && index < kNavTabCount)
+            tabViews_[index] = view;
+        log_msg("[ui] tab=%s ready\n", tag);
+        log_flush();
+        if (startedUs)
+            telemetry_log(
+                "ui", "main",
+                "event=tab_create duration_us=%llu tab=%s",
+                (unsigned long long)(now_us() - startedUs), tag);
+        return view;
+    }
+
+    void selectTab(int display, bool focusContent) {
+        if (display < 0 || display >= static_cast<int>(tabs_.size()))
+            return;
+        brls::View* view = ensureView(display);
+        if (active_ != display) {
+            if (content_)
+                contentHost_->removeView(content_, false);
+            content_ = view;
+            contentHost_->addView(content_);
+            active_ = display;
+            activeTabTag_ = navTabTag(tabs_[static_cast<size_t>(display)].icon);
+            log_msg("[ui] tab=%s\n", activeTabTag_.c_str());
+            log_flush();
+        }
+        for (size_t i = 0; i < tabs_.size(); ++i)
+            tabs_[i].item->setTabActive(static_cast<int>(i) == display);
+        if (focusContent && content_) {
+            brls::View* target = content_->getDefaultFocus();
+            brls::Application::giveFocus(target ? target : content_);
+        }
+    }
+
+    void cycleTab(int delta) {
+        if (tabs_.empty())
+            return;
+        const int n = static_cast<int>(tabs_.size());
+        int next = active_ < 0 ? 0 : active_;
+        for (int step = 0; step < n; ++step) {
+            next = (next + delta % n + n) % n;
+            if (tabs_[static_cast<size_t>(next)].item->getVisibility() !=
+                brls::Visibility::GONE)
+                break;
+        }
+        const bool fromTop = focusInTopbar();
+        if (fromTop)
+            brls::Application::giveFocus(tabs_[static_cast<size_t>(next)].item);
+        else {
+            selectTab(next, true);
+        }
+    }
+
+    void installFooterWidget(brls::AppletFrame* frame) {
+        if (!frame || footerStorage_)
+            return;
+        brls::Box* bottom = frame->getFooter();
+        if (!bottom)
+            return;
+        brls::View* time = bottom->getView("brls/hints/time");
+        brls::Box* slot = nullptr;
+        if (time) {
+            time->setVisibility(brls::Visibility::GONE);
+            slot = time->getParent();
+        }
+        if (!slot)
+            slot = bottom;
+        footerStorage_ = new FooterStorage();
+        footerStorage_->setShrink(0.0f);
+        slot->addView(footerStorage_);
+    }
+
     void scheduleRefresh() {
-        if (!footer_ || !manager_ || queryInFlight_)
+        if (!footerStorage_ || !manager_ || queryInFlight_)
             return;
         queryInFlight_ = true;
         auto alive = alive_;
         std::string root = manager_->rootPath();
-        pipensx::WebServer* server = webServer_;
-        brls::async([this, alive, root, server] {
+        brls::async([this, alive, root] {
             const pipensx::StorageSpaceSnapshot storage =
                 pipensx::queryStorageSpace(root);
-            const bool running = server ? server->running() : true;
-            std::string url = running ? webCompanionUrl(server, true) : "";
-            brls::sync([this, alive, storage, running, url = std::move(url)] {
+            brls::sync([this, alive, storage] {
                 if (!alive->load())
                     return;
                 queryInFlight_ = false;
                 if (storage.available)
-                    footer_->setStorage(storage.totalBytes, storage.freeBytes);
+                    footerStorage_->setStorage(storage.totalBytes,
+                                               storage.freeBytes);
                 else
-                    footer_->setUnavailable();
-                if (webRow_)
-                    webRow_->setState(running, url);
+                    footerStorage_->setUnavailable();
             });
         });
     }
 
-    // Wide enough for padding + the active-accent bar + the 28px icon.
-    static constexpr float kCollapsedWidth = 88.0f;
-    static constexpr float kFooterPad = 16.0f;
-
-    bool collapsed_ = false;
-    float expandedWidth_ = kSidebarExpandedWidth;
-    std::vector<brls::View*> labels_;
-    brls::Box* updateBadge_ = nullptr;
-    brls::Label* updateBadgeLabel_ = nullptr;
-    size_t updateBadgeCount_ = 0;
-    brls::Box* dock_ = nullptr;
-    StorageMeter* footer_ = nullptr;
-    WebStatusRow* webRow_ = nullptr;
+    brls::Box* topbar_ = nullptr;
+    brls::Box* nav_ = nullptr;
+    brls::Box* contentHost_ = nullptr;
+    brls::View* content_ = nullptr;
+    FooterStorage* footerStorage_ = nullptr;
+    TopTab* badgeTab_ = nullptr;
+    std::vector<TabEntry> tabs_;
+    int active_ = -1;
     DownloadManager* manager_ = nullptr;
-    pipensx::WebServer* webServer_ = nullptr;
     brls::View* tabViews_[kNavTabCount] = {};
     std::string activeTabTag_ = "unknown";
     brls::RepeatingTimer queryTimer_;

@@ -11,7 +11,7 @@
 namespace pipensx::ui {
 
 // Static crescent so the warning is a picture, not a screensaver, and so
-// golden frames do not depend on the wall clock.
+// deterministic frames do not depend on the wall clock.
 class ScreenOffGlyph : public brls::View {
 public:
     ScreenOffGlyph() {

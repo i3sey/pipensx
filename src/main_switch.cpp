@@ -46,6 +46,7 @@ extern "C" {
 #include "ui/common/ui_helpers.hpp"
 #include "ui/common/web_qr.hpp"
 #include "ui/first_run_view.hpp"
+#include "ui/home/home_view.hpp"
 #include "ui/i18n.hpp"
 #include "ui/main_frame.hpp"
 #include "ui/downloads/downloads_view.hpp"
@@ -140,12 +141,26 @@ public:
         auto* tabs = new pipensx::ui::MainFrame();
         using pipensx::ui::NavIconType;
         using pipensx::CatalogSection;
-        // Games, Ports, separator, Downloads, ... — Downloads is sidebar index 3.
+        tabs->addNavTab(tr("pipensx/nav/home"), NavIconType::Home,
+                        [this, manager, catalog, metadata, installed, settings,
+                         favorites, deploy, tabs] {
+            return new pipensx::ui::HomeView(
+                manager, catalog, metadata, installed, settings, favorites,
+                deploy, [tabs] {
+                    tabs->focusTab(NavIconType::Catalog);
+                    if (auto* catalogView = dynamic_cast<pipensx::ui::CatalogView*>(
+                            tabs->tabView(NavIconType::Catalog)))
+                        catalogView->openSearchKeyboard();
+                });
+        });
         tabs->addNavTab(tr("pipensx/nav/games"), NavIconType::Catalog,
                         [this, manager, catalog, metadata, installed,
                          settings, favorites, deploy, tabs] {
             return new CatalogView(manager, catalog, metadata, installed,
-                                   settings, [tabs] { tabs->focusTab(3); },
+                                   settings,
+                                   [tabs] {
+                                       tabs->focusTab(NavIconType::Downloads);
+                                   },
                                    favorites, deploy, CatalogSection::Games, {},
                                    [this] { refreshUpdateBadge(); });
         });
@@ -153,9 +168,14 @@ public:
                         [this, manager, catalog, metadata, installed,
                          settings, favorites, deploy, tabs] {
             return new CatalogView(manager, catalog, metadata, installed,
-                                   settings, [tabs] { tabs->focusTab(3); },
+                                   settings,
+                                   [tabs] {
+                                       tabs->focusTab(NavIconType::Downloads);
+                                   },
                                    favorites, deploy, CatalogSection::Ports,
-                                   [tabs] { tabs->focusTab(0); },
+                                   [tabs] {
+                                       tabs->focusTab(NavIconType::Catalog);
+                                   },
                                    [this] { refreshUpdateBadge(); });
         });
         tabs->addSeparator();
@@ -178,10 +198,13 @@ public:
         }, true);
         tabs->addNavTab(tr("pipensx/nav/settings"), NavIconType::Settings,
                         [this, settings, manager, catalog, metadata,
-                         installed, updater, webServer] {
+                         installed, updater, webServer, tabs] {
             return new SettingsView(settings, manager, catalog, metadata,
                                     installed, updater, webServer,
-                                    [this] { refreshUpdateBadge(); });
+                                    [this] { refreshUpdateBadge(); },
+                                    [tabs](bool show) {
+                tabs->setNavTabVisible(NavIconType::Home, show);
+            });
         });
         tabs->addNavTab(tr("pipensx/nav/help"), NavIconType::Help,
                         [manager, catalog, metadata, installed] {
@@ -190,11 +213,17 @@ public:
         tabs->addNavTab(tr("pipensx/nav/about"), NavIconType::About, [] {
             return new AboutView();
         });
-        tabs->attachStorageFooter(manager, webServer);
+        tabs->setNavTabVisible(NavIconType::Home,
+                               settings->get().showHomeTab);
         tabs_ = tabs;
         refreshUpdateBadge();
         frame_ = new brls::AppletFrame(tabs);
         frame_->setTitle(tr("pipensx/app/title"));
+        tabs->attachStorageFooter(manager, frame_);
+        frame_->setHeaderVisibility(brls::Visibility::GONE);
+        frame_->registerAction("", brls::BUTTON_B,
+                               [](brls::View*) { return false; },
+                               /*hidden=*/true);
     }
 
     // The installed scan runs off-thread so the first frame is not blocked.
@@ -247,6 +276,7 @@ public:
     }
 
     void onContentAvailable() override {
+        pipensx::ui::setShellHintStyle(frame_);
         // Hidden hint: this action sits on the frame, so its label would ride
         // the bottom bar on every screen under MainActivity — and the catalog
         // already registers more hints than a 1280px bar holds in Russian.
@@ -328,8 +358,8 @@ public:
                 dialog->open();
                 return true;
             }, /*hidden=*/true);
-        // Visible on every screen: the web companion QR is the whole pairing
-        // story, so it must not stay buried three levels deep in Settings.
+        // Live on every screen, hint hidden on the shell so the bar stays
+        // Y Search + ZR Favourites.
         registerAction(tr("pipensx/app/web_qr"), brls::BUTTON_BACK,
             [this](brls::View*) {
                 const pipensx::AppSettingsData& values = settings_->get();
@@ -344,7 +374,7 @@ public:
                 }
                 pipensx::ui::showWebQrDialog(url, values.webServerPin);
                 return true;
-            });
+            }, /*hidden=*/true);
     }
 
 private:

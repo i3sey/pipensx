@@ -11,6 +11,7 @@
     "off": "Web off"
   },
   "nav": {
+    "home": "Home",
     "games": "Games",
     "ports": "Ports",
     "downloads": "Downloads",
@@ -56,7 +57,13 @@
     "sort_alpha": "A-Z",
     "sort_size": "Size",
     "filter_fits": "Fits",
+    "filter_favorites": "Favourites",
+    "filter_genres": "Genres",
+    "filter_reset": "Reset",
     "filter_players": "Players",
+    "genres_all": "All genres",
+    "genres_title": "Genres",
+    "sort_title": "Sort",
     "players_title": "Play together",
     "players_any": "Any",
     "players_split": "Split screen",
@@ -85,7 +92,7 @@
     "freshness_stale": "Catalog outdated · {}",
     "freshness_never": "Catalog not updated",
     "freshness_updating": "Catalog updating…",
-    "empty_inline": "Catalog is empty. Press R to refresh.",
+    "empty_inline": "Catalog is empty.",
     "nothing_found_inline": "Nothing found. Tap the magnifier or press Y to change the query.",
     "empty_title": "Catalog is empty",
     "empty_body": "Refresh the catalog to load the latest releases on this console.",
@@ -550,6 +557,8 @@
     "language_zh": "简体中文",
     "language_it": "Italiano",
     "language_restart": "Restart pipensx to apply the language.",
+    "show_home": "Home tab",
+    "show_home_note": "Featured spotlight on its own tab. Off by default.",
     "auto_refresh": "Auto-refresh daily",
     "catalog_source": "Catalog source",
     "catalog_source_default": "Default (Langegen)",
@@ -785,5 +794,19 @@
     "install_completed": "{} installed.",
     "download_failed": "{} download failed.",
     "install_failed": "{} install failed."
+  },
+  "help": {
+    "home_title": "Home",
+    "home_body": "A rotating spotlight of popular and new games and ports, with artwork and a short description. Press A to open one.",
+    "tabs_title": "L / R",
+    "tabs_body": "Shoulder buttons switch tabs.",
+    "grid_title": "Games and Ports",
+    "grid_body": "A six-column grid. Open a game with A.",
+    "search_title": "Y and ZR",
+    "search_body": "Y opens search. ZR adds or removes the focused game from Favourites.",
+    "web_title": "Minus",
+    "web_body": "Shows the web companion QR code.",
+    "exit_title": "Plus",
+    "exit_body": "Exits pipensx."
   }
 }

@@ -3,17 +3,21 @@
 #include <algorithm>
 #include <cctype>
 #include <ctime>
+#include <numeric>
 #include <string>
 #include <vector>
 
 #include <borealis.hpp>
 
+#include "app/app_settings.hpp"
 #include "app/catalog_presentation.hpp"
 #include "app/catalog_service.hpp"
 #include "app/curl_https.hpp"
 #include "ui/i18n.hpp"
 #include "app/game_metadata_service.hpp"
 #include "ui/common/async_image.hpp"
+#include "ui/common/busy_pulse.hpp"
+#include "ui/theme.hpp"
 
 namespace pipensx::ui {
 
@@ -179,4 +183,139 @@ inline void appendAsyncImage(brls::Box* parent, GameMetadataService* service,
     loadImageInto(image, service, url);
     parent->addView(image);
 }
+
+// Popularity ranking used by the Home hero and the catalog Popular sort.
+// Indices are into `visible` (itself a list of snapshot indices). Peer count
+// wins; with no peers at all, a freshness+size rank sum is the fallback.
+inline std::vector<int> catalogPopularityOrder(
+    const std::vector<CatalogEntry>& all, const std::vector<int>& visible,
+    bool& usedFallback) {
+    std::vector<int> order(visible.size());
+    std::iota(order.begin(), order.end(), 0);
+    auto entry = [&](int visIndex) -> const CatalogEntry& {
+        return all[static_cast<size_t>(
+            visible[static_cast<size_t>(visIndex)])];
+    };
+    usedFallback = std::none_of(visible.begin(), visible.end(),
+        [&all](int snapshotIndex) {
+            return all[static_cast<size_t>(snapshotIndex)].peerCount > 0;
+        });
+    if (!usedFallback) {
+        std::stable_sort(order.begin(), order.end(),
+            [&](int left, int right) {
+                const auto& l = entry(left);
+                const auto& r = entry(right);
+                if (l.peerCount != r.peerCount)
+                    return l.peerCount > r.peerCount;
+                return l.publishedAt > r.publishedAt;
+            });
+        return order;
+    }
+    std::vector<size_t> score(visible.size(), 0);
+    std::vector<int> ranked = order;
+    std::stable_sort(ranked.begin(), ranked.end(),
+        [&](int left, int right) {
+            return entry(left).publishedAt > entry(right).publishedAt;
+        });
+    for (size_t pos = 0; pos < ranked.size(); ++pos)
+        score[static_cast<size_t>(ranked[pos])] += pos;
+    std::stable_sort(ranked.begin(), ranked.end(),
+        [&](int left, int right) {
+            return entry(left).size > entry(right).size;
+        });
+    for (size_t pos = 0; pos < ranked.size(); ++pos)
+        score[static_cast<size_t>(ranked[pos])] += pos;
+    std::stable_sort(order.begin(), order.end(),
+        [&](int left, int right) {
+            if (score[static_cast<size_t>(left)] !=
+                score[static_cast<size_t>(right)])
+                return score[static_cast<size_t>(left)] <
+                       score[static_cast<size_t>(right)];
+            return entry(left).publishedAt > entry(right).publishedAt;
+        });
+    return order;
+}
+
+inline std::string catalogFeaturedImageUrl(const CatalogEntry& entry,
+                                           const GameMetadata* metadata) {
+    if (metadata && !metadata->bannerUrl.empty())
+        return metadata->bannerUrl;
+    if (metadata && !metadata->screenshots.empty())
+        return metadata->screenshots.front();
+    if (!entry.screenshots.empty())
+        return entry.screenshots.front();
+    return {};
+}
+
+// Catalog refresh freshness badge (catalog header, left of the release count).
+class CatalogFreshnessBadge : public brls::Box {
+public:
+    CatalogFreshnessBadge() : brls::Box(brls::Axis::ROW) {
+        setFocusable(false);
+        setAlignItems(brls::AlignItems::CENTER);
+        setShrink(0.0f);
+        busyDot_ = new brls::Label();
+        busyDot_->setText("●");
+        busyDot_->setFontSize(theme::kFontCaption);
+        busyDot_->setTextColor(theme::warning());
+        busyDot_->setMarginRight(6);
+        busyDot_->setFocusable(false);
+        busyDot_->setShrink(0.0f);
+        busyDot_->setVisibility(brls::Visibility::GONE);
+        addView(busyDot_);
+        label_ = new brls::Label();
+        label_->setFontSize(theme::kFontCaption);
+        label_->setSingleLine(true);
+        label_->setFocusable(false);
+        label_->setShrink(0.0f);
+        addView(label_);
+    }
+
+    void update(bool busy, bool refreshInFlight, AppSettings* settings,
+                CatalogService* catalog) {
+        const uint64_t wallSec =
+            settings ? settings->get().lastCatalogRefreshWallSec : 0;
+        const int64_t snapshot = catalog ? catalog->snapshotEpochSec() : 0;
+        const bool hasEntries = catalog && !catalog->entries().empty();
+        const CatalogFreshness state = resolveCatalogFreshness(
+            busy || refreshInFlight, wallSec, snapshot, hasEntries,
+            wallSec != 0 &&
+                isLocalToday(static_cast<int64_t>(wallSec)));
+        switch (state.kind) {
+            case CatalogFreshness::Kind::Updating:
+                label_->setText(tr("pipensx/catalog/freshness_updating"));
+                label_->setTextColor(theme::warning());
+                return;
+            case CatalogFreshness::Kind::Never:
+                label_->setText(tr("pipensx/catalog/freshness_never"));
+                label_->setTextColor(theme::error());
+                return;
+            case CatalogFreshness::Kind::Ok:
+                label_->setText(tr("pipensx/catalog/freshness_ok",
+                                    formatEpochDateUtc(state.epochSec)));
+                label_->setTextColor(theme::success());
+                return;
+            case CatalogFreshness::Kind::Stale:
+                label_->setText(tr("pipensx/catalog/freshness_stale",
+                                    formatEpochDateUtc(state.epochSec)));
+                label_->setTextColor(theme::error());
+                return;
+        }
+    }
+
+    void setBusy(bool busy) {
+        if (busy) {
+            busyDot_->setVisibility(brls::Visibility::VISIBLE);
+            startBusyPulse(busyDot_);
+        } else {
+            stopBusyPulse(busyDot_);
+            busyDot_->setVisibility(brls::Visibility::GONE);
+        }
+    }
+
+private:
+    brls::Label* busyDot_ = nullptr;
+    brls::Label* label_ = nullptr;
+};
+
 }  // namespace pipensx::ui

@@ -378,12 +378,6 @@ private:
                     unregisterAction(cancelAction_);
                     cancelAction_ = ACTION_NONE;
                 }
-                queueAction_ = registerAction(
-                    tr("pipensx/batch/add_to_queue"), brls::BUTTON_RB,
-                    [this](brls::View*) {
-                        enqueuePrepared();
-                        return true;
-                    });
                 refreshSummary();
                 refreshStorageSnapshots();
                 brls::sync([this, alive] {
@@ -548,10 +542,6 @@ private:
         resultBack_->setText(remaining_.empty()
                                  ? tr("pipensx/batch/back_to_catalog")
                                  : tr("pipensx/batch/back_to_selected"));
-        if (queueAction_ != ACTION_NONE) {
-            unregisterAction(queueAction_);
-            queueAction_ = ACTION_NONE;
-        }
     }
 
     void refreshStorageSnapshots() {
@@ -604,7 +594,6 @@ private:
     brls::Box* resultControls_ = nullptr;
     brls::Button* resultBack_ = nullptr;
     brls::ActionIdentifier cancelAction_ = ACTION_NONE;
-    brls::ActionIdentifier queueAction_ = ACTION_NONE;
     bool storageQueryInFlight_ = false;
     bool storageReady_ = false;
     bool enqueueValidationInFlight_ = false;

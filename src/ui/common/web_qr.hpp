@@ -16,7 +16,7 @@
 namespace pipensx::ui {
 
 // "http://<ip>:<port>" when the server is up and the console has an address,
-// "" otherwise. A null server (golden runner) yields a fixed fake address so
+// "" otherwise. A null server (PC builds) yields a fixed fake address so
 // screenshot baselines never contain the host's real IP.
 inline std::string webCompanionUrl(pipensx::WebServer* server, bool enabled) {
     if (!enabled)

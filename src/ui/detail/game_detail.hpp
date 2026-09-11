@@ -213,7 +213,7 @@ private:
             auto* plate = new brls::Box();
             plate->setWidth(kLeftColumnWidth);
             plate->setHeight(kCoverHeight);
-            plate->setCornerRadius(theme::kRadiusLarge);
+            plate->setCornerRadius(theme::kRadiusSmall);
             plate->setBackgroundColor(theme::surface());
             auto* cover = new AsyncRgbaImage();
             cover->setWidth(kLeftColumnWidth);
@@ -221,7 +221,7 @@ private:
             cover->setPositionType(brls::PositionType::ABSOLUTE);
             cover->setPositionTop(0);
             cover->setPositionLeft(0);
-            cover->setCornerRadius(theme::kRadiusLarge);
+            cover->setCornerRadius(theme::kRadiusSmall);
             cover->setScalingType(brls::ImageScalingType::FIT);
             // FIT letterboxes; with clip on, borealis fills the whole view
             // rect with the pattern and the margin samples clamped edge texels
@@ -688,7 +688,7 @@ private:
     }
 
     // The glyph never changes \u2014 an outline star (U+2606) is not exercised by
-    // any golden baseline, so there is no evidence the console shared font
+    // any PC test baseline, so there is no evidence the console shared font
     // carries it. State rides on the fill instead, the same way the catalog
     // header's \u2605 filter chip reads as on/off.
     void refreshFavoriteButton() {

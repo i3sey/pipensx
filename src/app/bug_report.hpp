@@ -7,8 +7,8 @@
 // console.
 //
 // This translation unit is deliberately platform-neutral (no borealis, no
-// libnx, no qrcodegen): it compiles into the Switch app, the golden runner and
-// the Makefile.pc test suite alike, so the wire format is unit-tested on PC.
+// libnx, no qrcodegen): it compiles into the Switch app and the Makefile.pc
+// test suite alike, so the wire format is unit-tested on PC.
 //
 // Wire format (per chunk, must stay in lockstep with scripts/decode_report.py):
 //   offset size field

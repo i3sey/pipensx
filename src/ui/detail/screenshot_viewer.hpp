@@ -21,7 +21,7 @@ namespace pipensx::ui {
 // Fullscreen screenshot pager (O6)
 // ---------------------------------------------------------------------------
 // Opened by clicking (A) a screenshot on the game card. One shot fills the
-// screen (FIT); page with LB/RB, the D-pad, or a horizontal swipe. B returns —
+// screen (FIT); page with the D-pad or a horizontal swipe. B returns —
 // AppletFrame registers that for free.
 //
 // Resolution: the rail's decode is capped at kImageDimCard (360px), so blowing
@@ -111,12 +111,6 @@ class ScreenshotViewerActivity : public brls::Activity {
     brls::View* createContentView() override { return frame_; }
 
     void onContentAvailable() override {
-        registerAction(tr("pipensx/common/previous"), brls::BUTTON_LB,
-                       [this](brls::View*) { page(-1); return true; }, false,
-                       true);
-        registerAction(tr("pipensx/common/next"), brls::BUTTON_RB,
-                       [this](brls::View*) { page(1); return true; }, false,
-                       true);
         registerAction("", brls::BUTTON_LEFT,
                        [this](brls::View*) { page(-1); return true; }, true,
                        true);

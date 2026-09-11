@@ -1,4 +1,4 @@
-/* PC stubs for Switch-only platform hooks (desktop/golden builds only).
+/* PC stubs for Switch-only platform hooks (PC test builds only).
  *
  * The Switch build compiles src/platform/switch_crashlog.c instead; this
  * translation unit satisfies the same extern "C" interface declared in

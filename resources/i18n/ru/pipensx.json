@@ -11,6 +11,7 @@
     "off": "Веб выкл"
   },
   "nav": {
+    "home": "Главное",
     "games": "Игры",
     "ports": "Порты",
     "downloads": "Загрузки",
@@ -56,7 +57,13 @@
     "sort_alpha": "А-Я",
     "sort_size": "Размер",
     "filter_fits": "Влезет",
+    "filter_favorites": "Избранное",
+    "filter_genres": "Жанры",
+    "filter_reset": "Сбросить",
     "filter_players": "Игроки",
+    "genres_all": "Все жанры",
+    "genres_title": "Жанры",
+    "sort_title": "Сортировка",
     "players_title": "Совместная игра",
     "players_any": "Любые",
     "players_split": "Сплитскрин",
@@ -85,7 +92,7 @@
     "freshness_stale": "Каталог устарел · {}",
     "freshness_never": "Каталог не обновлялся",
     "freshness_updating": "Каталог обновляется…",
-    "empty_inline": "Каталог пуст. Нажмите R, чтобы обновить.",
+    "empty_inline": "Каталог пуст.",
     "nothing_found_inline": "Ничего не найдено. Нажмите Y, чтобы изменить запрос.",
     "empty_title": "Каталог пуст",
     "empty_body": "Обновите каталог, чтобы загрузить свежие релизы на этой консоли.",
@@ -550,6 +557,8 @@
     "language_zh": "简体中文",
     "language_it": "Итальянский",
     "language_restart": "Перезапустите pipensx, чтобы сменить язык.",
+    "show_home": "Вкладка «Главное»",
+    "show_home_note": "Подборка на отдельной вкладке. По умолчанию скрыта.",
     "auto_refresh": "Обновлять раз в сутки",
     "catalog_source": "Источник каталога",
     "catalog_source_default": "По умолчанию (Langegen)",
@@ -785,5 +794,19 @@
     "install_completed": "«{}» установлено.",
     "download_failed": "Загрузка «{}» не удалась.",
     "install_failed": "Установка «{}» не удалась."
+  },
+  "help": {
+    "home_title": "Главное",
+    "home_body": "Вращающаяся подборка популярных и новых игр и портов: баннер и короткое описание. A открывает карточку.",
+    "tabs_title": "L / R",
+    "tabs_body": "Плечевые кнопки переключают вкладки.",
+    "grid_title": "Игры и Порты",
+    "grid_body": "Сетка из шести колонок. A открывает игру.",
+    "search_title": "Y и ZR",
+    "search_body": "Y открывает поиск. ZR добавляет или убирает игру в избранном.",
+    "web_title": "Минус",
+    "web_body": "Показывает QR-код веб-компаньона.",
+    "exit_title": "Плюс",
+    "exit_body": "Выход из pipensx."
   }
 }

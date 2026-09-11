@@ -3,8 +3,8 @@
 // Segmented SD-storage bar (Switch data-management style): a full-width track
 // scaled to the card capacity, split into an existing "used" chunk, an optional
 // "this install" chunk (accent, red when it will not fit), and the remaining
-// free space. Used four ways:
-//   * sidebar footer       -> setStorage(total, free)   (no install chunk)
+// free space. Used three ways:
+//   * settings breakdown   -> setStorage(total, free)   (no install chunk)
 //   * game page            -> setGameEstimate(...)      (catalog size, then the
 //                                                        exact size after the
 //                                                        torrent metadata lands)

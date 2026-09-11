@@ -110,7 +110,7 @@ CatalogPresentation resolveCatalogPresentation(
     else
         result.coverUrl = result.iconUrl;
     // CatalogNative still falls back to the metadata prose: 26 catalogue
-    // entries carry no description at all, and neither does any golden fixture.
+    // entries carry no description at all, and neither do test fixtures.
     if (preference == TextPreference::CatalogNative &&
         !entry.description.empty())
         result.description = entry.description;

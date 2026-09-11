@@ -49,7 +49,7 @@ public:
         image_ = new AsyncRgbaImage();
         image_->setWidth(64);
         image_->setHeight(64);
-        image_->setCornerRadius(8);
+        image_->setCornerRadius(theme::kRadiusSmall);
         image_->setMarginRight(16);
         image_->setScalingType(brls::ImageScalingType::FILL);
         addView(image_);

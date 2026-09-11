@@ -240,7 +240,7 @@ public:
     bool contentFits() { return overflowDetail().empty(); }
 
     // First child whose frame escapes its parent's, as a "parent / child +
-    // frames" diagnostic for the golden harness. The diagram stretches to the
+    // frames" diagnostic for PC tests. The diagram stretches to the
     // panel's full width, so its own frame always fits — the fixed-width
     // chips inside it are what actually stick out, which is why this must
     // recurse into boxes. Frames are absolute (borealis getFrame), so every

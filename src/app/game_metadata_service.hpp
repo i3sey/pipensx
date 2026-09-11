@@ -155,8 +155,7 @@ public:
         // Active transfer: covers keep loading, under a per-fetch receive cap
         // so they take a slice of the link instead of racing the swarm.
         Throttled,
-        // Cache-only. Nothing uncached ever reaches the network — the golden
-        // runner renders placeholders instead of fixture URLs.
+        // Cache-only. Nothing uncached ever reaches the network on PC.
         Off,
     };
     void setImageNetwork(ImageNetwork mode) const;

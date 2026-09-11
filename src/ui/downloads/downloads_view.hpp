@@ -94,11 +94,6 @@ public:
             pauseResumeAll();
             return true;
         });
-        registerAction(tr("pipensx/downloads/clear_completed"), brls::BUTTON_LB,
-                       [this](brls::View*) {
-            clearCompleted();
-            return true;
-        });
         startRefreshing();
     }
 
@@ -364,35 +359,6 @@ private:
             pauseAll();
         else
             resumeAll();
-    }
-
-    void clearCompleted() {
-        bool any = false;
-        for (const DownloadTask& task : manager_->snapshotUi())
-            if (task.status == DownloadStatus::Completed ||
-                task.status == DownloadStatus::Installed) {
-                any = true;
-                break;
-            }
-        if (!any) {
-            brls::Application::notify(
-                tr("pipensx/downloads/clear_completed_none"));
-            return;
-        }
-        auto* dialog =
-            new brls::Dialog(tr("pipensx/downloads/clear_completed_question"));
-        auto run = [this](bool deleteData) {
-            std::string error;
-            if (!manager_->clearCompleted(deleteData, error) && !error.empty())
-                brls::Application::notify(error);
-            startRefreshing(true);
-        };
-        dialog->addButton(tr("pipensx/downloads/remove_keep"),
-                          [run] { run(false); });
-        dialog->addButton(tr("pipensx/downloads/remove_delete"),
-                          [run] { run(true); });
-        dialog->addButton(tr("pipensx/common/cancel"), [] {});
-        dialog->open();
     }
 
     std::string summaryText(const std::vector<DownloadTask>& tasks) const {

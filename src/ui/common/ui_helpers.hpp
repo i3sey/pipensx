@@ -10,6 +10,7 @@
 #include <vector>
 
 #include <borealis.hpp>
+#include <borealis/views/hint.hpp>
 
 extern "C" {
 #include "core/util.h"
@@ -431,5 +432,16 @@ inline std::string placeholderLetter(const std::string& title) {
     if (length == 1)
         letter[0] = static_cast<char>(std::toupper(lead));
     return letter;
+}
+
+inline void setShellHintStyle(brls::View* root) {
+    if (!root)
+        return;
+    if (auto* hints = dynamic_cast<brls::Hints*>(root))
+        hints->setAddUnableAButtonAction(false);
+    if (auto* box = dynamic_cast<brls::Box*>(root)) {
+        for (brls::View* child : box->getChildren())
+            setShellHintStyle(child);
+    }
 }
 }  // namespace pipensx::ui

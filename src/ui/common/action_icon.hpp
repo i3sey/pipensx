@@ -4,7 +4,7 @@
 // batch install). Hand-drawn with NanoVG rather than an icon font: the Material
 // fallback is registered per platform (desktop_font.cpp vs switch_font.cpp), so
 // a font glyph would not be guaranteed identical between the Switch build and
-// the golden-screenshot harness. Same drawing conventions as NavIcon in
+// PC/off-console builds. Same drawing conventions as NavIcon in
 // ui/main_frame.hpp — 24px glyph box inside a 28px view, 2px round stroke,
 // colour resolved at draw time so it follows the light/dark theme.
 //

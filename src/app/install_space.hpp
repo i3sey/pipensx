@@ -87,7 +87,7 @@ StorageSpaceSnapshot queryInstallStorageSpace(
     install::InstallStorageTarget target, const std::string& fallbackPath);
 
 // Test seam: makes queryStorageSpace / queryInstallStorageSpace return a fixed
-// snapshot instead of hitting nsGetStorageSize/statvfs, so the golden screenshot
+// snapshot instead of hitting nsGetStorageSize/statvfs for deterministic PC tests.
 // runner renders the storage meters deterministically. Pass nullptr to restore.
 void setStorageSpaceOverride(const StorageSpaceSnapshot* snapshot);
 

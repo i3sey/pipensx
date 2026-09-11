@@ -1,5 +1,5 @@
 // Screen-off without sleep for long downloads (B5). Switch-only: the PC and
-// golden builds never compile this unit (see APP_SOURCES in CMakeLists.txt),
+// PC test builds never compile this unit (see APP_SOURCES in CMakeLists.txt),
 // so no __SWITCH__ guard and no PC shim stub are needed.
 
 #include "switch_backlight.hpp"

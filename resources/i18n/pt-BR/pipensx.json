@@ -11,6 +11,7 @@
     "off": "Web desligada"
   },
   "nav": {
+    "home": "Início",
     "games": "Jogos",
     "ports": "Ports",
     "downloads": "Downloads",
@@ -56,7 +57,13 @@
     "sort_alpha": "A-Z",
     "sort_size": "Tamanho",
     "filter_fits": "Cabe no SD",
+    "filter_favorites": "Favoritos",
+    "filter_genres": "Gêneros",
+    "filter_reset": "Redefinir",
     "filter_players": "Jogadores",
+    "genres_all": "Todos os gêneros",
+    "genres_title": "Gêneros",
+    "sort_title": "Ordenar",
     "players_title": "Jogar junto",
     "players_any": "Qualquer",
     "players_split": "Tela dividida",
@@ -85,7 +92,7 @@
     "freshness_stale": "Catálogo desatualizado · {}",
     "freshness_never": "Catálogo não atualizado",
     "freshness_updating": "Atualizando catálogo…",
-    "empty_inline": "O catálogo está vazio. Pressione R para atualizar.",
+    "empty_inline": "O catálogo está vazio.",
     "nothing_found_inline": "Nada encontrado. Toque na lupa ou pressione Y para mudar a busca.",
     "empty_title": "Catálogo vazio",
     "empty_body": "Atualize o catálogo para carregar os lançamentos mais recentes neste console.",
@@ -550,6 +557,8 @@
     "language_zh": "简体中文",
     "language_it": "Italiano",
     "language_restart": "Reinicie o pipensx para aplicar o idioma.",
+    "show_home": "Aba Início",
+    "show_home_note": "Destaques numa aba própria. Desligada por padrão.",
     "auto_refresh": "Atualização automática diária",
     "catalog_source": "Fonte do catálogo",
     "catalog_source_default": "Padrão (Langegen)",
@@ -785,5 +794,19 @@
     "install_completed": "{} instalado.",
     "download_failed": "Download de {} falhou.",
     "install_failed": "Instalação de {} falhou."
+  },
+  "help": {
+    "home_title": "Início",
+    "home_body": "Destaque rotativo de jogos e ports populares e novos, com arte e uma descrição curta. A abre o título.",
+    "tabs_title": "L / R",
+    "tabs_body": "Os botões laterais mudam de aba.",
+    "grid_title": "Jogos e Ports",
+    "grid_body": "Grade de seis colunas. A abre o jogo.",
+    "search_title": "Y e ZR",
+    "search_body": "Y abre a busca. ZR adiciona ou remove o jogo dos Favoritos.",
+    "web_title": "Menos",
+    "web_body": "Mostra o QR do companion web.",
+    "exit_title": "Mais",
+    "exit_body": "Sai do pipensx."
   }
 }

@@ -21,7 +21,7 @@ namespace pipensx::ui {
 // send the whole thing in one photo. Y toggles a denser "detailed" layout that
 // carries more log (for a clean screenshot); B returns. The dev decodes the
 // photo with scripts/decode_report.py — no log file ever leaves the console.
-// The golden-screenshot seam: a fixed log and device state make the screen
+// PC-test seam: a fixed log and device state make the screen
 // deterministic, which the live path is not (it touches statvfs, firmware and
 // the clock). Production passes nothing.
 struct BugReportFixture {
@@ -43,7 +43,7 @@ class BugReportActivity : public brls::Activity {
     void onContentAvailable() override;
 
     // What the screen is showing right now, as "<mode> <codes> <caption>". The
-    // golden harness uses it to prove the Y action reached this activity and
+    // PC tests use it to prove the Y action reached this activity and
     // re-encoded the report, which a screenshot cannot show.
     std::string renderedState();
 
