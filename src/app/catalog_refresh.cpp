@@ -18,6 +18,8 @@ CatalogRefreshAdoption adoptCatalogRefresh(
     CatalogService& catalog, GameMetadataService& metadata,
     CatalogRefreshBatch batch, const std::string& catalogSourceUrl) {
     CatalogRefreshAdoption result;
+    if (batch.cancelled)
+        return result;
     if (batch.catalogOk) {
         catalog.adopt(std::move(batch.catalogEntries), catalogSourceUrl);
         result.catalogChanged = true;

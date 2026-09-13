@@ -10,6 +10,7 @@
 namespace pipensx {
 
 struct CatalogRefreshBatch {
+    bool cancelled = false;
     bool catalogOk = false;
     std::vector<CatalogEntry> catalogEntries;
     std::string catalogError;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -84,7 +85,8 @@ public:
     // never touches entries_, so it may run on a worker thread. The caller
     // adopts the parsed batch on the UI thread via adopt().
     bool fetchLatest(std::vector<CatalogEntry>& parsed, std::string& error,
-                     const std::string& sourceUrl);
+                     const std::string& sourceUrl,
+                     const std::atomic<bool>* cancelled = nullptr);
     // UI-thread only: adopt a freshly fetched batch as the live catalogue.
     // entries() is read unsynchronised by the render thread every frame, so
     // entries_ may only be reassigned here — never from a fetch worker.
@@ -123,7 +125,8 @@ public:
 
     static bool parseJson(const std::string& json,
                           std::vector<CatalogEntry>& entries,
-                          std::string& error);
+                          std::string& error,
+                          const std::atomic<bool>* cancelled = nullptr);
 
     // True when `url` is allowed to serve catalog bytes for `sourceUrl`.
     // Built-in Langegen keeps the historical repo-prefix allowlist; a custom

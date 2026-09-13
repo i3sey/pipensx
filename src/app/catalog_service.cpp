@@ -87,6 +87,17 @@ struct HttpBuffer {
     bool overflow = false;
 };
 
+bool cancellationRequested(const std::atomic<bool>* cancelled) {
+    return cancelled && cancelled->load(std::memory_order_relaxed);
+}
+
+bool failIfCancelled(const std::atomic<bool>* cancelled, std::string& error) {
+    if (!cancellationRequested(cancelled))
+        return false;
+    error = "Catalog refresh cancelled.";
+    return true;
+}
+
 size_t writeHttp(void* bytes, size_t size, size_t count, void* user) {
     HttpBuffer* buffer = static_cast<HttpBuffer*>(user);
     size_t total = size * count;
@@ -140,8 +151,11 @@ bool readFile(const std::string& path, std::string& data,
 }
 
 bool httpGet(const std::string& url, std::string& body, std::string& error,
-             const std::string& sourceUrl) {
+             const std::string& sourceUrl,
+             const std::atomic<bool>* cancelled) {
     body.clear();
+    if (failIfCancelled(cancelled, error))
+        return false;
     CURL* curl = curl_easy_init();
     if (!curl) {
         error = "Unable to initialize HTTP.";
@@ -163,6 +177,14 @@ bool httpGet(const std::string& url, std::string& body, std::string& error,
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 45L);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeHttp);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buffer);
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION,
+        +[](void* opaque, curl_off_t, curl_off_t, curl_off_t, curl_off_t) {
+            const auto* flag = static_cast<const std::atomic<bool>*>(opaque);
+            return cancellationRequested(flag) ? 1 : 0;
+        });
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA,
+                     const_cast<std::atomic<bool>*>(cancelled));
     curlApplyTrustedSsl(curl);
     curlPinHttpsOnly(curl);
     curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
@@ -175,6 +197,8 @@ bool httpGet(const std::string& url, std::string& body, std::string& error,
         effective ? std::string(effective) : std::string();
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
+    if (failIfCancelled(cancelled, error))
+        return false;
     if (result != CURLE_OK || status < 200 || status >= 300 ||
         buffer.overflow) {
         if (buffer.overflow)
@@ -196,7 +220,8 @@ bool httpGet(const std::string& url, std::string& body, std::string& error,
 }
 
 bool writeAtomic(const std::string& path, const std::string& data,
-                 std::string& error) {
+                 std::string& error,
+                 const std::atomic<bool>* cancelled = nullptr) {
     std::string temporary = path + ".tmp";
     {
         std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
@@ -211,6 +236,10 @@ bool writeAtomic(const std::string& path, const std::string& data,
             error = "Unable to write catalog cache.";
             return false;
         }
+    }
+    if (failIfCancelled(cancelled, error)) {
+        unlink(temporary.c_str());
+        return false;
     }
     if (rename(temporary.c_str(), path.c_str()) == 0)
         return true;
@@ -388,9 +417,14 @@ CatalogService::CatalogService(std::string rootPath, std::string bundledPath)
 
 bool CatalogService::parseJson(const std::string& json,
                                std::vector<CatalogEntry>& entries,
-                               std::string& error) {
+                               std::string& error,
+                               const std::atomic<bool>* cancelled) {
     entries.clear();
+    if (failIfCancelled(cancelled, error))
+        return false;
     nlohmann::json root = nlohmann::json::parse(json, nullptr, false);
+    if (failIfCancelled(cancelled, error))
+        return false;
     if (root.is_discarded() || !root.is_array()) {
         error = "Catalog JSON is not a valid array.";
         return false;
@@ -403,6 +437,10 @@ bool CatalogService::parseJson(const std::string& json,
     std::set<std::string> hashes;
     entries.reserve(root.size());
     for (const auto& item : root) {
+        if (failIfCancelled(cancelled, error)) {
+            entries.clear();
+            return false;
+        }
         // The Langegen source names the magnet "magnet" and the cover "cover";
         // the older bqio dumps used "magnetURI" and "poster". Accept either so
         // a cached bqio snapshot still parses.
@@ -505,10 +543,18 @@ bool CatalogService::parseJson(const std::string& json,
         error = "Catalog does not contain usable RuTracker magnets.";
         return false;
     }
+    if (failIfCancelled(cancelled, error)) {
+        entries.clear();
+        return false;
+    }
     std::stable_sort(entries.begin(), entries.end(),
                      [](const CatalogEntry& left, const CatalogEntry& right) {
                          return left.publishedAt > right.publishedAt;
                      });
+    if (failIfCancelled(cancelled, error)) {
+        entries.clear();
+        return false;
+    }
     return true;
 }
 
@@ -579,22 +625,33 @@ bool CatalogService::isTrustedSource(const std::string& url,
 
 bool CatalogService::fetchLatest(std::vector<CatalogEntry>& parsed,
                                  std::string& error,
-                                 const std::string& sourceUrl) {
+                                 const std::string& sourceUrl,
+                                 const std::atomic<bool>* cancelled) {
     // Network fetch + parse + cache write only, so it never touches entries_.
     // The cached catalogue in memory survives a failure — the caller keeps
     // showing it on error.
     parsed.clear();
+    if (failIfCancelled(cancelled, error))
+        return false;
     if (!isTrustedSource(sourceUrl, sourceUrl)) {
         error = "Catalog URL is not on the trusted host list.";
         return false;
     }
     std::string catalogBody;
-    if (!httpGet(sourceUrl, catalogBody, error, sourceUrl))
+    if (!httpGet(sourceUrl, catalogBody, error, sourceUrl, cancelled))
         return false;
-    if (!parseJson(catalogBody, parsed, error))
+    if (!parseJson(catalogBody, parsed, error, cancelled))
         return false;
-    if (!writeAtomic(cachePath_, catalogBody, error))
+    if (failIfCancelled(cancelled, error)) {
+        parsed.clear();
         return false;
+    }
+    if (!writeAtomic(cachePath_, catalogBody, error, cancelled))
+        return false;
+    if (failIfCancelled(cancelled, error)) {
+        parsed.clear();
+        return false;
+    }
     return true;
 }
 

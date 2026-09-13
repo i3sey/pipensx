@@ -356,7 +356,7 @@ public:
                 scheduleStorageRefresh();
             return true;
         }, /*hidden=*/false);
-        registerSearchAction();
+        registerRefreshAction();
         if (favorites_) {
             registerAction(tr("pipensx/catalog/action_favorite"),
                            brls::BUTTON_RT, [this](brls::View*) {
@@ -392,6 +392,8 @@ public:
 
     ~CatalogView() override {
         alive_->store(false);
+        if (refreshCancellation_)
+            refreshCancellation_->store(true, std::memory_order_relaxed);
         timer_.stop();
         freshnessBadge_->setBusy(false);
     }
@@ -1299,14 +1301,22 @@ private:
         restoreFocus(hash, shelfRow);
     }
 
-    // Refreshing only replaces the snapshot once the fetch succeeds. Keep the
-    // search shortcut bound while the old snapshot remains on screen.
-    void registerSearchAction() {
-        registerAction(tr("pipensx/common/search"), brls::BUTTON_Y,
-                       [this](brls::View*) {
-            openSearchKeyboard();
+    // This view remains usable while refreshing, except that Y becomes Stop
+    // for the request it owns. A view merely observing another owner's global
+    // refresh keeps its normal Search action.
+    void registerRefreshAction(bool updateHints = false) {
+        const bool canCancel = static_cast<bool>(refreshCancellation_);
+        registerAction(canCancel ? tr("pipensx/common/stop")
+                                 : tr("pipensx/common/search"),
+                       brls::BUTTON_Y, [this](brls::View*) {
+            if (refreshCancellation_)
+                refreshCancellation_->store(true, std::memory_order_relaxed);
+            else
+                openSearchKeyboard();
             return true;
         }, /*hidden=*/false);
+        if (updateHints)
+            brls::Application::getGlobalHintsUpdateEvent()->fire();
     }
 
     void setRefreshInFlight(bool inFlight) {
@@ -1583,6 +1593,8 @@ private:
             setRefreshInFlight(true);
             return;
         }
+        refreshCancellation_ = std::make_shared<std::atomic<bool>>(false);
+        registerRefreshAction(true);
         setRefreshInFlight(true);
         const std::string updating = fetchCatalog && fetchMetadata
             ? tr("pipensx/catalog/updating_both")
@@ -1596,20 +1608,23 @@ private:
         const std::string catalogSourceUrl =
             effectiveCatalogSourceUrl(settings_->get().catalogSourceUrl);
         AppSettings* settings = settings_;
+        auto cancelled = refreshCancellation_;
         uint64_t startedMs = now_ms();
         brls::async([this, alive, catalog, metadata, settings, startedMs,
-                     fetchCatalog, fetchMetadata, notify, catalogSourceUrl] {
+                     fetchCatalog, fetchMetadata, notify, catalogSourceUrl,
+                     cancelled] {
             CatalogRefreshBatch batch;
             std::thread metadataFetch;
             if (fetchMetadata) {
                 metadataFetch = std::thread([&] {
                     batch.metadataOk = metadata->fetchLatest(
-                        batch.metadata, batch.metadataError);
+                        batch.metadata, batch.metadataError, cancelled.get());
                 });
             }
             if (fetchCatalog) {
                 batch.catalogOk = catalog->fetchLatest(
-                    batch.catalogEntries, batch.catalogError, catalogSourceUrl);
+                    batch.catalogEntries, batch.catalogError, catalogSourceUrl,
+                    cancelled.get());
             }
             if (metadataFetch.joinable())
                 metadataFetch.join();
@@ -1629,7 +1644,10 @@ private:
             }
             brls::sync([this, alive, batch = std::move(batch), fetchCatalog,
                         fetchMetadata, notify, catalogSourceUrl, catalog,
-                        metadata, settings]() mutable {
+                        metadata, settings, cancelled]() mutable {
+                batch.cancelled =
+                    cancelled->load(std::memory_order_relaxed);
+                const bool wasCancelled = batch.cancelled;
                 const bool catalogOk = batch.catalogOk;
                 const bool metadataOk = batch.metadataOk;
                 const std::string catalogError = batch.catalogError;
@@ -1637,12 +1655,12 @@ private:
                 if (metadata) {
                     adoptCatalogRefresh(*catalog, *metadata, std::move(batch),
                                         catalogSourceUrl);
-                } else if (catalogOk) {
+                } else if (catalogOk && !wasCancelled) {
                     catalog->adopt(std::move(batch.catalogEntries),
                                    catalogSourceUrl);
                 }
                 std::string stampError;
-                if (!recordCatalogRefreshSuccess(
+                if (!wasCancelled && !recordCatalogRefreshSuccess(
                         settings, fetchCatalog && catalogOk,
                         fetchMetadata && metadataOk, stampError) &&
                     !stampError.empty()) {
@@ -1652,7 +1670,13 @@ private:
                 endCatalogRefresh();
                 if (!alive->load())
                     return;
+                if (refreshCancellation_ == cancelled) {
+                    refreshCancellation_.reset();
+                    registerRefreshAction(true);
+                }
                 setRefreshInFlight(false);
+                if (wasCancelled)
+                    return;
                 if (fetchCatalog && !catalogOk) {
                     diagnostic_error("catalog", "refresh", "error=%s",
                                      catalogError.c_str());
@@ -1714,6 +1738,9 @@ private:
     std::vector<std::string> genreSheetGenres_;
     EmptyStateView* emptyState_ = nullptr;
     std::shared_ptr<std::atomic<bool>> alive_;
+    // Non-null only while this view owns the global refresh lease. The token
+    // outlives the view in the worker capture and gates fetch, parse and adopt.
+    std::shared_ptr<std::atomic<bool>> refreshCancellation_;
     std::shared_ptr<int> focusColumn_ = std::make_shared<int>(0);
     // O12: where to put the focus back when the game page closes.
     std::string returnFocusHash_;

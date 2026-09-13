@@ -94,7 +94,8 @@ public:
     static constexpr int kImageDimFull = 1280;
 
     using MetadataFetcher = std::function<bool(
-        const std::string&, size_t, std::vector<uint8_t>&, std::string&)>;
+        const std::string&, size_t, std::vector<uint8_t>&, std::string&,
+        const std::atomic<bool>*)>;
 
     explicit GameMetadataService(std::string rootPath,
                                  std::string bundledPath =
@@ -111,7 +112,8 @@ public:
     GameMetadataService& operator=(const GameMetadataService&) = delete;
 
     bool load(std::string& error);
-    bool fetchLatest(MetadataSnapshot& snapshot, std::string& error) const;
+    bool fetchLatest(MetadataSnapshot& snapshot, std::string& error,
+                     const std::atomic<bool>* cancelled = nullptr) const;
     void adopt(MetadataSnapshot snapshot);
     const GameMetadata* findByInfoHash(
         const std::string& infoHash, const std::string& titleId = {}) const;
@@ -179,11 +181,13 @@ public:
 
     static bool parseIndex(const std::string& json,
                            std::vector<GameMetadata>& items,
-                           std::string& error);
+                           std::string& error,
+                           const std::atomic<bool>* cancelled = nullptr);
     static bool prepareSnapshot(const std::string& manifestJson,
                                 const std::string& indexJson,
                                 MetadataSnapshot& snapshot,
-                                std::string& error);
+                                std::string& error,
+                                const std::atomic<bool>* cancelled = nullptr);
     static bool isTrustedSource(const std::string& url);
     static bool isTrustedRedirect(const std::string& url);
 
@@ -216,7 +220,8 @@ private:
     void rebuildTitleIdIndex();
     void ingestItems(std::vector<GameMetadata> items);
     bool loadCachedSnapshot(MetadataSnapshot& snapshot,
-                            std::string& error) const;
+                            std::string& error,
+                            const std::atomic<bool>* cancelled = nullptr) const;
     ImageLoadResult loadImageInternal(const std::string& url,
                                       std::vector<uint8_t>& bytes,
                                       std::string& error) const;

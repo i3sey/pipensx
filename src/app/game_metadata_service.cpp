@@ -61,6 +61,24 @@ struct HttpBuffer {
     bool overflow = false;
 };
 
+struct HttpCancellation {
+    const std::atomic<bool>* service = nullptr;
+    const std::atomic<bool>* request = nullptr;
+
+    bool requested() const {
+        return (service && service->load(std::memory_order_relaxed)) ||
+               (request && request->load(std::memory_order_relaxed));
+    }
+};
+
+bool failIfRefreshCancelled(const std::atomic<bool>* cancelled,
+                            std::string& error) {
+    if (!cancelled || !cancelled->load(std::memory_order_relaxed))
+        return false;
+    error = "Metadata refresh cancelled.";
+    return true;
+}
+
 size_t writeBytes(void* bytes, size_t size, size_t count, void* user) {
     HttpBuffer* buffer = static_cast<HttpBuffer*>(user);
     size_t total = size * count;
@@ -122,7 +140,8 @@ bool readFile(const std::string& path, std::vector<uint8_t>& bytes,
 }
 
 bool writeAtomic(const std::string& path, const std::vector<uint8_t>& data,
-                 std::string& error) {
+                 std::string& error,
+                 const std::atomic<bool>* cancelled = nullptr) {
     std::string temporary = path + ".tmp";
     {
         std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
@@ -138,6 +157,10 @@ bool writeAtomic(const std::string& path, const std::vector<uint8_t>& data,
             error = "Unable to write metadata cache.";
             return false;
         }
+    }
+    if (failIfRefreshCancelled(cancelled, error)) {
+        unlink(temporary.c_str());
+        return false;
     }
     if (rename(temporary.c_str(), path.c_str()) == 0)
         return true;
@@ -157,7 +180,8 @@ bool httpGetOnce(const std::string& url, size_t limit,
                  std::string* effectiveUrl = nullptr,
                  bool verifyTls = false,
                  const std::atomic<bool>* stopping = nullptr,
-                 long maxRecvBytesPerSecond = 0) {
+                 long maxRecvBytesPerSecond = 0,
+                 const std::atomic<bool>* cancelled = nullptr) {
     data.clear();
     CURL* curl = curl_easy_init();
     if (!curl) {
@@ -188,13 +212,13 @@ bool httpGetOnce(const std::string& url, size_t limit,
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeBytes);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buffer);
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    HttpCancellation cancellation{stopping, cancelled};
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION,
         +[](void* opaque, curl_off_t, curl_off_t, curl_off_t, curl_off_t) {
-            const auto* flag = static_cast<const std::atomic<bool>*>(opaque);
-            return flag && flag->load(std::memory_order_relaxed) ? 1 : 0;
+            const auto* state = static_cast<const HttpCancellation*>(opaque);
+            return state && state->requested() ? 1 : 0;
         });
-    curl_easy_setopt(curl, CURLOPT_XFERINFODATA,
-                     const_cast<std::atomic<bool>*>(stopping));
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &cancellation);
     if (verifyTls)
         curlApplyTrustedSsl(curl);
     else {
@@ -502,10 +526,11 @@ std::string manifestIndexSha(const std::string& json) {
 
 bool fetchTrustedMetadata(const std::string& url, size_t limit,
                           std::vector<uint8_t>& data, std::string& error,
-                          const std::atomic<bool>* stopping = nullptr) {
+                          const std::atomic<bool>* stopping = nullptr,
+                          const std::atomic<bool>* cancelled = nullptr) {
     std::string effectiveUrl;
     if (!httpGetOnce(url, limit, data, error, true, &effectiveUrl, true,
-                     stopping))
+                     stopping, 0, cancelled))
         return false;
     if (!GameMetadataService::isTrustedRedirect(effectiveUrl)) {
         data.clear();
@@ -549,9 +574,10 @@ GameMetadataService::GameMetadataService(std::string rootPath,
     if (!metadataFetcher_) {
         metadataFetcher_ = [this](const std::string& url, size_t limit,
                                   std::vector<uint8_t>& data,
-                                  std::string& error) {
+                                  std::string& error,
+                                  const std::atomic<bool>* cancelled) {
             return fetchTrustedMetadata(url, limit, data, error,
-                                        &stoppingRequested_);
+                                        &stoppingRequested_, cancelled);
         };
     }
     makeDirectories(cacheRoot_);
@@ -583,14 +609,23 @@ GameMetadataService::~GameMetadataService() {
 
 bool GameMetadataService::parseIndex(const std::string& json,
                                      std::vector<GameMetadata>& items,
-                                     std::string& error) {
+                                     std::string& error,
+                                     const std::atomic<bool>* cancelled) {
     items.clear();
+    if (failIfRefreshCancelled(cancelled, error))
+        return false;
     nlohmann::json root = nlohmann::json::parse(json, nullptr, false);
+    if (failIfRefreshCancelled(cancelled, error))
+        return false;
     if (root.is_discarded() || !root.is_array()) {
         error = "Metadata index is not a JSON array.";
         return false;
     }
     for (const auto& item : root) {
+        if (failIfRefreshCancelled(cancelled, error)) {
+            items.clear();
+            return false;
+        }
         if (!item.is_object())
             continue;
         GameMetadata metadata;
@@ -640,8 +675,11 @@ bool GameMetadataService::isTrustedRedirect(const std::string& url) {
 bool GameMetadataService::prepareSnapshot(const std::string& manifestJson,
                                           const std::string& indexJson,
                                           MetadataSnapshot& snapshot,
-                                          std::string& error) {
+                                          std::string& error,
+                                          const std::atomic<bool>* cancelled) {
     snapshot = {};
+    if (failIfRefreshCancelled(cancelled, error))
+        return false;
     if (manifestJson.empty() || manifestJson.size() > kMaxManifestBytes) {
         error = "Metadata manifest is empty or too large.";
         return false;
@@ -703,7 +741,8 @@ bool GameMetadataService::prepareSnapshot(const std::string& manifestJson,
         return false;
     }
     std::vector<GameMetadata> items;
-    if (!parseIndex(indexJson, items, error))
+    if (failIfRefreshCancelled(cancelled, error) ||
+        !parseIndex(indexJson, items, error, cancelled))
         return false;
     if (items.size() != manifest.entryCount) {
         error = "Metadata manifest entry count does not match.";
@@ -718,7 +757,8 @@ bool GameMetadataService::prepareSnapshot(const std::string& manifestJson,
 }
 
 bool GameMetadataService::loadCachedSnapshot(MetadataSnapshot& snapshot,
-                                             std::string& error) const {
+                                             std::string& error,
+                                             const std::atomic<bool>* cancelled) const {
     const std::string manifestPath = cacheRoot_ + "/manifest.json";
     std::vector<uint8_t> manifestBytes;
     if (!readFile(manifestPath, manifestBytes, kMaxManifestBytes, error))
@@ -737,7 +777,8 @@ bool GameMetadataService::loadCachedSnapshot(MetadataSnapshot& snapshot,
         return false;
     const std::string indexJson(
         reinterpret_cast<const char*>(indexBytes.data()), indexBytes.size());
-    return prepareSnapshot(manifestJson, indexJson, snapshot, error);
+    return prepareSnapshot(manifestJson, indexJson, snapshot, error,
+                           cancelled);
 }
 
 void GameMetadataService::recomputePlayerSummary() {
@@ -909,12 +950,15 @@ void GameMetadataService::adopt(MetadataSnapshot snapshot) {
 }
 
 bool GameMetadataService::fetchLatest(MetadataSnapshot& snapshot,
-                                      std::string& error) const {
+                                      std::string& error,
+                                      const std::atomic<bool>* cancelled) const {
     snapshot = {};
     auto useCachedAfterFailure = [&](const std::string& refreshError) {
+        if (failIfRefreshCancelled(cancelled, error))
+            return false;
         std::string cacheError;
         MetadataSnapshot cached;
-        if (loadCachedSnapshot(cached, cacheError)) {
+        if (loadCachedSnapshot(cached, cacheError, cancelled)) {
             snapshot = std::move(cached);
             error.clear();
             log_msg("[metadata] refresh failed (%s); using cached index\n",
@@ -926,14 +970,18 @@ bool GameMetadataService::fetchLatest(MetadataSnapshot& snapshot,
             error += " Cached metadata: " + cacheError;
         return false;
     };
+    if (failIfRefreshCancelled(cancelled, error))
+        return false;
     if (!isTrustedSource(manifestUrl_)) {
         error = "Metadata manifest URL is not trusted.";
         return false;
     }
     std::vector<uint8_t> manifestBytes;
     if (!metadataFetcher_(manifestUrl_, kMaxManifestBytes, manifestBytes,
-                          error))
+                          error, cancelled))
         return useCachedAfterFailure(error);
+    if (failIfRefreshCancelled(cancelled, error))
+        return false;
     const std::string manifestJson(
         reinterpret_cast<const char*>(manifestBytes.data()),
         manifestBytes.size());
@@ -958,19 +1006,32 @@ bool GameMetadataService::fetchLatest(MetadataSnapshot& snapshot,
             "Metadata index URL or size is not trusted.");
     }
     std::vector<uint8_t> indexBytes;
-    if (!metadataFetcher_(indexUrl, kMaxIndexBytes, indexBytes, error))
+    if (!metadataFetcher_(indexUrl, kMaxIndexBytes, indexBytes, error,
+                          cancelled))
         return useCachedAfterFailure(error);
+    if (failIfRefreshCancelled(cancelled, error))
+        return false;
     const std::string indexJson(
         reinterpret_cast<const char*>(indexBytes.data()), indexBytes.size());
-    if (!prepareSnapshot(manifestJson, indexJson, snapshot, error))
+    if (!prepareSnapshot(manifestJson, indexJson, snapshot, error, cancelled))
         return useCachedAfterFailure(error);
+
+    if (failIfRefreshCancelled(cancelled, error)) {
+        snapshot = {};
+        return false;
+    }
 
     const std::string indexPath =
         cacheRoot_ + "/" + snapshot.manifest.indexSha256 + ".json";
-    if (!writeAtomic(indexPath, snapshot.indexData, error))
+    if (!writeAtomic(indexPath, snapshot.indexData, error, cancelled))
         return useCachedAfterFailure(error);
-    if (!writeAtomic(cacheRoot_ + "/manifest.json", manifestBytes, error))
+    if (!writeAtomic(cacheRoot_ + "/manifest.json", manifestBytes, error,
+                     cancelled))
         return useCachedAfterFailure(error);
+    if (failIfRefreshCancelled(cancelled, error)) {
+        snapshot = {};
+        return false;
+    }
     pruneIndexCache(cacheRoot_, snapshot.manifest.indexSha256);
     log_msg("[metadata] cached %zu game matches from %s\n",
             snapshot.items.size(), snapshot.manifest.generatedAt.c_str());

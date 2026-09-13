@@ -668,7 +668,7 @@ void testMetadataFetchVerifiesBeforeAdoptAndFallsBackToCache() {
     bool failIndex = false;
     GameMetadataService::MetadataFetcher fetcher =
         [&](const std::string& url, size_t, std::vector<uint8_t>& bytes,
-            std::string& error) {
+            std::string& error, const std::atomic<bool>*) {
             if (url == manifestUrl) {
                 bytes.assign(manifest.begin(), manifest.end());
                 return true;
@@ -809,6 +809,99 @@ void testCatalogRefreshInFlightGuard() {
     assert(!catalogRefreshInFlight());
     assert(tryBeginCatalogRefresh());
     endCatalogRefresh();
+}
+
+void testCancelledCatalogRefreshDoesNotPublish() {
+    const std::string root = "/tmp/pipensx-cancelled-adopt-" +
+        std::to_string(static_cast<long long>(getpid()));
+    mkdir(root.c_str(), 0755);
+    {
+        CatalogService catalog(root, "");
+        GameMetadataService metadata(root, root + "/missing-index.json");
+        CatalogEntry oldEntry;
+        oldEntry.infoHash = "old";
+        oldEntry.title = "Old";
+        catalog.adopt({oldEntry});
+
+        CatalogEntry lateEntry;
+        lateEntry.infoHash = "late";
+        lateEntry.title = "Late";
+        CatalogRefreshBatch late;
+        late.cancelled = true;
+        late.catalogOk = true;
+        late.catalogEntries.push_back(std::move(lateEntry));
+        late.metadataOk = true;
+        GameMetadata lateMetadata;
+        lateMetadata.infoHash = "late";
+        lateMetadata.titleId = "0100000000000000";
+        lateMetadata.name = "Late metadata";
+        late.metadata.items.push_back(std::move(lateMetadata));
+        const auto result = adoptCatalogRefresh(
+            catalog, metadata, std::move(late));
+        assert(!result.catalogChanged && !result.metadataChanged);
+        assert(catalog.entries().size() == 1);
+        assert(catalog.entries()[0].title == "Old");
+        assert(metadata.size() == 0);
+    }
+    rmdir((root + "/catalog/metadata").c_str());
+    rmdir((root + "/catalog/images").c_str());
+    rmdir((root + "/catalog").c_str());
+    rmdir(root.c_str());
+}
+
+void testCatalogRefreshCancellationStopsBeforeHttpAndParse() {
+    const std::string root = "/tmp/pipensx-cancelled-fetch-" +
+        std::to_string(static_cast<long long>(getpid()));
+    mkdir(root.c_str(), 0755);
+    std::atomic<bool> cancelled {true};
+    CatalogService catalog(root, "");
+    std::vector<CatalogEntry> entries;
+    std::string error;
+    assert(!catalog.fetchLatest(entries, error,
+        "https://example.invalid/catalog.json", &cancelled));
+    assert(error == "Catalog refresh cancelled.");
+    assert(entries.empty());
+
+    const std::string valid =
+        "[{\"title\":\"Late\",\"magnet\":\"magnet:?xt=urn:btih:"
+        "AABBCCDDEEFF00112233445566778899AABBCCDD\"}]";
+    error.clear();
+    assert(!CatalogService::parseJson(valid, entries, error, &cancelled));
+    assert(error == "Catalog refresh cancelled.");
+    assert(entries.empty());
+    rmdir((root + "/catalog").c_str());
+    rmdir(root.c_str());
+}
+
+void testMetadataRefreshCancellationStopsBeforeDownload() {
+    const std::string root = "/tmp/pipensx-cancelled-metadata-" +
+        std::to_string(static_cast<long long>(getpid()));
+    mkdir(root.c_str(), 0755);
+    int fetches = 0;
+    GameMetadataService::MetadataFetcher fetcher =
+        [&](const std::string&, size_t, std::vector<uint8_t>&,
+            std::string&, const std::atomic<bool>*) {
+            ++fetches;
+            return false;
+        };
+    {
+        GameMetadataService metadata(
+            root, root + "/missing-index.json",
+            "https://raw.githubusercontent.com/i3sey/pipensx-metadata/"
+            "data/manifest.json",
+            fetcher);
+        std::atomic<bool> cancelled {true};
+        MetadataSnapshot snapshot;
+        std::string error;
+        assert(!metadata.fetchLatest(snapshot, error, &cancelled));
+        assert(error == "Metadata refresh cancelled.");
+        assert(fetches == 0);
+        assert(snapshot.items.empty());
+    }
+    rmdir((root + "/catalog/metadata").c_str());
+    rmdir((root + "/catalog/images").c_str());
+    rmdir((root + "/catalog").c_str());
+    rmdir(root.c_str());
 }
 
 void testCatalogRefreshStampsSurviveWithoutView() {
@@ -1836,6 +1929,9 @@ int main() {
     testMetadataLoadFallsBackWhenRuntimeCacheIsCorrupt();
     testCatalogAndMetadataRefreshAdoptIndependently();
     testCatalogRefreshInFlightGuard();
+    testCancelledCatalogRefreshDoesNotPublish();
+    testCatalogRefreshCancellationStopsBeforeHttpAndParse();
+    testMetadataRefreshCancellationStopsBeforeDownload();
     testCatalogRefreshStampsSurviveWithoutView();
     testCatalogRowPresentationSkipsProse();
     testOptionalCatalogDataMayBeAbsent();
