@@ -409,7 +409,6 @@ private:
 
     mutable std::mutex mutex_;
     mutable std::mutex ioMutex_;
-    mutable uint64_t persistEpoch_ = 0;
     std::condition_variable condition_;
     StreamBudgetArbiter arbiter_;
     std::vector<DownloadTask> tasks_;

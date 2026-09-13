@@ -1,11 +1,14 @@
 #include "../src/app/download_manager.hpp"
 
+#include <atomic>
 #include <cassert>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <string>
 #include <sys/stat.h>
+#include <thread>
 #include <unistd.h>
 #include <vector>
 
@@ -200,6 +203,80 @@ void testPauseResumeAll() {
     removeAll(root);
 }
 
+std::string bstr(const std::string& value) {
+    return std::to_string(value.size()) + ":" + value;
+}
+
+void testConcurrentSavesFinish() {
+    const std::string root = tempRoot() + "-concurrent-save";
+    removeAll(root);
+    mkdir(root.c_str(), 0755);
+    const std::string queueRoot = root + "/queue";
+    const std::string dataPath = queueRoot + "/downloads/item";
+    mkdir(queueRoot.c_str(), 0755);
+    mkdir((queueRoot + "/downloads").c_str(), 0755);
+
+    // A large persisted selection keeps concurrent writers overlapped long
+    // enough to exercise the old epoch-retry livelock deterministically.
+    const std::string selection(4 * 1024 * 1024, '\1');
+    std::string state = "d5:tasksld";
+    state += "4:data" + bstr(dataPath);
+    state += "2:id" + bstr("concurrent-save");
+    state += "8:metainfo0:";
+    state += "4:name4:item";
+    state += "9:selection" + bstr(selection);
+    state += "6:source6:debrid";
+    state += "6:status6:queued";
+    state += "5:totali1e";
+    state += "ee7:versioni7ee";
+    {
+        std::ofstream out(queueRoot + "/queue.bencode",
+                          std::ios::binary | std::ios::trunc);
+        out.write(state.data(), static_cast<std::streamsize>(state.size()));
+    }
+
+    pipensx::DownloadManager manager(queueRoot, false);
+    assert(manager.snapshot().size() == 1);
+
+    constexpr int writerCount = 4;
+    std::atomic<bool> start{false};
+    std::atomic<int> ready{0};
+    std::atomic<int> done{0};
+    std::atomic<bool> allSaved{true};
+    std::vector<std::thread> writers;
+    for (int i = 0; i < writerCount; ++i) {
+        writers.emplace_back([&] {
+            ready.fetch_add(1);
+            while (!start.load())
+                std::this_thread::yield();
+            std::string error;
+            if (!manager.save(error))
+                allSaved.store(false);
+            done.fetch_add(1);
+        });
+    }
+    while (ready.load() != writerCount)
+        std::this_thread::yield();
+    start.store(true);
+
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::seconds(10);
+    while (done.load() != writerCount &&
+           std::chrono::steady_clock::now() < deadline)
+        std::this_thread::yield();
+    assert(done.load() == writerCount);
+    for (std::thread& writer : writers)
+        writer.join();
+    assert(allSaved.load());
+
+    pipensx::DownloadManager reloaded(queueRoot, false);
+    const auto tasks = reloaded.snapshot();
+    assert(tasks.size() == 1);
+    assert(tasks[0].fileSelection ==
+           std::vector<uint8_t>(selection.begin(), selection.end()));
+    removeAll(root);
+}
+
 void markFirstQueuedCompleted(const std::string& queueRoot) {
     const std::string path = queueRoot + "/queue.bencode";
     std::ifstream in(path, std::ios::binary);
@@ -276,6 +353,7 @@ int main() {
     testSummarizeQueueNoThroughputNoEta();
     testMoveTask();
     testPauseResumeAll();
+    testConcurrentSavesFinish();
     testClearCompleted();
     std::puts("queue controls tests passed");
     return 0;

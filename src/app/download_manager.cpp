@@ -1472,21 +1472,20 @@ bool DownloadManager::writeStateFile(const std::string& payload,
 
 bool DownloadManager::persistState(std::unique_lock<std::mutex>& lock,
                                    std::string& error) const {
-    while (true) {
-        const uint64_t seq = ++persistEpoch_;
-        const std::string payload = serializeStateLocked();
-        lock.unlock();
-        bool ok;
-        {
-            std::lock_guard<std::mutex> io(ioMutex_);
-            ok = writeStateFile(payload, error);
-        }
-        lock.lock();
-        if (!ok)
-            return false;
-        if (seq == persistEpoch_)
-            return true;
-    }
+    // Never wait for the state writer while holding mutex_: UI snapshots and
+    // transfer progress must remain available while an SD-card write is in
+    // flight.  Once this caller owns ioMutex_, reacquire mutex_ and serialize
+    // the latest state.  Taking the snapshot before ioMutex_ allowed two
+    // persist callers to invalidate and retry each other forever.
+    lock.unlock();
+    std::unique_lock<std::mutex> io(ioMutex_);
+    lock.lock();
+    const std::string payload = serializeStateLocked();
+    lock.unlock();
+    const bool ok = writeStateFile(payload, error);
+    io.unlock();
+    lock.lock();
+    return ok;
 }
 
 void DownloadManager::persistState(std::unique_lock<std::mutex>& lock) const {
