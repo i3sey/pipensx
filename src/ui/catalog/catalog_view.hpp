@@ -241,8 +241,7 @@ public:
           openGames_(std::move(openGames)),
           onSourcesRefreshed_(std::move(onSourcesRefreshed)), section_(section),
           freshnessBadge_(new CatalogFreshnessBadge()),
-          alive_(std::make_shared<std::atomic<bool>>(true)),
-          cancelled_(std::make_shared<std::atomic<bool>>(false)) {
+          alive_(std::make_shared<std::atomic<bool>>(true)) {
         recycler_ = new brls::RecyclerFrame();
         recycler_->setGrow(1);
         recycler_->setPadding(6, 28, 6, 28);
@@ -343,7 +342,7 @@ public:
         recyclerHost_ = recyclerHost(recycler_);
         addView(recyclerHost_);
         if (catalogRefreshInFlight())
-            setBusy(true);
+            setRefreshInFlight(true);
         rebuildEntries();
         updateFreshnessLabel();
 
@@ -357,7 +356,7 @@ public:
                 scheduleStorageRefresh();
             return true;
         }, /*hidden=*/false);
-        registerYAction(false);
+        registerSearchAction();
         if (favorites_) {
             registerAction(tr("pipensx/catalog/action_favorite"),
                            brls::BUTTON_RT, [this](brls::View*) {
@@ -393,7 +392,6 @@ public:
 
     ~CatalogView() override {
         alive_->store(false);
-        cancelled_->store(true);
         timer_.stop();
         freshnessBadge_->setBusy(false);
     }
@@ -419,8 +417,6 @@ public:
     void rebuildEntriesForTest() { rebuildEntries(); }
 
     void openSearchKeyboard() {
-        if (busy_)
-            return;
         brls::Application::getImeManager()->openForText(
             [this](std::string text) {
                 query_ = std::move(text);
@@ -432,7 +428,7 @@ public:
 
     void onEntrySelected(int row) {
         const CatalogEntry* picked = dataSource_->entryAt(row);
-        if (!picked || busy_)
+        if (!picked)
             return;
         CatalogEntry entry = *picked;
         auto it = catalogFailures_.find(lowerAscii(entry.infoHash));
@@ -512,7 +508,7 @@ private:
     // ZR on the grid: star/unstar whatever card the focus is on. Resolved the
     // same way rebuildEntries() resolves focus — the hero banner is a card too.
     void toggleFocusedFavorite() {
-        if (!favorites_ || busy_)
+        if (!favorites_)
             return;
         brls::View* focus = brls::Application::getCurrentFocus();
         std::string hash;
@@ -556,7 +552,7 @@ private:
         rebuildEntries();
     }
 
-    void rebuildEntries() {
+    void rebuildEntries(bool preserveViewport = false) {
         // reloadData() recycles every cell, so remember where the focus was
         // (F2 "done when": focus survives reloadData) and restore it after.
         brls::View* focus = brls::Application::getCurrentFocus();
@@ -574,19 +570,26 @@ private:
         // (e.g. deploy offer) is on top of the activity stack.
         if (activityStackHasOverlay() && !ownsFocus) {
             pendingRebuild_ = true;
+            pendingPreserveViewport_ = pendingPreserveViewport_ ||
+                                       preserveViewport;
             return;
         }
+        preserveViewport = preserveViewport || pendingPreserveViewport_;
         pendingRebuild_ = false;
+        pendingPreserveViewport_ = false;
         const uint64_t startedUs = telemetry_enabled() ? now_us() : 0;
 
         std::string focusHash;
         int focusShelf = -1;
+        int focusEntryIndex = -1;
         if (focusInRecycler) {
             if (auto* card = dynamic_cast<GameCard*>(focus)) {
                 focusHash = card->infoHash();
                 focusShelf = card->shelfRow();
+                focusEntryIndex = card->entryIndex();
             }
         }
+        const float previousOffset = recycler_->getContentOffsetY();
 
         // Info-hash (lower-case hex) -> status for anything already managed,
         // so rows can be badged. Task ids are lower-case hex; catalog info
@@ -748,7 +751,7 @@ private:
         const uint64_t reloadStartedUs = startedUs ? now_us() : 0;
         if (structureChanged) {
             recycler_->reloadData();
-            if (!ownsFocus)
+            if (!ownsFocus && !preserveViewport)
                 recycler_->setContentOffsetY(0, false);
         } else {
             for (auto* cell : visibleCells<brls::RecyclerCell>(recycler_))
@@ -791,6 +794,23 @@ private:
                                            : brls::Visibility::VISIBLE);
         if (focusInRecycler && structureChanged)
             restoreFocus(focusHash, focusShelf);
+        if (preserveViewport && structureChanged) {
+            float restoredOffset = previousOffset;
+            if (focusEntryIndex >= 0 && !focusHash.empty()) {
+                for (size_t i = 0; i < dataSource_->entryCount(); ++i) {
+                    const CatalogEntry* entry =
+                        dataSource_->entryAt(static_cast<int>(i));
+                    if (!entry || entry->infoHash != focusHash)
+                        continue;
+                    const int oldRow = focusEntryIndex / grid::kColumns;
+                    const int newRow = static_cast<int>(i) / grid::kColumns;
+                    restoredOffset +=
+                        static_cast<float>(newRow - oldRow) * grid::kRowHeight;
+                    break;
+                }
+            }
+            recycler_->setContentOffsetY(restoredOffset, false);
+        }
 
         countText_ = query_.empty()
             ? tr("pipensx/catalog/count_releases", withThousands(count))
@@ -851,8 +871,8 @@ private:
     // today, orange = in flight. The Kind decision lives in
     // resolveCatalogFreshness (unit-tested); this only renders it.
     void updateFreshnessLabel() {
-        freshnessBadge_->update(busy_, catalogRefreshInFlight(), settings_,
-                                catalog_);
+        freshnessBadge_->update(refreshInFlight_, catalogRefreshInFlight(),
+                                settings_, catalog_);
     }
 
     static void styleChip(brls::Button* chip, bool active) {
@@ -891,8 +911,6 @@ private:
     // flip across, which would silently re-order a list the user did not ask
     // to reverse.
     void setSort(SortMode mode) {
-        if (busy_)
-            return;
         if (sort_ == mode) {
             sortReversed_ = !sortReversed_;
         } else {
@@ -927,8 +945,6 @@ private:
     }
 
     void openSortSheet() {
-        if (busy_)
-            return;
         const std::vector<SortMode> modes = {
             SortMode::Latest, SortMode::Popular, SortMode::Alphabetical,
             SortMode::Largest};
@@ -1089,7 +1105,7 @@ private:
     }
 
     void openGenreSheet() {
-        if (busy_ || genreSheet_)
+        if (genreSheet_)
             return;
         genreSheet_ = new brls::Box();
         genreSheet_->setPositionType(brls::PositionType::ABSOLUTE);
@@ -1204,8 +1220,6 @@ private:
     }
 
     void openPlayerFilterMenu() {
-        if (busy_)
-            return;
         const std::vector<PlayerFilter> choices = playerFilterChoices();
         std::vector<std::string> labels;
         labels.reserve(choices.size());
@@ -1229,7 +1243,7 @@ private:
     }
 
     void setPlayerFilter(PlayerFilter filter) {
-        if (busy_ || playerFilter_ == filter)
+        if (playerFilter_ == filter)
             return;
         playerFilter_ = filter;
         rebuildEntries();
@@ -1285,33 +1299,20 @@ private:
         restoreFocus(hash, shelfRow);
     }
 
-    // Y searches while idle and cancels during a refresh. The search half is
-    // hidden to keep the bottom bar within its width (see the registration
-    // block in the constructor), but the cancel half has to be visible or a
-    // refresh looks unstoppable — and Action::hidden is fixed at construction,
-    // so the swap re-registers. registerAction replaces the entry for a button
-    // it already holds, which is what makes this safe to call repeatedly.
-    void registerYAction(bool busy) {
-        registerAction(busy ? tr("pipensx/common/stop")
-                            : tr("pipensx/common/search"),
-                       brls::BUTTON_Y, [this](brls::View*) {
-            if (busy_)
-                cancelled_->store(true);
-            else
-                openSearchKeyboard();
+    // Refreshing only replaces the snapshot once the fetch succeeds. Keep the
+    // search shortcut bound while the old snapshot remains on screen.
+    void registerSearchAction() {
+        registerAction(tr("pipensx/common/search"), brls::BUTTON_Y,
+                       [this](brls::View*) {
+            openSearchKeyboard();
             return true;
         }, /*hidden=*/false);
     }
 
-    void setBusy(bool busy) {
-        busy_ = busy;
-        registerYAction(busy);
-        freshnessBadge_->setBusy(busy);
+    void setRefreshInFlight(bool inFlight) {
+        refreshInFlight_ = inFlight;
+        freshnessBadge_->setBusy(inFlight);
         updateFreshnessLabel();
-        // Neither registerAction nor updateActionHint fires this, so without it
-        // the bar keeps the stale hint until some unrelated focus change
-        // refills it.
-        brls::Application::getGlobalHintsUpdateEvent()->fire();
     }
 
     static void hashTasks(const std::vector<DownloadTask>& tasks,
@@ -1381,25 +1382,23 @@ private:
     void refreshLiveState() {
         scheduleStorageRefresh();
         if (pendingRebuild_ && !activityStackHasOverlay()) {
-            rebuildEntries();
+            rebuildEntries(pendingPreserveViewport_);
             return;
         }
         const bool inFlight = catalogRefreshInFlight();
-        if (inFlight && !busy_)
-            setBusy(true);
-        else if (!inFlight && busy_)
-            setBusy(false);
+        if (inFlight && !refreshInFlight_)
+            setRefreshInFlight(true);
+        else if (!inFlight && refreshInFlight_)
+            setRefreshInFlight(false);
         if (catalog_ && catalog_->sharedEntries() != observedCatalog_) {
-            rebuildEntries();
+            rebuildEntries(true);
             return;
         }
         if (metadata_ &&
             metadata_->generation() != observedMetadataGeneration_) {
-            rebuildEntries();
+            rebuildEntries(true);
             return;
         }
-        if (busy_)
-            return;
         bool settingsChanged = false;
         if (settings_ && settings_->generation() !=
                              observedSettingsGeneration_) {
@@ -1576,15 +1575,15 @@ private:
         fetchMetadata = fetchMetadata && metadata_;
         if (!fetchCatalog && !fetchMetadata)
             return;
-        if (busy_)
+        if (refreshInFlight_)
             return;
         if (!tryBeginCatalogRefresh()) {
             // Another tab/settings already owns the fetch. Follow it so the
             // badge stays orange instead of flipping to red "never/stale".
-            setBusy(true);
+            setRefreshInFlight(true);
             return;
         }
-        setBusy(true);
+        setRefreshInFlight(true);
         const std::string updating = fetchCatalog && fetchMetadata
             ? tr("pipensx/catalog/updating_both")
             : fetchCatalog ? tr("pipensx/catalog/updating_catalog")
@@ -1653,7 +1652,7 @@ private:
                 endCatalogRefresh();
                 if (!alive->load())
                     return;
-                setBusy(false);
+                setRefreshInFlight(false);
                 if (fetchCatalog && !catalogOk) {
                     diagnostic_error("catalog", "refresh", "error=%s",
                                      catalogError.c_str());
@@ -1668,7 +1667,7 @@ private:
                 if (metadataOk)
                     updatePlayerChipVisibility();
                 if (catalogOk || metadataOk)
-                    rebuildEntries();
+                    rebuildEntries(true);
                 else
                     updateFreshnessLabel();
                 observedSettingsGeneration_ =
@@ -1715,7 +1714,6 @@ private:
     std::vector<std::string> genreSheetGenres_;
     EmptyStateView* emptyState_ = nullptr;
     std::shared_ptr<std::atomic<bool>> alive_;
-    std::shared_ptr<std::atomic<bool>> cancelled_;
     std::shared_ptr<int> focusColumn_ = std::make_shared<int>(0);
     // O12: where to put the focus back when the game page closes.
     std::string returnFocusHash_;
@@ -1729,8 +1727,11 @@ private:
     // Session-only, like the view filters: a relaunch comes back to the
     // catalog's own idea of order.
     bool sortReversed_ = false;
-    bool busy_ = false;
+    // This state gates only refreshSources(); the published catalogue snapshot
+    // remains fully interactive while its replacement is fetched.
+    bool refreshInFlight_ = false;
     bool pendingRebuild_ = false;
+    bool pendingPreserveViewport_ = false;
     // Session-only view filters: deliberately not persisted, so a relaunch
     // always comes back to the full catalog.
     bool favoritesOnly_ = false;
