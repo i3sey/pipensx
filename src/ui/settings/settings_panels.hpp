@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <ctime>
+#include <exception>
 #include <functional>
 #include <memory>
 #include <string>
@@ -25,6 +26,7 @@
 #include "app/storage_manager.hpp"
 #include "app/update_service.hpp"
 #include "app/web_server.hpp"
+#include "install/system_cleanup.hpp"
 #include "ui/common/storage_meter.hpp"
 #include "ui/common/ui_helpers.hpp"
 #include "ui/common/web_qr.hpp"
@@ -1272,6 +1274,16 @@ public:
                 confirmClearOrphanDownloads();
             });
         content_->addView(clearOrphanDownloads_);
+        clearSystemInstall_ = actionCell(
+            tr("pipensx/storage/clear_system_install"), "", [this] {
+                confirmClearSystemInstall();
+            });
+        content_->addView(clearSystemInstall_);
+        clearUnusedTickets_ = actionCell(
+            tr("pipensx/storage/clear_unused_tickets"), "", [this] {
+                confirmClearUnusedTickets();
+            });
+        content_->addView(clearUnusedTickets_);
         clearTemporary_ = actionCell(
             tr("pipensx/storage/clear_temporary"), "", [this] {
                 confirmClearTemporary();
@@ -1298,6 +1310,7 @@ private:
         uint64_t completedBytes = 0;
         uint64_t orphanBytes = 0;
         uint64_t orphanDownloadBytes = 0;
+        install::SystemCleanupSnapshot systemInstall;
         bool hasFinished = false;
     };
 
@@ -1327,6 +1340,13 @@ private:
             pipensx::orphanTorrentBytes(manager->torrentRoot(), active);
         payload.orphanDownloadBytes = pipensx::orphanDownloadBytes(
             manager->downloadRoot(), activeData);
+        std::string systemError;
+        if (!install::scanSystemInstallGarbage(
+                manager->rootPath(), active, payload.systemInstall,
+                systemError)) {
+            diagnostic_error("storage", "system_scan", "error=%s",
+                             systemError.c_str());
+        }
         return payload;
     }
 
@@ -1335,6 +1355,7 @@ private:
         completedBytes_ = payload.completedBytes;
         orphanBytes_ = payload.orphanBytes;
         orphanDownloadBytes_ = payload.orphanDownloadBytes;
+        systemInstall_ = payload.systemInstall;
         hasFinished_ = payload.hasFinished;
 
         if (meter_) {
@@ -1356,16 +1377,20 @@ private:
         if (clearOrphanDownloads_)
             clearOrphanDownloads_->setDetailText(
                 recoverableDetail(orphanDownloadBytes_));
+        if (clearSystemInstall_)
+            clearSystemInstall_->setDetailText(systemInstallDetail());
+        if (clearUnusedTickets_)
+            clearUnusedTickets_->setDetailText(unusedTicketsDetail());
         if (clearTemporary_)
             clearTemporary_->setDetailText(
                 recoverableDetail(snapshot_.temporaryBytes));
 
         if (canFree_) {
             uint64_t total = orphanBytes_;
-            const uint64_t parts[4] = {
+            const uint64_t parts[5] = {
                 hasFinished_ ? completedBytes_ : 0,
                 snapshot_.imageCacheBytes, snapshot_.temporaryBytes,
-                orphanDownloadBytes_};
+                orphanDownloadBytes_, systemInstall_.knownRecoverableBytes()};
             for (uint64_t part : parts)
                 total = part > UINT64_MAX - total ? UINT64_MAX
                                                   : total + part;
@@ -1384,7 +1409,8 @@ private:
             loading ? tr("pipensx/settings/checking") : std::string();
         brls::DetailCell* actions[] = {
             clearCompleted_, clearImages_, clearTorrents_,
-            clearOrphanDownloads_, clearTemporary_};
+            clearOrphanDownloads_, clearSystemInstall_, clearUnusedTickets_,
+            clearTemporary_};
         for (brls::DetailCell* action : actions) {
             if (!action)
                 continue;
@@ -1480,6 +1506,25 @@ private:
                   formatBytes(completedBytes_));
     }
 
+    std::string systemInstallDetail() {
+        if (!systemInstall_.available)
+            return tr("pipensx/storage/system_cleanup_unavailable");
+        if (systemInstall_.installLeftoverItems() == 0)
+            return tr("pipensx/storage/nothing_to_recover");
+        return tr("pipensx/storage/system_cleanup_detail",
+                  systemInstall_.installLeftoverItems(),
+                  formatBytes(systemInstall_.knownRecoverableBytes()));
+    }
+
+    std::string unusedTicketsDetail() {
+        if (!systemInstall_.available || !systemInstall_.ticketsAvailable)
+            return tr("pipensx/storage/system_cleanup_unavailable");
+        if (systemInstall_.unusedTicketCount == 0)
+            return tr("pipensx/storage/nothing_to_recover");
+        return tr("pipensx/storage/unused_tickets_detail",
+                  systemInstall_.unusedTicketCount);
+    }
+
     void confirmClearCompleted() {
         if (refreshInFlight_)
             return;
@@ -1510,6 +1555,60 @@ private:
             return;
         confirmAction(orphanDownloadBytes_,
                       [this] { clearOrphanDownloads(); });
+    }
+
+    void confirmClearSystemInstall() {
+        if (refreshInFlight_)
+            return;
+        if (manager_->hasActiveTransfer()) {
+            brls::Application::notify(
+                tr("pipensx/storage/busy_system_cleanup"));
+            return;
+        }
+        if (!systemInstall_.available) {
+            brls::Application::notify(
+                tr("pipensx/storage/system_cleanup_unavailable"));
+            return;
+        }
+        if (systemInstall_.installLeftoverItems() == 0) {
+            brls::Application::notify(
+                tr("pipensx/storage/nothing_to_recover"));
+            return;
+        }
+        confirm(tr("pipensx/storage/system_cleanup_confirm",
+                   systemInstall_.installLeftoverItems(),
+                   formatBytes(systemInstall_.knownRecoverableBytes())),
+                [this] {
+                    clearSystemInstall(install::SystemCleanupOptions {},
+                                       false);
+                });
+    }
+
+    void confirmClearUnusedTickets() {
+        if (refreshInFlight_)
+            return;
+        if (manager_->hasActiveTransfer()) {
+            brls::Application::notify(
+                tr("pipensx/storage/busy_system_cleanup"));
+            return;
+        }
+        if (!systemInstall_.available || !systemInstall_.ticketsAvailable) {
+            brls::Application::notify(
+                tr("pipensx/storage/system_cleanup_unavailable"));
+            return;
+        }
+        if (systemInstall_.unusedTicketCount == 0) {
+            brls::Application::notify(
+                tr("pipensx/storage/nothing_to_recover"));
+            return;
+        }
+        confirm(tr("pipensx/storage/unused_tickets_confirm",
+                   systemInstall_.unusedTicketCount),
+                [this] {
+                    clearSystemInstall(
+                        install::SystemCleanupOptions::unusedTicketsOnly(),
+                        true);
+                });
     }
 
     void confirmClearTemporary() {
@@ -1601,6 +1700,60 @@ private:
         refresh();
     }
 
+    void clearSystemInstall(const install::SystemCleanupOptions& options,
+                            bool ticketsOnly) {
+        std::string gateError;
+        if (!manager_->beginSystemCleanup(gateError)) {
+            brls::Application::notify(
+                tr("pipensx/storage/busy_system_cleanup"));
+            return;
+        }
+        std::vector<std::string> liveTaskIds;
+        for (const DownloadTask& task : manager_->snapshot())
+            liveTaskIds.push_back(task.id);
+        refreshInFlight_ = true;
+        setLoading(true);
+        auto alive = alive_;
+        DownloadManager* manager = manager_;
+        brls::async([this, alive, manager, options, ticketsOnly,
+                     liveTaskIds = std::move(liveTaskIds)] {
+            install::SystemCleanupSnapshot removed;
+            std::string error;
+            bool ok = false;
+            try {
+                ok = install::clearSystemInstallGarbage(
+                    manager->rootPath(), liveTaskIds, options, removed,
+                    error);
+            } catch (const std::exception& e) {
+                error = std::string("System cleanup failed: ") + e.what();
+            } catch (...) {
+                error = "System cleanup failed unexpectedly.";
+            }
+            manager->endSystemCleanup();
+            brls::sync([this, alive, ok, removed, error, ticketsOnly] {
+                if (!alive->load())
+                    return;
+                refreshInFlight_ = false;
+                if (!ok) {
+                    diagnostic_error("storage", "system_cleanup", "error=%s",
+                                     error.c_str());
+                    brls::Application::notify(error);
+                } else {
+                    if (ticketsOnly)
+                        brls::Application::notify(tr(
+                            "pipensx/storage/unused_tickets_done",
+                            removed.unusedTicketCount));
+                    else
+                        brls::Application::notify(tr(
+                            "pipensx/storage/system_cleanup_done",
+                            removed.installLeftoverItems(),
+                            formatBytes(removed.knownRecoverableBytes())));
+                }
+                refresh();
+            });
+        });
+    }
+
     void clearTemporary() {
         if (manager_->hasActiveTransfer()) {
             brls::Application::notify(tr("pipensx/storage/busy_transfer"));
@@ -1627,12 +1780,15 @@ private:
     brls::DetailCell* clearImages_ = nullptr;
     brls::DetailCell* clearTorrents_ = nullptr;
     brls::DetailCell* clearOrphanDownloads_ = nullptr;
+    brls::DetailCell* clearSystemInstall_ = nullptr;
+    brls::DetailCell* clearUnusedTickets_ = nullptr;
     brls::DetailCell* clearTemporary_ = nullptr;
     brls::Label* canFree_ = nullptr;
     StorageBreakdown snapshot_;
     uint64_t completedBytes_ = 0;
     uint64_t orphanBytes_ = 0;
     uint64_t orphanDownloadBytes_ = 0;
+    install::SystemCleanupSnapshot systemInstall_;
     bool hasFinished_ = false;
     bool refreshInFlight_ = false;
     bool refreshPending_ = false;

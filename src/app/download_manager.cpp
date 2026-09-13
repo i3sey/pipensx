@@ -13,6 +13,7 @@
 #include "port_selection.hpp"
 #include "../install/install_backend.hpp"
 #include "../install/install_journal.hpp"
+#include "../install/system_cleanup.hpp"
 #include "../install/package_stream.hpp"
 #include "../platform/storage.h"
 
@@ -1279,6 +1280,10 @@ std::optional<DownloadManager::ExternalDeployLease>
 DownloadManager::beginExternalDeploy(const std::string& taskId,
                                      std::string& error) {
     std::unique_lock<std::mutex> lock(mutex_);
+    if (systemCleanupActive_) {
+        error = "System installation storage is being cleaned.";
+        return std::nullopt;
+    }
     if (stopping_) {
         error = "The download manager is shutting down.";
         return std::nullopt;
@@ -1385,6 +1390,48 @@ bool DownloadManager::hasActiveTransfer() const {
         }
     }
     return false;
+}
+
+bool DownloadManager::beginSystemCleanup(std::string& error) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    if (systemCleanupActive_) {
+        error = "System cleanup is already running.";
+        return false;
+    }
+    if (!runners_.empty() || !externalDeployTaskId_.empty()) {
+        error = "Wait for active transfers to finish before system cleanup.";
+        return false;
+    }
+    for (const DownloadTask& task : tasks_) {
+        switch (task.status) {
+            case DownloadStatus::Queued:
+            case DownloadStatus::Checking:
+            case DownloadStatus::Fetching:
+            case DownloadStatus::Downloading:
+            case DownloadStatus::Installing:
+            case DownloadStatus::Committing:
+            case DownloadStatus::Verifying:
+            case DownloadStatus::Removing:
+                error = "Pause queued and active transfers before system cleanup.";
+                return false;
+            case DownloadStatus::Paused:
+            case DownloadStatus::Completed:
+            case DownloadStatus::Installed:
+            case DownloadStatus::Error:
+                break;
+        }
+    }
+    systemCleanupActive_ = true;
+    error.clear();
+    return true;
+}
+
+void DownloadManager::endSystemCleanup() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    if (!systemCleanupActive_)
+        return;
+    systemCleanupActive_ = false;
+    condition_.notify_all();
 }
 
 bool DownloadManager::save(std::string& error) const {
@@ -1771,6 +1818,10 @@ void DownloadManager::endExternalDeploy(const std::string& taskId) {
 bool DownloadManager::removeLocked(std::unique_lock<std::mutex>& lock,
                                    const std::string& id, bool deleteData,
                                    std::string& error, bool persist) {
+    if (systemCleanupActive_) {
+        error = "System installation storage is being cleaned.";
+        return false;
+    }
     for (auto it = tasks_.begin(); it != tasks_.end(); ++it) {
         if (it->id != id)
             continue;
@@ -1778,6 +1829,34 @@ bool DownloadManager::removeLocked(std::unique_lock<std::mutex>& lock,
              !isManagedChild(torrentRoot_, it->metainfoPath)) ||
             !isManagedChild(downloadRoot_, it->dataPath)) {
             error = "Refusing to remove a path outside application storage.";
+            it->status = DownloadStatus::Error;
+            it->error = error;
+            persistState(lock);
+            return false;
+        }
+        // A recoverable interrupted install owns NCM placeholders through its
+        // journal. Deleting the journal first loses the only IDs capable of
+        // rolling those bytes back; that was the system-storage leak cleaned
+        // later by DBI. Reattach and roll back before forgetting the task.
+        const std::string savedTaskId = it->id;
+        lock.unlock();
+        std::string installCleanupError;
+        const bool installCleanupOk = install::discardSavedInstall(
+            rootPath_, savedTaskId, installCleanupError);
+        lock.lock();
+        it = tasks_.end();
+        for (auto again = tasks_.begin(); again != tasks_.end(); ++again) {
+            if (again->id == id) {
+                it = again;
+                break;
+            }
+        }
+        if (it == tasks_.end())
+            return true;
+        if (!installCleanupOk) {
+            error = installCleanupError.empty()
+                ? "Unable to clean the interrupted install state."
+                : installCleanupError;
             it->status = DownloadStatus::Error;
             it->error = error;
             persistState(lock);
@@ -1892,6 +1971,8 @@ QueueSummary summarizeQueue(const std::vector<DownloadTask>& tasks,
 }
 
 DownloadTask* DownloadManager::claimableLocked() {
+    if (systemCleanupActive_)
+        return nullptr;
     for (DownloadTask& task : tasks_) {
         if (!taskClaimableUnderInstallToken(
                 task, installTokenHeld_ || !externalDeployTaskId_.empty()))

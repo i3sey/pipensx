@@ -82,6 +82,7 @@ MANAGER_TEST_OBJS = \
 		$(BUILD_DIR)/src/app/torbox_provider.o $(BUILD_DIR)/src/app/torrserver_provider.o \
 		$(BUILD_DIR)/src/app/realdebrid_client.o $(BUILD_DIR)/src/app/realdebrid_provider.o \
 		$(BUILD_DIR)/src/install/package_stream.o $(BUILD_DIR)/src/install/install_journal.o \
+		$(BUILD_DIR)/src/install/system_cleanup.o \
 		$(BUILD_DIR)/src/install/install_backend_pc.o \
 		$(filter-out $(BUILD_DIR)/src/main_pc.o,$(OBJS)) $(UTP_OBJS)
 
@@ -279,6 +280,7 @@ $(BUILD_DIR)/tests/test_web_server: tests/test_web_server.cpp \
 		$(BUILD_DIR)/src/app/torbox_provider.o $(BUILD_DIR)/src/app/torrserver_provider.o \
 		$(BUILD_DIR)/src/app/realdebrid_client.o $(BUILD_DIR)/src/app/realdebrid_provider.o \
 		$(BUILD_DIR)/src/install/package_stream.o $(BUILD_DIR)/src/install/install_journal.o \
+		$(BUILD_DIR)/src/install/system_cleanup.o \
 		$(BUILD_DIR)/src/install/install_backend_pc.o \
 		$(filter-out $(BUILD_DIR)/src/main_pc.o,$(OBJS)) $(UTP_OBJS)
 	@mkdir -p $(dir $@)
@@ -390,6 +392,7 @@ $(BUILD_DIR)/tests/test_batch_install: tests/test_batch_install.cpp \
 		$(BUILD_DIR)/src/app/torrserver_provider.o \
 		$(BUILD_DIR)/src/app/realdebrid_client.o $(BUILD_DIR)/src/app/realdebrid_provider.o \
 		$(BUILD_DIR)/src/install/package_stream.o $(BUILD_DIR)/src/install/install_journal.o \
+		$(BUILD_DIR)/src/install/system_cleanup.o \
 		$(BUILD_DIR)/src/install/install_backend_pc.o \
 		$(filter-out $(BUILD_DIR)/src/main_pc.o,$(OBJS)) $(UTP_OBJS)
 	@mkdir -p $(dir $@)
@@ -418,6 +421,14 @@ $(BUILD_DIR)/tests/test_install_pacer: tests/test_install_pacer.cpp \
 
 $(BUILD_DIR)/tests/test_install_journal: tests/test_install_journal.cpp \
 		$(BUILD_DIR)/src/install/install_journal.o $(BUILD_DIR)/src/core/bencode.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
+
+$(BUILD_DIR)/tests/test_system_cleanup: tests/test_system_cleanup.cpp \
+		$(BUILD_DIR)/src/install/system_cleanup.o \
+		$(BUILD_DIR)/src/install/install_journal.o \
+		$(BUILD_DIR)/src/install/install_backend_pc.o \
+		$(BUILD_DIR)/src/core/bencode.o
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
 
@@ -550,6 +561,7 @@ $(BUILD_DIR)/tests/test_switch_deploy: tests/test_switch_deploy.cpp \
 		$(BUILD_DIR)/src/app/torbox_provider.o $(BUILD_DIR)/src/app/torrserver_provider.o \
 		$(BUILD_DIR)/src/app/realdebrid_client.o $(BUILD_DIR)/src/app/realdebrid_provider.o \
 		$(BUILD_DIR)/src/install/package_stream.o $(BUILD_DIR)/src/install/install_journal.o \
+		$(BUILD_DIR)/src/install/system_cleanup.o \
 		$(BUILD_DIR)/src/install/install_backend_pc.o \
 		$(filter-out $(BUILD_DIR)/src/main_pc.o,$(OBJS)) $(UTP_OBJS)
 	@mkdir -p $(dir $@)
@@ -613,6 +625,7 @@ $(BUILD_DIR)/tools/webserver: tools/web_server_main.cpp \
 		$(BUILD_DIR)/src/app/torbox_provider.o $(BUILD_DIR)/src/app/torrserver_provider.o \
 		$(BUILD_DIR)/src/app/realdebrid_client.o $(BUILD_DIR)/src/app/realdebrid_provider.o \
 		$(BUILD_DIR)/src/install/package_stream.o $(BUILD_DIR)/src/install/install_journal.o \
+		$(BUILD_DIR)/src/install/system_cleanup.o \
 		$(BUILD_DIR)/src/install/install_backend_pc.o \
 		$(filter-out $(BUILD_DIR)/src/main_pc.o,$(OBJS)) $(UTP_OBJS)
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) \

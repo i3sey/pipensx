@@ -394,6 +394,37 @@ void testClearCompleted() {
     removeAll(root);
 }
 
+void testSystemCleanupGate() {
+    const std::string root = tempRoot() + "-cleanup-gate";
+    removeAll(root);
+    mkdir(root.c_str(), 0755);
+    const std::string source = makeTorrent(root, "a.bin", "aaaa");
+    pipensx::DownloadManager manager(root + "/queue", false);
+    std::string error;
+
+    assert(manager.beginSystemCleanup(error));
+    error.clear();
+    assert(!manager.beginSystemCleanup(error));
+    assert(!error.empty());
+    manager.endSystemCleanup();
+
+    std::string id;
+    assert(manager.importTorrent(source, pipensx::TransferMode::DownloadOnly,
+                                 id, error));
+    error.clear();
+    assert(!manager.beginSystemCleanup(error));
+    assert(!error.empty());
+
+    assert(manager.pause(id));
+    error.clear();
+    assert(manager.beginSystemCleanup(error));
+    error.clear();
+    assert(!manager.remove(id, false, error));
+    assert(!error.empty());
+    manager.endSystemCleanup();
+    removeAll(root);
+}
+
 } // namespace
 
 int main() {
@@ -405,6 +436,7 @@ int main() {
     testAsyncSaveFailureIsReportedAndLatestStateRecovers();
     testConcurrentSavesFinish();
     testClearCompleted();
+    testSystemCleanupGate();
     std::puts("queue controls tests passed");
     return 0;
 }

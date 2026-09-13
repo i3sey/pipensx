@@ -171,6 +171,7 @@ set(APP_SERVICE_SOURCES
     src/app/realdebrid_provider.cpp
     src/app/debrid_transfer.cpp
     src/install/install_journal.cpp
+    src/install/system_cleanup.cpp
     src/install/package_stream.cpp
 )
 

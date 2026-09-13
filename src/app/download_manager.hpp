@@ -300,6 +300,11 @@ public:
     }
 
     bool hasActiveTransfer() const;
+    // Prevent queued tasks from entering NCM while system installation
+    // storage is being scanned or cleaned. New imports can still queue and
+    // are claimed after endSystemCleanup().
+    bool beginSystemCleanup(std::string& error);
+    void endSystemCleanup();
     // Existence check without the full deep copy snapshot() makes.
     bool hasTask(const std::string& id) const;
     std::vector<DownloadTask> snapshot() const;
@@ -431,6 +436,7 @@ private:
     // Single install token: only one stream-install task may write to NCM
     // at a time; download-only tasks pass token-blocked stream tasks.
     bool installTokenHeld_ = false;   // guarded by mutex_
+    bool systemCleanupActive_ = false; // guarded by mutex_
     std::string externalDeployTaskId_; // guarded by mutex_
     uint32_t slotBitmap_ = 0;         // guarded by mutex_
     std::atomic<bool> stopping_{false};
