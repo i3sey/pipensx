@@ -199,6 +199,55 @@ void testPauseResumeAll() {
         tasks = manager.snapshot();
         assert(tasks[0].status == DownloadStatus::Queued);
         assert(tasks[1].status == DownloadStatus::Queued);
+        // Leave several generations pending; destruction is the durability
+        // barrier and must flush the newest state, not an intermediate one.
+        manager.pauseAll();
+    }
+    {
+        pipensx::DownloadManager reloaded(queueRoot, false);
+        const auto tasks = reloaded.snapshot();
+        assert(tasks.size() == 2);
+        assert(tasks[0].status == DownloadStatus::Paused);
+        assert(tasks[1].status == DownloadStatus::Paused);
+    }
+    removeAll(root);
+}
+
+void testAsyncSaveFailureIsReportedAndLatestStateRecovers() {
+    const std::string root = tempRoot() + "-async-save-error";
+    removeAll(root);
+    mkdir(root.c_str(), 0755);
+    const std::string source = makeTorrent(root, "a.bin", "aaaa");
+    const std::string queueRoot = root + "/queue";
+    {
+        pipensx::DownloadManager manager(queueRoot, false);
+        std::string error;
+        std::string id;
+        assert(manager.importTorrent(source,
+                                     pipensx::TransferMode::DownloadOnly,
+                                     id, error));
+
+        // A directory at the temporary-file path makes the background open
+        // fail without changing the last good queue.bencode.
+        assert(mkdir((queueRoot + "/queue.bencode.tmp").c_str(), 0755) == 0);
+        assert(manager.pause(id));
+        const auto deadline = std::chrono::steady_clock::now() +
+                              std::chrono::seconds(5);
+        while (!manager.takePersistenceError(error) &&
+               std::chrono::steady_clock::now() < deadline)
+            std::this_thread::yield();
+        assert(!error.empty());
+
+        assert(rmdir((queueRoot + "/queue.bencode.tmp").c_str()) == 0);
+        assert(manager.resume(id));
+        error.clear();
+        assert(manager.save(error));
+    }
+    {
+        pipensx::DownloadManager reloaded(queueRoot, false);
+        const auto tasks = reloaded.snapshot();
+        assert(tasks.size() == 1);
+        assert(tasks[0].status == DownloadStatus::Queued);
     }
     removeAll(root);
 }
@@ -353,6 +402,7 @@ int main() {
     testSummarizeQueueNoThroughputNoEta();
     testMoveTask();
     testPauseResumeAll();
+    testAsyncSaveFailureIsReportedAndLatestStateRecovers();
     testConcurrentSavesFinish();
     testClearCompleted();
     std::puts("queue controls tests passed");

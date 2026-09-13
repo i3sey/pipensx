@@ -383,6 +383,9 @@ private:
 
     void refresh() {
         const uint64_t startedUs = telemetry_enabled() ? now_us() : 0;
+        std::string persistenceError;
+        if (manager_->takePersistenceError(persistenceError))
+            brls::Application::notify(persistenceError);
         auto logRefresh = [startedUs](bool structural, bool reload) {
             if (!startedUs)
                 return;

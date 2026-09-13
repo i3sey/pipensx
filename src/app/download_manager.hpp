@@ -322,6 +322,9 @@ public:
                                    const std::string& error = {});
     bool externalDeployActive() const;
     std::string externalDeployTaskId() const;
+    // Returns each asynchronous queue-write failure once. UI pollers use this
+    // to surface an SD-card error without making button handlers wait for I/O.
+    bool takePersistenceError(std::string& error) const;
     bool save(std::string& error) const;
     void shutdown();
 
@@ -369,9 +372,12 @@ private:
     void reapRunnersLocked(std::unique_lock<std::mutex>& lock);
     std::string serializeStateLocked() const;
     bool writeStateFile(const std::string& payload, std::string& error) const;
+    void requestStateSaveLocked() const;
     bool persistState(std::unique_lock<std::mutex>& lock,
                       std::string& error) const;
     void persistState(std::unique_lock<std::mutex>& lock) const;
+    void persistenceMain();
+    void shutdownPersistence();
     DownloadTask* findLocked(const std::string& id);
     const DownloadTask* findLocked(const std::string& id) const;
     void endExternalDeploy(const std::string& taskId);
@@ -408,7 +414,6 @@ private:
     std::atomic<bool> torrentingEnabled_{false};
 
     mutable std::mutex mutex_;
-    mutable std::mutex ioMutex_;
     std::condition_variable condition_;
     StreamBudgetArbiter arbiter_;
     std::vector<DownloadTask> tasks_;
@@ -432,6 +437,21 @@ private:
     std::atomic<install::InstallStorageTarget> installTarget_{
         install::InstallStorageTarget::SdCard};
     bool workerStarted_ = false;
+
+    // One writer owns queue.bencode. Producers only advance the requested
+    // generation; the writer snapshots the newest state and skips superseded
+    // intermediate generations.
+    mutable std::mutex persistenceMutex_;
+    mutable std::condition_variable persistenceCondition_;
+    std::thread persistenceWorker_;
+    mutable uint64_t persistenceRequested_ = 0;
+    mutable uint64_t persistenceCompleted_ = 0;
+    mutable uint64_t persistenceSuccessful_ = 0;
+    mutable uint64_t persistenceFailed_ = 0;
+    mutable uint64_t persistenceErrorReported_ = 0;
+    mutable std::string persistenceError_;
+    bool persistenceStopping_ = false;
+    bool persistenceWorkerStarted_ = false;
 };
 
 const char* statusName(DownloadStatus status);

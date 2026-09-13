@@ -475,6 +475,9 @@ DownloadManager::DownloadManager(std::string rootPath, bool startWorker)
     // B-dismissed update-file choosers leave orphaned resolve temp files.
     sweepTempTorrents(rootPath_, "_update_tmp_");
     load();
+    persistenceWorkerStarted_ = true;
+    persistenceWorker_ =
+        std::thread(&DownloadManager::persistenceMain, this);
     if (startWorker) {
         workerStarted_ = true;
         worker_ = std::thread(&DownloadManager::schedulerMain, this);
@@ -483,6 +486,7 @@ DownloadManager::DownloadManager(std::string rootPath, bool startWorker)
 
 DownloadManager::~DownloadManager() {
     shutdown();
+    shutdownPersistence();
 }
 
 DownloadManager::ExternalDeployLease::ExternalDeployLease(
@@ -991,7 +995,7 @@ bool DownloadManager::pause(const std::string& taskId) {
         return false;
     task->status = DownloadStatus::Paused;
     task->speedBytesPerSecond = 0;
-    persistState(lock);
+    requestStateSaveLocked();
     condition_.notify_all();
     return true;
 }
@@ -1006,7 +1010,7 @@ bool DownloadManager::resume(const std::string& taskId) {
         return false;
     task->status = DownloadStatus::Queued;
     task->error.clear();
-    persistState(lock);
+    requestStateSaveLocked();
     condition_.notify_all();
     return true;
 }
@@ -1029,7 +1033,7 @@ void DownloadManager::pauseAll() {
         changed = true;
     }
     if (changed) {
-        persistState(lock);
+        requestStateSaveLocked();
     }
     condition_.notify_all();
 }
@@ -1048,7 +1052,7 @@ void DownloadManager::resumeAll() {
         changed = true;
     }
     if (changed) {
-        persistState(lock);
+        requestStateSaveLocked();
     }
     condition_.notify_all();
 }
@@ -1073,7 +1077,7 @@ bool DownloadManager::verify(const std::string& taskId) {
     task->error.clear();
     task->piecesVerified = 0;
     task->resumeBitfield.clear();  // a recheck must really rehash
-    persistState(lock);
+    requestStateSaveLocked();
     condition_.notify_all();
     return true;
 }
@@ -1106,7 +1110,8 @@ bool DownloadManager::moveToFront(const std::string& taskId,
     // Rotate rather than swap: everything between the two keeps its relative
     // order, so promoting one download does not shuffle the rest of the queue.
     std::rotate(firstQueued, target, target + 1);
-    return persistState(lock, error);
+    requestStateSaveLocked();
+    return true;
 }
 
 bool DownloadManager::moveTask(const std::string& taskId, bool up,
@@ -1134,7 +1139,8 @@ bool DownloadManager::moveTask(const std::string& taskId, bool up,
             --other;
             if (other->status == DownloadStatus::Queued) {
                 std::iter_swap(other, target);
-                return persistState(lock, error);
+                requestStateSaveLocked();
+                return true;
             }
         }
         return true; // already the first queued task
@@ -1144,7 +1150,8 @@ bool DownloadManager::moveTask(const std::string& taskId, bool up,
     while (other != tasks_.end()) {
         if (other->status == DownloadStatus::Queued) {
             std::iter_swap(other, target);
-            return persistState(lock, error);
+            requestStateSaveLocked();
+            return true;
         }
         ++other;
     }
@@ -1385,6 +1392,16 @@ bool DownloadManager::save(std::string& error) const {
     return persistState(lock, error);
 }
 
+bool DownloadManager::takePersistenceError(std::string& error) const {
+    std::lock_guard<std::mutex> lock(persistenceMutex_);
+    if (persistenceFailed_ == 0 ||
+        persistenceErrorReported_ == persistenceFailed_)
+        return false;
+    persistenceErrorReported_ = persistenceFailed_;
+    error = persistenceError_;
+    return true;
+}
+
 std::string DownloadManager::serializeStateLocked() const {
     std::ostringstream state;
     state << "d5:tasks";
@@ -1470,27 +1487,127 @@ bool DownloadManager::writeStateFile(const std::string& payload,
     return true;
 }
 
+void DownloadManager::requestStateSaveLocked() const {
+    {
+        std::lock_guard<std::mutex> persistenceLock(persistenceMutex_);
+        ++persistenceRequested_;
+    }
+    persistenceCondition_.notify_one();
+}
+
 bool DownloadManager::persistState(std::unique_lock<std::mutex>& lock,
                                    std::string& error) const {
-    // Never wait for the state writer while holding mutex_: UI snapshots and
-    // transfer progress must remain available while an SD-card write is in
-    // flight.  Once this caller owns ioMutex_, reacquire mutex_ and serialize
-    // the latest state.  Taking the snapshot before ioMutex_ allowed two
-    // persist callers to invalidate and retry each other forever.
+    uint64_t requested;
+    {
+        std::lock_guard<std::mutex> persistenceLock(persistenceMutex_);
+        requested = ++persistenceRequested_;
+    }
+    persistenceCondition_.notify_one();
+
+    // Explicit save/import/remove callers need a durable result, but never
+    // hold the queue mutex while the writer waits on the SD card.
     lock.unlock();
-    std::unique_lock<std::mutex> io(ioMutex_);
-    lock.lock();
-    const std::string payload = serializeStateLocked();
-    lock.unlock();
-    const bool ok = writeStateFile(payload, error);
-    io.unlock();
+    std::unique_lock<std::mutex> persistenceLock(persistenceMutex_);
+    persistenceCondition_.wait(persistenceLock, [this, requested] {
+        return persistenceCompleted_ >= requested;
+    });
+    const bool ok = persistenceSuccessful_ >= requested;
+    if (!ok) {
+        error = persistenceError_;
+        // This caller receives the failure directly; do not make the UI show
+        // the same error a second time on its next polling tick.
+        persistenceErrorReported_ = persistenceFailed_;
+    }
+    persistenceLock.unlock();
     lock.lock();
     return ok;
 }
 
 void DownloadManager::persistState(std::unique_lock<std::mutex>& lock) const {
-    std::string ignored;
-    persistState(lock, ignored);
+    (void)lock;
+    requestStateSaveLocked();
+}
+
+void DownloadManager::persistenceMain() {
+    for (;;) {
+        {
+            std::unique_lock<std::mutex> persistenceLock(persistenceMutex_);
+            persistenceCondition_.wait(persistenceLock, [this] {
+                return persistenceStopping_ ||
+                       persistenceRequested_ > persistenceCompleted_;
+            });
+            if (persistenceStopping_ &&
+                persistenceRequested_ <= persistenceCompleted_)
+                return;
+        }
+
+        uint64_t generation;
+        std::string payload;
+        {
+            // Producers can continue advancing the generation until this
+            // lock is acquired. The snapshot therefore coalesces everything
+            // accepted before serialization begins.
+            std::unique_lock<std::mutex> stateLock(mutex_);
+            {
+                std::lock_guard<std::mutex> persistenceLock(
+                    persistenceMutex_);
+                generation = persistenceRequested_;
+            }
+            payload = serializeStateLocked();
+        }
+
+        std::string error;
+        const bool ok = writeStateFile(payload, error);
+        {
+            std::lock_guard<std::mutex> persistenceLock(persistenceMutex_);
+            persistenceCompleted_ = generation;
+            if (ok) {
+                persistenceSuccessful_ = generation;
+                // A newer durable snapshot has recovered any older failure;
+                // do not surface that stale error after recovery.
+                if (persistenceFailed_ < generation)
+                    persistenceErrorReported_ = persistenceFailed_;
+            } else {
+                persistenceFailed_ = generation;
+                persistenceError_ = error;
+            }
+        }
+        if (!ok)
+            diagnostic_error("manager", "queue_save", "error=%s",
+                             error.c_str());
+        persistenceCondition_.notify_all();
+    }
+}
+
+void DownloadManager::shutdownPersistence() {
+    if (!persistenceWorkerStarted_)
+        return;
+    bool retryFailedSave = false;
+    {
+        std::unique_lock<std::mutex> lock(persistenceMutex_);
+        const uint64_t requested = persistenceRequested_;
+        persistenceCondition_.wait(lock, [this, requested] {
+            return persistenceCompleted_ >= requested;
+        });
+        retryFailedSave = persistenceSuccessful_ < requested;
+    }
+    // Every mutation already requested a generation. Avoid another SD write
+    // on a clean shutdown, but give the latest failed generation one final
+    // recovery attempt while the application storage is still mounted.
+    if (retryFailedSave) {
+        std::string error;
+        if (!save(error))
+            diagnostic_error("manager", "queue_save_shutdown", "error=%s",
+                             error.c_str());
+    }
+    {
+        std::lock_guard<std::mutex> lock(persistenceMutex_);
+        persistenceStopping_ = true;
+    }
+    persistenceCondition_.notify_all();
+    if (persistenceWorker_.joinable())
+        persistenceWorker_.join();
+    persistenceWorkerStarted_ = false;
 }
 
 void DownloadManager::load() {
@@ -2538,8 +2655,6 @@ void DownloadManager::shutdown() {
         condition_.notify_all();
         if (worker_.joinable())
             worker_.join();
-        std::string ignored;
-        save(ignored);
         workerStarted_ = false;
     }
     // A manager built without the scheduler (tests and a few tools) can still

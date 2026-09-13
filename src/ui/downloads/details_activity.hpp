@@ -496,6 +496,9 @@ private:
     }
 
     void refresh() {
+        std::string persistenceError;
+        if (manager_->takePersistenceError(persistenceError))
+            brls::Application::notify(persistenceError);
         const DownloadTask* task = currentTask();
         if (!task) {
             brls::Application::popActivity();

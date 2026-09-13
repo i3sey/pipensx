@@ -781,6 +781,10 @@ int main() {
         assert(!manager.externalDeployActive());
         assert(manager.verify(tasks[0].id));
         assert(manager.snapshot()[0].resumeBitfield.empty());
+        // verify() is a UI command and persistence is intentionally queued;
+        // save() is the durability barrier before opening the same state from
+        // a second manager in this process.
+        assert(manager.save(error));
         {
             DownloadManager reloaded(v5Root, false);
             assert(reloaded.snapshot()[0].resumeBitfield.empty());
