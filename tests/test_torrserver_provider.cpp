@@ -64,6 +64,15 @@ void testValidate() {
     Recorder empty;
     TorrserverProvider unset("", scripted(&empty));
     assert(!unset.validate(error) && empty.seen.empty());
+
+    TsTransport unreachable = [](const TsHttpRequest&, TsHttpResponse&,
+                                 std::string&) { return false; };
+    TorrserverProvider credentialed("http://user:secret@box:8090",
+                                    unreachable);
+    assert(!credentialed.validate(error));
+    assert(error.find("box:8090") != std::string::npos);
+    assert(error.find("user") == std::string::npos);
+    assert(error.find("secret") == std::string::npos);
 }
 
 void testCreatePollResolveRemove() {

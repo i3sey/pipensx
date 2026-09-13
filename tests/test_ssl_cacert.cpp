@@ -6,6 +6,7 @@
 #include <string>
 
 using pipensx::isSslCertificateErrorMessage;
+using pipensx::urlHostForDisplay;
 
 static std::string readFile(const char* path) {
     std::ifstream in(path, std::ios::binary);
@@ -34,6 +35,13 @@ int main() {
     assert(!isSslCertificateErrorMessage(
         "TorBox key rejected - relink in Settings."));
     assert(!isSslCertificateErrorMessage("Unable to reach TorrServer."));
+
+    assert(urlHostForDisplay("http://user:secret@192.0.2.1:8090/play/x/1") ==
+           "192.0.2.1:8090");
+    assert(urlHostForDisplay("https://cdn.example.test/file") ==
+           "cdn.example.test");
+    assert(urlHostForDisplay("http://[2001:db8::1]:8090/echo") ==
+           "[2001:db8::1]:8090");
 
     std::puts("test_ssl_cacert ok");
     return 0;

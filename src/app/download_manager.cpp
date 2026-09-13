@@ -873,19 +873,91 @@ std::unique_ptr<DebridProvider> DownloadManager::makeProvider(
 }
 
 // Best-effort: a transfer we drop locally should not sit on the account
-// burning the user's quota. Detached because it is one HTTPS round-trip we
-// never want a caller — least of all one holding mutex_ — to wait on.
+// burning the user's quota. The call remains asynchronous because remove()
+// runs on the UI thread, but the worker is manager-owned: libnx's detach()
+// throws ENOSYS and the joinable temporary then terminates the process.
 void DownloadManager::removeFromDebridAsync(DebridProviderKind provider,
                                             const std::string& apiKey,
                                             const std::string& debridId) {
     if (apiKey.empty() || debridId.empty())
         return;
-    std::thread([provider, apiKey, debridId] {
-        std::string error;
-        if (!makeProvider(provider, apiKey)->remove(debridId, error))
-            log_msg("[debrid] account cleanup failed id=%s: %s\n",
-                    debridId.c_str(), error.c_str());
-    }).detach();
+    try {
+        std::unique_lock<std::mutex> lock(debridCleanupMutex_);
+        if (debridCleanupStopping_) {
+            log_msg("[debrid] account cleanup skipped during shutdown id=%s\n",
+                    debridId.c_str());
+            return;
+        }
+        debridCleanups_.push_back({provider, apiKey, debridId});
+        if (!debridCleanupWorkerStarted_) {
+            try {
+                debridCleanupWorker_ =
+                    std::thread(&DownloadManager::debridCleanupMain, this);
+                debridCleanupWorkerStarted_ = true;
+            } catch (...) {
+                debridCleanups_.pop_back();
+                throw;
+            }
+        }
+    } catch (const std::exception& e) {
+        // Remote deletion is best-effort; failing to allocate/start its worker
+        // must never turn a successful local deletion into an app crash.
+        log_msg("[debrid] unable to start account cleanup id=%s: %s\n",
+                debridId.c_str(), e.what());
+        return;
+    } catch (...) {
+        log_msg("[debrid] unable to start account cleanup id=%s\n",
+                debridId.c_str());
+        return;
+    }
+    debridCleanupCondition_.notify_one();
+}
+
+void DownloadManager::debridCleanupMain() {
+    while (true) {
+        DebridCleanup cleanup;
+        {
+            std::unique_lock<std::mutex> lock(debridCleanupMutex_);
+            debridCleanupCondition_.wait(lock, [this] {
+                return debridCleanupStopping_ || !debridCleanups_.empty();
+            });
+            if (debridCleanups_.empty()) {
+                if (debridCleanupStopping_)
+                    return;
+                continue;
+            }
+            cleanup = std::move(debridCleanups_.front());
+            debridCleanups_.pop_front();
+        }
+        try {
+            std::string error;
+            if (!makeProvider(cleanup.provider, cleanup.apiKey)
+                     ->remove(cleanup.debridId, error)) {
+                log_msg("[debrid] account cleanup failed id=%s: %s\n",
+                        cleanup.debridId.c_str(), error.c_str());
+            } else {
+                log_msg("[debrid] account cleanup done id=%s\n",
+                        cleanup.debridId.c_str());
+            }
+        } catch (const std::exception& e) {
+            log_msg("[debrid] account cleanup threw id=%s: %s\n",
+                    cleanup.debridId.c_str(), e.what());
+        } catch (...) {
+            log_msg("[debrid] account cleanup threw id=%s\n",
+                    cleanup.debridId.c_str());
+        }
+    }
+}
+
+void DownloadManager::shutdownDebridCleanup() {
+    {
+        std::lock_guard<std::mutex> lock(debridCleanupMutex_);
+        debridCleanupStopping_ = true;
+    }
+    debridCleanupCondition_.notify_all();
+    if (debridCleanupWorker_.joinable())
+        debridCleanupWorker_.join();
+    debridCleanupWorkerStarted_ = false;
 }
 
 std::string DownloadManager::torboxApiKey() const {
@@ -1111,6 +1183,16 @@ bool DownloadManager::remove(const std::string& taskId, bool deleteData,
     lock.unlock();
     removeFromDebridAsync(provider, apiKey, debridId);
     return true;
+}
+
+void DownloadManager::cleanupDebridAsync(DebridProviderKind provider,
+                                         const std::string& debridId) {
+    std::string apiKey;
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        apiKey = apiKeyFor(provider);
+    }
+    removeFromDebridAsync(provider, apiKey, debridId);
 }
 
 bool DownloadManager::clearCompleted(bool deleteData, std::string& error) {
@@ -2452,15 +2534,18 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
 }
 
 void DownloadManager::shutdown() {
-    if (!workerStarted_)
-        return;
-    stopping_ = true;
-    condition_.notify_all();
-    if (worker_.joinable())
-        worker_.join();
-    std::string ignored;
-    save(ignored);
-    workerStarted_ = false;
+    if (workerStarted_) {
+        stopping_ = true;
+        condition_.notify_all();
+        if (worker_.joinable())
+            worker_.join();
+        std::string ignored;
+        save(ignored);
+        workerStarted_ = false;
+    }
+    // A manager built without the scheduler (tests and a few tools) can still
+    // queue debrid cleanup, so this join is intentionally outside the branch.
+    shutdownDebridCleanup();
 }
 
 } // namespace pipensx

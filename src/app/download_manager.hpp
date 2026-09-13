@@ -5,6 +5,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <mutex>
 #include <optional>
@@ -255,6 +256,10 @@ public:
     bool verify(const std::string& taskId);
     bool remove(const std::string& taskId, bool deleteData,
                 std::string& error);
+    // Best-effort removal for remotely prepared items that never entered the
+    // queue (for example, cancelling catalog batch preparation).
+    void cleanupDebridAsync(DebridProviderKind provider,
+                            const std::string& debridId);
     // Pause every task pause() would accept except Committing (a NAND commit
     // in flight is left alone). One lock, one state write.
     void pauseAll();
@@ -373,11 +378,18 @@ private:
     bool externallyLeasedLocked(const std::string& taskId) const;
     bool removeLocked(std::unique_lock<std::mutex>& lock, const std::string& id,
                       bool deleteData, std::string& error, bool persist = true);
-    // Fires a detached thread, so it must not touch *this: the manager can be
-    // torn down while a provider call is still in flight.
-    static void removeFromDebridAsync(DebridProviderKind provider,
-                                      const std::string& apiKey,
-                                      const std::string& debridId);
+    struct DebridCleanup {
+        DebridProviderKind provider = DebridProviderKind::TorBox;
+        std::string apiKey;
+        std::string debridId;
+    };
+    // Queue account cleanup on one manager-owned worker. libnx implements
+    // std::thread but not detach(), so detached cleanup terminated the app.
+    void removeFromDebridAsync(DebridProviderKind provider,
+                               const std::string& apiKey,
+                               const std::string& debridId);
+    void debridCleanupMain();
+    void shutdownDebridCleanup();
     std::string apiKeyFor(DebridProviderKind provider) const;
     static std::unique_ptr<class DebridProvider> makeProvider(
         DebridProviderKind provider, const std::string& key);
@@ -403,6 +415,14 @@ private:
     std::vector<DownloadTask> tasks_;
     std::thread worker_; // scheduler thread
     std::vector<std::unique_ptr<RunnerSlot>> runners_; // guarded by mutex_
+    // Lazy, single-threaded provider cleanup queue. It is separate from the
+    // scheduler so a slow HTTPS delete cannot delay transfer scheduling.
+    std::mutex debridCleanupMutex_;
+    std::condition_variable debridCleanupCondition_;
+    std::deque<DebridCleanup> debridCleanups_;
+    std::thread debridCleanupWorker_;
+    bool debridCleanupWorkerStarted_ = false;
+    bool debridCleanupStopping_ = false;
     uint32_t maxActive_ = 1;          // guarded by mutex_
     // Single install token: only one stream-install task may write to NCM
     // at a time; download-only tasks pass token-blocked stream tasks.

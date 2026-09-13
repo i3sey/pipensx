@@ -127,7 +127,8 @@ bool TorrserverProvider::torrents(const std::string& body,
     std::string transportError;
     if (!transport_(request, response, transportError)) {
         error = transportError.empty()
-            ? "Unable to reach TorrServer at " + base_ + "." : transportError;
+            ? "Unable to reach TorrServer at " + urlHostForDisplay(base_) + "."
+            : transportError;
         return false;
     }
     return statusOk(response, error);
@@ -145,7 +146,8 @@ bool TorrserverProvider::validate(std::string& error) {
     std::string transportError;
     if (!transport_(request, response, transportError)) {
         error = transportError.empty()
-            ? "Unable to reach TorrServer at " + base_ + "." : transportError;
+            ? "Unable to reach TorrServer at " + urlHostForDisplay(base_) + "."
+            : transportError;
         return false;
     }
     if (!statusOk(response, error))
@@ -184,7 +186,8 @@ bool TorrserverProvider::createFromFile(const std::string& torrentPath,
     std::string transportError;
     if (!transport_(request, response, transportError)) {
         error = transportError.empty()
-            ? "Unable to reach TorrServer at " + base_ + "." : transportError;
+            ? "Unable to reach TorrServer at " + urlHostForDisplay(base_) + "."
+            : transportError;
         return false;
     }
     if (!statusOk(response, error))

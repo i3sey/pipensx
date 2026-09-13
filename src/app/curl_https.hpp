@@ -51,6 +51,20 @@ inline void curlPinScheme(CURL* curl, const std::string& url) {
     curlPinHttpsOnly(curl);
 }
 
+// Return only the host[:port] part suitable for logs and user-facing network
+// errors. TorrServer permits http://user:password@host URLs; retaining the
+// userinfo here leaked those credentials into bug-report logs.
+inline std::string urlHostForDisplay(const std::string& url) {
+    const size_t scheme = url.find("://");
+    const size_t start = scheme == std::string::npos ? 0 : scheme + 3;
+    const size_t end = url.find_first_of("/?#", start);
+    std::string authority = url.substr(start, end - start);
+    const size_t userinfo = authority.rfind('@');
+    if (userinfo != std::string::npos)
+        authority.erase(0, userinfo + 1);
+    return authority;
+}
+
 // Peer verify stays on. On Switch, also import the bundled roots in
 // romfs:/ssl/cacert.pem (TorBox GTS + Real-Debrid DigiCert; libnx curl uses
 // sslContextImportServerPki — additive to the system store). On PC, leave the

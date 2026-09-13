@@ -13,6 +13,7 @@
 
 extern "C" {
 #include "../core/util.h"
+#include "../platform/storage.h"
 }
 
 #include <cerrno>
@@ -30,6 +31,7 @@ extern "C" {
 #include <mutex>
 #include <sys/stat.h>
 #include <thread>
+#include <unistd.h>
 
 namespace pipensx {
 
@@ -187,10 +189,145 @@ std::string parentDir(const std::string& path) {
 
 bool statSize(const std::string& path, uint64_t& size) {
     struct stat st {};
-    if (stat(path.c_str(), &st) != 0)
+    if (stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode))
         return false;
     size = static_cast<uint64_t>(st.st_size);
     return true;
+}
+
+constexpr uint64_t kFat32MaximumFileBytes = 0xFFFFFFFFull;
+constexpr uint64_t kSplitResumeCheckpointBytes = 4ull * 1024 * 1024;
+
+bool needsSplitDownload(uint64_t fileBytes) {
+#ifdef __SWITCH__
+    // Use the same DBI/HOS concatenation-folder format as torrent storage.
+    // Always splitting on Switch also works on exFAT and avoids a destructive
+    // filesystem probe after a multi-gigabyte partial download already exists.
+    return fileBytes > kFat32MaximumFileBytes;
+#else
+    (void)fileBytes;
+    return false;
+#endif
+}
+
+std::string splitResumePath(const std::string& localPath) {
+    return localPath + ".pipensx-partial";
+}
+
+bool splitResumeExists(const std::string& localPath) {
+    return access(splitResumePath(localPath).c_str(), F_OK) == 0;
+}
+
+bool loadSplitResume(const std::string& localPath, uint64_t expected,
+                     uint64_t& offset) {
+    FILE* file = std::fopen(splitResumePath(localPath).c_str(), "rb");
+    if (!file)
+        return false;
+    unsigned long long parsed = 0;
+    const bool ok = std::fscanf(file, "%llu", &parsed) == 1 &&
+                    parsed <= expected;
+    std::fclose(file);
+    if (ok)
+        offset = static_cast<uint64_t>(parsed);
+    return ok;
+}
+
+bool saveSplitResume(const std::string& localPath, uint64_t offset,
+                     std::string& error) {
+    const std::string path = splitResumePath(localPath);
+    // fsdev rename does not replace an existing destination on Switch. Keep
+    // the marker inode in place and rewrite its tiny payload instead. If the
+    // console loses power during this write, an empty/partial marker remains
+    // and loadSplitResume rejects it rather than mistaking the split folder
+    // for a completed download.
+    FILE* file = std::fopen(path.c_str(), "wb");
+    if (!file) {
+        error = std::string("Unable to create download resume state: ") +
+                std::strerror(errno);
+        return false;
+    }
+    bool ok = std::fprintf(file, "%llu\n",
+                           static_cast<unsigned long long>(offset)) > 0;
+    int savedErrno = ok ? 0 : errno;
+    if (ok && std::fflush(file) != 0) {
+        ok = false;
+        savedErrno = errno;
+    }
+    if (ok && fsync(fileno(file)) != 0) {
+        ok = false;
+        savedErrno = errno;
+    }
+    if (std::fclose(file) != 0 && ok) {
+        ok = false;
+        savedErrno = errno;
+    }
+    if (!ok) {
+        error = std::string("Unable to save download resume state: ") +
+                std::strerror(savedErrno ? savedErrno : EIO);
+    }
+    return ok;
+}
+
+// A pre-fix build appended a >4 GiB debrid file as one FAT32 file and stopped
+// at the filesystem ceiling. It cannot be converted safely in place to the
+// fixed-size split format, so discard that one legacy partial and restart it.
+bool splitDownloadOffset(const std::string& localPath, uint64_t expected,
+                         uint64_t& offset, std::string& error) {
+    offset = 0;
+    const bool markerPresent = splitResumeExists(localPath);
+    if (markerPresent && !loadSplitResume(localPath, expected, offset)) {
+        error = "The large-file download resume state is invalid. Delete its "
+                "downloaded data and retry.";
+        return false;
+    }
+
+    struct stat st {};
+    const bool outputExists = stat(localPath.c_str(), &st) == 0;
+    if (markerPresent) {
+        if (offset > 0 && !outputExists) {
+            offset = 0;
+            return saveSplitResume(localPath, offset, error);
+        }
+        if (outputExists && S_ISREG(st.st_mode)) {
+            if (static_cast<uint64_t>(st.st_size) == expected) {
+                std::remove(splitResumePath(localPath).c_str());
+                offset = expected;
+                return true;
+            }
+            if (std::remove(localPath.c_str()) != 0) {
+                error = std::string("Unable to replace the legacy large file: ") +
+                        std::strerror(errno);
+                return false;
+            }
+            offset = 0;
+            log_msg("[storage] restarting legacy unsplit debrid file '%s'\n",
+                    localPath.c_str());
+            return saveSplitResume(localPath, offset, error);
+        }
+        return true;
+    }
+
+    if (!outputExists)
+        return true;
+    if (S_ISDIR(st.st_mode)) {
+        // New split downloads keep the marker until every byte is committed
+        // and the concatenation attribute is set. No marker means complete.
+        offset = expected;
+        return true;
+    }
+    if (S_ISREG(st.st_mode) &&
+        static_cast<uint64_t>(st.st_size) == expected) {
+        offset = expected; // A complete file on exFAT from an older build.
+        return true;
+    }
+    if (S_ISREG(st.st_mode) && std::remove(localPath.c_str()) == 0) {
+        log_msg("[storage] restarting legacy unsplit debrid file '%s'\n",
+                localPath.c_str());
+        return true;
+    }
+    error = std::string("Unable to replace the legacy large file: ") +
+            std::strerror(errno);
+    return false;
 }
 
 std::string sanitizeRelative(const std::string& name,
@@ -378,9 +515,7 @@ RangeFetcher curlRangeFetcher() {
         }
         // Whether plaintext is acceptable at all is the provider's call and
         // was settled before we got here; this only has to speak both.
-        const size_t hostStart = plain ? 7 : 8;
-        size_t hostEnd = url.find('/', hostStart);
-        const std::string host = url.substr(hostStart, hostEnd - hostStart);
+        const std::string host = urlHostForDisplay(url);
         log_msg("[debrid] downloading from %s over %s\n", host.c_str(),
                 plain ? "HTTP" : "HTTPS");
         CURL* curl = curl_easy_init();
@@ -844,9 +979,155 @@ bool fetchOrdered(const RangeFetcher& fetcher, const std::string& url,
     return nextToEmit == totalBytes;
 }
 
+Step fetchSplitDownload(RunContext& ctx, const std::string& url,
+                        const std::string& localPath, uint64_t offset,
+                        uint64_t fileBytes, uint64_t baseCompleted) {
+    std::string stateError;
+    if (!saveSplitResume(localPath, offset, stateError)) {
+        ctx.error = stateError;
+        diagnostic_error("storage", "debrid_resume", "file=%s error=%s",
+                         baseName(localPath).c_str(), stateError.c_str());
+        return Step::Failed;
+    }
+
+    const std::string directory = parentDir(localPath);
+    const std::string leaf = baseName(localPath);
+    if (directory.empty() || leaf.empty() || leaf.size() >= MAX_NAME_LEN) {
+        ctx.error = "The large download file path is too long.";
+        return Step::Failed;
+    }
+
+    mi_file_t file {};
+    std::snprintf(file.path, sizeof(file.path), "%s", leaf.c_str());
+    file.length = static_cast<int64_t>(fileBytes);
+    file.offset = 0;
+    metainfo_t metainfo {};
+    std::snprintf(metainfo.name, sizeof(metainfo.name), "%s", leaf.c_str());
+    metainfo.total_length = file.length;
+    metainfo.num_files = 1;
+    metainfo.files = &file;
+
+    storage_file_config_t config {};
+    config.mode = STORAGE_FILE_DISK;
+    config.force_split = 1;
+    storage_t* output = storage_open_ex(&metainfo, directory.c_str(), &config);
+    if (!output) {
+        const char* detail = storage_open_error();
+        ctx.error = detail && *detail
+            ? std::string("Unable to prepare the large download: ") + detail
+            : "Unable to prepare the large download file.";
+        diagnostic_error("storage", "debrid_open", "file=%s error=%s",
+                         leaf.c_str(), ctx.error.c_str());
+        return Step::Failed;
+    }
+
+    if (offset == fileBytes) {
+        storage_finalize(output);
+        storage_close(output);
+        std::remove(splitResumePath(localPath).c_str());
+        return Step::Ok;
+    }
+
+    Clock::time_point windowStart = Clock::now();
+    Clock::time_point lastEmit = Clock::time_point::min();
+    uint64_t windowBytes = 0;
+    uint64_t written = 0;
+    uint64_t speed = 0;
+    uint64_t checkpoint = offset;
+    std::string sinkError;
+    auto sink = [&](const uint8_t* data, size_t n) -> bool {
+        if (!storage_write(output, static_cast<int64_t>(offset + written),
+                           data, n)) {
+            const char* detail = storage_error(output);
+            sinkError = detail && *detail
+                ? std::string("Unable to write the large download: ") + detail
+                : "Unable to write the large download file.";
+            diagnostic_error("storage", "debrid_write", "file=%s error=%s",
+                             leaf.c_str(), sinkError.c_str());
+            return false;
+        }
+        written += n;
+        windowBytes += n;
+        const uint64_t committed = offset + written;
+        if (committed - checkpoint >= kSplitResumeCheckpointBytes) {
+            if (!saveSplitResume(localPath, committed, sinkError)) {
+                diagnostic_error("storage", "debrid_resume",
+                                 "file=%s error=%s", leaf.c_str(),
+                                 sinkError.c_str());
+                return false;
+            }
+            checkpoint = committed;
+        }
+        Clock::time_point now = Clock::now();
+        double elapsed =
+            std::chrono::duration<double>(now - windowStart).count();
+        if (elapsed >= 1.0) {
+            speed = static_cast<uint64_t>(windowBytes / elapsed);
+            windowStart = now;
+            windowBytes = 0;
+        }
+        if (!shouldEmitProgress(lastEmit))
+            return true;
+        DebridProgress p;
+        p.status = DownloadStatus::Downloading;
+        p.completedBytes = baseCompleted + committed;
+        p.totalBytes = ctx.totalBytes;
+        p.speedBytesPerSecond = speed;
+        p.packagesInstalled = ctx.packagesInstalled;
+        ctx.emit(p);
+        return true;
+    };
+
+    std::string fetchError;
+    StreamRamBudget budget = detectStreamRamBudget(1 * 1024 * 1024);
+    const size_t maximumBuffered = budget.valid
+        ? budget.maxBufferedBytes : 64 * 1024 * 1024;
+    bool ok = sequentialHttp(ctx.provider)
+        ? fetchSequential(ctx.fetcher, url, offset, sink, *ctx.shouldStop,
+                          fetchError)
+        : fetchOrdered(ctx.fetcher, url, offset, fileBytes,
+                       maximumBuffered / 2, sink, *ctx.shouldStop, fetchError);
+    if (ok && !storage_flush(output)) {
+        const int savedErrno = errno;
+        sinkError = std::string("Unable to flush the large download: ") +
+                    std::strerror(savedErrno ? savedErrno : EIO);
+        diagnostic_error("storage", "debrid_flush", "file=%s error=%s",
+                         leaf.c_str(), sinkError.c_str());
+        ok = false;
+    }
+    const uint64_t committed = offset + written;
+    if (ok && committed != fileBytes) {
+        fetchError = "Downloaded file size mismatch.";
+        ok = false;
+    }
+    if (ok)
+        storage_finalize(output);
+    storage_close(output);
+
+    if (!ok) {
+        std::string resumeError;
+        if (!saveSplitResume(localPath, committed, resumeError))
+            diagnostic_error("storage", "debrid_resume", "file=%s error=%s",
+                             leaf.c_str(), resumeError.c_str());
+        if (ctx.stop())
+            return Step::Stopped;
+        ctx.error = !sinkError.empty() ? sinkError
+                  : !fetchError.empty() ? fetchError
+                                        : "Download failed.";
+        return Step::Failed;
+    }
+
+    std::remove(splitResumePath(localPath).c_str());
+    return Step::Ok;
+}
+
 Step fetchAppend(RunContext& ctx, const std::string& url,
                  const std::string& localPath, uint64_t offset,
                  uint64_t fileBytes, uint64_t baseCompleted) {
+    if (needsSplitDownload(fileBytes))
+        return fetchSplitDownload(ctx, url, localPath, offset, fileBytes,
+                                  baseCompleted);
+
     FILE* out = std::fopen(localPath.c_str(), "ab");
     if (!out) {
         ctx.error = "Unable to open the download file for writing.";
@@ -859,9 +1140,16 @@ Step fetchAppend(RunContext& ctx, const std::string& url,
     uint64_t windowBytes = 0;
     uint64_t written = 0;
     uint64_t speed = 0;
+    std::string sinkError;
     auto sink = [&](const uint8_t* data, size_t n) -> bool {
-        if (std::fwrite(data, 1, n, out) != n)
+        if (std::fwrite(data, 1, n, out) != n) {
+            const int savedErrno = errno;
+            sinkError = std::string("Unable to write the download file: ") +
+                        std::strerror(savedErrno ? savedErrno : EIO);
+            diagnostic_error("storage", "debrid_write", "file=%s error=%s",
+                             baseName(localPath).c_str(), sinkError.c_str());
             return false;
+        }
         written += n;
         windowBytes += n;
         Clock::time_point now = Clock::now();
@@ -893,12 +1181,27 @@ Step fetchAppend(RunContext& ctx, const std::string& url,
         ? fetchSequential(ctx.fetcher, url, offset, sink, *ctx.shouldStop, err)
         : fetchOrdered(ctx.fetcher, url, offset, fileBytes,
                        maximumBuffered / 2, sink, *ctx.shouldStop, err);
-    std::fflush(out);
-    std::fclose(out);
+    if (ok && std::fflush(out) != 0) {
+        const int savedErrno = errno;
+        sinkError = std::string("Unable to flush the download file: ") +
+                    std::strerror(savedErrno ? savedErrno : EIO);
+        diagnostic_error("storage", "debrid_flush", "file=%s error=%s",
+                         baseName(localPath).c_str(), sinkError.c_str());
+        ok = false;
+    }
+    if (std::fclose(out) != 0 && ok) {
+        const int savedErrno = errno;
+        sinkError = std::string("Unable to close the download file: ") +
+                    std::strerror(savedErrno ? savedErrno : EIO);
+        diagnostic_error("storage", "debrid_close", "file=%s error=%s",
+                         baseName(localPath).c_str(), sinkError.c_str());
+        ok = false;
+    }
     if (!ok) {
         if (ctx.stop())
             return Step::Stopped;
-        ctx.error = err.empty() ? "Download failed." : err;
+        ctx.error = !sinkError.empty() ? sinkError
+                                      : err.empty() ? "Download failed." : err;
         return Step::Failed;
     }
     return Step::Ok;
@@ -920,12 +1223,19 @@ Step downloadPlainFile(RunContext& ctx, size_t kthSelected,
     }
 
     uint64_t existing = 0;
-    bool exists = statSize(localPath, existing);
-    if (exists && existing == file.bytes)
-        return Step::Ok;
-    if (exists && existing > file.bytes) {
-        std::ofstream truncate(localPath,
-                               std::ios::binary | std::ios::trunc);
+    if (needsSplitDownload(file.bytes)) {
+        if (!splitDownloadOffset(localPath, file.bytes, existing, ctx.error))
+            return Step::Failed;
+        if (existing == file.bytes && !splitResumeExists(localPath))
+            return Step::Ok;
+    } else {
+        bool exists = statSize(localPath, existing);
+        if (exists && existing == file.bytes)
+            return Step::Ok;
+        if (exists && existing > file.bytes) {
+            std::ofstream truncate(localPath,
+                                   std::ios::binary | std::ios::trunc);
+        }
     }
 
     DebridInfo info;
@@ -941,7 +1251,12 @@ Step downloadPlainFile(RunContext& ctx, size_t kthSelected,
 
     for (int attempt = 0; attempt < 2; ++attempt) {
         uint64_t offset = 0;
-        statSize(localPath, offset);
+        if (needsSplitDownload(file.bytes)) {
+            if (!splitDownloadOffset(localPath, file.bytes, offset, ctx.error))
+                return Step::Failed;
+        } else {
+            statSize(localPath, offset);
+        }
         Step s = fetchAppend(ctx, url, localPath, offset, file.bytes,
                              ctx.completedSoFar);
         if (s == Step::Ok)
@@ -966,7 +1281,12 @@ Step downloadPlainFile(RunContext& ctx, size_t kthSelected,
     }
 
     uint64_t finalSize = 0;
-    statSize(localPath, finalSize);
+    if (needsSplitDownload(file.bytes)) {
+        if (!splitDownloadOffset(localPath, file.bytes, finalSize, ctx.error))
+            return Step::Failed;
+    } else {
+        statSize(localPath, finalSize);
+    }
     if (finalSize != file.bytes) {
         ctx.error = "Downloaded file size mismatch.";
         return Step::Failed;

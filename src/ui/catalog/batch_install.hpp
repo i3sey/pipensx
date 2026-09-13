@@ -168,6 +168,7 @@ public:
         debridMode_ = debridModeActive(settings_);
         if (debridMode_) {
             const AppSettingsData values = settings_->get();
+            debridProviderKind_ = values.debridProvider;
             debridProvider_ = std::shared_ptr<DebridProvider>(
                 makeDebridProvider(values.debridProvider,
                                    activeDebridKey(values)).release());
@@ -283,18 +284,11 @@ public:
     ~BatchInstallActivity() override {
         alive_->store(false);
         cancelled_->store(true);
-        if (debridMode_ && !enqueueFinished_ && prepared_ && debridProvider_) {
-            std::vector<std::string> ids;
+        if (debridMode_ && !enqueueFinished_ && prepared_ && manager_) {
             for (const PreparedCatalogInstall& item : prepared_->items())
                 if (!item.debridId.empty())
-                    ids.push_back(item.debridId);
-            auto provider = debridProvider_;
-            std::thread([provider, ids] {
-                for (const std::string& id : ids) {
-                    std::string ignored;
-                    provider->remove(id, ignored);
-                }
-            }).detach();
+                    manager_->cleanupDebridAsync(debridProviderKind_,
+                                                 item.debridId);
         }
     }
 
@@ -579,6 +573,7 @@ private:
     std::shared_ptr<std::atomic<bool>> alive_;
     std::shared_ptr<std::atomic<bool>> cancelled_;
     std::shared_ptr<CatalogBatchInstaller> installer_;
+    DebridProviderKind debridProviderKind_ = DebridProviderKind::TorBox;
     std::shared_ptr<DebridProvider> debridProvider_;
     std::shared_ptr<BatchPreparation> prepared_;
     StorageSpaceSnapshot storage_;
