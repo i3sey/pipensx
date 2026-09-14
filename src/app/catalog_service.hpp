@@ -123,6 +123,11 @@ public:
     // (cache/bundled mtime, or refresh time after adopt). 0 when empty.
     int64_t snapshotEpochSec() const { return snapshotEpochSec_; }
 
+    // Changes whenever a different live catalogue snapshot is published.
+    // UI views use this to retain derived presentation data across navigation
+    // without rescanning the unchanged catalogue.
+    uint64_t generation() const { return generation_; }
+
     static bool parseJson(const std::string& json,
                           std::vector<CatalogEntry>& entries,
                           std::string& error,
@@ -150,6 +155,7 @@ private:
     std::unordered_map<std::string, size_t> infoHashIndex_;
     std::string sourceLabel_;
     int64_t snapshotEpochSec_ = 0;
+    uint64_t generation_ = 0;
     std::function<void(std::shared_ptr<const std::vector<CatalogEntry>>)>
         onAdopt_;
 };

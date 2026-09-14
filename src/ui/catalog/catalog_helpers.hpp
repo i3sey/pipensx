@@ -184,7 +184,7 @@ inline void appendAsyncImage(brls::Box* parent, GameMetadataService* service,
     parent->addView(image);
 }
 
-// Popularity ranking used by the Home hero and the catalog Popular sort.
+// Popularity ranking used by the catalog Popular sort.
 // Indices are into `visible` (itself a list of snapshot indices). Peer count
 // wins; with no peers at all, a freshness+size rank sum is the fallback.
 inline std::vector<int> catalogPopularityOrder(

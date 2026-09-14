@@ -569,6 +569,7 @@ bool CatalogService::loadFile(const std::string& path,
         return false;
     entries_ = std::make_shared<const std::vector<CatalogEntry>>(
         std::move(parsed));
+    ++generation_;
     rebuildIndex();
     sourceLabel_ = label;
     struct stat st {};
@@ -597,6 +598,7 @@ bool CatalogService::load(std::string& error) {
     // A fresh public install intentionally has no bundled catalog. The UI
     // sees an empty list and starts the trusted live refresh in the background.
     entries_ = std::make_shared<const std::vector<CatalogEntry>>();
+    ++generation_;
     rebuildIndex();
     sourceLabel_.clear();
     snapshotEpochSec_ = 0;
@@ -678,6 +680,7 @@ void CatalogService::adopt(std::vector<CatalogEntry> parsed,
     // pick up the new one.
     entries_ = std::make_shared<const std::vector<CatalogEntry>>(
         std::move(parsed));
+    ++generation_;
     rebuildIndex();
     sourceLabel_ = catalogSourceLabel(sourceUrl.empty() ? kDefaultCatalogSourceUrl
                                                         : sourceUrl);

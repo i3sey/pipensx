@@ -1,8 +1,8 @@
 #pragma once
 
+#include <algorithm>
 #include <functional>
 #include <memory>
-#include <numeric>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -245,29 +245,41 @@ private:
 
     struct Slot {
         CatalogEntry entry;
-        std::string kicker;
+        enum class Kicker { Popular, New, Ports } kicker;
     };
 
-    static std::vector<int> newestOrder(const std::vector<CatalogEntry>& all,
-                                        const std::vector<int>& visible) {
-        std::vector<int> order(visible.size());
-        std::iota(order.begin(), order.end(), 0);
-        std::stable_sort(order.begin(), order.end(),
-                         [&](int left, int right) {
-                             return all[static_cast<size_t>(
-                                        visible[static_cast<size_t>(left)])]
-                                        .publishedAt >
-                                    all[static_cast<size_t>(
-                                        visible[static_cast<size_t>(right)])]
-                                        .publishedAt;
-                         });
-        return order;
+    std::string kickerText(Slot::Kicker kicker) const {
+        switch (kicker) {
+        case Slot::Kicker::Popular:
+            return tr("pipensx/catalog/shelf_popular");
+        case Slot::Kicker::New:
+            return tr("pipensx/catalog/shelf_new");
+        case Slot::Kicker::Ports:
+            return tr("pipensx/nav/ports");
+        }
+        return {};
     }
 
     void rebuild() {
-        slots_.clear();
-        if (!catalog_)
+        const uint64_t catalogGeneration =
+            catalog_ ? catalog_->generation() : 0;
+        const uint64_t metadataGeneration =
+            metadata_ ? metadata_->generation() : 0;
+        if (selectionCached_ &&
+            catalogGeneration == selectionCatalogGeneration_ &&
+            metadataGeneration == selectionMetadataGeneration_) {
+            presentSelection();
             return;
+        }
+
+        slots_.clear();
+        selectionCached_ = true;
+        selectionCatalogGeneration_ = catalogGeneration;
+        selectionMetadataGeneration_ = metadataGeneration;
+        if (!catalog_) {
+            presentSelection();
+            return;
+        }
         auto snapshot = catalog_->sharedEntries();
         const std::vector<CatalogEntry>& all = *snapshot;
         std::vector<int> games;
@@ -285,23 +297,13 @@ private:
             else
                 ports.push_back(static_cast<int>(i));
         }
-        bool fallback = false;
-        const std::vector<int> gamesPopular =
-            catalogPopularityOrder(all, games, fallback);
-        const std::vector<int> portsPopular =
-            catalogPopularityOrder(all, ports, fallback);
-        const std::vector<int> gamesNew = newestOrder(all, games);
-        const std::vector<int> portsNew = newestOrder(all, ports);
         std::unordered_set<std::string> used;
-        auto pushSlot = [&](const std::vector<int>& visible, int visIndex,
-                            const std::string& kicker, bool requireArt) {
+        auto pushSlot = [&](int snapshotIndex, Slot::Kicker kicker,
+                            bool requireArt) {
             if (slots_.size() >= kMaxSlots)
                 return;
-            if (visIndex < 0 ||
-                static_cast<size_t>(visIndex) >= visible.size())
-                return;
             const CatalogEntry& entry =
-                all[static_cast<size_t>(visible[static_cast<size_t>(visIndex)])];
+                all[static_cast<size_t>(snapshotIndex)];
             const GameMetadata* meta =
                 metadata_ ? metadata_->findByInfoHash(entry.infoHash) : nullptr;
             if (requireArt && catalogFeaturedImageUrl(entry, meta).empty())
@@ -315,28 +317,56 @@ private:
                 return;
             slots_.push_back({entry, kicker});
         };
-        auto fill = [&](const std::vector<int>& visible,
-                        const std::vector<int>& order,
-                        const std::string& kicker, size_t want,
-                        bool requireArt) {
+        auto fill = [&](const std::vector<int>& visible, bool popular,
+                        Slot::Kicker kicker, size_t want, bool requireArt) {
+            if (slots_.size() >= kMaxSlots)
+                return;
             const size_t before = slots_.size();
-            for (int visIndex : order) {
-                if (slots_.size() - before >= want)
-                    break;
-                pushSlot(visible, visIndex, kicker, requireArt);
+
+            // A heap exposes the next best entry without ordering the unused
+            // tail. Building it is O(n); only candidates actually inspected
+            // for the six hero slots pay O(log n) extraction cost.
+            std::vector<int> candidates = visible;
+            const bool hasPeers = popular && std::any_of(
+                visible.begin(), visible.end(), [&](int index) {
+                    return all[static_cast<size_t>(index)].peerCount > 0;
+                });
+            auto better = [&](int left, int right) {
+                const CatalogEntry& l = all[static_cast<size_t>(left)];
+                const CatalogEntry& r = all[static_cast<size_t>(right)];
+                if (popular && hasPeers && l.peerCount != r.peerCount)
+                    return l.peerCount > r.peerCount;
+                if (l.publishedAt != r.publishedAt)
+                    return l.publishedAt > r.publishedAt;
+                if (popular && !hasPeers && l.size != r.size)
+                    return l.size > r.size;
+                return left < right;
+            };
+            auto lessPreferred = [&](int left, int right) {
+                return better(right, left);
+            };
+            std::make_heap(candidates.begin(), candidates.end(), lessPreferred);
+            while (!candidates.empty() && slots_.size() < kMaxSlots &&
+                   slots_.size() - before < want) {
+                std::pop_heap(candidates.begin(), candidates.end(),
+                              lessPreferred);
+                const int snapshotIndex = candidates.back();
+                candidates.pop_back();
+                pushSlot(snapshotIndex, kicker, requireArt);
             }
         };
-        const std::string popular = tr("pipensx/catalog/shelf_popular");
-        const std::string newest = tr("pipensx/catalog/shelf_new");
-        const std::string portKicker = tr("pipensx/nav/ports");
-        fill(games, gamesPopular, popular, 2, true);
-        fill(games, gamesNew, newest, 2, true);
-        fill(ports, portsPopular, portKicker, 1, true);
-        fill(ports, portsNew, portKicker, 1, true);
-        fill(games, gamesPopular, popular, kMaxSlots, false);
-        fill(games, gamesNew, newest, kMaxSlots, false);
-        fill(ports, portsPopular, portKicker, kMaxSlots, false);
-        fill(ports, portsNew, portKicker, kMaxSlots, false);
+        fill(games, true, Slot::Kicker::Popular, 2, true);
+        fill(games, false, Slot::Kicker::New, 2, true);
+        fill(ports, true, Slot::Kicker::Ports, 1, true);
+        fill(ports, false, Slot::Kicker::Ports, 1, true);
+        fill(games, true, Slot::Kicker::Popular, kMaxSlots, false);
+        fill(games, false, Slot::Kicker::New, kMaxSlots, false);
+        fill(ports, true, Slot::Kicker::Ports, kMaxSlots, false);
+        fill(ports, false, Slot::Kicker::Ports, kMaxSlots, false);
+        presentSelection();
+    }
+
+    void presentSelection() {
         if (heroIndex_ >= static_cast<int>(slots_.size()))
             heroIndex_ = 0;
         paint();
@@ -367,7 +397,7 @@ private:
             metadata_ ? metadata_->findByInfoHash(slot.entry.infoHash)
                       : nullptr;
         const std::string hash = slot.entry.infoHash;
-        hero_->setSlot(slot.entry, meta, slot.kicker, metadata_,
+        hero_->setSlot(slot.entry, meta, kickerText(slot.kicker), metadata_,
                        [this, hash] { openDetail(hash); });
         rebuildDots();
     }
@@ -481,6 +511,9 @@ private:
     std::vector<brls::Box*> dotViews_;
     EmptyStateView* emptyState_ = nullptr;
     std::vector<Slot> slots_;
+    uint64_t selectionCatalogGeneration_ = 0;
+    uint64_t selectionMetadataGeneration_ = 0;
+    bool selectionCached_ = false;
     int heroIndex_ = 0;
     bool visible_ = false;
     bool autoplay_ = true;

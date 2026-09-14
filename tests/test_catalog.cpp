@@ -764,9 +764,11 @@ void testCatalogAndMetadataRefreshAdoptIndependently() {
     mkdir(root.c_str(), 0755);
     {
         CatalogService catalog(root, "");
+        assert(catalog.generation() == 0);
         CatalogEntry oldEntry;
         oldEntry.title = "Old";
         catalog.adopt({oldEntry});
+        assert(catalog.generation() == 1);
         GameMetadataService metadata(root, root + "/missing.json");
 
         CatalogEntry newEntry;
@@ -777,6 +779,7 @@ void testCatalogAndMetadataRefreshAdoptIndependently() {
         const auto first = adoptCatalogRefresh(
             catalog, metadata, std::move(catalogOnly));
         assert(first.catalogChanged && !first.metadataChanged);
+        assert(catalog.generation() == 2);
         assert(catalog.entries()[0].title == "New");
         assert(metadata.size() == 0);
 
@@ -1873,6 +1876,7 @@ void testBundledLangegenSnapshotLoadsWithoutNetwork() {
         CatalogService catalog(root, "resources/catalog/switch_games.json");
         std::string error;
         assert(catalog.load(error));
+        assert(catalog.generation() == 1);
         assert(catalog.entries().size() > 1000);
         assert(catalog.snapshotEpochSec() > 0);
 
