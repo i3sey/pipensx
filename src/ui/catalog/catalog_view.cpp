@@ -7,7 +7,7 @@ brls::RecyclerCell* CatalogDataSource::cellForRow(
     if (index.row == 0)
         return recycler->dequeueReusableCell("TopInset");
 
-    if (indices_.empty()) {
+    if (!result_ || result_->indices.empty()) {
         auto* cell = static_cast<TextMessageCell*>(
             recycler->dequeueReusableCell("Message"));
         cell->setMessage(message_);
@@ -21,7 +21,7 @@ brls::RecyclerCell* CatalogDataSource::cellForRow(
 
     const int start = (index.row - headerRowCount()) * grid::kColumns;
     const int end = std::min(start + grid::kColumns,
-                             static_cast<int>(indices_.size()));
+                             static_cast<int>(result_->indices.size()));
     std::vector<GridCardInfo> infos;
     infos.reserve(static_cast<size_t>(grid::kColumns));
     for (int i = start; i < end; ++i)
@@ -40,7 +40,7 @@ void CatalogDataSource::repaintCell(brls::RecyclerCell* cell) {
     const brls::IndexPath index = cell->getIndexPath();
     if (index.row == 0)
         return;
-    if (indices_.empty()) {
+    if (!result_ || result_->indices.empty()) {
         if (auto* message = dynamic_cast<TextMessageCell*>(cell))
             message->setMessage(message_);
         return;
@@ -52,7 +52,8 @@ void CatalogDataSource::repaintCell(brls::RecyclerCell* cell) {
     };
     const int start = (index.row - headerRowCount()) * grid::kColumns;
     const int end =
-        std::min(start + grid::kColumns, static_cast<int>(indices_.size()));
+        std::min(start + grid::kColumns,
+                 static_cast<int>(result_->indices.size()));
     std::vector<GridCardInfo> infos;
     infos.reserve(static_cast<size_t>(grid::kColumns));
     for (int row = start; row < end; ++row)
@@ -63,7 +64,7 @@ void CatalogDataSource::repaintCell(brls::RecyclerCell* cell) {
 
 void CatalogDataSource::didSelectRowAt(brls::RecyclerFrame*,
                                        brls::IndexPath) {
-    if (indices_.empty())
+    if (!result_ || result_->indices.empty())
         owner_->openSearchKeyboard();
 }
 

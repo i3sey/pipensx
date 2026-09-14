@@ -28,6 +28,7 @@ void testMissingFileIsEmptyNotAnError() {
     FavoritesService favorites(Root);
     std::string error;
     assert(favorites.load(error));
+    assert(favorites.generation() == 1);
     assert(error.empty());
     assert(favorites.items().empty());
     assert(!favorites.contains("abc"));
@@ -41,6 +42,7 @@ void testTogglePersistsAndFoldsCase() {
 
     // Catalog hashes arrive upper-case; task ids elsewhere are lower-case.
     assert(favorites.toggle("AABBCCDD", "Some Game", error));
+    assert(favorites.generation() == 2);
     assert(error.empty());
     assert(favorites.contains("aabbccdd"));
     assert(favorites.contains("AABBCCDD"));

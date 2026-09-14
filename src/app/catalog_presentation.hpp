@@ -119,23 +119,46 @@ struct CatalogBrowseResult {
     std::shared_ptr<const std::vector<CatalogEntry>> catalog;
     std::shared_ptr<const GameMetadataIndexSnapshot> metadata;
     std::vector<int> indices;
-    // Kept after row arrays are moved into the UI data source; the next
-    // worker compares this compact identity vector off-thread.
+    // Compact identity vector used by the next worker to decide whether the
+    // recycler structure changed.
     std::vector<std::string> structureHashes;
     std::vector<std::string> titles;
     std::vector<std::string> iconUrls;
     std::vector<uint8_t> iconPreserveAspect;
     std::vector<std::string> badges;
+    // Badge shown when there is no active download task (currently the
+    // installed marker). Keeping it separate lets task changes be patched
+    // without rebuilding/filtering/sorting the catalogue.
+    std::vector<std::string> baseBadges;
     std::vector<uint8_t> favorite;
     std::vector<uint8_t> selected;
     std::vector<uint8_t> selectable;
     std::vector<std::string> genres;
     std::unordered_map<std::string, size_t> rowByInfoHash;
+    // A catalogue may contain more than one release for the same hash. The
+    // fast live-state path must update every matching card without scanning
+    // the filtered result.
+    std::unordered_map<std::string, std::vector<size_t>> rowsByInfoHash;
     std::unordered_set<std::string> selectedHashes;
     size_t count = 0;
     bool hasRegularEntries = false;
     bool structureChanged = true;
 };
+
+// Patch presentation-only state in an already built browse result. Returned
+// row numbers are the cards that actually changed and can be repainted by a
+// virtualized UI without reloading the recycler.
+std::vector<size_t> patchCatalogTaskBadge(CatalogBrowseResult& result,
+                                          const std::string& infoHash,
+                                          bool hasTask,
+                                          const std::string& badge);
+std::vector<size_t> patchCatalogFavorite(CatalogBrowseResult& result,
+                                         const std::string& infoHash,
+                                         bool favorite);
+std::vector<size_t> patchCatalogInstalledBadge(
+    CatalogBrowseResult& result, const std::string& infoHash,
+    const std::unordered_set<std::string>& installedTitleIds,
+    const std::string& badge);
 
 // Returns false when cancelled. The predicate is sampled throughout joins,
 // filtering, cancellable merge-sort passes, presentation and comparison.

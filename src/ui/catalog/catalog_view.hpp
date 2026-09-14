@@ -4,6 +4,7 @@
 #include <functional>
 #include <memory>
 #include <numeric>
+#include <optional>
 #include <string>
 #include <thread>
 #include <ctime>
@@ -39,45 +40,29 @@ class CatalogDataSource : public brls::RecyclerDataSource {
 public:
     explicit CatalogDataSource(CatalogView* owner) : owner_(owner) {}
 
-    void setEntries(std::shared_ptr<const std::vector<CatalogEntry>> snapshot,
-                    std::vector<int> indices,
-                    std::vector<std::string> stateBadges,
-                    std::vector<std::string> gameNames,
-                    std::vector<std::string> iconUrls,
-                    std::vector<uint8_t> iconPreserveAspect,
-                    std::vector<uint8_t> selected,
-                    std::vector<uint8_t> selectable,
-                    std::vector<uint8_t> favorite,
+    void setEntries(std::shared_ptr<CatalogBrowseResult> result,
                     GameMetadataService* metadata) {
-        snapshot_ = snapshot ? std::move(snapshot)
-                             : std::make_shared<const std::vector<CatalogEntry>>();
-        indices_ = std::move(indices);
-        stateBadges_ = std::move(stateBadges);
-        gameNames_ = std::move(gameNames);
-        iconUrls_ = std::move(iconUrls);
-        iconPreserveAspect_ = std::move(iconPreserveAspect);
-        selected_ = std::move(selected);
-        selectable_ = std::move(selectable);
-        favorite_ = std::move(favorite);
+        result_ = result ? std::move(result)
+                         : std::make_shared<CatalogBrowseResult>();
         metadata_ = metadata;
-        selectionMode_ = false;
     }
     GridCardInfo cardInfo(int index) const { return makeInfo(index); }
     void setMessage(const std::string& message) { message_ = message; }
     const CatalogEntry* entryAt(int row) const {
-        if (!snapshot_ || row < 0 ||
-            static_cast<size_t>(row) >= indices_.size())
+        if (!result_ || row < 0 ||
+            static_cast<size_t>(row) >= result_->indices.size())
             return nullptr;
-        const int index = indices_[static_cast<size_t>(row)];
+        const int index = result_->indices[static_cast<size_t>(row)];
         if (index < 0 ||
-            static_cast<size_t>(index) >= snapshot_->size())
+            static_cast<size_t>(index) >= result_->catalog->size())
             return nullptr;
-        return &(*snapshot_)[static_cast<size_t>(index)];
+        return &(*result_->catalog)[static_cast<size_t>(index)];
     }
-    size_t entryCount() const { return indices_.size(); }
+    size_t entryCount() const { return result_ ? result_->indices.size() : 0; }
     bool selectableAt(int row) const {
-        return row >= 0 && static_cast<size_t>(row) < selectable_.size() &&
-               selectable_[static_cast<size_t>(row)] != 0;
+        return result_ && row >= 0 &&
+               static_cast<size_t>(row) < result_->selectable.size() &&
+               result_->selectable[static_cast<size_t>(row)] != 0;
     }
 
     // Recycler row layout: [top inset][grid rows of cards].
@@ -88,17 +73,17 @@ public:
     int columnForEntry(int index) const { return index % grid::kColumns; }
 
     int numberOfRows(brls::RecyclerFrame*, int) override {
-        if (indices_.empty())
+        if (!result_ || result_->indices.empty())
             return 2;
         const int gridRows =
-            (static_cast<int>(indices_.size()) + grid::kColumns - 1) /
+            (static_cast<int>(result_->indices.size()) + grid::kColumns - 1) /
             grid::kColumns;
         return headerRowCount() + gridRows;
     }
     float heightForRow(brls::RecyclerFrame*, brls::IndexPath index) override {
         if (index.row == 0)
             return grid::kTopInsetHeight;
-        if (indices_.empty())
+        if (!result_ || result_->indices.empty())
             return 100;
         return grid::kRowHeight;
     }
@@ -114,24 +99,25 @@ private:
         GridCardInfo info;
         info.entryIndex = index;
         info.infoHash = entry ? entry->infoHash : std::string();
-        info.title = row < gameNames_.size() && !gameNames_[row].empty()
-            ? gameNames_[row]
+        info.title = row < result_->titles.size() && !result_->titles[row].empty()
+            ? result_->titles[row]
             : (entry ? entry->title : std::string());
         const std::string badge =
-            row < stateBadges_.size() ? stateBadges_[row] : std::string();
+            row < result_->badges.size() ? result_->badges[row] : std::string();
         info.subIsBadge = !badge.empty();
         const uint64_t size = entry ? entry->size : 0;
         info.sub = info.subIsBadge
             ? badge
             : size ? formatBytes(size)
                    : tr("pipensx/catalog/unknown_size");
-        info.iconUrl = row < iconUrls_.size() ? iconUrls_[row] : std::string();
-        info.iconPreserveAspect = row < iconPreserveAspect_.size() &&
-                                  iconPreserveAspect_[row] != 0;
-        info.selectionMode = selectionMode_;
-        info.selected = row < selected_.size() && selected_[row] != 0;
-        info.selectable = row < selectable_.size() && selectable_[row] != 0;
-        info.favorite = row < favorite_.size() && favorite_[row] != 0;
+        info.iconUrl = row < result_->iconUrls.size()
+            ? result_->iconUrls[row] : std::string();
+        info.iconPreserveAspect = row < result_->iconPreserveAspect.size() &&
+                                  result_->iconPreserveAspect[row] != 0;
+        info.selectionMode = false;
+        info.selected = row < result_->selected.size() && result_->selected[row] != 0;
+        info.selectable = row < result_->selectable.size() && result_->selectable[row] != 0;
+        info.favorite = row < result_->favorite.size() && result_->favorite[row] != 0;
         return info;
     }
 
@@ -142,26 +128,17 @@ private:
             return;
         const int start = (row - headerRowCount()) * grid::kColumns;
         const int end = std::min(start + grid::kColumns,
-                                 static_cast<int>(iconUrls_.size()));
+                                 static_cast<int>(result_->iconUrls.size()));
         for (int i = start; i < end; ++i)
-            metadata_->prefetchImage(iconUrls_[static_cast<size_t>(i)],
+            metadata_->prefetchImage(result_->iconUrls[static_cast<size_t>(i)],
                                      GameMetadataService::kImageDimGrid);
     }
 
     CatalogView* owner_;
-    std::shared_ptr<const std::vector<CatalogEntry>> snapshot_ =
-        std::make_shared<const std::vector<CatalogEntry>>();
-    std::vector<int> indices_;
-    std::vector<std::string> stateBadges_;
-    std::vector<std::string> gameNames_;
-    std::vector<std::string> iconUrls_;
-    std::vector<uint8_t> iconPreserveAspect_;
-    std::vector<uint8_t> selected_;
-    std::vector<uint8_t> selectable_;
-    std::vector<uint8_t> favorite_;
+    std::shared_ptr<CatalogBrowseResult> result_ =
+        std::make_shared<CatalogBrowseResult>();
     GameMetadataService* metadata_ = nullptr;
     std::string message_;
-    bool selectionMode_ = false;
 };
 // Compact magnifier button for the O2 header. The icon is vector-drawn
 // (circle + handle) so it stays crisp and theme-aware without relying on
@@ -335,13 +312,6 @@ public:
             });
         }
         observedSettingsGeneration_ = settings_ ? settings_->generation() : 0;
-        {
-            const auto tasks = manager_->snapshotUi();
-            uint64_t ids = 0;
-            bool installed = false;
-            hashTasks(tasks, ids, taskSignature_, installed);
-            taskIdSignature_ = ids;
-        }
         timer_.setCallback([this] { refreshLiveState(); });
         timer_.start(1000);
         scheduleStorageRefresh();
@@ -418,17 +388,14 @@ public:
             else
                 catalogFailures_[hashLower] = failure;
         };
-        // O12: the detail page fires this from its destructor (re-badge the
-        // list). Running the rebuild synchronously there recycles the grid
-        // cells mid-pop, so borealis restores focus to a stale cell and
-        // smooth-scrolls to it for one frame before onDetailClosed re-seats —
-        // the visible "scroll a hair and snap back". Defer it so the original
-        // focused card survives the pop; the rebuild + focus re-seat then land
-        // together in the next frame's sync pass, before any draw.
-        auto onChange = [this, alive = alive_] {
-            brls::sync([this, alive] {
+        // The detail page also fires this from its destructor. Defer the
+        // comparison until the pop has completed; an unchanged close is then
+        // a no-op, while a real state change only rebinds the affected row.
+        const std::string changedHash = lowerAscii(entry.infoHash);
+        auto onChange = [this, alive = alive_, changedHash] {
+            brls::sync([this, alive, changedHash] {
                 if (alive->load())
-                    rebuildEntries();
+                    syncEntryState(changedHash);
             });
         };
         // O12: remember which card opened the page. On the way back the
@@ -526,7 +493,16 @@ private:
                 tr("pipensx/catalog/favorites_failed", error));
             return;
         }
-        rebuildEntries();
+        const std::string hashLower = lowerAscii(hash);
+        favoriteHashes_.insert(hashLower);
+        if (!favorites_->contains(hash))
+            favoriteHashes_.erase(hashLower);
+        if (favoritesOnly_)
+            rebuildEntries(true);
+        else if (publishedBrowse_)
+            repaintRows(patchCatalogFavorite(
+                *publishedBrowse_, hashLower,
+                favoriteHashes_.count(hashLower) != 0));
     }
 
     struct BrowseJob {
@@ -560,14 +536,31 @@ private:
         job.request.installedBadge = tr("pipensx/catalog/badge_installed");
         if (installed_)
             job.request.installedTitleIds = installed_->titleIds();
+        favoriteHashes_.clear();
         if (favorites_) {
             for (const FavoriteEntry& favorite : favorites_->items())
-                job.request.favoriteHashes.insert(
-                    lowerAscii(favorite.infoHash));
+                favoriteHashes_.insert(lowerAscii(favorite.infoHash));
+            job.request.favoriteHashes = favoriteHashes_;
+            observedFavoritesGeneration_ = favorites_->generation();
         }
-        for (const DownloadTask& task : manager_->snapshotUi())
-            job.request.taskBadges[lowerAscii(task.id)] =
-                badgeForStatus(task.status);
+        const auto tasks = manager_->snapshotUi();
+        std::unordered_map<std::string, DownloadStatus> nextTaskStatuses;
+        nextTaskStatuses.reserve(tasks.size());
+        for (const DownloadTask& task : tasks) {
+            const std::string hash = lowerAscii(task.id);
+            nextTaskStatuses[hash] = task.status;
+            job.request.taskBadges[hash] = badgeForStatus(task.status);
+            const auto before = taskStatuses_.find(hash);
+            if (liveStateInitialized_ && installed_ &&
+                task.status == DownloadStatus::Installed &&
+                (before == taskStatuses_.end() ||
+                 before->second != DownloadStatus::Installed))
+                pendingInstalledHashes_.insert(hash);
+        }
+        taskStatuses_ = std::move(nextTaskStatuses);
+        liveStateInitialized_ = true;
+        if (!pendingInstalledHashes_.empty())
+            refreshInstalledAsync();
         observedCatalog_ = job.request.catalog;
         observedMetadataGeneration_ =
             job.request.metadata ? job.request.metadata->generation : 0;
@@ -651,17 +644,33 @@ private:
         const bool structureChanged = result->structureChanged;
         const size_t count = result->count;
         const bool hasRegularEntries = result->hasRegularEntries;
-        selectedHashes_ = std::move(result->selectedHashes);
-        genreSheetGenres_ = std::move(result->genres);
+        // A task/favorite can change while this full browse is being built.
+        // Reconcile the finished presentation with the small live-state maps;
+        // this is part of applying an already-full rebuild, never the timer's
+        // per-task path.
+        for (size_t row = 0; row < result->structureHashes.size(); ++row) {
+            if (row < result->baseBadges.size() && row < result->badges.size())
+                result->badges[row] = result->baseBadges[row];
+            if (row < result->selectable.size())
+                result->selectable[row] = 1;
+            if (row < result->favorite.size())
+                result->favorite[row] = favoriteHashes_.count(
+                    result->structureHashes[row]) ? 1 : 0;
+        }
+        for (const auto& task : taskStatuses_)
+            patchCatalogTaskBadge(*result, task.first, true,
+                                  badgeForStatus(task.second));
+        if (installed_) {
+            const auto installedIds = installed_->titleIds();
+            for (const auto& rows : result->rowsByInfoHash)
+                patchCatalogInstalledBadge(
+                    *result, rows.first, installedIds,
+                    tr("pipensx/catalog/badge_installed"));
+        }
+        selectedHashes_ = result->selectedHashes;
+        genreSheetGenres_ = result->genres;
         publishedBrowse_ = result;
-        dataSource_->setEntries(result->catalog, std::move(result->indices),
-                                std::move(result->badges),
-                                std::move(result->titles),
-                                std::move(result->iconUrls),
-                                std::move(result->iconPreserveAspect),
-                                std::move(result->selected),
-                                std::move(result->selectable),
-                                std::move(result->favorite), metadata_);
+        dataSource_->setEntries(result, metadata_);
         dataSource_->setMessage(query_.empty()
             ? tr("pipensx/catalog/empty_inline")
             : tr("pipensx/catalog/nothing_found_inline"));
@@ -1163,20 +1172,98 @@ private:
         updateFreshnessLabel();
     }
 
-    static void hashTasks(const std::vector<DownloadTask>& tasks,
-                          uint64_t& ids, uint64_t& full, bool& anyInstalled) {
-        ids = full = 1469598103934665603ULL;
-        anyInstalled = false;
-        for (const DownloadTask& task : tasks) {
-            for (unsigned char c : task.id) {
-                ids = (ids ^ c) * 1099511628211ULL;
-                full = (full ^ c) * 1099511628211ULL;
-            }
-            full = (full ^ static_cast<uint64_t>(task.status)) *
-                   1099511628211ULL;
-            anyInstalled = anyInstalled ||
-                           task.status == DownloadStatus::Installed;
+    void repaintRows(const std::vector<size_t>& rows) {
+        if (rows.empty())
+            return;
+        std::unordered_set<int> recyclerRows;
+        recyclerRows.reserve(rows.size());
+        for (size_t row : rows)
+            recyclerRows.insert(dataSource_->rowForEntry(
+                static_cast<int>(row)));
+        for (auto* cell : visibleCells<brls::RecyclerCell>(recycler_)) {
+            if (recyclerRows.count(cell->getIndexPath().row) != 0)
+                dataSource_->repaintCell(cell);
         }
+    }
+
+    void patchTaskState(const std::string& hash,
+                        const std::optional<DownloadStatus>& status) {
+        const std::string normalized = lowerAscii(hash);
+        if (status)
+            taskStatuses_[normalized] = *status;
+        else
+            taskStatuses_.erase(normalized);
+        if (!publishedBrowse_)
+            return;
+        const std::string badge = status ? badgeForStatus(*status)
+                                         : std::string();
+        repaintRows(patchCatalogTaskBadge(
+            *publishedBrowse_, normalized, status.has_value(), badge));
+        if (status)
+            selectedHashes_.erase(normalized);
+    }
+
+    void patchFavoriteState(const std::string& hash, bool favorite) {
+        const std::string normalized = lowerAscii(hash);
+        if (favorite)
+            favoriteHashes_.insert(normalized);
+        else
+            favoriteHashes_.erase(normalized);
+        if (favoritesOnly_) {
+            rebuildEntries(true);
+            return;
+        }
+        if (publishedBrowse_)
+            repaintRows(patchCatalogFavorite(
+                *publishedBrowse_, normalized, favorite));
+    }
+
+    // Detail callbacks are deliberately allowed to be redundant. Closing a
+    // page always calls this, but no UI work is scheduled unless the task or
+    // favorite for that exact hash really changed.
+    void syncEntryState(const std::string& hash) {
+        const std::string normalized = lowerAscii(hash);
+        const auto task = manager_->snapshotUi(normalized);
+        const auto oldTask = taskStatuses_.find(normalized);
+        if (task) {
+            if (oldTask == taskStatuses_.end() ||
+                oldTask->second != task->status)
+                patchTaskState(normalized, task->status);
+        } else if (oldTask != taskStatuses_.end()) {
+            patchTaskState(normalized, std::nullopt);
+        }
+        if (favorites_) {
+            const bool favorite = favorites_->contains(normalized);
+            if ((favoriteHashes_.count(normalized) != 0) != favorite)
+                patchFavoriteState(normalized, favorite);
+        }
+    }
+
+    void syncFavoriteChanges() {
+        if (!favorites_ ||
+            favorites_->generation() == observedFavoritesGeneration_)
+            return;
+        observedFavoritesGeneration_ = favorites_->generation();
+        std::unordered_set<std::string> next;
+        for (const FavoriteEntry& favorite : favorites_->items())
+            next.insert(lowerAscii(favorite.infoHash));
+        if (next == favoriteHashes_)
+            return;
+        if (favoritesOnly_) {
+            favoriteHashes_ = std::move(next);
+            rebuildEntries(true);
+            return;
+        }
+        std::vector<std::pair<std::string, bool>> changes;
+        changes.reserve(next.size() + favoriteHashes_.size());
+        for (const std::string& hash : favoriteHashes_)
+            if (next.count(hash) == 0)
+                changes.emplace_back(hash, false);
+        for (const std::string& hash : next)
+            if (favoriteHashes_.count(hash) == 0)
+                changes.emplace_back(hash, true);
+        for (const auto& change : changes)
+            patchFavoriteState(change.first, change.second);
     }
 
     void refreshLiveState() {
@@ -1201,32 +1288,44 @@ private:
             rebuildEntries(true);
             return;
         }
-        bool settingsChanged = false;
+        syncFavoriteChanges();
         if (settings_ && settings_->generation() !=
                              observedSettingsGeneration_) {
             observedSettingsGeneration_ = settings_->generation();
-            settingsChanged = true;
+            // Settings do not participate in catalogue ordering. Storage
+            // refresh below handles the only filter input they can affect.
+            updateHeader();
         }
         const auto tasks = manager_->snapshotUi();
-        uint64_t ids = 0;
-        uint64_t signature = 0;
-        bool installedFinished = false;
-        hashTasks(tasks, ids, signature, installedFinished);
-        if (signature != taskSignature_) {
-            const bool idsChanged = ids != taskIdSignature_;
-            taskSignature_ = signature;
-            taskIdSignature_ = ids;
-            if (installedFinished && installed_ &&
-                installedRefreshSignature_ != signature) {
-                installedRefreshSignature_ = signature;
-                refreshInstalledAsync();
-            }
-            (void)idsChanged;
-            rebuildEntries();
-            return;
+        std::unordered_map<std::string, DownloadStatus> nextTasks;
+        nextTasks.reserve(tasks.size());
+        std::unordered_set<std::string> installedTransitions;
+        for (const DownloadTask& task : tasks) {
+            const std::string hash = lowerAscii(task.id);
+            nextTasks[hash] = task.status;
+            const auto before = taskStatuses_.find(hash);
+            if (task.status == DownloadStatus::Installed &&
+                (before == taskStatuses_.end() ||
+                 before->second != DownloadStatus::Installed))
+                installedTransitions.insert(hash);
         }
-        if (settingsChanged)
-            rebuildEntries();
+        std::vector<std::string> removed;
+        removed.reserve(taskStatuses_.size());
+        for (const auto& previous : taskStatuses_)
+            if (nextTasks.count(previous.first) == 0)
+                removed.push_back(previous.first);
+        for (const std::string& hash : removed)
+            patchTaskState(hash, std::nullopt);
+        for (const auto& task : nextTasks) {
+            const auto before = taskStatuses_.find(task.first);
+            if (before == taskStatuses_.end() || before->second != task.second)
+                patchTaskState(task.first, task.second);
+        }
+        if (!installedTransitions.empty() && installed_) {
+            pendingInstalledHashes_.insert(installedTransitions.begin(),
+                                           installedTransitions.end());
+            refreshInstalledAsync();
+        }
     }
 
     void scheduleStorageRefresh() {
@@ -1253,8 +1352,11 @@ private:
                 if (!alive->load())
                     return;
                 storageRefreshInFlight_ = false;
+                const bool filterInputChanged =
+                    storage_.available != storage.available ||
+                    storage_.freeBytes != storage.freeBytes;
                 storage_ = storage;
-                if (fitsOnly_)
+                if (fitsOnly_ && filterInputChanged)
                     rebuildEntries();
             });
         });
@@ -1264,19 +1366,31 @@ private:
         if (installedRefreshInFlight_)
             return;
         installedRefreshInFlight_ = true;
+        std::unordered_set<std::string> hashes;
+        hashes.swap(pendingInstalledHashes_);
         auto alive = alive_;
         InstalledTitleService* installed = installed_;
-        brls::async([this, alive, installed] {
+        brls::async([this, alive, installed, hashes = std::move(hashes)] {
             std::string error;
             bool ok = installed->refresh(error);
-            brls::sync([this, alive, ok, error] {
+            const auto installedIds = ok ? installed->titleIds()
+                                         : std::unordered_set<std::string>();
+            brls::sync([this, alive, ok, error, hashes,
+                        installedIds = std::move(installedIds)] {
                 if (!alive->load())
                     return;
                 installedRefreshInFlight_ = false;
                 if (!ok)
                     diagnostic_error("installed", "auto_refresh", "error=%s",
                                      error.c_str());
-                rebuildEntries();
+                if (ok && publishedBrowse_) {
+                    for (const std::string& hash : hashes)
+                        repaintRows(patchCatalogInstalledBadge(
+                            *publishedBrowse_, hash, installedIds,
+                            tr("pipensx/catalog/badge_installed")));
+                }
+                if (!pendingInstalledHashes_.empty())
+                    refreshInstalledAsync();
             });
         });
     }
@@ -1553,7 +1667,7 @@ private:
     std::unique_ptr<BrowseJob> pendingBrowse_;
     std::shared_ptr<CatalogBrowseResult> deferredBrowse_;
     bool deferredPreserveViewport_ = false;
-    std::shared_ptr<const CatalogBrowseResult> publishedBrowse_;
+    std::shared_ptr<CatalogBrowseResult> publishedBrowse_;
     // Session-only view filters: deliberately not persisted, so a relaunch
     // always comes back to the full catalog.
     bool favoritesOnly_ = false;
@@ -1564,10 +1678,12 @@ private:
     uint64_t observedSettingsGeneration_ = 0;
     std::shared_ptr<const std::vector<CatalogEntry>> observedCatalog_;
     uint64_t observedMetadataGeneration_ = 0;
-    uint64_t taskSignature_ = 0;
-    uint64_t taskIdSignature_ = 0;
-    uint64_t installedRefreshSignature_ = 0;
+    uint64_t observedFavoritesGeneration_ = 0;
+    std::unordered_map<std::string, DownloadStatus> taskStatuses_;
+    std::unordered_set<std::string> favoriteHashes_;
+    std::unordered_set<std::string> pendingInstalledHashes_;
     bool installedRefreshInFlight_ = false;
+    bool liveStateInitialized_ = false;
     static constexpr uint64_t kStorageRefreshIntervalMs = 2000;
     StorageSpaceSnapshot storage_;
     uint64_t lastStorageRefreshMs_ = 0;

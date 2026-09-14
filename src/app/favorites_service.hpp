@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -40,6 +41,7 @@ public:
 
     const std::vector<FavoriteEntry>& items() const { return items_; }
     const std::string& path() const { return path_; }
+    uint64_t generation() const { return generation_; }
 
 private:
     bool write(const std::vector<FavoriteEntry>& items,
@@ -47,6 +49,7 @@ private:
 
     std::string path_;
     std::vector<FavoriteEntry> items_;
+    uint64_t generation_ = 0;
 };
 
 } // namespace pipensx

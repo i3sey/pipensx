@@ -469,10 +469,12 @@ bool buildCatalogBrowse(const CatalogBrowseRequest& request,
     result.iconUrls.reserve(count);
     result.iconPreserveAspect.reserve(count);
     result.badges.reserve(count);
+    result.baseBadges.reserve(count);
     result.favorite.reserve(count);
     result.selected.reserve(count);
     result.selectable.reserve(count);
     result.rowByInfoHash.reserve(count);
+    result.rowsByInfoHash.reserve(count);
     result.structureHashes.reserve(count);
     for (size_t rowIndex = 0; rowIndex < count; ++rowIndex) {
         if ((rowIndex & 127u) == 0 && isCancelled())
@@ -487,21 +489,24 @@ bool buildCatalogBrowse(const CatalogBrowseRequest& request,
         const GameMetadata* meta =
             result.metadata->findByInfoHash(entry.infoHash);
         CatalogRowPresentation presentation = resolveCatalogRow(entry, meta);
-        std::string badge = selectable ? std::string() : task->second;
-        if (selectable && !presentation.titleId.empty() &&
+        std::string baseBadge;
+        if (!presentation.titleId.empty() &&
             request.installedTitleIds.count(
                 upperAscii(presentation.titleId)) != 0)
-            badge = request.installedBadge;
+            baseBadge = request.installedBadge;
+        std::string badge = selectable ? baseBadge : task->second;
         result.titles.push_back(std::move(presentation.title));
         result.iconUrls.push_back(std::move(presentation.iconUrl));
         result.iconPreserveAspect.push_back(
             presentation.iconPreserveAspect ? 1 : 0);
         result.badges.push_back(std::move(badge));
+        result.baseBadges.push_back(std::move(baseBadge));
         result.favorite.push_back(request.favoriteHashes.count(hash) ? 1 : 0);
         result.selected.push_back(
             result.selectedHashes.count(hash) ? 1 : 0);
         result.selectable.push_back(selectable ? 1 : 0);
         result.rowByInfoHash.emplace(hash, rowIndex);
+        result.rowsByInfoHash[hash].push_back(rowIndex);
     }
     result.count = count;
     if (request.previous) {
@@ -512,6 +517,90 @@ bool buildCatalogBrowse(const CatalogBrowseRequest& request,
         result.structureChanged = !same;
     }
     return !isCancelled();
+}
+
+std::vector<size_t> patchCatalogTaskBadge(CatalogBrowseResult& result,
+                                          const std::string& infoHash,
+                                          bool hasTask,
+                                          const std::string& badge) {
+    std::vector<size_t> changed;
+    const auto found = result.rowsByInfoHash.find(foldAscii(infoHash));
+    if (found == result.rowsByInfoHash.end())
+        return changed;
+    for (size_t row : found->second) {
+        if (row >= result.badges.size() || row >= result.baseBadges.size() ||
+            row >= result.selectable.size() || row >= result.selected.size())
+            continue;
+        const std::string& nextBadge = hasTask ? badge : result.baseBadges[row];
+        const uint8_t nextSelectable = hasTask ? 0 : 1;
+        const bool rowChanged = result.badges[row] != nextBadge ||
+            result.selectable[row] != nextSelectable ||
+            (hasTask && result.selected[row] != 0);
+        result.badges[row] = nextBadge;
+        result.selectable[row] = nextSelectable;
+        if (hasTask) {
+            result.selected[row] = 0;
+            result.selectedHashes.erase(foldAscii(infoHash));
+        }
+        if (rowChanged)
+            changed.push_back(row);
+    }
+    return changed;
+}
+
+std::vector<size_t> patchCatalogFavorite(CatalogBrowseResult& result,
+                                         const std::string& infoHash,
+                                         bool favorite) {
+    std::vector<size_t> changed;
+    const auto found = result.rowsByInfoHash.find(foldAscii(infoHash));
+    if (found == result.rowsByInfoHash.end())
+        return changed;
+    for (size_t row : found->second) {
+        if (row >= result.favorite.size() ||
+            result.favorite[row] == static_cast<uint8_t>(favorite))
+            continue;
+        result.favorite[row] = favorite ? 1 : 0;
+        changed.push_back(row);
+    }
+    return changed;
+}
+
+std::vector<size_t> patchCatalogInstalledBadge(
+    CatalogBrowseResult& result, const std::string& infoHash,
+    const std::unordered_set<std::string>& installedTitleIds,
+    const std::string& badge) {
+    std::vector<size_t> changed;
+    const auto found = result.rowsByInfoHash.find(foldAscii(infoHash));
+    if (found == result.rowsByInfoHash.end())
+        return changed;
+    for (size_t row : found->second) {
+        if (row >= result.baseBadges.size() || row >= result.badges.size() ||
+            row >= result.selectable.size())
+            continue;
+        if (row >= result.indices.size())
+            continue;
+        const int entryIndex = result.indices[row];
+        if (entryIndex < 0 || !result.catalog ||
+            static_cast<size_t>(entryIndex) >= result.catalog->size())
+            continue;
+        const CatalogEntry& entry =
+            (*result.catalog)[static_cast<size_t>(entryIndex)];
+        const GameMetadata* meta = result.metadata
+            ? result.metadata->findByInfoHash(entry.infoHash) : nullptr;
+        const std::string titleId = resolveCatalogRow(entry, meta).titleId;
+        const bool installed = !titleId.empty() &&
+            installedTitleIds.count(upperAscii(titleId)) != 0;
+        const std::string next = installed ? badge : std::string();
+        if (result.baseBadges[row] == next)
+            continue;
+        const std::string oldBase = result.baseBadges[row];
+        result.baseBadges[row] = next;
+        if (result.selectable[row] != 0 && result.badges[row] == oldBase) {
+            result.badges[row] = next;
+            changed.push_back(row);
+        }
+    }
+    return changed;
 }
 
 CatalogBrowseGenerationQueue::Ticket

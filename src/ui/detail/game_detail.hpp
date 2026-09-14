@@ -682,7 +682,8 @@ private:
             return;
         }
         refreshFavoriteButton();
-        // The catalog rebuilds its grid (and the star badge) on this.
+        // The catalog patches this entry's star (or its active favorites
+        // filter) on this notification.
         if (onChange_)
             onChange_();
     }

@@ -85,6 +85,7 @@ bool FavoritesService::load(std::string& error) {
                     std::strerror(errno);
             return false;
         }
+        ++generation_;
         return true;
     }
 
@@ -98,6 +99,7 @@ bool FavoritesService::load(std::string& error) {
     if (!parse(buffer.str(), parsed, error))
         return false;
     items_ = std::move(parsed);
+    ++generation_;
     return true;
 }
 
@@ -137,6 +139,7 @@ bool FavoritesService::toggle(const std::string& infoHash,
     if (!write(next, error))
         return false;
     items_ = std::move(next);
+    ++generation_;
     return adding;
 }
 

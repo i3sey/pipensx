@@ -67,6 +67,9 @@ using pipensx::CatalogBrowseResult;
 using pipensx::CatalogSortMode;
 using pipensx::GameMetadataIndexSnapshot;
 using pipensx::buildCatalogBrowse;
+using pipensx::patchCatalogFavorite;
+using pipensx::patchCatalogInstalledBadge;
+using pipensx::patchCatalogTaskBadge;
 
 namespace {
 
@@ -2003,8 +2006,25 @@ void testCatalogBrowseBuilder() {
     assert(result.selected[0] == 1 && result.selected[1] == 0);
     assert(result.selectedHashes.count("aaaaaaaa") == 0);
     assert(result.rowByInfoHash.at("aaaaaaaa") == 1);
+    assert(result.rowsByInfoHash.at("aaaaaaaa") ==
+           std::vector<size_t>{1});
     assert(result.hasRegularEntries);
     assert((result.genres == std::vector<std::string>{"Action", "Puzzle"}));
+
+    // Presentation-only changes preserve order and touch only the indexed
+    // row; no filter/sort pass is involved.
+    const std::vector<std::string> structure = result.structureHashes;
+    assert(patchCatalogTaskBadge(result, "AAAAAAAA", false, "") ==
+           std::vector<size_t>{1});
+    assert(result.badges[1].empty());
+    assert(result.selectable[1] == 1);
+    assert(patchCatalogFavorite(result, "DDDDDDDD", false) ==
+           std::vector<size_t>{0});
+    assert(result.favorite[0] == 0);
+    assert(patchCatalogInstalledBadge(result, "dddddddd", {}, "Installed") ==
+           std::vector<size_t>{0});
+    assert(result.badges[0].empty());
+    assert(result.structureHashes == structure);
 
     request.taskBadges.clear();
     request.installedTitleIds.clear();
