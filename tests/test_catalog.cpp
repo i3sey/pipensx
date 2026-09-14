@@ -1664,6 +1664,98 @@ void testImageNetworkThrottledDuringActiveTransfer() {
     rmdir(root.c_str());
 }
 
+// Network waits have their own workers. Even when both are occupied, a saved
+// installed-title icon must still reach the local reader/decoder immediately.
+void testLocalImageBypassesBlockedNetworkWorkers() {
+    const std::string root = "/tmp/pipensx-image-priority-test-" +
+                             std::to_string(static_cast<long long>(getpid()));
+    const std::string iconPath = root + "/saved-icon.png";
+    mkdir(root.c_str(), 0755);
+    const std::vector<uint8_t> png {
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+        0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+        0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+        0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+        0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41,
+        0x54, 0x08, 0xd7, 0x63, 0xf8, 0xcf, 0xc0, 0xf0,
+        0x1f, 0x00, 0x05, 0x00, 0x01, 0xff, 0x89, 0x99,
+        0x3d, 0x1d, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45,
+        0x4e, 0x44, 0xae, 0x42, 0x60, 0x82
+    };
+    {
+        std::ofstream output(iconPath, std::ios::binary | std::ios::trunc);
+        output.write(reinterpret_cast<const char*>(png.data()),
+                     static_cast<std::streamsize>(png.size()));
+        assert(output.good());
+    }
+
+    std::mutex networkMutex;
+    std::condition_variable networkReady;
+    int networkStarted = 0;
+    bool releaseNetwork = false;
+    GameMetadataService::ImageFetcher blockedFetcher =
+        [&](const std::string&, size_t, std::vector<uint8_t>&,
+            std::string& error, const std::atomic<bool>* stopping) {
+            std::unique_lock<std::mutex> lock(networkMutex);
+            ++networkStarted;
+            networkReady.notify_all();
+            networkReady.wait(lock, [&] {
+                return releaseNetwork ||
+                       (stopping && stopping->load(std::memory_order_relaxed));
+            });
+            error = "test network request released";
+            return false;
+        };
+
+    std::mutex resultMutex;
+    std::condition_variable resultReady;
+    bool localDone = false;
+    GameMetadataService::ImageData localResult;
+    {
+        GameMetadataService service(root, root + "/missing-index.json", {},
+                                    {}, std::move(blockedFetcher));
+        service.requestImage("https://example.invalid/blocked-a.png",
+                             [](GameMetadataService::ImageData) {});
+        service.requestImage("https://example.invalid/blocked-b.png",
+                             [](GameMetadataService::ImageData) {});
+        {
+            std::unique_lock<std::mutex> lock(networkMutex);
+            assert(networkReady.wait_for(lock, std::chrono::seconds(5), [&] {
+                return networkStarted == 2;
+            }));
+        }
+
+        service.requestImage(
+            iconPath,
+            [&](GameMetadataService::ImageData data) {
+                std::lock_guard<std::mutex> lock(resultMutex);
+                localResult = std::move(data);
+                localDone = true;
+                resultReady.notify_all();
+            }, GameMetadataService::kImageDimCard,
+            GameMetadataService::ImagePriority::Current);
+        {
+            std::unique_lock<std::mutex> lock(resultMutex);
+            assert(resultReady.wait_for(lock, std::chrono::seconds(2), [&] {
+                return localDone;
+            }));
+        }
+        assert(localResult);
+        assert(localResult->width == 1 && localResult->height == 1);
+
+        {
+            std::lock_guard<std::mutex> lock(networkMutex);
+            releaseNetwork = true;
+        }
+        networkReady.notify_all();
+    }
+    std::remove(iconPath.c_str());
+    rmdir((root + "/catalog/metadata").c_str());
+    rmdir((root + "/catalog/images").c_str());
+    rmdir((root + "/catalog").c_str());
+    rmdir(root.c_str());
+}
+
 int cancelTracker(void* user) {
     return static_cast<std::atomic<bool>*>(user)->load() ? 1 : 0;
 }
@@ -2239,6 +2331,7 @@ int main() {
     testImageMemoryCache();
     testImageSizeClassesCacheSeparately();
     testImageNetworkThrottledDuringActiveTransfer();
+    testLocalImageBypassesBlockedNetworkWorkers();
     testTrackerCancellation();
     runLiveResolutionIfRequested();
     std::puts("catalog tests passed");

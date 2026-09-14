@@ -223,7 +223,9 @@ inline void loadImageInto(AsyncRgbaImage* image, GameMetadataService* service,
                    const std::string& url,
                    const std::shared_ptr<ImageRequestState>& state,
                    uint64_t generation,
-                   int maxDim = GameMetadataService::kImageDimCard) {
+                   int maxDim = GameMetadataService::kImageDimCard,
+                   GameMetadataService::ImagePriority priority =
+                       GameMetadataService::ImagePriority::Visible) {
     if (!image)
         return;
     if (!service || url.empty()) {
@@ -242,7 +244,7 @@ inline void loadImageInto(AsyncRgbaImage* image, GameMetadataService* service,
     }
     image->resetArtwork();
     state->pending = true;
-    image->setRgbaAsync([service, url, state, generation, maxDim](
+    image->setRgbaAsync([service, url, state, generation, maxDim, priority](
         std::function<void(std::shared_ptr<const std::vector<uint8_t>>,
                            int, int)> done) {
         service->requestImage(url, [done, state, generation](
@@ -262,28 +264,34 @@ inline void loadImageInto(AsyncRgbaImage* image, GameMetadataService* service,
             std::shared_ptr<const std::vector<uint8_t>> pixels(
                 bytes, &bytes->pixels);
             done(std::move(pixels), bytes->width, bytes->height);
-        }, maxDim);
+        }, maxDim, priority, [state, generation] {
+            return state->generation.load() == generation;
+        });
     });
 }
 
 inline void loadImageInto(AsyncRgbaImage* image, GameMetadataService* service,
                    const std::string& url,
-                   int maxDim = GameMetadataService::kImageDimCard) {
+                   int maxDim = GameMetadataService::kImageDimCard,
+                   GameMetadataService::ImagePriority priority =
+                       GameMetadataService::ImagePriority::Visible) {
     auto state = std::make_shared<ImageRequestState>();
     uint64_t generation = ++state->generation;
-    loadImageInto(image, service, url, state, generation, maxDim);
+    loadImageInto(image, service, url, state, generation, maxDim, priority);
 }
 
 inline void setArtworkUrl(AsyncRgbaImage* image, GameMetadataService* service,
                    const std::string& url, std::string& currentUrl,
                    const std::shared_ptr<ImageRequestState>& state,
-                   int maxDim = GameMetadataService::kImageDimCard) {
+                   int maxDim = GameMetadataService::kImageDimCard,
+                   GameMetadataService::ImagePriority priority =
+                       GameMetadataService::ImagePriority::Visible) {
     if (currentUrl == url &&
         (image->hasArtwork() || state->pending.load()))
         return;
     currentUrl = url;
     uint64_t generation = ++state->generation;
-    loadImageInto(image, service, url, state, generation, maxDim);
+    loadImageInto(image, service, url, state, generation, maxDim, priority);
 }
 
 }  // namespace pipensx::ui

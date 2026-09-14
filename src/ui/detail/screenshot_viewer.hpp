@@ -248,7 +248,12 @@ class ScreenshotViewerActivity : public brls::Activity {
                 image_->setRgbaNow(bytes->pixels.data(), bytes->width,
                                    bytes->height);
             });
-        }, GameMetadataService::kImageDimFull);
+        }, GameMetadataService::kImageDimFull,
+           GameMetadataService::ImagePriority::Current,
+           [alive, state, generation] {
+               return !alive.expired() &&
+                      state->generation.load() == generation;
+           });
     }
 
     // Only one of plate/image is ever laid out, so focus has to follow the

@@ -227,7 +227,10 @@ private:
             // rect with the pattern and the margin samples clamped edge texels
             // (stretched bands). Clip off draws only the fitted image rect.
             cover->setClipsToBounds(false);
-            loadImageInto(cover, metadata_, presentation_.coverUrl);
+            loadImageInto(
+                cover, metadata_, presentation_.coverUrl,
+                GameMetadataService::kImageDimCard,
+                GameMetadataService::ImagePriority::Current);
             plate->addView(cover);
             left->addView(plate);
         }

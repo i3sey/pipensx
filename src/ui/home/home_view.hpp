@@ -132,7 +132,8 @@ public:
         setTextIfChanged(placeholder_, placeholderLetter(presentation.title));
         const std::string url = catalogFeaturedImageUrl(entry, meta);
         setArtworkUrl(image_, service, url, currentUrl_, imageState_,
-                      GameMetadataService::kImageDimFull);
+                      GameMetadataService::kImageDimFull,
+                      GameMetadataService::ImagePriority::Current);
     }
 
     void onFocusGained() override {

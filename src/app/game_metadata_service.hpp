@@ -116,6 +116,13 @@ public:
 
     using ImageData = std::shared_ptr<const DecodedImage>;
     using ImageCallback = std::function<void(ImageData)>;
+    using ImageRequestCurrent = std::function<bool()>;
+
+    enum class ImagePriority : uint8_t {
+        Prefetch,
+        Visible,
+        Current,
+    };
 
     // Decode size classes. The memory cache keys on url+class; the on-disk
     // byte cache stays per URL, so a second class costs a decode, never a
@@ -129,6 +136,7 @@ public:
     using MetadataFetcher = std::function<bool(
         const std::string&, size_t, std::vector<uint8_t>&, std::string&,
         const std::atomic<bool>*)>;
+    using ImageFetcher = MetadataFetcher;
 
     explicit GameMetadataService(std::string rootPath,
                                  std::string bundledPath =
@@ -138,7 +146,8 @@ public:
                                      "https://github.com/i3sey/"
                                      "pipensx-metadata/releases/latest/"
                                      "download/manifest.json",
-                                 MetadataFetcher metadataFetcher = {});
+                                 MetadataFetcher metadataFetcher = {},
+                                 ImageFetcher imageFetcher = {});
     ~GameMetadataService();
 
     GameMetadataService(const GameMetadataService&) = delete;
@@ -172,8 +181,13 @@ public:
                         std::string& error) const;
     bool loadImage(const std::string& url, std::vector<uint8_t>& bytes,
                    std::string& error) const;
+    // Jobs are scheduled Current -> Visible -> Prefetch. `current` lets the
+    // service discard a recycled UI cell's superseded request before doing
+    // I/O; callbacks are still completed with nullptr when discarded.
     void requestImage(const std::string& url, ImageCallback callback,
-                      int maxDim = kImageDimCard) const;
+                      int maxDim = kImageDimCard,
+                      ImagePriority priority = ImagePriority::Visible,
+                      ImageRequestCurrent current = {}) const;
     // UI_PLAN F6: synchronous memory-cache probe (bumps LRU recency).
     // Non-null result = decoded RGBA ready for a same-frame texture upload.
     ImageData cachedImage(const std::string& url,
@@ -232,6 +246,7 @@ public:
 private:
     enum class ImageLoadResult {
         Loaded,
+        NeedsNetwork,
         Failed,
     };
 
@@ -245,9 +260,30 @@ private:
     struct ImageJob {
         std::string url;
         int maxDim = kImageDimCard;
+        uint64_t id = 0;
+        uint64_t startedMs = 0;
+        std::vector<uint8_t> bytes;
+        std::string error;
+        bool downloaded = false;
+        std::shared_ptr<std::atomic<bool>> cancelled;
     };
 
-    void imageWorkerMain() const;
+    struct ImageCallbackRegistration {
+        ImageCallback callback;
+        ImageRequestCurrent current;
+    };
+
+    struct ImageRequest {
+        std::vector<ImageCallbackRegistration> callbacks;
+        ImagePriority priority = ImagePriority::Prefetch;
+        uint64_t id = 0;
+        bool prefetch = false;
+        bool inFlight = false;
+        std::shared_ptr<std::atomic<bool>> cancelled;
+    };
+
+    void imageLocalWorkerMain() const;
+    void imageNetworkWorkerMain() const;
     static std::shared_ptr<GameMetadataIndexSnapshot> buildIndex(
         std::vector<GameMetadata> items);
     bool loadCachedSnapshot(MetadataSnapshot& snapshot,
@@ -256,6 +292,20 @@ private:
     ImageLoadResult loadImageInternal(const std::string& url,
                                       std::vector<uint8_t>& bytes,
                                       std::string& error) const;
+    ImageLoadResult probeImageSource(const std::string& url,
+                                     std::vector<uint8_t>& bytes,
+                                     std::string& error) const;
+    bool fetchImageNetwork(const std::string& url,
+                           std::vector<uint8_t>& bytes,
+                           std::string& error,
+                           const std::atomic<bool>* cancelled = nullptr) const;
+    bool popImageJobLocked(std::deque<ImageJob>& queue,
+                           ImageJob& job) const;
+    void eraseImageJobsLocked(const std::string& key, uint64_t id) const;
+    void finishImageJob(const ImageJob& job, ImageData result,
+                        const std::string& error, bool memoryCacheHit) const;
+    void pruneImageQueueLocked(
+        std::vector<ImageCallback>& rejected) const;
     void cacheImageLocked(const std::string& key,
                           ImageData image) const;
 
@@ -265,10 +315,12 @@ private:
     std::string bundledPath_;
     std::string manifestUrl_;
     MetadataFetcher metadataFetcher_;
+    ImageFetcher imageFetcher_;
     mutable std::mutex imageMutex_;
     mutable std::condition_variable imageReady_;
-    mutable std::deque<ImageJob> imageQueue_;
-    mutable std::unordered_map<std::string, std::vector<ImageCallback>>
+    mutable std::deque<ImageJob> imageLocalQueue_;
+    mutable std::deque<ImageJob> imageNetworkQueue_;
+    mutable std::unordered_map<std::string, ImageRequest>
         imageRequests_;
     mutable std::unordered_map<std::string, CachedImage> imageCache_;
     // Old decoded caches are moved here in O(1) and destroyed by an image
@@ -276,9 +328,11 @@ private:
     mutable std::deque<std::unordered_map<std::string, CachedImage>>
         retiredImageCaches_;
     mutable std::unordered_map<std::string, uint64_t> imageRetryAfter_;
-    mutable std::vector<std::thread> imageWorkers_;
+    mutable std::thread imageLocalWorker_;
+    mutable std::vector<std::thread> imageNetworkWorkers_;
     mutable size_t imageCacheBytes_ = 0;
     mutable uint64_t imageAccess_ = 0;
+    mutable uint64_t imageRequestId_ = 0;
     mutable std::atomic<ImageNetwork> imageNetwork_{ImageNetwork::Full};
     mutable std::atomic<bool> stoppingRequested_{false};
     mutable bool stoppingImages_ = false;
