@@ -62,36 +62,6 @@ public:
         metadata_ = metadata;
         selectionMode_ = false;
     }
-    void updateStateBadges(std::vector<std::string> stateBadges) {
-        stateBadges_ = std::move(stateBadges);
-    }
-    bool sameStructure(
-        const std::shared_ptr<const std::vector<CatalogEntry>>& snapshot,
-        const std::vector<int>& indices) const {
-        auto hashAt = [](const std::shared_ptr<
-                             const std::vector<CatalogEntry>>& entries,
-                         const std::vector<int>& picks, int row)
-            -> const std::string* {
-            if (!entries || row < 0 ||
-                static_cast<size_t>(row) >= picks.size())
-                return nullptr;
-            const int index = picks[static_cast<size_t>(row)];
-            if (index < 0 || static_cast<size_t>(index) >= entries->size())
-                return nullptr;
-            return &(*entries)[static_cast<size_t>(index)].infoHash;
-        };
-        if (indices_.size() != indices.size())
-            return false;
-        for (size_t row = 0; row < indices.size(); ++row) {
-            const std::string* before =
-                hashAt(snapshot_, indices_, static_cast<int>(row));
-            const std::string* after =
-                hashAt(snapshot, indices, static_cast<int>(row));
-            if (!before || !after || *before != *after)
-                return false;
-        }
-        return true;
-    }
     GridCardInfo cardInfo(int index) const { return makeInfo(index); }
     void setMessage(const std::string& message) { message_ = message; }
     const CatalogEntry* entryAt(int row) const {
@@ -381,8 +351,12 @@ public:
     void willAppear(bool resetState) override {
         brls::Box::willAppear(resetState);
         timer_.start(1000);
-        if (pendingRebuild_)
-            rebuildEntries();
+        if (deferredBrowse_ && !activityStackHasOverlay()) {
+            auto ready = std::move(deferredBrowse_);
+            const bool preserve = deferredPreserveViewport_;
+            deferredPreserveViewport_ = false;
+            applyBrowseResult(std::move(ready), preserve);
+        }
     }
 
     void willDisappear(bool resetState) override {
@@ -392,6 +366,7 @@ public:
 
     ~CatalogView() override {
         alive_->store(false);
+        browseGenerationSignal_->fetch_add(1, std::memory_order_relaxed);
         if (refreshCancellation_)
             refreshCancellation_->store(true, std::memory_order_relaxed);
         timer_.stop();
@@ -554,33 +529,114 @@ private:
         rebuildEntries();
     }
 
+    struct BrowseJob {
+        CatalogBrowseRequest request;
+        bool preserveViewport = false;
+    };
+
     void rebuildEntries(bool preserveViewport = false) {
-        // reloadData() recycles every cell, so remember where the focus was
-        // (F2 "done when": focus survives reloadData) and restore it after.
+        updateHeader();
+        BrowseJob job;
+        job.preserveViewport = preserveViewport;
+        const CatalogBrowseGenerationQueue::Ticket ticket =
+            browseQueue_.request();
+        job.request.generation = ticket.generation;
+        browseGenerationSignal_->store(ticket.generation,
+                                       std::memory_order_relaxed);
+        job.request.catalog = catalog_->sharedEntries();
+        job.request.metadata = metadata_ ? metadata_->sharedIndex() : nullptr;
+        job.request.previous = publishedBrowse_;
+        job.request.section = section_;
+        job.request.sort = static_cast<CatalogSortMode>(sort_);
+        job.request.sortReversed = sortReversed_;
+        job.request.query = query_;
+        job.request.favoritesOnly = favoritesOnly_ && favorites_;
+        job.request.fitsOnly = fitsOnly_;
+        job.request.playerFilter = playerFilter_;
+        job.request.genreFilters = genreFilters_;
+        job.request.selectedHashes = selectedHashes_;
+        job.request.freeBytes = storage_.freeBytes;
+        job.request.freeSpaceAvailable = storage_.available;
+        job.request.installedBadge = tr("pipensx/catalog/badge_installed");
+        if (installed_)
+            job.request.installedTitleIds = installed_->titleIds();
+        if (favorites_) {
+            for (const FavoriteEntry& favorite : favorites_->items())
+                job.request.favoriteHashes.insert(
+                    lowerAscii(favorite.infoHash));
+        }
+        for (const DownloadTask& task : manager_->snapshotUi())
+            job.request.taskBadges[lowerAscii(task.id)] =
+                badgeForStatus(task.status);
+        observedCatalog_ = job.request.catalog;
+        observedMetadataGeneration_ =
+            job.request.metadata ? job.request.metadata->generation : 0;
+        deferredBrowse_.reset();
+        if (!ticket.startNow) {
+            pendingBrowse_ = std::make_unique<BrowseJob>(std::move(job));
+            return;
+        }
+        startBrowseJob(std::move(job));
+    }
+
+    void startBrowseJob(BrowseJob job) {
+        auto alive = alive_;
+        auto generationSignal = browseGenerationSignal_;
+        const uint64_t generation = job.request.generation;
+        brls::async([this, alive, generationSignal, generation,
+                     job = std::move(job)]() mutable {
+            auto result = std::make_shared<CatalogBrowseResult>();
+            const bool completed = buildCatalogBrowse(
+                job.request, *result, [generationSignal, generation] {
+                    return generationSignal->load(std::memory_order_relaxed) !=
+                           generation;
+                });
+            brls::sync([this, alive, generation, completed,
+                        preserveViewport = job.preserveViewport,
+                        result = std::move(result)]() mutable {
+                if (!alive->load())
+                    return;
+                const bool startPending = browseQueue_.complete(generation);
+                if (completed && browseQueue_.isCurrent(generation)) {
+                    if (activityStackHasOverlay() && !viewOwnsFocus()) {
+                        deferredBrowse_ = std::move(result);
+                        deferredPreserveViewport_ = preserveViewport;
+                    } else {
+                        applyBrowseResult(std::move(result), preserveViewport);
+                    }
+                }
+                if (startPending && pendingBrowse_) {
+                    BrowseJob next = std::move(*pendingBrowse_);
+                    pendingBrowse_.reset();
+                    startBrowseJob(std::move(next));
+                }
+            });
+        });
+    }
+
+    bool viewOwnsFocus() const {
+        for (brls::View* view = brls::Application::getCurrentFocus(); view;
+             view = view->getParent()) {
+            if (view == this)
+                return true;
+        }
+        return false;
+    }
+
+    void applyBrowseResult(std::shared_ptr<CatalogBrowseResult> result,
+                           bool preserveViewport) {
+        if (!result || !browseQueue_.isCurrent(result->generation))
+            return;
         brls::View* focus = brls::Application::getCurrentFocus();
         bool ownsFocus = false;
         bool focusInRecycler = false;
         for (brls::View* view = focus; view; view = view->getParent()) {
-            if (view == recycler_)
-                focusInRecycler = true;
+            focusInRecycler = focusInRecycler || view == recycler_;
             if (view == this) {
                 ownsFocus = true;
                 break;
             }
         }
-        // Same focusStack UAF as downloads: don't free cells while a dialog
-        // (e.g. deploy offer) is on top of the activity stack.
-        if (activityStackHasOverlay() && !ownsFocus) {
-            pendingRebuild_ = true;
-            pendingPreserveViewport_ = pendingPreserveViewport_ ||
-                                       preserveViewport;
-            return;
-        }
-        preserveViewport = preserveViewport || pendingPreserveViewport_;
-        pendingRebuild_ = false;
-        pendingPreserveViewport_ = false;
-        const uint64_t startedUs = telemetry_enabled() ? now_us() : 0;
-
         std::string focusHash;
         int focusShelf = -1;
         int focusEntryIndex = -1;
@@ -592,165 +648,23 @@ private:
             }
         }
         const float previousOffset = recycler_->getContentOffsetY();
-
-        // Info-hash (lower-case hex) -> status for anything already managed,
-        // so rows can be badged. Task ids are lower-case hex; catalog info
-        // hashes are upper-case, hence the case fold on both sides.
-        std::unordered_map<std::string, DownloadStatus> added;
-        for (const DownloadTask& task : manager_->snapshotUi())
-            added[lowerAscii(task.id)] = task.status;
-
-        auto snapshot = catalog_->sharedEntries();
-        const std::vector<CatalogEntry>& all = *snapshot;
-        std::vector<int> visible;
-        std::vector<const GameMetadata*> metadataByEntry(all.size(), nullptr);
-        // Fold once per rebuild: the predicate folds each haystack, so a
-        // Russian query matches titles in either case (ASCII-only folding
-        // broke this) and also matches the catalogue's own genre string,
-        // which half the entries need (no metadata join).
-        const std::string needle = catalogFoldForSearch(query_);
-        const bool searching = !needle.empty();
-        const bool favoritesOnly = favoritesOnly_ && favorites_;
-        const uint64_t filterStartedUs = startedUs ? now_us() : 0;
-        visible.reserve(all.size());
-        for (size_t i = 0; i < all.size(); ++i) {
-            const CatalogEntry& entry = all[i];
-            if (entry.isHiddenByDefault())
-                continue;
-            if (favoritesOnly && !favorites_->contains(entry.infoHash))
-                continue;
-            if (fitsOnly_ && !catalogEntryFitsFreeSpace(entry.size, storage_))
-                continue;
-            const GameMetadata* meta =
-                metadata_ ? metadata_->findByInfoHash(entry.infoHash) : nullptr;
-            metadataByEntry[i] = meta;
-            if (!catalogEntryInSection(entry, meta, section_))
-                continue;
-            // Unlike the Games filter above, this one also narrows a search:
-            // "which racing game can we play together" is exactly the question
-            // it exists for.
-            if (playerFilter_ != PlayerFilter::Any &&
-                !catalogEntryMatchesPlayerFilter(meta, playerFilter_))
-                continue;
-            if (!genreFilters_.empty() &&
-                !entryMatchesGenres(entry, meta))
-                continue;
-            bool matches = !searching ||
-                catalogEntryMatchesSearch(entry, meta, needle);
-            if (!matches)
-                continue;
-            visible.push_back(static_cast<int>(i));
-        }
-        const uint64_t filterDurationUs =
-            filterStartedUs ? now_us() - filterStartedUs : 0;
-        const uint64_t sortStartedUs = startedUs ? now_us() : 0;
-        if (sort_ == SortMode::Alphabetical) {
-            std::vector<std::string> keys(visible.size());
-            for (size_t i = 0; i < visible.size(); ++i)
-                keys[i] = catalogFoldForSearch(
-                    all[static_cast<size_t>(visible[i])].title);
-            std::vector<int> order(visible.size());
-            std::iota(order.begin(), order.end(), 0);
-            std::stable_sort(order.begin(), order.end(),
-                [&keys](int left, int right) {
-                    return keys[static_cast<size_t>(left)] <
-                           keys[static_cast<size_t>(right)];
-                });
-            std::vector<int> sorted;
-            sorted.reserve(visible.size());
-            for (int index : order)
-                sorted.push_back(visible[static_cast<size_t>(index)]);
-            visible = std::move(sorted);
-        } else if (sort_ == SortMode::Largest) {
-            std::stable_sort(visible.begin(), visible.end(),
-                [&all](int left, int right) {
-                    return all[static_cast<size_t>(left)].size >
-                           all[static_cast<size_t>(right)].size;
-                });
-        } else if (sort_ == SortMode::Popular) {
-            bool popularFallback = false;
-            const std::vector<int> order =
-                catalogPopularityOrder(all, visible, popularFallback);
-            std::vector<int> sorted;
-            sorted.reserve(order.size());
-            for (int index : order)
-                sorted.push_back(visible[static_cast<size_t>(index)]);
-            visible = std::move(sorted);
-            (void)popularFallback;
-        } else {
-            std::stable_sort(visible.begin(), visible.end(),
-                [&all](int left, int right) {
-                    return all[static_cast<size_t>(left)].publishedAt >
-                           all[static_cast<size_t>(right)].publishedAt;
-                });
-        }
-        applySortDirection(visible);
-        const uint64_t sortDurationUs =
-            sortStartedUs ? now_us() - sortStartedUs : 0;
-
-        std::vector<std::string> stateBadges;
-        std::vector<std::string> gameNames;
-        std::vector<std::string> iconUrls;
-        std::vector<uint8_t> iconPreserveAspect;
-        std::vector<uint8_t> selected;
-        std::vector<uint8_t> selectable;
-        std::vector<uint8_t> favorite;
-        stateBadges.reserve(visible.size());
-        gameNames.reserve(visible.size());
-        iconUrls.reserve(visible.size());
-        iconPreserveAspect.reserve(visible.size());
-        selected.reserve(visible.size());
-        selectable.reserve(visible.size());
-        favorite.reserve(visible.size());
-        const uint64_t presentationStartedUs = startedUs ? now_us() : 0;
-        const std::unordered_set<std::string> installedIds =
-            installed_ ? installed_->titleIds()
-                       : std::unordered_set<std::string>();
-        for (int snapshotIndex : visible) {
-            const CatalogEntry& entry = all[static_cast<size_t>(snapshotIndex)];
-            std::string hash = lowerAscii(entry.infoHash);
-            auto it = added.find(hash);
-            const bool canSelect = it == added.end();
-            if (it != added.end()) {
-                stateBadges.push_back(badgeForStatus(it->second));
-                selectedHashes_.erase(hash);
-            } else
-                stateBadges.emplace_back();
-            const GameMetadata* meta =
-                metadataByEntry[static_cast<size_t>(snapshotIndex)];
-            CatalogRowPresentation row =
-                resolveCatalogRow(entry, meta);
-            if (it == added.end() && !row.titleId.empty() &&
-                installedIds.count(upperAscii(row.titleId)))
-                stateBadges.back() = tr("pipensx/catalog/badge_installed");
-            gameNames.push_back(std::move(row.title));
-            iconUrls.push_back(std::move(row.iconUrl));
-            iconPreserveAspect.push_back(row.iconPreserveAspect ? 1 : 0);
-            selected.push_back(selectedHashes_.count(hash) ? 1 : 0);
-            selectable.push_back(canSelect ? 1 : 0);
-            favorite.push_back(favorites_ && favorites_->contains(hash) ? 1
-                                                                       : 0);
-        }
-        const uint64_t presentationDurationUs =
-            presentationStartedUs ? now_us() - presentationStartedUs : 0;
-
-        const size_t count = visible.size();
-        const bool structureChanged =
-            !dataSource_->sameStructure(snapshot, visible);
-        observedCatalog_ = snapshot;
-        observedMetadataGeneration_ =
-            metadata_ ? metadata_->generation() : 0;
-        dataSource_->setEntries(std::move(snapshot), std::move(visible),
-                                std::move(stateBadges),
-                                std::move(gameNames), std::move(iconUrls),
-                                std::move(iconPreserveAspect),
-                                std::move(selected), std::move(selectable),
-                                std::move(favorite),
-                                metadata_);
+        const bool structureChanged = result->structureChanged;
+        const size_t count = result->count;
+        const bool hasRegularEntries = result->hasRegularEntries;
+        selectedHashes_ = std::move(result->selectedHashes);
+        genreSheetGenres_ = std::move(result->genres);
+        publishedBrowse_ = result;
+        dataSource_->setEntries(result->catalog, std::move(result->indices),
+                                std::move(result->badges),
+                                std::move(result->titles),
+                                std::move(result->iconUrls),
+                                std::move(result->iconPreserveAspect),
+                                std::move(result->selected),
+                                std::move(result->selectable),
+                                std::move(result->favorite), metadata_);
         dataSource_->setMessage(query_.empty()
             ? tr("pipensx/catalog/empty_inline")
             : tr("pipensx/catalog/nothing_found_inline"));
-        const uint64_t reloadStartedUs = startedUs ? now_us() : 0;
         if (structureChanged) {
             recycler_->reloadData();
             if (!ownsFocus && !preserveViewport)
@@ -759,13 +673,11 @@ private:
             for (auto* cell : visibleCells<brls::RecyclerCell>(recycler_))
                 dataSource_->repaintCell(cell);
         }
-        const uint64_t reloadDurationUs =
-            reloadStartedUs ? now_us() - reloadStartedUs : 0;
         const bool empty = count == 0;
         if (empty) {
             if (query_.empty()) {
                 if (section_ == CatalogSection::Ports && openGames_ &&
-                    catalogHasVisibleEntries()) {
+                    hasRegularEntries) {
                     ensureEmptyState()->setContent(
                         tr("pipensx/catalog/empty_ports_title"),
                         tr("pipensx/catalog/empty_ports_body"),
@@ -799,16 +711,13 @@ private:
         if (preserveViewport && structureChanged) {
             float restoredOffset = previousOffset;
             if (focusEntryIndex >= 0 && !focusHash.empty()) {
-                for (size_t i = 0; i < dataSource_->entryCount(); ++i) {
-                    const CatalogEntry* entry =
-                        dataSource_->entryAt(static_cast<int>(i));
-                    if (!entry || entry->infoHash != focusHash)
-                        continue;
+                auto row = result->rowByInfoHash.find(lowerAscii(focusHash));
+                if (row != result->rowByInfoHash.end()) {
                     const int oldRow = focusEntryIndex / grid::kColumns;
-                    const int newRow = static_cast<int>(i) / grid::kColumns;
+                    const int newRow = static_cast<int>(row->second) /
+                                       grid::kColumns;
                     restoredOffset +=
                         static_cast<float>(newRow - oldRow) * grid::kRowHeight;
-                    break;
                 }
             }
             recycler_->setContentOffsetY(restoredOffset, false);
@@ -818,27 +727,6 @@ private:
             ? tr("pipensx/catalog/count_releases", withThousands(count))
             : tr("pipensx/catalog/count_matches", withThousands(count));
         updateHeader();
-        if (startedUs) {
-            telemetry_log("ui", "catalog",
-                          "event=filter duration_us=%llu",
-                          static_cast<unsigned long long>(filterDurationUs));
-            telemetry_log("ui", "catalog",
-                          "event=sort duration_us=%llu",
-                          static_cast<unsigned long long>(sortDurationUs));
-            telemetry_log(
-                "ui", "catalog", "event=presentation duration_us=%llu",
-                static_cast<unsigned long long>(presentationDurationUs));
-            telemetry_log(
-                "ui", "catalog",
-                "event=reload duration_us=%llu structural=%d",
-                static_cast<unsigned long long>(reloadDurationUs),
-                structureChanged ? 1 : 0);
-            telemetry_log(
-                "ui", "catalog",
-                "event=rebuild duration_us=%llu entries=%zu visible=%zu reload=%d",
-                static_cast<unsigned long long>(now_us() - startedUs),
-                all.size(), count, structureChanged ? 1 : 0);
-        }
     }
 
     // Sync the O2 header with the current state: search field mirrors the
@@ -965,43 +853,6 @@ private:
                 setSort(modes[static_cast<size_t>(index)]);
             });
         brls::Application::pushActivity(new brls::Activity(dropdown));
-    }
-
-    bool entryMatchesGenres(const CatalogEntry& entry,
-                            const GameMetadata* meta) const {
-        if (genreFilters_.empty())
-            return true;
-        if (meta) {
-            for (const std::string& category : meta->categories) {
-                if (genreFilters_.count(category))
-                    return true;
-            }
-        }
-        return !entry.genre.empty() && genreFilters_.count(entry.genre);
-    }
-
-    std::vector<std::string> availableGenres() const {
-        std::unordered_set<std::string> names;
-        if (!catalog_)
-            return {};
-        for (const CatalogEntry& entry : catalog_->entries()) {
-            if (entry.isHiddenByDefault())
-                continue;
-            const GameMetadata* meta =
-                metadata_ ? metadata_->findByInfoHash(entry.infoHash) : nullptr;
-            if (!catalogEntryInSection(entry, meta, section_))
-                continue;
-            if (meta) {
-                for (const std::string& category : meta->categories)
-                    if (!category.empty())
-                        names.insert(category);
-            } else if (!entry.genre.empty()) {
-                names.insert(entry.genre);
-            }
-        }
-        std::vector<std::string> out(names.begin(), names.end());
-        std::sort(out.begin(), out.end());
-        return out;
     }
 
     std::string genreFilterLabel() const {
@@ -1149,7 +1000,6 @@ private:
         title->setFontSize(theme::kFontBody);
         title->setMarginBottom(12);
         panel->addView(title);
-        genreSheetGenres_ = availableGenres();
         auto* recycler = new brls::RecyclerFrame();
         recycler->setGrow(1);
         recycler->estimatedRowHeight =
@@ -1251,16 +1101,6 @@ private:
         rebuildEntries();
     }
 
-    bool catalogHasVisibleEntries() const {
-        if (!catalog_)
-            return false;
-        for (const CatalogEntry& entry : catalog_->entries()) {
-            if (!entry.isHiddenByDefault())
-                return true;
-        }
-        return false;
-    }
-
     // Re-focus the card that was focused before reloadData recycled all
     // cells: same shelf if the focus lived on a shelf, otherwise the grid
     // card with the same info-hash (or the closest fallback). selectRowAt()
@@ -1273,12 +1113,10 @@ private:
             return;
         }
         int index = 0;
-        for (size_t i = 0; i < dataSource_->entryCount(); ++i) {
-            const CatalogEntry* entry = dataSource_->entryAt(static_cast<int>(i));
-            if (entry && entry->infoHash == hash) {
-                index = static_cast<int>(i);
-                break;
-            }
+        if (publishedBrowse_) {
+            auto row = publishedBrowse_->rowByInfoHash.find(lowerAscii(hash));
+            if (row != publishedBrowse_->rowByInfoHash.end())
+                index = static_cast<int>(row->second);
         }
         *focusColumn_ = dataSource_->columnForEntry(index);
         recycler_->selectRowAt(
@@ -1341,59 +1179,13 @@ private:
         }
     }
 
-    void patchTaskBadges(const std::vector<DownloadTask>& tasks) {
-        std::unordered_map<std::string, DownloadStatus> added;
-        for (const DownloadTask& task : tasks)
-            added[lowerAscii(task.id)] = task.status;
-        const size_t count = dataSource_->entryCount();
-        std::vector<std::string> badges;
-        badges.reserve(count);
-        const std::unordered_set<std::string> installedIds =
-            installed_ ? installed_->titleIds()
-                       : std::unordered_set<std::string>();
-        for (size_t i = 0; i < count; ++i) {
-            const CatalogEntry* entry = dataSource_->entryAt(static_cast<int>(i));
-            if (!entry) {
-                badges.emplace_back();
-                continue;
-            }
-            auto it = added.find(lowerAscii(entry->infoHash));
-            if (it != added.end()) {
-                badges.push_back(badgeForStatus(it->second));
-                continue;
-            }
-            badges.emplace_back();
-            const GameMetadata* meta =
-                metadata_ ? metadata_->findByInfoHash(entry->infoHash) : nullptr;
-            CatalogRowPresentation row = resolveCatalogRow(*entry, meta);
-            if (!row.titleId.empty() &&
-                installedIds.count(upperAscii(row.titleId)))
-                badges.back() = tr("pipensx/catalog/badge_installed");
-        }
-        dataSource_->updateStateBadges(std::move(badges));
-        std::function<void(brls::View*)> walk = [&](brls::View* view) {
-            if (!view)
-                return;
-            if (auto* card = dynamic_cast<GameCard*>(view)) {
-                if (card->entryIndex() >= 0) {
-                    GridCardInfo info = dataSource_->cardInfo(card->entryIndex());
-                    card->setSubLine(info.sub, info.subIsBadge);
-                }
-                return;
-            }
-            if (auto* box = dynamic_cast<brls::Box*>(view)) {
-                for (brls::View* child : box->getChildren())
-                    walk(child);
-            }
-        };
-        walk(recycler_);
-    }
-
     void refreshLiveState() {
         scheduleStorageRefresh();
-        if (pendingRebuild_ && !activityStackHasOverlay()) {
-            rebuildEntries(pendingPreserveViewport_);
-            return;
+        if (deferredBrowse_ && !activityStackHasOverlay()) {
+            auto ready = std::move(deferredBrowse_);
+            const bool preserve = deferredPreserveViewport_;
+            deferredPreserveViewport_ = false;
+            applyBrowseResult(std::move(ready), preserve);
         }
         const bool inFlight = catalogRefreshInFlight();
         if (inFlight && !refreshInFlight_)
@@ -1429,10 +1221,8 @@ private:
                 installedRefreshSignature_ = signature;
                 refreshInstalledAsync();
             }
-            if (settingsChanged || idsChanged)
-                rebuildEntries();
-            else
-                patchTaskBadges(tasks);
+            (void)idsChanged;
+            rebuildEntries();
             return;
         }
         if (settingsChanged)
@@ -1757,8 +1547,13 @@ private:
     // This state gates only refreshSources(); the published catalogue snapshot
     // remains fully interactive while its replacement is fetched.
     bool refreshInFlight_ = false;
-    bool pendingRebuild_ = false;
-    bool pendingPreserveViewport_ = false;
+    CatalogBrowseGenerationQueue browseQueue_;
+    std::shared_ptr<std::atomic<uint64_t>> browseGenerationSignal_ =
+        std::make_shared<std::atomic<uint64_t>>(0);
+    std::unique_ptr<BrowseJob> pendingBrowse_;
+    std::shared_ptr<CatalogBrowseResult> deferredBrowse_;
+    bool deferredPreserveViewport_ = false;
+    std::shared_ptr<const CatalogBrowseResult> publishedBrowse_;
     // Session-only view filters: deliberately not persisted, so a relaunch
     // always comes back to the full catalog.
     bool favoritesOnly_ = false;

@@ -8,6 +8,72 @@
 
 namespace pipensx {
 
+namespace {
+
+std::string foldAscii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char c) {
+                       return static_cast<char>(std::tolower(c));
+                   });
+    return value;
+}
+
+std::string upperAscii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char c) {
+                       return static_cast<char>(std::toupper(c));
+                   });
+    return value;
+}
+
+template <typename Less>
+bool stableSortCancelled(std::vector<int>& values, Less less,
+                         const std::function<bool()>& cancelled) {
+    if (values.size() < 2)
+        return !cancelled || !cancelled();
+    std::vector<int> scratch(values.size());
+    size_t checks = 0;
+    for (size_t width = 1; width < values.size();) {
+        if (cancelled && cancelled())
+            return false;
+        for (size_t left = 0; left < values.size(); left += width * 2) {
+            const size_t middle = std::min(left + width, values.size());
+            const size_t right = std::min(left + width * 2, values.size());
+            size_t a = left, b = middle, out = left;
+            while (a < middle || b < right) {
+                if ((++checks & 255u) == 0 && cancelled && cancelled())
+                    return false;
+                if (b == right ||
+                    (a < middle && !less(values[b], values[a])))
+                    scratch[out++] = values[a++];
+                else
+                    scratch[out++] = values[b++];
+            }
+        }
+        values.swap(scratch);
+        if (width > values.size() / 2)
+            break;
+        width *= 2;
+    }
+    return !cancelled || !cancelled();
+}
+
+bool sameBrowseStructure(const CatalogBrowseResult& before,
+                         const CatalogBrowseResult& after,
+                         const std::function<bool()>& cancelled) {
+    if (before.structureHashes.size() != after.structureHashes.size())
+        return false;
+    for (size_t row = 0; row < after.structureHashes.size(); ++row) {
+        if ((row & 255u) == 0 && cancelled && cancelled())
+            return false;
+        if (before.structureHashes[row] != after.structureHashes[row])
+            return false;
+    }
+    return true;
+}
+
+} // namespace
+
 std::vector<std::string> mergeScreenshotUrls(
     const GameMetadata* metadata, const CatalogEntry& entry, size_t limit) {
     std::vector<std::string> result;
@@ -248,6 +314,251 @@ bool catalogEntryMatchesSearch(const CatalogEntry& entry,
             return true;
     }
     return false;
+}
+
+bool buildCatalogBrowse(const CatalogBrowseRequest& request,
+                        CatalogBrowseResult& result,
+                        const std::function<bool()>& cancelled) {
+    auto isCancelled = [&] { return cancelled && cancelled(); };
+    result = {};
+    result.generation = request.generation;
+    result.catalog = request.catalog
+        ? request.catalog
+        : std::make_shared<const std::vector<CatalogEntry>>();
+    result.metadata = request.metadata
+        ? request.metadata
+        : std::make_shared<const GameMetadataIndexSnapshot>();
+    result.selectedHashes = request.selectedHashes;
+    const auto& all = *result.catalog;
+    const std::string needle = catalogFoldForSearch(request.query);
+    result.indices.reserve(all.size());
+
+    std::unordered_set<std::string> genres;
+    for (size_t i = 0; i < all.size(); ++i) {
+        if ((i & 127u) == 0 && isCancelled())
+            return false;
+        const CatalogEntry& entry = all[i];
+        if (entry.isHiddenByDefault())
+            continue;
+        result.hasRegularEntries = true;
+        const GameMetadata* meta =
+            result.metadata->findByInfoHash(entry.infoHash);
+        if (catalogEntryInSection(entry, meta, request.section)) {
+            if (meta) {
+                for (const std::string& category : meta->categories)
+                    if (!category.empty())
+                        genres.insert(category);
+            } else if (!entry.genre.empty()) {
+                genres.insert(entry.genre);
+            }
+        }
+
+        const std::string hash = foldAscii(entry.infoHash);
+        if (request.favoritesOnly &&
+            request.favoriteHashes.count(hash) == 0)
+            continue;
+        if (request.fitsOnly && request.freeSpaceAvailable && entry.size != 0 &&
+            entry.size > request.freeBytes)
+            continue;
+        if (!catalogEntryInSection(entry, meta, request.section))
+            continue;
+        if (!catalogEntryMatchesPlayerFilter(meta, request.playerFilter))
+            continue;
+        if (!request.genreFilters.empty()) {
+            bool matchedGenre = false;
+            if (meta) {
+                for (const std::string& category : meta->categories)
+                    matchedGenre = matchedGenre ||
+                        request.genreFilters.count(category) != 0;
+            }
+            matchedGenre = matchedGenre || (!entry.genre.empty() &&
+                request.genreFilters.count(entry.genre) != 0);
+            if (!matchedGenre)
+                continue;
+        }
+        if (!catalogEntryMatchesSearch(entry, meta, needle))
+            continue;
+        result.indices.push_back(static_cast<int>(i));
+    }
+    result.genres.assign(genres.begin(), genres.end());
+    std::sort(result.genres.begin(), result.genres.end());
+    if (isCancelled())
+        return false;
+
+    auto entryAt = [&](int index) -> const CatalogEntry& {
+        return all[static_cast<size_t>(index)];
+    };
+    if (request.sort == CatalogSortMode::Alphabetical) {
+        std::unordered_map<int, std::string> keys;
+        keys.reserve(result.indices.size());
+        size_t keyIndex = 0;
+        for (int index : result.indices) {
+            if ((keyIndex++ & 127u) == 0 && isCancelled())
+                return false;
+            keys.emplace(index, catalogFoldForSearch(entryAt(index).title));
+        }
+        if (!stableSortCancelled(result.indices,
+                [&](int a, int b) { return keys[a] < keys[b]; }, cancelled))
+            return false;
+    } else if (request.sort == CatalogSortMode::Largest) {
+        if (!stableSortCancelled(result.indices,
+                [&](int a, int b) {
+                    return entryAt(a).size > entryAt(b).size;
+                }, cancelled))
+            return false;
+    } else if (request.sort == CatalogSortMode::Latest) {
+        if (!stableSortCancelled(result.indices,
+                [&](int a, int b) {
+                    return entryAt(a).publishedAt > entryAt(b).publishedAt;
+                }, cancelled))
+            return false;
+    } else {
+        bool hasPeers = false;
+        for (size_t i = 0; i < result.indices.size(); ++i) {
+            if ((i & 127u) == 0 && isCancelled())
+                return false;
+            hasPeers = hasPeers || entryAt(result.indices[i]).peerCount > 0;
+        }
+        if (hasPeers) {
+            if (!stableSortCancelled(result.indices,
+                    [&](int a, int b) {
+                        const CatalogEntry& left = entryAt(a);
+                        const CatalogEntry& right = entryAt(b);
+                        if (left.peerCount != right.peerCount)
+                            return left.peerCount > right.peerCount;
+                        return left.publishedAt > right.publishedAt;
+                    }, cancelled))
+                return false;
+        } else {
+            std::vector<int> ranked = result.indices;
+            std::unordered_map<int, size_t> score;
+            score.reserve(ranked.size());
+            if (!stableSortCancelled(ranked, [&](int a, int b) {
+                    return entryAt(a).publishedAt > entryAt(b).publishedAt;
+                }, cancelled))
+                return false;
+            for (size_t pos = 0; pos < ranked.size(); ++pos)
+                score[ranked[pos]] += pos;
+            if (!stableSortCancelled(ranked, [&](int a, int b) {
+                    return entryAt(a).size > entryAt(b).size;
+                }, cancelled))
+                return false;
+            for (size_t pos = 0; pos < ranked.size(); ++pos)
+                score[ranked[pos]] += pos;
+            if (!stableSortCancelled(result.indices, [&](int a, int b) {
+                    if (score[a] != score[b])
+                        return score[a] < score[b];
+                    return entryAt(a).publishedAt > entryAt(b).publishedAt;
+                }, cancelled))
+                return false;
+        }
+    }
+    if (request.sortReversed) {
+        for (size_t left = 0, right = result.indices.size();
+             left < right && left < --right; ++left) {
+            if ((left & 127u) == 0 && isCancelled())
+                return false;
+            std::swap(result.indices[left], result.indices[right]);
+        }
+    }
+    if (isCancelled())
+        return false;
+
+    const size_t count = result.indices.size();
+    result.titles.reserve(count);
+    result.iconUrls.reserve(count);
+    result.iconPreserveAspect.reserve(count);
+    result.badges.reserve(count);
+    result.favorite.reserve(count);
+    result.selected.reserve(count);
+    result.selectable.reserve(count);
+    result.rowByInfoHash.reserve(count);
+    result.structureHashes.reserve(count);
+    for (size_t rowIndex = 0; rowIndex < count; ++rowIndex) {
+        if ((rowIndex & 127u) == 0 && isCancelled())
+            return false;
+        const CatalogEntry& entry = entryAt(result.indices[rowIndex]);
+        const std::string hash = foldAscii(entry.infoHash);
+        result.structureHashes.push_back(hash);
+        const auto task = request.taskBadges.find(hash);
+        const bool selectable = task == request.taskBadges.end();
+        if (!selectable)
+            result.selectedHashes.erase(hash);
+        const GameMetadata* meta =
+            result.metadata->findByInfoHash(entry.infoHash);
+        CatalogRowPresentation presentation = resolveCatalogRow(entry, meta);
+        std::string badge = selectable ? std::string() : task->second;
+        if (selectable && !presentation.titleId.empty() &&
+            request.installedTitleIds.count(
+                upperAscii(presentation.titleId)) != 0)
+            badge = request.installedBadge;
+        result.titles.push_back(std::move(presentation.title));
+        result.iconUrls.push_back(std::move(presentation.iconUrl));
+        result.iconPreserveAspect.push_back(
+            presentation.iconPreserveAspect ? 1 : 0);
+        result.badges.push_back(std::move(badge));
+        result.favorite.push_back(request.favoriteHashes.count(hash) ? 1 : 0);
+        result.selected.push_back(
+            result.selectedHashes.count(hash) ? 1 : 0);
+        result.selectable.push_back(selectable ? 1 : 0);
+        result.rowByInfoHash.emplace(hash, rowIndex);
+    }
+    result.count = count;
+    if (request.previous) {
+        const bool same = sameBrowseStructure(
+            *request.previous, result, cancelled);
+        if (isCancelled())
+            return false;
+        result.structureChanged = !same;
+    }
+    return !isCancelled();
+}
+
+CatalogBrowseGenerationQueue::Ticket
+CatalogBrowseGenerationQueue::request() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Ticket ticket;
+    ticket.generation = ++latest_;
+    if (active_ == 0) {
+        active_ = ticket.generation;
+        ticket.startNow = true;
+    } else {
+        pending_ = true;
+    }
+    return ticket;
+}
+
+bool CatalogBrowseGenerationQueue::complete(uint64_t generation) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (active_ != generation)
+        return false;
+    if (pending_) {
+        pending_ = false;
+        active_ = latest_;
+        return true;
+    }
+    active_ = 0;
+    return false;
+}
+
+bool CatalogBrowseGenerationQueue::isCurrent(uint64_t generation) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return generation == latest_;
+}
+
+size_t CatalogBrowseGenerationQueue::pendingCount() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return pending_ ? 1 : 0;
+}
+
+size_t CatalogBrowseGenerationQueue::activeCount() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return active_ == 0 ? 0 : 1;
+}
+
+uint64_t CatalogBrowseGenerationQueue::latestGeneration() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return latest_;
 }
 
 CatalogFreshness resolveCatalogFreshness(bool refreshing, uint64_t wallSec,

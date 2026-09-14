@@ -4,7 +4,12 @@
 #include "game_metadata_service.hpp"
 
 #include <cstddef>
+#include <functional>
+#include <memory>
+#include <mutex>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace pipensx {
@@ -72,6 +77,94 @@ CatalogPresentation resolveCatalogPresentation(
 enum class CatalogSection {
     Games,
     Ports,
+};
+
+enum class CatalogSortMode {
+    Latest,
+    Popular,
+    Alphabetical,
+    Largest,
+};
+
+struct CatalogBrowseResult;
+
+// Everything the background builder needs is owned or immutable. Status
+// labels are resolved by the UI before dispatch, so this layer never calls
+// borealis translation APIs.
+struct CatalogBrowseRequest {
+    uint64_t generation = 0;
+    std::shared_ptr<const std::vector<CatalogEntry>> catalog;
+    std::shared_ptr<const GameMetadataIndexSnapshot> metadata;
+    std::shared_ptr<const CatalogBrowseResult> previous;
+    CatalogSection section = CatalogSection::Games;
+    CatalogSortMode sort = CatalogSortMode::Popular;
+    bool sortReversed = false;
+    std::string query;
+    bool favoritesOnly = false;
+    bool fitsOnly = false;
+    PlayerFilter playerFilter = PlayerFilter::Any;
+    std::unordered_set<std::string> genreFilters;
+    // Lower-case info hash -> already localized task status label.
+    std::unordered_map<std::string, std::string> taskBadges;
+    std::unordered_set<std::string> favoriteHashes;
+    std::unordered_set<std::string> selectedHashes;
+    std::unordered_set<std::string> installedTitleIds;
+    std::string installedBadge;
+    uint64_t freeBytes = 0;
+    bool freeSpaceAvailable = false;
+};
+
+struct CatalogBrowseResult {
+    uint64_t generation = 0;
+    std::shared_ptr<const std::vector<CatalogEntry>> catalog;
+    std::shared_ptr<const GameMetadataIndexSnapshot> metadata;
+    std::vector<int> indices;
+    // Kept after row arrays are moved into the UI data source; the next
+    // worker compares this compact identity vector off-thread.
+    std::vector<std::string> structureHashes;
+    std::vector<std::string> titles;
+    std::vector<std::string> iconUrls;
+    std::vector<uint8_t> iconPreserveAspect;
+    std::vector<std::string> badges;
+    std::vector<uint8_t> favorite;
+    std::vector<uint8_t> selected;
+    std::vector<uint8_t> selectable;
+    std::vector<std::string> genres;
+    std::unordered_map<std::string, size_t> rowByInfoHash;
+    std::unordered_set<std::string> selectedHashes;
+    size_t count = 0;
+    bool hasRegularEntries = false;
+    bool structureChanged = true;
+};
+
+// Returns false when cancelled. The predicate is sampled throughout joins,
+// filtering, cancellable merge-sort passes, presentation and comparison.
+bool buildCatalogBrowse(const CatalogBrowseRequest& request,
+                        CatalogBrowseResult& result,
+                        const std::function<bool()>& cancelled = {});
+
+// Small, UI-independent generation gate used by CatalogView. request()
+// starts work only when idle; while active it coalesces any number of calls
+// into one pending generation. complete() promotes that latest generation.
+class CatalogBrowseGenerationQueue {
+public:
+    struct Ticket {
+        uint64_t generation = 0;
+        bool startNow = false;
+    };
+
+    Ticket request();
+    bool complete(uint64_t generation);
+    bool isCurrent(uint64_t generation) const;
+    size_t pendingCount() const;
+    size_t activeCount() const;
+    uint64_t latestGeneration() const;
+
+private:
+    mutable std::mutex mutex_;
+    uint64_t latest_ = 0;
+    uint64_t active_ = 0;
+    bool pending_ = false;
 };
 
 bool catalogEntryIsGame(const CatalogEntry& entry,

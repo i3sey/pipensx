@@ -73,6 +73,23 @@ struct MetadataSnapshot {
     std::vector<uint8_t> indexData;
 };
 
+// Immutable, shareable view of the joined metadata index. A catalogue
+// browse worker keeps this object alive while GameMetadataService::adopt()
+// publishes a newer generation on the UI thread.
+struct GameMetadataIndexSnapshot {
+    std::vector<GameMetadata> items;
+    std::unordered_map<std::string, size_t> byInfoHash;
+    uint64_t generation = 0;
+    uint8_t availablePlayerModes = 0;
+    bool hasLocalPlayerCounts = false;
+
+    const GameMetadata* findByInfoHash(const std::string& infoHash,
+                                       const std::string& titleId = {}) const;
+    bool hasPlayerData() const {
+        return availablePlayerModes != 0 || hasLocalPlayerCounts;
+    }
+};
+
 class GameMetadataService : public IUpdateMetadataSource {
 public:
     struct DecodedImage {
@@ -163,20 +180,25 @@ public:
     void setImageNetwork(ImageNetwork mode) const;
     bool clearImageCache(std::string& error) const;
 
-    size_t size() const { return byHash_.size(); }
+    size_t size() const { return index_->byInfoHash.size(); }
     // Bumps on every adopt() (including the startup cache load). Catalog UI
     // polls this to pick up a refresh that finished after the view was built.
     uint64_t generation() const { return generation_; }
+    std::shared_ptr<const GameMetadataIndexSnapshot> sharedIndex() const {
+        return index_;
+    }
     const MetadataManifest& manifest() const { return manifest_; }
 
     // PlayerMode bits present anywhere in the loaded index. The catalogue
     // builds its player-filter menu from this, so an index that predates the
     // field (or a mode nobody in it supports) simply has no menu entry.
-    uint8_t availablePlayerModes() const { return availableModes_; }
+    uint8_t availablePlayerModes() const {
+        return index_->availablePlayerModes;
+    }
     // True when the filter has anything to work with at all: either a mode
     // flag, or a couch-multiplayer player count to fall back on.
     bool hasPlayerData() const {
-        return availableModes_ != 0 || localPlayerCounts_;
+        return index_->hasPlayerData();
     }
 
     static bool parseIndex(const std::string& json,
@@ -210,13 +232,10 @@ private:
     };
 
     void imageWorkerMain() const;
-    // Refresh availableModes_/localPlayerCounts_ from items_. Called from
-    // every place that reassigns them (load, adopt).
-    void recomputePlayerSummary();
     // Rebuild byTitleId_ (titleId → latestVersion strings) and
-    // byTitleIdItems_ (titleId → indices into items_) from every index row.
+    // byTitleIdItems_ (titleId → indices into index_->items) from every row.
     // Combo dumps share an infoHash across title IDs; those rows must all
-    // stay, so this walks items_ rather than the unique-hash map.
+    // stay, so this walks every item rather than the unique-hash map.
     void rebuildTitleIdIndex();
     void ingestItems(std::vector<GameMetadata> items);
     bool loadCachedSnapshot(MetadataSnapshot& snapshot,
@@ -247,22 +266,17 @@ private:
     mutable std::atomic<ImageNetwork> imageNetwork_{ImageNetwork::Full};
     mutable std::atomic<bool> stoppingRequested_{false};
     mutable bool stoppingImages_ = false;
-    std::vector<GameMetadata> items_;
-    // infoHash → first items_ index. Catalog art looks up by torrent hash;
-    // combo dumps keep every title-id row in items_ and only the first hash
-    // wins here.
-    std::unordered_map<std::string, size_t> byHash_;
+    std::shared_ptr<const GameMetadataIndexSnapshot> index_ =
+        std::make_shared<const GameMetadataIndexSnapshot>();
     // titleId (upper-case hex) → non-empty latestVersion of every entry that
-    // carries one. Built beside items_ (same UI-thread-only reassignment
+    // carries one. Built beside index_ (same UI-thread-only reassignment
     // rule) and consumed by collectLatestVersions().
     std::unordered_map<std::string, std::vector<std::string>> byTitleId_;
-    // titleId (upper-case hex) → items_ indices of the same entry set as
+    // titleId (upper-case hex) → item indices of the same entry set as
     // byTitleId_. Consumed by findByTitleId() for update downloads.
     std::unordered_map<std::string, std::vector<size_t>> byTitleIdItems_;
     MetadataManifest manifest_;
     uint64_t generation_ = 0;
-    uint8_t availableModes_ = 0;
-    bool localPlayerCounts_ = false;
 };
 
 } // namespace pipensx

@@ -11,6 +11,7 @@ extern "C" {
 }
 
 #include <cassert>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -60,6 +61,12 @@ using pipensx::catalogFoldedContains;
 using pipensx::catalogEntryMatchesSearch;
 using pipensx::CatalogFreshness;
 using pipensx::resolveCatalogFreshness;
+using pipensx::CatalogBrowseGenerationQueue;
+using pipensx::CatalogBrowseRequest;
+using pipensx::CatalogBrowseResult;
+using pipensx::CatalogSortMode;
+using pipensx::GameMetadataIndexSnapshot;
+using pipensx::buildCatalogBrowse;
 
 namespace {
 
@@ -1904,6 +1911,253 @@ void testBundledMetadataSnapshotLoadsWithoutNetwork() {
     rmdir(root.c_str());
 }
 
+std::shared_ptr<const GameMetadataIndexSnapshot> browseMetadata() {
+    auto index = std::make_shared<GameMetadataIndexSnapshot>();
+    GameMetadata alpha;
+    alpha.infoHash = "AAAAAAAA";
+    alpha.titleId = "0100000000000001";
+    alpha.name = "Metadata Alpha";
+    alpha.iconUrl = "https://example.com/alpha.jpg";
+    alpha.categories = {"Action"};
+    alpha.hasModes = true;
+    alpha.modes = pipensx::kPlayerModeOnline;
+    index->items.push_back(alpha);
+    GameMetadata beta;
+    beta.infoHash = "BBBBBBBB";
+    beta.name = "Metadata Beta";
+    beta.categories = {"Coop"};
+    beta.players = 2;
+    index->items.push_back(beta);
+    index->byInfoHash["AAAAAAAA"] = 0;
+    index->byInfoHash["BBBBBBBB"] = 1;
+    index->availablePlayerModes = pipensx::kPlayerModeOnline;
+    index->hasLocalPlayerCounts = true;
+    index->generation = 7;
+    return index;
+}
+
+std::shared_ptr<const std::vector<CatalogEntry>> browseCatalog() {
+    std::vector<CatalogEntry> entries(5);
+    entries[0].infoHash = "AAAAAAAA";
+    entries[0].title = "[NSP] Альфа";
+    entries[0].titleId = "0100000000000001";
+    entries[0].genre = "Catalogue Action";
+    entries[0].size = 20;
+    entries[0].publishedAt = 100;
+    entries[0].peerCount = 2;
+    entries[1].infoHash = "BBBBBBBB";
+    entries[1].title = "[NRO] Beta";
+    entries[1].genre = "Ports";
+    entries[1].size = 40;
+    entries[1].publishedAt = 300;
+    entries[1].peerCount = 9;
+    entries[2].infoHash = "CCCCCCCC";
+    entries[2].title = "[NSP] Hidden";
+    entries[2].health = CatalogHealth::Dead;
+    entries[3].infoHash = "DDDDDDDD";
+    entries[3].title = "[NSP] Gamma";
+    entries[3].titleId = "0100000000000004";
+    entries[3].genre = "Puzzle";
+    entries[3].posterUrl = "https://example.com/fallback.jpg";
+    entries[3].size = 10;
+    entries[3].publishedAt = 200;
+    entries[3].peerCount = 4;
+    entries[4].infoHash = "EEEEEEEE";
+    entries[4].title = "untagged utility";
+    entries[4].size = 30;
+    entries[4].publishedAt = 50;
+    return std::make_shared<const std::vector<CatalogEntry>>(
+        std::move(entries));
+}
+
+CatalogBrowseResult browse(CatalogBrowseRequest request) {
+    CatalogBrowseResult result;
+    assert(buildCatalogBrowse(request, result));
+    return result;
+}
+
+void testCatalogBrowseBuilder() {
+    CatalogBrowseRequest request;
+    request.generation = 12;
+    request.catalog = browseCatalog();
+    request.metadata = browseMetadata();
+    request.section = CatalogSection::Games;
+    request.sort = CatalogSortMode::Latest;
+    request.installedTitleIds.insert("0100000000000004");
+    request.installedBadge = "Installed";
+    request.taskBadges["aaaaaaaa"] = "Downloading";
+    request.favoriteHashes.insert("dddddddd");
+    request.selectedHashes = {"aaaaaaaa", "dddddddd"};
+    CatalogBrowseResult result = browse(request);
+    assert(result.generation == 12);
+    assert(result.count == 2); // hidden and both ports are absent
+    assert(result.structureHashes[0] == "dddddddd");
+    assert(result.structureHashes[1] == "aaaaaaaa");
+    assert(result.titles[1] == "Metadata Alpha");
+    assert(result.iconUrls[0] == "https://example.com/fallback.jpg");
+    assert(result.iconPreserveAspect[0] == 1);
+    assert(result.badges[0] == "Installed");
+    assert(result.badges[1] == "Downloading");
+    assert(result.favorite[0] == 1 && result.favorite[1] == 0);
+    assert(result.selectable[0] == 1 && result.selectable[1] == 0);
+    assert(result.selected[0] == 1 && result.selected[1] == 0);
+    assert(result.selectedHashes.count("aaaaaaaa") == 0);
+    assert(result.rowByInfoHash.at("aaaaaaaa") == 1);
+    assert(result.hasRegularEntries);
+    assert((result.genres == std::vector<std::string>{"Action", "Puzzle"}));
+
+    request.taskBadges.clear();
+    request.installedTitleIds.clear();
+    request.selectedHashes.clear();
+    request.query = "АЛЬФА";
+    assert(browse(request).structureHashes ==
+           std::vector<std::string>{"aaaaaaaa"});
+    request.query.clear();
+    request.favoritesOnly = true;
+    assert(browse(request).structureHashes ==
+           std::vector<std::string>{"dddddddd"});
+    request.favoritesOnly = false;
+    request.fitsOnly = true;
+    request.freeSpaceAvailable = true;
+    request.freeBytes = 15;
+    assert(browse(request).structureHashes ==
+           std::vector<std::string>{"dddddddd"});
+    request.fitsOnly = false;
+    request.playerFilter = PlayerFilter::Online;
+    assert(browse(request).structureHashes ==
+           std::vector<std::string>{"aaaaaaaa"});
+    request.playerFilter = PlayerFilter::Any;
+    request.genreFilters = {"Puzzle"};
+    assert(browse(request).structureHashes ==
+           std::vector<std::string>{"dddddddd"});
+    request.genreFilters.clear();
+    request.section = CatalogSection::Ports;
+    result = browse(request);
+    assert(result.count == 2);
+    assert(result.structureHashes[0] == "bbbbbbbb");
+    assert(result.structureHashes[1] == "eeeeeeee");
+
+    request.section = CatalogSection::Games;
+    request.query = "missing";
+    result = browse(request);
+    assert(result.count == 0 && result.indices.empty());
+    assert(result.hasRegularEntries);
+}
+
+void testCatalogBrowseSortsAndStructure() {
+    CatalogBrowseRequest request;
+    request.catalog = browseCatalog();
+    request.metadata = browseMetadata();
+    request.section = CatalogSection::Games;
+    const std::vector<std::pair<CatalogSortMode, std::vector<std::string>>>
+        expected = {
+            {CatalogSortMode::Latest, {"dddddddd", "aaaaaaaa"}},
+            {CatalogSortMode::Popular, {"dddddddd", "aaaaaaaa"}},
+            {CatalogSortMode::Alphabetical, {"dddddddd", "aaaaaaaa"}},
+            {CatalogSortMode::Largest, {"aaaaaaaa", "dddddddd"}},
+        };
+    for (const auto& item : expected) {
+        request.sort = item.first;
+        request.sortReversed = false;
+        CatalogBrowseResult normal = browse(request);
+        assert(normal.structureHashes == item.second);
+        request.sortReversed = true;
+        CatalogBrowseResult reversed = browse(request);
+        std::vector<std::string> reverseExpected = item.second;
+        std::reverse(reverseExpected.begin(), reverseExpected.end());
+        assert(reversed.structureHashes == reverseExpected);
+    }
+
+    request.sort = CatalogSortMode::Latest;
+    request.sortReversed = false;
+    auto first = std::make_shared<CatalogBrowseResult>(browse(request));
+    request.previous = first;
+    auto changedCatalog = std::make_shared<std::vector<CatalogEntry>>(
+        *request.catalog);
+    (*changedCatalog)[0].title = "Changed title, same identity";
+    request.catalog = changedCatalog;
+    CatalogBrowseResult same = browse(request);
+    assert(!same.structureChanged);
+    request.sort = CatalogSortMode::Largest;
+    CatalogBrowseResult sorted = browse(request);
+    assert(sorted.rowByInfoHash.at("aaaaaaaa") == 0);
+    assert(sorted.rowByInfoHash.at("dddddddd") == 1);
+}
+
+void testCatalogBrowseCancellationAndQueue() {
+    CatalogBrowseRequest request;
+    request.catalog = browseCatalog();
+    request.metadata = browseMetadata();
+    CatalogBrowseResult result;
+    assert(!buildCatalogBrowse(request, result, [] { return true; }));
+
+    auto many = std::make_shared<std::vector<CatalogEntry>>();
+    for (int i = 0; i < 2000; ++i) {
+        CatalogEntry entry;
+        entry.infoHash = std::to_string(i);
+        entry.title = "[NSP] item " + std::to_string(i);
+        entry.titleId = "0100000000000001";
+        many->push_back(std::move(entry));
+    }
+    request.catalog = many;
+    int checks = 0;
+    assert(!buildCatalogBrowse(request, result, [&] { return ++checks > 3; }));
+    assert(checks > 3);
+
+    CatalogBrowseGenerationQueue queue;
+    const auto a = queue.request();
+    const auto b = queue.request();
+    const auto c = queue.request();
+    assert(a.startNow && !b.startNow && !c.startNow);
+    assert(queue.activeCount() == 1 && queue.pendingCount() == 1);
+    assert(!queue.isCurrent(a.generation));
+    assert(queue.isCurrent(c.generation));
+    std::vector<uint64_t> published;
+    if (queue.isCurrent(a.generation))
+        published.push_back(a.generation);
+    if (queue.isCurrent(b.generation))
+        published.push_back(b.generation);
+    assert(queue.complete(a.generation));
+    assert(queue.activeCount() == 1 && queue.pendingCount() == 0);
+    if (queue.isCurrent(c.generation))
+        published.push_back(c.generation);
+    assert((published == std::vector<uint64_t>{c.generation}));
+    assert(queue.complete(c.generation) == false);
+    assert(queue.activeCount() == 0);
+}
+
+void testMetadataSharedIndexSurvivesAdopt() {
+    const std::string root = "/tmp/pipensx-metadata-index-" +
+        std::to_string(static_cast<long long>(getpid()));
+    mkdir(root.c_str(), 0755);
+    {
+        GameMetadataService service(root, root + "/missing.json");
+        MetadataSnapshot first;
+        GameMetadata oldItem;
+        oldItem.infoHash = "OLD";
+        first.items.push_back(oldItem);
+        service.adopt(std::move(first));
+        auto oldIndex = service.sharedIndex();
+        assert(oldIndex->generation == 1);
+        assert(oldIndex->findByInfoHash("old"));
+
+        MetadataSnapshot second;
+        GameMetadata newItem;
+        newItem.infoHash = "NEW";
+        second.items.push_back(newItem);
+        service.adopt(std::move(second));
+        auto newIndex = service.sharedIndex();
+        assert(newIndex->generation == 2);
+        assert(newIndex->findByInfoHash("new"));
+        assert(!newIndex->findByInfoHash("old"));
+        assert(oldIndex->findByInfoHash("old"));
+    }
+    rmdir((root + "/catalog/metadata").c_str());
+    rmdir((root + "/catalog/images").c_str());
+    rmdir((root + "/catalog").c_str());
+    rmdir(root.c_str());
+}
+
 int main() {
     testMagnetParsing();
     testTrustedSourceAllowlist();
@@ -1912,6 +2166,10 @@ int main() {
     testLangegenLanguageFields();
     testBundledLangegenSnapshotLoadsWithoutNetwork();
     testBundledMetadataSnapshotLoadsWithoutNetwork();
+    testCatalogBrowseBuilder();
+    testCatalogBrowseSortsAndStructure();
+    testCatalogBrowseCancellationAndQueue();
+    testMetadataSharedIndexSurvivesAdopt();
     testCatalogV2HealthParsing();
     testInfoDictParsing();
     testResolveFromPresetInfoDict();

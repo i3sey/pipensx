@@ -781,35 +781,30 @@ bool GameMetadataService::loadCachedSnapshot(MetadataSnapshot& snapshot,
                            cancelled);
 }
 
-void GameMetadataService::recomputePlayerSummary() {
-    availableModes_ = 0;
-    localPlayerCounts_ = false;
-    for (const GameMetadata& entry : items_) {
-        availableModes_ |= entry.modes;
-        if (!entry.hasModes && entry.players >= 2)
-            localPlayerCounts_ = true;
-    }
-}
-
 void GameMetadataService::ingestItems(std::vector<GameMetadata> items) {
-    items_ = std::move(items);
-    byHash_.clear();
-    byHash_.reserve(items_.size());
-    for (size_t i = 0; i < items_.size(); ++i) {
-        if (byHash_.find(items_[i].infoHash) == byHash_.end())
-            byHash_[items_[i].infoHash] = i;
+    auto next = std::make_shared<GameMetadataIndexSnapshot>();
+    next->items = std::move(items);
+    next->generation = generation_;
+    next->byInfoHash.reserve(next->items.size());
+    for (size_t i = 0; i < next->items.size(); ++i) {
+        const GameMetadata& entry = next->items[i];
+        if (next->byInfoHash.find(entry.infoHash) == next->byInfoHash.end())
+            next->byInfoHash[entry.infoHash] = i;
+        next->availablePlayerModes |= entry.modes;
+        if (!entry.hasModes && entry.players >= 2)
+            next->hasLocalPlayerCounts = true;
     }
-    recomputePlayerSummary();
+    index_ = std::move(next);
     rebuildTitleIdIndex();
 }
 
 void GameMetadataService::rebuildTitleIdIndex() {
     std::unordered_map<std::string, std::vector<std::string>> next;
     std::unordered_map<std::string, std::vector<size_t>> nextItems;
-    next.reserve(items_.size());
-    nextItems.reserve(items_.size());
-    for (size_t i = 0; i < items_.size(); ++i) {
-        const GameMetadata& metadata = items_[i];
+    next.reserve(index_->items.size());
+    nextItems.reserve(index_->items.size());
+    for (size_t i = 0; i < index_->items.size(); ++i) {
+        const GameMetadata& metadata = index_->items[i];
         if (metadata.latestVersion.empty())
             continue;
         std::string titleId = metadata.titleId;
@@ -844,9 +839,9 @@ bool GameMetadataService::findByTitleId(
         return false;
     out.reserve(out.size() + it->second.size());
     for (size_t index : it->second)
-        out.push_back(&items_[index]);
-    // byHash_ iterates unordered, so pin a deterministic order: newest
-    // bundled update first, info-hash as the tie-break.
+        out.push_back(&index_->items[index]);
+    // Pin a deterministic order: newest bundled update first, info-hash as
+    // the tie-break.
     std::sort(out.begin(), out.end(), [](const GameMetadata* a,
                                          const GameMetadata* b) {
         const uint64_t av = strtoull(a->latestVersion.c_str(), nullptr, 10);
@@ -903,12 +898,10 @@ bool GameMetadataService::collectLatestVersions(
 }
 
 bool GameMetadataService::load(std::string& error) {
-    items_.clear();
-    byHash_.clear();
+    index_ = std::make_shared<const GameMetadataIndexSnapshot>();
     byTitleId_.clear();
     byTitleIdItems_.clear();
     manifest_ = {};
-    recomputePlayerSummary();
 
     std::string cacheError;
     MetadataSnapshot cached;
@@ -916,7 +909,7 @@ bool GameMetadataService::load(std::string& error) {
         adopt(std::move(cached));
         error.clear();
         log_msg("[metadata] loaded %zu cached game matches\n",
-                byHash_.size());
+                index_->byInfoHash.size());
         return true;
     }
     if (!cacheError.empty())
@@ -938,15 +931,15 @@ bool GameMetadataService::load(std::string& error) {
     if (!parseIndex(json, items, error))
         return false;
     ingestItems(std::move(items));
-    log_msg("[metadata] loaded %zu game matches from %s\n", byHash_.size(),
-            bundledPath_.c_str());
+    log_msg("[metadata] loaded %zu game matches from %s\n",
+            index_->byInfoHash.size(), bundledPath_.c_str());
     return true;
 }
 
 void GameMetadataService::adopt(MetadataSnapshot snapshot) {
+    ++generation_;
     ingestItems(std::move(snapshot.items));
     manifest_ = std::move(snapshot.manifest);
-    ++generation_;
 }
 
 bool GameMetadataService::fetchLatest(MetadataSnapshot& snapshot,
@@ -1042,6 +1035,11 @@ bool GameMetadataService::fetchLatest(MetadataSnapshot& snapshot,
 const GameMetadata*
 GameMetadataService::findByInfoHash(const std::string& infoHash,
                                     const std::string& titleId) const {
+    return index_->findByInfoHash(infoHash, titleId);
+}
+
+const GameMetadata* GameMetadataIndexSnapshot::findByInfoHash(
+    const std::string& infoHash, const std::string& titleId) const {
     auto upper = [](std::string value) {
         std::transform(value.begin(), value.end(), value.begin(),
                        [](unsigned char c) {
@@ -1052,15 +1050,15 @@ GameMetadataService::findByInfoHash(const std::string& infoHash,
     const std::string hash = upper(infoHash);
     const std::string wanted = upper(titleId);
     if (!wanted.empty()) {
-        for (const GameMetadata& item : items_) {
+        for (const GameMetadata& item : items) {
             if (item.infoHash == hash && upper(item.titleId) == wanted)
                 return &item;
         }
     }
-    auto it = byHash_.find(hash);
-    if (it == byHash_.end())
+    auto it = byInfoHash.find(hash);
+    if (it == byInfoHash.end())
         return nullptr;
-    return &items_[it->second];
+    return &items[it->second];
 }
 
 bool GameMetadataService::refreshDetails(const std::string& titleId,
