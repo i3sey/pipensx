@@ -16,12 +16,13 @@ std::atomic<bool> catalogRefreshHeld{false};
 
 CatalogRefreshAdoption adoptCatalogRefresh(
     CatalogService& catalog, GameMetadataService& metadata,
-    CatalogRefreshBatch batch, const std::string& catalogSourceUrl) {
+    CatalogRefreshBatch&& batch, const std::string& catalogSourceUrl) {
     CatalogRefreshAdoption result;
     if (batch.cancelled)
         return result;
     if (batch.catalogOk) {
-        catalog.adopt(std::move(batch.catalogEntries), catalogSourceUrl);
+        result.retiredCatalog =
+            catalog.adopt(std::move(batch.catalog), catalogSourceUrl);
         result.catalogChanged = true;
     }
     if (batch.metadataOk) {
@@ -30,7 +31,7 @@ CatalogRefreshAdoption adoptCatalogRefresh(
         // visible card would re-decode and flicker on the next scroll.
         const std::string incomingSha = batch.metadata.manifest.indexSha256;
         const std::string currentSha = metadata.manifest().indexSha256;
-        metadata.adopt(std::move(batch.metadata));
+        result.retiredMetadata = metadata.adopt(std::move(batch.metadata));
         if (incomingSha.empty() || incomingSha != currentSha)
             metadata.dropMemoryImageCache();
         result.metadataChanged = true;

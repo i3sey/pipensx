@@ -66,11 +66,18 @@ struct MetadataManifest {
     size_t entryCount = 0;
 };
 
+struct GameMetadataIndexSnapshot;
+
 struct MetadataSnapshot {
     MetadataManifest manifest;
+    // Input for manually assembled/startup snapshots. prepareSnapshot() moves
+    // these rows into preparedIndex so a fetched snapshot has one owner.
     std::vector<GameMetadata> items;
     std::string manifestJson;
     std::vector<uint8_t> indexData;
+    // Filled by prepareSnapshot()/fetchLatest() on their caller's worker.
+    // adopt() only stamps the generation and swaps this ready index.
+    std::shared_ptr<GameMetadataIndexSnapshot> preparedIndex;
 };
 
 // Immutable, shareable view of the joined metadata index. A catalogue
@@ -82,12 +89,21 @@ struct GameMetadataIndexSnapshot {
     uint64_t generation = 0;
     uint8_t availablePlayerModes = 0;
     bool hasLocalPlayerCounts = false;
+    std::unordered_map<std::string, std::vector<std::string>> byTitleId;
+    std::unordered_map<std::string, std::vector<size_t>> byTitleIdItems;
 
     const GameMetadata* findByInfoHash(const std::string& infoHash,
                                        const std::string& titleId = {}) const;
     bool hasPlayerData() const {
         return availablePlayerModes != 0 || hasLocalPlayerCounts;
     }
+};
+
+struct RetiredMetadataSnapshot {
+    std::shared_ptr<const GameMetadataIndexSnapshot> index;
+    std::vector<GameMetadata> items;
+    std::string manifestJson;
+    std::vector<uint8_t> indexData;
 };
 
 class GameMetadataService : public IUpdateMetadataSource {
@@ -131,7 +147,7 @@ public:
     bool load(std::string& error);
     bool fetchLatest(MetadataSnapshot& snapshot, std::string& error,
                      const std::atomic<bool>* cancelled = nullptr) const;
-    void adopt(MetadataSnapshot snapshot);
+    RetiredMetadataSnapshot adopt(MetadataSnapshot snapshot);
     const GameMetadata* findByInfoHash(
         const std::string& infoHash, const std::string& titleId = {}) const;
     // Appends every index entry matching titleId that carries a non-empty
@@ -232,12 +248,8 @@ private:
     };
 
     void imageWorkerMain() const;
-    // Rebuild byTitleId_ (titleId → latestVersion strings) and
-    // byTitleIdItems_ (titleId → indices into index_->items) from every row.
-    // Combo dumps share an infoHash across title IDs; those rows must all
-    // stay, so this walks every item rather than the unique-hash map.
-    void rebuildTitleIdIndex();
-    void ingestItems(std::vector<GameMetadata> items);
+    static std::shared_ptr<GameMetadataIndexSnapshot> buildIndex(
+        std::vector<GameMetadata> items);
     bool loadCachedSnapshot(MetadataSnapshot& snapshot,
                             std::string& error,
                             const std::atomic<bool>* cancelled = nullptr) const;
@@ -259,6 +271,10 @@ private:
     mutable std::unordered_map<std::string, std::vector<ImageCallback>>
         imageRequests_;
     mutable std::unordered_map<std::string, CachedImage> imageCache_;
+    // Old decoded caches are moved here in O(1) and destroyed by an image
+    // worker, never by the UI thread that publishes a metadata refresh.
+    mutable std::deque<std::unordered_map<std::string, CachedImage>>
+        retiredImageCaches_;
     mutable std::unordered_map<std::string, uint64_t> imageRetryAfter_;
     mutable std::vector<std::thread> imageWorkers_;
     mutable size_t imageCacheBytes_ = 0;
@@ -268,13 +284,6 @@ private:
     mutable bool stoppingImages_ = false;
     std::shared_ptr<const GameMetadataIndexSnapshot> index_ =
         std::make_shared<const GameMetadataIndexSnapshot>();
-    // titleId (upper-case hex) → non-empty latestVersion of every entry that
-    // carries one. Built beside index_ (same UI-thread-only reassignment
-    // rule) and consumed by collectLatestVersions().
-    std::unordered_map<std::string, std::vector<std::string>> byTitleId_;
-    // titleId (upper-case hex) → item indices of the same entry set as
-    // byTitleId_. Consumed by findByTitleId() for update downloads.
-    std::unordered_map<std::string, std::vector<size_t>> byTitleIdItems_;
     MetadataManifest manifest_;
     uint64_t generation_ = 0;
 };

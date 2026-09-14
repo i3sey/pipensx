@@ -752,6 +752,7 @@ bool GameMetadataService::prepareSnapshot(const std::string& manifestJson,
     snapshot.items = std::move(items);
     snapshot.manifestJson = manifestJson;
     snapshot.indexData.assign(indexJson.begin(), indexJson.end());
+    snapshot.preparedIndex = buildIndex(std::move(snapshot.items));
     error.clear();
     return true;
 }
@@ -781,10 +782,10 @@ bool GameMetadataService::loadCachedSnapshot(MetadataSnapshot& snapshot,
                            cancelled);
 }
 
-void GameMetadataService::ingestItems(std::vector<GameMetadata> items) {
+std::shared_ptr<GameMetadataIndexSnapshot> GameMetadataService::buildIndex(
+    std::vector<GameMetadata> items) {
     auto next = std::make_shared<GameMetadataIndexSnapshot>();
     next->items = std::move(items);
-    next->generation = generation_;
     next->byInfoHash.reserve(next->items.size());
     for (size_t i = 0; i < next->items.size(); ++i) {
         const GameMetadata& entry = next->items[i];
@@ -794,17 +795,10 @@ void GameMetadataService::ingestItems(std::vector<GameMetadata> items) {
         if (!entry.hasModes && entry.players >= 2)
             next->hasLocalPlayerCounts = true;
     }
-    index_ = std::move(next);
-    rebuildTitleIdIndex();
-}
-
-void GameMetadataService::rebuildTitleIdIndex() {
-    std::unordered_map<std::string, std::vector<std::string>> next;
-    std::unordered_map<std::string, std::vector<size_t>> nextItems;
-    next.reserve(index_->items.size());
-    nextItems.reserve(index_->items.size());
-    for (size_t i = 0; i < index_->items.size(); ++i) {
-        const GameMetadata& metadata = index_->items[i];
+    next->byTitleId.reserve(next->items.size());
+    next->byTitleIdItems.reserve(next->items.size());
+    for (size_t i = 0; i < next->items.size(); ++i) {
+        const GameMetadata& metadata = next->items[i];
         if (metadata.latestVersion.empty())
             continue;
         std::string titleId = metadata.titleId;
@@ -812,10 +806,10 @@ void GameMetadataService::rebuildTitleIdIndex() {
                        [](unsigned char c) {
                            return static_cast<char>(std::toupper(c));
                        });
-        next[titleId].push_back(metadata.latestVersion);
-        nextItems[titleId].push_back(i);
+        next->byTitleId[titleId].push_back(metadata.latestVersion);
+        next->byTitleIdItems[titleId].push_back(i);
     }
-    for (auto& entry : next)
+    for (auto& entry : next->byTitleId)
         std::sort(entry.second.begin(), entry.second.end(),
                   [](const std::string& a, const std::string& b) {
                       const uint64_t av = strtoull(a.c_str(), nullptr, 10);
@@ -824,8 +818,7 @@ void GameMetadataService::rebuildTitleIdIndex() {
                           return av > bv;
                       return a > b;
                   });
-    byTitleId_ = std::move(next);
-    byTitleIdItems_ = std::move(nextItems);
+    return next;
 }
 
 bool GameMetadataService::findByTitleId(
@@ -834,8 +827,8 @@ bool GameMetadataService::findByTitleId(
     std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) {
         return static_cast<char>(std::toupper(c));
     });
-    auto it = byTitleIdItems_.find(key);
-    if (it == byTitleIdItems_.end())
+    auto it = index_->byTitleIdItems.find(key);
+    if (it == index_->byTitleIdItems.end())
         return false;
     out.reserve(out.size() + it->second.size());
     for (size_t index : it->second)
@@ -890,8 +883,8 @@ bool GameMetadataService::collectLatestVersions(
     std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) {
         return static_cast<char>(std::toupper(c));
     });
-    auto it = byTitleId_.find(key);
-    if (it == byTitleId_.end())
+    auto it = index_->byTitleId.find(key);
+    if (it == index_->byTitleId.end())
         return false;
     out.insert(out.end(), it->second.begin(), it->second.end());
     return true;
@@ -899,8 +892,6 @@ bool GameMetadataService::collectLatestVersions(
 
 bool GameMetadataService::load(std::string& error) {
     index_ = std::make_shared<const GameMetadataIndexSnapshot>();
-    byTitleId_.clear();
-    byTitleIdItems_.clear();
     manifest_ = {};
 
     std::string cacheError;
@@ -930,16 +921,25 @@ bool GameMetadataService::load(std::string& error) {
     std::vector<GameMetadata> items;
     if (!parseIndex(json, items, error))
         return false;
-    ingestItems(std::move(items));
+    index_ = buildIndex(std::move(items));
     log_msg("[metadata] loaded %zu game matches from %s\n",
             index_->byInfoHash.size(), bundledPath_.c_str());
     return true;
 }
 
-void GameMetadataService::adopt(MetadataSnapshot snapshot) {
+RetiredMetadataSnapshot GameMetadataService::adopt(MetadataSnapshot snapshot) {
     ++generation_;
-    ingestItems(std::move(snapshot.items));
+    if (!snapshot.preparedIndex)
+        snapshot.preparedIndex = buildIndex(std::move(snapshot.items));
+    snapshot.preparedIndex->generation = generation_;
+    RetiredMetadataSnapshot retired;
+    retired.index = std::move(index_);
+    retired.items = std::move(snapshot.items);
+    retired.manifestJson = std::move(snapshot.manifestJson);
+    retired.indexData = std::move(snapshot.indexData);
+    index_ = std::move(snapshot.preparedIndex);
     manifest_ = std::move(snapshot.manifest);
+    return retired;
 }
 
 bool GameMetadataService::fetchLatest(MetadataSnapshot& snapshot,
@@ -1288,10 +1288,16 @@ void GameMetadataService::prefetchImage(const std::string& url,
 }
 
 void GameMetadataService::dropMemoryImageCache() const {
-    std::lock_guard<std::mutex> lock(imageMutex_);
-    imageCache_.clear();
-    imageCacheBytes_ = 0;
-    imageRetryAfter_.clear();
+    {
+        std::lock_guard<std::mutex> lock(imageMutex_);
+        if (!imageCache_.empty()) {
+            retiredImageCaches_.push_back(std::move(imageCache_));
+            imageCache_ = {};
+        }
+        imageCacheBytes_ = 0;
+        imageRetryAfter_.clear();
+    }
+    imageReady_.notify_one();
 }
 
 void GameMetadataService::setImageNetwork(ImageNetwork mode) const {
@@ -1331,16 +1337,27 @@ void GameMetadataService::cacheImageLocked(
 void GameMetadataService::imageWorkerMain() const {
     while (true) {
         ImageJob job;
+        std::unordered_map<std::string, CachedImage> retiredCache;
+        bool reclaimCache = false;
         {
             std::unique_lock<std::mutex> lock(imageMutex_);
             imageReady_.wait(lock, [this] {
-                return stoppingImages_ || !imageQueue_.empty();
+                return stoppingImages_ || !imageQueue_.empty() ||
+                       !retiredImageCaches_.empty();
             });
             if (stoppingImages_)
                 return;
-            job = std::move(imageQueue_.front());
-            imageQueue_.pop_front();
+            if (!retiredImageCaches_.empty()) {
+                retiredCache = std::move(retiredImageCaches_.front());
+                retiredImageCaches_.pop_front();
+                reclaimCache = true;
+            } else {
+                job = std::move(imageQueue_.front());
+                imageQueue_.pop_front();
+            }
         }
+        if (reclaimCache)
+            continue;
         const std::string& url = job.url;
         const std::string key = imageCacheKey(job.url, job.maxDim);
         const uint64_t startedMs = monotonicMilliseconds();

@@ -570,7 +570,7 @@ bool CatalogService::loadFile(const std::string& path,
     entries_ = std::make_shared<const std::vector<CatalogEntry>>(
         std::move(parsed));
     ++generation_;
-    rebuildIndex();
+    buildIndex(*entries_, infoHashIndex_);
     sourceLabel_ = label;
     struct stat st {};
     // Wall-clock only: now_sec() is monotonic (boot-relative), useless for
@@ -599,7 +599,7 @@ bool CatalogService::load(std::string& error) {
     // sees an empty list and starts the trusted live refresh in the background.
     entries_ = std::make_shared<const std::vector<CatalogEntry>>();
     ++generation_;
-    rebuildIndex();
+    buildIndex(*entries_, infoHashIndex_);
     sourceLabel_.clear();
     snapshotEpochSec_ = 0;
     error.clear();
@@ -657,6 +657,25 @@ bool CatalogService::fetchLatest(std::vector<CatalogEntry>& parsed,
     return true;
 }
 
+bool CatalogService::fetchLatest(CatalogSnapshot& snapshot,
+                                 std::string& error,
+                                 const std::string& sourceUrl,
+                                 const std::atomic<bool>* cancelled) {
+    snapshot = {};
+    if (!fetchLatest(snapshot.entries, error, sourceUrl, cancelled))
+        return false;
+    if (failIfCancelled(cancelled, error)) {
+        snapshot = {};
+        return false;
+    }
+    buildIndex(snapshot.entries, snapshot.infoHashIndex);
+    if (failIfCancelled(cancelled, error)) {
+        snapshot = {};
+        return false;
+    }
+    return true;
+}
+
 const CatalogEntry* CatalogService::findByInfoHash(
     const std::string& infoHash) const {
     const auto found = infoHashIndex_.find(lowerAscii(infoHash));
@@ -665,23 +684,36 @@ const CatalogEntry* CatalogService::findByInfoHash(
         : &(*entries_)[found->second];
 }
 
-void CatalogService::rebuildIndex() {
-    infoHashIndex_.clear();
-    infoHashIndex_.reserve(entries_->size());
-    for (size_t i = 0; i < entries_->size(); ++i)
-        infoHashIndex_.emplace(lowerAscii((*entries_)[i].infoHash), i);
+void CatalogService::buildIndex(
+    const std::vector<CatalogEntry>& entries,
+    std::unordered_map<std::string, size_t>& index) {
+    index.clear();
+    index.reserve(entries.size());
+    for (size_t i = 0; i < entries.size(); ++i)
+        index.emplace(lowerAscii(entries[i].infoHash), i);
 }
 
-void CatalogService::adopt(std::vector<CatalogEntry> parsed,
-                           const std::string& sourceUrl) {
+RetiredCatalogSnapshot CatalogService::adopt(
+    std::vector<CatalogEntry> parsed, const std::string& sourceUrl) {
+    CatalogSnapshot snapshot;
+    snapshot.entries = std::move(parsed);
+    buildIndex(snapshot.entries, snapshot.infoHashIndex);
+    return adopt(std::move(snapshot), sourceUrl);
+}
+
+RetiredCatalogSnapshot CatalogService::adopt(
+    CatalogSnapshot snapshot, const std::string& sourceUrl) {
     // UI thread only: entries() is read unsynchronised by the render thread, so
     // this swap must never happen on the fetch worker (data race → UAF).
     // Observers holding the previous shared snapshot keep it alive until they
     // pick up the new one.
+    RetiredCatalogSnapshot retired;
+    retired.entries = std::move(entries_);
+    retired.infoHashIndex = std::move(infoHashIndex_);
     entries_ = std::make_shared<const std::vector<CatalogEntry>>(
-        std::move(parsed));
+        std::move(snapshot.entries));
+    infoHashIndex_ = std::move(snapshot.infoHashIndex);
     ++generation_;
-    rebuildIndex();
     sourceLabel_ = catalogSourceLabel(sourceUrl.empty() ? kDefaultCatalogSourceUrl
                                                         : sourceUrl);
     snapshotEpochSec_ = static_cast<int64_t>(time(nullptr));
@@ -689,6 +721,7 @@ void CatalogService::adopt(std::vector<CatalogEntry> parsed,
             sourceLabel_.c_str());
     if (onAdopt_)
         onAdopt_(entries_);
+    return retired;
 }
 
 } // namespace pipensx

@@ -576,8 +576,9 @@ void testMetadataSnapshotAcceptsVerifiedIndex() {
     std::string error;
     assert(GameMetadataService::prepareSnapshot(manifest, index, snapshot,
                                                 error));
-    assert(snapshot.items.size() == 1);
-    assert(snapshot.items[0].name == "Runtime");
+    assert(snapshot.preparedIndex);
+    assert(snapshot.preparedIndex->items.size() == 1);
+    assert(snapshot.preparedIndex->items[0].name == "Runtime");
     assert(snapshot.manifest.indexBytes == index.size());
     const std::string manifestWithoutUrl =
         "{\"schemaVersion\":1,\"generatedAt\":\"2026-07-09T00:00:00Z\","
@@ -703,8 +704,9 @@ void testMetadataFetchVerifiesBeforeAdoptAndFallsBackToCache() {
         MetadataSnapshot cached;
         assert(metadata.fetchLatest(cached, error));
         assert(metadata.size() == 0);
-        assert(cached.items.size() == 1);
-        assert(cached.items[0].name == "Runtime");
+        assert(cached.preparedIndex);
+        assert(cached.preparedIndex->items.size() == 1);
+        assert(cached.preparedIndex->items[0].name == "Runtime");
         metadata.adopt(std::move(cached));
         assert(metadata.size() == 1);
         assert(metadata.findByInfoHash(
@@ -772,15 +774,18 @@ void testCatalogAndMetadataRefreshAdoptIndependently() {
         GameMetadataService metadata(root, root + "/missing.json");
 
         CatalogEntry newEntry;
+        newEntry.infoHash = "AABB";
         newEntry.title = "New";
         CatalogRefreshBatch catalogOnly;
         catalogOnly.catalogOk = true;
-        catalogOnly.catalogEntries = {newEntry};
+        catalogOnly.catalog.entries = {newEntry};
+        catalogOnly.catalog.infoHashIndex.emplace("aabb", 0);
         const auto first = adoptCatalogRefresh(
             catalog, metadata, std::move(catalogOnly));
         assert(first.catalogChanged && !first.metadataChanged);
         assert(catalog.generation() == 2);
         assert(catalog.entries()[0].title == "New");
+        assert(catalog.findByInfoHash("AaBb") == &catalog.entries()[0]);
         assert(metadata.size() == 0);
 
         const std::string index =
@@ -842,7 +847,7 @@ void testCancelledCatalogRefreshDoesNotPublish() {
         CatalogRefreshBatch late;
         late.cancelled = true;
         late.catalogOk = true;
-        late.catalogEntries.push_back(std::move(lateEntry));
+        late.catalog.entries.push_back(std::move(lateEntry));
         late.metadataOk = true;
         GameMetadata lateMetadata;
         lateMetadata.infoHash = "late";
@@ -855,6 +860,8 @@ void testCancelledCatalogRefreshDoesNotPublish() {
         assert(catalog.entries().size() == 1);
         assert(catalog.entries()[0].title == "Old");
         assert(metadata.size() == 0);
+        assert(late.catalog.entries.size() == 1);
+        assert(late.metadata.items.size() == 1);
     }
     rmdir((root + "/catalog/metadata").c_str());
     rmdir((root + "/catalog/images").c_str());

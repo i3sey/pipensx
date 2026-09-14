@@ -12,7 +12,7 @@ namespace pipensx {
 struct CatalogRefreshBatch {
     bool cancelled = false;
     bool catalogOk = false;
-    std::vector<CatalogEntry> catalogEntries;
+    CatalogSnapshot catalog;
     std::string catalogError;
     bool metadataOk = false;
     MetadataSnapshot metadata;
@@ -22,13 +22,17 @@ struct CatalogRefreshBatch {
 struct CatalogRefreshAdoption {
     bool catalogChanged = false;
     bool metadataChanged = false;
+    RetiredCatalogSnapshot retiredCatalog;
+    RetiredMetadataSnapshot retiredMetadata;
 };
 
-// UI-thread seam: worker threads fill a batch without touching live maps, then
-// the render thread adopts each successful source independently.
+// UI-thread seam: workers fill fully indexed snapshots without touching live
+// maps, then the render thread publishes each successful source independently.
+// The rvalue reference deliberately leaves cancelled payload ownership with
+// the caller so it can retire those large buffers on a worker.
 CatalogRefreshAdoption adoptCatalogRefresh(
     CatalogService& catalog, GameMetadataService& metadata,
-    CatalogRefreshBatch batch, const std::string& catalogSourceUrl = {});
+    CatalogRefreshBatch&& batch, const std::string& catalogSourceUrl = {});
 
 // One in-flight catalogue/metadata fetch across every UI entry (catalog tab,
 // settings). A second caller no-ops until endCatalogRefresh().

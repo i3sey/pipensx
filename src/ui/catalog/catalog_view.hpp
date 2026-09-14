@@ -1517,17 +1517,18 @@ private:
         brls::async([this, alive, catalog, metadata, settings, startedMs,
                      fetchCatalog, fetchMetadata, notify, catalogSourceUrl,
                      cancelled] {
-            CatalogRefreshBatch batch;
+            auto batch = std::make_shared<CatalogRefreshBatch>();
             std::thread metadataFetch;
             if (fetchMetadata) {
                 metadataFetch = std::thread([&] {
-                    batch.metadataOk = metadata->fetchLatest(
-                        batch.metadata, batch.metadataError, cancelled.get());
+                    batch->metadataOk = metadata->fetchLatest(
+                        batch->metadata, batch->metadataError,
+                        cancelled.get());
                 });
             }
             if (fetchCatalog) {
-                batch.catalogOk = catalog->fetchLatest(
-                    batch.catalogEntries, batch.catalogError, catalogSourceUrl,
+                batch->catalogOk = catalog->fetchLatest(
+                    batch->catalog, batch->catalogError, catalogSourceUrl,
                     cancelled.get());
             }
             if (metadataFetch.joinable())
@@ -1535,34 +1536,45 @@ private:
             if (fetchCatalog) {
                 telemetry_log("catalog", "-",
                               "event=refresh ok=%d duration_ms=%llu entries=%zu",
-                              batch.catalogOk ? 1 : 0,
+                              batch->catalogOk ? 1 : 0,
                               (unsigned long long)(now_ms() - startedMs),
-                              batch.catalogEntries.size());
+                              batch->catalog.entries.size());
             }
             if (fetchMetadata) {
                 telemetry_log("metadata", "-",
                               "event=refresh ok=%d duration_ms=%llu entries=%zu",
-                              batch.metadataOk ? 1 : 0,
+                              batch->metadataOk ? 1 : 0,
                               (unsigned long long)(now_ms() - startedMs),
-                              batch.metadata.items.size());
+                              batch->metadata.preparedIndex
+                                  ? batch->metadata.preparedIndex->items.size()
+                                  : batch->metadata.items.size());
             }
-            brls::sync([this, alive, batch = std::move(batch), fetchCatalog,
+            brls::sync([this, alive, batch, fetchCatalog,
                         fetchMetadata, notify, catalogSourceUrl, catalog,
                         metadata, settings, cancelled]() mutable {
-                batch.cancelled =
+                batch->cancelled =
                     cancelled->load(std::memory_order_relaxed);
-                const bool wasCancelled = batch.cancelled;
-                const bool catalogOk = batch.catalogOk;
-                const bool metadataOk = batch.metadataOk;
-                const std::string catalogError = batch.catalogError;
-                const std::string metadataError = batch.metadataError;
+                const bool wasCancelled = batch->cancelled;
+                const bool catalogOk = batch->catalogOk;
+                const bool metadataOk = batch->metadataOk;
+                const std::string catalogError = batch->catalogError;
+                const std::string metadataError = batch->metadataError;
+                CatalogRefreshAdoption adoption;
                 if (metadata) {
-                    adoptCatalogRefresh(*catalog, *metadata, std::move(batch),
-                                        catalogSourceUrl);
+                    adoption = adoptCatalogRefresh(
+                        *catalog, *metadata, std::move(*batch), catalogSourceUrl);
                 } else if (catalogOk && !wasCancelled) {
-                    catalog->adopt(std::move(batch.catalogEntries),
-                                   catalogSourceUrl);
+                    adoption.retiredCatalog = catalog->adopt(
+                        std::move(batch->catalog), catalogSourceUrl);
                 }
+                // Keep ownership through the rest of this UI turn (where
+                // views exchange their shared snapshots), then destroy the
+                // displaced indexes, entries and raw buffers on a worker.
+                auto retired = std::make_shared<CatalogRefreshAdoption>(
+                    std::move(adoption));
+                brls::sync([retired, batch] {
+                    brls::async([retired, batch] {});
+                });
                 std::string stampError;
                 if (!wasCancelled && !recordCatalogRefreshSuccess(
                         settings, fetchCatalog && catalogOk,

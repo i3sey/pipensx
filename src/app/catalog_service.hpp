@@ -70,6 +70,20 @@ struct CatalogEntry {
     }
 };
 
+// Fully indexed catalogue built by a refresh worker. Publishing this on the
+// UI thread only moves ready containers; it never scans the catalogue.
+struct CatalogSnapshot {
+    std::vector<CatalogEntry> entries;
+    std::unordered_map<std::string, size_t> infoHashIndex;
+};
+
+// Ownership displaced by a publish. UI callers hand this to a worker so the
+// last references and the old hash table are not destroyed in a render frame.
+struct RetiredCatalogSnapshot {
+    std::shared_ptr<const std::vector<CatalogEntry>> entries;
+    std::unordered_map<std::string, size_t> infoHashIndex;
+};
+
 // Built-in Langegen switch_games.json URL used when catalogSourceUrl is empty.
 std::string defaultCatalogSourceUrl();
 
@@ -80,18 +94,22 @@ public:
 
     bool load(std::string& error);
 
-    // Pool-thread safe: fetch the latest catalogue from the trusted source,
-    // parse it, and persist the on-disk cache. Fills `parsed` on success and
-    // never touches entries_, so it may run on a worker thread. The caller
-    // adopts the parsed batch on the UI thread via adopt().
+    // Pool-thread safe: fetch, parse and persist without touching live state.
+    // The CatalogSnapshot overload also builds the lookup index and is the
+    // refresh-path API; the vector overload remains for startup/tests.
     bool fetchLatest(std::vector<CatalogEntry>& parsed, std::string& error,
                      const std::string& sourceUrl,
                      const std::atomic<bool>* cancelled = nullptr);
-    // UI-thread only: adopt a freshly fetched batch as the live catalogue.
-    // entries() is read unsynchronised by the render thread every frame, so
-    // entries_ may only be reassigned here — never from a fetch worker.
-    void adopt(std::vector<CatalogEntry> parsed,
-               const std::string& sourceUrl = {});
+    bool fetchLatest(CatalogSnapshot& snapshot, std::string& error,
+                     const std::string& sourceUrl,
+                     const std::atomic<bool>* cancelled = nullptr);
+    // UI-thread only: publish a freshly fetched batch. The CatalogSnapshot
+    // overload only moves ready containers; the vector compatibility overload
+    // builds its index synchronously and is not used by refresh UI paths.
+    RetiredCatalogSnapshot adopt(std::vector<CatalogEntry> parsed,
+                                 const std::string& sourceUrl = {});
+    RetiredCatalogSnapshot adopt(CatalogSnapshot snapshot,
+                                 const std::string& sourceUrl = {});
 
     const std::vector<CatalogEntry>& entries() const { return *entries_; }
 
@@ -142,7 +160,8 @@ public:
 private:
     bool loadFile(const std::string& path, const std::string& label,
                   std::string& error);
-    void rebuildIndex();
+    static void buildIndex(const std::vector<CatalogEntry>& entries,
+                           std::unordered_map<std::string, size_t>& index);
 
     std::string rootPath_;
     std::string catalogRoot_;

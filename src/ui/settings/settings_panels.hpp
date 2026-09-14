@@ -1117,14 +1117,16 @@ private:
             effectiveCatalogSourceUrl(settings_->get().catalogSourceUrl);
         brls::async([this, alive, catalog, settings, catalogSourceUrl,
                      onDone = std::move(onDone)]() mutable {
-            std::vector<CatalogEntry> entries;
+            auto snapshot = std::make_shared<CatalogSnapshot>();
             std::string error;
-            bool ok = catalog->fetchLatest(entries, error, catalogSourceUrl);
-            brls::sync([this, alive, ok, entries = std::move(entries),
+            bool ok = catalog->fetchLatest(*snapshot, error, catalogSourceUrl);
+            brls::sync([this, alive, ok, snapshot,
                         error = std::move(error), catalogSourceUrl, catalog,
                         settings, onDone = std::move(onDone)]() mutable {
+                RetiredCatalogSnapshot retired;
                 if (ok) {
-                    catalog->adopt(std::move(entries), catalogSourceUrl);
+                    retired = catalog->adopt(std::move(*snapshot),
+                                             catalogSourceUrl);
                     std::string stampError;
                     if (!recordCatalogRefreshSuccess(settings, true, false,
                                                      stampError) &&
@@ -1133,6 +1135,11 @@ private:
                                          "error=%s", stampError.c_str());
                     }
                 }
+                auto retiredHolder = std::make_shared<RetiredCatalogSnapshot>(
+                    std::move(retired));
+                brls::sync([retiredHolder, snapshot] {
+                    brls::async([retiredHolder, snapshot] {});
+                });
                 endCatalogRefresh();
                 if (!alive->load())
                     return;
@@ -1164,14 +1171,15 @@ private:
         AppSettings* settings = settings_;
         brls::async([this, alive, metadata, settings,
                      onDone = std::move(onDone)]() mutable {
-            MetadataSnapshot snapshot;
+            auto snapshot = std::make_shared<MetadataSnapshot>();
             std::string error;
-            bool ok = metadata->fetchLatest(snapshot, error);
-            brls::sync([this, alive, ok, snapshot = std::move(snapshot),
+            bool ok = metadata->fetchLatest(*snapshot, error);
+            brls::sync([this, alive, ok, snapshot,
                         error = std::move(error), metadata, settings,
                         onDone = std::move(onDone)]() mutable {
+                RetiredMetadataSnapshot retired;
                 if (ok) {
-                    metadata->adopt(std::move(snapshot));
+                    retired = metadata->adopt(std::move(*snapshot));
                     metadata->dropMemoryImageCache();
                     std::string stampError;
                     if (!recordCatalogRefreshSuccess(settings, false, true,
@@ -1181,6 +1189,11 @@ private:
                                          "error=%s", stampError.c_str());
                     }
                 }
+                auto retiredHolder = std::make_shared<RetiredMetadataSnapshot>(
+                    std::move(retired));
+                brls::sync([retiredHolder, snapshot] {
+                    brls::async([retiredHolder, snapshot] {});
+                });
                 endCatalogRefresh();
                 if (!alive->load())
                     return;
