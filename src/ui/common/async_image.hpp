@@ -109,18 +109,26 @@ public:
     // UI_PLAN F6: synchronous upload for memory-cache hits. UI thread only
     // (needs the live NVG context) — the cover paints in the same frame,
     // so catalog re-entry shows no placeholder flash.
+    void setRgbaNow(std::shared_ptr<const std::vector<uint8_t>> pixels,
+                    int width, int height, RequestCurrent current = {}) {
+        if (!pixels || pixels->empty() || width <= 0 || height <= 0)
+            return;
+        deferred_ = DeferredRgba{std::move(pixels), width, height,
+                                 std::move(current)};
+        // A recycled cell must not paint the previous item's texture while it
+        // waits for its turn in the frame budget.
+        clear();
+    }
+
     void setRgbaNow(const uint8_t* pixels, int width, int height,
                     RequestCurrent current = {}) {
         if (!pixels || width <= 0 || height <= 0)
             return;
         const size_t bytes =
             static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
-        deferred_ = DeferredRgba{
-            std::make_shared<std::vector<uint8_t>>(pixels, pixels + bytes),
-            width, height, std::move(current)};
-        // A recycled cell must not paint the previous item's texture while it
-        // waits for its turn in the frame budget.
-        clear();
+        setRgbaNow(std::make_shared<std::vector<uint8_t>>(
+                       pixels, pixels + bytes),
+                   width, height, std::move(current));
     }
 
     void setRgbaAsync(std::function<void(std::function<void(
@@ -252,7 +260,9 @@ inline void loadImageInto(AsyncRgbaImage* image, GameMetadataService* service,
     if (GameMetadataService::ImageData cached =
             service->cachedImage(url, maxDim)) {
         state->pending = false;
-        image->setRgbaNow(cached->pixels.data(), cached->width,
+        std::shared_ptr<const std::vector<uint8_t>> pixels(
+            cached, &cached->pixels);
+        image->setRgbaNow(std::move(pixels), cached->width,
                           cached->height, [state, generation] {
                               return state->generation.load() == generation;
                           });

@@ -126,9 +126,10 @@ public:
 
     // Decode size classes. The memory cache keys on url+class; the on-disk
     // byte cache stays per URL, so a second class costs a decode, never a
-    // download. Grid matches the 180px catalog slot (360px GPU uploads blow
-    // Horizon's ~4 MB mapping slack). Card is detail/hero/list art. Full is
-    // the screenshot viewer.
+    // download. Icon matches the 72px download-list slot. Grid matches the
+    // 180px catalog slot (360px GPU uploads blow Horizon's ~4 MB mapping
+    // slack). Card is detail/hero/list art. Full is the screenshot viewer.
+    static constexpr int kImageDimIcon = 72;
     static constexpr int kImageDimGrid = 180;
     static constexpr int kImageDimCard = 360;
     static constexpr int kImageDimFull = 1280;

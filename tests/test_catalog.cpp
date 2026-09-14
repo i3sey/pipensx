@@ -1485,6 +1485,54 @@ void testAsyncImageDiskCache() {
     rmdir(root.c_str());
 }
 
+// Dimensions are inspected before stbi_load_from_memory can allocate an RGBA
+// buffer. The PNG payload is tiny but advertises a width above the decode cap.
+void testOversizedImageRejectedBeforeDecode() {
+    const std::string root = "/tmp/pipensx-image-size-guard-" +
+                             std::to_string(static_cast<long long>(getpid()));
+    std::vector<uint8_t> png {
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+        0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+        0x00, 0x00, 0x10, 0x01, 0x00, 0x00, 0x00, 0x01,
+        0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+        0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41,
+        0x54, 0x08, 0xd7, 0x63, 0xf8, 0xcf, 0xc0, 0xf0,
+        0x1f, 0x00, 0x05, 0x00, 0x01, 0xff, 0x89, 0x99,
+        0x3d, 0x1d, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45,
+        0x4e, 0x44, 0xae, 0x42, 0x60, 0x82
+    };
+    GameMetadataService::ImageFetcher fetcher =
+        [png](const std::string&, size_t, std::vector<uint8_t>& bytes,
+              std::string&, const std::atomic<bool>*) {
+            bytes = png;
+            return true;
+        };
+    std::mutex mutex;
+    std::condition_variable ready;
+    bool done = false;
+    GameMetadataService::ImageData result;
+    {
+        GameMetadataService service(root, root + "/missing-index.json", {},
+                                    {}, std::move(fetcher));
+        service.requestImage(
+            "https://example.invalid/oversized.png",
+            [&](GameMetadataService::ImageData data) {
+                std::lock_guard<std::mutex> lock(mutex);
+                result = std::move(data);
+                done = true;
+                ready.notify_all();
+            });
+        std::unique_lock<std::mutex> lock(mutex);
+        assert(ready.wait_for(lock, std::chrono::seconds(5),
+                              [&] { return done; }));
+        assert(!result);
+    }
+    rmdir((root + "/catalog/metadata").c_str());
+    rmdir((root + "/catalog/images").c_str());
+    rmdir((root + "/catalog").c_str());
+    rmdir(root.c_str());
+}
+
 // UI_PLAN F6: memory cache — synchronous hit after a load, prefetch warms
 // it without a callback, dropMemoryImageCache() invalidates it.
 void testImageMemoryCache() {
@@ -1571,9 +1619,9 @@ void testImageMemoryCache() {
     rmdir(root.c_str());
 }
 
-// One source, three decode classes. Grid tiles must not share the 360px card
-// decode (that upload blows Switch mapping slack), and the fullscreen viewer
-// must not inherit either smaller class.
+// One source, four decode classes. Small list icons and grid tiles must not
+// share the 360px card decode (that upload blows Switch mapping slack), and the
+// fullscreen viewer must not inherit any smaller class.
 void testImageSizeClassesCacheSeparately() {
     char cwd[4096];
     assert(getcwd(cwd, sizeof(cwd)));
@@ -1602,6 +1650,11 @@ void testImageSizeClassesCacheSeparately() {
             return result;
         };
 
+        GameMetadataService::ImageData icon =
+            decode(GameMetadataService::kImageDimIcon);
+        assert(icon);
+        assert(icon->width == 71 && icon->height == 40);
+
         GameMetadataService::ImageData grid =
             decode(GameMetadataService::kImageDimGrid);
         assert(grid);
@@ -1617,15 +1670,72 @@ void testImageSizeClassesCacheSeparately() {
         assert(full);
         assert(full->width == 1280 && full->height == 720);
 
-        // All three survive: opening a game must not evict the grid tile, and
+        // All four survive: opening a game must not evict the grid tile, and
         // the default class stays the card one for existing call sites.
         assert(service.cachedImage(source).get() == card.get());
+        assert(service.cachedImage(source,
+                                   GameMetadataService::kImageDimIcon).get() ==
+               icon.get());
         assert(service.cachedImage(source,
                                    GameMetadataService::kImageDimGrid).get() ==
                grid.get());
         assert(service.cachedImage(source,
                                    GameMetadataService::kImageDimFull).get() ==
                full.get());
+    }
+    rmdir((root + "/catalog/metadata").c_str());
+    rmdir((root + "/catalog/images").c_str());
+    rmdir((root + "/catalog").c_str());
+    rmdir(root.c_str());
+}
+
+// A smaller size class is prepared from an existing decoded class. Removing
+// the local source proves the second request neither reads nor decodes it.
+void testImageThumbnailReusesLargerDecode() {
+    const std::string root = "/tmp/pipensx-image-thumbnail-" +
+                             std::to_string(static_cast<long long>(getpid()));
+    const std::string source = root + "/source.jpg";
+    mkdir(root.c_str(), 0755);
+    {
+        std::ifstream input("resources/2026071002004100.jpg", std::ios::binary);
+        std::ofstream output(source, std::ios::binary | std::ios::trunc);
+        output << input.rdbuf();
+        assert(input.good() && output.good());
+    }
+    {
+        GameMetadataService service(root, root + "/missing-index.json");
+        auto decode = [&](int maxDim) {
+            std::mutex mutex;
+            std::condition_variable ready;
+            bool done = false;
+            GameMetadataService::ImageData result;
+            service.requestImage(
+                source,
+                [&](GameMetadataService::ImageData data) {
+                    std::lock_guard<std::mutex> lock(mutex);
+                    result = std::move(data);
+                    done = true;
+                    ready.notify_all();
+                },
+                maxDim);
+            std::unique_lock<std::mutex> lock(mutex);
+            assert(ready.wait_for(lock, std::chrono::seconds(10),
+                                  [&] { return done; }));
+            return result;
+        };
+
+        GameMetadataService::ImageData card =
+            decode(GameMetadataService::kImageDimCard);
+        assert(card);
+        std::remove(source.c_str());
+
+        GameMetadataService::ImageData icon =
+            decode(GameMetadataService::kImageDimIcon);
+        assert(icon);
+        assert(icon->width == 64 && icon->height == 36);
+        assert(service.cachedImage(source,
+                                   GameMetadataService::kImageDimIcon).get() ==
+               icon.get());
     }
     rmdir((root + "/catalog/metadata").c_str());
     rmdir((root + "/catalog/images").c_str());
@@ -2328,8 +2438,10 @@ int main() {
     testResolveCatalogFreshness();
     testAdoptKeepsImageCacheWhenIndexUnchanged();
     testAsyncImageDiskCache();
+    testOversizedImageRejectedBeforeDecode();
     testImageMemoryCache();
     testImageSizeClassesCacheSeparately();
+    testImageThumbnailReusesLargerDecode();
     testImageNetworkThrottledDuringActiveTransfer();
     testLocalImageBypassesBlockedNetworkWorkers();
     testTrackerCancellation();

@@ -222,7 +222,8 @@ public:
                 if (found)
                     iconUrl = found->iconUrl;
             }
-            setArtworkUrl(image_, service, iconUrl, currentIconUrl_, imageState_);
+            setArtworkUrl(image_, service, iconUrl, currentIconUrl_, imageState_,
+                          GameMetadataService::kImageDimIcon);
         }
     }
 

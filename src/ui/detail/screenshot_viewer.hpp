@@ -212,7 +212,9 @@ class ScreenshotViewerActivity : public brls::Activity {
                 url, GameMetadataService::kImageDimFull)) {
             awaitingFull_ = true;
             hidePlate();
-            image_->setRgbaNow(full->pixels.data(), full->width, full->height,
+            std::shared_ptr<const std::vector<uint8_t>> pixels(
+                full, &full->pixels);
+            image_->setRgbaNow(std::move(pixels), full->width, full->height,
                                current);
             return;
         }
@@ -221,7 +223,9 @@ class ScreenshotViewerActivity : public brls::Activity {
         // back to the labelled plate when even that is missing.
         if (GameMetadataService::ImageData card = metadata_->cachedImage(url)) {
             hidePlate();
-            image_->setRgbaNow(card->pixels.data(), card->width, card->height,
+            std::shared_ptr<const std::vector<uint8_t>> pixels(
+                card, &card->pixels);
+            image_->setRgbaNow(std::move(pixels), card->width, card->height,
                                current);
         } else {
             showPlate(tr("pipensx/detail/screenshot_loading"));
@@ -249,7 +253,9 @@ class ScreenshotViewerActivity : public brls::Activity {
                 }
                 awaitingFull_ = true;
                 hidePlate();
-                image_->setRgbaNow(bytes->pixels.data(), bytes->width,
+                std::shared_ptr<const std::vector<uint8_t>> pixels(
+                    bytes, &bytes->pixels);
+                image_->setRgbaNow(std::move(pixels), bytes->width,
                                    bytes->height, [state, generation] {
                                        return state->generation.load() ==
                                               generation;

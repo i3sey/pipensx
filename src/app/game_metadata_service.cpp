@@ -387,20 +387,40 @@ uint64_t monotonicMilliseconds() {
                                       .time_since_epoch()).count());
 }
 
-// Shrink a decode to the requested size class. Catalog tiles ask for
-// kImageDimGrid (the 180px slot). Detail/hero keep kImageDimCard. The
-// fullscreen viewer asks for kImageDimFull, because upscaling a card decode
-// over the whole screen is what "screenshots open in low resolution" looks like.
-void downscaleRgba(std::vector<uint8_t>& pixels, int& width, int& height,
-                   int maxDim) {
+constexpr int kMaxDecodedImageDimension = 4096;
+constexpr uint64_t kMaxDecodedImageBytes = 64 * 1024 * 1024;
+
+bool validDecodedImageSize(int width, int height) {
+    return width > 0 && height > 0 &&
+           width <= kMaxDecodedImageDimension &&
+           height <= kMaxDecodedImageDimension &&
+           static_cast<uint64_t>(width) * static_cast<uint64_t>(height) * 4 <=
+               kMaxDecodedImageBytes;
+}
+
+bool inspectImage(const std::vector<uint8_t>& bytes, int& width, int& height) {
+    int channels = 0;
+    return !bytes.empty() &&
+           stbi_info_from_memory(bytes.data(), static_cast<int>(bytes.size()),
+                                 &width, &height, &channels) &&
+           validDecodedImageSize(width, height);
+}
+
+// Produce the requested size class directly from stb's decode buffer. For an
+// oversized source this avoids first copying the full RGBA image into a vector
+// and then allocating another vector for the thumbnail.
+std::vector<uint8_t> sizedRgba(const uint8_t* pixels, int& width, int& height,
+                               int maxDim) {
     const int longEdge = std::max(width, height);
-    if (maxDim <= 0 || longEdge <= maxDim || width <= 0 || height <= 0)
-        return;
+    if (maxDim <= 0 || longEdge <= maxDim)
+        return std::vector<uint8_t>(
+            pixels, pixels + static_cast<size_t>(width) * height * 4);
     const int factor = (longEdge + maxDim - 1) / maxDim;
     const int dw = width / factor;
     const int dh = height / factor;
     if (dw <= 0 || dh <= 0)
-        return;
+        return std::vector<uint8_t>(
+            pixels, pixels + static_cast<size_t>(width) * height * 4);
     std::vector<uint8_t> out(static_cast<size_t>(dw) * dh * 4);
     const uint32_t area = static_cast<uint32_t>(factor) * factor;
     for (int y = 0; y < dh; ++y) {
@@ -408,7 +428,7 @@ void downscaleRgba(std::vector<uint8_t>& pixels, int& width, int& height,
             uint32_t r = 0, g = 0, b = 0, a = 0;
             for (int fy = 0; fy < factor; ++fy) {
                 const uint8_t* row =
-                    pixels.data() +
+                    pixels +
                     (static_cast<size_t>(y * factor + fy) * width +
                      static_cast<size_t>(x) * factor) * 4;
                 for (int fx = 0; fx < factor; ++fx) {
@@ -426,9 +446,9 @@ void downscaleRgba(std::vector<uint8_t>& pixels, int& width, int& height,
             dst[3] = static_cast<uint8_t>(a / area);
         }
     }
-    pixels = std::move(out);
     width = dw;
     height = dh;
+    return out;
 }
 
 std::string stringValue(const nlohmann::json& item, const char* key) {
@@ -1155,10 +1175,8 @@ GameMetadataService::ImageLoadResult GameMetadataService::probeImageSource(
             return ImageLoadResult::Failed;
         int width = 0;
         int height = 0;
-        int channels = 0;
-        if (!stbi_info_from_memory(bytes.data(), static_cast<int>(bytes.size()),
-                                   &width, &height, &channels)) {
-            error = "Local image is not valid.";
+        if (!inspectImage(bytes, width, height)) {
+            error = "Local image is invalid or too large.";
             return ImageLoadResult::Failed;
         }
         return ImageLoadResult::Loaded;
@@ -1168,10 +1186,7 @@ GameMetadataService::ImageLoadResult GameMetadataService::probeImageSource(
     if (readFile(path, bytes, kMaxImageBytes, error)) {
         int width = 0;
         int height = 0;
-        int channels = 0;
-        if (stbi_info_from_memory(bytes.data(),
-                                  static_cast<int>(bytes.size()),
-                                  &width, &height, &channels))
+        if (inspectImage(bytes, width, height))
             return ImageLoadResult::Loaded;
         unlink(path.c_str());
         bytes.clear();
@@ -1200,10 +1215,8 @@ bool GameMetadataService::fetchImageNetwork(
     }
     int width = 0;
     int height = 0;
-    int channels = 0;
-    if (!stbi_info_from_memory(bytes.data(), static_cast<int>(bytes.size()),
-                               &width, &height, &channels)) {
-        error = "Downloaded response is not an image.";
+    if (!inspectImage(bytes, width, height)) {
+        error = "Downloaded response is not an image or is too large.";
         return false;
     }
     const std::string path = imageRoot_ + "/" + cacheNameForUrl(url);
@@ -1616,6 +1629,39 @@ void GameMetadataService::imageLocalWorkerMain() const {
                 cached->second.access = ++imageAccess_;
                 result = cached->second.image;
                 memoryCacheHit = true;
+            } else {
+                // Reuse the smallest suitable decoded class. Navigating from
+                // a detail card back to a small list icon should only prepare
+                // and cache a thumbnail, not read and decode the source again.
+                ImageData larger;
+                const int classes[] = {
+                    kImageDimIcon, kImageDimGrid, kImageDimCard, kImageDimFull};
+                for (int candidateDim : classes) {
+                    if (candidateDim <= job.maxDim)
+                        continue;
+                    auto candidate = imageCache_.find(
+                        imageCacheKey(job.url, candidateDim));
+                    if (candidate == imageCache_.end() ||
+                        !candidate->second.image)
+                        continue;
+                    if (!larger || candidate->second.image->pixels.size() <
+                                       larger->pixels.size())
+                        larger = candidate->second.image;
+                }
+                if (larger) {
+                    int width = larger->width;
+                    int height = larger->height;
+                    std::vector<uint8_t> rgba = sizedRgba(
+                        larger->pixels.data(), width, height, job.maxDim);
+                    if (!rgba.empty()) {
+                        auto thumbnail = std::make_shared<DecodedImage>();
+                        thumbnail->width = width;
+                        thumbnail->height = height;
+                        thumbnail->pixels = std::move(rgba);
+                        result = std::move(thumbnail);
+                        memoryCacheHit = true;
+                    }
+                }
             }
         }
 
@@ -1645,15 +1691,17 @@ void GameMetadataService::imageLocalWorkerMain() const {
                 int width = 0;
                 int height = 0;
                 int channels = 0;
-                stbi_uc* pixels = stbi_load_from_memory(
-                    bytes.data(), static_cast<int>(bytes.size()),
-                    &width, &height, &channels, 4);
-                const uint64_t decodedBytes = width > 0 && height > 0
-                    ? static_cast<uint64_t>(width) * height * 4 : 0;
-                if (pixels && width <= 4096 && height <= 4096 &&
-                    decodedBytes <= 64 * 1024 * 1024) {
-                    std::vector<uint8_t> rgba(pixels, pixels + decodedBytes);
-                    downscaleRgba(rgba, width, height, job.maxDim);
+                // Keep the dimensions guard adjacent to stb's allocation even
+                // though every current source has already been inspected.
+                const bool sizeOk = inspectImage(bytes, width, height);
+                stbi_uc* pixels = sizeOk
+                    ? stbi_load_from_memory(
+                          bytes.data(), static_cast<int>(bytes.size()),
+                          &width, &height, &channels, 4)
+                    : nullptr;
+                if (pixels && validDecodedImageSize(width, height)) {
+                    std::vector<uint8_t> rgba =
+                        sizedRgba(pixels, width, height, job.maxDim);
                     auto decoded = std::make_shared<DecodedImage>();
                     decoded->width = width;
                     decoded->height = height;
