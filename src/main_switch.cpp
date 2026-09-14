@@ -42,6 +42,7 @@ extern "C" {
 #include <unistd.h>
 
 #include "ui/catalog/catalog_view.hpp"
+#include "ui/common/async_image.hpp"
 #include "ui/common/burn_in_saver.hpp"
 #include "ui/common/ui_helpers.hpp"
 #include "ui/common/web_qr.hpp"
@@ -808,6 +809,7 @@ int main(int argc, char** argv) {
                         ? GameMetadataService::ImageNetwork::Throttled
                         : GameMetadataService::ImageNetwork::Full);
             }
+            beginImageUploadFrame();
             if (!brls::Application::mainLoop())
                 break;
             if (!updateBadgeApplied && installedScanDone.load()) {

@@ -320,6 +320,12 @@ test: $(TEST_BINS)
 	./$(BUILD_DIR)/tests/test_manager
 
 
+# Header-only: frame/byte/measured-time accounting for UI texture uploads.
+$(BUILD_DIR)/tests/test_image_upload_budget: tests/test_image_upload_budget.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
+
+
 # Header-only: exercises the inline progress fractions in download_manager.hpp.
 $(BUILD_DIR)/tests/test_task_progress: tests/test_task_progress.cpp
 	@mkdir -p $(dir $@)

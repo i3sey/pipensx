@@ -198,8 +198,11 @@ class ScreenshotViewerActivity : public brls::Activity {
         updateCounter(0, 0);
 
         const uint64_t generation = ++state_->generation;
+        image_->resetArtwork();
+        auto current = [state = state_, generation] {
+            return state->generation.load() == generation;
+        };
         if (!metadata_ || url.empty()) {
-            image_->clear();
             showPlate(tr("pipensx/detail/screenshot_unavailable"));
             return;
         }
@@ -209,7 +212,8 @@ class ScreenshotViewerActivity : public brls::Activity {
                 url, GameMetadataService::kImageDimFull)) {
             awaitingFull_ = true;
             hidePlate();
-            image_->setRgbaNow(full->pixels.data(), full->width, full->height);
+            image_->setRgbaNow(full->pixels.data(), full->width, full->height,
+                               current);
             return;
         }
         // Otherwise show the rail's card-class decode (it is in memory — the
@@ -217,9 +221,9 @@ class ScreenshotViewerActivity : public brls::Activity {
         // back to the labelled plate when even that is missing.
         if (GameMetadataService::ImageData card = metadata_->cachedImage(url)) {
             hidePlate();
-            image_->setRgbaNow(card->pixels.data(), card->width, card->height);
+            image_->setRgbaNow(card->pixels.data(), card->width, card->height,
+                               current);
         } else {
-            image_->clear();
             showPlate(tr("pipensx/detail/screenshot_loading"));
         }
         requestFull(url, generation);
@@ -239,14 +243,17 @@ class ScreenshotViewerActivity : public brls::Activity {
                     state->generation.load() != generation)
                     return;
                 if (!bytes || bytes->pixels.empty()) {
-                    image_->clear();
+                    image_->resetArtwork();
                     showPlate(tr("pipensx/detail/screenshot_unavailable"));
                     return;
                 }
                 awaitingFull_ = true;
                 hidePlate();
                 image_->setRgbaNow(bytes->pixels.data(), bytes->width,
-                                   bytes->height);
+                                   bytes->height, [state, generation] {
+                                       return state->generation.load() ==
+                                              generation;
+                                   });
             });
         }, GameMetadataService::kImageDimFull,
            GameMetadataService::ImagePriority::Current,

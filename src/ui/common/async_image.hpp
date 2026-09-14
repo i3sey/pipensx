@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -14,6 +15,7 @@
 
 #include "app/game_metadata_service.hpp"
 #include "app/stream_install_flag.hpp"
+#include "ui/common/image_upload_budget.hpp"
 
 extern "C" {
 #include "core/util.h"
@@ -61,27 +63,25 @@ struct AsyncImageLifetime {
     AsyncRgbaImage* image = nullptr;
 };
 
-// All full texture uploads originate on the UI thread. Use a process-wide
-// 16 ms bucket so a burst of cache hits cannot monopolize one rendered frame.
-inline bool claimFullImageUploadBudget() {
-    struct Budget {
-        uint64_t bucket = static_cast<uint64_t>(-1);
-        unsigned uploads = 0;
-    };
-    static Budget budget;
-    const uint64_t bucket = now_us() / 16000;
-    if (budget.bucket != bucket) {
-        budget.bucket = bucket;
-        budget.uploads = 0;
-    }
-    if (budget.uploads >= 2)
-        return false;
-    ++budget.uploads;
-    return true;
+inline uint64_t& imageUploadFrameNumber() {
+    static uint64_t frameNumber = 0;
+    return frameNumber;
+}
+
+inline ImageUploadBudget& imageUploadBudget() {
+    static ImageUploadBudget budget;
+    return budget;
+}
+
+// Called exactly once immediately before Borealis renders a real frame.
+inline void beginImageUploadFrame() {
+    ++imageUploadFrameNumber();
 }
 
 class AsyncRgbaImage : public brls::Image {
 public:
+    using RequestCurrent = std::function<bool()>;
+
     AsyncRgbaImage() : lifetime_(std::make_shared<AsyncImageLifetime>()) {
         lifetime_->image = this;
     }
@@ -109,110 +109,124 @@ public:
     // UI_PLAN F6: synchronous upload for memory-cache hits. UI thread only
     // (needs the live NVG context) — the cover paints in the same frame,
     // so catalog re-entry shows no placeholder flash.
-    void setRgbaNow(const uint8_t* pixels, int width, int height) {
+    void setRgbaNow(const uint8_t* pixels, int width, int height,
+                    RequestCurrent current = {}) {
         if (!pixels || width <= 0 || height <= 0)
             return;
-        if (streamInstallActive()) {
-            const size_t bytes =
-                static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
-            applyRgba(std::make_shared<std::vector<uint8_t>>(
-                          pixels, pixels + bytes),
-                      width, height);
-            return;
-        }
-        if (!claimFullImageUploadBudget()) {
-            const size_t bytes =
-                static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
-            deferred_ = DeferredRgba{
-                std::make_shared<std::vector<uint8_t>>(pixels, pixels + bytes),
-                width, height};
-            clear();
-            return;
-        }
-        deferred_.reset();
-        uploadRgba(pixels, width, height, false);
+        const size_t bytes =
+            static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
+        deferred_ = DeferredRgba{
+            std::make_shared<std::vector<uint8_t>>(pixels, pixels + bytes),
+            width, height, std::move(current)};
+        // A recycled cell must not paint the previous item's texture while it
+        // waits for its turn in the frame budget.
+        clear();
     }
 
     void setRgbaAsync(std::function<void(std::function<void(
-        std::shared_ptr<const std::vector<uint8_t>>, int, int)>)> provider) {
+        std::shared_ptr<const std::vector<uint8_t>>, int, int)>)> provider,
+        RequestCurrent current = {}) {
         std::weak_ptr<AsyncImageLifetime> weakLifetime = lifetime_;
-        provider([weakLifetime](
+        provider([weakLifetime, current = std::move(current)](
             std::shared_ptr<const std::vector<uint8_t>> pixels,
             int width, int height) {
             brls::sync([weakLifetime, pixels = std::move(pixels),
-                        width, height] {
+                        width, height, current] {
                 auto lifetime = weakLifetime.lock();
                 if (!lifetime)
                     return;
                 std::lock_guard<std::mutex> lock(lifetime->mutex);
-                if (!lifetime->image)
+                if (!lifetime->image || (current && !current()))
                     return;
-                lifetime->image->applyRgba(std::move(pixels), width, height);
+                lifetime->image->applyRgba(std::move(pixels), width, height,
+                                           current);
             });
         });
     }
 
 private:
     struct DeferredRgba {
+        DeferredRgba(std::shared_ptr<const std::vector<uint8_t>> value,
+                     int imageWidth, int imageHeight,
+                     RequestCurrent requestCurrent)
+            : pixels(std::move(value)), width(imageWidth),
+              height(imageHeight), current(std::move(requestCurrent)) {}
+
         std::shared_ptr<const std::vector<uint8_t>> pixels;
         int width = 0;
         int height = 0;
+        RequestCurrent current;
+        std::vector<uint8_t> preview;
+        int previewWidth = 0;
+        int previewHeight = 0;
+        bool previewUploaded = false;
     };
 
-    void uploadRgba(const uint8_t* pixels, int width, int height,
-                    bool deferred) {
-        const uint64_t startedUs = telemetry_enabled() ? now_us() : 0;
+    bool uploadRgba(const uint8_t* pixels, int width, int height,
+                    bool deferred, const RequestCurrent& current) {
+        const size_t bytes =
+            static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
+        const uint64_t frameNumber = imageUploadFrameNumber();
+        ImageUploadBudget& budget = imageUploadBudget();
+        if (!budget.canUpload(frameNumber, bytes))
+            return false;
+        // Generation may have changed while this upload waited for a visible
+        // draw and for earlier textures to consume their frame budget.
+        if (current && !current())
+            return false;
+        const uint64_t startedUs = now_us();
         NVGcontext* vg = brls::Application::getNVGContext();
         innerSetImage(nvgCreateImageRGBA(vg, width, height, 0, pixels));
-        if (startedUs)
+        const uint64_t durationUs = now_us() - startedUs;
+        budget.recordUpload(frameNumber, bytes, durationUs);
+        if (telemetry_enabled())
             telemetry_log(
                 "ui", "image",
                 "event=upload duration_us=%llu bytes=%llu deferred=%d",
-                (unsigned long long)(now_us() - startedUs),
-                (unsigned long long)(
-                    static_cast<size_t>(width) *
-                    static_cast<size_t>(height) * 4),
+                (unsigned long long)durationUs,
+                (unsigned long long)bytes,
                 deferred ? 1 : 0);
+        return true;
     }
 
     void applyRgba(std::shared_ptr<const std::vector<uint8_t>> pixels,
-                   int width, int height) {
+                   int width, int height, RequestCurrent current) {
         if (!pixels || pixels->empty() || width <= 0 || height <= 0)
             return;
-        // Stream-install already owns the process mapping slack (ENOBUFS
-        // on sockets, ~4 MB kernel headroom). Full-res covers killed the
-        // Zelda session; a 160px preview does not. Keep the decode for a
-        // full upload on the first draw after the worker exits.
-        if (streamInstallActive()) {
-            // Always replace the texture with the new preview: a recycled
-            // tile can still hold the previous game's texture, and keeping
-            // it makes covers appear swapped while the install runs.
-            deferred_ = DeferredRgba{pixels, width, height};
-            std::vector<uint8_t> preview;
-            int pw = 0;
-            int ph = 0;
-            nearestDownscaleRgba(pixels->data(), width, height, preview, pw,
-                                 ph, kStreamInstallPreviewDim);
-            uploadRgba(preview.data(), pw, ph, true);
-            return;
-        }
-        if (!claimFullImageUploadBudget()) {
-            deferred_ = DeferredRgba{std::move(pixels), width, height};
-            clear();
-            return;
-        }
-        deferred_.reset();
-        uploadRgba(pixels->data(), width, height, false);
+        deferred_ = DeferredRgba{std::move(pixels), width, height,
+                                 std::move(current)};
     }
 
     void flushDeferred() {
-        if (!deferred_ || streamInstallActive())
+        if (!deferred_)
             return;
-        if (!claimFullImageUploadBudget())
+        if (deferred_->current && !deferred_->current()) {
+            deferred_.reset();
             return;
-        DeferredRgba held = std::move(*deferred_);
-        deferred_.reset();
-        uploadRgba(held.pixels->data(), held.width, held.height, true);
+        }
+
+        if (streamInstallActive()) {
+            if (deferred_->previewUploaded)
+                return;
+            // The preview uses this same frame budget. Retain the full decode
+            // so a later visible frame can upgrade it after installation.
+            if (deferred_->preview.empty())
+                nearestDownscaleRgba(
+                    deferred_->pixels->data(), deferred_->width,
+                    deferred_->height, deferred_->preview,
+                    deferred_->previewWidth, deferred_->previewHeight,
+                    kStreamInstallPreviewDim);
+            if (uploadRgba(deferred_->preview.data(),
+                           deferred_->previewWidth,
+                           deferred_->previewHeight, true,
+                           deferred_->current))
+                deferred_->previewUploaded = true;
+            return;
+        }
+
+        if (uploadRgba(deferred_->pixels->data(), deferred_->width,
+                       deferred_->height, true, deferred_->current))
+            deferred_.reset();
     }
 
     std::shared_ptr<AsyncImageLifetime> lifetime_;
@@ -239,7 +253,9 @@ inline void loadImageInto(AsyncRgbaImage* image, GameMetadataService* service,
             service->cachedImage(url, maxDim)) {
         state->pending = false;
         image->setRgbaNow(cached->pixels.data(), cached->width,
-                          cached->height);
+                          cached->height, [state, generation] {
+                              return state->generation.load() == generation;
+                          });
         return;
     }
     image->resetArtwork();
@@ -250,9 +266,6 @@ inline void loadImageInto(AsyncRgbaImage* image, GameMetadataService* service,
         service->requestImage(url, [done, state, generation](
             GameMetadataService::ImageData bytes) {
             if (state->generation.load() != generation) {
-                // A superseded request must not leave the recycled card marked
-                // pending, or its current same-URL binding can be skipped.
-                state->pending = false;
                 done(nullptr, 0, 0);
                 return;
             }
@@ -267,6 +280,8 @@ inline void loadImageInto(AsyncRgbaImage* image, GameMetadataService* service,
         }, maxDim, priority, [state, generation] {
             return state->generation.load() == generation;
         });
+    }, [state, generation] {
+        return state->generation.load() == generation;
     });
 }
 
