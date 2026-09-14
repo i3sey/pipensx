@@ -36,10 +36,13 @@ constexpr size_t kMaxIndexBytes = 24 * 1024 * 1024;
 constexpr size_t kMaxManifestBytes = 64 * 1024;
 constexpr size_t kMaxDetailsBytes = 256 * 1024;
 constexpr size_t kMaxImageBytes = 3 * 1024 * 1024;
-// UI_PLAN F6: decoded-RGBA budget for instant catalog re-entry. 96 MB sits
-// mid-range of the 64-128 MB plan window; the LRU sweep in cacheImageLocked
-// keeps the worst case bounded while scrolling the full catalog.
+// UI_PLAN F6: upper ceiling for decoded RGBA in application mode. Runtime
+// policy lowers it for constrained launches and while package installation
+// needs the heap (recommendedImageCacheBudget()).
 constexpr size_t kMaxImageCacheBytes = 96 * 1024 * 1024;
+constexpr size_t kAppletImageCacheBytes = 24 * 1024 * 1024;
+constexpr size_t kInstallImageCacheBytes = 24 * 1024 * 1024;
+constexpr size_t kAppletInstallImageCacheBytes = 8 * 1024 * 1024;
 constexpr uint64_t kImageRetryDelayMs = 30 * 1000;
 constexpr size_t kImageNetworkWorkerCount = 2;
 constexpr size_t kMaxQueuedImageRequests = 64;
@@ -1371,7 +1374,7 @@ GameMetadataService::cachedImage(const std::string& url, int maxDim) const {
     auto cached = imageCache_.find(imageCacheKey(url, maxDim));
     if (cached == imageCache_.end())
         return nullptr;
-    cached->second.access = ++imageAccess_;
+    touchImageLocked(cached->second);
     return cached->second.image;
 }
 
@@ -1443,6 +1446,7 @@ void GameMetadataService::dropMemoryImageCache() const {
             retiredImageCaches_.push_back(std::move(imageCache_));
             imageCache_ = {};
         }
+        imageLru_.clear();
         imageCacheBytes_ = 0;
         imageRetryAfter_.clear();
     }
@@ -1453,34 +1457,78 @@ void GameMetadataService::setImageNetwork(ImageNetwork mode) const {
     imageNetwork_.store(mode, std::memory_order_relaxed);
 }
 
+size_t GameMetadataService::recommendedImageCacheBudget(
+    bool applicationMode, bool installActive, uint64_t availableBytes) {
+    size_t ceiling = applicationMode ? kMaxImageCacheBytes
+                                     : kAppletImageCacheBytes;
+    if (installActive) {
+        ceiling = std::min(
+            ceiling, applicationMode ? kInstallImageCacheBytes
+                                     : kAppletInstallImageCacheBytes);
+    }
+    if (availableBytes != 0) {
+        const uint64_t divisor = installActive ? 16 : 8;
+        ceiling = static_cast<size_t>(std::min<uint64_t>(
+            ceiling, availableBytes / divisor));
+    }
+    return ceiling;
+}
+
+void GameMetadataService::setImageCacheBudget(size_t bytes) const {
+    std::vector<ImageData> evicted;
+    {
+        std::lock_guard<std::mutex> lock(imageMutex_);
+        imageCacheBudgetBytes_ = std::min(bytes, kMaxImageCacheBytes);
+        pruneImageCacheLocked(0, evicted);
+    }
+    // Dropping the last cache-owned shared_ptr may release multi-megabyte
+    // pixel vectors. Keep that allocator work away from the UI cache mutex.
+}
+
+void GameMetadataService::touchImageLocked(CachedImage& cached) const {
+    imageLru_.splice(imageLru_.begin(), imageLru_, cached.lru);
+}
+
+void GameMetadataService::pruneImageCacheLocked(
+    size_t incomingBytes, std::vector<ImageData>& evicted) const {
+    while (!imageLru_.empty() &&
+           (incomingBytes > imageCacheBudgetBytes_ ||
+            imageCacheBytes_ > imageCacheBudgetBytes_ - incomingBytes)) {
+        auto oldest = imageCache_.find(imageLru_.back());
+        if (oldest == imageCache_.end()) {
+            imageLru_.pop_back();
+            continue;
+        }
+        imageCacheBytes_ -= oldest->second.image->pixels.size();
+        evicted.push_back(std::move(oldest->second.image));
+        imageLru_.erase(oldest->second.lru);
+        imageCache_.erase(oldest);
+    }
+}
+
 void GameMetadataService::cacheImageLocked(
-    const std::string& key, ImageData image) const {
+    const std::string& key, ImageData image,
+    std::vector<ImageData>& evicted) const {
     if (!image)
         return;
     auto existing = imageCache_.find(key);
     if (existing != imageCache_.end()) {
         imageCacheBytes_ -= existing->second.image->pixels.size();
+        evicted.push_back(std::move(existing->second.image));
+        imageLru_.erase(existing->second.lru);
         imageCache_.erase(existing);
     }
     const size_t bytes = image->pixels.size();
-    if (bytes > kMaxImageCacheBytes)
+    if (bytes > imageCacheBudgetBytes_)
         return;
 
-    while (imageCacheBytes_ + bytes > kMaxImageCacheBytes &&
-           !imageCache_.empty()) {
-        auto oldest = std::min_element(
-            imageCache_.begin(), imageCache_.end(),
-            [](const auto& left, const auto& right) {
-                return left.second.access < right.second.access;
-            });
-        imageCacheBytes_ -= oldest->second.image->pixels.size();
-        imageCache_.erase(oldest);
-    }
+    pruneImageCacheLocked(bytes, evicted);
+    imageLru_.push_front(key);
     CachedImage cached;
     cached.image = std::move(image);
-    cached.access = ++imageAccess_;
+    cached.lru = imageLru_.begin();
     imageCacheBytes_ += bytes;
-    imageCache_[key] = std::move(cached);
+    imageCache_.emplace(key, std::move(cached));
 }
 
 void GameMetadataService::pruneImageQueueLocked(
@@ -1577,13 +1625,14 @@ void GameMetadataService::finishImageJob(
                   result ? result->pixels.size() : 0);
 
     std::vector<ImageCallbackRegistration> callbacks;
+    std::vector<ImageData> evicted;
     {
         std::lock_guard<std::mutex> lock(imageMutex_);
         auto request = imageRequests_.find(key);
         if (request == imageRequests_.end() || request->second.id != job.id)
             return;
         if (loaded && imageCache_.find(key) == imageCache_.end())
-            cacheImageLocked(key, result);
+            cacheImageLocked(key, result, evicted);
         callbacks = std::move(request->second.callbacks);
         imageRequests_.erase(request);
         if (!loaded)
@@ -1626,14 +1675,14 @@ void GameMetadataService::imageLocalWorkerMain() const {
             std::lock_guard<std::mutex> lock(imageMutex_);
             auto cached = imageCache_.find(key);
             if (cached != imageCache_.end()) {
-                cached->second.access = ++imageAccess_;
+                touchImageLocked(cached->second);
                 result = cached->second.image;
                 memoryCacheHit = true;
             } else {
                 // Reuse the smallest suitable decoded class. Navigating from
                 // a detail card back to a small list icon should only prepare
                 // and cache a thumbnail, not read and decode the source again.
-                ImageData larger;
+                auto larger = imageCache_.end();
                 const int classes[] = {
                     kImageDimIcon, kImageDimGrid, kImageDimCard, kImageDimFull};
                 for (int candidateDim : classes) {
@@ -1644,15 +1693,18 @@ void GameMetadataService::imageLocalWorkerMain() const {
                     if (candidate == imageCache_.end() ||
                         !candidate->second.image)
                         continue;
-                    if (!larger || candidate->second.image->pixels.size() <
-                                       larger->pixels.size())
-                        larger = candidate->second.image;
+                    if (larger == imageCache_.end() ||
+                        candidate->second.image->pixels.size() <
+                            larger->second.image->pixels.size())
+                        larger = candidate;
                 }
-                if (larger) {
-                    int width = larger->width;
-                    int height = larger->height;
+                if (larger != imageCache_.end()) {
+                    touchImageLocked(larger->second);
+                    const ImageData source = larger->second.image;
+                    int width = source->width;
+                    int height = source->height;
                     std::vector<uint8_t> rgba = sizedRgba(
-                        larger->pixels.data(), width, height, job.maxDim);
+                        source->pixels.data(), width, height, job.maxDim);
                     if (!rgba.empty()) {
                         auto thumbnail = std::make_shared<DecodedImage>();
                         thumbnail->width = width;

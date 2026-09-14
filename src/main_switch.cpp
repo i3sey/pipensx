@@ -5,6 +5,7 @@
 #include "app/game_metadata_service.hpp"
 #include "app/game_update_service.hpp"
 #include "app/installed_title_service.hpp"
+#include "app/stream_ram_budget.hpp"
 #include "app/switch_deploy.hpp"
 #include "app/update_service.hpp"
 #include "app/web_server.hpp"
@@ -401,7 +402,8 @@ int main(int argc, char** argv) {
     // A library applet must only terminate after qlaunch asks it to close.
     // Keep this path before logging, settings, and custom signal handlers so
     // the unsupported mode uses only libnx's normal applet lifecycle.
-    if (!isApplicationMode()) {
+    const bool applicationMode = isApplicationMode();
+    if (!applicationMode) {
         showApplicationModeRequired();
         return 0;
     }
@@ -525,6 +527,21 @@ int main(int argc, char** argv) {
         // max(catalog, metadata) instead of their sum.
         startupStage("GameMetadataService construction");
         GameMetadataService metadata("sdmc:/switch/pipensx");
+        auto configureImageCache = [&](bool installActive) {
+            const pipensx::StreamRamMemorySnapshot memory =
+                pipensx::detectStreamRamMemorySnapshot();
+            const uint64_t available = memory.heapDetected
+                ? memory.heapAvailableBytes : 0;
+            const size_t budget =
+                GameMetadataService::recommendedImageCacheBudget(
+                    applicationMode, installActive, available);
+            metadata.setImageCacheBudget(budget);
+            log_msg("[metadata] image_cache_budget=%zu available=%llu "
+                    "application=%d installing=%d\n",
+                    budget, static_cast<unsigned long long>(available),
+                    applicationMode ? 1 : 0, installActive ? 1 : 0);
+        };
+        configureImageCache(false);
         std::string metadataError;
         bool metadataOk = true;
         ThreadJoiner metadataLoader{
@@ -795,6 +812,7 @@ int main(int argc, char** argv) {
         uint64_t lastPerfMs = 0;
         pipensx::SwitchDeploySnapshot deployState{};
         bool activeTransfer = false;
+        bool imageInstallActive = false;
         bool updateBadgeApplied = false;
         while (true) {
             const uint64_t nowPerf = now_ms();
@@ -803,6 +821,15 @@ int main(int argc, char** argv) {
                 deployState = deploy.snapshot();
                 activeTransfer = manager.hasActiveTransfer() ||
                                   deployState.active();
+                const bool installActive = manager.hasActiveInstallation() ||
+                    deployState.phase ==
+                        pipensx::SwitchDeployPhase::InstallingPackages ||
+                    deployState.phase ==
+                        pipensx::SwitchDeployPhase::CommittingPackage;
+                if (installActive != imageInstallActive) {
+                    imageInstallActive = installActive;
+                    configureImageCache(installActive);
+                }
                 performance.setActive(activeTransfer);
                 metadata.setImageNetwork(
                     activeTransfer

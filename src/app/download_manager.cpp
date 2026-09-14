@@ -1392,6 +1392,16 @@ bool DownloadManager::hasActiveTransfer() const {
     return false;
 }
 
+bool DownloadManager::hasActiveInstallation() const {
+    std::unique_lock<std::mutex> lock(mutex_);
+    for (const DownloadTask& task : tasks_) {
+        if (task.status == DownloadStatus::Installing ||
+            task.status == DownloadStatus::Committing)
+            return true;
+    }
+    return false;
+}
+
 bool DownloadManager::beginSystemCleanup(std::string& error) {
     std::unique_lock<std::mutex> lock(mutex_);
     if (systemCleanupActive_) {

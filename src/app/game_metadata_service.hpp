@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <list>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -200,6 +201,14 @@ public:
     // UI_PLAN F6: invalidate decoded covers (catalog refresh); the disk
     // cache stays — clearImageCache() removes both.
     void dropMemoryImageCache() const;
+    // Select and apply the decoded-RGBA ceiling. Application mode keeps the
+    // full catalogue cache; constrained applet launches and active package
+    // installation leave progressively more heap to the rest of the process.
+    // availableBytes == 0 means that free-heap detection was unavailable.
+    static size_t recommendedImageCacheBudget(bool applicationMode,
+                                              bool installActive,
+                                              uint64_t availableBytes);
+    void setImageCacheBudget(size_t bytes) const;
     enum class ImageNetwork {
         Full,
         // Active transfer: covers keep loading, under a per-fetch receive cap
@@ -253,7 +262,7 @@ private:
 
     struct CachedImage {
         ImageData image;
-        uint64_t access = 0;
+        std::list<std::string>::iterator lru;
     };
 
     // Queued decode: the URL says what to read, maxDim which size class to
@@ -308,7 +317,11 @@ private:
     void pruneImageQueueLocked(
         std::vector<ImageCallback>& rejected) const;
     void cacheImageLocked(const std::string& key,
-                          ImageData image) const;
+                          ImageData image,
+                          std::vector<ImageData>& evicted) const;
+    void touchImageLocked(CachedImage& cached) const;
+    void pruneImageCacheLocked(size_t incomingBytes,
+                               std::vector<ImageData>& evicted) const;
 
     std::string rootPath_;
     std::string cacheRoot_;
@@ -324,6 +337,9 @@ private:
     mutable std::unordered_map<std::string, ImageRequest>
         imageRequests_;
     mutable std::unordered_map<std::string, CachedImage> imageCache_;
+    // Most-recently used at the front. CachedImage::lru makes both promotion
+    // and selection of the back victim constant-time under imageMutex_.
+    mutable std::list<std::string> imageLru_;
     // Old decoded caches are moved here in O(1) and destroyed by an image
     // worker, never by the UI thread that publishes a metadata refresh.
     mutable std::deque<std::unordered_map<std::string, CachedImage>>
@@ -332,7 +348,7 @@ private:
     mutable std::thread imageLocalWorker_;
     mutable std::vector<std::thread> imageNetworkWorkers_;
     mutable size_t imageCacheBytes_ = 0;
-    mutable uint64_t imageAccess_ = 0;
+    mutable size_t imageCacheBudgetBytes_ = 96 * 1024 * 1024;
     mutable uint64_t imageRequestId_ = 0;
     mutable std::atomic<ImageNetwork> imageNetwork_{ImageNetwork::Full};
     mutable std::atomic<bool> stoppingRequested_{false};

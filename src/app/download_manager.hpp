@@ -300,6 +300,9 @@ public:
     }
 
     bool hasActiveTransfer() const;
+    // Cheap status probe for consumers that need to shed optional memory
+    // specifically while NCM/package commit work is active.
+    bool hasActiveInstallation() const;
     // Prevent queued tasks from entering NCM while system installation
     // storage is being scanned or cleaned. New imports can still queue and
     // are claimed after endSystemCleanup().

@@ -1619,6 +1619,78 @@ void testImageMemoryCache() {
     rmdir(root.c_str());
 }
 
+void testImageCacheBudgetAndLru() {
+    constexpr uint64_t MiB = 1024 * 1024;
+    assert(GameMetadataService::recommendedImageCacheBudget(
+               true, false, 1024 * MiB) == 96 * MiB);
+    assert(GameMetadataService::recommendedImageCacheBudget(
+               false, false, 1024 * MiB) == 24 * MiB);
+    assert(GameMetadataService::recommendedImageCacheBudget(
+               true, true, 1024 * MiB) == 24 * MiB);
+    assert(GameMetadataService::recommendedImageCacheBudget(
+               false, true, 1024 * MiB) == 8 * MiB);
+    assert(GameMetadataService::recommendedImageCacheBudget(
+               true, false, 64 * MiB) == 8 * MiB);
+
+    const std::string root = "/tmp/pipensx-image-lru-test-" +
+        std::to_string(static_cast<long long>(getpid()));
+    const std::vector<uint8_t> png {
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+        0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+        0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+        0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+        0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41,
+        0x54, 0x08, 0xd7, 0x63, 0xf8, 0xcf, 0xc0, 0xf0,
+        0x1f, 0x00, 0x05, 0x00, 0x01, 0xff, 0x89, 0x99,
+        0x3d, 0x1d, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45,
+        0x4e, 0x44, 0xae, 0x42, 0x60, 0x82
+    };
+    mkdir(root.c_str(), 0755);
+    const std::string a = root + "/lru-a.png";
+    const std::string b = root + "/lru-b.png";
+    const std::string c = root + "/lru-c.png";
+    for (const std::string* path : {&a, &b, &c}) {
+        std::ofstream output(*path, std::ios::binary | std::ios::trunc);
+        output.write(reinterpret_cast<const char*>(png.data()),
+                     static_cast<std::streamsize>(png.size()));
+        assert(output.good());
+    }
+    {
+        GameMetadataService service(root, root + "/missing-index.json");
+        service.setImageCacheBudget(8); // exactly two decoded 1x1 RGBA images
+        auto load = [&](const std::string& url) {
+            std::mutex mutex;
+            std::condition_variable ready;
+            bool done = false;
+            service.requestImage(url, [&](GameMetadataService::ImageData) {
+                std::lock_guard<std::mutex> lock(mutex);
+                done = true;
+                ready.notify_all();
+            });
+            std::unique_lock<std::mutex> lock(mutex);
+            assert(ready.wait_for(lock, std::chrono::seconds(5),
+                                  [&] { return done; }));
+        };
+        load(a);
+        load(b);
+        assert(service.cachedImage(a)); // A becomes MRU; B is the next victim.
+        load(c);
+        assert(service.cachedImage(a));
+        assert(!service.cachedImage(b));
+        assert(service.cachedImage(c));
+        service.setImageCacheBudget(4);
+        assert(!service.cachedImage(a));
+        assert(service.cachedImage(c));
+    }
+    std::remove(a.c_str());
+    std::remove(b.c_str());
+    std::remove(c.c_str());
+    rmdir((root + "/catalog/metadata").c_str());
+    rmdir((root + "/catalog/images").c_str());
+    rmdir((root + "/catalog").c_str());
+    rmdir(root.c_str());
+}
+
 // One source, four decode classes. Small list icons and grid tiles must not
 // share the 360px card decode (that upload blows Switch mapping slack), and the
 // fullscreen viewer must not inherit any smaller class.
@@ -2440,6 +2512,7 @@ int main() {
     testAsyncImageDiskCache();
     testOversizedImageRejectedBeforeDecode();
     testImageMemoryCache();
+    testImageCacheBudgetAndLru();
     testImageSizeClassesCacheSeparately();
     testImageThumbnailReusesLargerDecode();
     testImageNetworkThrottledDuringActiveTransfer();
