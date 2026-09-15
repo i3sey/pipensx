@@ -341,6 +341,11 @@ $(BUILD_DIR)/tests/test_update_service: tests/test_update_service.cpp src/app/up
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -Wl,--wrap=rename
 
+$(BUILD_DIR)/tests/test_nro_relocation: tests/test_nro_relocation.c \
+		src/app/nro_relocation.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Isrc -o $@ $^
+
 $(BUILD_DIR)/tests/test_game_update_service: tests/test_game_update_service.cpp \
 		src/app/game_update_service.cpp src/app/update_service.cpp \
 		$(BUILD_DIR)/src/app/update_transaction.o src/core/sha256.c $(BUILD_DIR)/src/core/util.o

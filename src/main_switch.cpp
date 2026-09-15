@@ -5,6 +5,7 @@
 #include "app/game_metadata_service.hpp"
 #include "app/game_update_service.hpp"
 #include "app/installed_title_service.hpp"
+#include "app/nro_relocation.h"
 #include "app/stream_ram_budget.hpp"
 #include "app/switch_deploy.hpp"
 #include "app/update_service.hpp"
@@ -95,6 +96,10 @@ bool runOnUiThread(const std::function<void()>& fn) {
 
 constexpr const char* BundledCatalogPath =
     "romfs:/catalog/switch_games.json.zst";
+constexpr const char* InstalledNroPath =
+    "sdmc:/switch/pipensx/pipensx.nro";
+constexpr const char* RelocationBackupPath =
+    "sdmc:/switch/pipensx/pipensx.nro.relocation-backup";
 
 // AppSettingsData::language -> the borealis locale to load. LOCALE_AUTO makes
 // SwitchPlatform read the console's system language, so a Russian console gets
@@ -414,8 +419,60 @@ int main(int argc, char** argv) {
     mkdir("sdmc:/switch/pipensx", 0755);
     log_init(LogPath);
 
-    (void)argc;
-    (void)argv;
+    char launchSource[FS_MAX_PATH] = {0};
+    if (argc > 0 &&
+        nro_relocation_source(argv[0], launchSource, sizeof(launchSource))) {
+        const nro_relocation_paths_t paths{
+            launchSource, InstalledNroPath, RelocationBackupPath};
+        char error[256] = {0};
+        if (!nro_relocation_apply(&paths, error, sizeof(error))) {
+            diagnostic_error("startup", "nro_relocation", "error=%s", error);
+        } else {
+            Result commit = fsdevCommitDevice("sdmc");
+            if (R_FAILED(commit)) {
+                char rollbackError[256] = {0};
+                const bool rolledBack = nro_relocation_rollback(
+                    &paths, rollbackError, sizeof(rollbackError));
+                const Result rollbackCommit = fsdevCommitDevice("sdmc");
+                diagnostic_error(
+                    "startup", "nro_relocation",
+                    "commit_result=0x%08x rollback=%d "
+                    "rollback_commit_result=0x%08x rollback_error=%s",
+                    commit, rolledBack ? 1 : 0, rollbackCommit, rollbackError);
+            } else {
+                if (!nro_relocation_confirm(&paths, error, sizeof(error)))
+                    diagnostic_error("startup", "nro_relocation_cleanup",
+                                     "error=%s", error);
+                else {
+                    const Result cleanupCommit = fsdevCommitDevice("sdmc");
+                    if (R_FAILED(cleanupCommit))
+                        diagnostic_error("startup", "nro_relocation_cleanup",
+                                         "commit_result=0x%08x",
+                                         cleanupCommit);
+                }
+
+                if (!envHasNextLoad()) {
+                    diagnostic_error("startup", "nro_relocation_restart",
+                                     "next-load unsupported");
+                } else {
+                    const std::string arguments =
+                        std::string("\"") + InstalledNroPath + "\"";
+                    const Result restart = envSetNextLoad(
+                        InstalledNroPath, arguments.c_str());
+                    if (R_SUCCEEDED(restart)) {
+                        log_msg("[startup] relocated NRO from %s to %s; "
+                                "restarting\n", launchSource,
+                                InstalledNroPath);
+                        log_close();
+                        return 0;
+                    }
+                    diagnostic_error("startup", "nro_relocation_restart",
+                                     "result=0x%08x", restart);
+                }
+            }
+        }
+    }
+
     UpdateService launchUpdater;
     const bool updatePendingConfirmation =
         launchUpdater.hasPendingConfirmation();
