@@ -385,8 +385,6 @@ int main(int, char**)
         log_msg("[daemon] http listening on %u\n", (unsigned)server.boundPort());
 
     /* A sysmodule never returns. */
-    for (;;) {
+    for (;;)
         svcSleepThread(1000000000ULL);
-        log_flush();
-    }
 }

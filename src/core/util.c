@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <time.h>
 #include <stdatomic.h>
+#include <pthread.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -34,11 +35,51 @@ time_t now_sec(void) {
 }
 
 static FILE *g_logfile = NULL;
-static uint64_t g_log_flush_ms = 0;
+static pthread_mutex_t g_log_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_log_cond = PTHREAD_COND_INITIALIZER;
+static pthread_t g_log_thread;
+static int g_log_thread_started = 0;
+static int g_log_stop = 0;
+static int g_log_dirty = 0;
 static atomic_int g_telemetry_enabled = 0;
 static atomic_uint g_telemetry_generation = 1;
 
 #define LOG_ROTATE_BYTES (32ULL * 1024ULL * 1024ULL)
+#define LOG_FLUSH_INTERVAL_MS 1000ULL
+
+static void flush_log_locked(void) {
+    if (!g_logfile)
+        return;
+    flockfile(g_logfile);
+    fflush(g_logfile);
+    funlockfile(g_logfile);
+    g_log_dirty = 0;
+}
+
+static void *log_flush_worker(void *unused) {
+    (void)unused;
+    pthread_mutex_lock(&g_log_mutex);
+    while (!g_log_stop) {
+        struct timespec deadline;
+        clock_gettime(CLOCK_REALTIME, &deadline);
+        deadline.tv_sec += (time_t)(LOG_FLUSH_INTERVAL_MS / 1000ULL);
+        deadline.tv_nsec += (long)(LOG_FLUSH_INTERVAL_MS % 1000ULL) * 1000000L;
+        if (deadline.tv_nsec >= 1000000000L) {
+            deadline.tv_sec++;
+            deadline.tv_nsec -= 1000000000L;
+        }
+        while (!g_log_stop &&
+               pthread_cond_timedwait(&g_log_cond, &g_log_mutex,
+                                      &deadline) == 0) {
+            /* Only shutdown signals this condition. Spurious wakeups retain
+             * the original deadline instead of accelerating file I/O. */
+        }
+        if (!g_log_stop && g_log_dirty)
+            flush_log_locked();
+    }
+    pthread_mutex_unlock(&g_log_mutex);
+    return NULL;
+}
 
 static void rotate_log_if_needed(const char *path) {
     struct stat st;
@@ -60,28 +101,49 @@ void log_init(const char *path) {
     /* "a+", not "a": the bug-report screen reads the tail back through this
      * same handle. On the Switch a second fopen() of a path this process
      * already holds open returns NULL, so there is no other way to read it. */
-    g_logfile = fopen(path, "a+");
-    if (g_logfile) {
-        setvbuf(g_logfile, NULL, _IOFBF, 64 * 1024);
-        fprintf(g_logfile, "=== pipensx log started ===\n");
-        fflush(g_logfile);
-        g_log_flush_ms = now_ms();
+    FILE *file = fopen(path, "a+");
+    if (file) {
+        setvbuf(file, NULL, _IOFBF, 64 * 1024);
+        fprintf(file, "=== pipensx log started ===\n");
+        fflush(file);
+        pthread_mutex_lock(&g_log_mutex);
+        g_logfile = file;
+        g_log_dirty = 0;
+        g_log_stop = 0;
+        g_log_thread_started =
+            pthread_create(&g_log_thread, NULL, log_flush_worker, NULL) == 0;
+        pthread_mutex_unlock(&g_log_mutex);
     }
 }
 
 void log_close(void) {
-    if (!g_logfile) return;
-    fflush(g_logfile);
+    pthread_mutex_lock(&g_log_mutex);
+    if (!g_logfile) {
+        pthread_mutex_unlock(&g_log_mutex);
+        return;
+    }
+    int join_worker = g_log_thread_started;
+    if (join_worker) {
+        g_log_stop = 1;
+        pthread_cond_signal(&g_log_cond);
+    }
+    pthread_mutex_unlock(&g_log_mutex);
+    if (join_worker)
+        pthread_join(g_log_thread, NULL);
+
+    pthread_mutex_lock(&g_log_mutex);
+    flush_log_locked();
     fclose(g_logfile);
     g_logfile = NULL;
+    g_log_thread_started = 0;
+    g_log_stop = 0;
+    pthread_mutex_unlock(&g_log_mutex);
 }
 
 void log_flush(void) {
-    if (!g_logfile) return;
-    flockfile(g_logfile);
-    fflush(g_logfile);
-    g_log_flush_ms = now_ms();
-    funlockfile(g_logfile);
+    pthread_mutex_lock(&g_log_mutex);
+    flush_log_locked();
+    pthread_mutex_unlock(&g_log_mutex);
 }
 
 FILE *log_file(void) {
@@ -100,8 +162,13 @@ void log_emergency(const char *text) {
 }
 
 size_t log_read_tail(char *buf, size_t max) {
-    if (!g_logfile || !buf || max == 0) return 0;
+    if (!buf || max == 0) return 0;
     size_t got = 0;
+    pthread_mutex_lock(&g_log_mutex);
+    if (!g_logfile) {
+        pthread_mutex_unlock(&g_log_mutex);
+        return 0;
+    }
     flockfile(g_logfile);
     /* A read after a write on the same stream needs a seek in between (C11
      * 7.21.5.3); fflush also makes the appended bytes visible to the read. */
@@ -117,11 +184,17 @@ size_t log_read_tail(char *buf, size_t max) {
      * mid-file position would make the next ftell()/log_clear() lie. */
     fseek(g_logfile, 0, SEEK_END);
     funlockfile(g_logfile);
+    g_log_dirty = 0;
+    pthread_mutex_unlock(&g_log_mutex);
     return got;
 }
 
 int log_clear(void) {
-    if (!g_logfile) return 0;
+    pthread_mutex_lock(&g_log_mutex);
+    if (!g_logfile) {
+        pthread_mutex_unlock(&g_log_mutex);
+        return 0;
+    }
     flockfile(g_logfile);
     int fd = fileno(g_logfile);
     int ok = fflush(g_logfile) == 0 && fd >= 0 && ftruncate(fd, 0) == 0;
@@ -129,9 +202,10 @@ int log_clear(void) {
         rewind(g_logfile);
         ok = fprintf(g_logfile, "=== pipensx log cleared ===\n") > 0 &&
              fflush(g_logfile) == 0;
-        g_log_flush_ms = now_ms();
+        g_log_dirty = 0;
     }
     funlockfile(g_logfile);
+    pthread_mutex_unlock(&g_log_mutex);
     return ok;
 }
 
@@ -145,6 +219,7 @@ void log_msg(const char *fmt, ...) {
     fflush(stdout);
 #endif
 
+    pthread_mutex_lock(&g_log_mutex);
     if (g_logfile) {
         flockfile(g_logfile);
         /* Prefix every line with elapsed ms */
@@ -153,12 +228,10 @@ void log_msg(const char *fmt, ...) {
         uint64_t ms = (uint64_t)ts.tv_sec * 1000u + ts.tv_nsec / 1000000u;
         fprintf(g_logfile, "[%7llu] ", (unsigned long long)ms % 10000000ULL);
         vfprintf(g_logfile, fmt, ap2);
-        if (ms - g_log_flush_ms >= 1000) {
-            fflush(g_logfile);
-            g_log_flush_ms = ms;
-        }
+        g_log_dirty = 1;
         funlockfile(g_logfile);
     }
+    pthread_mutex_unlock(&g_log_mutex);
 
     va_end(ap2);
     va_end(ap);

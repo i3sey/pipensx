@@ -33,7 +33,9 @@ void log_emergency(const char *text);
  * left at the end so appending continues undisturbed. */
 size_t log_read_tail(char *buf, size_t max);
 
-/* Logging — file-only on Switch, stdout and file on PC. */
+/* Logging — file-only on Switch, stdout and file on PC. Ordinary messages are
+ * buffered and flushed by a background worker; use log_flush only at an
+ * explicit durability boundary. */
 void log_msg(const char *fmt, ...);
 
 /* Optional rate-limited throughput telemetry. Disabled by default. */

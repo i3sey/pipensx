@@ -22,6 +22,15 @@ static int file_contains(const char *path, const char *needle) {
     return found;
 }
 
+static int wait_for_file_text(const char *path, const char *needle) {
+    for (int attempt = 0; attempt < 40; ++attempt) {
+        if (file_contains(path, needle))
+            return 1;
+        usleep(50000);
+    }
+    return 0;
+}
+
 int main(void) {
     const char *path = "/tmp/pipensx-telemetry-test.log";
     char backup[256];
@@ -35,6 +44,8 @@ int main(void) {
     assert(telemetry_enabled());
     assert(telemetry_generation() == before + 1);
     telemetry_log("test", "unit", "value=%d", 42);
+    log_msg("[ui] tab=buffered-test\n");
+    assert(wait_for_file_text(path, "[ui] tab=buffered-test"));
     telemetry_set_enabled(0);
     telemetry_log("test", "unit", "suppressed=1");
     diagnostic_error("settings", "unit", "event=save_failed code=%d", 7);

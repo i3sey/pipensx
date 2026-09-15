@@ -556,19 +556,29 @@ private:
         if (index >= 0 && index < kNavTabCount && tabViews_[index])
             return tabViews_[index];
         const uint64_t startedUs = telemetry_enabled() ? now_us() : 0;
+        uint64_t loggingUs = 0;
+        uint64_t logStartedUs = startedUs ? now_us() : 0;
         log_msg("[ui] tab=%s\n", tag);
-        log_flush();
+        if (logStartedUs)
+            loggingUs += now_us() - logStartedUs;
         switch_crashlog_stage(tag);
         brls::View* view = nullptr;
         try {
             view = entry.creator();
         } catch (const std::exception& error) {
-            log_msg("[ui] tab=%s failed: %s\n", tag, error.what());
-            log_flush();
+            logStartedUs = startedUs ? now_us() : 0;
+            diagnostic_error("ui", tag,
+                             "event=tab_create_failed error=%s",
+                             error.what());
+            if (logStartedUs)
+                loggingUs += now_us() - logStartedUs;
             view = new brls::Box();
         } catch (...) {
-            log_msg("[ui] tab=%s failed: unknown exception\n", tag);
-            log_flush();
+            logStartedUs = startedUs ? now_us() : 0;
+            diagnostic_error("ui", tag,
+                             "event=tab_create_failed error=unknown_exception");
+            if (logStartedUs)
+                loggingUs += now_us() - logStartedUs;
             view = new brls::Box();
         }
         if (!view)
@@ -576,13 +586,20 @@ private:
         view->setGrow(1.0f);
         if (index >= 0 && index < kNavTabCount)
             tabViews_[index] = view;
+        logStartedUs = startedUs ? now_us() : 0;
         log_msg("[ui] tab=%s ready\n", tag);
-        log_flush();
-        if (startedUs)
+        if (logStartedUs)
+            loggingUs += now_us() - logStartedUs;
+        if (startedUs) {
+            const uint64_t totalUs = now_us() - startedUs;
+            const uint64_t durationUs = totalUs > loggingUs
+                ? totalUs - loggingUs : 0;
             telemetry_log(
                 "ui", "main",
-                "event=tab_create duration_us=%llu tab=%s",
-                (unsigned long long)(now_us() - startedUs), tag);
+                "event=tab_create duration_us=%llu logging_us=%llu tab=%s",
+                (unsigned long long)durationUs,
+                (unsigned long long)loggingUs, tag);
+        }
         return view;
     }
 
@@ -598,7 +615,6 @@ private:
             active_ = display;
             activeTabTag_ = navTabTag(tabs_[static_cast<size_t>(display)].icon);
             log_msg("[ui] tab=%s\n", activeTabTag_.c_str());
-            log_flush();
         }
         for (size_t i = 0; i < tabs_.size(); ++i)
             tabs_[i].item->setTabActive(static_cast<int>(i) == display);
