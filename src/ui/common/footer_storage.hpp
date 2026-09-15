@@ -1,8 +1,10 @@
 #pragma once
 
-// Footer SD indicator for the AppletFrame bottom bar (replaces the clock).
+// Footer install-storage indicator for the AppletFrame bottom bar (replaces
+// the clock).
 // Much smaller than the old top-bar StorageMeter: a ~72x8 pill plus a single
-// "SD: 72GB" label in one row. Draw-only; the caller feeds total/free bytes.
+// "SD: 72GB" / "NAND: 20GB" label in one row. Draw-only; the caller feeds the
+// storage label and total/free bytes.
 
 #include <algorithm>
 #include <cstdint>
@@ -29,21 +31,22 @@ public:
         label_->setTextColor(theme::textPrimary());
         label_->setMarginLeft(8);
         addView(label_);
-        setUnavailable();
+        setUnavailable("SD");
     }
 
-    void setStorage(uint64_t total, uint64_t free) {
+    void setStorage(const std::string& storageLabel, uint64_t total,
+                    uint64_t free) {
         if (total == 0) {
-            setUnavailable();
+            setUnavailable(storageLabel);
             return;
         }
         bar_->setData(total, free);
-        label_->setText("SD: " + formatShort(free));
+        label_->setText(storageLabel + ": " + formatShort(free));
     }
 
-    void setUnavailable() {
+    void setUnavailable(const std::string& storageLabel) {
         bar_->setData(0, 0);
-        label_->setText("SD: --");
+        label_->setText(storageLabel + ": --");
     }
 
 private:

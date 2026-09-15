@@ -472,9 +472,10 @@ public:
             badgeTab_->setBadgeCount(count);
     }
 
-    // The SD indicator lives in the AppletFrame bottom bar where the clock
-    // was: installFooterWidget hides the time label and docks a much smaller
-    // FooterStorage (pill + "SD: 72GB") into the same right-hand cluster.
+    // The selected install-storage indicator lives in the AppletFrame bottom
+    // bar where the clock was: installFooterWidget hides the time label and
+    // docks a much smaller FooterStorage (pill + "SD: 72GB" / "NAND: 20GB")
+    // into the same right-hand cluster.
     // Called after the AppletFrame wrapping this frame exists.
     void attachStorageFooter(DownloadManager* manager,
                              brls::AppletFrame* frame = nullptr) {
@@ -651,18 +652,32 @@ private:
         queryInFlight_ = true;
         auto alive = alive_;
         std::string root = manager_->rootPath();
-        brls::async([this, alive, root] {
+        const auto target = manager_->installTarget();
+        const std::string label =
+            target == pipensx::install::InstallStorageTarget::Nand
+                ? "NAND"
+                : "SD";
+        if (!footerTargetValid_ || footerTarget_ != target) {
+            footerTarget_ = target;
+            footerTargetValid_ = true;
+            footerStorage_->setUnavailable(label);
+        }
+        brls::async([this, alive, root, target, label] {
             const pipensx::StorageSpaceSnapshot storage =
-                pipensx::queryStorageSpace(root);
-            brls::sync([this, alive, storage] {
+                pipensx::queryInstallStorageSpace(target, root);
+            brls::sync([this, alive, target, label, storage] {
                 if (!alive->load())
                     return;
                 queryInFlight_ = false;
+                if (!manager_ || manager_->installTarget() != target) {
+                    scheduleRefresh();
+                    return;
+                }
                 if (storage.available)
-                    footerStorage_->setStorage(storage.totalBytes,
+                    footerStorage_->setStorage(label, storage.totalBytes,
                                                storage.freeBytes);
                 else
-                    footerStorage_->setUnavailable();
+                    footerStorage_->setUnavailable(label);
             });
         });
     }
@@ -680,6 +695,9 @@ private:
     std::string activeTabTag_ = "unknown";
     brls::RepeatingTimer queryTimer_;
     bool queryInFlight_ = false;
+    bool footerTargetValid_ = false;
+    pipensx::install::InstallStorageTarget footerTarget_ =
+        pipensx::install::InstallStorageTarget::SdCard;
     std::shared_ptr<std::atomic<bool>> alive_ =
         std::make_shared<std::atomic<bool>>(true);
 };
