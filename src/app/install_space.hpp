@@ -19,6 +19,8 @@ enum class SpaceEstimateCertainty {
 struct InstallSpaceEstimate {
     uint64_t selectedBytes = 0;
     uint64_t downloadBytes = 0;
+    // Installed footprint. NSZ uses the expanded size advertised in its file
+    // name, or a conservative fallback when the name has no usable size.
     uint64_t packageBytes = 0;
     uint64_t requiredBytes = 0;
     uint32_t selectedFiles = 0;

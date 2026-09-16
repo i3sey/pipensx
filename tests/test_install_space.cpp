@@ -141,6 +141,9 @@ int main() {
         };
         InstallSpaceEstimate estimate = estimateInstallSpace(
             preview, {}, TransferMode::StreamInstall);
+        assert(estimate.selectedBytes == 900);
+        assert(estimate.packageBytes == 2700);
+        assert(estimate.requiredBytes == 2700);
         assert(estimate.certainty ==
                SpaceEstimateCertainty::CompressedUnknown);
 
@@ -154,6 +157,82 @@ int main() {
         storage.freeBytes = 3000;
         check = assessInstallSpace(estimate, storage);
         assert(check.status == InstallSpaceCheckStatus::Enough);
+    }
+
+    // Scene-style NSZ names advertise the expanded install footprint. The
+    // selection meter must use it instead of the compressed torrent length.
+    {
+        constexpr uint64_t gib = 1ULL << 30;
+        const uint64_t expanded = 13 * gib + (48 * gib + 50) / 100;
+        TorrentPreview preview;
+        preview.files = {{
+            "The Legend of Zelda Breath of the Wild "
+            "[01007EF00011E000][v0] (13.48 GB).nsz",
+            8 * gib, true, true, false,
+        }};
+
+        InstallSpaceEstimate estimate = estimateInstallSpace(
+            preview, {}, TransferMode::StreamInstall);
+        assert(estimate.selectedBytes == 8 * gib);
+        assert(estimate.downloadBytes == 0);
+        assert(estimate.packageBytes == expanded);
+        assert(estimate.requiredBytes == expanded);
+        assert(estimate.certainty == SpaceEstimateCertainty::Conservative);
+
+        estimate = estimateInstallSpace(
+            preview, {}, TransferMode::DownloadOnly);
+        assert(estimate.downloadBytes == 8 * gib);
+        assert(estimate.packageBytes == 0);
+        assert(estimate.requiredBytes == 8 * gib);
+        assert(estimate.certainty == SpaceEstimateCertainty::Exact);
+    }
+
+    // Known and unknown NSZ sizes are handled per file. In particular, the
+    // fallback must not multiply the NSP or the named NSZ a second time.
+    {
+        TorrentPreview preview;
+        preview.files = {
+            {"plain.nsp", 1000, true, false, false},
+            {"named (2 KB).nsz", 900, true, true, false},
+            {"unknown.nsz", 100, true, true, false},
+        };
+        InstallSpaceEstimate estimate = estimateInstallSpace(
+            preview, {}, TransferMode::StreamInstall);
+        assert(estimate.packageBytes == 1000 + 2048 + 300);
+        assert(estimate.requiredBytes == estimate.packageBytes);
+        assert(estimate.certainty ==
+               SpaceEstimateCertainty::CompressedUnknown);
+    }
+
+    // Never trust a rounded name to claim less space than the NSZ itself.
+    {
+        TorrentPreview preview;
+        preview.files = {
+            {"rounded (1 MB).nsz", 2ULL << 20, true, true, false},
+        };
+        InstallSpaceEstimate estimate = estimateInstallSpace(
+            preview, {}, TransferMode::StreamInstall);
+        assert(estimate.packageBytes == 2ULL << 20);
+        assert(estimate.certainty == SpaceEstimateCertainty::Conservative);
+    }
+
+    // Malformed names retain the conservative fallback, including overflow.
+    {
+        TorrentPreview preview;
+        preview.files = {
+            {"bad (many GB).nsz", 10, true, true, false},
+        };
+        InstallSpaceEstimate estimate = estimateInstallSpace(
+            preview, {}, TransferMode::StreamInstall);
+        assert(estimate.packageBytes == 30);
+        assert(estimate.certainty ==
+               SpaceEstimateCertainty::CompressedUnknown);
+
+        preview.files[0].length = UINT64_MAX / 2;
+        estimate = estimateInstallSpace(
+            preview, {}, TransferMode::StreamInstall);
+        assert(estimate.overflow);
+        assert(estimate.packageBytes == UINT64_MAX);
     }
 
     {

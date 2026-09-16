@@ -3,6 +3,8 @@
 #include "nx_file_types.hpp"
 #include "port_selection.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
@@ -24,6 +26,116 @@ void addBytes(uint64_t& target, uint64_t value, bool& overflow) {
         return;
     }
     target += value;
+}
+
+bool parseNszInstalledBytes(const std::string& path, uint64_t& bytes) {
+    if (!isCompressedName(path) || path.size() < 6)
+        return false;
+
+    const size_t extension = path.size() - 4;
+    if (extension == 0 || path[extension - 1] != ')')
+        return false;
+    const size_t open = path.rfind('(', extension - 1);
+    if (open == std::string::npos)
+        return false;
+
+    size_t begin = open + 1;
+    size_t end = extension - 1;
+    while (begin < end && std::isspace(
+                              static_cast<unsigned char>(path[begin])))
+        ++begin;
+    while (end > begin && std::isspace(
+                            static_cast<unsigned char>(path[end - 1])))
+        --end;
+
+    size_t unitBegin = end;
+    while (unitBegin > begin && !std::isspace(
+                                    static_cast<unsigned char>(
+                                        path[unitBegin - 1])))
+        --unitBegin;
+    if (unitBegin == begin)
+        return false;
+    size_t numberEnd = unitBegin;
+    while (numberEnd > begin && std::isspace(
+                                   static_cast<unsigned char>(
+                                       path[numberEnd - 1])))
+        --numberEnd;
+
+    std::string unit = path.substr(unitBegin, end - unitBegin);
+    for (char& ch : unit)
+        ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+    uint64_t multiplier = 0;
+    if (unit == "KB")
+        multiplier = 1ULL << 10;
+    else if (unit == "MB")
+        multiplier = 1ULL << 20;
+    else if (unit == "GB")
+        multiplier = 1ULL << 30;
+    else if (unit == "TB")
+        multiplier = 1ULL << 40;
+    else
+        return false;
+
+    uint64_t whole = 0;
+    uint64_t fraction = 0;
+    uint64_t fractionScale = 1;
+    bool separatorSeen = false;
+    bool digitSeen = false;
+    for (size_t i = begin; i < numberEnd; ++i) {
+        const unsigned char ch = static_cast<unsigned char>(path[i]);
+        if (ch == '.' || ch == ',') {
+            if (separatorSeen)
+                return false;
+            separatorSeen = true;
+            continue;
+        }
+        if (!std::isdigit(ch))
+            return false;
+        digitSeen = true;
+        const uint64_t digit = ch - '0';
+        if (!separatorSeen) {
+            if (whole > (std::numeric_limits<uint64_t>::max() - digit) / 10)
+                return false;
+            whole = whole * 10 + digit;
+        } else {
+            // More precision is not useful for a byte count and makes the
+            // fixed-point multiplication needlessly prone to overflow.
+            if (fractionScale >= 1000000)
+                return false;
+            fraction = fraction * 10 + digit;
+            fractionScale *= 10;
+        }
+    }
+    if (!digitSeen || (separatorSeen && fractionScale == 1) ||
+        (whole == 0 && fraction == 0) ||
+        whole > std::numeric_limits<uint64_t>::max() / multiplier)
+        return false;
+
+    const uint64_t wholeBytes = whole * multiplier;
+    const uint64_t fractionBytes =
+        (fraction * multiplier + fractionScale / 2) / fractionScale;
+    if (fractionBytes > std::numeric_limits<uint64_t>::max() - wholeBytes)
+        return false;
+    bytes = wholeBytes + fractionBytes;
+    return true;
+}
+
+uint64_t compressedInstallBytes(const TorrentPreview::File& file,
+                                bool& sizeKnown, bool& overflow) {
+    uint64_t namedBytes = 0;
+    if (parseNszInstalledBytes(file.path, namedBytes)) {
+        sizeKnown = true;
+        return std::max(file.length, namedBytes);
+    }
+
+    sizeKnown = false;
+    constexpr uint64_t kCompressedExpansionFallback = 3;
+    if (file.length > std::numeric_limits<uint64_t>::max() /
+                          kCompressedExpansionFallback) {
+        overflow = true;
+        return std::numeric_limits<uint64_t>::max();
+    }
+    return file.length * kCompressedExpansionFallback;
 }
 
 } // namespace
@@ -77,7 +189,7 @@ InstallSpaceEstimate estimateInstallSpace(
     }
 
     bool streamedPackage = false;
-    bool compressedPackage = false;
+    bool unknownCompressedPackage = false;
     for (size_t i = 0; i < count; ++i) {
         const TorrentPreview::File& file = preview.files[i];
         uint8_t action = useSelection
@@ -101,8 +213,15 @@ InstallSpaceEstimate estimateInstallSpace(
         if (packageInstall) {
             ++result.packageFiles;
             streamedPackage = true;
-            compressedPackage = compressedPackage || file.compressed;
-            addBytes(result.packageBytes, file.length, result.overflow);
+            uint64_t installBytes = file.length;
+            if (file.compressed) {
+                bool sizeKnown = false;
+                installBytes = compressedInstallBytes(file, sizeKnown,
+                                                       result.overflow);
+                unknownCompressedPackage = unknownCompressedPackage ||
+                                           !sizeKnown;
+            }
+            addBytes(result.packageBytes, installBytes, result.overflow);
             // Deferred port packages must also remain as local files until
             // payload deployment succeeds; stream installs do not.
             if (mode == TransferMode::PortInstall)
@@ -114,7 +233,7 @@ InstallSpaceEstimate estimateInstallSpace(
 
     result.requiredBytes = result.downloadBytes;
     addBytes(result.requiredBytes, result.packageBytes, result.overflow);
-    if (compressedPackage)
+    if (unknownCompressedPackage)
         result.certainty = SpaceEstimateCertainty::CompressedUnknown;
     else if (streamedPackage)
         result.certainty = SpaceEstimateCertainty::Conservative;
@@ -145,20 +264,11 @@ InstallSpaceCheck assessTransferSpace(
         downloadStorage.freeBytes == packageStorage.freeBytes;
     if (sharedPool) {
         uint64_t combined = estimate.downloadBytes;
-        uint64_t packageNeed = estimate.packageBytes;
-        if (estimate.certainty == SpaceEstimateCertainty::CompressedUnknown &&
-            packageNeed != 0) {
-            constexpr uint64_t kCompressedExpansionMin = 3;
-            if (packageNeed > std::numeric_limits<uint64_t>::max() /
-                                  kCompressedExpansionMin)
-                packageNeed = std::numeric_limits<uint64_t>::max();
-            else
-                packageNeed *= kCompressedExpansionMin;
-        }
-        if (combined > std::numeric_limits<uint64_t>::max() - packageNeed)
+        if (combined > std::numeric_limits<uint64_t>::max() -
+                           estimate.packageBytes)
             combined = std::numeric_limits<uint64_t>::max();
         else
-            combined += packageNeed;
+            combined += estimate.packageBytes;
         if (combined > downloadStorage.freeBytes) {
             result.status = InstallSpaceCheckStatus::Insufficient;
             result.shortfallBytes = combined - downloadStorage.freeBytes;
@@ -177,20 +287,6 @@ InstallSpaceCheck assessTransferSpace(
             shortfall = std::max(shortfall, need - storage.freeBytes);
     };
     checkPool(estimate.downloadBytes, downloadStorage);
-    if (estimate.certainty == SpaceEstimateCertainty::CompressedUnknown &&
-        estimate.packageBytes > 0 && packageStorage.available) {
-        constexpr uint64_t kCompressedExpansionMin = 3;
-        uint64_t conservative = estimate.packageBytes;
-        if (conservative > std::numeric_limits<uint64_t>::max() /
-                               kCompressedExpansionMin)
-            conservative = std::numeric_limits<uint64_t>::max();
-        else
-            conservative *= kCompressedExpansionMin;
-        if (conservative > packageStorage.freeBytes)
-            shortfall = std::max(shortfall,
-                                 conservative - packageStorage.freeBytes);
-        checked = true;
-    }
     checkPool(estimate.packageBytes, packageStorage);
     if (!checked &&
         ((estimate.downloadBytes > 0 && !downloadStorage.available) ||
