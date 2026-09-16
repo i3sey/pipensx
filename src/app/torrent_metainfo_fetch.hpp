@@ -18,13 +18,18 @@ using TorrentHttpGet = std::function<bool(const std::string& url,
                                           long& httpStatus,
                                           std::string& error)>;
 
+// Cheap cancellation predicate shared by the debrid and native magnet paths.
+// The native resolver combines user cancellation with its source-race stop
+// flag, so a winning swarm/cache request can interrupt the losing HTTP fetch.
+using TorrentCancelCheck = std::function<bool()>;
+
 enum class DebridCreateStage {
     SendingMagnet,
     FetchingTorrent,
     UploadingTorrent,
 };
 
-// itorrents.org path for a 40-char hex infohash (uppercased).
+// itorrents.net path for a 40-char hex infohash (uppercased).
 std::string itorrentsUrlForHash(const std::string& infoHashHex);
 
 // True when body is a torrent whose info dict SHA-1 matches infoHashHex.
@@ -38,6 +43,14 @@ bool writeTorrentFromInfoDict(const std::string& magnetUri,
                               std::string& error);
 
 // HTTPS torrent-cache fetch (no BitTorrent). transport nullptr → real curl.
+bool fetchTorrentByInfoHash(const std::string& infoHashHex,
+                            const std::string& outPath,
+                            const TorrentCancelCheck& cancelled,
+                            std::string& error,
+                            TorrentHttpGet* transport = nullptr);
+
+// Compatibility wrapper for the debrid callers, whose cancellation state is
+// already represented by one atomic flag.
 bool fetchTorrentByInfoHash(const std::string& infoHashHex,
                             const std::string& outPath,
                             std::atomic<bool>& cancelled,

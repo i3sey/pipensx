@@ -8,6 +8,7 @@ extern "C" {
 #include <atomic>
 #include <cassert>
 #include <cstdio>
+#include <curl/curl.h>
 #include <fstream>
 #include <string>
 #include <unistd.h>
@@ -63,7 +64,7 @@ static std::string readFile(const std::string& path) {
 
 static void testItorrentsUrl() {
     assert(itorrentsUrlForHash(kHash) ==
-           "https://itorrents.org/torrent/"
+           "https://itorrents.net/torrent/"
            "9E2B6F8ACD7B3DA966E5FF4BA4C0E00750AC2595.torrent");
 }
 
@@ -174,12 +175,26 @@ static void testEnsurePrefersInfoDict() {
     rmdir(dir);
 }
 
+static void runLiveCacheFetchIfRequested() {
+    const char* hash = std::getenv("PIPENSX_LIVE_TORRENT_HASH");
+    if (!hash || !*hash)
+        return;
+    assert(curl_global_init(CURL_GLOBAL_DEFAULT) == CURLE_OK);
+    std::atomic<bool> cancelled{false};
+    std::string error;
+    assert(fetchTorrentByInfoHash(hash, "/tmp/pipensx-live-cache.torrent",
+                                  cancelled, error));
+    unlink("/tmp/pipensx-live-cache.torrent");
+    curl_global_cleanup();
+}
+
 int main() {
     testItorrentsUrl();
     testWriteFromInfoDict();
     testRejectBadBody();
     testFetchViaTransport();
     testEnsurePrefersInfoDict();
+    runLiveCacheFetchIfRequested();
     std::printf("test_torrent_metainfo_fetch: all assertions passed\n");
     return 0;
 }

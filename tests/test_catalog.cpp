@@ -6,6 +6,7 @@
 #include "app/magnet_resolver.hpp"
 
 extern "C" {
+#include "core/metainfo.h"
 #include "core/sha1.h"
 #include "core/tracker.h"
 }
@@ -252,6 +253,120 @@ void testResolveFromPresetInfoDict() {
                                    nullptr, &preset));
     assert(access(path.c_str(), F_OK) != 0);
     unlink(path.c_str());
+}
+
+void testHttpsCacheWinsMetadataRace() {
+    const std::string info =
+        "d6:lengthi1e4:name8:test.nsp12:piece lengthi16384e6:pieces20:"
+        "01234567890123456789e";
+    uint8_t digest[20];
+    sha1(info.data(), info.size(), digest);
+    const std::string magnet =
+        "magnet:?xt=urn:btih:" + hexHash(digest) +
+        "&tr=http://bt.t-ru.org/ann?magnet";
+    const std::vector<uint8_t> infoDict(info.begin(), info.end());
+
+    bool cacheCalled = false;
+    MagnetResolver resolver(
+        [&](const std::string& hash, const std::string& candidatePath,
+            const MagnetResolver::CancelCheck& cancelled,
+            std::string& error) {
+            cacheCalled = true;
+            assert(!cancelled());
+            MagnetSpec spec;
+            assert(MagnetResolver::parse(magnet, spec, error));
+            assert(hash == spec.infoHashHex);
+            std::vector<uint8_t> torrent;
+            assert(MagnetResolver::buildTorrent(spec, infoDict, torrent,
+                                                error));
+            std::ofstream out(candidatePath,
+                              std::ios::binary | std::ios::trunc);
+            out.write(reinterpret_cast<const char*>(torrent.data()),
+                      static_cast<std::streamsize>(torrent.size()));
+            return out.good();
+        });
+
+    char pathTemplate[] = "/tmp/pipensx-cache-race-XXXXXX";
+    int fd = mkstemp(pathTemplate);
+    assert(fd >= 0);
+    close(fd);
+    unlink(pathTemplate);
+    std::atomic<bool> cancelled{false};
+    std::string error;
+    auto started = std::chrono::steady_clock::now();
+    assert(resolver.resolveToFile(magnet, pathTemplate, cancelled, nullptr,
+                                  error));
+    auto elapsed = std::chrono::steady_clock::now() - started;
+    assert(cacheCalled);
+    assert(elapsed < std::chrono::seconds(2));
+
+    std::ifstream input(pathTemplate, std::ios::binary);
+    std::vector<uint8_t> body(
+        (std::istreambuf_iterator<char>(input)),
+        std::istreambuf_iterator<char>());
+    MagnetSpec spec;
+    assert(MagnetResolver::parse(magnet, spec, error));
+    metainfo_t parsed;
+    assert(metainfo_parse(body.data(), body.size(), &parsed));
+    assert(std::memcmp(parsed.info_hash, spec.infoHash, 20) == 0);
+    metainfo_free(&parsed);
+    assert(access((std::string(pathTemplate) + ".cache-candidate").c_str(),
+                  F_OK) != 0);
+    assert(access((std::string(pathTemplate) + ".swarm-candidate").c_str(),
+                  F_OK) != 0);
+    unlink(pathTemplate);
+}
+
+void testRaceUserCancelAbortsBoth() {
+    const std::string info =
+        "d6:lengthi1e4:name8:test.nsp12:piece lengthi16384e6:pieces20:"
+        "01234567890123456789e";
+    uint8_t digest[20];
+    sha1(info.data(), info.size(), digest);
+    const std::string magnet =
+        "magnet:?xt=urn:btih:" + hexHash(digest) +
+        "&tr=http://bt.t-ru.org/ann?magnet";
+
+    std::atomic<bool> cacheSawCancel{false};
+    MagnetResolver resolver(
+        [&](const std::string&, const std::string&,
+            const MagnetResolver::CancelCheck& cancelled,
+            std::string& error) {
+            // Simulate a hanging HTTPS fetch that respects cancellation.
+            while (!cancelled())
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            cacheSawCancel.store(true);
+            error = "Cancelled.";
+            return false;
+        });
+
+    char pathTemplate[] = "/tmp/pipensx-race-cancel-XXXXXX";
+    int fd = mkstemp(pathTemplate);
+    assert(fd >= 0);
+    close(fd);
+    unlink(pathTemplate);
+    std::atomic<bool> cancelled{false};
+    std::string error;
+    std::thread canceller([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        cancelled.store(true);
+    });
+    auto started = std::chrono::steady_clock::now();
+    bool ok = resolver.resolveToFile(magnet, pathTemplate, cancelled, nullptr,
+                                     error);
+    auto elapsed = std::chrono::steady_clock::now() - started;
+    canceller.join();
+    assert(!ok);
+    assert(error == "Metadata resolution was cancelled.");
+    assert(cacheSawCancel.load());
+    // Both workers must unwind promptly once the user cancels, not linger
+    // on the old multi-second blocking connect/read timeouts.
+    assert(elapsed < std::chrono::seconds(10));
+    assert(access(pathTemplate, F_OK) != 0);
+    assert(access((std::string(pathTemplate) + ".cache-candidate").c_str(),
+                  F_OK) != 0);
+    assert(access((std::string(pathTemplate) + ".swarm-candidate").c_str(),
+                  F_OK) != 0);
 }
 
 void testTorrentConstruction() {
@@ -2478,6 +2593,8 @@ int main() {
     testCatalogV2HealthParsing();
     testInfoDictParsing();
     testResolveFromPresetInfoDict();
+    testHttpsCacheWinsMetadataRace();
+    testRaceUserCancelAbortsBoth();
     testTorrentConstruction();
     testMetadataIndexParsing();
     testMetadataIndexPlayerFields();

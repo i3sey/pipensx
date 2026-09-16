@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace pipensx {
@@ -32,6 +33,13 @@ struct MagnetProgress {
 class MagnetResolver {
 public:
     using ProgressCallback = std::function<void(const MagnetProgress&)>;
+    using CancelCheck = std::function<bool()>;
+    using MetadataCacheFetch = std::function<bool(
+        const std::string& infoHashHex, const std::string& outPath,
+        const CancelCheck& cancelled, std::string& error)>;
+
+    explicit MagnetResolver(MetadataCacheFetch cacheFetch = {})
+        : cacheFetch_(std::move(cacheFetch)) {}
 
     static bool parse(const std::string& uri, MagnetSpec& spec,
                       std::string& error);
@@ -50,6 +58,9 @@ public:
                        std::string& error,
                        std::vector<uint8_t>* verifiedPeers = nullptr,
                        const std::vector<uint8_t>* presetInfo = nullptr) const;
+
+private:
+    MetadataCacheFetch cacheFetch_;
 };
 
 } // namespace pipensx

@@ -1,4 +1,5 @@
 #include "magnet_resolver.hpp"
+#include "torrent_metainfo_fetch.hpp"
 
 extern "C" {
 #include "../core/bencode.h"
@@ -26,10 +27,6 @@ extern "C" {
 
 namespace pipensx {
 namespace {
-
-int trackerCancelled(void* user) {
-    return static_cast<std::atomic<bool>*>(user)->load() ? 1 : 0;
-}
 
 // The ut_metadata id we advertise in our extension handshake. Peers address
 // extended messages back to us using this id (BEP 10), regardless of the id
@@ -59,6 +56,23 @@ constexpr int kDhtPollIntervalMs = 250;
 constexpr uint32_t kPexThinThreshold = 3;
 constexpr uint8_t kLocalUtPexId = 2;
 constexpr int kPexPeerTimeoutMs = 5000;
+constexpr int kCancelablePollSliceMs = 100;
+
+struct ResolveStop {
+    const std::atomic<bool>* user = nullptr;
+    const std::atomic<bool>* race = nullptr;
+    const std::atomic<bool>* local = nullptr;
+
+    bool requested() const {
+        return (user && user->load(std::memory_order_relaxed)) ||
+               (race && race->load(std::memory_order_relaxed)) ||
+               (local && local->load(std::memory_order_relaxed));
+    }
+};
+
+int trackerCancelled(void* user) {
+    return static_cast<ResolveStop*>(user)->requested() ? 1 : 0;
+}
 
 bool hexNibble(char c, uint8_t& value) {
     if (c >= '0' && c <= '9')
@@ -149,13 +163,24 @@ void appendUniquePeers(std::vector<uint8_t>& peers,
     }
 }
 
-bool waitFd(socket_t fd, short events, int timeoutMs) {
-    pollfd item{fd, events, 0};
-    int result;
-    do {
-        result = poll(&item, 1, timeoutMs);
-    } while (result < 0 && errno == EINTR);
-    return result > 0 && (item.revents & events) != 0;
+bool waitFd(socket_t fd, short events, int timeoutMs,
+            const ResolveStop* stop = nullptr) {
+    int remaining = timeoutMs;
+    while (remaining > 0 && !(stop && stop->requested())) {
+        pollfd item{fd, events, 0};
+        int slice = stop ? std::min(remaining, kCancelablePollSliceMs)
+                         : remaining;
+        int result;
+        do {
+            result = poll(&item, 1, slice);
+        } while (result < 0 && errno == EINTR);
+        if (result > 0)
+            return (item.revents & events) != 0;
+        if (result < 0)
+            return false;
+        remaining -= slice;
+    }
+    return false;
 }
 
 /* Compact IPv4 peers discovered by the short-lived DHT search that runs in
@@ -230,10 +255,11 @@ void runDhtSearch(const uint8_t infoHash[20],
     dht_detach(session);
 }
 
-bool sendAll(socket_t fd, const uint8_t* data, size_t size) {
+bool sendAll(socket_t fd, const uint8_t* data, size_t size,
+             const ResolveStop* stop = nullptr) {
     size_t sent = 0;
     while (sent < size) {
-        if (!waitFd(fd, POLLOUT, kIoTimeoutMs))
+        if (!waitFd(fd, POLLOUT, kIoTimeoutMs, stop))
             return false;
         ssize_t count = send(fd, data + sent, size - sent, 0);
         if (count <= 0)
@@ -243,10 +269,11 @@ bool sendAll(socket_t fd, const uint8_t* data, size_t size) {
     return true;
 }
 
-bool recvAll(socket_t fd, uint8_t* data, size_t size, int timeoutMs) {
+bool recvAll(socket_t fd, uint8_t* data, size_t size, int timeoutMs,
+             const ResolveStop* stop = nullptr) {
     size_t received = 0;
     while (received < size) {
-        if (!waitFd(fd, POLLIN, timeoutMs))
+        if (!waitFd(fd, POLLIN, timeoutMs, stop))
             return false;
         ssize_t count = recv(fd, data + received, size - received, 0);
         if (count <= 0)
@@ -269,22 +296,24 @@ struct PeerWire {
     size_t backlogPos = 0;        // handshake that belong to the peer stream
 };
 
-bool wireSendAll(PeerWire& wire, const uint8_t* data, size_t size) {
+bool wireSendAll(PeerWire& wire, const uint8_t* data, size_t size,
+                 const ResolveStop* stop = nullptr) {
     if (!wire.encrypted)
-        return sendAll(wire.fd, data, size);
+        return sendAll(wire.fd, data, size, stop);
     uint8_t chunk[4096];
     size_t offset = 0;
     while (offset < size) {
         size_t count = std::min(sizeof(chunk), size - offset);
         rc4_crypt(&wire.send, data + offset, chunk, count);
-        if (!sendAll(wire.fd, chunk, count))
+        if (!sendAll(wire.fd, chunk, count, stop))
             return false;
         offset += count;
     }
     return true;
 }
 
-bool wireRecvAll(PeerWire& wire, uint8_t* data, size_t size, int timeoutMs) {
+bool wireRecvAll(PeerWire& wire, uint8_t* data, size_t size, int timeoutMs,
+                 const ResolveStop* stop = nullptr) {
     size_t got = 0;
     if (wire.encrypted && wire.backlogPos < wire.backlog.size()) {
         size_t take = std::min(wire.backlog.size() - wire.backlogPos, size);
@@ -294,14 +323,15 @@ bool wireRecvAll(PeerWire& wire, uint8_t* data, size_t size, int timeoutMs) {
     }
     if (got == size)
         return true;
-    if (!recvAll(wire.fd, data + got, size - got, timeoutMs))
+    if (!recvAll(wire.fd, data + got, size - got, timeoutMs, stop))
         return false;
     if (wire.encrypted)
         rc4_crypt(&wire.recv, data + got, data + got, size - got);
     return true;
 }
 
-bool sendFrame(PeerWire& wire, const std::vector<uint8_t>& payload) {
+bool sendFrame(PeerWire& wire, const std::vector<uint8_t>& payload,
+               const ResolveStop* stop = nullptr) {
     uint32_t size = static_cast<uint32_t>(payload.size());
     uint8_t header[4] = {
         static_cast<uint8_t>(size >> 24),
@@ -309,13 +339,14 @@ bool sendFrame(PeerWire& wire, const std::vector<uint8_t>& payload) {
         static_cast<uint8_t>(size >> 8),
         static_cast<uint8_t>(size),
     };
-    return wireSendAll(wire, header, sizeof(header)) &&
-           wireSendAll(wire, payload.data(), payload.size());
+    return wireSendAll(wire, header, sizeof(header), stop) &&
+           wireSendAll(wire, payload.data(), payload.size(), stop);
 }
 
-bool recvFrame(PeerWire& wire, std::vector<uint8_t>& payload) {
+bool recvFrame(PeerWire& wire, std::vector<uint8_t>& payload,
+               const ResolveStop* stop = nullptr) {
     uint8_t header[4];
-    if (!wireRecvAll(wire, header, sizeof(header), kIoTimeoutMs))
+    if (!wireRecvAll(wire, header, sizeof(header), kIoTimeoutMs, stop))
         return false;
     uint32_t size = (static_cast<uint32_t>(header[0]) << 24) |
                     (static_cast<uint32_t>(header[1]) << 16) |
@@ -324,7 +355,8 @@ bool recvFrame(PeerWire& wire, std::vector<uint8_t>& payload) {
     if (size > kMetadataPieceSize + 4096)
         return false;
     payload.resize(size);
-    return size == 0 || wireRecvAll(wire, payload.data(), size, kIoTimeoutMs);
+    return size == 0 ||
+           wireRecvAll(wire, payload.data(), size, kIoTimeoutMs, stop);
 }
 
 // What one peer attempt achieved, and where it died. Telling "we never reached
@@ -338,7 +370,8 @@ struct PeerAttempt {
     int error = 0;                  // errno there, 0 when there is none to give
 };
 
-socket_t tcpConnect(const uint8_t* compact, PeerAttempt& attempt) {
+socket_t tcpConnect(const uint8_t* compact, PeerAttempt& attempt,
+                    const ResolveStop* stop = nullptr) {
     sockaddr_in address{};
     address.sin_family = AF_INET;
     std::memcpy(&address.sin_addr.s_addr, compact, 4);
@@ -349,7 +382,7 @@ socket_t tcpConnect(const uint8_t* compact, PeerAttempt& attempt) {
         attempt.error = errno;
         return INVALID_SOCK;
     }
-    if (!waitFd(fd, POLLOUT, kIoTimeoutMs)) {
+    if (!waitFd(fd, POLLOUT, kIoTimeoutMs, stop)) {
         net_close(fd);
         attempt.failure = "connect timed out";
         attempt.error = 0;
@@ -378,9 +411,10 @@ void buildBtHandshake(uint8_t hs[68], const uint8_t infoHash[20],
 }
 
 // Read and verify the 68-byte BT handshake reply (through RC4 when encrypted).
-bool readBtHandshakeReply(PeerWire& wire, const uint8_t infoHash[20]) {
+bool readBtHandshakeReply(PeerWire& wire, const uint8_t infoHash[20],
+                          const ResolveStop* stop = nullptr) {
     uint8_t response[68];
-    return wireRecvAll(wire, response, sizeof(response), kIoTimeoutMs) &&
+    return wireRecvAll(wire, response, sizeof(response), kIoTimeoutMs, stop) &&
            response[0] == 19 &&
            std::memcmp(response + 1, "BitTorrent protocol", 19) == 0 &&
            std::memcmp(response + 28, infoHash, 20) == 0 &&
@@ -391,7 +425,8 @@ bool readBtHandshakeReply(PeerWire& wire, const uint8_t infoHash[20]) {
 // handshake rides inside the encrypted request as the IA payload, so on success
 // the peer's (encrypted) BT handshake reply is left for readBtHandshakeReply.
 bool mseHandshake(socket_t fd, const uint8_t infoHash[20],
-                  const uint8_t peerId[20], PeerWire& wire) {
+                  const uint8_t peerId[20], PeerWire& wire,
+                  const ResolveStop* stop = nullptr) {
     mse_client_t client;
     uint8_t priv[MSE_DH_LEN];
     mse_dh_private(priv);
@@ -402,14 +437,14 @@ bool mseHandshake(socket_t fd, const uint8_t infoHash[20],
     if (mse_client_start(&client, infoHash, priv, nullptr, 0, ia, sizeof(ia),
                          out, sizeof(out), &produced) != MSE_CONTINUE)
         return false;
-    if (!sendAll(fd, out, produced))
+    if (!sendAll(fd, out, produced, stop))
         return false;
 
     std::vector<uint8_t> inbuf;
     uint8_t tmp[1024];
     const uint64_t deadline = now_ms() + 2 * kIoTimeoutMs;
-    while (now_ms() < deadline) {
-        if (!waitFd(fd, POLLIN, kIoTimeoutMs))
+    while (now_ms() < deadline && !(stop && stop->requested())) {
+        if (!waitFd(fd, POLLIN, kIoTimeoutMs, stop))
             return false;
         ssize_t count = recv(fd, tmp, sizeof(tmp), 0);
         if (count <= 0)
@@ -421,7 +456,7 @@ bool mseHandshake(socket_t fd, const uint8_t infoHash[20],
         mse_status_t status = mse_client_feed(&client, inbuf.data(),
                                               inbuf.size(), &consumed, out,
                                               sizeof(out), &produced);
-        if (produced && !sendAll(fd, out, produced))
+        if (produced && !sendAll(fd, out, produced, stop))
             return false;
         inbuf.erase(inbuf.begin(),
                     inbuf.begin() + static_cast<ptrdiff_t>(consumed));
@@ -450,18 +485,18 @@ bool mseHandshake(socket_t fd, const uint8_t infoHash[20],
 // `wire` owns the socket and carries any encryption state.
 bool connectPeer(const uint8_t* compact, const uint8_t infoHash[20],
                  const uint8_t peerId[20], PeerWire& wire,
-                 PeerAttempt& attempt) {
-    socket_t fd = tcpConnect(compact, attempt);
+                 PeerAttempt& attempt, const ResolveStop* stop = nullptr) {
+    socket_t fd = tcpConnect(compact, attempt, stop);
     if (fd == INVALID_SOCK)
         return false;
     attempt.connected = true;
 
     uint8_t handshake[68];
     buildBtHandshake(handshake, infoHash, peerId);
-    if (sendAll(fd, handshake, sizeof(handshake))) {
+    if (sendAll(fd, handshake, sizeof(handshake), stop)) {
         wire.fd = fd;
         wire.encrypted = false;
-        if (readBtHandshakeReply(wire, infoHash)) {
+        if (readBtHandshakeReply(wire, infoHash, stop)) {
             net_set_tcp_receive_buffer(fd);
             return true;
         }
@@ -470,11 +505,11 @@ bool connectPeer(const uint8_t* compact, const uint8_t infoHash[20],
     net_close(fd);
     wire = PeerWire{};
 
-    fd = tcpConnect(compact, attempt);
+    fd = tcpConnect(compact, attempt, stop);
     if (fd == INVALID_SOCK)
         return false;
-    if (!mseHandshake(fd, infoHash, peerId, wire) ||
-        !readBtHandshakeReply(wire, infoHash)) {
+    if (!mseHandshake(fd, infoHash, peerId, wire, stop) ||
+        !readBtHandshakeReply(wire, infoHash, stop)) {
         net_close(fd);
         wire = PeerWire{};
         attempt.failure = "plaintext and MSE handshake";
@@ -486,16 +521,17 @@ bool connectPeer(const uint8_t* compact, const uint8_t infoHash[20],
 }
 
 bool negotiateMetadata(PeerWire& wire, uint8_t& peerExtension,
-                       size_t& metadataSize) {
+                       size_t& metadataSize,
+                       const ResolveStop* stop = nullptr) {
     static const char handshake[] = "d1:md11:ut_metadatai1eee";
     std::vector<uint8_t> request{20, 0};
     request.insert(request.end(), handshake, handshake + sizeof(handshake) - 1);
-    if (!sendFrame(wire, request))
+    if (!sendFrame(wire, request, stop))
         return false;
 
     for (int message = 0; message < 32; ++message) {
         std::vector<uint8_t> frame;
-        if (!recvFrame(wire, frame))
+        if (!recvFrame(wire, frame, stop))
             return false;
         if (frame.size() < 3 || frame[0] != 20 || frame[1] != 0)
             continue;
@@ -526,18 +562,20 @@ bool negotiateMetadata(PeerWire& wire, uint8_t& peerExtension,
     return false;
 }
 
-bool sendMetadataRequest(PeerWire& wire, uint8_t extension, uint32_t piece) {
+bool sendMetadataRequest(PeerWire& wire, uint8_t extension, uint32_t piece,
+                         const ResolveStop* stop = nullptr) {
     std::string body = "d8:msg_typei0e5:piecei" + std::to_string(piece) + "ee";
     std::vector<uint8_t> frame{20, extension};
     frame.insert(frame.end(), body.begin(), body.end());
-    return sendFrame(wire, frame);
+    return sendFrame(wire, frame, stop);
 }
 
 bool receiveMetadataPiece(PeerWire& wire,
                           uint32_t& piece, const uint8_t*& data,
-                          size_t& dataSize, std::vector<uint8_t>& frame) {
+                          size_t& dataSize, std::vector<uint8_t>& frame,
+                          const ResolveStop* stop = nullptr) {
     for (int message = 0; message < 32; ++message) {
-        if (!recvFrame(wire, frame)) {
+        if (!recvFrame(wire, frame, stop)) {
             log_msg("[magnet] peer frame receive timed out\n");
             return false;
         }
@@ -587,18 +625,20 @@ bool fetchMetadataFromPeer(const uint8_t* compact,
                            uint64_t deadline,
                            std::atomic<bool>& cancelled,
                            std::atomic<bool>& stopWorkers,
+                           std::atomic<bool>& peerAbort,
                            const MagnetResolver::ProgressCallback& progress,
                            std::vector<uint8_t>& metadata,
                            PeerAttempt& attempt) {
     attempt = PeerAttempt{};
-    if (cancelled || stopWorkers || now_ms() >= deadline)
+    ResolveStop stop{&cancelled, &stopWorkers, &peerAbort};
+    if (stop.requested() || now_ms() >= deadline)
         return false;
     if (progress)
         progress({MagnetProgress::Stage::Connecting, 0, 0, peerIndex + 1,
                   peerCount});
 
     PeerWire wire;
-    if (!connectPeer(compact, spec.infoHash, peerId, wire, attempt)) {
+    if (!connectPeer(compact, spec.infoHash, peerId, wire, attempt, &stop)) {
         log_msg("[magnet] peer %u/%u failed at %s (errno %d)\n",
                 peerIndex + 1, peerCount, attempt.failure, attempt.error);
         net_close(wire.fd);
@@ -610,7 +650,7 @@ bool fetchMetadataFromPeer(const uint8_t* compact,
 
     uint8_t extension = 0;
     size_t metadataSize = 0;
-    if (!negotiateMetadata(wire, extension, metadataSize)) {
+    if (!negotiateMetadata(wire, extension, metadataSize, &stop)) {
         log_msg("[magnet] peer %u/%u has no usable ut_metadata\n",
                 peerIndex + 1, peerCount);
         net_close(wire.fd);
@@ -626,13 +666,13 @@ bool fetchMetadataFromPeer(const uint8_t* compact,
     uint32_t completed = 0;
     uint32_t inFlight = 0;
 
-    while (!cancelled && !stopWorkers && now_ms() < deadline &&
+    while (!stop.requested() && now_ms() < deadline &&
            completed < received.size()) {
         for (uint32_t piece = 0;
              piece < received.size() && inFlight < kRequestPipeline; ++piece) {
             if (received[piece] || requested[piece])
                 continue;
-            if (!sendMetadataRequest(wire, extension, piece)) {
+            if (!sendMetadataRequest(wire, extension, piece, &stop)) {
                 net_close(wire.fd);
                 return false;
             }
@@ -644,7 +684,8 @@ bool fetchMetadataFromPeer(const uint8_t* compact,
         const uint8_t* bytes = nullptr;
         size_t byteCount = 0;
         std::vector<uint8_t> frame;
-        if (!receiveMetadataPiece(wire, piece, bytes, byteCount, frame)) {
+        if (!receiveMetadataPiece(wire, piece, bytes, byteCount, frame,
+                                  &stop)) {
             log_msg("[magnet] peer %u/%u metadata receive failed\n",
                     peerIndex + 1, peerCount);
             net_close(wire.fd);
@@ -684,12 +725,12 @@ bool fetchMetadataFromPeer(const uint8_t* compact,
 
 // Advertise both ut_metadata and ut_pex so the peer will push its swarm view
 // to us on our advertised ut_pex id (kLocalUtPexId). BEP10 handshake.
-bool sendPexHandshake(PeerWire& wire) {
+bool sendPexHandshake(PeerWire& wire, const ResolveStop* stop = nullptr) {
     static const char handshake[] =
         "d1:md11:ut_metadatai1e6:ut_pexi2eee";
     std::vector<uint8_t> request{20, 0};
     request.insert(request.end(), handshake, handshake + sizeof(handshake) - 1);
-    return sendFrame(wire, request);
+    return sendFrame(wire, request, stop);
 }
 
 // Connect to one thin-list peer, advertise ut_pex, and harvest the compact
@@ -700,21 +741,23 @@ bool sendPexHandshake(PeerWire& wire) {
 void harvestPexFromPeer(const uint8_t* compact, const MagnetSpec& spec,
                         const uint8_t peerId[20],
                         std::atomic<bool>& cancelled,
+                        std::atomic<bool>& stopWorkers,
                         std::vector<uint8_t>& out) {
+    ResolveStop stop{&cancelled, &stopWorkers};
     PeerWire wire;
     PeerAttempt attempt;
-    if (!connectPeer(compact, spec.infoHash, peerId, wire, attempt)) {
+    if (!connectPeer(compact, spec.infoHash, peerId, wire, attempt, &stop)) {
         net_close(wire.fd);
         return;
     }
-    if (!sendPexHandshake(wire)) {
+    if (!sendPexHandshake(wire, &stop)) {
         net_close(wire.fd);
         return;
     }
     uint64_t deadline = now_ms() + kPexPeerTimeoutMs;
-    while (!cancelled && now_ms() < deadline) {
+    while (!stop.requested() && now_ms() < deadline) {
         std::vector<uint8_t> frame;
-        if (!recvFrame(wire, frame))
+        if (!recvFrame(wire, frame, &stop))
             break;
         // Extended messages the peer sends to us carry our advertised id, not
         // the peer's (BEP 10). Skip the peer's extension handshake (id 0) and
@@ -889,6 +932,45 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
                 presetError.c_str());
     }
 
+    const std::string cachePath = path + ".cache-candidate";
+    const std::string swarmPath = path + ".swarm-candidate";
+    unlink(cachePath.c_str());
+    unlink(swarmPath.c_str());
+
+    // 0 = unresolved, 1 = HTTPS cache, 2 = tracker/DHT/peer swarm. A source
+    // claims the result only after it has fully validated and written its own
+    // candidate, so the coordinator never publishes a partial file.
+    std::atomic<int> winner{0};
+    std::atomic<bool> stopWorkers{false};
+    std::atomic<bool> peerAbort{false};
+    std::atomic<bool> cacheOk{false};
+    std::string cacheError;
+    const uint64_t raceStartedMs = now_ms();
+    std::thread cacheThread([&, cachePath] {
+        CancelCheck stop = [&] {
+            return cancelled.load(std::memory_order_relaxed) ||
+                   stopWorkers.load(std::memory_order_relaxed);
+        };
+        bool ok = cacheFetch_
+                      ? cacheFetch_(spec.infoHashHex, cachePath, stop,
+                                    cacheError)
+                      : fetchTorrentByInfoHash(spec.infoHashHex, cachePath,
+                                               stop, cacheError);
+        if (!ok || cancelled.load(std::memory_order_relaxed))
+            return;
+        int expected = 0;
+        if (winner.compare_exchange_strong(expected, 1)) {
+            cacheOk.store(true, std::memory_order_relaxed);
+            stopWorkers.store(true, std::memory_order_relaxed);
+            log_msg("[magnet] source=https-cache duration_ms=%llu\n",
+                    (unsigned long long)(now_ms() - raceStartedMs));
+        }
+    });
+
+    auto resolveSwarm = [&]() -> bool {
+
+    ResolveStop raceStop{&cancelled, &stopWorkers};
+
     uint8_t peerId[20];
     std::memcpy(peerId, "-PN0001-", 8);
     rand_bytes(peerId + 8, 12);
@@ -917,15 +999,15 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
     bool sawNotRegistered = false;
     auto trackers = rutrackerTrackerCandidates(spec.trackerUrl);
     for (const std::string& tracker : trackers) {
-        if (cancelled)
+        if (raceStop.requested())
             break;
         uint8_t batch[kMaxPeersPerTracker * 6];
         tracker_announce_result_t result;
         uint32_t count = tracker_announce_url_ex_cancel(
             tracker.c_str(), spec.infoHash, peerId, 6881, 0, 0,
             batch, kMaxPeersPerTracker, &result,
-            trackerCancelled, &cancelled);
-        if (cancelled)
+            trackerCancelled, &raceStop);
+        if (raceStop.requested())
             break;
         if (result.tracker_failure) {
             sawTrackerFailure = true;
@@ -972,7 +1054,7 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
        the metadata workers and every retry round merges what it found. When
        the trackers gave us nothing at all there is nothing to run alongside,
        so wait for it here. */
-    if (sawNotRegistered)
+    if (sawNotRegistered || raceStop.requested())
         dhtStop.store(true);
     if (peers.empty() || sawNotRegistered)
         dhtThread.join();
@@ -996,11 +1078,11 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
        cannot bootstrap from nothing, but it cheaply multiplies a thin result.
        Harvest into a scratch vector — appending to `peers` while iterating
        peers.data() would dangle on reallocation. */
-    if (peerCount <= kPexThinThreshold && !cancelled) {
+    if (peerCount <= kPexThinThreshold && !raceStop.requested()) {
         std::vector<uint8_t> pexPeers;
-        for (uint32_t i = 0; i < peerCount && !cancelled; ++i)
+        for (uint32_t i = 0; i < peerCount && !raceStop.requested(); ++i)
             harvestPexFromPeer(peers.data() + i * 6, spec, peerId, cancelled,
-                               pexPeers);
+                               stopWorkers, pexPeers);
         uint32_t before = static_cast<uint32_t>(peers.size() / 6);
         if (!pexPeers.empty())
             appendUniquePeers(peers, pexPeers.data(),
@@ -1016,7 +1098,6 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
     std::mutex mutex;
     uint32_t nextPeer = 0;
     bool resolved = false;
-    std::atomic<bool> stopWorkers{false};
     std::atomic<uint32_t> reachedPeers{0}; // peers we got a TCP session to
     std::vector<uint8_t> metadata;
     std::vector<uint8_t> verifiedEndpoints;
@@ -1029,7 +1110,7 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
     auto reannounce = [&]() -> uint32_t {
         uint32_t before = static_cast<uint32_t>(peers.size() / 6);
         for (const std::string& tracker : trackers) {
-            if (cancelled || now_ms() >= deadline ||
+            if (raceStop.requested() || now_ms() >= deadline ||
                 peers.size() / 6 >= kMaxMergedPeers)
                 break;
             uint8_t batch[kMaxPeersPerTracker * 6];
@@ -1037,8 +1118,8 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
             uint32_t count = tracker_announce_url_ex_cancel(
                 tracker.c_str(), spec.infoHash, peerId, 6881, 0, 0,
                 batch, kMaxPeersPerTracker, &result,
-                trackerCancelled, &cancelled);
-            if (cancelled)
+                trackerCancelled, &raceStop);
+            if (raceStop.requested())
                 break;
             appendUniquePeers(peers, batch, count);
         }
@@ -1050,7 +1131,7 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
     };
 
     int emptyReannounces = 0;
-    while (!cancelled && !resolved && unsafeMetadata.empty() &&
+    while (!raceStop.requested() && !resolved && unsafeMetadata.empty() &&
            now_ms() < deadline) {
         uint32_t roundEnd = peerCount;
         if (nextPeer >= roundEnd) {
@@ -1060,10 +1141,10 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
                that IP — back off briefly, pull a rotated peer set plus what the
                DHT has found meanwhile, and keep trying until the deadline. */
             uint64_t backoffUntil = now_ms() + kReannounceBackoffMs;
-            while (!cancelled && now_ms() < backoffUntil &&
+            while (!raceStop.requested() && now_ms() < backoffUntil &&
                    now_ms() < deadline)
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            if (cancelled || now_ms() >= deadline)
+            if (raceStop.requested() || now_ms() >= deadline)
                 break;
             uint32_t added = mergeDht();
             /* Stop pestering the trackers once they have twice repeated
@@ -1090,7 +1171,8 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
         uint32_t workerCount = std::min(pending, kMaxConcurrentPeers);
         for (uint32_t worker = 0; worker < workerCount; ++worker) {
             workers.emplace_back([&, roundEnd] {
-                while (!cancelled && !stopWorkers && now_ms() < deadline) {
+                while (!raceStop.requested() && !peerAbort.load() &&
+                       now_ms() < deadline) {
                     uint32_t peerIndex = 0;
                     {
                         std::lock_guard<std::mutex> lock(mutex);
@@ -1103,8 +1185,8 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
                     PeerAttempt attempt;
                     bool fetched = fetchMetadataFromPeer(
                         peers.data() + peerIndex * 6, spec, peerId, peerIndex,
-                        peerCount, deadline, cancelled, stopWorkers, progress,
-                        candidate, attempt);
+                        peerCount, deadline, cancelled, stopWorkers, peerAbort,
+                        progress, candidate, attempt);
                     if (attempt.connected)
                         reachedPeers.fetch_add(1);
                     if (attempt.handshakeVerified) {
@@ -1128,17 +1210,22 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
                             std::lock_guard<std::mutex> lock(mutex);
                             if (unsafeMetadata.empty())
                                 unsafeMetadata = probeError;
-                            stopWorkers.store(true);
+                            peerAbort.store(true);
                         }
                         continue;
                     }
 
                     {
                         std::lock_guard<std::mutex> lock(mutex);
-                        if (!resolved) {
+                        int expected = 0;
+                        if (!resolved && winner.compare_exchange_strong(
+                                             expected, 2)) {
                             metadata = std::move(candidate);
                             resolved = true;
                             stopWorkers.store(true);
+                            log_msg("[magnet] source=swarm duration_ms=%llu\n",
+                                    (unsigned long long)(now_ms() -
+                                                         raceStartedMs));
                         }
                     }
                     return;
@@ -1180,11 +1267,42 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
     std::vector<uint8_t> torrent;
     if (!buildTorrent(spec, metadata, torrent, error))
         return false;
-    if (!writeTorrentAtomic(path, torrent, error))
+    if (!writeTorrentAtomic(swarmPath, torrent, error))
         return false;
     if (verifiedPeers)
         *verifiedPeers = std::move(verifiedEndpoints);
     return true;
+    };
+
+    bool swarmOk = resolveSwarm();
+    if (swarmOk)
+        stopWorkers.store(true, std::memory_order_relaxed);
+    if (cacheThread.joinable())
+        cacheThread.join();
+
+    bool ok = false;
+    if (!cancelled.load(std::memory_order_relaxed) &&
+        winner.load(std::memory_order_relaxed) == 1 && cacheOk.load()) {
+        ok = rename(cachePath.c_str(), path.c_str()) == 0;
+        if (!ok)
+            error = "Unable to publish cached torrent metadata.";
+        if (verifiedPeers)
+            verifiedPeers->clear();
+    } else if (!cancelled.load(std::memory_order_relaxed) && swarmOk &&
+               winner.load(std::memory_order_relaxed) == 2) {
+        ok = rename(swarmPath.c_str(), path.c_str()) == 0;
+        if (!ok)
+            error = "Unable to publish peer torrent metadata.";
+    } else if (cancelled.load(std::memory_order_relaxed)) {
+        error = "Metadata resolution was cancelled.";
+    } else if (!cacheError.empty()) {
+        log_msg("[magnet] https-cache failed: %s\n", cacheError.c_str());
+        if (error.empty() || error == "Metadata resolution was cancelled.")
+            error = cacheError;
+    }
+    unlink(cachePath.c_str());
+    unlink(swarmPath.c_str());
+    return ok;
 }
 
 } // namespace pipensx

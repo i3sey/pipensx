@@ -94,8 +94,21 @@ bool parseHexHash(const std::string& hex, uint8_t out[20],
     return true;
 }
 
+struct CurlCancelContext {
+    const TorrentCancelCheck* cancelled = nullptr;
+};
+
+int curlProgress(void* user, curl_off_t, curl_off_t, curl_off_t, curl_off_t) {
+    auto* context = static_cast<CurlCancelContext*>(user);
+    return context && context->cancelled && *context->cancelled &&
+                   (*context->cancelled)()
+               ? 1
+               : 0;
+}
+
 bool defaultHttpGet(const std::string& url, std::vector<uint8_t>& body,
-                    long& httpStatus, std::string& error) {
+                    long& httpStatus, const TorrentCancelCheck& cancelled,
+                    std::string& error) {
     body.clear();
     httpStatus = 0;
     CURL* curl = curl_easy_init();
@@ -111,6 +124,10 @@ bool defaultHttpGet(const std::string& url, std::vector<uint8_t>& body,
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curlWrite);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
+    CurlCancelContext cancelContext{&cancelled};
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, curlProgress);
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &cancelContext);
     curlPinHttpsOnly(curl);
     curlApplyTrustedSsl(curl);
     const CURLcode result = curl_easy_perform(curl);
@@ -158,7 +175,11 @@ bool pollUntilFiles(DebridProvider& provider, const std::string& id,
 } // namespace
 
 std::string itorrentsUrlForHash(const std::string& infoHashHex) {
-    return "https://itorrents.org/torrent/" + upperHex(infoHashHex) +
+    // itorrents.org 301-redirects to plain-http itorrents.net, which our
+    // HTTPS-only curl pin rejects ("Unsupported protocol (in redirect)").
+    // itorrents.net serves the same hash-verified torrents directly over
+    // HTTPS, so use it to avoid the http downgrade hop.
+    return "https://itorrents.net/torrent/" + upperHex(infoHashHex) +
            ".torrent";
 }
 
@@ -202,10 +223,10 @@ bool writeTorrentFromInfoDict(const std::string& magnetUri,
 
 bool fetchTorrentByInfoHash(const std::string& infoHashHex,
                             const std::string& outPath,
-                            std::atomic<bool>& cancelled,
+                            const TorrentCancelCheck& cancelled,
                             std::string& error,
                             TorrentHttpGet* transport) {
-    if (cancelled.load()) {
+    if (cancelled && cancelled()) {
         error = "Cancelled.";
         return false;
     }
@@ -214,14 +235,15 @@ bool fetchTorrentByInfoHash(const std::string& infoHashHex,
         return false;
 
     const std::string url = itorrentsUrlForHash(infoHashHex);
-    log_msg("[debrid-meta] fetching %s\n", url.c_str());
+    log_msg("[torrent-meta] fetching %s\n", url.c_str());
     std::vector<uint8_t> body;
     long status = 0;
     std::string transportError;
     const bool ok =
         transport ? (*transport)(url, body, status, transportError)
-                  : defaultHttpGet(url, body, status, transportError);
-    if (cancelled.load()) {
+                  : defaultHttpGet(url, body, status, cancelled,
+                                   transportError);
+    if (cancelled && cancelled()) {
         error = "Cancelled.";
         return false;
     }
@@ -237,6 +259,16 @@ bool fetchTorrentByInfoHash(const std::string& infoHashHex,
     if (!torrentBodyMatchesInfoHash(body, infoHashHex, error))
         return false;
     return writeTorrentAtomic(outPath, body, error);
+}
+
+bool fetchTorrentByInfoHash(const std::string& infoHashHex,
+                            const std::string& outPath,
+                            std::atomic<bool>& cancelled,
+                            std::string& error,
+                            TorrentHttpGet* transport) {
+    TorrentCancelCheck check = [&cancelled] { return cancelled.load(); };
+    return fetchTorrentByInfoHash(infoHashHex, outPath, check, error,
+                                  transport);
 }
 
 bool ensureTorrentFileForDebrid(const std::string& magnetUri,
