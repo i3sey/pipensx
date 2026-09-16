@@ -999,7 +999,7 @@ private:
         genreSheet_->addView(backdrop);
 
         auto* panel = new brls::Box(brls::Axis::COLUMN);
-        panel->setWidth(520);
+        panel->setWidth(680);
         panel->setHeight(560);
         panel->setBackgroundColor(theme::panel());
         panel->setCornerRadius(theme::kRadiusLarge);
