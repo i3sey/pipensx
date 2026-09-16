@@ -1,5 +1,6 @@
 #include "app/app_settings.hpp"
 #include "app/catalog_service.hpp"
+#include "app/catalog_refresh.hpp"
 #include "app/companion_settings.hpp"
 #include "app/download_manager.hpp"
 #include "app/game_metadata_service.hpp"
@@ -62,10 +63,12 @@ extern "C" {
 
 using pipensx::AppSettings;
 using pipensx::CatalogService;
+using pipensx::CatalogSnapshot;
 using pipensx::DownloadManager;
 using pipensx::SwitchDeployService;
 using pipensx::PortUninstallService;
 using pipensx::GameMetadataService;
+using pipensx::MetadataSnapshot;
 using pipensx::GameUpdateService;
 using pipensx::InstalledTitleService;
 using pipensx::FavoritesService;
@@ -253,6 +256,15 @@ public:
         tabs_->setUpdateCountBadge(gameUpdates_->availableCount(titles));
     }
 
+    void refreshLoadedData() {
+        if (!tabs_)
+            return;
+        if (auto* home = dynamic_cast<pipensx::ui::HomeView*>(
+                tabs_->tabView(pipensx::ui::NavIconType::Home)))
+            home->refreshData();
+        refreshUpdateBadge();
+    }
+
     // Called when a task reaches Installed: the installed scan and the
     // game-update results both go stale the moment the title version changes,
     // so refresh the scan off-thread and re-check the update results — this
@@ -425,8 +437,20 @@ int main(int argc, char** argv) {
         const nro_relocation_paths_t paths{
             launchSource, InstalledNroPath, RelocationBackupPath};
         char error[256] = {0};
-        if (!nro_relocation_apply(&paths, error, sizeof(error))) {
+        // Borealis mounted the embedded RomFS from argv[0] in userAppInit().
+        // Horizon refuses to rename that open file, so release it for the
+        // short relocation transaction. Every path that continues this
+        // process mounts it again before touching application resources.
+        const Result unmount = romfsExit();
+        if (R_FAILED(unmount)) {
+            diagnostic_error("startup", "nro_relocation_unmount",
+                             "result=0x%08x", unmount);
+        } else if (!nro_relocation_apply(&paths, error, sizeof(error))) {
             diagnostic_error("startup", "nro_relocation", "error=%s", error);
+            const Result remount = romfsInit();
+            if (R_FAILED(remount))
+                diagnostic_error("startup", "nro_relocation_remount",
+                                 "result=0x%08x", remount);
         } else {
             Result commit = fsdevCommitDevice("sdmc");
             if (R_FAILED(commit)) {
@@ -439,18 +463,12 @@ int main(int argc, char** argv) {
                     "commit_result=0x%08x rollback=%d "
                     "rollback_commit_result=0x%08x rollback_error=%s",
                     commit, rolledBack ? 1 : 0, rollbackCommit, rollbackError);
+                const Result remount = romfsInit();
+                if (R_FAILED(remount))
+                    diagnostic_error("startup", "nro_relocation_remount",
+                                     "result=0x%08x", remount);
             } else {
-                if (!nro_relocation_confirm(&paths, error, sizeof(error)))
-                    diagnostic_error("startup", "nro_relocation_cleanup",
-                                     "error=%s", error);
-                else {
-                    const Result cleanupCommit = fsdevCommitDevice("sdmc");
-                    if (R_FAILED(cleanupCommit))
-                        diagnostic_error("startup", "nro_relocation_cleanup",
-                                         "commit_result=0x%08x",
-                                         cleanupCommit);
-                }
-
+                bool restartReady = false;
                 if (!envHasNextLoad()) {
                     diagnostic_error("startup", "nro_relocation_restart",
                                      "next-load unsupported");
@@ -460,15 +478,40 @@ int main(int argc, char** argv) {
                     const Result restart = envSetNextLoad(
                         InstalledNroPath, arguments.c_str());
                     if (R_SUCCEEDED(restart)) {
-                        log_msg("[startup] relocated NRO from %s to %s; "
-                                "restarting\n", launchSource,
-                                InstalledNroPath);
-                        log_close();
-                        return 0;
+                        restartReady = true;
+                    } else {
+                        diagnostic_error("startup", "nro_relocation_restart",
+                                         "result=0x%08x", restart);
                     }
-                    diagnostic_error("startup", "nro_relocation_restart",
-                                     "result=0x%08x", restart);
                 }
+                if (restartReady) {
+                    if (!nro_relocation_confirm(&paths, error, sizeof(error)))
+                        diagnostic_error("startup", "nro_relocation_cleanup",
+                                         "error=%s", error);
+                    const Result cleanupCommit = fsdevCommitDevice("sdmc");
+                    if (R_FAILED(cleanupCommit))
+                        diagnostic_error("startup", "nro_relocation_cleanup",
+                                         "commit_result=0x%08x",
+                                         cleanupCommit);
+                    log_msg("[startup] relocated NRO from %s to %s; "
+                            "restarting\n", launchSource, InstalledNroPath);
+                    log_close();
+                    return 0;
+                }
+
+                char rollbackError[256] = {0};
+                const bool rolledBack = nro_relocation_rollback(
+                    &paths, rollbackError, sizeof(rollbackError));
+                const Result rollbackCommit = fsdevCommitDevice("sdmc");
+                if (!rolledBack || R_FAILED(rollbackCommit))
+                    diagnostic_error(
+                        "startup", "nro_relocation_restart_rollback",
+                        "rollback=%d commit_result=0x%08x error=%s",
+                        rolledBack ? 1 : 0, rollbackCommit, rollbackError);
+                const Result remount = romfsInit();
+                if (R_FAILED(remount))
+                    diagnostic_error("startup", "nro_relocation_remount",
+                                     "result=0x%08x", remount);
             }
         }
     }
@@ -577,11 +620,6 @@ int main(int argc, char** argv) {
         unlink("sdmc:/switch/pipensx/rutracker_cookies.txt");
         CatalogService catalog("sdmc:/switch/pipensx", BundledCatalogPath);
 
-        // The metadata index parse (an ~8 MB JSON) runs on a worker thread in
-        // parallel with the catalog parse below; the service is not touched by
-        // anything else until the join before MainActivity construction, after
-        // which all access is UI-thread as before. Startup pays
-        // max(catalog, metadata) instead of their sum.
         startupStage("GameMetadataService construction");
         GameMetadataService metadata("sdmc:/switch/pipensx");
         auto configureImageCache = [&](bool installActive) {
@@ -599,17 +637,30 @@ int main(int argc, char** argv) {
                     applicationMode ? 1 : 0, installActive ? 1 : 0);
         };
         configureImageCache(false);
-        std::string metadataError;
-        bool metadataOk = true;
-        ThreadJoiner metadataLoader{
-            std::thread([&metadata, &metadataError, &metadataOk] {
-                metadataOk = metadata.load(metadataError);
-            })};
-
-        std::string catalogError;
-        if (!catalog.load(catalogError))
-            log_msg("[catalog] initial load failed: %s\n",
-                    catalogError.c_str());
+        struct InitialDataLoad {
+            CatalogSnapshot catalog;
+            MetadataSnapshot metadata;
+            std::string catalogError;
+            std::string metadataError;
+            bool catalogOk = false;
+            bool metadataOk = false;
+            std::atomic<bool> ready{false};
+        };
+        auto initialData = std::make_shared<InitialDataLoad>();
+        // Prevent CatalogView's launch refresh from racing the initial cache
+        // publication. It will observe this owner and follow it instead.
+        const bool initialRefreshHeld = pipensx::tryBeginCatalogRefresh();
+        ThreadJoiner initialDataLoader{std::thread([&catalog, &metadata,
+                                                    initialData] {
+            std::thread metadataThread([&metadata, initialData] {
+                initialData->metadataOk = metadata.prepareInitialSnapshot(
+                    initialData->metadata, initialData->metadataError);
+            });
+            initialData->catalogOk = catalog.prepareInitialSnapshot(
+                initialData->catalog, initialData->catalogError);
+            metadataThread.join();
+            initialData->ready.store(true, std::memory_order_release);
+        })};
 
         startupStage("FavoritesService construction");
         FavoritesService favorites("sdmc:/switch/pipensx");
@@ -708,14 +759,6 @@ int main(int argc, char** argv) {
             });
         if (settings.get().webServerEnabled)
             webServer.start();
-
-        // Barrier: from here on the UI reads the metadata service, so the
-        // parallel index parse must have landed.
-        startupStage("join metadata loader");
-        metadataLoader.thread.join();
-        if (!metadataOk)
-            log_msg("[metadata] initial load failed: %s\n",
-                    metadataError.c_str());
 
         startupStage("GameUpdateService load");
         GameUpdateService gameUpdates(&metadata,
@@ -871,6 +914,7 @@ int main(int argc, char** argv) {
         bool activeTransfer = false;
         bool imageInstallActive = false;
         bool updateBadgeApplied = false;
+        bool initialDataApplied = false;
         while (true) {
             const uint64_t nowPerf = now_ms();
             if (lastPerfMs == 0 || nowPerf - lastPerfMs >= 250) {
@@ -896,6 +940,26 @@ int main(int argc, char** argv) {
             beginImageUploadFrame();
             if (!brls::Application::mainLoop())
                 break;
+            if (!initialDataApplied &&
+                initialData->ready.load(std::memory_order_acquire)) {
+                initialDataApplied = true;
+                if (initialData->catalogOk) {
+                    catalog.adopt(std::move(initialData->catalog));
+                } else {
+                    diagnostic_error("catalog", "startup_load", "error=%s",
+                                     initialData->catalogError.c_str());
+                }
+                if (initialData->metadataOk) {
+                    metadata.adopt(std::move(initialData->metadata));
+                } else {
+                    diagnostic_error("metadata", "startup_load", "error=%s",
+                                     initialData->metadataError.c_str());
+                }
+                if (initialRefreshHeld)
+                    pipensx::endCatalogRefresh();
+                activity->refreshLoadedData();
+                startupStage("initial data published");
+            }
             if (!updateBadgeApplied && installedScanDone.load()) {
                 updateBadgeApplied = true;
                 activity->refreshUpdateBadge();
@@ -1196,6 +1260,10 @@ int main(int argc, char** argv) {
         }
 
         startupStage("manager shutdown");
+        if (initialDataLoader.thread.joinable())
+            initialDataLoader.thread.join();
+        if (!initialDataApplied && initialRefreshHeld)
+            pipensx::endCatalogRefresh();
         // Stop the watchdog first: nothing below pumps the heartbeat, and a
         // late stall log mid-teardown would only confuse a crash triage.
         watchdogStop.store(true, std::memory_order_relaxed);

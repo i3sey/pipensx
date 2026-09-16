@@ -1277,8 +1277,13 @@ private:
         const bool inFlight = catalogRefreshInFlight();
         if (inFlight && !refreshInFlight_)
             setRefreshInFlight(true);
-        else if (!inFlight && refreshInFlight_)
+        else if (!inFlight && refreshInFlight_) {
             setRefreshInFlight(false);
+            if (followedExternalRefresh_) {
+                followedExternalRefresh_ = false;
+                refreshCatalogIfDue();
+            }
+        }
         if (catalog_ && catalog_->sharedEntries() != observedCatalog_) {
             rebuildEntries(true);
             return;
@@ -1494,6 +1499,7 @@ private:
         if (!tryBeginCatalogRefresh()) {
             // Another tab/settings already owns the fetch. Follow it so the
             // badge stays orange instead of flipping to red "never/stale".
+            followedExternalRefresh_ = true;
             setRefreshInFlight(true);
             return;
         }
@@ -1673,6 +1679,7 @@ private:
     // This state gates only refreshSources(); the published catalogue snapshot
     // remains fully interactive while its replacement is fetched.
     bool refreshInFlight_ = false;
+    bool followedExternalRefresh_ = false;
     CatalogBrowseGenerationQueue browseQueue_;
     std::shared_ptr<std::atomic<uint64_t>> browseGenerationSignal_ =
         std::make_shared<std::atomic<uint64_t>>(0);

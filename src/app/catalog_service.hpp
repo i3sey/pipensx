@@ -75,6 +75,8 @@ struct CatalogEntry {
 struct CatalogSnapshot {
     std::vector<CatalogEntry> entries;
     std::unordered_map<std::string, size_t> infoHashIndex;
+    std::string sourceLabel;
+    int64_t snapshotEpochSec = 0;
 };
 
 // Ownership displaced by a publish. UI callers hand this to a worker so the
@@ -93,6 +95,11 @@ public:
                             std::string bundledPath = {});
 
     bool load(std::string& error);
+
+    // Worker-thread safe startup path: read, parse and index the preferred
+    // cache (or the bundled fallback) without touching the live UI snapshot.
+    bool prepareInitialSnapshot(CatalogSnapshot& snapshot,
+                                std::string& error) const;
 
     // Pool-thread safe: fetch, parse and persist without touching live state.
     // The CatalogSnapshot overload also builds the lookup index and is the
@@ -158,8 +165,9 @@ public:
                                 const std::string& sourceUrl);
 
 private:
-    bool loadFile(const std::string& path, const std::string& label,
-                  std::string& error);
+    bool loadFileSnapshot(const std::string& path, const std::string& label,
+                          CatalogSnapshot& snapshot,
+                          std::string& error) const;
     static void buildIndex(const std::vector<CatalogEntry>& entries,
                            std::unordered_map<std::string, size_t>& index);
 

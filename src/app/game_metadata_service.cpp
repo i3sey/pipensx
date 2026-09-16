@@ -940,17 +940,13 @@ bool GameMetadataService::collectLatestVersions(
     return true;
 }
 
-bool GameMetadataService::load(std::string& error) {
-    index_ = std::make_shared<const GameMetadataIndexSnapshot>();
-    manifest_ = {};
-
+bool GameMetadataService::prepareInitialSnapshot(
+    MetadataSnapshot& snapshot, std::string& error) const {
     std::string cacheError;
-    MetadataSnapshot cached;
-    if (loadCachedSnapshot(cached, cacheError)) {
-        adopt(std::move(cached));
+    if (loadCachedSnapshot(snapshot, cacheError)) {
         error.clear();
-        log_msg("[metadata] loaded %zu cached game matches\n",
-                index_->byInfoHash.size());
+        log_msg("[metadata] prepared %zu cached game matches\n",
+                snapshot.preparedIndex->byInfoHash.size());
         return true;
     }
     if (!cacheError.empty())
@@ -960,6 +956,7 @@ bool GameMetadataService::load(std::string& error) {
         // Public builds intentionally omit the generated metadata index. Live
         // catalog entries carry the fields needed by the detail view.
         error.clear();
+        snapshot = {};
         log_msg("[metadata] optional index is not embedded\n");
         return true;
     }
@@ -971,9 +968,20 @@ bool GameMetadataService::load(std::string& error) {
     std::vector<GameMetadata> items;
     if (!parseIndex(json, items, error))
         return false;
-    index_ = buildIndex(std::move(items));
-    log_msg("[metadata] loaded %zu game matches from %s\n",
-            index_->byInfoHash.size(), bundledPath_.c_str());
+    snapshot = {};
+    snapshot.preparedIndex = buildIndex(std::move(items));
+    log_msg("[metadata] prepared %zu game matches from %s\n",
+            snapshot.preparedIndex->byInfoHash.size(), bundledPath_.c_str());
+    return true;
+}
+
+bool GameMetadataService::load(std::string& error) {
+    index_ = std::make_shared<const GameMetadataIndexSnapshot>();
+    manifest_ = {};
+    MetadataSnapshot snapshot;
+    if (!prepareInitialSnapshot(snapshot, error))
+        return false;
+    adopt(std::move(snapshot));
     return true;
 }
 

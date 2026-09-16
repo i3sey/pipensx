@@ -240,6 +240,10 @@ public:
 
     ~HomeView() override { timer_.stop(); }
 
+    // Initial catalogue loading is asynchronous. Publish its first prepared
+    // snapshot immediately instead of waiting for the carousel timer.
+    void refreshData() { rebuild(); }
+
 private:
     static constexpr int kHeroMs = 5000;
     static constexpr size_t kMaxSlots = 6;

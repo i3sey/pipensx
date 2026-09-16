@@ -558,37 +558,39 @@ bool CatalogService::parseJson(const std::string& json,
     return true;
 }
 
-bool CatalogService::loadFile(const std::string& path,
-                              const std::string& label,
-                              std::string& error) {
+bool CatalogService::loadFileSnapshot(const std::string& path,
+                                      const std::string& label,
+                                      CatalogSnapshot& snapshot,
+                                      std::string& error) const {
     std::string data;
     if (!readFile(path, data, error))
         return false;
-    std::vector<CatalogEntry> parsed;
-    if (!parseJson(data, parsed, error))
+    snapshot = {};
+    if (!parseJson(data, snapshot.entries, error))
         return false;
-    entries_ = std::make_shared<const std::vector<CatalogEntry>>(
-        std::move(parsed));
-    ++generation_;
-    buildIndex(*entries_, infoHashIndex_);
-    sourceLabel_ = label;
+    buildIndex(snapshot.entries, snapshot.infoHashIndex);
+    snapshot.sourceLabel = label;
     struct stat st {};
     // Wall-clock only: now_sec() is monotonic (boot-relative), useless for
     // "was this snapshot taken today?" checks in the UI.
-    snapshotEpochSec_ = (stat(path.c_str(), &st) == 0 && st.st_mtime > 0)
-                            ? static_cast<int64_t>(st.st_mtime)
-                            : static_cast<int64_t>(time(nullptr));
-    log_msg("[catalog] loaded %zu entries from %s\n", entries_->size(),
+    snapshot.snapshotEpochSec =
+        (stat(path.c_str(), &st) == 0 && st.st_mtime > 0)
+            ? static_cast<int64_t>(st.st_mtime)
+            : static_cast<int64_t>(time(nullptr));
+    log_msg("[catalog] prepared %zu entries from %s\n",
+            snapshot.entries.size(),
             path.c_str());
     return true;
 }
 
-bool CatalogService::load(std::string& error) {
+bool CatalogService::prepareInitialSnapshot(CatalogSnapshot& snapshot,
+                                            std::string& error) const {
     std::string cacheError;
-    if (loadFile(cachePath_, "cached catalog", cacheError))
+    if (loadFileSnapshot(cachePath_, "cached catalog", snapshot, cacheError))
         return true;
     if (!bundledPath_.empty()) {
-        if (loadFile(bundledPath_, "bundled catalog", error))
+        if (loadFileSnapshot(bundledPath_, "bundled catalog", snapshot,
+                             error))
             return true;
         if (!cacheError.empty())
             error = cacheError + " " + error;
@@ -597,12 +599,21 @@ bool CatalogService::load(std::string& error) {
 
     // A fresh public install intentionally has no bundled catalog. The UI
     // sees an empty list and starts the trusted live refresh in the background.
-    entries_ = std::make_shared<const std::vector<CatalogEntry>>();
-    ++generation_;
-    buildIndex(*entries_, infoHashIndex_);
-    sourceLabel_.clear();
-    snapshotEpochSec_ = 0;
+    snapshot = {};
     error.clear();
+    return true;
+}
+
+bool CatalogService::load(std::string& error) {
+    CatalogSnapshot snapshot;
+    if (!prepareInitialSnapshot(snapshot, error))
+        return false;
+    entries_ = std::make_shared<const std::vector<CatalogEntry>>(
+        std::move(snapshot.entries));
+    infoHashIndex_ = std::move(snapshot.infoHashIndex);
+    sourceLabel_ = std::move(snapshot.sourceLabel);
+    snapshotEpochSec_ = snapshot.snapshotEpochSec;
+    ++generation_;
     return true;
 }
 
@@ -714,9 +725,13 @@ RetiredCatalogSnapshot CatalogService::adopt(
         std::move(snapshot.entries));
     infoHashIndex_ = std::move(snapshot.infoHashIndex);
     ++generation_;
-    sourceLabel_ = catalogSourceLabel(sourceUrl.empty() ? kDefaultCatalogSourceUrl
-                                                        : sourceUrl);
-    snapshotEpochSec_ = static_cast<int64_t>(time(nullptr));
+    sourceLabel_ = snapshot.sourceLabel.empty()
+        ? catalogSourceLabel(sourceUrl.empty() ? kDefaultCatalogSourceUrl
+                                               : sourceUrl)
+        : std::move(snapshot.sourceLabel);
+    snapshotEpochSec_ = snapshot.snapshotEpochSec > 0
+        ? snapshot.snapshotEpochSec
+        : static_cast<int64_t>(time(nullptr));
     log_msg("[catalog] refreshed %zu entries from %s\n", entries_->size(),
             sourceLabel_.c_str());
     if (onAdopt_)

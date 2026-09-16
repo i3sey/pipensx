@@ -156,6 +156,10 @@ public:
     GameMetadataService& operator=(const GameMetadataService&) = delete;
 
     bool load(std::string& error);
+    // Worker-thread safe startup path. Like fetchLatest(), this prepares all
+    // indexes without publishing them; adopt() remains UI-thread only.
+    bool prepareInitialSnapshot(MetadataSnapshot& snapshot,
+                                std::string& error) const;
     bool fetchLatest(MetadataSnapshot& snapshot, std::string& error,
                      const std::atomic<bool>* cancelled = nullptr) const;
     RetiredMetadataSnapshot adopt(MetadataSnapshot snapshot);
