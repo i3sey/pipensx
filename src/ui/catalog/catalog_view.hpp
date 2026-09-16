@@ -288,8 +288,14 @@ public:
         addView(header_);
         recyclerHost_ = recyclerHost(recycler_);
         addView(recyclerHost_);
-        if (catalogRefreshInFlight())
+        if (catalogRefreshInFlight()) {
+            // Startup holds the shared refresh lease while publishing the
+            // cached/bundled snapshots. Remember that this view is following
+            // that work so its first timer tick after publication can start
+            // the network refresh when the catalogue is due.
+            followedExternalRefresh_ = true;
             setRefreshInFlight(true);
+        }
         rebuildEntries();
         updateFreshnessLabel();
 
