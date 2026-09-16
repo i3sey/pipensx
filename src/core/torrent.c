@@ -29,8 +29,12 @@
    announce are found in ~one pass rather than dribbled out over seconds. */
 #define CONNECT_IN_FLIGHT   16
 /* Evict an ACTIVE peer that keeps us choked with no piece for this long: it is
-   dead weight holding a slot a productive peer could use. */
-#define PEER_CHOKE_GIVEUP_MS 20000ULL
+   dead weight holding a slot a productive peer could use. 60s, not 20s:
+   stock BitTorrent optimistic-unchokes every 30s, so a 20s give-up evicts
+   peers just before they would unchoke us — the log showed a steady
+   evict/reconnect churn (active 8-13, unchoked only 5-6) with speed
+   collapsing between reconnect slow-starts. */
+#define PEER_CHOKE_GIVEUP_MS 60000ULL
 #define TRACKER_REANNOUNCE_MS (30*60*1000ULL)  /* 30 min */
 /* When the swarm is peer-starved, don't wait the full interval — re-announce
    early to pull in a fresh peer set (PERF_PLAN 1.6). Rate-limited so we never
@@ -55,8 +59,13 @@
 #define BOOTSTRAP_PIPELINE     16
 /* Requests to a zero-delivery peer expire on a short fuse so hostage blocks
    return to the pool quickly; the full REQUEST_TIMEOUT_MS applies only once
-   the peer has proven it delivers. */
-#define FIRST_BLOCK_TIMEOUT_MS 4000
+   the peer has proven it delivers. 8s, not 4s: half this swarm is \u03bcTP
+   (TCP dial fails -> fallback) and LEDBAT + Switch WiFi routinely needs
+   >4s for the first block (handshake + bitfield + LEDBAT ramp), so 4s
+   expired whole probe windows (256 expired per 10s in the log), slapped a
+   strike + cooldown on peers that were merely slow, and the speed
+   oscillated 633bps..3MB/s. */
+#define FIRST_BLOCK_TIMEOUT_MS 8000
 /* A peer whose requests expired but that delivered a block this recently is
    servicing its queue — release the stale blocks without a strike/cooldown,
    otherwise the cooldown starves a productive peer and its rate EMA (and
@@ -84,7 +93,11 @@
 #define PEX_SEND_MAX            32
 #define LISTEN_BACKLOG          16
 #define MAX_PEER_TELEMETRY    8
-#define PEER_BLOCKLIST_SIZE   64
+/* One tracker announce carries ~120 peers; a 64-slot blocklist cannot hold a
+   single bad announce, so dead endpoints were re-dialed every re-announce
+   (840 TCP fails + 1490 handshake timeouts in one session). 256 holds two
+   full announces. */
+#define PEER_BLOCKLIST_SIZE   256
 #define PEER_BLOCKLIST_MS     60000
 /* Startup verification runs in time-budgeted batches per tick so the tick
    still reaches poll(): sockets stay serviced and dials/handshakes proceed

@@ -457,10 +457,10 @@ static void test_blocklist_cooldown_and_wrap(void) {
     assert(!blocklist_blocked(&torrent, ip, port, 61000));
 
     memset(&torrent, 0, sizeof(torrent));
-    for (uint32_t i = 0; i <= 64; ++i)
+    for (uint32_t i = 0; i <= PEER_BLOCKLIST_SIZE; ++i)
         blocklist_add(&torrent, htonl(0x0b000001u + i), port, 2000 + i);
     assert(!blocklist_blocked(&torrent, htonl(0x0b000001u), port, 3000));
-    assert(blocklist_blocked(&torrent, htonl(0x0b000041u), port, 3000));
+    assert(blocklist_blocked(&torrent, htonl(0x0b000001u + PEER_BLOCKLIST_SIZE), port, 3000));
 }
 
 static void test_initial_peers_keep_verified_order(void) {

@@ -313,6 +313,12 @@ bool saveInstallJournal(const std::string& path,
         std::remove(tmp.c_str());
         return false;
     }
+    // sdmc:/ FAT32 rename does not overwrite: std::rename over an existing
+    // journal fails with EEXIST ("File exists", seen 23x in one Switch
+    // session), unlike POSIX. Remove first — on POSIX this is a harmless
+    // no-op for correctness; a crash between remove and rename only loses
+    // the resume journal and forces a re-stream, same as a lost write.
+    std::remove(path.c_str());
     if (std::rename(tmp.c_str(), path.c_str()) != 0) {
         setJournalError(error, "cannot rename install journal", path, errno);
         std::remove(tmp.c_str());
