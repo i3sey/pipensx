@@ -175,6 +175,19 @@ static void testEnsurePrefersInfoDict() {
     rmdir(dir);
 }
 
+static void testHttpsCacheRetryable() {
+    // curl timeout wording from the failing Switch log.
+    assert(httpsCacheErrorRetryable(
+        "Torrent cache request failed: Timeout was reached."));
+    assert(httpsCacheErrorRetryable("SSL connection timeout"));
+    // Definitive failures must not be retried.
+    assert(!httpsCacheErrorRetryable("Torrent cache HTTP 404."));
+    assert(!httpsCacheErrorRetryable(
+        "Torrent cache body does not match the info hash."));
+    assert(!httpsCacheErrorRetryable("Cancelled."));
+    assert(!httpsCacheErrorRetryable(""));
+}
+
 static void runLiveCacheFetchIfRequested() {
     const char* hash = std::getenv("PIPENSX_LIVE_TORRENT_HASH");
     if (!hash || !*hash)
@@ -194,6 +207,7 @@ int main() {
     testRejectBadBody();
     testFetchViaTransport();
     testEnsurePrefersInfoDict();
+    testHttpsCacheRetryable();
     runLiveCacheFetchIfRequested();
     std::printf("test_torrent_metainfo_fetch: all assertions passed\n");
     return 0;

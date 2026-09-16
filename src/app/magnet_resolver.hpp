@@ -63,4 +63,9 @@ private:
     MetadataCacheFetch cacheFetch_;
 };
 
+// True when an HTTPS torrent-cache failure is worth one immediate retry:
+// transport timeouts. HTTP status errors, hash mismatches and cancellations
+// are definitive.
+bool httpsCacheErrorRetryable(const std::string& error);
+
 } // namespace pipensx

@@ -47,7 +47,11 @@ constexpr uint32_t kRequestPipeline = 8;
 // the seeders) usually just needs another pass rather than a hard failure.
 constexpr uint64_t kReannounceBackoffMs = 3000;
 constexpr int kMaxEmptyReannounces = 2;
-constexpr uint64_t kDhtSearchTimeoutMs = 25 * 1000;
+// 60s, not 25s: the DHT engine only re-bootstraps after 30s with zero good
+// nodes, so a 25s search window could never benefit from it. A cold cache on
+// a slow network needs the rebootstrap + the 60s periodic re-search to have
+// any chance; still fits inside the 90s overall deadline.
+constexpr uint64_t kDhtSearchTimeoutMs = 60 * 1000;
 constexpr uint32_t kDhtTargetPeers = 32;
 constexpr int kDhtPollIntervalMs = 250;
 
@@ -788,6 +792,13 @@ std::string bencodeString(const std::string& value) {
 
 } // namespace
 
+// A failed HTTPS torrent-cache fetch is worth one immediate retry only when
+// the failure is a transport timeout ("Timeout was reached"). HTTP status
+// errors, hash mismatches and cancellations are definitive.
+bool httpsCacheErrorRetryable(const std::string& error) {
+    return error.find("imeout") != std::string::npos;
+}
+
 bool MagnetResolver::parse(const std::string& uri, MagnetSpec& spec,
                            std::string& error) {
     spec = {};
@@ -951,19 +962,33 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
             return cancelled.load(std::memory_order_relaxed) ||
                    stopWorkers.load(std::memory_order_relaxed);
         };
-        bool ok = cacheFetch_
-                      ? cacheFetch_(spec.infoHashHex, cachePath, stop,
-                                    cacheError)
-                      : fetchTorrentByInfoHash(spec.infoHashHex, cachePath,
-                                               stop, cacheError);
-        if (!ok || cancelled.load(std::memory_order_relaxed))
-            return;
-        int expected = 0;
-        if (winner.compare_exchange_strong(expected, 1)) {
-            cacheOk.store(true, std::memory_order_relaxed);
-            stopWorkers.store(true, std::memory_order_relaxed);
-            log_msg("[magnet] source=https-cache duration_ms=%llu\n",
-                    (unsigned long long)(now_ms() - raceStartedMs));
+        // itorrents.net is the only HTTPS metadata source, and on a network
+        // that blocks BitTorrent it is the only resolve path at all. A single
+        // transient timeout (30s curl timeout inside a 90s race) must not kill
+        // it: retry once on timeout. Anything else (404, hash mismatch) is
+        // definitive and returns immediately.
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            cacheError.clear();
+            bool ok = cacheFetch_
+                          ? cacheFetch_(spec.infoHashHex, cachePath, stop,
+                                        cacheError)
+                          : fetchTorrentByInfoHash(spec.infoHashHex, cachePath,
+                                                   stop, cacheError);
+            if (ok && !cancelled.load(std::memory_order_relaxed)) {
+                int expected = 0;
+                if (winner.compare_exchange_strong(expected, 1)) {
+                    cacheOk.store(true, std::memory_order_relaxed);
+                    stopWorkers.store(true, std::memory_order_relaxed);
+                    log_msg("[magnet] source=https-cache duration_ms=%llu\n",
+                            (unsigned long long)(now_ms() - raceStartedMs));
+                }
+                return;
+            }
+            if (stop() || winner.load(std::memory_order_relaxed) != 0)
+                return;
+            if (!httpsCacheErrorRetryable(cacheError))
+                return;
+            log_msg("[magnet] https-cache timeout, retrying once\n");
         }
     });
 
@@ -1099,6 +1124,10 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
     uint32_t nextPeer = 0;
     bool resolved = false;
     std::atomic<uint32_t> reachedPeers{0}; // peers we got a TCP session to
+    // Peers that actively refused the SYN (RST). A refused connection proves
+    // our packets reached a live host — the peer list is stale, not the
+    // network blocking us. Drives the error message below.
+    std::atomic<uint32_t> refusedPeers{0};
     std::vector<uint8_t> metadata;
     std::vector<uint8_t> verifiedEndpoints;
     std::string unsafeMetadata;
@@ -1189,6 +1218,10 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
                         progress, candidate, attempt);
                     if (attempt.connected)
                         reachedPeers.fetch_add(1);
+                    else if (attempt.failure &&
+                             std::strcmp(attempt.failure,
+                                         "connect refused") == 0)
+                        refusedPeers.fetch_add(1);
                     if (attempt.handshakeVerified) {
                         std::lock_guard<std::mutex> lock(mutex);
                         appendUniquePeers(verifiedEndpoints,
@@ -1248,16 +1281,26 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
             error = unsafeMetadata;
             return false;
         }
-        /* Not one of them let us open a TCP session — that is a network
-           blocking BitTorrent, not a stale catalog entry, and telling the two
-           apart is the difference between "try again later" (useless here)
-           and "try another network" (the thing that actually works). */
-        if (!reachedPeers.load())
-            error = "Found " + std::to_string(peerCount) +
-                    " peers but could not connect to any of them. This "
-                    "network appears to block BitTorrent — try another "
-                    "Wi-Fi or a phone hotspot.";
-        else
+        /* Not one of them let us open a TCP session — that is usually a
+           network blocking BitTorrent, not a stale catalog entry, and telling
+           the two apart is the difference between "try again later"
+           (useless here) and "try another network" (the thing that actually
+           works). Exception: refused SYNs prove packets reached live hosts
+           whose BitTorrent port is closed — a dead swarm, not a blocked
+           network — so say that instead of sending the user to hunt Wi-Fi. */
+        if (!reachedPeers.load()) {
+            if (refusedPeers.load() > 0)
+                error = "Found " + std::to_string(peerCount) +
+                        " peers but none accepted connections (" +
+                        std::to_string(refusedPeers.load()) +
+                        " refused outright). The swarm looks dead right "
+                        "now — try this catalog item again later.";
+            else
+                error = "Found " + std::to_string(peerCount) +
+                        " peers but could not connect to any of them. This "
+                        "network appears to block BitTorrent — try another "
+                        "Wi-Fi or a phone hotspot.";
+        } else
             error = "Peers were found, but none returned torrent metadata. "
                     "Try this catalog item again later.";
         return false;
