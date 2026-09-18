@@ -1,6 +1,5 @@
 #include "app/app_settings.hpp"
 #include "app/catalog_service.hpp"
-#include "app/catalog_refresh.hpp"
 #include "app/companion_settings.hpp"
 #include "app/download_manager.hpp"
 #include "app/game_metadata_service.hpp"
@@ -262,6 +261,12 @@ public:
         if (auto* home = dynamic_cast<pipensx::ui::HomeView*>(
                 tabs_->tabView(pipensx::ui::NavIconType::Home)))
             home->refreshData();
+        if (auto* games = dynamic_cast<pipensx::ui::CatalogView*>(
+                tabs_->tabView(pipensx::ui::NavIconType::Catalog)))
+            games->onSourcesPublished();
+        if (auto* ports = dynamic_cast<pipensx::ui::CatalogView*>(
+                tabs_->tabView(pipensx::ui::NavIconType::Ports)))
+            ports->onSourcesPublished();
         refreshUpdateBadge();
     }
 
@@ -647,9 +652,9 @@ int main(int argc, char** argv) {
             std::atomic<bool> ready{false};
         };
         auto initialData = std::make_shared<InitialDataLoad>();
-        // Prevent CatalogView's launch refresh from racing the initial cache
-        // publication. It will observe this owner and follow it instead.
-        const bool initialRefreshHeld = pipensx::tryBeginCatalogRefresh();
+        // Parse cache/bundle off-thread so it overlaps DownloadManager and the
+        // installed-title scan. The UI must not appear until this is adopted:
+        // otherwise Games opens empty with "catalog updating…" for ~8s.
         ThreadJoiner initialDataLoader{std::thread([&catalog, &metadata,
                                                     initialData] {
             std::thread metadataThread([&metadata, initialData] {
@@ -767,6 +772,23 @@ int main(int argc, char** argv) {
         if (!gameUpdates.load(gameUpdatesError))
             diagnostic_error("game_updates", "load", "error=%s",
                              gameUpdatesError.c_str());
+
+        startupStage("initial catalog/metadata adopt");
+        if (initialDataLoader.thread.joinable())
+            initialDataLoader.thread.join();
+        if (initialData->catalogOk) {
+            catalog.adopt(std::move(initialData->catalog));
+        } else if (!initialData->catalogError.empty()) {
+            diagnostic_error("catalog", "startup_load", "error=%s",
+                             initialData->catalogError.c_str());
+        }
+        if (initialData->metadataOk) {
+            metadata.adopt(std::move(initialData->metadata));
+        } else if (!initialData->metadataError.empty()) {
+            diagnostic_error("metadata", "startup_load", "error=%s",
+                             initialData->metadataError.c_str());
+        }
+        startupStage("initial data published");
 
         startupStage("MainActivity construction");
         auto* activity = new MainActivity(&manager, &catalog, &metadata,
@@ -914,7 +936,6 @@ int main(int argc, char** argv) {
         bool activeTransfer = false;
         bool imageInstallActive = false;
         bool updateBadgeApplied = false;
-        bool initialDataApplied = false;
         while (true) {
             const uint64_t nowPerf = now_ms();
             if (lastPerfMs == 0 || nowPerf - lastPerfMs >= 250) {
@@ -940,26 +961,6 @@ int main(int argc, char** argv) {
             beginImageUploadFrame();
             if (!brls::Application::mainLoop())
                 break;
-            if (!initialDataApplied &&
-                initialData->ready.load(std::memory_order_acquire)) {
-                initialDataApplied = true;
-                if (initialData->catalogOk) {
-                    catalog.adopt(std::move(initialData->catalog));
-                } else {
-                    diagnostic_error("catalog", "startup_load", "error=%s",
-                                     initialData->catalogError.c_str());
-                }
-                if (initialData->metadataOk) {
-                    metadata.adopt(std::move(initialData->metadata));
-                } else {
-                    diagnostic_error("metadata", "startup_load", "error=%s",
-                                     initialData->metadataError.c_str());
-                }
-                if (initialRefreshHeld)
-                    pipensx::endCatalogRefresh();
-                activity->refreshLoadedData();
-                startupStage("initial data published");
-            }
             if (!updateBadgeApplied && installedScanDone.load()) {
                 updateBadgeApplied = true;
                 activity->refreshUpdateBadge();
@@ -1262,8 +1263,6 @@ int main(int argc, char** argv) {
         startupStage("manager shutdown");
         if (initialDataLoader.thread.joinable())
             initialDataLoader.thread.join();
-        if (!initialDataApplied && initialRefreshHeld)
-            pipensx::endCatalogRefresh();
         // Stop the watchdog first: nothing below pumps the heartbeat, and a
         // late stall log mid-teardown would only confuse a crash triage.
         watchdogStop.store(true, std::memory_order_relaxed);

@@ -277,10 +277,13 @@ public:
             settings ? settings->get().lastCatalogRefreshWallSec : 0;
         const int64_t snapshot = catalog ? catalog->snapshotEpochSec() : 0;
         const bool hasEntries = catalog && !catalog->entries().empty();
+        const bool cached = catalog && catalog->snapshotFromCache();
+        const bool isToday =
+            wallSec != 0
+                ? isLocalToday(static_cast<int64_t>(wallSec))
+                : (cached && snapshot > 0 && isLocalToday(snapshot));
         const CatalogFreshness state = resolveCatalogFreshness(
-            busy || refreshInFlight, wallSec, snapshot, hasEntries,
-            wallSec != 0 &&
-                isLocalToday(static_cast<int64_t>(wallSec)));
+            busy || refreshInFlight, wallSec, snapshot, hasEntries, isToday);
         switch (state.kind) {
             case CatalogFreshness::Kind::Updating:
                 label_->setText(tr("pipensx/catalog/freshness_updating"));

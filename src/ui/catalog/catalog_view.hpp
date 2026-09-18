@@ -369,6 +369,18 @@ public:
 
     void rebuildEntriesForTest() { rebuildEntries(); }
 
+    // Startup just published the cached/bundled snapshot. Show it immediately
+    // and start a network refresh only if that snapshot is not from today.
+    void onSourcesPublished() {
+        if (followedExternalRefresh_) {
+            followedExternalRefresh_ = false;
+            if (!catalogRefreshInFlight())
+                setRefreshInFlight(false);
+        }
+        rebuildEntries(true);
+        refreshCatalogIfDue();
+    }
+
     void openSearchKeyboard() {
         brls::Application::getImeManager()->openForText(
             [this](std::string text) {
@@ -689,7 +701,12 @@ private:
                 dataSource_->repaintCell(cell);
         }
         const bool empty = count == 0;
-        if (empty) {
+        // Cache is still loading (startup holds the refresh lease). Don't flash
+        // "catalog empty, tap to update" over a snapshot that's about to appear.
+        const bool waitingForCatalog =
+            empty && query_.empty() &&
+            (refreshInFlight_ || catalogRefreshInFlight());
+        if (empty && !waitingForCatalog) {
             if (query_.empty()) {
                 if (section_ == CatalogSection::Ports && openGames_ &&
                     hasRegularEntries) {
@@ -715,7 +732,7 @@ private:
                     });
             }
         }
-        if (empty)
+        if (empty && !waitingForCatalog)
             ensureEmptyState()->setVisibility(brls::Visibility::VISIBLE);
         else if (emptyState_)
             emptyState_->setVisibility(brls::Visibility::GONE);
@@ -776,8 +793,14 @@ private:
     // today, orange = in flight. The Kind decision lives in
     // resolveCatalogFreshness (unit-tested); this only renders it.
     void updateFreshnessLabel() {
-        freshnessBadge_->update(refreshInFlight_, catalogRefreshInFlight(),
-                                settings_, catalog_);
+        // Metadata-only fetches must not paint the catalogue as "updating":
+        // artwork can be due every boot (monotonic stamp) while today's
+        // catalogue should stay green and usable.
+        const bool catalogRefreshing =
+            fetchingCatalog_ ||
+            (followedExternalRefresh_ &&
+             (refreshInFlight_ || catalogRefreshInFlight()));
+        freshnessBadge_->update(catalogRefreshing, false, settings_, catalog_);
     }
 
     static void styleChip(brls::Button* chip, bool active) {
@@ -1174,7 +1197,8 @@ private:
 
     void setRefreshInFlight(bool inFlight) {
         refreshInFlight_ = inFlight;
-        freshnessBadge_->setBusy(inFlight);
+        freshnessBadge_->setBusy(
+            inFlight && (fetchingCatalog_ || followedExternalRefresh_));
         updateFreshnessLabel();
     }
 
@@ -1449,11 +1473,17 @@ private:
 
     void refreshCatalogIfDue() {
         // Bundled dumps do not count. Auto-refresh when this console has never
-        // pulled the catalogue, or the last pull was not today.
+        // pulled the catalogue, or the last pull was not today. A cached
+        // snapshot from today still skips the fetch if the wall stamp is missing.
         const uint64_t wallSec =
             settings_ ? settings_->get().lastCatalogRefreshWallSec : 0;
-        const bool catalogDue =
-            wallSec == 0 || !isLocalToday(static_cast<int64_t>(wallSec));
+        const int64_t snapshot = catalog_ ? catalog_->snapshotEpochSec() : 0;
+        const bool cached = catalog_ && catalog_->snapshotFromCache() &&
+                            !catalog_->entries().empty();
+        const bool catalogDue = catalogAutoRefreshDue(
+            wallSec, snapshot, cached,
+            wallSec != 0 && isLocalToday(static_cast<int64_t>(wallSec)),
+            snapshot > 0 && isLocalToday(snapshot));
         const bool metadataDue = metadata_ && settings_ &&
             dailyRefreshDue(now_ms(), settings_->get().lastMetadataRefreshMs);
         refreshSources(catalogDue, catalogDue || metadataDue, false);
@@ -1506,11 +1536,13 @@ private:
             // Another tab/settings already owns the fetch. Follow it so the
             // badge stays orange instead of flipping to red "never/stale".
             followedExternalRefresh_ = true;
+            fetchingCatalog_ = fetchCatalog;
             setRefreshInFlight(true);
             return;
         }
         refreshCancellation_ = std::make_shared<std::atomic<bool>>(false);
         registerRefreshAction(true);
+        fetchingCatalog_ = fetchCatalog;
         setRefreshInFlight(true);
         const std::string updating = fetchCatalog && fetchMetadata
             ? tr("pipensx/catalog/updating_both")
@@ -1602,6 +1634,7 @@ private:
                     refreshCancellation_.reset();
                     registerRefreshAction(true);
                 }
+                fetchingCatalog_ = false;
                 setRefreshInFlight(false);
                 if (wasCancelled)
                     return;
@@ -1686,6 +1719,7 @@ private:
     // remains fully interactive while its replacement is fetched.
     bool refreshInFlight_ = false;
     bool followedExternalRefresh_ = false;
+    bool fetchingCatalog_ = false;
     CatalogBrowseGenerationQueue browseQueue_;
     std::shared_ptr<std::atomic<uint64_t>> browseGenerationSignal_ =
         std::make_shared<std::atomic<uint64_t>>(0);

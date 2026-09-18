@@ -241,9 +241,10 @@ bool catalogEntryMatchesSearch(const CatalogEntry& entry,
 // Honest freshness badge decision (B7 goal 1), pure so unit tests cover it.
 // Only a successful network refresh stamps wallSec; a cache/bundle snapshot
 // still dates the data on screen when this console never fetched (wallSec 0
-// but a snapshot exists), instead of the bare "never" badge. A truly empty
-// catalogue keeps Never. `isToday` is injected (isLocalToday at the call
-// site) to keep this clock-free.
+// but a snapshot exists), instead of the bare "never" badge. A snapshot
+// whose injected `isToday` is true is Ok (today's catalog, even without a
+// stamp). A truly empty catalogue keeps Never. `isToday` is injected
+// (isLocalToday at the call site) to keep this clock-free.
 struct CatalogFreshness {
     enum class Kind {
         Updating,
@@ -260,5 +261,13 @@ struct CatalogFreshness {
 CatalogFreshness resolveCatalogFreshness(bool refreshing, uint64_t wallSec,
                                           int64_t snapshotSec, bool hasEntries,
                                           bool isToday);
+
+// Auto-refresh gate, clock-free like resolveCatalogFreshness. A network stamp
+// from today skips the fetch; so does a cached snapshot from today when this
+// console never stamped (lost settings, killed mid-stamp). Bundled/empty
+// snapshots with no stamp stay due so a first install still pulls live data.
+bool catalogAutoRefreshDue(uint64_t wallSec, int64_t cachedSnapshotSec,
+                           bool hasCachedEntries, bool wallIsToday,
+                           bool cachedIsToday);
 
 } // namespace pipensx

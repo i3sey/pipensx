@@ -33,6 +33,8 @@ namespace {
 constexpr size_t kMaxCatalogBytes = 48 * 1024 * 1024;
 constexpr size_t kMaxCatalogEntries = 20000;
 constexpr size_t kMaxInfoDictBytes = 8 * 1024 * 1024;
+constexpr const char kCachedCatalogLabel[] = "cached catalog";
+constexpr const char kBundledCatalogLabel[] = "bundled catalog";
 
 std::string lowerAscii(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(),
@@ -586,10 +588,10 @@ bool CatalogService::loadFileSnapshot(const std::string& path,
 bool CatalogService::prepareInitialSnapshot(CatalogSnapshot& snapshot,
                                             std::string& error) const {
     std::string cacheError;
-    if (loadFileSnapshot(cachePath_, "cached catalog", snapshot, cacheError))
+    if (loadFileSnapshot(cachePath_, kCachedCatalogLabel, snapshot, cacheError))
         return true;
     if (!bundledPath_.empty()) {
-        if (loadFileSnapshot(bundledPath_, "bundled catalog", snapshot,
+        if (loadFileSnapshot(bundledPath_, kBundledCatalogLabel, snapshot,
                              error))
             return true;
         if (!cacheError.empty())
@@ -685,6 +687,10 @@ bool CatalogService::fetchLatest(CatalogSnapshot& snapshot,
         return false;
     }
     return true;
+}
+
+bool CatalogService::snapshotFromCache() const {
+    return sourceLabel_ == kCachedCatalogLabel;
 }
 
 const CatalogEntry* CatalogService::findByInfoHash(

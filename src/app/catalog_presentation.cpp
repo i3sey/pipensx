@@ -665,12 +665,23 @@ CatalogFreshness resolveCatalogFreshness(bool refreshing, uint64_t wallSec,
         return out;
     }
     if (snapshotSec > 0 && hasEntries) {
-        out.kind = CatalogFreshness::Kind::Stale;
+        out.kind = isToday ? CatalogFreshness::Kind::Ok
+                           : CatalogFreshness::Kind::Stale;
         out.epochSec = snapshotSec;
         return out;
     }
     out.kind = CatalogFreshness::Kind::Never;
     return out;
+}
+
+bool catalogAutoRefreshDue(uint64_t wallSec, int64_t cachedSnapshotSec,
+                           bool hasCachedEntries, bool wallIsToday,
+                           bool cachedIsToday) {
+    if (wallSec != 0)
+        return !wallIsToday;
+    if (hasCachedEntries && cachedSnapshotSec > 0)
+        return !cachedIsToday;
+    return true;
 }
 
 } // namespace pipensx

@@ -144,6 +144,11 @@ public:
     const std::string& sourceLabel() const { return sourceLabel_; }
     const std::string& rootPath() const { return rootPath_; }
 
+    // True when the live snapshot came from the on-disk cache of a previous
+    // network fetch, not the bundled dump or a live refresh. Used to treat a
+    // today's cache as already-fresh even if the wall stamp was never saved.
+    bool snapshotFromCache() const;
+
     // Wall-clock seconds for when the live snapshot was written or loaded
     // (cache/bundled mtime, or refresh time after adopt). 0 when empty.
     int64_t snapshotEpochSec() const { return snapshotEpochSec_; }

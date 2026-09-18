@@ -62,6 +62,7 @@ using pipensx::catalogFoldedContains;
 using pipensx::catalogEntryMatchesSearch;
 using pipensx::CatalogFreshness;
 using pipensx::resolveCatalogFreshness;
+using pipensx::catalogAutoRefreshDue;
 using pipensx::CatalogBrowseGenerationQueue;
 using pipensx::CatalogBrowseRequest;
 using pipensx::CatalogBrowseResult;
@@ -1401,8 +1402,12 @@ void testResolveCatalogFreshness() {
             resolveCatalogFreshness(false, 1700000000, 0, true, false);
         assert(stale.kind == Kind::Stale && stale.epochSec == 1700000000);
     }
-    // Never fetched, but a snapshot is on disk: date the data, stay red.
+    // Never fetched, but a snapshot is on disk: date the data. Today's cache
+    // is green; anything else stays red.
     {
+        const CatalogFreshness ok =
+            resolveCatalogFreshness(false, 0, 1699999999, true, true);
+        assert(ok.kind == Kind::Ok && ok.epochSec == 1699999999);
         const CatalogFreshness dated =
             resolveCatalogFreshness(false, 0, 1699999999, true, false);
         assert(dated.kind == Kind::Stale && dated.epochSec == 1699999999);
@@ -1414,6 +1419,20 @@ void testResolveCatalogFreshness() {
            Kind::Never);
     assert(resolveCatalogFreshness(false, 0, 0, true, false).kind ==
            Kind::Never);
+}
+
+void testCatalogAutoRefreshDue() {
+    // Stamped today: skip, regardless of the cache mtime.
+    assert(!catalogAutoRefreshDue(100, 0, false, true, false));
+    // Stamped, but not today: fetch.
+    assert(catalogAutoRefreshDue(100, 50, true, false, true));
+    // Never stamped, cached today: skip (lost wall stamp, cache is fresh).
+    assert(!catalogAutoRefreshDue(0, 50, true, false, true));
+    // Never stamped, cached not today: fetch.
+    assert(catalogAutoRefreshDue(0, 50, true, false, false));
+    // Bundled or empty, no stamp: always fetch, even if the file mtime is today.
+    assert(catalogAutoRefreshDue(0, 50, false, false, true));
+    assert(catalogAutoRefreshDue(0, 0, false, false, false));
 }
 
 // B7 goal 3: adopting the same metadata index twice must not evict the
@@ -2275,6 +2294,7 @@ void testBundledLangegenSnapshotLoadsWithoutNetwork() {
         assert(catalog.generation() == 1);
         assert(catalog.entries().size() > 1000);
         assert(catalog.snapshotEpochSec() > 0);
+        assert(!catalog.snapshotFromCache());
 
         bool hasInlineArtwork = false;
         bool hasInlineDescription = false;
@@ -2287,6 +2307,30 @@ void testBundledLangegenSnapshotLoadsWithoutNetwork() {
         assert(hasInlineArtwork);
         assert(hasInlineDescription);
     }
+    rmdir((root + "/catalog").c_str());
+    rmdir(root.c_str());
+}
+
+void testCachedCatalogSnapshotFromCache() {
+    const std::string root = "/tmp/pipensx-cached-snapshot-" +
+        std::to_string(static_cast<long long>(getpid()));
+    mkdir(root.c_str(), 0755);
+    mkdir((root + "/catalog").c_str(), 0755);
+    {
+        std::ofstream out(root + "/catalog/catalog.json");
+        out << "[{\"title\":\"Cached\",\"magnet\":\"magnet:?xt=urn:btih:"
+            << "AABBCCDDEEFF00112233445566778899AABBCCDD&tr="
+            << "http://bt.t-ru.org/ann?magnet\"}]";
+    }
+    {
+        CatalogService catalog(root, "");
+        std::string error;
+        assert(catalog.load(error));
+        assert(catalog.snapshotFromCache());
+        assert(catalog.entries().size() == 1);
+        assert(catalog.snapshotEpochSec() > 0);
+    }
+    unlink((root + "/catalog/catalog.json").c_str());
     rmdir((root + "/catalog").c_str());
     rmdir(root.c_str());
 }
@@ -2585,6 +2629,7 @@ int main() {
     testLangegenSchemaParsing();
     testLangegenLanguageFields();
     testBundledLangegenSnapshotLoadsWithoutNetwork();
+    testCachedCatalogSnapshotFromCache();
     testBundledMetadataSnapshotLoadsWithoutNetwork();
     testCatalogBrowseBuilder();
     testCatalogBrowseSortsAndStructure();
@@ -2625,6 +2670,7 @@ int main() {
     testCatalogFoldedContains();
     testCatalogEntryMatchesSearch();
     testResolveCatalogFreshness();
+    testCatalogAutoRefreshDue();
     testAdoptKeepsImageCacheWhenIndexUnchanged();
     testAsyncImageDiskCache();
     testOversizedImageRejectedBeforeDecode();

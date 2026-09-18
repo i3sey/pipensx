@@ -423,14 +423,19 @@ bool isLocalToday(int64_t epochSec) {
     const time_t then = static_cast<time_t>(epochSec);
     std::tm nowTm {};
     std::tm thenTm {};
+    bool localOk = false;
 #if defined(_WIN32)
-    if (localtime_s(&nowTm, &now) != 0 || localtime_s(&thenTm, &then) != 0)
-        return false;
+    localOk = localtime_s(&nowTm, &now) == 0 &&
+              localtime_s(&thenTm, &then) == 0;
 #else
-    if (!localtime_r(&now, &nowTm) || !localtime_r(&then, &thenTm))
-        return false;
+    localOk = localtime_r(&now, &nowTm) && localtime_r(&then, &thenTm);
 #endif
-    return nowTm.tm_year == thenTm.tm_year && nowTm.tm_yday == thenTm.tm_yday;
+    if (localOk)
+        return nowTm.tm_year == thenTm.tm_year &&
+               nowTm.tm_yday == thenTm.tm_yday;
+    // newlib on the Switch can lack TZ; UTC day still answers "today".
+    constexpr time_t kDay = 86400;
+    return (now / kDay) == (then / kDay);
 }
 
 AppSettings::AppSettings(std::string path, std::string legacyTelemetryPath)
