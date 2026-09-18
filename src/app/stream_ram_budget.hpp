@@ -23,9 +23,15 @@ struct StreamRamBudget {
     size_t maxQueuedBytes = 0;
     size_t maxBufferedBytes = 0;
     uint64_t requestAheadBytes = 0;
+    /* Picker AIMD band in pieces (PERF_PLAN 5.1). Independent of the
+       piece-buffer RAM cap below. */
     uint32_t lookaheadMin = 0;
     uint32_t lookaheadStart = 0;
     uint32_t lookaheadMax = 0;
+    /* RAM reserved for in-flight piece buffers (PENDING+HASHING). Not
+       lookaheadMax * piece_length: the picker window is in pieces so a
+       16 MiB torrent can still AIMD 8/32/64, while this cap stays ~64–128 MiB. */
+    uint64_t maxPieceBufferBytes = 0;
 };
 
 // Assumed free RAM when heap detection is unavailable (PC builds).

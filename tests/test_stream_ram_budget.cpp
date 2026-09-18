@@ -16,11 +16,12 @@ void test_full_budget_matches_existing_fast_path() {
     assert(budget.reserveBytes == 256 * MiB);
     assert(budget.peakBytes == 384 * MiB);
     assert(budget.maxBufferedBytes == 256 * MiB);
+    assert(budget.maxPieceBufferBytes == 128 * MiB);
     assert(budget.maxQueuedBytes == 64 * MiB);
     assert(budget.requestAheadBytes == 192 * MiB);
     assert(budget.lookaheadMin == 8);
     assert(budget.lookaheadStart == 32);
-    assert(budget.lookaheadMax == 32);
+    assert(budget.lookaheadMax == 64);
 }
 
 void test_constrained_memory_reduces_both_windows() {
@@ -30,13 +31,13 @@ void test_constrained_memory_reduces_both_windows() {
     assert(budget.valid);
     assert(budget.peakBytes == 128 * MiB);
     assert(budget.maxBufferedBytes == 88 * MiB);
+    assert(budget.maxPieceBufferBytes == 40 * MiB);
     assert(budget.maxQueuedBytes == 20 * MiB);
     assert(budget.requestAheadBytes == 68 * MiB);
     assert(budget.lookaheadMin == 8);
-    assert(budget.lookaheadStart == 10);
-    assert(budget.lookaheadMax == 10);
-    assert(budget.maxBufferedBytes +
-               budget.lookaheadMax * 4 * MiB <=
+    assert(budget.lookaheadStart == 32);
+    assert(budget.lookaheadMax == 64);
+    assert(budget.maxBufferedBytes + budget.maxPieceBufferBytes <=
            budget.peakBytes);
 }
 
@@ -48,11 +49,12 @@ void test_low_memory_scales_reserve_instead_of_rejecting_install() {
     assert(budget.reserveBytes == 160 * MiB);
     assert(budget.peakBytes == 80 * MiB);
     assert(budget.maxBufferedBytes == 64 * MiB);
+    assert(budget.maxPieceBufferBytes == 16 * MiB);
     assert(budget.maxQueuedBytes == 16 * MiB);
     assert(budget.requestAheadBytes == 48 * MiB);
     assert(budget.lookaheadMin == 8);
-    assert(budget.lookaheadStart == 8);
-    assert(budget.lookaheadMax == 8);
+    assert(budget.lookaheadStart == 32);
+    assert(budget.lookaheadMax == 64);
     assert(budget.availableBytes - budget.peakBytes >= budget.reserveBytes);
 }
 
@@ -64,9 +66,10 @@ void test_severely_constrained_memory_reduces_buffer_below_preferred_minimum() {
     assert(budget.reserveBytes == 64 * MiB);
     assert(budget.peakBytes == 32 * MiB);
     assert(budget.maxBufferedBytes == 30 * MiB);
-    assert(budget.lookaheadMin == 1);
-    assert(budget.lookaheadStart == 1);
-    assert(budget.lookaheadMax == 1);
+    assert(budget.maxPieceBufferBytes == 2 * MiB);
+    assert(budget.lookaheadMin == 8);
+    assert(budget.lookaheadStart == 32);
+    assert(budget.lookaheadMax == 64);
     assert(budget.availableBytes - budget.peakBytes >= budget.reserveBytes);
 }
 
@@ -86,12 +89,14 @@ void test_large_pieces_fit_the_same_peak_bound() {
     assert(budget.valid);
     assert(budget.peakBytes == 384 * MiB);
     assert(budget.maxBufferedBytes == 256 * MiB);
+    assert(budget.maxPieceBufferBytes == 128 * MiB);
+    assert(budget.maxPieceBufferBytes / (16 * MiB) == 8);
     assert(budget.lookaheadMin == 8);
-    assert(budget.lookaheadStart == 8);
-    assert(budget.lookaheadMax == 8);
-    assert(budget.maxBufferedBytes +
-               budget.lookaheadMax * 16 * MiB <=
+    assert(budget.lookaheadStart == 32);
+    assert(budget.lookaheadMax == 64);
+    assert(budget.maxBufferedBytes + budget.maxPieceBufferBytes <=
            budget.peakBytes);
+    assert(budget.lookaheadMax * 16 * MiB > budget.maxPieceBufferBytes);
 }
 
 void test_limits_hold_across_piece_sizes() {
@@ -101,9 +106,13 @@ void test_limits_hold_across_piece_sizes() {
             pipensx::calculateStreamRamBudget(1024 * MiB, pieceSize);
         assert(budget.valid);
         assert(budget.maxBufferedBytes <= 256 * MiB);
-        assert(budget.lookaheadMax <= 64);
+        assert(budget.lookaheadMin == 8);
+        assert(budget.lookaheadStart == 32);
+        assert(budget.lookaheadMax == 64);
+        assert(budget.maxPieceBufferBytes >= pieceSize);
+        assert(budget.maxPieceBufferBytes % pieceSize == 0);
         assert(budget.peakBytes == budget.maxBufferedBytes +
-                                       budget.lookaheadMax * pieceSize);
+                                       budget.maxPieceBufferBytes);
         assert(budget.availableBytes - budget.peakBytes >=
                budget.reserveBytes);
     }
@@ -133,9 +142,13 @@ void test_limits_hold_across_low_and_high_memory() {
             assert(budget.maxBufferedBytes <= 256 * MiB);
             assert(budget.maxQueuedBytes <= 64 * MiB);
             assert(budget.maxQueuedBytes <= budget.maxBufferedBytes);
-            assert(budget.lookaheadMax >= 1);
+            assert(budget.lookaheadMin == 8);
+            assert(budget.lookaheadStart == 32);
+            assert(budget.lookaheadMax == 64);
+            assert(budget.maxPieceBufferBytes >= pieceSize);
+            assert(budget.maxPieceBufferBytes % pieceSize == 0);
             assert(budget.peakBytes == budget.maxBufferedBytes +
-                                           budget.lookaheadMax * pieceSize);
+                                           budget.maxPieceBufferBytes);
         }
     }
 }

@@ -1631,6 +1631,8 @@ torrent_t *torrent_create_ex(const metainfo_t *mi,
         piece_mgr_set_strict_policy(t->pm,
                                     options->strict_order_lookahead,
                                     options->strict_fill_pending_first);
+        if (options->max_inflight_pieces)
+            piece_mgr_set_buf_limit(t->pm, options->max_inflight_pieces);
         if (options->have_bitfield &&
             options->have_bitfield_len == (mi->num_pieces + 7) / 8) {
             /* Fast resume: trust the bitfield saved at the last orderly
@@ -2190,6 +2192,14 @@ void torrent_set_strict_lookahead(torrent_t *t, uint32_t lookahead) {
         return;
     piece_mgr_set_strict_policy(t->pm, lookahead,
                                 t->pm->strict_fill_pending_first);
+}
+
+void torrent_set_piece_buf_limit(torrent_t *t, uint32_t max_inflight) {
+    if (!t || !t->pm)
+        return;
+    if (t->pm->max_inflight_pieces == max_inflight)
+        return;
+    piece_mgr_set_buf_limit(t->pm, max_inflight);
 }
 
 void torrent_set_rate_freeze(torrent_t *t, int freeze) {

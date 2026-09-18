@@ -902,6 +902,35 @@ static void test_strict_order_prefers_requestable_pending_piece(void) {
     free_test_metainfo(&mi);
 }
 
+static void test_strict_order_pick_excluding_head(void) {
+    metainfo_t mi;
+    init_single_file_metainfo(&mi, "exclude.bin", BLOCK_SIZE,
+                              4 * BLOCK_SIZE);
+    piece_mgr_t *pm = piece_mgr_create_ex(&mi, NULL, 1, NULL, 0);
+    assert(pm);
+    piece_mgr_set_strict_policy(pm, 4, 1);
+
+    uint8_t peer_bf[1] = {0};
+    bf_set(peer_bf, 0);
+    bf_set(peer_bf, 1);
+    bf_set(peer_bf, 2);
+    assert(piece_mgr_pick(pm, peer_bf, sizeof(peer_bf)) == 0);
+    assert(piece_mgr_pick_excluding(pm, peer_bf, sizeof(peer_bf), 0) == 1);
+
+    pm->slots[0].state = PS_PENDING;
+    piece_mgr_mark_block_requested(pm, 0, 0);
+    /* Head is pending but fully requested; ordinary pick already moves on. */
+    assert(piece_mgr_pick(pm, peer_bf, sizeof(peer_bf)) == 1);
+    /* Exclusion still skips a requestable head so μTP can fill the tail. */
+    pm->slots[0].state = PS_PENDING;
+    piece_mgr_clear_all_block_requests(pm, 0, 0);
+    assert(piece_mgr_pick(pm, peer_bf, sizeof(peer_bf)) == 0);
+    assert(piece_mgr_pick_excluding(pm, peer_bf, sizeof(peer_bf), 0) == 1);
+
+    piece_mgr_destroy(pm);
+    free_test_metainfo(&mi);
+}
+
 static void test_non_strict_pick_skips_fully_requested_pending(void) {
     metainfo_t mi;
     init_single_file_metainfo(&mi, "endgame.bin", BLOCK_SIZE,
@@ -1273,6 +1302,56 @@ static void test_pick_skips_hashing_piece(void) {
     cleanup_output(outdir, "pick.bin");
 }
 
+static void test_mark_pending_does_not_allocate_buf(void) {
+    metainfo_t mi;
+    init_single_file_metainfo(&mi, "lazy.bin", BLOCK_SIZE,
+                              2 * BLOCK_SIZE);
+    piece_mgr_t *pm = piece_mgr_create_ex(&mi, NULL, 1, NULL, 0);
+    assert(pm);
+
+    piece_mgr_mark_pending(pm, 0);
+    assert(pm->slots[0].state == PS_PENDING);
+    assert(pm->slots[0].buf == NULL);
+    assert(pm->inflight_pieces == 1);
+
+    piece_mgr_destroy(pm);
+    free_test_metainfo(&mi);
+}
+
+static void test_buf_limit_blocks_new_empty_pieces(void) {
+    metainfo_t mi;
+    init_single_file_metainfo(&mi, "cap.bin", BLOCK_SIZE,
+                              8 * BLOCK_SIZE);
+    piece_mgr_t *pm = piece_mgr_create_ex(&mi, NULL, 1, NULL, 0);
+    assert(pm);
+    piece_mgr_set_strict_policy(pm, 8, 1);
+    piece_mgr_set_buf_limit(pm, 2);
+
+    uint8_t peer_bf[1] = {0};
+    for (uint32_t i = 0; i < 8; i++)
+        bf_set(peer_bf, i);
+
+    assert(piece_mgr_pick(pm, peer_bf, sizeof(peer_bf)) == 0);
+    piece_mgr_mark_pending(pm, 0);
+    piece_mgr_mark_block_requested(pm, 0, 0);
+    assert(pm->inflight_pieces == 1);
+
+    assert(piece_mgr_pick(pm, peer_bf, sizeof(peer_bf)) == 1);
+    piece_mgr_mark_pending(pm, 1);
+    piece_mgr_mark_block_requested(pm, 1, 0);
+    assert(pm->inflight_pieces == 2);
+
+    /* Cap reached and both pending pieces are fully requested. */
+    assert(piece_mgr_pick(pm, peer_bf, sizeof(peer_bf)) == (uint32_t)-1);
+
+    /* A pending piece with room still wins over starting a new empty one. */
+    piece_mgr_clear_all_block_requests(pm, 0, 0);
+    assert(piece_mgr_pick(pm, peer_bf, sizeof(peer_bf)) == 0);
+
+    piece_mgr_destroy(pm);
+    free_test_metainfo(&mi);
+}
+
 static void test_got_block_geometry_sets_storage_error(void) {
     const int64_t piece_length = BLOCK_SIZE * 4;
     char outdir[] = "/tmp/pipensx-piece-geom-XXXXXX";
@@ -1317,6 +1396,7 @@ int main(void) {
     test_strict_order_stops_at_request_gate();
     test_request_reference_counts();
     test_strict_order_prefers_requestable_pending_piece();
+    test_strict_order_pick_excluding_head();
     test_non_strict_pick_skips_fully_requested_pending();
     test_metainfo_web_seeds_parse();
     test_async_hash_defers_completion_until_drain();
@@ -1326,6 +1406,8 @@ int main(void) {
     test_hash_result_callback_reports_in_order();
     test_destroy_flushes_inflight_hashes();
     test_pick_skips_hashing_piece();
+    test_mark_pending_does_not_allocate_buf();
+    test_buf_limit_blocks_new_empty_pieces();
     test_got_block_geometry_sets_storage_error();
     puts("piece tests passed");
     return 0;

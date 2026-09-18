@@ -39,6 +39,7 @@ bool sameBudget(const StreamRamBudget& a, const StreamRamBudget& b) {
            a.maxQueuedBytes == b.maxQueuedBytes &&
            a.maxBufferedBytes == b.maxBufferedBytes &&
            a.requestAheadBytes == b.requestAheadBytes &&
+           a.maxPieceBufferBytes == b.maxPieceBufferBytes &&
            a.lookaheadMin == b.lookaheadMin &&
            a.lookaheadStart == b.lookaheadStart &&
            a.lookaheadMax == b.lookaheadMax;

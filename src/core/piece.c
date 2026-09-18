@@ -86,6 +86,23 @@ static void piece_buf_put(piece_mgr_t *pm, uint8_t *buf) {
         free(buf);
 }
 
+static int state_inflight(piece_state_t state) {
+    return state == PS_PENDING || state == PS_HASHING;
+}
+
+static void slot_set_state(piece_mgr_t *pm, piece_slot_t *sl,
+                           piece_state_t state) {
+    int was = state_inflight(sl->state);
+    int now = state_inflight(state);
+    sl->state = state;
+    if (was == now)
+        return;
+    if (now)
+        pm->inflight_pieces++;
+    else if (pm->inflight_pieces)
+        pm->inflight_pieces--;
+}
+
 static void reset_piece(piece_mgr_t *pm, uint32_t idx) {
     piece_slot_t *sl = &pm->slots[idx];
     if (sl->state == PS_DONE && pm->num_done > 0) {
@@ -104,7 +121,7 @@ static void reset_piece(piece_mgr_t *pm, uint32_t idx) {
     memset(sl->have_blocks, 0, block_bitmap_size(sl->num_blocks));
     memset(sl->request_counts, 0, sl->num_blocks);
     sl->num_blocks_done = 0;
-    sl->state = PS_EMPTY;
+    slot_set_state(pm, sl, PS_EMPTY);
     order_cursor_rewind(pm, idx);
 }
 
@@ -112,7 +129,7 @@ static void reset_piece(piece_mgr_t *pm, uint32_t idx) {
 static void mark_piece_done(piece_mgr_t *pm, uint32_t idx, uint32_t plen) {
     piece_slot_t *sl = &pm->slots[idx];
     int64_t abs_off = (int64_t)idx * pm->mi->piece_length;
-    sl->state = PS_DONE;
+    slot_set_state(pm, sl, PS_DONE);
     bf_set(pm->have_bf, idx);
     if (storage_range_readable(pm->store, abs_off, (size_t)plen))
         bf_set(pm->available_bf, idx);
@@ -265,7 +282,7 @@ static int hash_enqueue(piece_mgr_t *pm, uint32_t idx, piece_slot_t *sl,
     pthread_cond_signal(&pm->hash_cond);
     pthread_mutex_unlock(&pm->hash_mutex);
     sl->buf = NULL;
-    sl->state = PS_HASHING;
+    slot_set_state(pm, sl, PS_HASHING);
     return 1;
 }
 
@@ -392,16 +409,20 @@ void piece_mgr_set_strict_policy(piece_mgr_t *pm, uint32_t lookahead,
     pm->strict_fill_pending_first = fill_pending_first != 0;
 }
 
+void piece_mgr_set_buf_limit(piece_mgr_t *pm, uint32_t max_inflight) {
+    if (!pm)
+        return;
+    pm->max_inflight_pieces = max_inflight;
+}
+
 void piece_mgr_mark_pending(piece_mgr_t *pm, uint32_t idx) {
     if (idx >= pm->num_pieces) return;
     piece_slot_t *sl = &pm->slots[idx];
     if (sl->state == PS_DONE || sl->state == PS_HASHING)
         return; /* complete (or completing) — never re-alloc a buf */
-    if (sl->state == PS_EMPTY) sl->state = PS_PENDING;
-    if (!sl->buf) {
-        sl->buf = piece_buf_get(pm);
-        /* ignore alloc failure — got_block checks */
-    }
+    if (sl->state == PS_EMPTY)
+        slot_set_state(pm, sl, PS_PENDING);
+    /* buf is allocated on the first got_block, not on request. */
 }
 
 static void piece_fail(piece_mgr_t *pm, const char *msg) {
@@ -440,7 +461,7 @@ int piece_mgr_got_block(piece_mgr_t *pm, uint32_t idx, uint32_t offset,
             return -1;
         }
     }
-    sl->state = PS_PENDING;
+    slot_set_state(pm, sl, PS_PENDING);
     memcpy(sl->buf + offset, data, len);
 
     if (!block_is_set(sl, blk)) {
@@ -523,7 +544,7 @@ int piece_mgr_verify_piece(piece_mgr_t *pm, uint32_t idx) {
    of piece_mgr_check_existing and the fast-resume preset. */
 static void mark_done_unhashed(piece_mgr_t *pm, uint32_t idx, int readable) {
     piece_slot_t *sl = &pm->slots[idx];
-    sl->state = PS_DONE;
+    slot_set_state(pm, sl, PS_DONE);
     sl->num_blocks_done = sl->num_blocks;
     memset(sl->have_blocks, 0xff, block_bitmap_size(sl->num_blocks));
     bf_set(pm->have_bf, idx);
@@ -643,6 +664,11 @@ void piece_mgr_clear_all_block_requests(piece_mgr_t *pm, uint32_t idx,
     sl->request_counts[block] = 0;
 }
 
+static int at_buf_cap(const piece_mgr_t *pm) {
+    return pm->max_inflight_pieces &&
+           pm->inflight_pieces >= pm->max_inflight_pieces;
+}
+
 static int slot_has_requestable_block(const piece_slot_t *slot) {
     if (!slot || !slot->request_counts)
         return 0;
@@ -653,8 +679,9 @@ static int slot_has_requestable_block(const piece_slot_t *slot) {
     return 0;
 }
 
-uint32_t piece_mgr_pick(const piece_mgr_t *pm,
-                        const uint8_t *peer_bf, uint32_t bf_bytes) {
+uint32_t piece_mgr_pick_excluding(const piece_mgr_t *pm,
+                                  const uint8_t *peer_bf, uint32_t bf_bytes,
+                                  uint32_t exclude) {
     if (pm->strict_order) {
         uint32_t count = order_count(pm);
         uint32_t unfinished = 0;
@@ -675,6 +702,10 @@ uint32_t piece_mgr_pick(const piece_mgr_t *pm,
                 break;
             if (unfinished++ >= lookahead)
                 break;
+            /* Still counts toward the window so exclusion cannot stretch
+               lookahead past the sequential frontier. */
+            if (i == exclude)
+                continue;
             if (i / 8 < bf_bytes && bf_has(peer_bf, i)) {
                 if (pm->slots[i].state == PS_PENDING &&
                     slot_has_requestable_block(&pm->slots[i]) &&
@@ -684,6 +715,8 @@ uint32_t piece_mgr_pick(const piece_mgr_t *pm,
                         return i;
                 } else if (pm->slots[i].state == PS_EMPTY &&
                            empty_candidate == (uint32_t)-1) {
+                    if (at_buf_cap(pm))
+                        continue;
                     empty_candidate = i;
                     if (!pm->strict_fill_pending_first)
                         return i;
@@ -700,8 +733,10 @@ uint32_t piece_mgr_pick(const piece_mgr_t *pm,
     /* Rarest-first would be ideal, but for minimality we do sequential:
        find the first piece the peer has and we don't (not DONE, not PENDING). */
     for (uint32_t i = 0; i < pm->num_pieces; i++) {
+        if (i == exclude) continue;
         if (!request_allowed(pm, i)) continue;
         if (pm->slots[i].state != PS_EMPTY) continue;
+        if (at_buf_cap(pm)) continue;
         if (!bf_has(pm->have_bf, i)) {
             if (i / 8 < bf_bytes && bf_has(peer_bf, i))
                 return i;
@@ -711,6 +746,7 @@ uint32_t piece_mgr_pick(const piece_mgr_t *pm,
        whose leftover blocks are already requested — otherwise the scheduler
        queues nothing and stops filling this peer. */
     for (uint32_t i = 0; i < pm->num_pieces; i++) {
+        if (i == exclude) continue;
         if (!request_allowed(pm, i)) continue;
         if (pm->slots[i].state == PS_DONE ||
             pm->slots[i].state == PS_HASHING) continue;
@@ -723,6 +759,11 @@ uint32_t piece_mgr_pick(const piece_mgr_t *pm,
         }
     }
     return (uint32_t)-1;
+}
+
+uint32_t piece_mgr_pick(const piece_mgr_t *pm,
+                        const uint8_t *peer_bf, uint32_t bf_bytes) {
+    return piece_mgr_pick_excluding(pm, peer_bf, bf_bytes, UINT32_MAX);
 }
 
 uint32_t piece_mgr_head_piece(const piece_mgr_t *pm) {

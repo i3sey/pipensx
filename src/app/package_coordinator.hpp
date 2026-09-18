@@ -155,11 +155,13 @@ public:
             lookaheadMax_ = budget.lookaheadMax;
             lookaheadWindow_ = budget.lookaheadStart;
             lookaheadHealthy_ = budget.lookaheadStart;
+            maxInflightPieces_ = inflightLimitFromBudget(
+                budget, pieceLengthBytes_);
             requestGate_.configure(maxBufferedBytes_, requestAheadBytes_,
                                    pieceLengthBytes_, producerOrdinal_);
             log_msg("[install] RAM budget source=%s available=%llu reserve=%llu "
                     "piece=%llu kernel_headroom=%llu peak=%llu reorder=%zu "
-                    "queue=%zu lookahead=%u/%u/%u\n",
+                    "queue=%zu lookahead=%u/%u/%u piece_bufs=%u\n",
                     budget.memoryDetected ? "heap" : "fallback",
                     static_cast<unsigned long long>(budget.availableBytes),
                     static_cast<unsigned long long>(budget.reserveBytes),
@@ -168,12 +170,13 @@ public:
                         budget.kernelHeadroomBytes),
                     static_cast<unsigned long long>(budget.peakBytes),
                     maxBufferedBytes_, maxQueuedBytes_, lookaheadMin_,
-                    lookaheadWindow_, lookaheadMax_);
+                    lookaheadWindow_, lookaheadMax_, maxInflightPieces_);
             telemetry_log("ram_budget", taskId_.c_str(),
                 "valid=1 source=%s available_bytes=%llu reserve_bytes=%llu "
                 "piece_bytes=%llu kernel_headroom_bytes=%llu "
                 "kernel_headroom_detected=%d peak_bytes=%llu "
-                "reorder_bytes=%zu queue_bytes=%zu lookahead_min=%u "
+                "reorder_bytes=%zu queue_bytes=%zu piece_buf_bytes=%llu "
+                "piece_bufs=%u lookahead_min=%u "
                 "lookahead_start=%u lookahead_max=%u",
                 budget.memoryDetected ? "heap" : "fallback",
                 static_cast<unsigned long long>(budget.availableBytes),
@@ -182,7 +185,9 @@ public:
                 static_cast<unsigned long long>(budget.kernelHeadroomBytes),
                 budget.kernelHeadroomDetected ? 1 : 0,
                 static_cast<unsigned long long>(budget.peakBytes),
-                maxBufferedBytes_, maxQueuedBytes_, lookaheadMin_,
+                maxBufferedBytes_, maxQueuedBytes_,
+                static_cast<unsigned long long>(budget.maxPieceBufferBytes),
+                maxInflightPieces_, lookaheadMin_,
                 lookaheadWindow_, lookaheadMax_);
             installWorker_ = std::thread(&PackageCoordinator::installMain, this);
         }
@@ -223,6 +228,10 @@ public:
     const std::vector<uint32_t>& pieceOrder() const { return pieceOrder_; }
     uint32_t packageCount() const { return packageCount_; }
     uint32_t initialLookahead() const { return lookaheadWindow_; }
+    uint32_t maxInflightPieces() const {
+        std::lock_guard<std::mutex> lock(queueMutex_);
+        return maxInflightPieces_;
+    }
     static int requestAllowedThunk(void* user, uint32_t piece) {
         return static_cast<PackageCoordinator*>(user)->canRequestPiece(piece)
             ? 1 : 0;
@@ -306,11 +315,15 @@ public:
         requestAheadBytes_ = budget.requestAheadBytes;
         lookaheadMin_ = budget.lookaheadMin;
         lookaheadMax_ = budget.lookaheadMax;
+        if (lookaheadMin_ > lookaheadMax_)
+            lookaheadMin_ = lookaheadMax_;
         lookaheadWindow_ =
             std::clamp(lookaheadWindow_, lookaheadMin_, lookaheadMax_);
         if (lookaheadHealthy_)
             lookaheadHealthy_ =
                 std::clamp(lookaheadHealthy_, lookaheadMin_, lookaheadMax_);
+        maxInflightPieces_ = inflightLimitFromBudget(
+            budget, pieceLengthBytes_);
         requestGate_.configure(maxBufferedBytes_, requestAheadBytes_,
                                pieceLengthBytes_, producerOrdinal_);
         // configure() resets the admission edge to the package start;
@@ -318,11 +331,13 @@ public:
         updateRequestGateLocked(now_ms());
         telemetry_log("ram_budget", taskId_.c_str(),
             "event=resize reorder_bytes=%zu queue_bytes=%zu "
-            "request_ahead_bytes=%llu lookahead_min=%u lookahead_max=%u "
-            "lookahead_window=%u",
+            "request_ahead_bytes=%llu piece_buf_bytes=%llu piece_bufs=%u "
+            "lookahead_min=%u lookahead_max=%u lookahead_window=%u",
             maxBufferedBytes_, maxQueuedBytes_,
             static_cast<unsigned long long>(requestAheadBytes_),
-            lookaheadMin_, lookaheadMax_, lookaheadWindow_);
+            static_cast<unsigned long long>(budget.maxPieceBufferBytes),
+            maxInflightPieces_, lookaheadMin_, lookaheadMax_,
+            lookaheadWindow_);
     }
 
     std::string error() const {
@@ -369,6 +384,15 @@ private:
         uint32_t ordinal = UINT32_MAX;
         uint64_t offset = 0;
     };
+
+    static uint32_t inflightLimitFromBudget(const StreamRamBudget& budget,
+                                            uint64_t pieceLengthBytes) {
+        if (!pieceLengthBytes ||
+            budget.maxPieceBufferBytes < pieceLengthBytes)
+            return 0;
+        uint64_t n = budget.maxPieceBufferBytes / pieceLengthBytes;
+        return n > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(n);
+    }
 
     static int sinkThunk(void* user, uint32_t fileIndex,
                          int64_t fileOffset, const uint8_t* data, size_t size) {
@@ -1090,17 +1114,19 @@ private:
     uint32_t producerOrdinal_ = 0;
     uint64_t producerOffset_ = 0;
     // Adaptive strict-order lookahead state (PERF_PLAN 5.1); guarded by
-    // queueMutex_. Window bounds in pieces: at 4 MiB pieces the max adds at
-    // most 128 MiB of concurrently pending piece buffers, and the
-    // requestAheadBytes_ gate still caps the total in-flight span.
+    // queueMutex_. Window bounds are in pieces and independent of the
+    // piece-buffer RAM cap (maxInflightPieces_): a 16 MiB torrent can AIMD
+    // 8/32/64 while only ~8 full buffers are allocated. requestAheadBytes_
+    // still caps the total in-flight span.
     static constexpr uint32_t kLookaheadStep = 4;
     static constexpr uint64_t kLookaheadAdaptIntervalMs = 1000;
     uint32_t lookaheadMin_ = 8;
-    uint32_t lookaheadMax_ = 32;
+    uint32_t lookaheadMax_ = 64;
     uint32_t lookaheadWindow_ = 32;
     uint32_t lookaheadHealthy_ = 0;
     uint32_t lookaheadStallEvents_ = 0;
     uint64_t lookaheadLastAdaptMs_ = 0;
+    uint32_t maxInflightPieces_ = 0;
     // Request gate state (PERF_PLAN 5.3 + 7.1); guarded by queueMutex_.
     pipensx::RequestGate requestGate_;
     pipensx::InstallPacer pacer_;

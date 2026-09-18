@@ -17,6 +17,7 @@ typedef struct {
     uint32_t request_pipeline_limit; /* per peer, 0 = MAX_PIPELINE */
     uint32_t hedge_after_ms; /* duplicate critical requests after this age */
     int strict_fill_pending_first;
+    uint32_t max_inflight_pieces; /* 0 = unlimited (no piece-buffer RAM cap) */
     const char *telemetry_tag; /* copied by torrent_create_ex */
     /*
      * Fast resume: have-bitfield saved by torrent_copy_have_bitfield at a
@@ -123,6 +124,12 @@ const char *torrent_last_error(const torrent_t *t);
  * No-op unless the torrent runs in strict piece order; lookahead 0 is ignored.
  */
 void torrent_set_strict_lookahead(torrent_t *t, uint32_t lookahead);
+
+/*
+ * Cap concurrent in-flight piece buffers (PENDING+HASHING). No-op when t
+ * is NULL; 0 removes the cap. Live updates from the stream RAM budget.
+ */
+void torrent_set_piece_buf_limit(torrent_t *t, uint32_t max_inflight);
 
 /*
  * Freeze or resume per-peer download-rate sampling (PERF_PLAN 7.2). While

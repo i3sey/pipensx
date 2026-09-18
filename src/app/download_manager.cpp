@@ -2432,6 +2432,7 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
             // Initial window only; the loop below resizes it from the
             // install sink's backlog (PERF_PLAN 5.1).
             options.strict_order_lookahead = coordinator->initialLookahead();
+            options.max_inflight_pieces = coordinator->maxInflightPieces();
             options.strict_fill_pending_first = 1;
             // Per-peer in-flight ceiling (4 MiB = 256 x 16 KiB blocks =
             // MAX_PIPELINE). The engine scales the actual window per peer by
@@ -2562,6 +2563,8 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
             torrent_set_strict_lookahead(
                 torrent,
                 coordinator->adaptiveLookahead(stat.num_active_peers));
+            torrent_set_piece_buf_limit(
+                torrent, coordinator->maxInflightPieces());
             torrent_set_rate_freeze(
                 torrent, coordinator->requestsCurtailed() ? 1 : 0);
         }

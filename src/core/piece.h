@@ -23,7 +23,7 @@ typedef enum {
 
 typedef struct {
     piece_state_t state;
-    uint8_t      *buf;         /* piece_length bytes, NULL until first request */
+    uint8_t      *buf;         /* piece_length bytes, NULL until first block */
     uint8_t      *have_blocks; /* bitmap of received 16KB blocks */
     uint8_t      *request_counts; /* number of peers requesting each block */
     uint32_t      num_blocks;
@@ -61,6 +61,11 @@ typedef struct {
     int               strict_order;
     uint32_t          strict_order_lookahead;
     int               strict_fill_pending_first;
+    /* PS_PENDING + PS_HASHING. A slot is charged as soon as it is requested,
+       even before the first block arrives and buf is allocated. 0 max =
+       unlimited. */
+    uint32_t          inflight_pieces;
+    uint32_t          max_inflight_pieces;
     uint32_t         *piece_order;
     uint32_t          piece_order_count;
     uint8_t          *verify_buf; /* piece_length scratch, lazily allocated */
@@ -110,8 +115,13 @@ void         piece_mgr_destroy(piece_mgr_t *pm);
 void         piece_mgr_set_strict_policy(piece_mgr_t *pm,
                                          uint32_t lookahead,
                                          int fill_pending_first);
+/* Cap concurrent PENDING+HASHING pieces (0 = unlimited). The picker will
+   not start a new EMPTY piece once the cap is reached; already-pending
+   pieces stay fillable. */
+void         piece_mgr_set_buf_limit(piece_mgr_t *pm, uint32_t max_inflight);
 
-/* Mark a block as requested by a peer (sets PS_PENDING) */
+/* Mark a piece as requested by a peer (sets PS_PENDING). Does not allocate
+   the piece buffer — that happens on the first got_block. */
 void piece_mgr_mark_pending(piece_mgr_t *pm, uint32_t idx);
 
 /*
@@ -183,6 +193,11 @@ void piece_mgr_clear_all_block_requests(piece_mgr_t *pm, uint32_t idx,
  */
 uint32_t piece_mgr_pick(const piece_mgr_t *pm,
                         const uint8_t *peer_bf, uint32_t bf_bytes);
+/* Same picker, but never returns `exclude` (UINT32_MAX = no exclusion).
+   Used so μTP peers can fill the lookahead tail while TCP owns the head. */
+uint32_t piece_mgr_pick_excluding(const piece_mgr_t *pm,
+                                  const uint8_t *peer_bf, uint32_t bf_bytes,
+                                  uint32_t exclude);
 
 /* First piece in download order that is not yet DONE, or UINT32_MAX when the
    torrent is complete. O(1) thanks to the maintained order cursor. */

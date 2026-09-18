@@ -101,25 +101,29 @@ StreamRamBudget calculateStreamRamBudget(uint64_t availableBytes,
     uint64_t peakBytes = std::max(usableBytes / 2, minimumPeakBytes);
     peakBytes = std::min(peakBytes, peakCapacity);
 
-    uint64_t lookaheadPieces = std::min<uint64_t>(
+    /* Piece-buffer RAM is a byte cap, not lookahead*piece_length. Charging
+       every picker slot as a full buffer pinned 16 MiB torrents at 8/8/8
+       and killed AIMD. The same peak/3 split as before sizes the cap
+       (typically 64-128 MiB); the picker window stays 8/32/64 pieces. */
+    uint64_t pieceBufPieces = std::min<uint64_t>(
         peakBytes / 3 / pieceLengthBytes, kAbsoluteLookaheadMax);
-    lookaheadPieces = std::max<uint64_t>(lookaheadPieces, 1);
-    while (lookaheadPieces > 1 &&
-           peakBytes - lookaheadPieces * pieceLengthBytes <
+    pieceBufPieces = std::max<uint64_t>(pieceBufPieces, 1);
+    while (pieceBufPieces > 1 &&
+           peakBytes - pieceBufPieces * pieceLengthBytes <
                minimumBufferedBytes) {
-        --lookaheadPieces;
+        --pieceBufPieces;
     }
 
-    uint64_t bufferedBytes = peakBytes - lookaheadPieces * pieceLengthBytes;
+    uint64_t bufferedBytes = peakBytes - pieceBufPieces * pieceLengthBytes;
     if (bufferedBytes < minimumBufferedBytes)
         return budget;
     if (bufferedBytes > kMaxBufferedBytes) {
         uint64_t excessBytes = bufferedBytes - kMaxBufferedBytes;
         uint64_t extraPieces =
             (excessBytes + pieceLengthBytes - 1) / pieceLengthBytes;
-        lookaheadPieces = std::min<uint64_t>(
-            lookaheadPieces + extraPieces, kAbsoluteLookaheadMax);
-        bufferedBytes = peakBytes - lookaheadPieces * pieceLengthBytes;
+        pieceBufPieces = std::min<uint64_t>(
+            pieceBufPieces + extraPieces, kAbsoluteLookaheadMax);
+        bufferedBytes = peakBytes - pieceBufPieces * pieceLengthBytes;
         bufferedBytes = std::min(bufferedBytes, kMaxBufferedBytes);
     }
 
@@ -131,16 +135,15 @@ StreamRamBudget calculateStreamRamBudget(uint64_t availableBytes,
         queuedBytes = std::min(pieceLengthBytes, bufferedBytes);
 
     budget.valid = true;
-    budget.peakBytes = bufferedBytes + lookaheadPieces * pieceLengthBytes;
+    budget.maxPieceBufferBytes = pieceBufPieces * pieceLengthBytes;
+    budget.peakBytes = bufferedBytes + budget.maxPieceBufferBytes;
     budget.maxQueuedBytes = static_cast<size_t>(queuedBytes);
     budget.maxBufferedBytes = static_cast<size_t>(bufferedBytes);
     budget.requestAheadBytes = bufferedBytes > queuedBytes
         ? bufferedBytes - queuedBytes : bufferedBytes;
-    budget.lookaheadMax = static_cast<uint32_t>(lookaheadPieces);
-    budget.lookaheadMin = std::min(kPreferredLookaheadMin,
-                                   budget.lookaheadMax);
-    budget.lookaheadStart = std::min(kPreferredLookaheadStart,
-                                     budget.lookaheadMax);
+    budget.lookaheadMax = kAbsoluteLookaheadMax;
+    budget.lookaheadMin = kPreferredLookaheadMin;
+    budget.lookaheadStart = kPreferredLookaheadStart;
     return budget;
 }
 
