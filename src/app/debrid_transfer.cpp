@@ -435,7 +435,24 @@ bool sequentialHttp(const DebridProvider& provider) {
 }
 
 int pollWaitMs(const DebridProvider& provider) {
-    return std::strcmp(provider.name(), "torrserver") == 0 ? 1000 : 5000;
+    return std::strcmp(provider.name(), "torrserver") == 0 ? 250 : 5000;
+}
+
+// Piece-buffer RAM is for the torrent picker. Debrid HTTP has no pieces;
+// fold that reservation into the reorder queue so the TorrServer/CDN reader
+// stays ahead of ncm instead of sitting idle in unused piece slots.
+size_t debridQueueBytes() {
+    StreamRamBudget budget = detectStreamRamBudget(1 * 1024 * 1024);
+    if (!budget.valid)
+        return 64 * 1024 * 1024;
+    uint64_t bytes = static_cast<uint64_t>(budget.maxBufferedBytes) +
+                     budget.maxPieceBufferBytes;
+    constexpr uint64_t kMax = 256ull * 1024 * 1024;
+    if (bytes > kMax)
+        bytes = kMax;
+    if (bytes < budget.maxBufferedBytes)
+        bytes = budget.maxBufferedBytes;
+    return static_cast<size_t>(bytes);
 }
 
 void remTorrserverIfFinished(DebridProvider& provider, const std::string& id,
@@ -1079,9 +1096,7 @@ Step fetchSplitDownload(RunContext& ctx, const std::string& url,
     };
 
     std::string fetchError;
-    StreamRamBudget budget = detectStreamRamBudget(1 * 1024 * 1024);
-    const size_t maximumBuffered = budget.valid
-        ? budget.maxBufferedBytes : 64 * 1024 * 1024;
+    const size_t maximumBuffered = debridQueueBytes();
     bool ok = sequentialHttp(ctx.provider)
         ? fetchSequential(ctx.fetcher, url, offset, sink, *ctx.shouldStop,
                           fetchError)
@@ -1172,9 +1187,7 @@ Step fetchAppend(RunContext& ctx, const std::string& url,
         return true;
     };
     std::string err;
-    StreamRamBudget budget = detectStreamRamBudget(1 * 1024 * 1024);
-    const size_t maximumBuffered = budget.valid
-        ? budget.maxBufferedBytes : 64 * 1024 * 1024;
+    const size_t maximumBuffered = debridQueueBytes();
     // RD CDN corrupts parallel 206s; TorrServer's cache is a sequential
     // reader with readahead — Range workers thrash it.
     bool ok = sequentialHttp(ctx.provider)
@@ -1369,9 +1382,7 @@ Step attemptStreamInstall(RunContext& ctx, const DebridFile& file,
         journalConsumed = 0;
     };
 
-    StreamRamBudget budget = detectStreamRamBudget(1 * 1024 * 1024);
-    const size_t maximumBuffered = budget.valid
-        ? budget.maxBufferedBytes : 64 * 1024 * 1024;
+    const size_t maximumBuffered = debridQueueBytes();
     InstallPacer pacer(maximumBuffered);
     pacer.beginPackage(compressed);
 
@@ -1409,8 +1420,27 @@ Step attemptStreamInstall(RunContext& ctx, const DebridFile& file,
             clearJournal();
         }
     }
+
+    // Start the HTTP reader before beginPackage so TorrServer's sequential
+    // cache and a WAN CDN handshake run during ncm/FS setup instead of after.
+    DebridStreamQueue queue(maximumBuffered, pacer, *ctx.shouldStop);
+    std::string fetchError;
+    bool fetchOk = false;
+    const uint64_t producerOffset = fetchOffset;
+    std::thread producer([&] {
+        auto sink = [&queue, &ctx](const uint8_t* data, size_t n) -> bool {
+            ctx.packageDownloadedBytes.fetch_add(n);
+            return queue.push(data, n);
+        };
+        fetchOk = fetchSequential(ctx.fetcher, url, producerOffset, sink,
+                                  *ctx.shouldStop, fetchError);
+        queue.finish();
+    });
+
     if (!resumed) {
         if (!backend->beginPackage(ctx.spec.taskId, displayName)) {
+            queue.stop();
+            producer.join();
             ctx.error = backend->error();
             return Step::Failed;
         }
@@ -1444,19 +1474,6 @@ Step attemptStreamInstall(RunContext& ctx, const DebridFile& file,
         }
         journalConsumed = consumed;
     };
-
-    DebridStreamQueue queue(maximumBuffered, pacer, *ctx.shouldStop);
-    std::string fetchError;
-    bool fetchOk = false;
-    std::thread producer([&] {
-        auto sink = [&queue, &ctx](const uint8_t* data, size_t n) -> bool {
-            ctx.packageDownloadedBytes.fetch_add(n);
-            return queue.push(data, n);
-        };
-        fetchOk = fetchSequential(ctx.fetcher, url, fetchOffset, sink,
-                                  *ctx.shouldStop, fetchError);
-        queue.finish();
-    });
 
     bool streamOk = true;
     std::vector<uint8_t> chunk;

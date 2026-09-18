@@ -1,6 +1,8 @@
 #pragma once
 
 #include <curl/curl.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/socket.h>
 
 #include <string>
@@ -30,6 +32,9 @@ inline int curlEnlargeReceiveBuffer(void*, curl_socket_t socket,
         int size = 256 * 1024;
         setsockopt(socket, SOL_SOCKET, SO_RCVBUF,
                    reinterpret_cast<const char*>(&size), sizeof(size));
+        int nodelay = 1;
+        setsockopt(socket, IPPROTO_TCP, TCP_NODELAY,
+                   reinterpret_cast<const char*>(&nodelay), sizeof(nodelay));
     }
     return CURL_SOCKOPT_OK;
 }
@@ -38,6 +43,12 @@ inline void curlTuneDownloadSocket(CURL* curl) {
     curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
     curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, 256L * 1024L);
     curl_easy_setopt(curl, CURLOPT_SOCKOPTFUNCTION, curlEnlargeReceiveBuffer);
+    // LAN TorrServer and WAN CDNs are both IPv4 in practice; skipping AAAA
+    // waits on a hostname that has no v6 route.
+    curl_easy_setopt(curl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
+    curl_easy_setopt(curl, CURLOPT_TCP_KEEPALIVE, 1L);
+    curl_easy_setopt(curl, CURLOPT_TCP_KEEPIDLE, 30L);
+    curl_easy_setopt(curl, CURLOPT_TCP_KEEPINTVL, 15L);
 }
 
 // HTTPS stays pinned so a debrid CDN cannot redirect onto plaintext. Plain
