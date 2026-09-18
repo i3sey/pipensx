@@ -450,6 +450,10 @@ $(BUILD_DIR)/tests/test_content_meta: tests/test_content_meta.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
 
+$(BUILD_DIR)/tests/test_placeholder_grow: tests/test_placeholder_grow.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
+
 $(BUILD_DIR)/tests/test_ticket_rights: tests/test_ticket_rights.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^

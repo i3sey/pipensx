@@ -1,4 +1,5 @@
 #include "install/content_meta.hpp"
+#include "install/placeholder_grow.hpp"
 #include "install/ticket_rights.hpp"
 #include "install_backend.hpp"
 
@@ -35,6 +36,10 @@ static_assert(static_cast<int>(kMetaTypeApplication) == NcmContentMetaType_Appli
               "content_meta.hpp meta type constants drifted from libnx");
 
 constexpr const char* TempRoot = "sdmc:/switch/pipensx/install-temp";
+
+bool placeholderGrowSupported() {
+    return hosversionAtLeast(2, 0, 0);
+}
 
 // PERF_PLAN 7.4: install target is selectable so NAND (eMMC) can be measured
 // against the ~16 MB/s SD write ceiling. NcmContentStorage APIs act on the
@@ -233,6 +238,7 @@ struct Content {
     NcmPlaceHolderId placeholder {};
     uint64_t size = 0;
     uint64_t written = 0;
+    uint64_t allocated = 0;
     bool existing = false;
     bool registered = false;
     bool meta = false;
@@ -521,23 +527,37 @@ public:
             }
             rc = ncmContentStorageGeneratePlaceHolderId(
                 &storage_, &current_->placeholder);
+            const uint64_t createBytes =
+                placeholderCreateBytes(size, placeholderGrowSupported());
             if (R_SUCCEEDED(rc))
                 rc = ncmContentStorageCreatePlaceHolder(
-                    &storage_, &current_->id, &current_->placeholder, size);
+                    &storage_, &current_->id, &current_->placeholder,
+                    static_cast<s64>(createBytes));
             if (R_FAILED(rc)) {
                 placeholderErrorResult("Unable to create content placeholder",
                                        rc, 0, 0);
                 return false;
             }
+            current_->allocated = createBytes;
             pendingPlaceholderBytes_ += size;
+            if (createBytes != size)
+                log_msg("[install] placeholder deferred '%s' initial=%llu "
+                        "final=%llu\n",
+                        current_->name.c_str(),
+                        static_cast<unsigned long long>(createBytes),
+                        static_cast<unsigned long long>(size));
+        } else {
+            current_->allocated = size;
         }
         sha256ContextCreate(&sha_);
         hashActive_ = true;
         if (setupStartedUs) {
             uint64_t setupUs = now_us() - setupStartedUs;
             telemetry_log("ncm", taskId_.c_str(),
-                "event=file_setup target=%s bytes=%llu existing=%d setup_us=%llu",
+                "event=file_setup target=%s bytes=%llu allocated=%llu "
+                "existing=%d setup_us=%llu",
                 targetName_, (unsigned long long)size,
+                (unsigned long long)current_->allocated,
                 current_->existing ? 1 : 0,
                 (unsigned long long)setupUs);
         }
@@ -570,6 +590,8 @@ public:
         bool track = telemetry_enabled();
         uint64_t ncmUs = 0;
         if (!current_->existing) {
+            if (!growPlaceholder(*current_, current_->written + size))
+                return false;
             uint64_t ncmStartedUs = track ? now_us() : 0;
             Result rc = ncmContentStorageWritePlaceHolder(
                 &storage_, &current_->placeholder, current_->written,
@@ -1168,16 +1190,20 @@ public:
         // Every checkpointed content must still be present on this console;
         // otherwise discard the leftovers and let the caller start fresh.
         bool valid = true;
-        for (const auto& content : contents) {
+        for (auto& content : contents) {
             bool has = false;
-            if (content.existing || content.registered)
+            if (content.existing || content.registered) {
                 valid = R_SUCCEEDED(ncmContentStorageHas(
                             &storage_, &has, &content.id)) && has;
-            else if (content.size)
+                content.allocated = content.size;
+            } else if (content.size) {
                 valid = R_SUCCEEDED(ncmContentStorageHasPlaceHolder(
                             &storage_, &has, &content.placeholder)) && has;
-            else
+                if (valid && !restorePlaceholderAllocated(content))
+                    valid = false;
+            } else {
                 valid = content.written == 0;
+            }
             if (!valid) {
                 log_msg("[install] resume rejected: '%s' is missing\n",
                         content.name.c_str());
@@ -1345,6 +1371,89 @@ private:
             (unsigned long long)(summary ? telemetryTotalExistingBytes_ : 0));
         if (!summary)
             resetFileInterval(now);
+    }
+
+    bool growPlaceholder(Content& content, uint64_t needed) {
+        if (content.existing)
+            return true;
+        if (needed > content.size)
+            needed = content.size;
+        while (content.allocated < needed) {
+            if (!placeholderGrowSupported()) {
+                error_ = "Unable to grow content placeholder.";
+                return false;
+            }
+            const uint64_t next = placeholderNextBytes(
+                content.allocated, needed, content.size, true);
+            if (next <= content.allocated) {
+                error_ = "Unable to grow content placeholder.";
+                return false;
+            }
+            uint64_t growStartedUs = telemetry_enabled() ? now_us() : 0;
+            Result rc = ncmContentStorageSetPlaceHolderSize(
+                &storage_, &content.placeholder, static_cast<s64>(next));
+            uint64_t growUs = growStartedUs ? now_us() - growStartedUs : 0;
+            if (R_FAILED(rc)) {
+                placeholderErrorResult(
+                    "Unable to grow content placeholder", rc,
+                    content.allocated, 0);
+                return false;
+            }
+            content.allocated = next;
+            if (growStartedUs) {
+                telemetry_log("ncm", taskId_.c_str(),
+                    "event=placeholder_grow target=%s to=%llu grow_us=%llu",
+                    targetName_, (unsigned long long)next,
+                    (unsigned long long)growUs);
+                if (growUs >= 100000) {
+                    log_msg("[install] placeholder grow '%s' to=%llu "
+                            "grow_us=%llu\n",
+                            content.name.c_str(),
+                            (unsigned long long)next,
+                            (unsigned long long)growUs);
+                }
+            }
+        }
+        return true;
+    }
+
+    // Restore the on-disk placeholder size after resume. 4.0.0+ can query
+    // it; older firmware that still supports SetPlaceHolderSize extends to
+    // the full NCA so a sparse file cannot be written past EOF.
+    bool restorePlaceholderAllocated(Content& content) {
+        if (content.existing || !content.size) {
+            content.allocated = content.size;
+            return true;
+        }
+        if (hosversionAtLeast(4, 0, 0)) {
+            s64 phSize = 0;
+            Result rc = ncmContentStorageGetSizeFromPlaceHolderId(
+                &storage_, &phSize, &content.placeholder);
+            if (R_FAILED(rc) || phSize < 0 ||
+                static_cast<uint64_t>(phSize) < content.written) {
+                log_msg("[install] resume rejected: '%s' placeholder "
+                        "size mismatch written=%llu size=%lld rc=0x%08x\n",
+                        content.name.c_str(),
+                        static_cast<unsigned long long>(content.written),
+                        static_cast<long long>(phSize), rc);
+                return false;
+            }
+            content.allocated = static_cast<uint64_t>(phSize);
+            return true;
+        }
+        if (placeholderGrowSupported() && content.written < content.size) {
+            Result rc = ncmContentStorageSetPlaceHolderSize(
+                &storage_, &content.placeholder,
+                static_cast<s64>(content.size));
+            if (R_FAILED(rc)) {
+                log_msg("[install] resume rejected: '%s' placeholder grow "
+                        "failed rc=0x%08x\n",
+                        content.name.c_str(), rc);
+                return false;
+            }
+        }
+        content.allocated = content.size;
+        return true;
     }
 
     void errorResult(const char* message, Result rc) {
