@@ -67,11 +67,22 @@ static void order_cursor_rewind(piece_mgr_t *pm, uint32_t idx) {
         pm->order_cursor = pos;
 }
 
+/* tests/test_piece.c forces the next N allocations to fail. */
+static uint32_t buf_alloc_fail_remaining;
+
+void piece_mgr_debug_fail_next_allocs(uint32_t n) {
+    buf_alloc_fail_remaining = n;
+}
+
 /* Buffers coming out of the pool (or reused across reset_piece) are NOT
    zeroed: a piece is only hashed or written once every block has been
    received, and each block overwrites its whole range, so no stale byte can
    ever be observed. */
 static uint8_t *piece_buf_get(piece_mgr_t *pm) {
+    if (buf_alloc_fail_remaining) {
+        buf_alloc_fail_remaining--;
+        return NULL;
+    }
     if (pm->buf_pool_count)
         return pm->buf_pool[--pm->buf_pool_count];
     return (uint8_t*)malloc((size_t)pm->mi->piece_length);
@@ -457,8 +468,19 @@ int piece_mgr_got_block(piece_mgr_t *pm, uint32_t idx, uint32_t offset,
     if (!sl->buf) {
         sl->buf = piece_buf_get(pm);
         if (!sl->buf) {
-            piece_fail(pm, "out of memory for piece buffer");
-            return -1;
+            /* A finished hash may have just freed a buffer into the pool. */
+            piece_mgr_drain_hash_results(pm);
+            sl->buf = piece_buf_get(pm);
+        }
+        if (!sl->buf) {
+            /* Transient: do not piece_fail — torrent.c treats storage_error
+               as fatal and would kill the download. Drop this block and
+               clear its request so the picker can ask again after a buffer
+               returns to the pool. */
+            log_msg("[piece] out of memory for piece buffer (piece %u) "
+                    "— dropping block\n", idx);
+            piece_mgr_clear_all_block_requests(pm, idx, blk);
+            return 1;
         }
     }
     slot_set_state(pm, sl, PS_PENDING);

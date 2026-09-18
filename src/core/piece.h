@@ -128,14 +128,19 @@ void piece_mgr_mark_pending(piece_mgr_t *pm, uint32_t idx);
  * Receive a block.  Returns:
  *   2 = piece complete and verified inline (worker unavailable; have_bf
  *       updated)
- *   1 = block stored. On the last block of a piece the slot moves to
- *       PS_HASHING and verification completes asynchronously in
- *       piece_mgr_drain_hash_results / piece_mgr_hash_flush.
+ *   1 = block stored, or a transient drop (piece-buffer OOM). On the last
+ *       block of a piece the slot moves to PS_HASHING and verification
+ *       completes asynchronously in piece_mgr_drain_hash_results /
+ *       piece_mgr_hash_flush. A drop does not set storage_error; the
+ *       block is left unreceived so the scheduler can ask again.
  *   0 = inline hash mismatch (piece reset)
  *  -1 = error (bad params etc.)
  */
 int piece_mgr_got_block(piece_mgr_t *pm, uint32_t idx, uint32_t offset,
                         const uint8_t *data, uint32_t len);
+
+/* Test helper: the next n piece-buffer allocations return NULL. */
+void piece_mgr_debug_fail_next_allocs(uint32_t n);
 
 /* Apply every finished async hash result (FIFO): verified pieces are
    written and marked DONE, mismatches reset. Non-blocking; no-op when the

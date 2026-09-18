@@ -1352,6 +1352,44 @@ static void test_buf_limit_blocks_new_empty_pieces(void) {
     free_test_metainfo(&mi);
 }
 
+static void test_piece_buffer_oom_is_transient(void) {
+    char outdir[] = "/tmp/pipensx-piece-oom-XXXXXX";
+    assert(mkdtemp(outdir));
+
+    metainfo_t mi;
+    init_single_file_metainfo(&mi, "oom.bin", 2 * BLOCK_SIZE, 2 * BLOCK_SIZE);
+    storage_t *store = storage_open(&mi, outdir);
+    assert(store);
+    piece_mgr_t *pm = piece_mgr_create(&mi, store);
+    assert(pm);
+
+    piece_mgr_mark_pending(pm, 0);
+    piece_mgr_mark_block_requested(pm, 0, 0);
+    assert(pm->slots[0].buf == NULL);
+    assert(piece_mgr_block_request_count(pm, 0, 0) == 1);
+
+    uint8_t data[BLOCK_SIZE];
+    memset(data, 0xab, sizeof(data));
+    /* First get plus the drain-and-retry get inside got_block. */
+    piece_mgr_debug_fail_next_allocs(2);
+    assert(piece_mgr_got_block(pm, 0, 0, data, BLOCK_SIZE) == 1);
+    assert(pm->slots[0].buf == NULL);
+    assert(!piece_mgr_has_block(pm, 0, 0));
+    assert(piece_mgr_block_request_count(pm, 0, 0) == 0);
+    assert(pm->slots[0].state == PS_PENDING);
+    assert(storage_error(store)[0] == 0);
+
+    assert(piece_mgr_got_block(pm, 0, 0, data, BLOCK_SIZE) == 1);
+    assert(pm->slots[0].buf != NULL);
+    assert(piece_mgr_has_block(pm, 0, 0));
+    assert(storage_error(store)[0] == 0);
+
+    piece_mgr_destroy(pm);
+    storage_close(store);
+    free_test_metainfo(&mi);
+    cleanup_output(outdir, "oom.bin");
+}
+
 static void test_got_block_geometry_sets_storage_error(void) {
     const int64_t piece_length = BLOCK_SIZE * 4;
     char outdir[] = "/tmp/pipensx-piece-geom-XXXXXX";
@@ -1408,6 +1446,7 @@ int main(void) {
     test_pick_skips_hashing_piece();
     test_mark_pending_does_not_allocate_buf();
     test_buf_limit_blocks_new_empty_pieces();
+    test_piece_buffer_oom_is_transient();
     test_got_block_geometry_sets_storage_error();
     puts("piece tests passed");
     return 0;
