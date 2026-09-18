@@ -435,7 +435,12 @@ bool sequentialHttp(const DebridProvider& provider) {
 }
 
 int pollWaitMs(const DebridProvider& provider) {
-    return std::strcmp(provider.name(), "torrserver") == 0 ? 250 : 5000;
+    const char* name = provider.name();
+    if (std::strcmp(name, "torrserver") == 0)
+        return 250;
+    // TorBox/RD: the cloud copy can take minutes; 2s is enough to notice
+    // Ready without burning the 300/min (TorBox) / 250/min (RD) budgets.
+    return 2000;
 }
 
 // Piece-buffer RAM is for the torrent picker. Debrid HTTP has no pieces;
@@ -824,9 +829,11 @@ bool shouldEmitProgress(Clock::time_point& lastEmit) {
     return false;
 }
 
-// One TCP stream from offset to EOF. Stream-install always uses this, and
-// Real-Debrid download-only does too: parallel Range workers on RD CDN URLs
-// corrupt the byte stream (RD returns 206 but pipensx sees non-PFS0 payloads).
+// One TCP stream from offset to EOF. Real-Debrid's CDN returns 206 but the
+// body is not the requested slice (PFS0 / installer rejects). TorrServer's
+// RAM cache is a sequential reader — Range workers thrash it. TorBox's CDN
+// is the remaining WAN path that actually pipelines 206s, which is what
+// keeps Switch's 256 KiB TCP window off the ~5 MB/s floor.
 bool fetchSequential(const RangeFetcher& fetcher, const std::string& url,
                      uint64_t offset,
                      const std::function<bool(const uint8_t*, size_t)>& sink,
@@ -1432,8 +1439,12 @@ Step attemptStreamInstall(RunContext& ctx, const DebridFile& file,
             ctx.packageDownloadedBytes.fetch_add(n);
             return queue.push(data, n);
         };
-        fetchOk = fetchSequential(ctx.fetcher, url, producerOffset, sink,
-                                  *ctx.shouldStop, fetchError);
+        fetchOk = sequentialHttp(ctx.provider)
+            ? fetchSequential(ctx.fetcher, url, producerOffset, sink,
+                              *ctx.shouldStop, fetchError)
+            : fetchOrdered(ctx.fetcher, url, producerOffset, file.bytes,
+                           maximumBuffered / 2, sink, *ctx.shouldStop,
+                           fetchError);
         queue.finish();
     });
 

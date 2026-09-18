@@ -796,8 +796,8 @@ void testStreamInstallCoalescesTinyChunks() {
     assert(last.packagesInstalled == 1);
 }
 
-void testStreamInstallLargeFileUsesSequentialFetch() {
-    const std::string root = "/tmp/pipensx-torbox-stream-large-test";
+void testTorboxStreamInstallUsesRangeFetch() {
+    const std::string root = "/tmp/pipensx-torbox-stream-range-test";
     system(("rm -rf " + root).c_str());
     mkdir(root.c_str(), 0755);
     const std::string data = root + "/data";
@@ -816,13 +816,23 @@ void testStreamInstallLargeFileUsesSequentialFetch() {
                                const std::function<bool(const uint8_t*, size_t)>&
                                    sink,
                                const std::function<bool()>&, std::string& error) {
-        if (endExclusive != 0) {
-            ++rangedCalls;
-            error = kDebridRangeNotSupported;
+        if (offset > content.size()) {
+            error = "range past end";
             return false;
         }
-        ++sequentialCalls;
-        std::string slice = content.substr(static_cast<size_t>(offset));
+        uint64_t end = endExclusive == 0
+            ? content.size()
+            : std::min<uint64_t>(endExclusive, content.size());
+        if (offset > end) {
+            error = "range past end";
+            return false;
+        }
+        if (endExclusive != 0)
+            ++rangedCalls;
+        else
+            ++sequentialCalls;
+        std::string slice = content.substr(static_cast<size_t>(offset),
+                                           static_cast<size_t>(end - offset));
         return sink(reinterpret_cast<const uint8_t*>(slice.data()),
                     slice.size());
     };
@@ -848,6 +858,89 @@ void testStreamInstallLargeFileUsesSequentialFetch() {
         spec, [] { return false; },
         [&last](const DebridProgress& p) { last = p; }, debridId, error);
     assert(result == DebridRunResult::Finished);
+    assert(error.empty());
+    assert(rangedCalls >= 1);
+    assert(last.status == DownloadStatus::Installed);
+    assert(last.packagesInstalled == 1);
+}
+
+void testRealdebridStreamInstallUsesSequentialFetch() {
+    const std::string root = "/tmp/pipensx-rd-stream-seq-test";
+    system(("rm -rf " + root).c_str());
+    mkdir(root.c_str(), 0755);
+    const std::string data = root + "/data";
+    mkdir(data.c_str(), 0755);
+
+    const size_t size = 10 * 1024 * 1024;
+    std::vector<uint8_t> nca(size, 0x2b);
+    std::vector<uint8_t> nsp =
+        makePfs0({{"00112233445566778899aabbccddeeff.nca", nca}});
+    std::string content(nsp.begin(), nsp.end());
+
+    int rangedCalls = 0;
+    int sequentialCalls = 0;
+    RangeFetcher fetcher = [&](const std::string&, uint64_t offset,
+                               uint64_t endExclusive,
+                               const std::function<bool(const uint8_t*, size_t)>&
+                                   sink,
+                               const std::function<bool()>&, std::string& error) {
+        if (endExclusive != 0) {
+            ++rangedCalls;
+            error = kDebridRangeNotSupported;
+            return false;
+        }
+        ++sequentialCalls;
+        std::string slice = content.substr(static_cast<size_t>(offset));
+        return sink(reinterpret_cast<const uint8_t*>(slice.data()),
+                    slice.size());
+    };
+
+    std::vector<std::pair<std::string, std::string>> script = {
+        {"/torrents/info/",
+         "{\"id\":\"abc123\",\"filename\":\"Example\",\"bytes\":" +
+             std::to_string(content.size()) +
+             ",\"progress\":100,\"status\":\"downloaded\","
+             "\"files\":[{\"id\":\"1\",\"path\":\"/Example/game.nsp\","
+             "\"bytes\":" +
+             std::to_string(content.size()) +
+             ",\"selected\":1}],"
+             "\"links\":[\"https://rd.to/dl/x\"]}"},
+        {"/unrestrict/link",
+         "{\"download\":\"https://cdn.example/game.nsp\","
+         "\"filename\":\"game.nsp\",\"filesize\":" +
+             std::to_string(content.size()) + "}"},
+    };
+    RdTransport transport = [&script](const RdHttpRequest& request,
+                                      RdHttpResponse& response, std::string&) {
+        for (const auto& entry : script) {
+            if (request.url.find(entry.first) != std::string::npos) {
+                response.status = 200;
+                response.body = entry.second;
+                return true;
+            }
+        }
+        response.status = 200;
+        response.body = "{}";
+        return true;
+    };
+    RealdebridProvider provider("k", transport);
+    DebridTransfer transfer(provider, fetcher);
+
+    DebridTaskSpec spec;
+    spec.taskId = "aabbccddaabbccddaabbccddaabbccddaabbccdd";
+    spec.debridId = "abc123";
+    spec.dataPath = data;
+    spec.workingRoot = root;
+    spec.mode = TransferMode::StreamInstall;
+
+    std::string debridId;
+    std::string error;
+    DebridProgress last;
+    DebridRunResult result = transfer.run(
+        spec, [] { return false; },
+        [&last](const DebridProgress& p) { last = p; }, debridId, error);
+    assert(result == DebridRunResult::Finished);
+    assert(error.empty());
     assert(rangedCalls == 0);
     assert(sequentialCalls >= 1);
     assert(last.status == DownloadStatus::Installed);
@@ -1327,7 +1420,8 @@ int main() {
     testOutOfOrderRangesAssembleInOrder();
     testRangeIgnoredFallsBackToSequential();
     testStreamInstallCoalescesTinyChunks();
-    testStreamInstallLargeFileUsesSequentialFetch();
+    testTorboxStreamInstallUsesRangeFetch();
+    testRealdebridStreamInstallUsesSequentialFetch();
     testRealdebridDownloadOnlyUsesSequentialFetch();
     testTorrserverDownloadOnlySequentialAndRemoves();
     testTorrserverStreamInstallSequentialAndRemoves();
