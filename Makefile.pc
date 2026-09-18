@@ -55,6 +55,7 @@ CORE_SOURCES = \
     src/core/piece.c      \
     src/core/tracker.c    \
     src/core/dht.c        \
+    src/core/peer_handoff.c \
     src/core/torrent.c    \
     src/platform/storage.c \
     vendor/dht/dht.c
@@ -299,7 +300,7 @@ $(BUILD_DIR)/tests/test_catalog: tests/test_catalog.cpp \
 		$(BUILD_DIR)/src/core/tracker.o $(BUILD_DIR)/src/core/net.o \
 		$(BUILD_DIR)/src/core/dht.o $(BUILD_DIR)/vendor/dht/dht.o \
 		$(BUILD_DIR)/src/core/bencode.o $(BUILD_DIR)/src/core/metainfo.o $(BUILD_DIR)/src/core/sha1.o $(BUILD_DIR)/src/core/sha256.o \
-		$(BUILD_DIR)/src/core/mse.o \
+		$(BUILD_DIR)/src/core/mse.o $(BUILD_DIR)/src/core/peer_handoff.o \
 		$(BUILD_DIR)/src/core/util.o
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -lzstd
@@ -528,7 +529,8 @@ $(BUILD_DIR)/tests/test_torrent_metainfo_fetch: tests/test_torrent_metainfo_fetc
 		$(BUILD_DIR)/src/core/dht.o $(BUILD_DIR)/vendor/dht/dht.o \
 		$(BUILD_DIR)/src/core/bencode.o $(BUILD_DIR)/src/core/metainfo.o \
 		$(BUILD_DIR)/src/core/sha1.o $(BUILD_DIR)/src/core/sha256.o \
-		$(BUILD_DIR)/src/core/mse.o $(BUILD_DIR)/src/core/util.o
+		$(BUILD_DIR)/src/core/mse.o $(BUILD_DIR)/src/core/peer_handoff.o \
+		$(BUILD_DIR)/src/core/util.o
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -pthread
 

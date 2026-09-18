@@ -47,6 +47,13 @@ int dht_session_poll(dht_session_t *s, uint8_t (*out)[6], int max);
 void dht_engine_set_cache_path(const char *path);
 
 /*
+ * After the last session detaches, keep the UDP socket and routing table
+ * alive for this many milliseconds so magnet resolve → torrent_create does
+ * not cold-bootstrap. 0 = stop immediately (tests). Default: 90000.
+ */
+void dht_engine_set_idle_grace_ms(int ms);
+
+/*
  * Cache file codec, exposed for tests. Format: "PXD1" magic, 20-byte node
  * ID, u16 LE count (<= DHT_CACHE_MAX_NODES), then count compact endpoints
  * (4-byte IPv4 + 2-byte port, network order). Read returns the node count
@@ -63,5 +70,5 @@ int dht_cache_write(const char *path, const uint8_t node_id[20],
 /* Stats for the shared engine's routing table. */
 void dht_shared_nodes(int *good, int *dubious);
 
-/* 1 while at least one session is attached and the engine thread is up. */
+/* 1 while the engine thread is up (including idle grace after last detach). */
 int dht_shared_running(void);

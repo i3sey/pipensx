@@ -165,6 +165,8 @@ static struct {
     socket_t   fd;
     uint8_t    node_id[20];
     int        refcount;              /* under lifecycle_mu */
+    int        running;               /* engine thread alive, incl. idle */
+    int        idle_gen;              /* cancels a pending idle-stop */
     struct dht_session *sessions;     /* under jech_mu */
     /* Engine-thread-only state. */
     int        bootstrapped;
@@ -174,6 +176,15 @@ static struct {
     .jech_mu = PTHREAD_MUTEX_INITIALIZER,
     /* the rest zero-initialized */
 };
+
+/* Keep the routing table warm across magnet → torrent (file picker). */
+static int g_idle_grace_ms = 90000;
+
+void dht_engine_set_idle_grace_ms(int ms) {
+    if (ms < 0)
+        ms = 0;
+    g_idle_grace_ms = ms;
+}
 
 static void dht_callback(void *closure, int event,
                          const uint8_t *info_hash,
@@ -366,10 +377,35 @@ static int dht_engine_start(void) {
     if (pthread_create(&g_dht.thread, NULL, dht_thread_main, NULL) != 0) {
         dht_uninit();
         net_close(g_dht.fd);
+        g_dht.fd = INVALID_SOCK;
         return 0;
     }
+    g_dht.running = 1;
     log_msg("[dht] init port=%u\n", DHT_SHARED_PORT);
     return 1;
+}
+
+/* Caller holds lifecycle_mu. jech_mu is taken here because this also runs
+   while the engine thread is still alive (last detach, idle grace). */
+static void dht_engine_persist_cache(void) {
+    if (!g_cache_path[0] || !g_dht.running)
+        return;
+    struct sockaddr_in sins[128];
+    int num = 128, num6 = 0;
+    /* num6 must be a real pointer: dht_get_nodes writes *num6
+       unconditionally. */
+    pthread_mutex_lock(&g_dht.jech_mu);
+    dht_get_nodes(sins, &num, NULL, &num6);
+    pthread_mutex_unlock(&g_dht.jech_mu);
+    if (num <= 0)
+        return;
+    uint8_t nodes[128][6];
+    for (int i = 0; i < num; i++) {
+        memcpy(nodes[i], &sins[i].sin_addr, 4);
+        memcpy(nodes[i] + 4, &sins[i].sin_port, 2);
+    }
+    if (dht_cache_write(g_cache_path, g_dht.node_id, nodes, num))
+        log_msg("[dht] saved %d nodes to %s\n", num, g_cache_path);
 }
 
 static void dht_engine_stop(void) {
@@ -378,24 +414,39 @@ static void dht_engine_stop(void) {
 
     /* Persist good nodes for the next warm start. Skipped when the table is
        empty so an offline session cannot clobber a useful cache. */
-    if (g_cache_path[0]) {
-        struct sockaddr_in sins[128];
-        int num = 128, num6 = 0;
-        /* num6 must be a real pointer: dht_get_nodes writes *num6
-           unconditionally. */
-        dht_get_nodes(sins, &num, NULL, &num6);
-        if (num > 0) {
-            uint8_t nodes[128][6];
-            for (int i = 0; i < num; i++) {
-                memcpy(nodes[i], &sins[i].sin_addr, 4);
-                memcpy(nodes[i] + 4, &sins[i].sin_port, 2);
-            }
-            if (dht_cache_write(g_cache_path, g_dht.node_id, nodes, num))
-                log_msg("[dht] saved %d nodes to %s\n", num, g_cache_path);
-        }
-    }
+    dht_engine_persist_cache();
     dht_uninit();
     net_close(g_dht.fd);
+    g_dht.fd = INVALID_SOCK;
+    g_dht.running = 0;
+}
+
+static void *dht_idle_stop_main(void *arg) {
+    int gen = (int)(intptr_t)arg;
+    int grace;
+    pthread_mutex_lock(&g_dht.lifecycle_mu);
+    grace = g_idle_grace_ms;
+    pthread_mutex_unlock(&g_dht.lifecycle_mu);
+    if (grace <= 0)
+        return NULL;
+    uint64_t start = now_ms();
+    while (now_ms() - start < (uint64_t)grace) {
+        struct timespec ts = {0, 100000000L}; /* 100 ms */
+        nanosleep(&ts, NULL);
+        pthread_mutex_lock(&g_dht.lifecycle_mu);
+        int cancel = (g_dht.refcount > 0 || g_dht.idle_gen != gen ||
+                      !g_dht.running);
+        pthread_mutex_unlock(&g_dht.lifecycle_mu);
+        if (cancel)
+            return NULL;
+    }
+    pthread_mutex_lock(&g_dht.lifecycle_mu);
+    if (g_dht.refcount == 0 && g_dht.idle_gen == gen && g_dht.running) {
+        log_msg("[dht] idle stop\n");
+        dht_engine_stop();
+    }
+    pthread_mutex_unlock(&g_dht.lifecycle_mu);
+    return NULL;
 }
 
 dht_session_t *dht_attach(const uint8_t info_hash[20],
@@ -408,10 +459,16 @@ dht_session_t *dht_attach(const uint8_t info_hash[20],
     s->announce_port = announce_port;
 
     pthread_mutex_lock(&g_dht.lifecycle_mu);
-    if (g_dht.refcount == 0 && !dht_engine_start()) {
-        pthread_mutex_unlock(&g_dht.lifecycle_mu);
-        free(s);
-        return NULL;
+    int warm = g_dht.running;
+    if (g_dht.refcount == 0) {
+        if (g_dht.running) {
+            /* Cancel the idle-stop; reuse the live routing table. */
+            g_dht.idle_gen++;
+        } else if (!dht_engine_start()) {
+            pthread_mutex_unlock(&g_dht.lifecycle_mu);
+            free(s);
+            return NULL;
+        }
     }
     g_dht.refcount++;
     pthread_mutex_lock(&g_dht.jech_mu);
@@ -426,8 +483,8 @@ dht_session_t *dht_attach(const uint8_t info_hash[20],
     int sessions = g_dht.refcount;
     pthread_mutex_unlock(&g_dht.lifecycle_mu);
 
-    log_msg("[dht] attach announce_port=%u sessions=%d\n",
-            announce_port, sessions);
+    log_msg("[dht] attach announce_port=%u sessions=%d%s\n",
+            announce_port, sessions, warm ? " warm" : "");
     return s;
 }
 
@@ -444,13 +501,29 @@ void dht_detach(dht_session_t *s) {
     }
     pthread_mutex_unlock(&g_dht.jech_mu);
     g_dht.refcount--;
-    if (g_dht.refcount == 0)
-        dht_engine_stop();
+    if (g_dht.refcount == 0) {
+        int grace = g_idle_grace_ms;
+        if (grace <= 0) {
+            dht_engine_stop();
+        } else {
+            /* Persist now so a kill during the picker still warm-starts. */
+            dht_engine_persist_cache();
+            int gen = ++g_dht.idle_gen;
+            pthread_t idle;
+            if (pthread_create(&idle, NULL, dht_idle_stop_main,
+                               (void*)(intptr_t)gen) == 0)
+                pthread_detach(idle);
+            else
+                dht_engine_stop();
+        }
+    }
     int sessions = g_dht.refcount;
+    int idle = (sessions == 0 && g_dht.running);
     pthread_mutex_unlock(&g_dht.lifecycle_mu);
 
     free(s);
-    log_msg("[dht] detach sessions=%d\n", sessions);
+    log_msg("[dht] detach sessions=%d%s\n",
+            sessions, idle ? " idle" : "");
 }
 
 int dht_session_poll(dht_session_t *s, uint8_t (*out)[6], int max) {
@@ -470,15 +543,15 @@ int dht_session_poll(dht_session_t *s, uint8_t (*out)[6], int max) {
 
 int dht_shared_running(void) {
     pthread_mutex_lock(&g_dht.lifecycle_mu);
-    int n = g_dht.refcount;
+    int n = g_dht.running;
     pthread_mutex_unlock(&g_dht.lifecycle_mu);
-    return n > 0;
+    return n;
 }
 
 void dht_shared_nodes(int *good, int *dubious) {
     int g = 0, d = 0, c = 0, in = 0;
     pthread_mutex_lock(&g_dht.lifecycle_mu);
-    if (g_dht.refcount > 0) {
+    if (g_dht.running) {
         pthread_mutex_lock(&g_dht.jech_mu);
         dht_nodes(AF_INET, &g, &d, &c, &in);
         pthread_mutex_unlock(&g_dht.jech_mu);

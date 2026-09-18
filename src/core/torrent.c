@@ -3,6 +3,7 @@
 #include "tracker.h"
 #include "net.h"
 #include "peer.h"
+#include "peer_handoff.h"
 #include "util.h"
 #include "utp.h"
 #include "../platform/storage.h"
@@ -22,8 +23,16 @@
 #define CONNECT_INTERVAL_MS 50
 /* A μTP-only or firewalled peer's TCP SYN just hangs, squatting a slot until
    this fires; a reachable plaintext-TCP peer answers well inside it. Keep it
-   short so the burst dialer can cycle through a big peer list quickly. */
-#define CONNECT_TIMEOUT_MS  3000
+   short so the burst dialer can cycle through a big peer list quickly.
+   Handshake/MSE get a longer budget: those peers already completed TCP, and
+   a 1.5 s cut would drop slow-but-good Switch Wi-Fi peers into μTP. */
+#define CONNECT_TIMEOUT_MS   1500
+#define HANDSHAKE_TIMEOUT_MS 4000
+/* LEDBAT μTP yields to TCP and, in the GTA5 log, a swarm of μTP peers made
+   sequential stream-install slower than the same 3 TCP unchokes alone. Cap
+   how many μTP slots we occupy; TCP still retries SYN-hangs into μTP up to
+   this many. */
+#define MAX_UTP_PEERS 8
 /* Keep this many sockets mid-connect at once (PERF: dial in bursts instead of
    one peer per CONNECT_INTERVAL_MS) so the reachable TCP peers in a large
    announce are found in ~one pass rather than dribbled out over seconds. */
@@ -75,9 +84,16 @@
 #define TIMEOUT_COOLDOWN_MAX_MS  10000
 #define TIMEOUT_DISCONNECT_STRIKES 3
 #define TIMEOUT_DISCONNECT_IDLE_MS (REQUEST_TIMEOUT_MS * 2)
-#define MAX_HEDGES_PER_TICK   4
-#define MAX_HEDGED_BLOCKS     16
+#define MAX_HEDGES_PER_TICK   16
+#define MAX_ENDGAME_HEDGES_PER_TICK 32
+#define MAX_HEDGED_BLOCKS     64
 #define HEDGE_INTERVAL_MS     250
+/* Last 1 MiB of the head piece (64 × 16 KiB): duplicate outstanding blocks
+   to every other unchoked peer instead of waiting out hedge_after_ms=5 s.
+   A 16 MiB piece with 4 leftover blocks sat 8–22 s in the GTA5 log. */
+#define HEDGE_ENDGAME_REMAINING 64
+#define HEDGE_ENDGAME_AFTER_MS  500
+#define HEDGE_ENDGAME_COPIES    4
 /* Adaptive hedge threshold (PERF_PLAN 5.1): duplicate a head-window request
    once it is HEDGE_LATENCY_MULT times older than the median active-peer block
    latency, instead of waiting for the static hedge_after_ms. The static value
@@ -754,6 +770,8 @@ static void clear_peer_requests(torrent_t *t, peer_t *p) {
 }
 
 /* ---- peer_ctx helper ---- */
+static int peer_slot_taken(const torrent_t *t, uint32_t ip, uint16_t port);
+
 static void fill_ctx(torrent_t *t, peer_ctx_t *ctx) {
     ctx->info_hash   = t->mi.info_hash;
     ctx->peer_id     = t->peer_id;
@@ -762,6 +780,87 @@ static void fill_ctx(torrent_t *t, peer_ctx_t *ctx) {
     ctx->our_bf      = t->pm->available_bf;
     ctx->listen_port = t->listen_port;
     ctx->use_mse     = 1; /* try MSE/PE first to reach encryption-required peers */
+}
+
+/* Magnet → torrent live sockets. Compact IPs (PERF_PLAN 7.7) still reconnect;
+   these fds are already past the BT handshake. */
+uint32_t torrent_adopt_stashed_peers(torrent_t *t) {
+    if (!t)
+        return 0;
+    torrent_peer_handoff_t taken[PEER_HANDOFF_MAX];
+    int n = torrent_take_stashed_peers(t->mi.info_hash, taken, PEER_HANDOFF_MAX);
+    uint32_t adopted = 0;
+    for (int i = 0; i < n; i++) {
+        torrent_peer_handoff_t *h = &taken[i];
+        socket_t fd = h->fd;
+        h->fd = INVALID_SOCK;
+        if (t->num_peers >= MAX_ACTIVE_PEERS ||
+            peer_slot_taken(t, h->addr.sin_addr.s_addr, h->addr.sin_port)) {
+            net_close(fd);
+            free((void*)h->pending);
+            continue;
+        }
+        peer_ctx_t ctx;
+        fill_ctx(t, &ctx);
+        ctx.use_mse = 0;
+        peer_t *p = peer_create(fd, h->addr, &ctx);
+        if (!p) {
+            net_close(fd);
+            free((void*)h->pending);
+            continue;
+        }
+        p->mse_enabled = 0;
+        p->supports_ext = 1;
+        p->dl_rate_bps = PIPELINE_BOOTSTRAP_BPS;
+        /* Pending bytes are already plaintext; inject before mse_active. */
+        if (h->pending_len && h->pending &&
+            peer_rbuf_append(p, h->pending, h->pending_len) < 0) {
+            peer_destroy(p);
+            free((void*)h->pending);
+            continue;
+        }
+        if (h->mse_active) {
+            p->mse.send_rc4 = h->send_rc4;
+            p->mse.recv_rc4 = h->recv_rc4;
+            p->mse_active = 1;
+        }
+        p->state = PS_ACTIVE;
+        p->last_recv_ms = now_ms();
+        p->last_send_ms = p->last_recv_ms;
+        int ok = 1;
+        if (!peer_send_ext_handshake(p, ctx.listen_port))
+            ok = 0;
+        if (ok && ctx.our_bf && ctx.bf_bytes &&
+            !peer_send_bitfield(p, ctx.our_bf, ctx.bf_bytes))
+            ok = 0;
+        if (ok && !peer_send_interested(p))
+            ok = 0;
+        if (ok && peer_process(p, &ctx, cb_block, cb_have, cb_peers, t) < 0)
+            ok = 0;
+        free((void*)h->pending);
+        h->pending = NULL;
+        if (!ok) {
+            peer_destroy(p);
+            continue;
+        }
+        int slotted = 0;
+        for (int s = 0; s < MAX_ACTIVE_PEERS; s++) {
+            if (!t->peers[s]) {
+                t->peers[s] = p;
+                t->num_peers++;
+                slotted = 1;
+                adopted++;
+                break;
+            }
+        }
+        if (!slotted)
+            peer_destroy(p);
+    }
+    if (adopted)
+        log_msg("[torrent] adopted %u magnet sockets\n", adopted);
+    telemetry_log("torrent", t->telemetry_tag,
+                  "event=adopt_peers count=%u", adopted);
+    return adopted;
 }
 
 static void broadcast_have(torrent_t *t, uint32_t idx) {
@@ -1040,11 +1139,33 @@ static int requeue_utp(torrent_t *t, uint32_t ip, uint16_t port) {
     return 1;
 }
 
-/* True when a failed peer is a TCP dial that never reached PS_ACTIVE — the only
-   case worth retrying over μTP. Must be read before the peer is destroyed. */
+/* True when a failed TCP SYN never connected. Handshake/MSE timeouts already
+   completed TCP — retrying those over LEDBAT μTP filled the GTA5 swarm with
+   slow peers that then held the sequential head. Must be read before destroy. */
 static int should_retry_utp(const torrent_t *t, const peer_t *p) {
     return t->utp && !p->incoming && p->transport == TRANSPORT_TCP &&
-           (p->state == PS_CONNECTING || p->state == PS_HANDSHAKE);
+           p->state == PS_CONNECTING;
+}
+
+static int count_utp_peers(const torrent_t *t) {
+    int n = 0;
+    for (int i = 0; i < MAX_ACTIVE_PEERS; i++) {
+        peer_t *p = t->peers[i];
+        if (p && p->state != PS_DEAD && p->transport == TRANSPORT_UTP)
+            n++;
+    }
+    return n;
+}
+
+static int count_unchoked_tcp(const torrent_t *t) {
+    int n = 0;
+    for (int i = 0; i < MAX_ACTIVE_PEERS; i++) {
+        peer_t *p = t->peers[i];
+        if (p && p->state == PS_ACTIVE && !p->am_choked &&
+            p->transport == TRANSPORT_TCP)
+            n++;
+    }
+    return n;
 }
 
 /* Unified dial-failure fallback across both axes (crypto × transport). Inputs
@@ -1073,7 +1194,17 @@ static void handle_dial_failure(torrent_t *t, uint32_t ip, uint16_t port,
 static int try_connect(torrent_t *t) {
     if (t->num_peers >= MAX_ACTIVE_PEERS) return 0;
     uint32_t ip; uint16_t port; uint8_t no_mse = 0, use_utp = 0;
-    if (!queue_pop(t, &ip, &port, &no_mse, &use_utp)) return 0;
+    int skipped_utp = 0;
+    for (;;) {
+        if (!queue_pop(t, &ip, &port, &no_mse, &use_utp)) return 0;
+        if (use_utp && count_utp_peers(t) >= MAX_UTP_PEERS) {
+            queue_insert(t, ip, port, /*front*/0, no_mse, 1);
+            if (++skipped_utp >= MAX_UTP_PEERS)
+                return 0;
+            continue;
+        }
+        break;
+    }
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
@@ -1182,8 +1313,18 @@ static void schedule_requests(torrent_t *t, peer_t *p, uint64_t now) {
         return;
     uint32_t limit = peer_pipeline_limit(t, p);
     uint32_t stalled = (uint32_t)-1;
+    uint32_t exclude = UINT32_MAX;
+    /* While any TCP peer is unchoked, keep μTP off the sequential head so
+       LEDBAT cannot hold last blocks of a 16 MiB piece. μTP still fills the
+       lookahead tail; if TCP goes silent, exclude stays unset. */
+    if (p->transport == TRANSPORT_UTP && count_unchoked_tcp(t) > 0) {
+        uint32_t head = piece_mgr_head_piece(t->pm);
+        if (head != UINT32_MAX)
+            exclude = head;
+    }
     while ((uint32_t)p->pipeline_len < limit) {
-        uint32_t pidx = piece_mgr_pick(t->pm, p->bitfield, p->bf_bytes);
+        uint32_t pidx = piece_mgr_pick_excluding(
+            t->pm, p->bitfield, p->bf_bytes, exclude);
         if (pidx == (uint32_t)-1) break;
         if (pidx == stalled) break;
         piece_mgr_mark_pending(t->pm, pidx);
@@ -1235,10 +1376,21 @@ static uint32_t current_head_piece(const torrent_t *t) {
     return piece_mgr_head_piece(t->pm);
 }
 
+static int hedge_peer_better(const peer_t *peer, const peer_t *best) {
+    if (!best)
+        return 1;
+    if (peer->timeout_strikes != best->timeout_strikes)
+        return peer->timeout_strikes < best->timeout_strikes;
+    if (peer->last_piece_ms != best->last_piece_ms)
+        return peer->last_piece_ms > best->last_piece_ms;
+    return peer->pipeline_len < best->pipeline_len;
+}
+
 static peer_t *pick_hedge_peer(torrent_t *t, const peer_t *primary,
                                uint32_t piece, uint32_t offset,
                                uint64_t now) {
-    peer_t *best = NULL;
+    peer_t *best_tcp = NULL;
+    peer_t *best_other = NULL;
     for (int i = 0; i < MAX_ACTIVE_PEERS; ++i) {
         peer_t *peer = t->peers[i];
         if (!peer || peer == primary || peer->state != PS_ACTIVE ||
@@ -1247,16 +1399,27 @@ static peer_t *pick_hedge_peer(torrent_t *t, const peer_t *primary,
             peer_has_request(peer, piece, offset) ||
             (uint32_t)peer->pipeline_len >= peer_pipeline_limit(t, peer))
             continue;
-        if (!best || peer->timeout_strikes < best->timeout_strikes ||
-            (peer->timeout_strikes == best->timeout_strikes &&
-             peer->last_piece_ms > best->last_piece_ms) ||
-            (peer->timeout_strikes == best->timeout_strikes &&
-             peer->last_piece_ms == best->last_piece_ms &&
-             peer->pipeline_len < best->pipeline_len)) {
-            best = peer;
+        if (peer->transport == TRANSPORT_TCP) {
+            if (hedge_peer_better(peer, best_tcp))
+                best_tcp = peer;
+        } else if (hedge_peer_better(peer, best_other)) {
+            best_other = peer;
         }
     }
-    return best;
+    return best_tcp ? best_tcp : best_other;
+}
+
+static uint32_t head_blocks_remaining(const piece_mgr_t *pm, uint32_t head) {
+    if (!pm || head >= pm->num_pieces)
+        return 0;
+    const piece_slot_t *sl = &pm->slots[head];
+    if (!sl->num_blocks || sl->num_blocks_done >= sl->num_blocks)
+        return 0;
+    return sl->num_blocks - sl->num_blocks_done;
+}
+
+static int head_in_endgame(uint32_t remaining) {
+    return remaining > 0 && remaining <= HEDGE_ENDGAME_REMAINING;
 }
 
 /* PERF_PLAN 5.1: hedge threshold derived from the swarm's measured block
@@ -1290,6 +1453,14 @@ static uint32_t adaptive_hedge_after_ms(const torrent_t *t) {
     return (uint32_t)threshold;
 }
 
+static uint32_t hedge_after_ms_for(const torrent_t *t, int endgame) {
+    uint32_t adaptive = adaptive_hedge_after_ms(t);
+    if (!endgame)
+        return adaptive;
+    return adaptive < HEDGE_ENDGAME_AFTER_MS ? adaptive
+                                             : HEDGE_ENDGAME_AFTER_MS;
+}
+
 static void schedule_hedged_requests(torrent_t *t, uint64_t now) {
     if (!t->hedge_after_ms)
         return;
@@ -1300,8 +1471,13 @@ static void schedule_hedged_requests(torrent_t *t, uint64_t now) {
     uint32_t head = current_head_piece(t);
     if (head == UINT32_MAX)
         return;
-    uint32_t hedge_after_ms = adaptive_hedge_after_ms(t);
+    uint32_t remaining = head_blocks_remaining(t->pm, head);
+    int endgame = head_in_endgame(remaining);
+    uint32_t hedge_after_ms = hedge_after_ms_for(t, endgame);
     t->hedge_effective_ms = hedge_after_ms;
+    uint32_t wanted = endgame ? HEDGE_ENDGAME_COPIES : 2;
+    uint32_t tick_cap = endgame ? MAX_ENDGAME_HEDGES_PER_TICK
+                                : MAX_HEDGES_PER_TICK;
 
     uint32_t outstanding = 0;
     piece_slot_t *headSlot = &t->pm->slots[head];
@@ -1312,32 +1488,33 @@ static void schedule_hedged_requests(torrent_t *t, uint64_t now) {
     if (outstanding >= MAX_HEDGED_BLOCKS)
         return;
     uint32_t budget = MAX_HEDGED_BLOCKS - outstanding;
-    if (budget > MAX_HEDGES_PER_TICK)
-        budget = MAX_HEDGES_PER_TICK;
+    if (budget > tick_cap)
+        budget = tick_cap;
     uint32_t hedged = 0;
-    for (int i = 0; i < MAX_ACTIVE_PEERS &&
-                    hedged < budget; ++i) {
+    for (int i = 0; i < MAX_ACTIVE_PEERS && hedged < budget; ++i) {
         peer_t *primary = t->peers[i];
         if (!primary || primary->state != PS_ACTIVE)
             continue;
-        for (int j = 0; j < primary->pipeline_len &&
-                        hedged < budget; ++j) {
+        for (int j = 0; j < primary->pipeline_len && hedged < budget; ++j) {
             block_req_t request = primary->pipeline[j];
             if (request.index != (int)head || request.offset < 0 ||
                 request.requested_ms > now ||
                 now - request.requested_ms < hedge_after_ms)
                 continue;
             uint32_t block = (uint32_t)request.offset / BLOCK_SIZE;
-            if (piece_mgr_has_block(t->pm, head, block) ||
-                piece_mgr_block_request_count(t->pm, head, block) != 1)
+            if (piece_mgr_has_block(t->pm, head, block))
                 continue;
-            peer_t *candidate = pick_hedge_peer(
-                t, primary, head, (uint32_t)request.offset, now);
-            if (!candidate)
-                continue;
-            if (peer_request_block(candidate, head,
-                                   (uint32_t)request.offset,
-                                   (uint32_t)request.length)) {
+            while (hedged < budget &&
+                   piece_mgr_block_request_count(t->pm, head, block) <
+                       wanted) {
+                peer_t *candidate = pick_hedge_peer(
+                    t, primary, head, (uint32_t)request.offset, now);
+                if (!candidate)
+                    break;
+                if (!peer_request_block(candidate, head,
+                                        (uint32_t)request.offset,
+                                        (uint32_t)request.length))
+                    break;
                 piece_mgr_mark_block_requested(t->pm, head, block);
                 candidate->telemetry_hedged_requests++;
                 t->telemetry_hedged_requests++;
@@ -2077,8 +2254,10 @@ int torrent_tick(torrent_t *t) {
         /* Replace unreachable peers quickly so they do not occupy every slot. */
         if (p->state == PS_CONNECTING || p->state == PS_MSE ||
             p->state == PS_HANDSHAKE) {
+            uint64_t dial_limit = p->state == PS_CONNECTING
+                ? CONNECT_TIMEOUT_MS : HANDSHAKE_TIMEOUT_MS;
             if (p->connect_time_ms <= now2 &&
-                now2 - p->connect_time_ms > CONNECT_TIMEOUT_MS) {
+                now2 - p->connect_time_ms > dial_limit) {
                 log_msg("[torrent] peer connect/handshake timeout\n");
                 uint32_t ip = p->addr.sin_addr.s_addr;
                 uint16_t port = p->addr.sin_port;

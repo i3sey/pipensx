@@ -2,6 +2,7 @@
 #include "metainfo.h"
 #include "piece.h"
 #include "dht.h"
+#include "peer_handoff.h"
 #include <stdint.h>
 
 typedef struct torrent torrent_t;
@@ -75,6 +76,10 @@ void        torrent_destroy(torrent_t *t);
  * deduplication. */
 uint32_t torrent_add_initial_peers(torrent_t *t, const uint8_t *compact,
                                    uint32_t count);
+
+/* Install stashed magnet sockets as PS_ACTIVE peers (ext handshake, bitfield,
+   interested, replay pending). Returns how many were slotted. */
+uint32_t torrent_adopt_stashed_peers(torrent_t *t);
 
 /*
  * Run one tick of the event loop.

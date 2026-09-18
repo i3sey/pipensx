@@ -573,6 +573,63 @@ static void test_accept_incoming_plaintext(void) {
     net_close(t.listen_fd);
 }
 
+static void test_adopt_stashed_peer(void) {
+    int sv[2];
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
+    assert(net_set_nonblock(sv[0]));
+    assert(net_set_nonblock(sv[1]));
+
+    uint8_t hash[20];
+    memset(hash, 0xab, 20);
+
+    uint8_t pending[] = {
+        0, 0, 0, 1, MSG_UNCHOKE,
+        0, 0, 0, 2, MSG_BITFIELD, 0x80,
+    };
+    torrent_peer_handoff_t handoff;
+    memset(&handoff, 0, sizeof(handoff));
+    handoff.fd = sv[0];
+    handoff.addr.sin_family = AF_INET;
+    handoff.addr.sin_addr.s_addr = htonl(0x08080808u);
+    handoff.addr.sin_port = htons(6881);
+    handoff.pending = pending;
+    handoff.pending_len = (uint32_t)sizeof(pending);
+    torrent_stash_peer(hash, &handoff);
+
+    torrent_t torrent = {0};
+    memcpy(torrent.mi.info_hash, hash, 20);
+    torrent.mi.num_pieces = 1;
+    piece_mgr_t pm = {0};
+    uint8_t our_bf = 0;
+    pm.available_bf = &our_bf;
+    pm.num_pieces = 1;
+    torrent.pm = &pm;
+    memset(torrent.peer_id, 0x11, 20);
+    torrent.listen_port = 51413;
+
+    assert(torrent_adopt_stashed_peers(&torrent) == 1);
+    assert(torrent.num_peers == 1);
+    peer_t *p = torrent.peers[0];
+    assert(p != NULL);
+    assert(p->state == PS_ACTIVE);
+    assert(p->am_choked == 0);
+    assert(p->am_interested == 1);
+    assert(p->bitfield != NULL);
+    assert((p->bitfield[0] & 0x80) != 0);
+    assert(p->fd == sv[0]);
+
+    /* Duplicate compact IP must not queue a second dial. */
+    uint8_t compact[6];
+    memcpy(compact, &handoff.addr.sin_addr.s_addr, 4);
+    memcpy(compact + 4, &handoff.addr.sin_port, 2);
+    assert(torrent_add_initial_peers(&torrent, compact, 1) == 0);
+
+    peer_destroy(p);
+    torrent.peers[0] = NULL;
+    net_close(sv[1]);
+    torrent_drop_stashed_peers(hash);
+}
+
 int main(void) {
     test_ema_update();
     test_last_piece_age_marks_missing_sample();
@@ -586,6 +643,7 @@ int main(void) {
     test_initial_peers_keep_verified_order();
     test_started_event_only_on_first_announce();
     test_accept_incoming_plaintext();
+    test_adopt_stashed_peer();
     test_bencode_rejects_deep_nesting();
     test_metainfo_path_join_bounds();
     test_metainfo_rejects_bad_numbers();

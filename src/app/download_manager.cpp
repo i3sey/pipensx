@@ -2470,6 +2470,7 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
         metainfo_free(&metainfo);
         return;
     }
+    torrent_adopt_stashed_peers(torrent);
     if (!initialPeers.empty()) {
         torrent_add_initial_peers(
             torrent, initialPeers.data(),

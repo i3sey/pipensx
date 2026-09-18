@@ -8,6 +8,7 @@ extern "C" {
 #include "../core/mse.h"
 #include "../core/net.h"
 #include "../core/sha1.h"
+#include "../core/peer_handoff.h"
 #include "../core/tracker.h"
 #include "../core/util.h"
 }
@@ -16,6 +17,7 @@ extern "C" {
 #include <cerrno>
 #include <cctype>
 #include <chrono>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -347,6 +349,73 @@ bool sendFrame(PeerWire& wire, const std::vector<uint8_t>& payload,
            wireSendAll(wire, payload.data(), payload.size(), stop);
 }
 
+void appendCapturedFrame(std::vector<uint8_t>* extra,
+                         const std::vector<uint8_t>& payload) {
+    if (!extra)
+        return;
+    constexpr size_t kMaxCaptured = 64 * 1024;
+    if (extra->size() + 4 + payload.size() > kMaxCaptured)
+        return;
+    uint32_t size = static_cast<uint32_t>(payload.size());
+    extra->push_back(static_cast<uint8_t>(size >> 24));
+    extra->push_back(static_cast<uint8_t>(size >> 16));
+    extra->push_back(static_cast<uint8_t>(size >> 8));
+    extra->push_back(static_cast<uint8_t>(size));
+    extra->insert(extra->end(), payload.begin(), payload.end());
+}
+
+void stashMagnetPeer(PeerWire& wire, const uint8_t infoHash[20],
+                     const uint8_t* compact,
+                     const std::vector<uint8_t>* extra) {
+    if (wire.fd == INVALID_SOCK || !compact)
+        return;
+    /* Ask for unchoke during the picker gap so adopt may already be fed. */
+    static const uint8_t interested[] = {0, 0, 0, 1, 2};
+    wireSendAll(wire, interested, sizeof(interested));
+
+    std::vector<uint8_t> pending;
+    if (extra && !extra->empty())
+        pending = *extra;
+    if (wire.backlogPos < wire.backlog.size())
+        pending.insert(pending.end(),
+                       wire.backlog.begin() +
+                           static_cast<std::ptrdiff_t>(wire.backlogPos),
+                       wire.backlog.end());
+
+    torrent_peer_handoff_t handoff{};
+    handoff.fd = wire.fd;
+    handoff.addr.sin_family = AF_INET;
+    std::memcpy(&handoff.addr.sin_addr.s_addr, compact, 4);
+    std::memcpy(&handoff.addr.sin_port, compact + 4, 2);
+    handoff.mse_active = wire.encrypted ? 1 : 0;
+    handoff.send_rc4 = wire.send;
+    handoff.recv_rc4 = wire.recv;
+    handoff.pending = pending.empty() ? nullptr : pending.data();
+    handoff.pending_len = static_cast<uint32_t>(pending.size());
+    torrent_stash_peer(infoHash, &handoff);
+    wire.fd = INVALID_SOCK;
+}
+
+struct MagnetWireGuard {
+    PeerWire* wire = nullptr;
+    const uint8_t* infoHash = nullptr;
+    const uint8_t* compact = nullptr;
+    std::vector<uint8_t>* extra = nullptr;
+    bool handshake = false;
+
+    ~MagnetWireGuard() { finish(); }
+
+    void finish() {
+        if (!wire || wire->fd == INVALID_SOCK)
+            return;
+        if (handshake && infoHash && compact)
+            stashMagnetPeer(*wire, infoHash, compact, extra);
+        else
+            net_close(wire->fd);
+        wire->fd = INVALID_SOCK;
+    }
+};
+
 bool recvFrame(PeerWire& wire, std::vector<uint8_t>& payload,
                const ResolveStop* stop = nullptr) {
     uint8_t header[4];
@@ -526,6 +595,7 @@ bool connectPeer(const uint8_t* compact, const uint8_t infoHash[20],
 
 bool negotiateMetadata(PeerWire& wire, uint8_t& peerExtension,
                        size_t& metadataSize,
+                       std::vector<uint8_t>* extra = nullptr,
                        const ResolveStop* stop = nullptr) {
     static const char handshake[] = "d1:md11:ut_metadatai1eee";
     std::vector<uint8_t> request{20, 0};
@@ -537,8 +607,10 @@ bool negotiateMetadata(PeerWire& wire, uint8_t& peerExtension,
         std::vector<uint8_t> frame;
         if (!recvFrame(wire, frame, stop))
             return false;
-        if (frame.size() < 3 || frame[0] != 20 || frame[1] != 0)
+        if (frame.size() < 3 || frame[0] != 20 || frame[1] != 0) {
+            appendCapturedFrame(extra, frame);
             continue;
+        }
         const char* begin = reinterpret_cast<const char*>(frame.data() + 2);
         const char* end = reinterpret_cast<const char*>(frame.data() + frame.size());
         be_node_t root;
@@ -577,6 +649,7 @@ bool sendMetadataRequest(PeerWire& wire, uint8_t extension, uint32_t piece,
 bool receiveMetadataPiece(PeerWire& wire,
                           uint32_t& piece, const uint8_t*& data,
                           size_t& dataSize, std::vector<uint8_t>& frame,
+                          std::vector<uint8_t>* extra = nullptr,
                           const ResolveStop* stop = nullptr) {
     for (int message = 0; message < 32; ++message) {
         if (!recvFrame(wire, frame, stop)) {
@@ -586,8 +659,10 @@ bool receiveMetadataPiece(PeerWire& wire,
         // Extended messages the peer sends back to us carry our advertised
         // ut_metadata id, not the peer's (BEP 10).
         if (frame.size() < 3 || frame[0] != 20 ||
-            frame[1] != kLocalUtMetadataId)
+            frame[1] != kLocalUtMetadataId) {
+            appendCapturedFrame(extra, frame);
             continue;
+        }
         const char* begin = reinterpret_cast<const char*>(frame.data() + 2);
         const char* end = reinterpret_cast<const char*>(frame.data() + frame.size());
         const char* cursor = begin;
@@ -642,22 +717,28 @@ bool fetchMetadataFromPeer(const uint8_t* compact,
                   peerCount});
 
     PeerWire wire;
+    std::vector<uint8_t> extraFrames;
+    MagnetWireGuard guard;
+    guard.wire = &wire;
+    guard.infoHash = spec.infoHash;
+    guard.compact = compact;
+    guard.extra = &extraFrames;
     if (!connectPeer(compact, spec.infoHash, peerId, wire, attempt, &stop)) {
         log_msg("[magnet] peer %u/%u failed at %s (errno %d)\n",
                 peerIndex + 1, peerCount, attempt.failure, attempt.error);
-        net_close(wire.fd);
         return false;
     }
     log_msg("[magnet] peer %u/%u BitTorrent handshake ok%s\n",
             peerIndex + 1, peerCount, wire.encrypted ? " (MSE)" : "");
     attempt.handshakeVerified = true;
+    guard.handshake = true;
 
     uint8_t extension = 0;
     size_t metadataSize = 0;
-    if (!negotiateMetadata(wire, extension, metadataSize, &stop)) {
+    if (!negotiateMetadata(wire, extension, metadataSize, &extraFrames,
+                           &stop)) {
         log_msg("[magnet] peer %u/%u has no usable ut_metadata\n",
                 peerIndex + 1, peerCount);
-        net_close(wire.fd);
         return false;
     }
     log_msg("[magnet] peer %u/%u ut_metadata=%u size=%zu\n",
@@ -676,10 +757,8 @@ bool fetchMetadataFromPeer(const uint8_t* compact,
              piece < received.size() && inFlight < kRequestPipeline; ++piece) {
             if (received[piece] || requested[piece])
                 continue;
-            if (!sendMetadataRequest(wire, extension, piece, &stop)) {
-                net_close(wire.fd);
+            if (!sendMetadataRequest(wire, extension, piece, &stop))
                 return false;
-            }
             requested[piece] = 1;
             ++inFlight;
         }
@@ -689,10 +768,9 @@ bool fetchMetadataFromPeer(const uint8_t* compact,
         size_t byteCount = 0;
         std::vector<uint8_t> frame;
         if (!receiveMetadataPiece(wire, piece, bytes, byteCount, frame,
-                                  &stop)) {
+                                  &extraFrames, &stop)) {
             log_msg("[magnet] peer %u/%u metadata receive failed\n",
                     peerIndex + 1, peerCount);
-            net_close(wire.fd);
             return false;
         }
         if (piece >= received.size())
@@ -706,7 +784,6 @@ bool fetchMetadataFromPeer(const uint8_t* compact,
         if (byteCount != expected) {
             log_msg("[magnet] peer %u/%u wrong metadata piece size %zu/%zu\n",
                     peerIndex + 1, peerCount, byteCount, expected);
-            net_close(wire.fd);
             return false;
         }
         if (!received[piece]) {
@@ -720,7 +797,6 @@ bool fetchMetadataFromPeer(const uint8_t* compact,
         }
     }
 
-    net_close(wire.fd);
     if (completed != received.size())
         return false;
     metadata = std::move(local);
@@ -749,15 +825,18 @@ void harvestPexFromPeer(const uint8_t* compact, const MagnetSpec& spec,
                         std::vector<uint8_t>& out) {
     ResolveStop stop{&cancelled, &stopWorkers};
     PeerWire wire;
+    std::vector<uint8_t> extraFrames;
+    MagnetWireGuard guard;
+    guard.wire = &wire;
+    guard.infoHash = spec.infoHash;
+    guard.compact = compact;
+    guard.extra = &extraFrames;
     PeerAttempt attempt;
-    if (!connectPeer(compact, spec.infoHash, peerId, wire, attempt, &stop)) {
-        net_close(wire.fd);
+    if (!connectPeer(compact, spec.infoHash, peerId, wire, attempt, &stop))
         return;
-    }
-    if (!sendPexHandshake(wire, &stop)) {
-        net_close(wire.fd);
+    guard.handshake = true;
+    if (!sendPexHandshake(wire, &stop))
         return;
-    }
     uint64_t deadline = now_ms() + kPexPeerTimeoutMs;
     while (!stop.requested() && now_ms() < deadline) {
         std::vector<uint8_t> frame;
@@ -766,8 +845,10 @@ void harvestPexFromPeer(const uint8_t* compact, const MagnetSpec& spec,
         // Extended messages the peer sends to us carry our advertised id, not
         // the peer's (BEP 10). Skip the peer's extension handshake (id 0) and
         // anything that is not our ut_pex channel.
-        if (frame.size() < 3 || frame[0] != 20 || frame[1] != kLocalUtPexId)
+        if (frame.size() < 3 || frame[0] != 20 || frame[1] != kLocalUtPexId) {
+            appendCapturedFrame(&extraFrames, frame);
             continue;
+        }
         const char* begin = reinterpret_cast<const char*>(frame.data() + 2);
         const char* end =
             reinterpret_cast<const char*>(frame.data() + frame.size());
@@ -783,7 +864,6 @@ void harvestPexFromPeer(const uint8_t* compact, const MagnetSpec& spec,
                               static_cast<uint32_t>(added.slen / 6));
         }
     }
-    net_close(wire.fd);
 }
 
 std::string bencodeString(const std::string& value) {
@@ -1130,6 +1210,14 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
     std::atomic<uint32_t> refusedPeers{0};
     std::vector<uint8_t> metadata;
     std::vector<uint8_t> verifiedEndpoints;
+    struct PublishVerified {
+        std::vector<uint8_t>& endpoints;
+        std::vector<uint8_t>* out;
+        ~PublishVerified() {
+            if (out && out->empty() && !endpoints.empty())
+                *out = endpoints;
+        }
+    } publishVerified{verifiedEndpoints, verifiedPeers};
     std::string unsafeMetadata;
 
     /* Re-announce the RuTracker trackers for a fresh (rotated) peer set and
@@ -1329,8 +1417,8 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
         ok = rename(cachePath.c_str(), path.c_str()) == 0;
         if (!ok)
             error = "Unable to publish cached torrent metadata.";
-        if (verifiedPeers)
-            verifiedPeers->clear();
+        /* Swarm workers may have handshake-verified sockets even when the
+           HTTPS cache won the metadata race — keep those endpoints. */
     } else if (!cancelled.load(std::memory_order_relaxed) && swarmOk &&
                winner.load(std::memory_order_relaxed) == 2) {
         ok = rename(swarmPath.c_str(), path.c_str()) == 0;

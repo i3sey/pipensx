@@ -5,6 +5,7 @@
 
 #include <assert.h>
 #include <stdio.h>
+#include <unistd.h>
 
 /* dht_callback routes by info-hash: peers land only in matching mailboxes,
    and every session attached to the same hash receives them. */
@@ -149,10 +150,43 @@ static void test_concurrent_attach_detach(void) {
         net_close(probe);
 }
 
+/* Last detach keeps the engine (and UDP port) until the grace expires;
+   a re-attach in that window reuses it instead of cold-starting. */
+static void test_idle_grace(void) {
+    dht_engine_set_idle_grace_ms(800);
+    uint8_t hash[20];
+    memset(hash, 0x51, 20);
+    dht_session_t *s = dht_attach(hash, 51413);
+    if (!s) {
+        dht_engine_set_idle_grace_ms(0);
+        puts("test_idle_grace skipped: UDP 51413 unavailable");
+        return;
+    }
+    dht_detach(s);
+    assert(dht_shared_running());
+    assert(!port_is_free(DHT_SHARED_PORT));
+    usleep(200 * 1000);
+    assert(dht_shared_running());
+    assert(!port_is_free(DHT_SHARED_PORT));
+
+    s = dht_attach(hash, 51413);
+    assert(s != NULL);
+    assert(dht_shared_running());
+    dht_detach(s);
+    usleep(1200 * 1000);
+    assert(!dht_shared_running());
+    assert(port_is_free(DHT_SHARED_PORT));
+    dht_engine_set_idle_grace_ms(0);
+}
+
 int main(void) {
+    /* Production default is 90s; tests that assert a free port after the
+       last detach need the engine to stop immediately. */
+    dht_engine_set_idle_grace_ms(0);
     test_callback_routing();
     test_mailbox_drop_newest_and_wrap();
     test_lifecycle();
+    test_idle_grace();
     test_concurrent_attach_detach();
     puts("test_dht_shared: all tests passed");
     return 0;

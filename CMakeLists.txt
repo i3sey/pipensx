@@ -125,6 +125,7 @@ set(CORE_SOURCES
     src/core/piece.c
     src/core/tracker.c
     src/core/dht.c
+    src/core/peer_handoff.c
     src/core/torrent.c
     src/platform/storage.c
     vendor/dht/dht.c
