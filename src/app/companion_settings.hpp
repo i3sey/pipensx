@@ -12,7 +12,8 @@ namespace pipensx {
 std::string companionSettingsJson(const AppSettingsData& values);
 
 // Partial update of the companion whitelist. Unknown keys fail. Empty string
-// on torboxApiKey / realdebridApiKey clears. Omitted keys are left alone.
+// on torboxApiKey / realdebridApiKey / alldebridApiKey clears. Omitted keys
+// are left alone.
 bool applyCompanionSettingsPatch(AppSettingsData& values,
                                  const std::string& jsonBody,
                                  std::string& error);
@@ -29,6 +30,7 @@ inline void applyCompanionSettingsRuntime(const AppSettingsData& values,
     manager.setTorboxApiKey(values.torboxApiKey);
     manager.setTorrserverUrl(values.torrserverUrl);
     manager.setRealdebridApiKey(values.realdebridApiKey);
+    manager.setAlldebridApiKey(values.alldebridApiKey);
     applyProxySetting(values.proxyUrl);
 }
 

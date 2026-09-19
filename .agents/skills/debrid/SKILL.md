@@ -1,7 +1,7 @@
 ---
 name: debrid
 description: >
-  Adding or changing a debrid provider (TorBox, TorrServer, Real-Debrid),
+  Adding or changing a debrid provider (TorBox, TorrServer, Real-Debrid, AllDebrid),
   DebridProvider, *Client/*Provider, debrid UI, first-run debrid cards, or
   persisted settings/download-state versioning in app_settings.cpp and
   download_manager.cpp saveLocked/load.
@@ -9,8 +9,8 @@ description: >
 
 # Debrid providers and persisted state
 
-Three download sources: TorBox (cloud), TorrServer (self-hosted LAN), and
-Real-Debrid (cloud). Each implements `DebridProvider` (`src/app/debrid_provider.hpp`),
+Four download sources: TorBox (cloud), TorrServer (self-hosted LAN),
+Real-Debrid (cloud), and AllDebrid (cloud). Each implements `DebridProvider` (`src/app/debrid_provider.hpp`),
 a pure-virtual interface with eight required methods: `validate`, `createFromMagnet`, `createFromFile`, `fetchInfo`, `selectFiles`, `resolveDownloadUrl`, `remove`, and `name`.
 
 ## Adding a new provider

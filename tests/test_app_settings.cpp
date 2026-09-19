@@ -56,6 +56,15 @@ void testCompanionSettingsPatchWhitelist() {
     assert(values.catalogFilter == CatalogFilter::All);
     assert(values.refreshCatalogOnLaunch);
     error.clear();
+    assert(applyCompanionSettingsPatch(
+        values, "{\"debridProvider\":\"alldebrid\",\"alldebridApiKey\":\"ad\"}",
+        error));
+    assert(values.debridProvider == DebridProviderKind::AllDebrid);
+    assert(values.alldebridApiKey == "ad");
+    std::string configured = companionSettingsJson(values);
+    assert(configured.find("\"alldebridConfigured\":true") != std::string::npos);
+    assert(configured.find("alldebridApiKey") == std::string::npos);
+    error.clear();
     assert(applyCompanionSettingsPatch(values, "{\"torboxApiKey\":\"\"}", error));
     assert(values.torboxApiKey.empty());
     error.clear();
@@ -63,6 +72,8 @@ void testCompanionSettingsPatchWhitelist() {
         values, "{\"proxyUrl\":\"ftp://nope\"}", error));
     std::string json = companionSettingsJson(values);
     assert(json.find("torboxApiKey") == std::string::npos);
+    assert(json.find("realdebridApiKey") == std::string::npos);
+    assert(json.find("alldebridApiKey") == std::string::npos);
     assert(json.find("\"torboxConfigured\":false") != std::string::npos);
 }
 
@@ -92,6 +103,8 @@ void testMissingFileUsesSafeDefaults() {
     assert(!values.torrentingEnabled);
     assert(values.torboxApiKey.empty());
     assert(values.torrserverUrl.empty());
+    assert(values.realdebridApiKey.empty());
+    assert(values.alldebridApiKey.empty());
     assert(values.debridProvider == DebridProviderKind::TorBox);
     assert(!values.firstRunCompleted);
     // Fresh install gets a random companion PIN so mutations are never open.
@@ -125,6 +138,8 @@ void testUpdatePersistsEveryPublicSetting() {
     changed.catalogDisclaimerAcknowledged = true;
     changed.torrentingEnabled = true;
     changed.torboxApiKey = "0a1b2c3d-4e5f-6789-abcd-ef0123456789";
+    changed.realdebridApiKey = "rd-token-example";
+    changed.alldebridApiKey = "ad-key-example";
     changed.torrserverUrl = "http://192.168.1.10:8090";
     changed.catalogSourceUrl =
         "https://cdn.example.com/repo/switch_games.json";
@@ -353,6 +368,27 @@ void testLegacyDebridKeysTolerated() {
     assert(settings.get().torboxApiKey == "abc");
 }
 
+void testAlldebridProviderPersists() {
+    cleanup();
+    {
+        std::ofstream output(SettingsPath);
+        output << "{\"version\":3,\"debrid_provider\":\"alldebrid\","
+               << "\"alldebrid_api_key\":\"ad-key\"}";
+    }
+    AppSettings settings(SettingsPath, LegacyPath);
+    std::string error;
+    assert(settings.load(error));
+    assert(settings.get().debridProvider == DebridProviderKind::AllDebrid);
+    assert(settings.get().alldebridApiKey == "ad-key");
+    AppSettingsData values = settings.get();
+    values.alldebridApiKey = "ad-key-2";
+    assert(settings.update(values, error));
+    AppSettings restored(SettingsPath, LegacyPath);
+    assert(restored.load(error));
+    assert(restored.get().debridProvider == DebridProviderKind::AllDebrid);
+    assert(restored.get().alldebridApiKey == "ad-key-2");
+}
+
 // v2 -> v3: the struct default flipped torrenting off when debrid landed. A
 // file written before that has no say in the matter, so it must migrate to on
 // rather than leave an existing install unable to download anything.
@@ -468,6 +504,7 @@ int main() {
     testVersionOneResetsActiveDownloads();
     testFutureVersionIsRejected();
     testLegacyDebridKeysTolerated();
+    testAlldebridProviderPersists();
     testPreV3FileKeepsTorrentingOn();
     testVersionThreeHonoursTorrentingOff();
     testProxyUrlValidation();

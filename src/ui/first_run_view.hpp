@@ -88,7 +88,7 @@ private:
 // Direct mode hides the server, so the diagram collapses to a single hop.
 class ModeDiagram : public brls::Box {
 public:
-    enum class Kind { TorrServer, TorBox, RealDebrid, Direct };
+    enum class Kind { TorrServer, TorBox, RealDebrid, AllDebrid, Direct };
 
     ModeDiagram() : brls::Box(brls::Axis::ROW) {
         setFocusable(false);
@@ -124,9 +124,12 @@ public:
                 break;
             case Kind::TorBox:
             case Kind::RealDebrid:
+            case Kind::AllDebrid:
                 serverLabel_->setText(
                     kind == Kind::RealDebrid
                         ? tr("pipensx/first_run/diagram_realdebrid")
+                        : kind == Kind::AllDebrid
+                        ? tr("pipensx/first_run/diagram_alldebrid")
                         : tr("pipensx/first_run/diagram_torbox"));
                 serverHop_->setCaption(
                     tr("pipensx/first_run/diagram_internet"));
@@ -398,6 +401,11 @@ public:
             [this] { updateSelection(DebridProviderKind::RealDebrid, false); },
             "", tr("pipensx/first_run/chip_paid"), theme::warning()));
         left->addView(new FirstRunOption(
+            tr("pipensx/first_run/alldebrid"),
+            [this] { choose(DebridProviderKind::AllDebrid, false); },
+            [this] { updateSelection(DebridProviderKind::AllDebrid, false); },
+            "", tr("pipensx/first_run/chip_paid"), theme::warning()));
+        left->addView(new FirstRunOption(
             tr("pipensx/first_run/torbox"),
             [this] { choose(DebridProviderKind::TorBox, false); },
             [this] { updateSelection(DebridProviderKind::TorBox, false); },
@@ -409,7 +417,7 @@ public:
             directHint, tr("pipensx/first_run/chip_free"),
             theme::success()));
         const bool preferDirect = hint == DirectHint::Recommended;
-        left->setDefaultFocusedIndex(preferDirect ? 4 : 1);
+        left->setDefaultFocusedIndex(preferDirect ? 5 : 1);
 
         auto* note = new brls::Label();
         note->setText(tr("pipensx/first_run/note"));
@@ -505,6 +513,12 @@ private:
             how = tr("pipensx/first_run/realdebrid_how");
             peer = tr("pipensx/first_run/realdebrid_peer");
             setup = tr("pipensx/first_run/realdebrid_setup");
+        } else if (provider == DebridProviderKind::AllDebrid) {
+            kind = ModeDiagram::Kind::AllDebrid;
+            name = tr("pipensx/first_run/alldebrid");
+            how = tr("pipensx/first_run/alldebrid_how");
+            peer = tr("pipensx/first_run/alldebrid_peer");
+            setup = tr("pipensx/first_run/alldebrid_setup");
         } else {
             kind = ModeDiagram::Kind::TorBox;
             name = tr("pipensx/first_run/torbox");

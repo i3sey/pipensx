@@ -911,8 +911,10 @@ async function loadSettings() {
   $("set-catalog-refresh").checked = !!s.refreshCatalogOnLaunch;
   $("set-torbox").value = "";
   $("set-realdebrid").value = "";
+  $("set-alldebrid").value = "";
   $("set-torbox").placeholder = s.torboxConfigured ? "••••••••" : "";
   $("set-realdebrid").placeholder = s.realdebridConfigured ? "••••••••" : "";
+  $("set-alldebrid").placeholder = s.alldebridConfigured ? "••••••••" : "";
   settingsLoaded = true;
 }
 $("settings-save").addEventListener("click", async () => {
@@ -929,8 +931,10 @@ $("settings-save").addEventListener("click", async () => {
   };
   const torbox = $("set-torbox").value;
   const realdebrid = $("set-realdebrid").value;
+  const alldebrid = $("set-alldebrid").value;
   if (torbox) patch.torboxApiKey = torbox;
   if (realdebrid) patch.realdebridApiKey = realdebrid;
+  if (alldebrid) patch.alldebridApiKey = alldebrid;
   $("settings-save").disabled = true;
   try {
     const resp = await api("/api/settings", {

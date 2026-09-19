@@ -77,7 +77,7 @@ inline std::string urlHostForDisplay(const std::string& url) {
 }
 
 // Peer verify stays on. On Switch, also import the bundled roots in
-// romfs:/ssl/cacert.pem (TorBox GTS + Real-Debrid DigiCert; libnx curl uses
+// romfs:/ssl/cacert.pem (TorBox GTS + Real-Debrid / AllDebrid DigiCert; libnx curl uses
 // sslContextImportServerPki — additive to the system store). On PC, leave the
 // OpenSSL system store alone: CAINFO would replace it.
 inline void curlApplyTrustedSsl(CURL* curl) {

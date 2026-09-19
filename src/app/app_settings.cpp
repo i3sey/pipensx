@@ -140,6 +140,8 @@ bool parseSettings(const std::string& text, AppSettingsData& values,
                   error) ||
         !readString(root, "torbox_api_key", values.torboxApiKey, error) ||
         !readString(root, "realdebrid_api_key", values.realdebridApiKey,
+                     error) ||
+        !readString(root, "alldebrid_api_key", values.alldebridApiKey,
                      error)) {
         return false;
     }
@@ -167,12 +169,14 @@ bool parseSettings(const std::string& text, AppSettingsData& values,
         std::string provider = "torbox";
         if (!readString(root, "debrid_provider", provider, error))
             return false;
-        // Neither "realdebrid" nor any other unknown value should land on a
-        // kind that cannot fetch anything — default to TorBox.
+        // Unknown values land on TorBox so a typo cannot leave the app with
+        // a kind that cannot fetch anything.
         values.debridProvider = provider == "torrserver"
             ? DebridProviderKind::TorrServer
             : provider == "realdebrid"
             ? DebridProviderKind::RealDebrid
+            : provider == "alldebrid"
+            ? DebridProviderKind::AllDebrid
             : DebridProviderKind::TorBox;
     }
     if (root.contains("first_run_completed")) {
@@ -257,11 +261,14 @@ std::string serializeSettings(const AppSettingsData& values) {
     root["torbox_api_key"] = values.torboxApiKey;
     root["torrserver_url"] = values.torrserverUrl;
     root["realdebrid_api_key"] = values.realdebridApiKey;
+    root["alldebrid_api_key"] = values.alldebridApiKey;
     root["debrid_provider"] =
         values.debridProvider == DebridProviderKind::TorrServer
             ? "torrserver"
             : values.debridProvider == DebridProviderKind::RealDebrid
             ? "realdebrid"
+            : values.debridProvider == DebridProviderKind::AllDebrid
+            ? "alldebrid"
             : "torbox";
     root["first_run_completed"] = values.firstRunCompleted;
     root["proxy_url"] = values.proxyUrl;
@@ -405,6 +412,8 @@ bool AppSettingsData::operator==(const AppSettingsData& other) const {
            torrentingEnabled == other.torrentingEnabled &&
            torboxApiKey == other.torboxApiKey &&
            torrserverUrl == other.torrserverUrl &&
+           realdebridApiKey == other.realdebridApiKey &&
+           alldebridApiKey == other.alldebridApiKey &&
            debridProvider == other.debridProvider &&
            firstRunCompleted == other.firstRunCompleted &&
            proxyUrl == other.proxyUrl;

@@ -13,7 +13,8 @@ using Json = nlohmann::json;
 const std::unordered_set<std::string> kAllowedKeys = {
     "maxActiveDownloads", "streamSelection",   "installLocation",
     "debridProvider",     "torboxApiKey",      "realdebridApiKey",
-    "torrserverUrl",      "proxyUrl",          "catalogSourceUrl",
+    "alldebridApiKey",    "torrserverUrl",     "proxyUrl",
+    "catalogSourceUrl",
     "catalogFilter",      "refreshCatalogOnLaunch",
 };
 
@@ -35,6 +36,8 @@ const char* debridProviderJson(DebridProviderKind value) {
             return "torrserver";
         case DebridProviderKind::RealDebrid:
             return "realdebrid";
+        case DebridProviderKind::AllDebrid:
+            return "alldebrid";
         case DebridProviderKind::TorBox:
             return "torbox";
     }
@@ -51,6 +54,7 @@ std::string companionSettingsJson(const AppSettingsData& values) {
     j["debridProvider"] = debridProviderJson(values.debridProvider);
     j["torboxConfigured"] = !values.torboxApiKey.empty();
     j["realdebridConfigured"] = !values.realdebridApiKey.empty();
+    j["alldebridConfigured"] = !values.alldebridApiKey.empty();
     j["torrserverUrl"] = values.torrserverUrl;
     j["proxyUrl"] = values.proxyUrl;
     j["catalogSourceUrl"] = values.catalogSourceUrl;
@@ -124,6 +128,8 @@ bool applyCompanionSettingsPatch(AppSettingsData& values,
             values.debridProvider = DebridProviderKind::TorrServer;
         else if (v == "realdebrid")
             values.debridProvider = DebridProviderKind::RealDebrid;
+        else if (v == "alldebrid")
+            values.debridProvider = DebridProviderKind::AllDebrid;
         else {
             error = "debridProvider has an unknown value";
             return false;
@@ -142,6 +148,13 @@ bool applyCompanionSettingsPatch(AppSettingsData& values,
             return false;
         }
         values.realdebridApiKey = root["realdebridApiKey"].get<std::string>();
+    }
+    if (root.contains("alldebridApiKey")) {
+        if (!root["alldebridApiKey"].is_string()) {
+            error = "alldebridApiKey must be a string";
+            return false;
+        }
+        values.alldebridApiKey = root["alldebridApiKey"].get<std::string>();
     }
     if (root.contains("torrserverUrl")) {
         if (!root["torrserverUrl"].is_string()) {

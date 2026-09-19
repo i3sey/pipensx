@@ -706,6 +706,7 @@ int main(int argc, char** argv) {
         manager.setTorboxApiKey(settings.get().torboxApiKey);
         manager.setTorrserverUrl(settings.get().torrserverUrl);
         manager.setRealdebridApiKey(settings.get().realdebridApiKey);
+        manager.setAlldebridApiKey(settings.get().alldebridApiKey);
         manager.setTorrentingEnabled(settings.get().torrentingEnabled);
         metadata.setImageNetwork(
             manager.hasActiveTransfer()

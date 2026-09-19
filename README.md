@@ -37,7 +37,7 @@ DOWNLOAD LATEST - [pipensx.nro](https://github.com/i3sey/pipensx/releases/latest
 - unified homebrew-port installs: NRO application folders and ZIP/7z payloads
   are deployed safely to `SD:/switch/` before local NSP/NSZ forwarders install
 - Application, Patch, and AddOnContent packages with installed-version checks
-- optional debrid fetch via TorBox or a self-hosted TorrServer (no Real-Debrid)
+- optional debrid fetch via TorBox, Real-Debrid, AllDebrid, or a self-hosted TorrServer
 - optional HTTPS/SOCKS proxy for catalog, artwork, and debrid HTTPS traffic
 - download diagnostics, speed history, peer state, and extended telemetry
 

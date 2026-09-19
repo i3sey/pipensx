@@ -417,6 +417,7 @@ int main() {
         std::string body = responseBody(resp);
         assert(body.find("torboxApiKey") == std::string::npos);
         assert(body.find("realdebridApiKey") == std::string::npos);
+        assert(body.find("alldebridApiKey") == std::string::npos);
         assert(body.find("\"torboxConfigured\":false") != std::string::npos);
         assert(body.find("webServerPin") == std::string::npos);
 

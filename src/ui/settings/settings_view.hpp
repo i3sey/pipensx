@@ -140,6 +140,7 @@ private:
         manager_->setTorboxApiKey(values.torboxApiKey);
         manager_->setTorrserverUrl(values.torrserverUrl);
         manager_->setRealdebridApiKey(values.realdebridApiKey);
+        manager_->setAlldebridApiKey(values.alldebridApiKey);
         source_->refreshDetail();
     }
 

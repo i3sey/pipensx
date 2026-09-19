@@ -247,6 +247,7 @@ public:
     void setTorboxApiKey(const std::string& key);
     void setTorrserverUrl(const std::string& url);
     void setRealdebridApiKey(const std::string& key);
+    void setAlldebridApiKey(const std::string& key);
     std::string torboxApiKey() const;
     void setTorrentingEnabled(bool enabled);
     bool torrentingEnabled() const;
@@ -415,6 +416,7 @@ private:
     std::string torboxApiKey_;
     std::string torrserverUrl_;
     std::string realdebridApiKey_;
+    std::string alldebridApiKey_;
     // Off until someone opts in. The constructor starts the worker before any
     // caller can configure the manager, so a restored Queued torrent task is
     // eligible for pickup during that window — defaulting to true would let it

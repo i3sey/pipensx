@@ -23,7 +23,7 @@ struct DebridInfo {
     std::vector<std::string> links;
 };
 
-enum class DebridProviderKind { TorBox, TorrServer, RealDebrid };
+enum class DebridProviderKind { TorBox, TorrServer, RealDebrid, AllDebrid };
 
 class DebridProvider {
 public:

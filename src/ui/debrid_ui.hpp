@@ -18,6 +18,7 @@
 #include "app/torbox_provider.hpp"
 #include "app/torrserver_provider.hpp"
 #include "app/realdebrid_provider.hpp"
+#include "app/alldebrid_provider.hpp"
 #include "ui/common/qr_view.hpp"
 #include "ui/common/setup_summary_panel.hpp"
 #include "ui/common/ui_helpers.hpp"
@@ -31,6 +32,8 @@ inline const std::string& activeDebridKey(const AppSettingsData& values) {
         return values.torrserverUrl;
     if (values.debridProvider == DebridProviderKind::RealDebrid)
         return values.realdebridApiKey;
+    if (values.debridProvider == DebridProviderKind::AllDebrid)
+        return values.alldebridApiKey;
     return values.torboxApiKey;
 }
 
@@ -40,6 +43,8 @@ inline std::unique_ptr<DebridProvider> makeDebridProvider(
         return std::unique_ptr<DebridProvider>(new TorrserverProvider(key));
     if (kind == DebridProviderKind::RealDebrid)
         return std::unique_ptr<DebridProvider>(new RealdebridProvider(key));
+    if (kind == DebridProviderKind::AllDebrid)
+        return std::unique_ptr<DebridProvider>(new AlldebridProvider(key));
     return std::unique_ptr<DebridProvider>(new TorboxProvider(key));
 }
 
@@ -48,6 +53,8 @@ inline const char* debridProviderName(DebridProviderKind kind) {
         return "TorrServer";
     if (kind == DebridProviderKind::RealDebrid)
         return "Real-Debrid";
+    if (kind == DebridProviderKind::AllDebrid)
+        return "AllDebrid";
     return "TorBox";
 }
 
@@ -143,6 +150,10 @@ public:
                     : provider == DebridProviderKind::RealDebrid
                     ? "Paste your Real-Debrid API token. Find it at "
                       "real-debrid.com/apitoken. A premium subscription "
+                      "is required — free accounts cannot add torrents."
+                    : provider == DebridProviderKind::AllDebrid
+                    ? "Paste your AllDebrid API key. Find it at "
+                      "alldebrid.com/apikeys. A premium subscription "
                       "is required — free accounts cannot add torrents."
                     : kTorboxPairingHint);
             std::string error;
@@ -249,6 +260,8 @@ private:
             return settings_->get().torrserverUrl;
         if (provider_ == DebridProviderKind::RealDebrid)
             return settings_->get().realdebridApiKey;
+        if (provider_ == DebridProviderKind::AllDebrid)
+            return settings_->get().alldebridApiKey;
         return settings_->get().torboxApiKey;
     }
 
@@ -347,6 +360,8 @@ private:
             values.torrserverUrl = key;
         else if (provider_ == DebridProviderKind::RealDebrid)
             values.realdebridApiKey = key;
+        else if (provider_ == DebridProviderKind::AllDebrid)
+            values.alldebridApiKey = key;
         else
             values.torboxApiKey = key;
         std::string error;
@@ -360,6 +375,9 @@ private:
         } else if (provider_ == DebridProviderKind::RealDebrid) {
             if (manager_)
                 manager_->setRealdebridApiKey(key);
+        } else if (provider_ == DebridProviderKind::AllDebrid) {
+            if (manager_)
+                manager_->setAlldebridApiKey(key);
         } else {
             if (manager_)
                 manager_->setTorboxApiKey(key);
