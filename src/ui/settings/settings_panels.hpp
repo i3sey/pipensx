@@ -307,6 +307,17 @@ public:
         label_->setTextColor(theme::textSecondary());
         label_->setText(std::move(label));
         addView(label_);
+
+        // Tap gives focus (which selects the section). A / tap-release
+        // walks into the panel, same as borealis SidebarItem.
+        registerAction("", brls::BUTTON_A,
+            [](brls::View*) {
+                brls::Application::onControllerButtonPressed(
+                    brls::BUTTON_NAV_RIGHT, false);
+                return true;
+            },
+            /*hidden=*/true);
+        addGestureRecognizer(new brls::TapGestureRecognizer(this));
     }
 
     void setActive(bool active) {

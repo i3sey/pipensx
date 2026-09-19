@@ -339,6 +339,7 @@ public:
             onChoose_();
             return true;
         });
+        addGestureRecognizer(new brls::TapGestureRecognizer(this));
     }
 
     void onFocusGained() override {
