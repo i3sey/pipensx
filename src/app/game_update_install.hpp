@@ -86,6 +86,27 @@ std::vector<uint8_t> selectSmartInstallFiles(
     const std::string& titleId = {},
     const std::vector<std::string>& installedDlcIds = {});
 
+// True when the mask installs at least one package and skips a non-package
+// extra (readme, rusifikator zip, LayeredFS). Used to tell the user extras
+// were left out of a one-tap install.
+inline bool selectionSkipsExtraFiles(
+    const TorrentPreview& preview, const std::vector<uint8_t>& actions) {
+    bool skippedExtra = false;
+    bool installing = false;
+    for (size_t i = 0; i < preview.files.size(); ++i) {
+        const uint8_t raw = i < actions.size()
+            ? actions[i]
+            : static_cast<uint8_t>(defaultFileAction(preview.files[i].package,
+                                                     TransferMode::StreamInstall));
+        if (raw == static_cast<uint8_t>(FileAction::Install))
+            installing = true;
+        if (!preview.files[i].package && !preview.files[i].cartridge &&
+            raw == static_cast<uint8_t>(FileAction::Skip))
+            skippedExtra = true;
+    }
+    return installing && skippedExtra;
+}
+
 // Settled when the tracked task is gone or in a terminal download status —
 // used by InstalledView's post-install re-check tick (and tested directly so
 // the snapshot-by-value path cannot grow another dangling pointer).

@@ -366,15 +366,26 @@ std::string baseName(const std::string& path) {
 
 bool selected(const DebridTaskSpec& spec, size_t index,
               const DebridFile& file) {
+    bool wanted = false;
     if (!spec.selectionPaths.empty()) {
         std::string base = baseName(file.path);
         for (const auto& entry : spec.selectionPaths)
-            if (entry.first == base && entry.second == file.bytes)
-                return true;
-        return false;
+            if (entry.first == base && entry.second == file.bytes) {
+                wanted = true;
+                break;
+            }
+    } else {
+        wanted = spec.fileSelection.empty() ||
+                 (index < spec.fileSelection.size() && spec.fileSelection[index]);
     }
-    return spec.fileSelection.empty() ||
-           (index < spec.fileSelection.size() && spec.fileSelection[index]);
+    if (!wanted)
+        return false;
+    // Stream-install only fetches NSP/NSZ. Extra files after the last
+    // package (rusifikator zip, readme) used to run at 100% and fail the
+    // whole task. PortInstall / DownloadOnly still pull them.
+    if (spec.mode == TransferMode::StreamInstall && !isPackageName(file.path))
+        return false;
+    return true;
 }
 
 size_t kthSelectedIndex(const DebridTaskSpec& spec,
@@ -1689,12 +1700,28 @@ DebridRunResult DebridTransfer::run(
             if (packageOrdinal >= spec.packagesInstalled)
                 fs = streamInstallPackage(ctx, kthSelected, file);
             ++packageOrdinal;
+        } else if (spec.mode == TransferMode::StreamInstall) {
+            continue;
         } else {
             fs = downloadPlainFile(ctx, kthSelected, file);
         }
         if (fs == Step::Stopped)
             return DebridRunResult::Stopped;
         if (fs == Step::Failed) {
+            if (spec.mode == TransferMode::StreamInstall &&
+                ctx.packagesInstalled > 0) {
+                bool morePackages = false;
+                for (size_t j : selectedFileOrder(spec, ctx.files)) {
+                    if (j <= i)
+                        continue;
+                    if (installs(spec, j, ctx.files[j])) {
+                        morePackages = true;
+                        break;
+                    }
+                }
+                if (!morePackages)
+                    break;
+            }
             error = ctx.error;
             return DebridRunResult::Failed;
         }

@@ -64,9 +64,7 @@ bool isValidFileAction(uint8_t value) {
 
 FileAction defaultActionFor(const TorrentPreview::File& file,
                             TransferMode mode) {
-    return mode == TransferMode::StreamInstall && file.package
-        ? FileAction::Install
-        : FileAction::Download;
+    return defaultFileAction(file.package, mode);
 }
 
 std::vector<uint8_t> actionsFromLegacySelection(
@@ -566,6 +564,9 @@ bool DownloadManager::importTorrent(const std::string& path,
         error = "Selected file list does not match torrent contents.";
         return false;
     }
+    if (selectedFiles.empty() && torrentPortLayoutDetected(preview))
+        return importTorrentActions(path, selectPortInstallActions(preview),
+                                    taskId, error, initialPeers);
     return importTorrentActions(path,
                                 actionsFromLegacySelection(preview, mode,
                                                            selectedFiles),
@@ -597,11 +598,13 @@ bool DownloadManager::importTorrentActions(
     uint32_t installPackageCount = 0;
     uint32_t selectedPackageCount = 0;
     bool hasSelectedFiles = false;
-    bool selectedPortPayload = false;
+    bool selectedNro = false;
+    bool selectedZipOrLayered = false;
     for (size_t i = 0; i < preview.files.size(); ++i) {
         uint8_t action = useSelection
             ? selection[i]
-            : actionValue(FileAction::Download);
+            : actionValue(defaultFileAction(preview.files[i].package,
+                                            TransferMode::StreamInstall));
         if (!isValidFileAction(action)) {
             error = "Selected file action is invalid.";
             return false;
@@ -610,10 +613,13 @@ bool DownloadManager::importTorrentActions(
             hasSelectedFiles = true;
             const std::string logical = torrentLogicalPath(preview,
                                                             preview.files[i]);
-            selectedPortPayload = selectedPortPayload ||
-                (!preview.files[i].package && !preview.files[i].cartridge &&
-                 (hasNroExtension(logical) || isPortArchiveName(logical) ||
-                  isLayeredFsRomfsPath(logical)));
+            if (!preview.files[i].package && !preview.files[i].cartridge) {
+                if (hasNroExtension(logical))
+                    selectedNro = true;
+                else if (isPortArchiveName(logical) ||
+                         isLayeredFsRomfsPath(logical))
+                    selectedZipOrLayered = true;
+            }
             if (preview.files[i].package)
                 ++selectedPackageCount;
         }
@@ -631,7 +637,8 @@ bool DownloadManager::importTorrentActions(
         error = "Select at least one file.";
         return false;
     }
-    const bool portInstall = selectedPortPayload;
+    const bool portInstall =
+        selectedNro || (selectedZipOrLayered && selectedPackageCount == 0);
     if (portInstall && useSelection) {
         // Packages are retained on disk for the post-deploy install stage.
         for (size_t i = 0; i < selection.size(); ++i)
@@ -729,25 +736,33 @@ bool DownloadManager::importDebrid(const DebridImport& import,
             }
             if (importSelection.empty() && torrentPortLayoutDetected(preview))
                 importSelection = selectPortInstallActions(preview);
-            bool selectedPortPayload = false;
+            bool selectedNro = false;
+            bool selectedZipOrLayered = false;
             importPackageCount = 0;
+            uint32_t selectedPackages = 0;
             for (size_t i = 0; i < preview.files.size(); ++i) {
                 const uint8_t action = importSelection.empty()
-                    ? actionValue(FileAction::Download) : importSelection[i];
+                    ? actionValue(defaultFileAction(
+                          preview.files[i].package, importMode))
+                    : importSelection[i];
                 if (action == actionValue(FileAction::Skip))
                     continue;
                 const std::string logical = torrentLogicalPath(
                     preview, preview.files[i]);
-                selectedPortPayload = selectedPortPayload ||
-                    (!preview.files[i].package &&
-                     !preview.files[i].cartridge &&
-                     (hasNroExtension(logical) ||
-                      isPortArchiveName(logical) ||
-                      isLayeredFsRomfsPath(logical)));
+                if (!preview.files[i].package &&
+                    !preview.files[i].cartridge) {
+                    if (hasNroExtension(logical))
+                        selectedNro = true;
+                    else if (isPortArchiveName(logical) ||
+                             isLayeredFsRomfsPath(logical))
+                        selectedZipOrLayered = true;
+                }
                 if (preview.files[i].package)
-                    ++importPackageCount;
+                    ++selectedPackages;
             }
-            if (selectedPortPayload) {
+            importPackageCount = selectedPackages;
+            if (selectedNro ||
+                (selectedZipOrLayered && selectedPackages == 0)) {
                 importMode = TransferMode::PortInstall;
                 for (size_t i = 0; i < importSelection.size(); ++i)
                     if (preview.files[i].package &&
@@ -2532,7 +2547,19 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
                 break;
             // The user can flip torrenting off mid-transfer; stop talking to
             // peers on the next tick rather than at the end of the download.
+            // If every package is already committed, extras still in the
+            // swarm must not fail the install (RE dump + rusifikator).
             if (!torrentingEnabled_.load()) {
+                if (mode == TransferMode::StreamInstall &&
+                    task->packageCount > 0 &&
+                    task->packagesInstalled == task->packageCount) {
+                    task->status = DownloadStatus::Installed;
+                    task->error.clear();
+                    task->speedBytesPerSecond = 0;
+                    persistState(lock);
+                    finished = true;
+                    break;
+                }
                 task->status = DownloadStatus::Error;
                 task->error = "Torrenting is off — enable Direct BitTorrent "
                                 "in Settings (Download source) to retry.";
@@ -2630,12 +2657,21 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
                 lastCheckpointMs = now_ms();
             }
             if (running < 0) {
-                task->status = DownloadStatus::Error;
-                task->error = !installError.empty()
-                    ? installError : torrent_last_error(torrent);
-                if (coordinator && installError.empty())
-                    coordinator->markRecoverableError(task->error);
-                task->speedBytesPerSecond = 0;
+                if (mode == TransferMode::StreamInstall &&
+                    task->packageCount > 0 &&
+                    task->packagesInstalled == task->packageCount) {
+                    task->status = DownloadStatus::Installed;
+                    task->error.clear();
+                    task->speedBytesPerSecond = 0;
+                    finished = true;
+                } else {
+                    task->status = DownloadStatus::Error;
+                    task->error = !installError.empty()
+                        ? installError : torrent_last_error(torrent);
+                    if (coordinator && installError.empty())
+                        coordinator->markRecoverableError(task->error);
+                    task->speedBytesPerSecond = 0;
+                }
             }
         }
         // Throttled crash checkpoint: snapshot the have-bitfield off the

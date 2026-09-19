@@ -163,11 +163,8 @@ std::vector<uint8_t> defaultInstallSelection(
     mask.reserve(preview.files.size());
     bool allSelected = true;
     for (const TorrentPreview::File& file : preview.files) {
-        uint8_t action = static_cast<uint8_t>(FileAction::Skip);
-        if (file.package)
-            action = static_cast<uint8_t>(FileAction::Install);
-        else if (!file.cartridge && isPortPayloadName(file.path))
-            action = static_cast<uint8_t>(FileAction::Download);
+        uint8_t action = static_cast<uint8_t>(
+            defaultFileAction(file.package, mode));
         mask.push_back(action);
         allSelected = allSelected &&
                       action != static_cast<uint8_t>(FileAction::Skip);
@@ -194,9 +191,7 @@ InstallSpaceEstimate estimateInstallSpace(
         const TorrentPreview::File& file = preview.files[i];
         uint8_t action = useSelection
             ? fileActions[i]
-            : (mode == TransferMode::StreamInstall && file.package
-                   ? static_cast<uint8_t>(FileAction::Install)
-                   : static_cast<uint8_t>(FileAction::Download));
+            : static_cast<uint8_t>(defaultFileAction(file.package, mode));
         if (action == static_cast<uint8_t>(FileAction::Skip))
             continue;
         if (action != static_cast<uint8_t>(FileAction::Download) &&

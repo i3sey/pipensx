@@ -62,10 +62,10 @@ public:
         configs_.resize(metainfo_.num_files);
         std::vector<uint32_t> installOrder;
         for (uint32_t i = 0; i < metainfo_.num_files; ++i) {
-            FileAction action = streamInstall_ &&
-                                      isPackageName(metainfo_.files[i].path)
-                                  ? FileAction::Install
-                                  : FileAction::Download;
+            FileAction action = defaultFileAction(
+                isPackageName(metainfo_.files[i].path),
+                streamInstall_ ? TransferMode::StreamInstall
+                               : TransferMode::DownloadOnly);
             if (useSelection) {
                 const uint8_t raw = fileSelection[i];
                 if (raw != static_cast<uint8_t>(FileAction::Skip) &&

@@ -1329,6 +1329,7 @@ private:
                             debridId.c_str());
                     return;
                 }
+                bool extrasSkipped = false;
                 if (mode == TransferMode::StreamInstall && !info.files.empty()) {
                     TorrentPreview preview;
                     preview.name = import.name;
@@ -1348,6 +1349,8 @@ private:
                         if (action == static_cast<uint8_t>(FileAction::Install))
                             ++import.packageCount;
                     }
+                    extrasSkipped = selectionSkipsExtraFiles(
+                        preview, import.fileSelection);
                     if (import.packageCount == 0) {
                         operationMessage_ = tr("pipensx/detail/smart_open_options");
                         refreshButtons();
@@ -1369,7 +1372,13 @@ private:
                     operationMessage_ = importError;
                     brls::Application::notify(importError);
                 } else {
-                    statusLabel_->setText(tr("pipensx/debrid/queued"));
+                    statusLabel_->setText(
+                        extrasSkipped
+                            ? tr("pipensx/detail/installing_extras_skipped")
+                            : tr("pipensx/debrid/queued"));
+                    if (extrasSkipped)
+                        brls::Application::notify(
+                            tr("pipensx/detail/installing_extras_skipped_hint"));
                     if (onChange_)
                         onChange_();
                 }
@@ -1447,7 +1456,13 @@ private:
                       : manager_->installTarget());
         if (manager_->importTorrentActions(path, mask, id, err, initialPeers)) {
             log_msg("[catalog] imported torrent %s\n", id.c_str());
-            if (titleInstalled) {
+            const bool extrasSkipped = selectionSkipsExtraFiles(preview, mask);
+            if (extrasSkipped) {
+                statusLabel_->setText(
+                    tr("pipensx/detail/installing_extras_skipped"));
+                brls::Application::notify(
+                    tr("pipensx/detail/installing_extras_skipped_hint"));
+            } else if (titleInstalled) {
                 statusLabel_->setText(
                     tr("pipensx/detail/smart_installing_update", destination));
                 brls::Application::notify(

@@ -701,6 +701,7 @@ public:
                                  size_t& packageCount) const {
         packageCount = 0;
         bool payload = false;
+        const bool retailPackages = torrentHasPackageFiles(preview_);
         for (size_t i = 0; i < actions.size() && i < preview_.files.size(); ++i) {
             if (actions[i] == static_cast<uint8_t>(FileAction::Skip))
                 continue;
@@ -709,7 +710,8 @@ public:
                 ++packageCount;
             } else if (!file.cartridge &&
                        (hasNroExtension(file.path) ||
-                        isPortArchiveName(file.path))) {
+                        (!retailPackages &&
+                         isPortArchiveName(file.path)))) {
                 payload = true;
             }
         }
