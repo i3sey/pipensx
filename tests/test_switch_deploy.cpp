@@ -229,6 +229,7 @@ int main() {
             {"notes.txt", 3, false, false, false},
         };
         assert(torrentHasPortArchive(preview));
+        assert(!torrentPortLayoutDetected(preview));
         const auto mask = selectPortInstallActions(preview);
         assert(mask[0] == static_cast<uint8_t>(FileAction::Download));
         assert(mask[1] == static_cast<uint8_t>(FileAction::Download));
@@ -258,7 +259,7 @@ int main() {
             {"readme.txt", 5, false, false, false},
         };
         assert(torrentHasLayeredFsPayload(preview));
-        assert(torrentPortLayoutDetected(preview));
+        assert(!torrentPortLayoutDetected(preview));
         const auto mask = selectPortInstallActions(preview);
         assert(mask.size() == 5);
         assert(mask[0] == static_cast<uint8_t>(FileAction::Download));

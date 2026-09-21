@@ -52,8 +52,9 @@ InstallSpaceEstimate estimateInstallSpace(
     const std::vector<uint8_t>& fileActions,
     TransferMode mode);
 
-// Upgrade an install request to the unified port transaction whenever the
-// torrent advertises an NRO payload or a supported payload archive.
+// Upgrade an install request to the unified port transaction when the torrent
+// is a real port (NRO, or zip/LayeredFS with no packages). Retail dumps with
+// extras stay on the requested mode.
 TransferMode defaultTransferMode(const TorrentPreview& preview,
                                  TransferMode requestedMode);
 

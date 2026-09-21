@@ -96,6 +96,8 @@ int main() {
         assert(estimate.requiredBytes == 2304);
     }
 
+    // A retail dump plus a payload archive is still stream-install: the zip
+    // is an extra, not a reason to treat the torrent as a port.
     {
         TorrentPreview preview;
         preview.files = {
@@ -104,12 +106,12 @@ int main() {
         };
         const TransferMode mode = defaultTransferMode(
             preview, TransferMode::StreamInstall);
-        assert(mode == TransferMode::PortInstall);
+        assert(mode == TransferMode::StreamInstall);
         std::vector<uint8_t> selection = defaultInstallSelection(
             preview, mode, StreamSelection::PackagesOnly);
         assert((selection == std::vector<uint8_t>{
-            static_cast<uint8_t>(FileAction::Download),
-            static_cast<uint8_t>(FileAction::Download),
+            static_cast<uint8_t>(FileAction::Install),
+            static_cast<uint8_t>(FileAction::Skip),
         }));
     }
 
