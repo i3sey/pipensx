@@ -276,6 +276,25 @@ int main() {
         assert(!isLayeredFsRomfsPath(
             "atmosphere/contents/0100b00b51230000/exefs/a"));
     }
+    {
+        TorrentPreview preview;
+        preview.multi = false;
+        preview.name = "FlatPort";
+        preview.files = {
+            {"Game.nro", 32, false, false, false},
+            {"data/x.bin", 9, false, false, false},
+            {"readme.txt", 4, false, false, false},
+        };
+        const auto roots = candidatePortPayloadRoots(preview);
+        assert(roots.size() == 1);
+        assert(roots[0].empty());
+        assert(torrentPortLayoutDetected(preview));
+        const auto mask = selectPortInstallActions(preview);
+        assert(mask.size() == 3);
+        assert(mask[0] == static_cast<uint8_t>(FileAction::Download));
+        assert(mask[1] == static_cast<uint8_t>(FileAction::Download));
+        assert(mask[2] == static_cast<uint8_t>(FileAction::Download));
+    }
 
     assert(portArchiveSolidFitsRam(0, 0));
     assert(portArchiveSolidFitsRam(100, kPortArchiveSolidRamReserveBytes + 100));
@@ -1073,6 +1092,97 @@ int main() {
             const std::string got((std::istreambuf_iterator<char>(in)),
                                   std::istreambuf_iterator<char>());
             assert(got == loc);
+        }
+        assert(rusInspection.plan.archives[0].kind ==
+               PortArchiveKind::LayeredFs);
+        assert(rusInspection.plan.archives[0].layeredFiles == 1);
+        assert(rusInspection.plan.archives[0].switchFiles == 0);
+    }
+
+    {
+        const std::string flatRoot = root + "-flat-nro";
+        const std::string flatTarget = flatRoot + "/sd/switch";
+        const std::string flatData = flatRoot + "/downloads/flat";
+        fs::remove_all(flatRoot);
+        fs::create_directories(flatTarget);
+        const std::string flatNro = nroBytes();
+        writeFile(flatData + "/Game.nro", flatNro);
+        writeFile(flatData + "/data/x.bin", "DATA");
+        writeFile(flatData + "/readme.txt", "HI");
+        TaskFileInventory flatInventory;
+        flatInventory.taskId = "flat-nro-data";
+        flatInventory.rootPath = flatData;
+        flatInventory.settled = true;
+        flatInventory.completeManifest = true;
+        addPresent(flatInventory, "Game.nro", flatData + "/Game.nro",
+                   flatNro.size());
+        addPresent(flatInventory, "data/x.bin", flatData + "/data/x.bin", 4);
+        addPresent(flatInventory, "readme.txt", flatData + "/readme.txt", 2);
+        SwitchDeployInspection flatInspection =
+            inspectSwitchDeploy(std::move(flatInventory), flatTarget);
+        assert(flatInspection.canStart());
+        assert(flatInspection.plan.files.size() == 3);
+        bool sawNro = false;
+        bool sawData = false;
+        bool sawReadme = false;
+        for (const SwitchDeployEntry& entry : flatInspection.plan.files) {
+            if (entry.destinationRelativePath == "Game.nro")
+                sawNro = true;
+            if (entry.destinationRelativePath == "data/x.bin")
+                sawData = true;
+            if (entry.destinationRelativePath == "readme.txt")
+                sawReadme = true;
+        }
+        assert(sawNro && sawData && sawReadme);
+        fs::remove_all(flatRoot);
+    }
+
+    {
+        const std::string mixedPath = data + "/mixed-port.zip";
+        const std::string mixedNro = nroBytes();
+        const std::string mixedLoc = "RU-MIX";
+        writeFile(mixedPath,
+                  writeStoredZip(
+                      {{"Game.nro", mixedNro},
+                       {"data/x.bin", "DATA"},
+                       {"atmosphere/contents/0100B00B51230000/romfs/loc.txt",
+                        mixedLoc}}));
+        TaskFileInventory mixedInventory;
+        mixedInventory.taskId = "mixed-nro-layeredfs-zip";
+        mixedInventory.rootPath = data;
+        mixedInventory.settled = true;
+        mixedInventory.completeManifest = true;
+        addPresent(mixedInventory, "mixed-port.zip", mixedPath,
+                   fs::file_size(mixedPath));
+        const std::string mixedSd = root + "/sd-mixed";
+        const std::string mixedSwitch = mixedSd + "/switch";
+        fs::create_directories(mixedSwitch);
+        SwitchDeployInspection mixedInspection =
+            inspectSwitchDeploy(std::move(mixedInventory), mixedSwitch);
+        assert(mixedInspection.canStart());
+        assert(mixedInspection.plan.archives.size() == 1);
+        assert(mixedInspection.plan.archives[0].extractable);
+        assert(mixedInspection.plan.archives[0].kind ==
+               PortArchiveKind::Mixed);
+        assert(mixedInspection.plan.archives[0].switchFiles == 2);
+        assert(mixedInspection.plan.archives[0].layeredFiles == 1);
+        assert(mixedInspection.plan.layeredFs);
+        std::atomic<bool> mixedCancelled{false};
+        std::string mixedError;
+        assert(extractPortArchive(mixedPath, mixedSwitch, mixedSd,
+                                  mixedCancelled, nullptr, nullptr,
+                                  mixedError));
+        assert(mixedError.empty());
+        assert(fs::exists(mixedSwitch + "/Game.nro"));
+        assert(fs::exists(mixedSwitch + "/data/x.bin"));
+        assert(!fs::exists(mixedSwitch + "/atmosphere"));
+        {
+            std::ifstream in(mixedSd + "/atmosphere/contents/"
+                                       "0100B00B51230000/romfs/loc.txt",
+                             std::ios::binary);
+            const std::string got((std::istreambuf_iterator<char>(in)),
+                                  std::istreambuf_iterator<char>());
+            assert(got == mixedLoc);
         }
     }
 

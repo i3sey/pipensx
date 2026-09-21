@@ -50,8 +50,11 @@ inline std::vector<std::string> candidatePortPayloadRoots(
 inline bool pathUnderPortRoot(const std::string& logical,
                               const std::string& root) {
     const std::string folded = portSelectionLower(logical);
+    // An NRO sitting at the torrent root has an empty parent. Treat that
+    // the same way archive mapping treats an empty extract root: every
+    // non-package file belongs to the payload (`Game.nro` plus `data/…`).
     if (root.empty())
-        return folded.find('/') == std::string::npos;
+        return true;
     return folded == root || folded.rfind(root + "/", 0) == 0;
 }
 

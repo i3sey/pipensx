@@ -8,8 +8,19 @@
 
 namespace pipensx {
 
+// Header probe result. Zip/7z names are only candidates; the mapping
+// decides whether the archive is an NRO port, a LayeredFS extra, both,
+// or neither (junk — probe fails).
+enum class PortArchiveKind : uint8_t {
+    None = 0,
+    PortNro,
+    LayeredFs,
+    Mixed,
+};
+
 struct PortArchiveProbe {
     bool ok = false;
+    PortArchiveKind kind = PortArchiveKind::None;
     uint64_t packedBytes = 0;
     uint64_t unpackBytes = 0;
     uint64_t maxSolidBlockBytes = 0;

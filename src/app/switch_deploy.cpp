@@ -1267,6 +1267,8 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
             archive.unpackBytes = probe.unpackBytes;
             archive.maxSolidBlockBytes = probe.maxSolidBlockBytes;
             archive.switchFiles = probe.switchFiles;
+            archive.layeredFiles = probe.layeredFiles;
+            archive.kind = probe.kind;
             archive.destinationRelativePaths = probe.files;
             archive.extractable = true;
             for (size_t i = 0; i < probe.files.size(); ++i) {
@@ -1356,7 +1358,8 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
                        "This download contains native packages only.");
         } else if (!hasLooseFiles && !result.plan.archives.empty()) {
             setProblem(result, SwitchDeployProblem::NotAPort,
-                       "The selected archives contain no NRO port payload.");
+                       "The selected archives contain no NRO or Atmosphere "
+                       "LayeredFS payload.");
         } else {
             setProblem(result, SwitchDeployProblem::LayoutNotFound,
                        "A downloadable application directory with a valid "
@@ -1407,6 +1410,9 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
                 ++result.plan.ignoredFiles;
             continue;
         }
+        if (isPortArchiveName(file.logicalPath) ||
+            isLayeredFsRomfsPath(file.logicalPath))
+            continue;
         if (file.action != TaskFileAction::Download || file.package ||
             file.cartridge) {
             ++result.plan.ignoredFiles;

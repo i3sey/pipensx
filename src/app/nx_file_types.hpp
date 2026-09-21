@@ -38,8 +38,8 @@ inline bool isCompressedName(const std::string& name) {
 
 // Supported port payload archives. Releases use both the conventional
 // switch.zip/switch.7z names and game-specific names, so classification is by
-// supported extension; the post-download probe confirms that the archive
-// actually contains an NRO payload before anything is deployed.
+// supported extension; the post-download probe confirms an NRO payload, an
+// Atmosphere LayeredFS tree, or both before anything is deployed.
 inline bool isPortArchiveName(const std::string& path) {
     if (hasFileExtension(path, ".zip"))
         return true;

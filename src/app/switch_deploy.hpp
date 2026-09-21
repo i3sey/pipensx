@@ -64,6 +64,8 @@ struct SwitchDeployArchive {
     uint64_t unpackBytes = 0;
     uint64_t maxSolidBlockBytes = 0;
     size_t switchFiles = 0;
+    size_t layeredFiles = 0;
+    PortArchiveKind kind = PortArchiveKind::None;
     std::vector<std::string> destinationRelativePaths;
     bool extractable = true;
     std::string detail;

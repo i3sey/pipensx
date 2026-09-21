@@ -156,7 +156,15 @@ bool buildArchiveMapping(const std::vector<RawArchiveFile>& raw,
             continue;
         std::string destination;
         bool sdRoot = false;
-        if (!roots.empty()) {
+        size_t atmosphereOffset = 0;
+        // LayeredFS members always land on the SD root, even when an NRO
+        // sits at the archive root (empty extract root would otherwise
+        // swallow atmosphere/… into /switch).
+        if (isLayeredFsRomfsPath(source, &atmosphereOffset)) {
+            destination = source.substr(atmosphereOffset);
+            std::replace(destination.begin(), destination.end(), '\\', '/');
+            sdRoot = true;
+        } else if (!roots.empty()) {
             const std::string* selected = nullptr;
             for (const std::string& root : roots) {
                 if (!pathInside(source, root))
@@ -172,17 +180,8 @@ bool buildArchiveMapping(const std::vector<RawArchiveFile>& raw,
                     destination += source.substr(selected->size());
                 }
             }
-        }
-        if (destination.empty()) {
-            size_t atmosphereOffset = 0;
-            if (isLayeredFsRomfsPath(source, &atmosphereOffset)) {
-                destination = source.substr(atmosphereOffset);
-                std::replace(destination.begin(), destination.end(), '\\',
-                             '/');
-                sdRoot = true;
-            } else if (roots.empty()) {
-                destination = legacyDestination(source);
-            }
+        } else {
+            destination = legacyDestination(source);
         }
         if (destination.empty() ||
             !taskFilePathIsFatCompatible(destination))
@@ -220,6 +219,12 @@ bool buildArchiveMapping(const std::vector<RawArchiveFile>& raw,
             : "The archive has no files in an NRO application directory.";
         return false;
     }
+    if (out.switchFiles && out.layeredFiles)
+        out.kind = PortArchiveKind::Mixed;
+    else if (out.layeredFiles)
+        out.kind = PortArchiveKind::LayeredFs;
+    else
+        out.kind = PortArchiveKind::PortNro;
     return true;
 }
 
