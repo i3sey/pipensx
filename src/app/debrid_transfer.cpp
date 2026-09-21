@@ -384,7 +384,14 @@ bool selected(const DebridTaskSpec& spec, size_t index,
     // LayeredFS) still fetch so they can deploy after the packages commit.
     // Unselected junk stays skipped so a leftover rusifikator cannot fail
     // the task at 100%.
+    //
+    // Live debrid tasks send the mask as selectionPaths (basename+size)
+    // because the provider's file order is not the torrent's. Do not index
+    // fileSelection with the debrid list position — a zip listed first
+    // would otherwise see the NSP's Install slot and be dropped.
     if (spec.mode == TransferMode::StreamInstall && !isPackageName(file.path)) {
+        if (!spec.selectionPaths.empty())
+            return true;
         return index < spec.fileSelection.size() &&
                spec.fileSelection[index] ==
                    static_cast<uint8_t>(FileAction::Download);
@@ -1704,11 +1711,6 @@ DebridRunResult DebridTransfer::run(
             if (packageOrdinal >= spec.packagesInstalled)
                 fs = streamInstallPackage(ctx, kthSelected, file);
             ++packageOrdinal;
-        } else if (spec.mode == TransferMode::StreamInstall &&
-                   (i >= spec.fileSelection.size() ||
-                    spec.fileSelection[i] !=
-                        static_cast<uint8_t>(FileAction::Download))) {
-            continue;
         } else {
             fs = downloadPlainFile(ctx, kthSelected, file);
         }

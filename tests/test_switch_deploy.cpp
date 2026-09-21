@@ -1415,14 +1415,26 @@ int main() {
                        "atmosphere/contents/" + titleId + "/romfs/", 0) == 0);
         }
 
-        // Unknown files mean a mixed LayeredFS version/mod set. Installation
-        // is blocked rather than deleting user mods or merging versions.
+        // Translations overlap by filename: matching romfs files are
+        // overwritten, foreign mods in the same tree are left in place.
         const std::string unknown = layeredSd + "/atmosphere/contents/" +
             titleId + "/romfs/user-mod.rpf";
         writeFile(unknown, "KEEP-MOD");
+        writeFile(layeredSd + "/atmosphere/contents/" + titleId +
+                      "/romfs/common.rpf",
+                  "OLD-COMMON");
         layeredInspection = layeredDeploy.inspect(layeredId);
-        assert(layeredInspection.problem == SwitchDeployProblem::Conflict);
-        fs::remove(unknown);
+        assert(layeredInspection.canStart());
+        assert(layeredInspection.plan.layeredForeignFiles >= 1);
+        assert(layeredInspection.plan.layeredOverwriteFiles >= 1);
+        bool sawOverwrite = false;
+        for (const SwitchDeployEntry& entry : layeredInspection.plan.files) {
+            if (entry.destinationRelativePath.find("common.rpf") !=
+                std::string::npos)
+                sawOverwrite =
+                    entry.state == SwitchDeployEntryState::WillOverwrite;
+        }
+        assert(sawOverwrite);
 
         assert(layeredDeploy.start(layeredId, error));
         for (int i = 0; i < 500 && layeredDeploy.snapshot().active(); ++i)
@@ -1436,6 +1448,13 @@ int main() {
             "/romfs/switch/data.rpf";
         assert(fs::exists(deployedCommon));
         assert(fs::exists(deployedSwitch));
+        {
+            std::ifstream in(deployedCommon, std::ios::binary);
+            const std::string got((std::istreambuf_iterator<char>(in)),
+                                  std::istreambuf_iterator<char>());
+            assert(got == common);
+        }
+        assert(fs::exists(unknown));
         assert(!fs::exists(layeredData +
                            "/Release/atmosphere/contents/" + titleId +
                            "/romfs/common.rpf"));
@@ -1451,9 +1470,6 @@ int main() {
         assert(layeredPlan.switchFiles.empty());
         assert(layeredPlan.sdRootFiles.size() == 2);
         assert(layeredPlan.sdRootBytes == common.size() + switchAsset.size());
-        writeFile(layeredSd + "/atmosphere/contents/" + titleId +
-                      "/romfs/user-mod.rpf",
-                  "KEEP-MOD");
         PortUninstallReport layeredReport;
         assert(layeredUninstall.uninstallPort(
             layeredPlan, [](std::string&) { return true; }, layeredReport));

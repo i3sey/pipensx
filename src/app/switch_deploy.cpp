@@ -794,6 +794,27 @@ bool copyFile(const SwitchDeployEntry& entry, const std::string& appRoot,
     return true;
 }
 
+bool removeRegularFileIfPresent(const std::string& path, std::string& error) {
+    struct stat existing {};
+    if (lstat(path.c_str(), &existing) != 0) {
+        if (errno == ENOENT)
+            return true;
+        error = std::string("Unable to inspect a LayeredFS destination (") +
+                std::strerror(errno) + ").";
+        return false;
+    }
+    if (S_ISLNK(existing.st_mode) || !S_ISREG(existing.st_mode)) {
+        error = "Refusing to overwrite a non-file LayeredFS destination.";
+        return false;
+    }
+    if (unlink(path.c_str()) != 0) {
+        error = std::string("Unable to replace a LayeredFS file (") +
+                std::strerror(errno) + ").";
+        return false;
+    }
+    return true;
+}
+
 bool moveFile(const SwitchDeployEntry& entry,
               std::atomic<bool>& cancelled,
               const std::function<void(uint64_t)>& progress,
@@ -1206,9 +1227,13 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
                 return result;
             }
             entry.state = SwitchDeployEntryState::Missing;
-        } else if (!logicalFilePresent(entry.destinationPath, entry.size)) {
+        } else if (S_ISLNK(destination.st_mode) ||
+                   !S_ISREG(destination.st_mode)) {
             entry.state = SwitchDeployEntryState::ExistingConflict;
             ++result.plan.conflictFiles;
+        } else if (!logicalFilePresent(entry.destinationPath, entry.size)) {
+            entry.state = SwitchDeployEntryState::WillOverwrite;
+            ++result.plan.layeredOverwriteFiles;
         } else {
             std::array<uint8_t, 32> destinationDigest {};
             if (!hashLogicalFile(entry.sourcePath, entry.size, entry.sha256) ||
@@ -1223,8 +1248,8 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
                 ++result.plan.identicalFiles;
                 result.plan.bytesToMove -= entry.size;
             } else {
-                entry.state = SwitchDeployEntryState::ExistingConflict;
-                ++result.plan.conflictFiles;
+                entry.state = SwitchDeployEntryState::WillOverwrite;
+                ++result.plan.layeredOverwriteFiles;
             }
         }
         result.plan.files.push_back(std::move(entry));
@@ -1242,10 +1267,8 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
                 return result;
             }
             for (const std::string& path : existing) {
-                if (layeredExpected.count(path) == 0) {
-                    ++result.plan.conflictFiles;
-                    break;
-                }
+                if (layeredExpected.count(path) == 0)
+                    ++result.plan.layeredForeignFiles;
             }
         }
         detectPerformanceState(sdRoot, result.plan.layeredTitleIds,
@@ -1270,6 +1293,7 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
             archive.layeredFiles = probe.layeredFiles;
             archive.kind = probe.kind;
             archive.destinationRelativePaths = probe.files;
+            archive.destinationSdRoot = probe.destinationSdRoot;
             archive.extractable = true;
             for (size_t i = 0; i < probe.files.size(); ++i) {
                 const std::string& relative = probe.files[i];
@@ -1295,7 +1319,12 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
                 struct stat destination {};
                 if (lstat((destRoot + "/" + relative).c_str(),
                           &destination) == 0) {
-                    ++result.plan.conflictFiles;
+                    if (sdRootDest && S_ISREG(destination.st_mode) &&
+                        !S_ISLNK(destination.st_mode)) {
+                        ++result.plan.layeredOverwriteFiles;
+                    } else {
+                        ++result.plan.conflictFiles;
+                    }
                 } else if (errno != ENOENT) {
                     setProblem(result, SwitchDeployProblem::Io, relative);
                     return result;
@@ -1646,7 +1675,43 @@ bool SwitchDeployService::inventory(const std::string& taskId,
         error = "Download task not found.";
         return false;
     }
-    return buildTaskFileInventory(appRoot_, *task, inventory, error);
+    if (!buildTaskFileInventory(appRoot_, *task, inventory, error))
+        return false;
+    for (TaskFileInfo& file : inventory.files) {
+        if (file.kind != SwitchPathKind::Archive ||
+            file.action != TaskFileAction::Download ||
+            file.state != TaskFileState::Present ||
+            file.absolutePath.empty())
+            continue;
+        PortArchiveProbe probe;
+        if (!probePortArchive(file.absolutePath, probe) || !probe.ok)
+            continue;
+        file.destinationPaths.clear();
+        bool switchDest = false;
+        bool atmosphereDest = false;
+        for (size_t i = 0; i < probe.files.size(); ++i) {
+            const bool sdRootDest =
+                i < probe.destinationSdRoot.size() &&
+                probe.destinationSdRoot[i] != 0;
+            const std::string prefix = sdRootDest ? "/" : "/switch/";
+            file.destinationPaths.push_back(prefix + probe.files[i]);
+            if (sdRootDest)
+                atmosphereDest = true;
+            else
+                switchDest = true;
+        }
+        file.destinationCount = file.destinationPaths.size();
+        if (atmosphereDest && switchDest)
+            file.destinationRoot = "/atmosphere + /switch";
+        else if (atmosphereDest)
+            file.destinationRoot = "/atmosphere";
+        else if (switchDest)
+            file.destinationRoot = "/switch";
+        if (!file.destinationPaths.empty())
+            file.destinationExample = file.destinationPaths.front();
+        file.staysInDownloads = false;
+    }
+    return true;
 }
 
 bool SwitchDeployService::start(const std::string& taskId,
@@ -1839,8 +1904,17 @@ void SwitchDeployService::run(DownloadManager::ExternalDeployLease lease,
         plan.files.begin(), plan.files.end(),
         [](const SwitchDeployEntry& entry) {
             return entry.moveSource &&
-                   entry.state == SwitchDeployEntryState::Missing;
+                   entry.state != SwitchDeployEntryState::ExistingIdentical;
         });
+    for (const SwitchDeployEntry& entry : plan.files) {
+        if (entry.state != SwitchDeployEntryState::WillOverwrite)
+            continue;
+        if (!removeRegularFileIfPresent(entry.destinationPath, error)) {
+            finish(SwitchDeployPhase::Failed, SwitchDeployProblem::Io,
+                   std::move(error));
+            return;
+        }
+    }
     bool moveJournalActive = false;
     if (hasMoveFiles) {
         if (!saveMoveJob(appRoot_, plan.taskId, plan.files)) {
@@ -1894,6 +1968,15 @@ void SwitchDeployService::run(DownloadManager::ExternalDeployLease lease,
     for (SwitchDeployEntry& entry : plan.files) {
         if (entry.state == SwitchDeployEntryState::ExistingIdentical)
             continue;
+        if (entry.state == SwitchDeployEntryState::WillOverwrite &&
+            !removeRegularFileIfPresent(entry.destinationPath, error)) {
+            const bool restored = rollbackMoves();
+            if (!restored)
+                error += " Some moved files could not be restored; recovery will retry at next launch.";
+            finish(SwitchDeployPhase::Failed, SwitchDeployProblem::Io,
+                   std::move(error));
+            return;
+        }
         if (cancelled_.load(std::memory_order_relaxed)) {
             const bool restored = rollbackMoves();
             finish(SwitchDeployPhase::Cancelled,
@@ -1953,6 +2036,24 @@ void SwitchDeployService::run(DownloadManager::ExternalDeployLease lease,
             snapshot_.phase = SwitchDeployPhase::Extracting;
             snapshot_.currentPath = archive.sourceRelativePath;
             ++snapshot_.generation;
+        }
+        const std::string sdRoot = sdRootForSwitchRoot(targetRoot_);
+        for (size_t i = 0; i < archive.destinationRelativePaths.size(); ++i) {
+            const bool sdRootDest =
+                i < archive.destinationSdRoot.size() &&
+                archive.destinationSdRoot[i] != 0;
+            if (!sdRootDest)
+                continue;
+            if (!removeRegularFileIfPresent(
+                    sdRoot + "/" + archive.destinationRelativePaths[i],
+                    error)) {
+                const bool restored = rollbackMoves();
+                if (!restored)
+                    error += " Some moved files could not be restored; recovery will retry at next launch.";
+                finish(SwitchDeployPhase::Failed, SwitchDeployProblem::Io,
+                       std::move(error));
+                return;
+            }
         }
         log_msg("[deploy] extracting %s solid=%llu unpack=%llu files=%zu\n",
                 archive.sourceRelativePath.c_str(),

@@ -37,6 +37,7 @@ enum class SwitchDeployEntryState {
     Missing,
     ExistingIdentical,
     ExistingConflict,
+    WillOverwrite,
 };
 
 enum class SwitchDeployTarget : uint8_t {
@@ -67,6 +68,7 @@ struct SwitchDeployArchive {
     size_t layeredFiles = 0;
     PortArchiveKind kind = PortArchiveKind::None;
     std::vector<std::string> destinationRelativePaths;
+    std::vector<uint8_t> destinationSdRoot;
     bool extractable = true;
     std::string detail;
 };
@@ -91,6 +93,8 @@ struct SwitchDeployPlan {
     size_t ignoredFiles = 0;
     size_t identicalFiles = 0;
     size_t conflictFiles = 0;
+    size_t layeredOverwriteFiles = 0;
+    size_t layeredForeignFiles = 0;
     bool layeredFs = false;
     bool performanceToolDetected = false;
     bool performanceProfileDetected = false;
