@@ -1349,6 +1349,114 @@ void testRealdebridInstallsBaseBeforeUpdate() {
     assert(fetched[1].find("update") != std::string::npos);
 }
 
+void testStreamInstallDownloadsSelectedExtras() {
+    const std::string root = "/tmp/pipensx-torbox-stream-extra-test";
+    system(("rm -rf " + root).c_str());
+    mkdir(root.c_str(), 0755);
+    const std::string data = root + "/data";
+    mkdir(data.c_str(), 0755);
+
+    std::vector<uint8_t> nca(4096);
+    for (size_t i = 0; i < nca.size(); ++i)
+        nca[i] = static_cast<uint8_t>((i * 7) ^ (i >> 3));
+    std::vector<uint8_t> nsp =
+        makePfs0({{"00112233445566778899aabbccddeeff.nca", nca}});
+    const std::string package(nsp.begin(), nsp.end());
+    const std::string extra(512, 'Z');
+
+    std::vector<std::pair<std::string, std::string>> script = {
+        {"mylist", infoReadyJsonTwo("Example/game.nsp", package.size(),
+                                    "Example/rus.zip", extra.size())},
+        {"requestdl", "{\"success\":true,\"data\":\"https://x/nsp\"}"},
+        {"requestdl", "{\"success\":true,\"data\":\"https://x/zip\"}"},
+    };
+    RangeFetcher fetcher = [&](const std::string& url, uint64_t offset,
+                               uint64_t endExclusive,
+                               const std::function<bool(const uint8_t*, size_t)>&
+                                   sink,
+                               const std::function<bool()>&, std::string&) {
+        const std::string& body =
+            url.find("zip") != std::string::npos ? extra : package;
+        uint64_t end = endExclusive == 0
+            ? body.size()
+            : std::min<uint64_t>(endExclusive, body.size());
+        if (offset >= end)
+            return false;
+        return sink(reinterpret_cast<const uint8_t*>(body.data() + offset),
+                    static_cast<size_t>(end - offset));
+    };
+    TorboxProvider provider("k", scriptedTransport(&script));
+    DebridTransfer transfer(provider, fetcher);
+
+    DebridTaskSpec spec;
+    spec.taskId = "aabbccddaabbccddaabbccddaabbccddaabbccdd";
+    spec.debridId = "42";
+    spec.dataPath = data;
+    spec.workingRoot = root;
+    spec.mode = TransferMode::StreamInstall;
+    spec.fileSelection = {
+        static_cast<uint8_t>(FileAction::Install),
+        static_cast<uint8_t>(FileAction::Download),
+    };
+
+    std::string debridId;
+    std::string error;
+    DebridProgress last;
+    DebridRunResult result = transfer.run(
+        spec, [] { return false; },
+        [&last](const DebridProgress& p) { last = p; }, debridId, error);
+    assert(result == DebridRunResult::Finished);
+    assert(last.status == DownloadStatus::Installed);
+    assert(last.packagesInstalled == 1);
+    struct stat st {};
+    assert(stat((data + "/rus.zip").c_str(), &st) == 0);
+    assert(static_cast<uint64_t>(st.st_size) == extra.size());
+}
+
+void testStreamInstallSkipsUnselectedExtras() {
+    const std::string root = "/tmp/pipensx-torbox-stream-skip-extra-test";
+    system(("rm -rf " + root).c_str());
+    mkdir(root.c_str(), 0755);
+    const std::string data = root + "/data";
+    mkdir(data.c_str(), 0755);
+
+    std::vector<uint8_t> nca(1024, 0x33);
+    std::vector<uint8_t> nsp =
+        makePfs0({{"00112233445566778899aabbccddeeff.nca", nca}});
+    const std::string package(nsp.begin(), nsp.end());
+    const std::string extra(64, 'Y');
+
+    std::vector<std::pair<std::string, std::string>> script = {
+        {"mylist", infoReadyJsonTwo("Example/game.nsp", package.size(),
+                                    "Example/readme.txt", extra.size())},
+        {"requestdl", "{\"success\":true,\"data\":\"https://x/nsp\"}"},
+    };
+    TorboxProvider provider("k", scriptedTransport(&script));
+    DebridTransfer transfer(provider, memoryFetcher(package));
+
+    DebridTaskSpec spec;
+    spec.taskId = "aabbccddaabbccddaabbccddaabbccddaabbccdd";
+    spec.debridId = "42";
+    spec.dataPath = data;
+    spec.workingRoot = root;
+    spec.mode = TransferMode::StreamInstall;
+    spec.fileSelection = {
+        static_cast<uint8_t>(FileAction::Install),
+        static_cast<uint8_t>(FileAction::Skip),
+    };
+
+    std::string debridId;
+    std::string error;
+    DebridProgress last;
+    DebridRunResult result = transfer.run(
+        spec, [] { return false; },
+        [&last](const DebridProgress& p) { last = p; }, debridId, error);
+    assert(result == DebridRunResult::Finished);
+    assert(last.status == DownloadStatus::Installed);
+    struct stat st {};
+    assert(stat((data + "/readme.txt").c_str(), &st) != 0);
+}
+
 void testFilesResolvedStripsLeadingSlash() {
     const std::string root = "/tmp/pipensx-torbox-slash-path-test";
     system(("rm -rf " + root).c_str());
@@ -1412,6 +1520,8 @@ int main() {
     testStopRequestedReturnsStopped();
     testFetchProgressEmittedWhilePolling();
     testStreamInstallCommitsPackage();
+    testStreamInstallDownloadsSelectedExtras();
+    testStreamInstallSkipsUnselectedExtras();
     testStreamInstallStopResumesFromJournal();
     testPartialStreamFailureRetriesWithoutPacerDeadlock();
     testSelectionPathsPicksOneFile();

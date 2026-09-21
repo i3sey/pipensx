@@ -14,12 +14,13 @@ struct PortArchiveProbe {
     uint64_t unpackBytes = 0;
     uint64_t maxSolidBlockBytes = 0;
     size_t switchFiles = 0;
-    // Source member and /switch-relative destination pairs, in archive order
-    // (read from headers, not by decompressing). The mapping is derived from
-    // every directory that directly contains an NRO and is shared by probe,
-    // conflict preflight, extraction and uninstall receipts.
+    size_t layeredFiles = 0;
+    // Source member and destination pairs, in archive order (read from
+    // headers, not by decompressing). NRO members are /switch-relative;
+    // LayeredFS members are SD-root relative (atmosphere/contents/…).
     std::vector<std::string> sourceFiles;
     std::vector<std::string> files;
+    std::vector<uint8_t> destinationSdRoot;
     std::string error;
 };
 
@@ -41,11 +42,19 @@ inline bool portArchiveSolidFitsRam(uint64_t maxSolidBlockBytes,
 // Cheap header-only probe (no full decompress). ok=false fills error.
 bool probePortArchive(const std::string& archivePath, PortArchiveProbe& out);
 
-// Extract members whose path contains a /switch/ segment into targetRoot
-// (everything after that segment). progress(bytes) is called as file data is
-// written. Returns false and fills error on failure or cancel.
+// Extract mapped members. NRO / switch/ destinations land under targetRoot
+// (/switch). LayeredFS destinations land under sdRoot (SD card root). When
+// sdRoot is omitted it equals targetRoot, which is what the archive unit
+// tests use with a single output directory.
 bool extractPortArchive(const std::string& archivePath,
                         const std::string& targetRoot,
+                        const std::atomic<bool>& cancelled,
+                        const std::function<void(uint64_t)>& progress,
+                        const std::function<void(const std::string&)>& currentFile,
+                        std::string& error);
+bool extractPortArchive(const std::string& archivePath,
+                        const std::string& targetRoot,
+                        const std::string& sdRoot,
                         const std::atomic<bool>& cancelled,
                         const std::function<void(uint64_t)>& progress,
                         const std::function<void(const std::string&)>& currentFile,

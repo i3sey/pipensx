@@ -158,6 +158,37 @@ inline bool isPortPayloadName(const std::string& path) {
            isLayeredFsRomfsPath(path);
 }
 
+// Name-only extra classification. Zip/7z still need a post-download probe to
+// tell an NRO port archive from a LayeredFS rusifikator; junk never deploys.
+enum class SwitchPathKind {
+    Package,
+    Cartridge,
+    Nro,
+    LayeredFsRomfs,
+    Archive,
+    Junk,
+};
+
+inline SwitchPathKind classifySwitchPath(const std::string& path) {
+    if (isPackageName(path))
+        return SwitchPathKind::Package;
+    if (isCartridgeName(path))
+        return SwitchPathKind::Cartridge;
+    if (hasNroExtension(path))
+        return SwitchPathKind::Nro;
+    if (isLayeredFsRomfsPath(path))
+        return SwitchPathKind::LayeredFsRomfs;
+    if (isPortArchiveName(path))
+        return SwitchPathKind::Archive;
+    return SwitchPathKind::Junk;
+}
+
+inline bool isDeployableExtraPath(const std::string& path) {
+    const SwitchPathKind kind = classifySwitchPath(path);
+    return kind == SwitchPathKind::LayeredFsRomfs ||
+           kind == SwitchPathKind::Archive;
+}
+
 inline bool isRarName(const std::string& name) {
     return hasFileExtension(name, ".rar");
 }

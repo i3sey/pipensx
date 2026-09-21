@@ -391,8 +391,9 @@ public:
 
     void selectPortFiles(const TorrentPreview& preview,
                          const std::string& root) {
+        (void)root;
         const std::vector<uint8_t> mask =
-            pipensx::selectPortPayloadActions(preview, root);
+            pipensx::selectPortInstallActions(preview);
         for (size_t i = 0; i < entries_.size() && i < mask.size(); ++i)
             entries_[i].action = static_cast<FileAction>(mask[i]);
     }
@@ -699,23 +700,8 @@ public:
 
     bool selectedPortTransaction(const std::vector<uint8_t>& actions,
                                  size_t& packageCount) const {
-        packageCount = 0;
-        bool payload = false;
-        const bool retailPackages = torrentHasPackageFiles(preview_);
-        for (size_t i = 0; i < actions.size() && i < preview_.files.size(); ++i) {
-            if (actions[i] == static_cast<uint8_t>(FileAction::Skip))
-                continue;
-            const auto& file = preview_.files[i];
-            if (file.package) {
-                ++packageCount;
-            } else if (!file.cartridge &&
-                       (hasNroExtension(file.path) ||
-                        (!retailPackages &&
-                         isPortArchiveName(file.path)))) {
-                payload = true;
-            }
-        }
-        return payload;
+        return pipensx::selectionIsPortTransaction(preview_, actions,
+                                                   &packageCount);
     }
 
     void populateEntries() {

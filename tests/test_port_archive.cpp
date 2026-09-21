@@ -90,6 +90,39 @@ int main() {
     assert(!error.empty());
     assert(readFile(root / "out/game/data.bin") == payload);
 
+    const fs::path layeredRoot = root / "layered";
+    fs::create_directories(
+        layeredRoot / "src/atmosphere/contents/0100B00B51230000/romfs");
+    const std::string loc = "RU-TEXT";
+    writeFile(layeredRoot /
+                  "src/atmosphere/contents/0100B00B51230000/romfs/loc.txt",
+              loc);
+    const fs::path layeredZip = layeredRoot / "rusifikator.zip";
+    assert(run("cd '" + (layeredRoot / "src").string() +
+               "' && 7z a -tzip '" + layeredZip.string() +
+               "' atmosphere >/dev/null"));
+    PortArchiveProbe layered;
+    assert(probePortArchive(layeredZip.string(), layered));
+    assert(layered.ok);
+    assert(layered.switchFiles == 0);
+    assert(layered.layeredFiles == 1);
+    assert(layered.files.size() == 1);
+    assert(layered.files[0] ==
+           "atmosphere/contents/0100B00B51230000/romfs/loc.txt");
+    assert(!layered.destinationSdRoot.empty() &&
+           layered.destinationSdRoot[0] != 0);
+    const fs::path layeredOut = layeredRoot / "sd";
+    error.clear();
+    assert(extractPortArchive(layeredZip.string(),
+                              (layeredRoot / "switch").string(),
+                              layeredOut.string(), cancelled, nullptr, nullptr,
+                              error));
+    assert(error.empty());
+    assert(readFile(layeredOut /
+                    "atmosphere/contents/0100B00B51230000/romfs/loc.txt") ==
+           loc);
+    assert(!fs::exists(layeredRoot / "switch/atmosphere"));
+
     fs::remove_all(root);
     std::cout << "port archive tests passed\n";
     return 0;

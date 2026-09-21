@@ -1269,8 +1269,15 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
             archive.switchFiles = probe.switchFiles;
             archive.destinationRelativePaths = probe.files;
             archive.extractable = true;
-            for (const std::string& relative : probe.files) {
-                const std::string folded = "switch:" + lowerAscii(relative);
+            for (size_t i = 0; i < probe.files.size(); ++i) {
+                const std::string& relative = probe.files[i];
+                const bool sdRootDest =
+                    i < probe.destinationSdRoot.size() &&
+                    probe.destinationSdRoot[i] != 0;
+                const std::string& destRoot = sdRootDest ? sdRoot : targetRoot;
+                const std::string folded =
+                    std::string(sdRootDest ? "sd:" : "switch:") +
+                    lowerAscii(relative);
                 auto duplicate = plannedFiles.find(folded);
                 if (duplicate != plannedFiles.end()) {
                     setProblem(result, SwitchDeployProblem::UnsafePath,
@@ -1278,18 +1285,30 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
                     return result;
                 }
                 plannedFiles.emplace(folded, relative);
-                if (!destinationParentsSafe(targetRoot, relative)) {
+                if (!destinationParentsSafe(destRoot, relative)) {
                     setProblem(result, SwitchDeployProblem::UnsafePath,
                                relative);
                     return result;
                 }
                 struct stat destination {};
-                if (lstat((targetRoot + "/" + relative).c_str(),
+                if (lstat((destRoot + "/" + relative).c_str(),
                           &destination) == 0) {
                     ++result.plan.conflictFiles;
                 } else if (errno != ENOENT) {
                     setProblem(result, SwitchDeployProblem::Io, relative);
                     return result;
+                }
+                if (sdRootDest) {
+                    size_t atmosphereOffset = 0;
+                    std::string titleId;
+                    if (isLayeredFsRomfsPath(relative, &atmosphereOffset,
+                                             &titleId)) {
+                        for (char& ch : titleId)
+                            if (ch >= 'a' && ch <= 'f')
+                                ch = static_cast<char>(ch - 'a' + 'A');
+                        layeredIds.insert(titleId);
+                        result.plan.layeredFs = true;
+                    }
                 }
             }
         } else {
@@ -1304,6 +1323,14 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
                 : file.size;
             result.plan.bytesToCopy += need;
         }
+    }
+    if (!layeredIds.empty()) {
+        result.plan.layeredFs = true;
+        result.plan.layeredTitleIds.assign(layeredIds.begin(),
+                                           layeredIds.end());
+        detectPerformanceState(sdRoot, result.plan.layeredTitleIds,
+                               result.plan.performanceToolDetected,
+                               result.plan.performanceProfileDetected);
     }
     const bool hasExtractableArchive = std::any_of(
         result.plan.archives.begin(), result.plan.archives.end(),
@@ -1938,7 +1965,8 @@ void SwitchDeployService::run(DownloadManager::ExternalDeployLease lease,
             snapshot_.currentPath = path;
             ++snapshot_.generation;
         };
-        if (!extractPortArchive(archive.sourcePath, targetRoot_, cancelled_,
+        if (!extractPortArchive(archive.sourcePath, targetRoot_,
+                                sdRootForSwitchRoot(targetRoot_), cancelled_,
                                 progress, current, error)) {
             const bool restored = rollbackMoves();
             if (!restored)
@@ -2114,7 +2142,9 @@ SwitchDeployReceiptState SwitchDeployService::receiptState(
     // Unpacked members carry no recorded size or digest — existence is all
     // the receipt can verify.
     for (const std::string& relative : unpacked) {
-        const std::string path = targetRoot_ + "/" + relative;
+        const std::string& root = isLayeredFsRomfsPath(relative)
+            ? sdRoot : targetRoot_;
+        const std::string path = root + "/" + relative;
         struct stat st {};
         if (lstat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode) ||
             S_ISLNK(st.st_mode))
@@ -2175,8 +2205,8 @@ void SwitchDeployService::clearInspecting(const std::string& taskId) {
         if (!task || !taskReadyForSwitchDeploy(*task))
             return false;
         const bool markerArmed = autoCopyArmed(taskId);
-        const bool autoArmed = markerArmed ||
-                               task->mode == TransferMode::PortInstall;
+        bool autoArmed = markerArmed ||
+                         task->mode == TransferMode::PortInstall;
         if (task->mode != TransferMode::StreamInstall && !autoArmed)
             return false;
         // A saved receipt means this task was already copied to /switch once.
@@ -2200,6 +2230,15 @@ void SwitchDeployService::clearInspecting(const std::string& taskId) {
                 inspection.canStart() ? 1 : 0, inspection.plan.files.size(),
                 inspection.plan.archives.size(),
                 inspection.detail.empty() ? "-" : inspection.detail.c_str());
+        if (task->mode == TransferMode::StreamInstall &&
+            inspection.canStart() &&
+            (inspection.plan.layeredFs ||
+             std::any_of(inspection.plan.archives.begin(),
+                         inspection.plan.archives.end(),
+                         [](const SwitchDeployArchive& archive) {
+                             return archive.extractable;
+                         })))
+            autoArmed = true;
         if (autoArmed) {
             const bool missingLayout =
                 inspection.problem == SwitchDeployProblem::LayoutNotFound ||
@@ -2503,13 +2542,23 @@ bool PortUninstallService::plan(const std::string& titleId,
             }
         }
         for (const std::string& path : unpacked) {
-            switchFiles.insert(path);
+            const bool layered = isLayeredFsRomfsPath(path);
+            if (layered)
+                sdRootFiles.insert(path);
+            else
+                switchFiles.insert(path);
             // The receipt records sizes only for the copied files; stat the
             // extracted members so the dialog reports the real footprint.
-            const std::string full = targetRoot_ + "/" + path;
+            const std::string full =
+                (layered ? sdRootForSwitchRoot(targetRoot_) : targetRoot_) +
+                "/" + path;
             struct stat st {};
-            if (lstat(full.c_str(), &st) == 0 && S_ISREG(st.st_mode))
-                switchBytes += static_cast<uint64_t>(st.st_size);
+            if (lstat(full.c_str(), &st) == 0 && S_ISREG(st.st_mode)) {
+                if (layered)
+                    sdRootBytes += static_cast<uint64_t>(st.st_size);
+                else
+                    switchBytes += static_cast<uint64_t>(st.st_size);
+            }
         }
         for (const ReceiptFile& file : files) {
             if (file.target == SwitchDeployTarget::SdRoot) {

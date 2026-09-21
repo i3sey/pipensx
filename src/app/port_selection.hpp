@@ -165,4 +165,32 @@ inline std::vector<uint8_t> selectPortInstallActions(
     return mask;
 }
 
+// True when the picker selection is an NRO (or zip/LayeredFS-only) port
+// transaction. Retail NSP + zip/LayeredFS stays StreamInstall: packages are
+// streamed and extras deploy afterwards.
+inline bool selectionIsPortTransaction(const TorrentPreview& preview,
+                                       const std::vector<uint8_t>& actions,
+                                       size_t* packageCount = nullptr) {
+    size_t packages = 0;
+    bool payload = false;
+    const bool retailPackages = torrentHasPackageFiles(preview);
+    for (size_t i = 0; i < actions.size() && i < preview.files.size(); ++i) {
+        if (actions[i] == static_cast<uint8_t>(FileAction::Skip))
+            continue;
+        const TorrentPreview::File& file = preview.files[i];
+        if (file.package) {
+            ++packages;
+            continue;
+        }
+        if (file.cartridge)
+            continue;
+        if (hasNroExtension(file.path) ||
+            (!retailPackages && isDeployableExtraPath(file.path)))
+            payload = true;
+    }
+    if (packageCount)
+        *packageCount = packages;
+    return payload;
+}
+
 } // namespace pipensx

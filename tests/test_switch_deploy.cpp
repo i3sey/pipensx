@@ -4,12 +4,14 @@
 #include "../src/app/port_selection.hpp"
 #include "../src/app/switch_deploy.hpp"
 
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <optional>
 #include <thread>
 #include <utility>
@@ -1028,6 +1030,50 @@ int main() {
         SwitchDeployInspection archiveInspection =
             inspectSwitchDeploy(std::move(archiveInventory), target);
         assert(archiveInspection.problem == SwitchDeployProblem::NotAPort);
+    }
+
+    {
+        const std::string rusPath = data + "/rusifikator.zip";
+        const std::string loc = "RU";
+        writeFile(rusPath,
+                  writeStoredZip(
+                      {{"atmosphere/contents/0100B00B51230000/romfs/loc.txt",
+                        loc}}));
+        TaskFileInventory rusInventory;
+        rusInventory.taskId = "nsp-plus-rusifikator";
+        rusInventory.rootPath = data;
+        rusInventory.settled = true;
+        rusInventory.completeManifest = true;
+        TaskFileInfo nsp;
+        nsp.logicalPath = "game.nsp";
+        nsp.size = 4096;
+        nsp.package = true;
+        nsp.action = TaskFileAction::Install;
+        nsp.state = TaskFileState::Installed;
+        rusInventory.files.push_back(std::move(nsp));
+        addPresent(rusInventory, "rusifikator.zip", rusPath,
+                   fs::file_size(rusPath));
+        SwitchDeployInspection rusInspection =
+            inspectSwitchDeploy(std::move(rusInventory), target);
+        assert(rusInspection.canStart());
+        assert(rusInspection.plan.layeredFs);
+        assert(rusInspection.plan.archives.size() == 1);
+        assert(rusInspection.plan.archives[0].extractable);
+        assert(!rusInspection.plan.layeredTitleIds.empty());
+        std::atomic<bool> cancelled{false};
+        std::string extractError;
+        const std::string sdRoot = root + "/sd";
+        assert(extractPortArchive(rusPath, target, sdRoot, cancelled, nullptr,
+                                  nullptr, extractError));
+        assert(extractError.empty());
+        {
+            std::ifstream in(sdRoot + "/atmosphere/contents/"
+                                      "0100B00B51230000/romfs/loc.txt",
+                             std::ios::binary);
+            const std::string got((std::istreambuf_iterator<char>(in)),
+                                  std::istreambuf_iterator<char>());
+            assert(got == loc);
+        }
     }
 
     {

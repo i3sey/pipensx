@@ -380,11 +380,15 @@ bool selected(const DebridTaskSpec& spec, size_t index,
     }
     if (!wanted)
         return false;
-    // Stream-install only fetches NSP/NSZ. Extra files after the last
-    // package (rusifikator zip, readme) used to run at 100% and fail the
-    // whole task. PortInstall / DownloadOnly still pull them.
-    if (spec.mode == TransferMode::StreamInstall && !isPackageName(file.path))
-        return false;
+    // Stream-install packages go to NCM. Explicit Download extras (zip /
+    // LayeredFS) still fetch so they can deploy after the packages commit.
+    // Unselected junk stays skipped so a leftover rusifikator cannot fail
+    // the task at 100%.
+    if (spec.mode == TransferMode::StreamInstall && !isPackageName(file.path)) {
+        return index < spec.fileSelection.size() &&
+               spec.fileSelection[index] ==
+                   static_cast<uint8_t>(FileAction::Download);
+    }
     return true;
 }
 
@@ -1700,7 +1704,10 @@ DebridRunResult DebridTransfer::run(
             if (packageOrdinal >= spec.packagesInstalled)
                 fs = streamInstallPackage(ctx, kthSelected, file);
             ++packageOrdinal;
-        } else if (spec.mode == TransferMode::StreamInstall) {
+        } else if (spec.mode == TransferMode::StreamInstall &&
+                   (i >= spec.fileSelection.size() ||
+                    spec.fileSelection[i] !=
+                        static_cast<uint8_t>(FileAction::Download))) {
             continue;
         } else {
             fs = downloadPlainFile(ctx, kthSelected, file);

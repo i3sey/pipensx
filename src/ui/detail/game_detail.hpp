@@ -1072,13 +1072,8 @@ private:
                     return;
                 }
                 pending->peers = std::move(initialPeers);
-                setPortInstallReady(
-                    *host,
-                    torrentHasLayeredFsPayload(pending->preview)
-                        ? tr("pipensx/port_install/layout_layered")
-                        : torrentPortLayoutDetected(pending->preview)
-                            ? tr("pipensx/port_install/layout_detected")
-                            : tr("pipensx/port_install/layout_missing"));
+                setPortInstallReady(*host,
+                                    portLayoutStatus(pending->preview));
             });
         });
     }
@@ -1159,15 +1154,50 @@ private:
                 pending->debrid.totalBytes = pending->preview.totalBytes;
                 pending->debrid.provider = pending->providerKind;
                 pending->debrid.debridId = debridId;
-                setPortInstallReady(
-                    *host,
-                    torrentHasLayeredFsPayload(pending->preview)
-                        ? tr("pipensx/port_install/layout_layered")
-                        : torrentPortLayoutDetected(pending->preview)
-                            ? tr("pipensx/port_install/layout_detected")
-                            : tr("pipensx/port_install/layout_missing"));
+                setPortInstallReady(*host,
+                                    portLayoutStatus(pending->preview));
             });
         });
+    }
+
+    static std::string portLayoutStatus(const TorrentPreview& preview) {
+        return torrentHasLayeredFsPayload(preview)
+            ? tr("pipensx/port_install/layout_layered")
+            : torrentPortLayoutDetected(preview)
+                ? tr("pipensx/port_install/layout_detected")
+                : tr("pipensx/port_install/layout_missing");
+    }
+
+    void beginResolvedPortInstall(
+        std::shared_ptr<PortImportPending> pending) {
+        if (!pending)
+            return;
+        setBusy(true);
+        operationMessage_.clear();
+        cancelled_->store(false);
+        auto host = std::make_shared<PortInstallDialogHost>();
+        auto alive = alive_;
+        auto cancelled = cancelled_;
+        *host = openPortInstallDialog(
+            [this, alive, pending] {
+                if (!alive->load())
+                    return;
+                finishPortImport(*pending);
+            },
+            [this, alive, cancelled, pending] {
+                cancelled->store(true);
+                if (!pending->torrentPath.empty())
+                    ::unlink(pending->torrentPath.c_str());
+                if (pending->debridMode && !pending->debridId.empty())
+                    removeDebridTransferAsync(pending->providerKind,
+                                              pending->debridKey,
+                                              pending->debridId);
+                if (alive->load()) {
+                    setBusy(false);
+                    refreshButtons();
+                }
+            });
+        setPortInstallReady(*host, portLayoutStatus(pending->preview));
     }
 
     void finishPortImport(PortImportPending& pending) {
@@ -1329,6 +1359,24 @@ private:
                             debridId.c_str());
                     return;
                 }
+                TorrentPreview layoutPreview = previewFromDebridInfo(
+                    info, entry.title, entry.size);
+                if (torrentPortLayoutDetected(layoutPreview)) {
+                    auto pending = std::make_shared<PortImportPending>();
+                    pending->debridMode = true;
+                    pending->providerKind = providerKind;
+                    pending->debridKey = key;
+                    pending->debridId = debridId;
+                    pending->preview = std::move(layoutPreview);
+                    pending->debrid = import;
+                    pending->debrid.infoHash = catalogLower(entry.infoHash);
+                    pending->debrid.name = pending->preview.name;
+                    pending->debrid.totalBytes = pending->preview.totalBytes;
+                    pending->debrid.provider = providerKind;
+                    pending->debrid.debridId = debridId;
+                    beginResolvedPortInstall(pending);
+                    return;
+                }
                 bool extrasSkipped = false;
                 if (mode == TransferMode::StreamInstall && !info.files.empty()) {
                     TorrentPreview preview;
@@ -1414,6 +1462,15 @@ private:
         // on cancel. Each row chooses Skip, Download, or Install directly.
         if (forcePicker) {
             openSelection(path, std::move(preview), std::move(initialPeers));
+            return;
+        }
+
+        if (torrentPortLayoutDetected(preview)) {
+            auto pending = std::make_shared<PortImportPending>();
+            pending->torrentPath = path;
+            pending->preview = std::move(preview);
+            pending->peers = std::move(initialPeers);
+            beginResolvedPortInstall(pending);
             return;
         }
 
