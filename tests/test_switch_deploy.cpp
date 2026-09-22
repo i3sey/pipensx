@@ -469,6 +469,7 @@ int main() {
     SwitchDeployInspection collision = inspectSwitchDeploy(
         std::move(collisionInventory), target);
     assert(collision.problem == SwitchDeployProblem::UnsafePath);
+    assert(collision.unsafeReason == SwitchDeployUnsafeReason::NameCollision);
 
     writeFile(data + "/sources/a", "A");
     writeFile(data + "/sources/b", "B");
@@ -483,8 +484,13 @@ int main() {
                data + "/sources/a", 1);
     addPresent(directoryCollision, "Release/switch/myport/data/b.bin",
                data + "/sources/b", 1);
-    assert(inspectSwitchDeploy(std::move(directoryCollision), target).problem ==
-           SwitchDeployProblem::UnsafePath);
+    {
+        SwitchDeployInspection directory =
+            inspectSwitchDeploy(std::move(directoryCollision), target);
+        assert(directory.problem == SwitchDeployProblem::UnsafePath);
+        assert(directory.unsafeReason ==
+               SwitchDeployUnsafeReason::NameCollision);
+    }
 
     TaskFileInventory prefixCollision;
     prefixCollision.taskId = "prefix-collision";
@@ -497,8 +503,42 @@ int main() {
                data + "/sources/a", 1);
     addPresent(prefixCollision, "Release/switch/MyPort/data/app.bin",
                data + "/sources/b", 1);
-    assert(inspectSwitchDeploy(std::move(prefixCollision), target).problem ==
-           SwitchDeployProblem::UnsafePath);
+    {
+        SwitchDeployInspection prefix =
+            inspectSwitchDeploy(std::move(prefixCollision), target);
+        assert(prefix.problem == SwitchDeployProblem::UnsafePath);
+        assert(prefix.unsafeReason == SwitchDeployUnsafeReason::NameCollision);
+    }
+
+    TaskFileInventory symlink;
+    symlink.taskId = "symlink";
+    symlink.rootPath = data;
+    symlink.settled = true;
+    symlink.completeManifest = true;
+    addPresent(symlink, "Release/switch/MyPort/MyPort.nro",
+               data + "/Release/switch/MyPort/MyPort.nro", nro.size());
+    symlink.files.back().state = TaskFileState::Unsafe;
+    {
+        SwitchDeployInspection linked =
+            inspectSwitchDeploy(std::move(symlink), target);
+        assert(linked.problem == SwitchDeployProblem::UnsafePath);
+        assert(linked.unsafeReason == SwitchDeployUnsafeReason::Symlink);
+    }
+
+    TaskFileInventory appDir;
+    appDir.taskId = "appdir";
+    appDir.rootPath = data;
+    appDir.settled = true;
+    appDir.completeManifest = true;
+    addPresent(appDir, "pipensx/Game.nro",
+               data + "/Release/switch/MyPort/MyPort.nro", nro.size());
+    {
+        SwitchDeployInspection forbidden =
+            inspectSwitchDeploy(std::move(appDir), target);
+        assert(forbidden.problem == SwitchDeployProblem::UnsafePath);
+        assert(forbidden.unsafeReason ==
+               SwitchDeployUnsafeReason::AppDirectory);
+    }
 
     writeFile(data + "/Other/switch/Other/Other.nro", nro);
     TaskFileInventory ambiguous;

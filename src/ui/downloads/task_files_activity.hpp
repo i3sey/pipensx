@@ -73,8 +73,9 @@ inline std::string taskFileStateText(TaskFileState state) {
     return {};
 }
 
-inline std::string deployProblemText(SwitchDeployProblem problem,
-                                     const std::string& detail) {
+inline std::string deployProblemText(
+    SwitchDeployProblem problem, const std::string& detail,
+    SwitchDeployUnsafeReason unsafeReason = SwitchDeployUnsafeReason::Generic) {
     const char* key = nullptr;
     switch (problem) {
         case SwitchDeployProblem::None: return {};
@@ -86,10 +87,18 @@ inline std::string deployProblemText(SwitchDeployProblem problem,
             key = "pipensx/deploy/problem_layout"; break;
         case SwitchDeployProblem::NotAPort:
             key = "pipensx/deploy/problem_not_port"; break;
-        case SwitchDeployProblem::AmbiguousLayout:
-            key = "pipensx/deploy/problem_ambiguous"; break;
         case SwitchDeployProblem::UnsafePath:
-            key = "pipensx/deploy/problem_unsafe"; break;
+            switch (unsafeReason) {
+                case SwitchDeployUnsafeReason::NameCollision:
+                    key = "pipensx/deploy/problem_unsafe_collision"; break;
+                case SwitchDeployUnsafeReason::Symlink:
+                    key = "pipensx/deploy/problem_unsafe_symlink"; break;
+                case SwitchDeployUnsafeReason::AppDirectory:
+                    key = "pipensx/deploy/problem_unsafe_appdir"; break;
+                case SwitchDeployUnsafeReason::Generic:
+                    key = "pipensx/deploy/problem_unsafe"; break;
+            }
+            break;
         case SwitchDeployProblem::MissingSource:
             key = "pipensx/deploy/problem_missing"; break;
         case SwitchDeployProblem::Conflict:
@@ -104,7 +113,17 @@ inline std::string deployProblemText(SwitchDeployProblem problem,
             key = "pipensx/deploy/problem_io"; break;
     }
     std::string text = tr(key);
-    if (!detail.empty())
+    // Collision, symlink, and the pipensx-folder refusal already say the
+    // whole thing. A canned English sentence in detail would repeat it;
+    // a path (it contains '/') is still worth showing.
+    const bool translatedReason =
+        problem == SwitchDeployProblem::UnsafePath &&
+        unsafeReason != SwitchDeployUnsafeReason::Generic;
+    const bool cannedRam =
+        problem == SwitchDeployProblem::NoRam &&
+        detail.rfind("Not enough free RAM", 0) == 0;
+    if (!detail.empty() && !cannedRam &&
+        !(translatedReason && detail.find('/') == std::string::npos))
         text += "\n" + detail;
     return text;
 }
@@ -546,7 +565,8 @@ public:
                                   ? theme::textSecondary() : theme::error());
         if (inspection_.problem != SwitchDeployProblem::None) {
             warning->setText(
-                deployProblemText(inspection_.problem, inspection_.detail));
+                deployProblemText(inspection_.problem, inspection_.detail,
+                                  inspection_.unsafeReason));
         } else if (inspection_.plan.layeredFs) {
             std::string text;
             if (inspection_.plan.layeredOverwriteFiles != 0 ||

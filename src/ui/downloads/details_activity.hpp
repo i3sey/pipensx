@@ -479,7 +479,8 @@ private:
             } else if (state.phase == SwitchDeployPhase::Failed) {
                 setTextIfChanged(deployPhase_,
                                  deployProblemText(state.problem,
-                                                   state.detail));
+                                                   state.detail,
+                                                   state.unsafeReason));
                 deployPhase_->setTextColor(theme::error());
                 setTextIfChanged(deployStatus_, "");
             } else if (state.phase == SwitchDeployPhase::Cancelled) {

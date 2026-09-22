@@ -682,10 +682,14 @@ bool sourceFileSafe(const TaskFileInventory& inventory,
 }
 
 void setProblem(SwitchDeployInspection& result, SwitchDeployProblem problem,
-                std::string detail) {
+                std::string detail,
+                SwitchDeployUnsafeReason reason =
+                    SwitchDeployUnsafeReason::Generic) {
     if (result.problem == SwitchDeployProblem::None) {
         result.problem = problem;
         result.detail = std::move(detail);
+        if (problem == SwitchDeployProblem::UnsafePath)
+            result.unsafeReason = reason;
     }
 }
 
@@ -1115,7 +1119,8 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
     for (const TaskFileInfo& file : result.inventory.files) {
         if (file.state == TaskFileState::Unsafe) {
             setProblem(result, SwitchDeployProblem::UnsafePath,
-                       "The download contains a symlink or unsafe file.");
+                       "The download contains a symlink or unsafe file.",
+                       SwitchDeployUnsafeReason::Symlink);
             return result;
         }
     }
@@ -1183,7 +1188,7 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
         }
         if (!taskFilePathIsFatCompatible(destinationRelative)) {
             setProblem(result, SwitchDeployProblem::UnsafePath,
-                       file.logicalPath);
+                       file.logicalPath, SwitchDeployUnsafeReason::NameCollision);
             return result;
         }
         for (char& ch : titleId)
@@ -1203,7 +1208,8 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
         const std::string plannedKey = "sd:" + foldedDestination;
         if (!plannedFiles.emplace(plannedKey, destinationRelative).second) {
             setProblem(result, SwitchDeployProblem::UnsafePath,
-                       "LayeredFS destination paths collide on FAT.");
+                       "LayeredFS destination paths collide on FAT.",
+                       SwitchDeployUnsafeReason::NameCollision);
             return result;
         }
         layeredExpected.insert(foldedDestination);
@@ -1311,7 +1317,8 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
                 auto duplicate = plannedFiles.find(folded);
                 if (duplicate != plannedFiles.end()) {
                     setProblem(result, SwitchDeployProblem::UnsafePath,
-                               "Payload destination paths collide on FAT.");
+                               "Payload destination paths collide on FAT.",
+                               SwitchDeployUnsafeReason::NameCollision);
                     return result;
                 }
                 plannedFiles.emplace(folded, relative);
@@ -1482,7 +1489,7 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
         }
         if (!taskFilePathIsFatCompatible(destinationRelative)) {
             setProblem(result, SwitchDeployProblem::UnsafePath,
-                       file.logicalPath);
+                       file.logicalPath, SwitchDeployUnsafeReason::NameCollision);
             return result;
         }
         const std::vector<std::string> destinationParts =
@@ -1490,7 +1497,8 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
         if (destinationParts.empty() ||
             asciiEqual(destinationParts.front(), "pipensx")) {
             setProblem(result, SwitchDeployProblem::UnsafePath,
-                       "Writing inside the pipensx application directory is forbidden.");
+                       "Writing inside the pipensx application directory is forbidden.",
+                       SwitchDeployUnsafeReason::AppDirectory);
             return result;
         }
         std::string layoutPath;
@@ -1510,8 +1518,8 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
                             : collision->second.file == isFile
                                   ? "The layout contains a duplicate destination path."
                                   : "The layout contains a file/directory conflict.";
-                    setProblem(result, SwitchDeployProblem::UnsafePath,
-                               detail);
+                    setProblem(result, SwitchDeployProblem::UnsafePath, detail,
+                               SwitchDeployUnsafeReason::NameCollision);
                     return result;
                 }
             } else {
@@ -1525,7 +1533,8 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
         auto planned = plannedFiles.find(plannedKey);
         if (planned != plannedFiles.end()) {
             setProblem(result, SwitchDeployProblem::UnsafePath,
-                       "Payload destination paths collide on FAT.");
+                       "Payload destination paths collide on FAT.",
+                       SwitchDeployUnsafeReason::NameCollision);
             return result;
         }
         plannedFiles.emplace(plannedKey, destinationRelative);
@@ -1649,6 +1658,7 @@ SwitchDeployInspection SwitchDeployService::inspect(
     if (task->mode == TransferMode::PortInstall &&
         receiptState(taskId) == SwitchDeployReceiptState::Valid) {
         inspection.problem = SwitchDeployProblem::None;
+        inspection.unsafeReason = SwitchDeployUnsafeReason::Generic;
         inspection.detail.clear();
         inspection.plan.files.clear();
         inspection.plan.archives.clear();
@@ -1809,6 +1819,7 @@ void SwitchDeployService::run(DownloadManager::ExternalDeployLease lease,
         // Do not re-extract archives (which would now correctly conflict with
         // their own files); only the remaining local packages are retried.
         inspection.problem = SwitchDeployProblem::None;
+        inspection.unsafeReason = SwitchDeployUnsafeReason::Generic;
         inspection.detail.clear();
         inspection.plan.files.clear();
         inspection.plan.archives.clear();
@@ -1827,7 +1838,7 @@ void SwitchDeployService::run(DownloadManager::ExternalDeployLease lease,
     }
     if (!inspection.canStart()) {
         finish(SwitchDeployPhase::Failed, inspection.problem,
-               std::move(inspection.detail));
+               std::move(inspection.detail), inspection.unsafeReason);
         return;
     }
     SwitchDeployPlan plan = std::move(inspection.plan);
@@ -2186,7 +2197,8 @@ void SwitchDeployService::run(DownloadManager::ExternalDeployLease lease,
 
 void SwitchDeployService::finish(SwitchDeployPhase phase,
                                  SwitchDeployProblem problem,
-                                 std::string detail) {
+                                 std::string detail,
+                                 SwitchDeployUnsafeReason unsafeReason) {
     std::string taskId;
     std::string loggedDetail;
     std::remove(jobPath(appRoot_).c_str());
@@ -2195,6 +2207,8 @@ void SwitchDeployService::finish(SwitchDeployPhase phase,
         taskId = snapshot_.taskId;
         snapshot_.phase = phase;
         snapshot_.problem = problem;
+        snapshot_.unsafeReason = problem == SwitchDeployProblem::UnsafePath
+            ? unsafeReason : SwitchDeployUnsafeReason::Generic;
         snapshot_.detail = std::move(detail);
         snapshot_.currentPath.clear();
         ++snapshot_.generation;
@@ -2287,6 +2301,7 @@ void SwitchDeployService::markInspecting(const std::string& taskId) {
     snapshot_.phase = SwitchDeployPhase::Preparing;
     snapshot_.taskId = taskId;
     snapshot_.problem = SwitchDeployProblem::None;
+    snapshot_.unsafeReason = SwitchDeployUnsafeReason::Generic;
     snapshot_.currentPath.clear();
     snapshot_.detail.clear();
     snapshot_.bytesCopied = 0;
@@ -2354,8 +2369,7 @@ void SwitchDeployService::clearInspecting(const std::string& taskId) {
             autoArmed = true;
         if (autoArmed) {
             const bool missingLayout =
-                inspection.problem == SwitchDeployProblem::LayoutNotFound ||
-                inspection.problem == SwitchDeployProblem::AmbiguousLayout;
+                inspection.problem == SwitchDeployProblem::LayoutNotFound;
             if (!inspection.canStart() &&
                 !switchDeployOffersCopy(inspection.problem) && !missingLayout) {
                 clearInspecting(taskId);
