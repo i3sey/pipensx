@@ -398,6 +398,16 @@ public:
             entries_[i].action = static_cast<FileAction>(mask[i]);
     }
 
+    void toggleExefsPatches(const TorrentPreview& preview) {
+        std::vector<uint8_t> actions;
+        actions.reserve(entries_.size());
+        for (const TorrentSelectionEntry& entry : entries_)
+            actions.push_back(static_cast<uint8_t>(entry.action));
+        pipensx::toggleExefsPatchActions(preview, actions);
+        for (size_t i = 0; i < entries_.size() && i < actions.size(); ++i)
+            entries_[i].action = static_cast<FileAction>(actions[i]);
+    }
+
     size_t selectedCount() const {
         size_t count = 0;
         for (const auto& entry : entries_)
@@ -628,6 +638,23 @@ public:
                 return true;
             });
             row->addView(selectPort_);
+        }
+
+        if (pipensx::torrentHasExefsPatches(preview_)) {
+            selectExefs_ = new brls::Button();
+            selectExefs_->setStyle(&brls::BUTTONSTYLE_DEFAULT);
+            selectExefs_->setFontSize(16);
+            selectExefs_->setHeight(46);
+            selectExefs_->setMarginLeft(10);
+            selectExefs_->setGrow(1);
+            selectExefs_->setText(tr("pipensx/torrent/select_exefs"));
+            selectExefs_->registerClickAction([this](brls::View*) {
+                applyPreset([this] {
+                    dataSource_->toggleExefsPatches(preview_);
+                });
+                return true;
+            });
+            row->addView(selectExefs_);
         }
 
         buttons->addView(row);
@@ -984,6 +1011,8 @@ public:
         clearAll_->setState(toggleState);
         if (selectPort_)
             selectPort_->setState(toggleState);
+        if (selectExefs_)
+            selectExefs_->setState(toggleState);
     }
 
     void confirmSelection() {
@@ -1121,6 +1150,7 @@ public:
     brls::Button* clearAll_ = nullptr;
     brls::Button* installSelected_ = nullptr;
     brls::Button* selectPort_ = nullptr;
+    brls::Button* selectExefs_ = nullptr;
     std::string portRoot_;
     bool storageQueryInFlight_ = false;
     bool storageReady_ = false;

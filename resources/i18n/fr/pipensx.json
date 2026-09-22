@@ -227,6 +227,7 @@
     "added": "Ajouté aux téléchargements.",
     "port_detected": "Structure de port homebrew détectée. Après le téléchargement, pipensx proposera Copier vers /switch.",
     "select_port": "Sélectionner les fichiers du port",
+    "select_exefs": "Correctifs exécutables",
     "cta_install": "Installer {} vers {} · {}",
     "cta_download": "Télécharger {} · {}",
     "preset_packages": "Paquets",

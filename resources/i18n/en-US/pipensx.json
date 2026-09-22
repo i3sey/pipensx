@@ -227,6 +227,7 @@
     "added": "Added to downloads.",
     "port_detected": "Homebrew port layout detected. After download, pipensx will deploy the selected payload automatically.",
     "select_port": "Select port files",
+    "select_exefs": "Executable patches",
     "cta_install": "Install {} to {} · {}",
     "cta_download": "Download {} · {}",
     "preset_packages": "Packages",

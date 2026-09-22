@@ -156,13 +156,12 @@ bool buildArchiveMapping(const std::vector<RawArchiveFile>& raw,
             continue;
         std::string destination;
         bool sdRoot = false;
-        size_t atmosphereOffset = 0;
         // LayeredFS members always land on the SD root, even when an NRO
         // sits at the archive root (empty extract root would otherwise
-        // swallow atmosphere/… into /switch).
-        if (isLayeredFsRomfsPath(source, &atmosphereOffset)) {
-            destination = source.substr(atmosphereOffset);
-            std::replace(destination.begin(), destination.end(), '\\', '/');
+        // swallow atmosphere/… into /switch). contents/ and titles/ roots
+        // are rewritten to atmosphere/contents/<tid>/romfs/. Exefs stays out
+        // of the automatic mapping.
+        if (isLayeredFsRomfsPath(source, nullptr, nullptr, &destination)) {
             sdRoot = true;
         } else if (!roots.empty()) {
             const std::string* selected = nullptr;

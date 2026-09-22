@@ -91,13 +91,29 @@ inline bool isHexTitleId(const std::string& value) {
     return true;
 }
 
-// Recognizes a safe Atmosphere LayeredFS RomFS member at any release prefix:
-// [prefix/]atmosphere/contents/<16-hex title id>/romfs/<member>. Executable
-// patches under exefs are deliberately excluded; silently deploying those has
-// a materially larger security and compatibility surface than game data.
-inline bool isLayeredFsRomfsPath(const std::string& path,
-                                 size_t* atmosphereOffset = nullptr,
-                                 std::string* titleId = nullptr) {
+inline bool layeredFsComponentEqual(const std::string& value,
+                                   const char* expected) {
+    size_t i = 0;
+    for (; expected[i] != '\0'; ++i) {
+        if (i >= value.size() ||
+            static_cast<char>(std::tolower(
+                static_cast<unsigned char>(value[i]))) != expected[i])
+            return false;
+    }
+    return i == value.size();
+}
+
+// `leaf` is "romfs" or "exefs". A match is a member under one of:
+//   [prefix/]atmosphere/contents/<16-hex>/leaf/<member>
+//   [prefix/]contents/<16-hex>/leaf/<member>
+//   [prefix/]titles/<16-hex>/leaf/<member>
+// `destination`, when set, is always the SD-relative canonical path
+// atmosphere/contents/<title id>/leaf/<member>. `sourceOffset` is the start
+// of the recognized root in `path` (useful for the atmosphere spelling,
+// where a suffix slice still begins with "atmosphere").
+inline bool locateLayeredFsMember(const std::string& path, const char* leaf,
+                                  size_t* sourceOffset, std::string* titleId,
+                                  std::string* destination) {
     size_t start = 0;
     std::string parts[4];
     size_t partStarts[4] {};
@@ -123,34 +139,61 @@ inline bool isLayeredFsRomfsPath(const std::string& path,
             partStarts[2] = partStarts[3];
             partStarts[3] = start;
         }
-        if (count == 4) {
-            auto equal = [](const std::string& value, const char* expected) {
-                size_t i = 0;
-                for (; expected[i] != '\0'; ++i) {
-                    if (i >= value.size() ||
-                        static_cast<char>(std::tolower(
-                            static_cast<unsigned char>(value[i]))) !=
-                            expected[i])
-                        return false;
-                }
-                return i == value.size();
-            };
-            if (equal(parts[0], "atmosphere") &&
-                equal(parts[1], "contents") && isHexTitleId(parts[2]) &&
-                equal(parts[3], "romfs") && slash != std::string::npos &&
-                slash + 1 < path.size()) {
-                if (atmosphereOffset)
-                    *atmosphereOffset = partStarts[0];
-                if (titleId)
-                    *titleId = parts[2];
-                return true;
+        auto publish = [&](size_t rootIndex, size_t tidIndex,
+                           size_t memberStart) {
+            if (sourceOffset)
+                *sourceOffset = partStarts[rootIndex];
+            if (titleId)
+                *titleId = parts[tidIndex];
+            if (destination) {
+                std::string member = path.substr(memberStart);
+                for (char& ch : member)
+                    if (ch == '\\')
+                        ch = '/';
+                *destination = "atmosphere/contents/" + parts[tidIndex] +
+                               "/" + leaf + "/" + member;
             }
+            return true;
+        };
+        if (count == 4) {
+            if (layeredFsComponentEqual(parts[0], "atmosphere") &&
+                layeredFsComponentEqual(parts[1], "contents") &&
+                isHexTitleId(parts[2]) &&
+                layeredFsComponentEqual(parts[3], leaf) &&
+                slash != std::string::npos && slash + 1 < path.size())
+                return publish(0, 2, slash + 1);
+            if ((layeredFsComponentEqual(parts[0], "contents") ||
+                 layeredFsComponentEqual(parts[0], "titles")) &&
+                isHexTitleId(parts[1]) &&
+                layeredFsComponentEqual(parts[2], leaf))
+                return publish(0, 1, partStarts[3]);
         }
         if (slash == std::string::npos)
             break;
         start = slash + 1;
     }
     return false;
+}
+
+// RomFS game data. Also accepts a release that omitted atmosphere/ or used
+// the old titles/<tid>/ root; the SD destination is still
+// atmosphere/contents/<tid>/romfs/<member>. Executable exefs patches are not
+// romfs: they stay out of one-tap and are opted in from the file picker.
+inline bool isLayeredFsRomfsPath(const std::string& path,
+                                 size_t* atmosphereOffset = nullptr,
+                                 std::string* titleId = nullptr,
+                                 std::string* destination = nullptr) {
+    return locateLayeredFsMember(path, "romfs", atmosphereOffset, titleId,
+                                 destination);
+}
+
+// Code patch under exefs. Same roots as romfs, canonical destination
+// atmosphere/contents/<tid>/exefs/<member>. Not a one-tap extra.
+inline bool isLayeredFsExefsPath(const std::string& path,
+                                std::string* destination = nullptr,
+                                std::string* titleId = nullptr) {
+    return locateLayeredFsMember(path, "exefs", nullptr, titleId,
+                                 destination);
 }
 
 inline bool isPortPayloadName(const std::string& path) {

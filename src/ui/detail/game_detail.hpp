@@ -107,7 +107,10 @@ public:
           onClose_(std::move(onClose)),
           alive_(std::make_shared<std::atomic<bool>>(true)),
           cancelled_(std::make_shared<std::atomic<bool>>(false)),
-          autoInstall_(autoInstall), portInstall_(portInstall) {
+          autoInstall_(autoInstall) {
+        // The catalog tab still passes portInstall. The Install action is
+        // chosen after the file list resolves (cardOneTapUsesPortInstall).
+        (void)portInstall;
         const GameMetadata* found =
             metadata_->findByInfoHash(entry_.infoHash, entry_.titleId);
         presentation_ = resolveCatalogPresentation(entry_, found,
@@ -822,10 +825,6 @@ private:
     void startInstall(bool forcePicker) {
         if (busy_)
             return;
-        if (portInstall_ && !forcePicker) {
-            startPortInstall();
-            return;
-        }
         if (debridModeActive(settings_)) {
             startDebridInstall(TransferMode::StreamInstall, forcePicker);
             return;
@@ -944,220 +943,6 @@ private:
             preview.cartridgeCount += isCartridgeName(file.path) ? 1 : 0;
         }
         return preview;
-    }
-
-    void startPortInstall() {
-        if (busy_)
-            return;
-        if (debridModeActive(settings_) &&
-            !ensureDebridLinked(settings_, manager_))
-            return;
-        setBusy(true);
-        operationMessage_.clear();
-        cancelled_->store(false);
-
-        auto pending = std::make_shared<PortImportPending>();
-        auto host = std::make_shared<PortInstallDialogHost>();
-        auto alive = alive_;
-        auto cancelled = cancelled_;
-        *host = openPortInstallDialog(
-            [this, alive, pending] {
-                if (!alive->load())
-                    return;
-                finishPortImport(*pending);
-            },
-            [this, alive, cancelled, pending] {
-                cancelled->store(true);
-                if (!pending->torrentPath.empty())
-                    ::unlink(pending->torrentPath.c_str());
-                if (pending->debridMode && !pending->debridId.empty())
-                    removeDebridTransferAsync(pending->providerKind,
-                                              pending->debridKey,
-                                              pending->debridId);
-                if (alive->load()) {
-                    setBusy(false);
-                    refreshButtons();
-                }
-            });
-
-        if (debridModeActive(settings_)) {
-            startPortDebridIndex(host, pending);
-            return;
-        }
-
-        uint32_t serial = gCatalogTempSerial.fetch_add(1);
-        pending->torrentPath = manager_->rootPath() + "/_catalog_tmp_" +
-                               catalogLower(entry_.infoHash) + "_" +
-                               std::to_string(serial) + ".torrent";
-        std::string magnet = entry_.magnetUri;
-        std::vector<uint8_t> infoDict = entry_.infoDict;
-        std::string telemetryTag = catalogLower(entry_.infoHash);
-        uint64_t startedMs = now_ms();
-        std::string tmp = pending->torrentPath;
-        brls::async([this, alive, cancelled, magnet, infoDict, tmp, host,
-                     pending, telemetryTag, startedMs] {
-            std::string err;
-            MagnetResolver resolver;
-            auto progress = [alive, host, last = std::string()](
-                                const pipensx::MagnetProgress& p) mutable {
-                std::string text;
-                switch (p.stage) {
-                    case pipensx::MagnetProgress::Stage::FindingPeers:
-                        text = tr("pipensx/detail/finding_peers");
-                        break;
-                    case pipensx::MagnetProgress::Stage::Connecting:
-                        text = tr("pipensx/detail/contacting_peer",
-                                  p.peerIndex, p.peerCount);
-                        break;
-                    case pipensx::MagnetProgress::Stage::FetchingMetadata:
-                        text = tr("pipensx/detail/fetching_metadata",
-                                  p.completedPieces, p.totalPieces);
-                        break;
-                    case pipensx::MagnetProgress::Stage::Validating:
-                        text = tr("pipensx/detail/validating");
-                        break;
-                }
-                if (text == last)
-                    return;
-                last = text;
-                brls::sync([alive, host, text] {
-                    if (!alive->load() || !host->live || !host->live->load())
-                        return;
-                    if (host->status)
-                        host->status->setText(text);
-                });
-            };
-            std::vector<uint8_t> initialPeers;
-            bool ok = resolver.resolveToFile(
-                magnet, tmp, *cancelled, progress, err, &initialPeers,
-                infoDict.empty() ? nullptr : &infoDict);
-            telemetry_log("magnet", telemetryTag.c_str(),
-                          "event=resolve ok=%d cancelled=%d duration_ms=%llu "
-                          "verified_peers=%u",
-                          ok ? 1 : 0, cancelled->load() ? 1 : 0,
-                          (unsigned long long)(now_ms() - startedMs),
-                          static_cast<unsigned>(initialPeers.size() / 6));
-            brls::sync([this, alive, ok, err, tmp, host, pending,
-                        initialPeers = std::move(initialPeers)]() mutable {
-                if (!alive->load()) {
-                    ::unlink(tmp.c_str());
-                    return;
-                }
-                if (!host->live || !host->live->load()) {
-                    ::unlink(tmp.c_str());
-                    return;
-                }
-                std::string hash = catalogLower(entry_.infoHash);
-                if (!ok) {
-                    std::string reason = classifyResolveFailure(err);
-                    if (onFailure_)
-                        onFailure_(hash, reason);
-                    diagnostic_error("magnet", hash.c_str(), "error=%s",
-                                     err.c_str());
-                    if (host->status)
-                        host->status->setText(reason);
-                    ::unlink(tmp.c_str());
-                    pending->torrentPath.clear();
-                    return;
-                }
-                if (onFailure_)
-                    onFailure_(hash, "");
-                std::string error;
-                if (!DownloadManager::previewTorrent(tmp, pending->preview,
-                                                     error)) {
-                    if (host->status)
-                        host->status->setText(error);
-                    ::unlink(tmp.c_str());
-                    pending->torrentPath.clear();
-                    return;
-                }
-                pending->peers = std::move(initialPeers);
-                setPortInstallReady(*host,
-                                    portLayoutStatus(pending->preview));
-            });
-        });
-    }
-
-    void startPortDebridIndex(
-        std::shared_ptr<PortInstallDialogHost> host,
-        std::shared_ptr<PortImportPending> pending) {
-        const AppSettingsData values = settings_->get();
-        pending->debridMode = true;
-        pending->providerKind = values.debridProvider;
-        pending->debridKey = activeDebridKey(values);
-        auto alive = alive_;
-        auto cancelled = cancelled_;
-        const CatalogEntry entry = entry_;
-        const std::string root = manager_->rootPath();
-        const uint32_t serial = gCatalogTempSerial.fetch_add(1);
-        brls::async([alive, cancelled, host, pending, entry, root, serial] {
-            auto provider = makeDebridProvider(pending->providerKind,
-                                               pending->debridKey);
-            std::string error;
-            std::string debridId;
-            DebridInfo info;
-            const std::string tmp =
-                root + "/_debrid_tmp_" + catalogLower(entry.infoHash) + "_" +
-                std::to_string(serial) + ".torrent";
-            const auto deadline = std::chrono::steady_clock::now() +
-                                  std::chrono::seconds(60);
-            auto onStage = [host, alive](DebridCreateStage stage) {
-                std::string text;
-                switch (stage) {
-                    case DebridCreateStage::FetchingTorrent:
-                        text = tr("pipensx/debrid/fetching_torrent");
-                        break;
-                    case DebridCreateStage::UploadingTorrent:
-                        text = tr("pipensx/debrid/submitting");
-                        break;
-                    case DebridCreateStage::SendingMagnet:
-                    default:
-                        text = tr("pipensx/debrid/sending_magnet");
-                        break;
-                }
-                brls::sync([host, alive, text] {
-                    if (alive->load() && host->live && host->live->load() &&
-                        host->status)
-                        host->status->setText(text);
-                });
-            };
-            const bool ok = createDebridWithMetainfoFallback(
-                *provider, entry.magnetUri, catalogLower(entry.infoHash),
-                entry.infoDict, tmp, *cancelled, deadline, debridId, info,
-                error, onStage);
-            brls::sync([alive, ok, error, info, debridId, host, pending,
-                        entry] {
-                if (!alive->load() || !host->live || !host->live->load()) {
-                    if (!debridId.empty())
-                        removeDebridTransferAsync(pending->providerKind,
-                                                  pending->debridKey,
-                                                  debridId);
-                    return;
-                }
-                if (!ok) {
-                    if (!debridId.empty())
-                        removeDebridTransferAsync(pending->providerKind,
-                                                  pending->debridKey,
-                                                  debridId);
-                    if (host->status)
-                        host->status->setText(
-                            error.empty()
-                                ? tr("pipensx/debrid/magnet_unavailable")
-                                : error);
-                    return;
-                }
-                pending->debridId = debridId;
-                pending->preview = previewFromDebridInfo(
-                    info, entry.title, entry.size);
-                pending->debrid.infoHash = catalogLower(entry.infoHash);
-                pending->debrid.name = pending->preview.name;
-                pending->debrid.totalBytes = pending->preview.totalBytes;
-                pending->debrid.provider = pending->providerKind;
-                pending->debrid.debridId = debridId;
-                setPortInstallReady(*host,
-                                    portLayoutStatus(pending->preview));
-            });
-        });
     }
 
     static std::string portLayoutStatus(const TorrentPreview& preview) {
@@ -1361,7 +1146,7 @@ private:
                 }
                 TorrentPreview layoutPreview = previewFromDebridInfo(
                     info, entry.title, entry.size);
-                if (torrentPortLayoutDetected(layoutPreview)) {
+                if (cardOneTapUsesPortInstall(layoutPreview)) {
                     auto pending = std::make_shared<PortImportPending>();
                     pending->debridMode = true;
                     pending->providerKind = providerKind;
@@ -1465,7 +1250,7 @@ private:
             return;
         }
 
-        if (torrentPortLayoutDetected(preview)) {
+        if (cardOneTapUsesPortInstall(preview)) {
             auto pending = std::make_shared<PortImportPending>();
             pending->torrentPath = path;
             pending->preview = std::move(preview);
@@ -1691,7 +1476,6 @@ private:
     std::vector<DownloadTask> cache_;
     bool busy_ = false;
     bool autoInstall_ = false;
-    bool portInstall_ = false;
 };
 
 }  // namespace pipensx::ui

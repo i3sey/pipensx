@@ -653,15 +653,21 @@ void annotateTaskFileDestinations(TaskFileInventory& inventory) {
             file.kind = SwitchPathKind::Cartridge;
             continue;
         }
-        size_t atmosphereOffset = 0;
-        if (file.kind == SwitchPathKind::LayeredFsRomfs ||
-            isLayeredFsRomfsPath(file.logicalPath, &atmosphereOffset)) {
+        std::string layeredDest;
+        if (isLayeredFsRomfsPath(file.logicalPath, nullptr, nullptr,
+                                 &layeredDest)) {
             file.kind = SwitchPathKind::LayeredFsRomfs;
-            std::string dest = file.logicalPath.substr(atmosphereOffset);
-            std::replace(dest.begin(), dest.end(), '\\', '/');
             file.destinationRoot = "/atmosphere";
-            file.destinationExample = dest;
-            file.destinationPaths.push_back("/" + dest);
+            file.destinationExample = layeredDest;
+            file.destinationPaths.push_back("/" + layeredDest);
+            file.destinationCount = 1;
+            file.staysInDownloads = false;
+            continue;
+        }
+        if (isLayeredFsExefsPath(file.logicalPath, &layeredDest)) {
+            file.destinationRoot = "/atmosphere";
+            file.destinationExample = layeredDest;
+            file.destinationPaths.push_back("/" + layeredDest);
             file.destinationCount = 1;
             file.staysInDownloads = false;
             continue;

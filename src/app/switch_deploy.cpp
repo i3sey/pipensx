@@ -1157,11 +1157,19 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
     std::map<std::string, std::string> layeredRomfsRoots;
     std::set<std::string> layeredIds;
     for (const TaskFileInfo& file : result.inventory.files) {
-        size_t atmosphereOffset = 0;
+        std::string destinationRelative;
         std::string titleId;
+        const bool romfsMember =
+            isLayeredFsRomfsPath(file.logicalPath, nullptr, &titleId,
+                                 &destinationRelative);
+        if (!romfsMember) {
+            titleId.clear();
+            destinationRelative.clear();
+        }
         if (file.package || file.cartridge ||
-            !isLayeredFsRomfsPath(file.logicalPath, &atmosphereOffset,
-                                  &titleId))
+            (!romfsMember &&
+             !isLayeredFsExefsPath(file.logicalPath, &destinationRelative,
+                                   &titleId)))
             continue;
         if (file.action != TaskFileAction::Download) {
             ++result.plan.ignoredFiles;
@@ -1173,10 +1181,6 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
                        file.logicalPath);
             return result;
         }
-        std::string destinationRelative =
-            file.logicalPath.substr(atmosphereOffset);
-        std::replace(destinationRelative.begin(), destinationRelative.end(),
-                     '\\', '/');
         if (!taskFilePathIsFatCompatible(destinationRelative)) {
             setProblem(result, SwitchDeployProblem::UnsafePath,
                        file.logicalPath);
@@ -1435,12 +1439,14 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
         if (!selectedRoot) {
             if (file.action == TaskFileAction::Download &&
                 !isPortArchiveName(file.logicalPath) &&
-                !isLayeredFsRomfsPath(file.logicalPath))
+                !isLayeredFsRomfsPath(file.logicalPath) &&
+                !isLayeredFsExefsPath(file.logicalPath))
                 ++result.plan.ignoredFiles;
             continue;
         }
         if (isPortArchiveName(file.logicalPath) ||
-            isLayeredFsRomfsPath(file.logicalPath))
+            isLayeredFsRomfsPath(file.logicalPath) ||
+            isLayeredFsExefsPath(file.logicalPath))
             continue;
         if (file.action != TaskFileAction::Download || file.package ||
             file.cartridge) {

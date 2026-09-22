@@ -227,6 +227,7 @@
     "added": "Aggiunto ai download.",
     "port_detected": "Rilevato layout porting homebrew. Dopo il download, pipensx proporrà Copia in /switch.",
     "select_port": "Seleziona file porting",
+    "select_exefs": "Patch eseguibili",
     "cta_install": "Installa {} su {} · {}",
     "cta_download": "Scarica {} · {}",
     "preset_packages": "Pacchetti",

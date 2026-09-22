@@ -227,6 +227,7 @@
     "added": "Añadido a descargas.",
     "port_detected": "Diseño de port homebrew detectado. Tras la descarga, pipensx ofrecerá Copiar a /switch.",
     "select_port": "Seleccionar archivos del port",
+    "select_exefs": "Parches ejecutables",
     "cta_install": "Instalar {} em {} · {}",
     "cta_download": "Descargar {} · {}",
     "preset_packages": "Paquete",

@@ -227,6 +227,7 @@
     "added": "已添加到下载列表。",
     "port_detected": "检测到自制软件移植布局。下载完成后，pipensx 将提供“复制到 /switch”。",
     "select_port": "选择移植文件",
+    "select_exefs": "可执行补丁",
     "cta_install": "安装 {} 到 {} · {}",
     "cta_download": "下载 {} · {}",
     "preset_packages": "包",

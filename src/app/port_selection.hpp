@@ -122,6 +122,60 @@ inline bool torrentPortLayoutDetected(const TorrentPreview& preview) {
            torrentHasLayeredFsPayload(preview);
 }
 
+// Detail-card one-tap, after the file list is known. The catalog tab is not
+// consulted. NSP/NSZ keeps smart StreamInstall even when an NRO is in the
+// torrent or "[NRO]" is in the title. No packages, and an NRO or a
+// zip/LayeredFS tree, is a port.
+inline bool cardOneTapUsesPortInstall(const TorrentPreview& preview) {
+    if (torrentHasPackageFiles(preview))
+        return false;
+    return torrentPortLayoutDetected(preview);
+}
+
+inline bool pathIsExefsPatch(const TorrentPreview& preview,
+                            const TorrentPreview::File& file) {
+    if (file.package || file.cartridge)
+        return false;
+    return isLayeredFsExefsPath(file.path) ||
+           isLayeredFsExefsPath(torrentLogicalPath(preview, file));
+}
+
+inline bool torrentHasExefsPatches(const TorrentPreview& preview) {
+    for (const TorrentPreview::File& file : preview.files)
+        if (pathIsExefsPatch(preview, file))
+            return true;
+    return false;
+}
+
+// Picker opt-in. Turns every exefs member to Download, or back to Skip when
+// they are already all selected. Other rows are left alone. One-tap never
+// calls this.
+inline void toggleExefsPatchActions(const TorrentPreview& preview,
+                                   std::vector<uint8_t>& actions) {
+    bool any = false;
+    bool enable = false;
+    for (size_t i = 0; i < preview.files.size(); ++i) {
+        if (!pathIsExefsPatch(preview, preview.files[i]))
+            continue;
+        any = true;
+        const uint8_t action = i < actions.size()
+            ? actions[i]
+            : static_cast<uint8_t>(FileAction::Skip);
+        if (action != static_cast<uint8_t>(FileAction::Download))
+            enable = true;
+    }
+    if (!any)
+        return;
+    if (actions.size() < preview.files.size())
+        actions.resize(preview.files.size(),
+                       static_cast<uint8_t>(FileAction::Skip));
+    const uint8_t next = static_cast<uint8_t>(
+        enable ? FileAction::Download : FileAction::Skip);
+    for (size_t i = 0; i < preview.files.size(); ++i)
+        if (pathIsExefsPatch(preview, preview.files[i]))
+            actions[i] = next;
+}
+
 inline std::vector<uint8_t> selectPortPayloadActions(
     const TorrentPreview& preview, const std::string& legacyRoot = {}) {
     std::vector<uint8_t> mask(preview.files.size(),
