@@ -413,6 +413,55 @@ void testMagnetFallsBackToRuTrackerMagnetWhenNoCatalogEntry() {
            "&tr=http://bt.t-ru.org/ann?magnet");
 }
 
+void testSkippedExtraNotice() {
+    TorrentPreview preview;
+    preview.files = {
+        package("Game [0100AAAA00B00000][v0].nsp"),
+        plain("readme.txt"),
+        plain("rusifikator.zip"),
+        plain("atmosphere/contents/0100AAAA00B00000/romfs/a.dat"),
+        plain("contents/0100AAAA00B00000/exefs/main.npdm"),
+        plain("voice.rar"),
+        plain("Русский/text.txt"),
+        plain("forwarder.nro"),
+    };
+    const uint8_t install = static_cast<uint8_t>(FileAction::Install);
+    const uint8_t skip = static_cast<uint8_t>(FileAction::Skip);
+    const uint8_t download = static_cast<uint8_t>(FileAction::Download);
+    assert(pipensx::skippedExtraNotice(
+               preview, {install, skip, skip, skip, skip, skip, skip, skip}) ==
+           pipensx::SkippedExtraNotice::Installable);
+    assert(pipensx::selectionSkipsExtraFiles(
+        preview, {install, skip, skip, skip, skip, skip, skip, skip}));
+    // Notes, rar, and a loose translation folder are not installed.
+    assert(pipensx::skippedExtraNotice(
+               preview,
+               {install, skip, download, download, download, skip, skip,
+                download}) == pipensx::SkippedExtraNotice::NotInstalled);
+    assert(pipensx::skippedExtraNotice(
+               preview,
+               {install, download, download, download, download, download,
+                download, download}) == pipensx::SkippedExtraNotice::None);
+    // No package is installing, so this is not the one-tap extras toast.
+    assert(pipensx::skippedExtraNotice(
+               preview, {skip, skip, skip, skip, skip, skip, skip, skip}) ==
+           pipensx::SkippedExtraNotice::None);
+    assert(pipensx::skippedExtraNotice(
+               preview,
+               {install, download, download, download, skip, download,
+                download, download}) ==
+           pipensx::SkippedExtraNotice::Installable);
+    assert(pipensx::skippedExtraNotice(
+               preview,
+               {install, download, skip, download, download, download,
+                download, download}) ==
+           pipensx::SkippedExtraNotice::Installable);
+    assert(pipensx::skippedExtraNotice(
+               preview,
+               {install, download, download, download, download, download,
+                download, skip}) == pipensx::SkippedExtraNotice::Installable);
+}
+
 void testUtf8TruncateBoundary() {
     const std::string cyr = "\xD0\xB0\xD0\xB1\xD0\xB2";  // "абв"
     assert(pipensx::utf8TruncateBoundary(cyr, 99) == cyr.size());
@@ -650,6 +699,7 @@ int main() {
     testSmartInstallUsesBundledPatchVersionWhenLatestEmpty();
     testMagnetPrefersCatalogEntry();
     testMagnetFallsBackToRuTrackerMagnetWhenNoCatalogEntry();
+    testSkippedExtraNotice();
     testUtf8TruncateBoundary();
     testPreflightBotwWithMods();
     testPreflightBroforceWithoutMods();

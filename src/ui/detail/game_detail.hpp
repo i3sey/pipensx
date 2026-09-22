@@ -1162,7 +1162,7 @@ private:
                     beginResolvedPortInstall(pending);
                     return;
                 }
-                bool extrasSkipped = false;
+                SkippedExtraNotice extrasNotice = SkippedExtraNotice::None;
                 if (mode == TransferMode::StreamInstall && !info.files.empty()) {
                     TorrentPreview preview;
                     preview.name = import.name;
@@ -1182,8 +1182,7 @@ private:
                         if (action == static_cast<uint8_t>(FileAction::Install))
                             ++import.packageCount;
                     }
-                    extrasSkipped = selectionSkipsExtraFiles(
-                        preview, import.fileSelection);
+                    extrasNotice = skippedExtraNotice(preview, import.fileSelection);
                     if (import.packageCount == 0) {
                         operationMessage_ = tr("pipensx/detail/smart_open_options");
                         refreshButtons();
@@ -1205,13 +1204,8 @@ private:
                     operationMessage_ = importError;
                     brls::Application::notify(importError);
                 } else {
-                    statusLabel_->setText(
-                        extrasSkipped
-                            ? tr("pipensx/detail/installing_extras_skipped")
-                            : tr("pipensx/debrid/queued"));
-                    if (extrasSkipped)
-                        brls::Application::notify(
-                            tr("pipensx/detail/installing_extras_skipped_hint"));
+                    if (!notifyExtrasSkipped(extrasNotice))
+                        statusLabel_->setText(tr("pipensx/debrid/queued"));
                     if (onChange_)
                         onChange_();
                 }
@@ -1298,22 +1292,18 @@ private:
                       : manager_->installTarget());
         if (manager_->importTorrentActions(path, mask, id, err, initialPeers)) {
             log_msg("[catalog] imported torrent %s\n", id.c_str());
-            const bool extrasSkipped = selectionSkipsExtraFiles(preview, mask);
-            if (extrasSkipped) {
-                statusLabel_->setText(
-                    tr("pipensx/detail/installing_extras_skipped"));
-                brls::Application::notify(
-                    tr("pipensx/detail/installing_extras_skipped_hint"));
-            } else if (titleInstalled) {
-                statusLabel_->setText(
-                    tr("pipensx/detail/smart_installing_update", destination));
-                brls::Application::notify(
-                    tr("pipensx/detail/smart_installing_update", destination));
-            } else {
-                statusLabel_->setText(
-                    tr("pipensx/detail/smart_installing_base", destination));
-                brls::Application::notify(
-                    tr("pipensx/detail/smart_installing_base", destination));
+            if (!notifyExtrasSkipped(skippedExtraNotice(preview, mask))) {
+                if (titleInstalled) {
+                    statusLabel_->setText(
+                        tr("pipensx/detail/smart_installing_update", destination));
+                    brls::Application::notify(
+                        tr("pipensx/detail/smart_installing_update", destination));
+                } else {
+                    statusLabel_->setText(
+                        tr("pipensx/detail/smart_installing_base", destination));
+                    brls::Application::notify(
+                        tr("pipensx/detail/smart_installing_base", destination));
+                }
             }
             if (onChange_)
                 onChange_();
@@ -1427,6 +1417,19 @@ private:
 
     std::vector<std::string> installedDlcIds() const {
         return installed_ ? installed_->dlcTitleIds() : std::vector<std::string>();
+    }
+
+    // Sets the status line and the one-tap toast. Returns false when nothing
+    // extra was skipped, so the caller can show the ordinary queued text.
+    bool notifyExtrasSkipped(SkippedExtraNotice notice) {
+        if (notice == SkippedExtraNotice::None)
+            return false;
+        statusLabel_->setText(tr("pipensx/detail/installing_extras_skipped"));
+        brls::Application::notify(tr(
+            notice == SkippedExtraNotice::Installable
+                ? "pipensx/detail/installing_extras_skipped_hint"
+                : "pipensx/detail/installing_extras_skipped_junk_hint"));
+        return true;
     }
 
     std::vector<uint8_t> smartInstallMask(

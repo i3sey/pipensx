@@ -3,6 +3,7 @@
 #include "catalog_service.hpp"
 #include "download_manager.hpp"
 #include "installed_title_service.hpp"
+#include "nx_file_types.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -86,12 +87,25 @@ std::vector<uint8_t> selectSmartInstallFiles(
     const std::string& titleId = {},
     const std::vector<std::string>& installedDlcIds = {});
 
-// True when the mask installs at least one package and skips a non-package
-// extra (readme, rusifikator zip, LayeredFS). Used to tell the user extras
-// were left out of a one-tap install.
-inline bool selectionSkipsExtraFiles(
+// What a one-tap package install left on Skip, for the extras toast.
+// Installable: a zip/7z, LayeredFS romfs, exefs patch, or NRO. Choose files
+// can still install that selection. NotInstalled: only notes and other files
+// that are never copied into the game.
+enum class SkippedExtraNotice {
+    None,
+    Installable,
+    NotInstalled,
+};
+
+inline bool skippedExtraIsInstallable(const std::string& path) {
+    return isPortArchiveName(path) || hasNroExtension(path) ||
+           isLayeredFsRomfsPath(path) || isLayeredFsExefsPath(path);
+}
+
+inline SkippedExtraNotice skippedExtraNotice(
     const TorrentPreview& preview, const std::vector<uint8_t>& actions) {
-    bool skippedExtra = false;
+    bool installable = false;
+    bool other = false;
     bool installing = false;
     for (size_t i = 0; i < preview.files.size(); ++i) {
         const uint8_t raw = i < actions.size()
@@ -100,11 +114,25 @@ inline bool selectionSkipsExtraFiles(
                                                      TransferMode::StreamInstall));
         if (raw == static_cast<uint8_t>(FileAction::Install))
             installing = true;
-        if (!preview.files[i].package && !preview.files[i].cartridge &&
-            raw == static_cast<uint8_t>(FileAction::Skip))
-            skippedExtra = true;
+        if (preview.files[i].package || preview.files[i].cartridge ||
+            raw != static_cast<uint8_t>(FileAction::Skip))
+            continue;
+        if (skippedExtraIsInstallable(preview.files[i].path))
+            installable = true;
+        else
+            other = true;
     }
-    return installing && skippedExtra;
+    if (!installing || (!installable && !other))
+        return SkippedExtraNotice::None;
+    return installable ? SkippedExtraNotice::Installable
+                       : SkippedExtraNotice::NotInstalled;
+}
+
+// True when the mask installs at least one package and skips a non-package
+// extra. The toast text depends on skippedExtraNotice.
+inline bool selectionSkipsExtraFiles(
+    const TorrentPreview& preview, const std::vector<uint8_t>& actions) {
+    return skippedExtraNotice(preview, actions) != SkippedExtraNotice::None;
 }
 
 // Settled when the tracked task is gone or in a terminal download status —
