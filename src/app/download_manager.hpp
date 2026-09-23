@@ -310,6 +310,11 @@ public:
     std::string torboxApiKey() const;
     void setTorrentingEnabled(bool enabled);
     bool torrentingEnabled() const;
+    // Which debrid account the saved source uses when torrenting is off.
+    // The keys themselves stay on the setters above.
+    void setActiveDebridProvider(DebridProviderKind kind);
+    DebridProviderKind activeDebridProvider() const;
+    std::string activeDebridCredential() const;
     // `error` is a taskActionReasonName() code when the command is refused.
     bool pause(const std::string& taskId, std::string& error);
     bool pause(const std::string& taskId) {
@@ -493,6 +498,7 @@ private:
     std::string torrserverUrl_;
     std::string realdebridApiKey_;
     std::string alldebridApiKey_;
+    DebridProviderKind activeDebridProvider_ = DebridProviderKind::TorBox;
     // Off until someone opts in. The constructor starts the worker before any
     // caller can configure the manager, so a restored Queued torrent task is
     // eligible for pickup during that window — defaulting to true would let it

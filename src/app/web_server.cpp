@@ -1,4 +1,5 @@
 #include "web_server.hpp"
+#include "add_release.hpp"
 #include "task_actions.hpp"
 
 extern "C" {
@@ -207,6 +208,18 @@ void WebServer::shutdown() {
 void WebServer::setPin(std::string pin) {
     std::lock_guard<std::mutex> lock(configMutex_);
     pin_ = std::move(pin);
+}
+
+void WebServer::setDebridProviderFactory(DebridProviderFactory factory) {
+    std::lock_guard<std::mutex> lock(configMutex_);
+    debridFactory_ = factory;
+    addQueue_.setDebridProviderFactory(std::move(factory));
+}
+
+void WebServer::setOneTapContextLookup(
+    std::function<OneTapContext(const std::string& infoHash,
+                                const std::string& titleId)> lookup) {
+    addQueue_.setOneTapContextLookup(std::move(lookup));
 }
 
 void WebServer::setStreamSelection(StreamSelection selection) {
@@ -693,7 +706,8 @@ HttpResponse WebServer::handleAddMagnet(const HttpRequest& req) {
         selection = streamSelection_;
     }
     std::string jobId = addQueue_.enqueue("", magnet, spec.infoHashHex, {},
-                                          mode, selection, error);
+                                          mode, selection, error,
+                                          AddInputKind::Magnet);
     if (jobId.empty()) return jsonError(409, error);
     Json j;
     j["jobId"] = jobId;
@@ -711,6 +725,7 @@ HttpResponse WebServer::handleAddCatalog(const HttpRequest& req) {
 
     std::string title;
     std::string magnet;
+    std::string titleId;
     std::vector<uint8_t> infoDict;
     {
         std::lock_guard<std::mutex> lock(catalogMutex_);
@@ -721,6 +736,7 @@ HttpResponse WebServer::handleAddCatalog(const HttpRequest& req) {
         title = entry.title;
         magnet = entry.magnetUri;
         infoDict = entry.infoDict;
+        titleId = entry.titleId;
     }
     StreamSelection selection;
     {
@@ -730,7 +746,8 @@ HttpResponse WebServer::handleAddCatalog(const HttpRequest& req) {
     std::string error;
     std::string jobId =
         addQueue_.enqueue(std::move(title), std::move(magnet), hash,
-                          std::move(infoDict), mode, selection, error);
+                          std::move(infoDict), mode, selection, error,
+                          AddInputKind::Catalog, std::move(titleId));
     if (jobId.empty()) return jsonError(409, error);
     Json j;
     j["jobId"] = jobId;
@@ -743,11 +760,17 @@ HttpResponse WebServer::handleAddTorrent(const HttpRequest& req) {
     if (!parseMode(req.queryParam("mode"), mode))
         return jsonError(400, "mode must be \"install\" or \"download\"");
 
-    // Parsing the upload is offline, but the task it creates is a torrent one
-    // and the worker would just error it out. Say so now instead of accepting
-    // an upload that is going to fail a second later.
-    if (!manager_.torrentingEnabled())
-        return jsonError(409, "torrenting is disabled in Settings");
+    // Refuse before writing the upload when the saved source cannot take a
+    // .torrent. Direct stays off; a configured debrid provider accepts it.
+    DebridProviderFactory factory;
+    {
+        std::lock_guard<std::mutex> lock(configMutex_);
+        factory = debridFactory_;
+    }
+    ReleaseAdder adder(manager_, std::move(factory));
+    const AddSourceChoice source = adder.choose(AddInputKind::TorrentFile);
+    if (!source.accepted)
+        return jsonError(409, source.refusal);
 
     const std::string path =
         manager_.rootPath() + "/_web_upload_" +
@@ -767,25 +790,25 @@ HttpResponse WebServer::handleAddTorrent(const HttpRequest& req) {
         ::unlink(path.c_str());
         return jsonError(400, error.empty() ? "invalid torrent" : error);
     }
-    std::vector<uint8_t> mask;
-    if (mode == TransferMode::StreamInstall) {
-        StreamSelection selection;
-        {
-            std::lock_guard<std::mutex> lock(configMutex_);
-            selection = streamSelection_;
-        }
-        mode = defaultTransferMode(preview, mode);
-        mask = defaultInstallSelection(preview, mode, selection);
-        InstallSpaceEstimate space = estimateInstallSpace(preview, mask, mode);
-        if (space.packageFiles == 0 && mode != TransferMode::PortInstall)
-            mode = TransferMode::DownloadOnly;
+    StreamSelection selection;
+    {
+        std::lock_guard<std::mutex> lock(configMutex_);
+        selection = streamSelection_;
     }
-    std::string taskId;
-    bool ok = manager_.importTorrent(path, mode, mask, taskId, error);
+    AddRequest request;
+    request.input = AddInputKind::TorrentFile;
+    request.title = preview.name;
+    request.infoHashHex = preview.infoHash;
+    request.requestedMode = mode;
+    request.selection = selection;
+    std::atomic<bool> cancelled{false};
+    const AddOutcome outcome = adder.addTorrentFile(request, path, cancelled);
     ::unlink(path.c_str());
-    if (!ok) return jsonError(409, error.empty() ? "import failed" : error);
+    if (!outcome.ok)
+        return jsonError(409, outcome.error.empty() ? "import failed"
+                                                    : outcome.error);
     Json j;
-    j["taskId"] = taskId;
+    j["taskId"] = outcome.taskId;
     return HttpResponse::text(200, dumpJson(j));
 }
 

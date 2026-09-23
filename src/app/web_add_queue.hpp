@@ -10,6 +10,7 @@
 #include <thread>
 #include <vector>
 
+#include "add_release.hpp"
 #include "app_settings.hpp"
 #include "download_manager.hpp"
 #include "magnet_resolver.hpp"
@@ -39,6 +40,8 @@ struct WebAddJob {
     std::string infoHashHex;  // lowercase; may be empty for odd magnets
     std::string magnetUri;
     std::vector<uint8_t> infoDict;  // catalog fast path; empty = network resolve
+    std::string titleId;
+    AddInputKind input = AddInputKind::Magnet;
     TransferMode requestedMode = TransferMode::StreamInstall;
     StreamSelection selection = StreamSelection::AllFiles;
     WebAddJobState state = WebAddJobState::Queued;
@@ -60,8 +63,14 @@ public:
         const MagnetResolver::ProgressCallback& progress,
         std::vector<uint8_t>& initialPeers, std::string& error)>;
 
-    explicit WebAddQueue(DownloadManager& manager, Resolver resolver = {});
+    explicit WebAddQueue(DownloadManager& manager, Resolver resolver = {},
+                         DebridProviderFactory debridFactory = {});
     ~WebAddQueue();
+
+    void setDebridProviderFactory(DebridProviderFactory factory);
+    void setOneTapContextLookup(
+        std::function<OneTapContext(const std::string& infoHash,
+                                    const std::string& titleId)> lookup);
 
     WebAddQueue(const WebAddQueue&) = delete;
     WebAddQueue& operator=(const WebAddQueue&) = delete;
@@ -70,7 +79,9 @@ public:
     std::string enqueue(std::string title, std::string magnetUri,
                         std::string infoHashHex, std::vector<uint8_t> infoDict,
                         TransferMode mode, StreamSelection selection,
-                        std::string& error);
+                        std::string& error,
+                        AddInputKind input = AddInputKind::Magnet,
+                        std::string titleId = {});
     bool cancel(const std::string& jobId);
     // Thread-safe copy; prunes terminal jobs older than ~2 minutes.
     std::vector<WebAddJob> snapshot();
@@ -88,6 +99,10 @@ private:
 
     DownloadManager& manager_;
     Resolver resolver_;
+    DebridProviderFactory debridFactory_;
+    std::function<OneTapContext(const std::string& infoHash,
+                                const std::string& titleId)>
+        oneTapLookup_;
     mutable std::mutex mutex_;
     std::condition_variable cv_;
     std::vector<Job> jobs_;

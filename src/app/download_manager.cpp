@@ -1005,6 +1005,21 @@ bool DownloadManager::torrentingEnabled() const {
     return torrentingEnabled_.load();
 }
 
+void DownloadManager::setActiveDebridProvider(DebridProviderKind kind) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    activeDebridProvider_ = kind;
+}
+
+DebridProviderKind DownloadManager::activeDebridProvider() const {
+    std::unique_lock<std::mutex> lock(mutex_);
+    return activeDebridProvider_;
+}
+
+std::string DownloadManager::activeDebridCredential() const {
+    std::unique_lock<std::mutex> lock(mutex_);
+    return apiKeyFor(activeDebridProvider_);
+}
+
 bool DownloadManager::pause(const std::string& taskId, std::string& error) {
     std::unique_lock<std::mutex> lock(mutex_);
     DownloadTask* task = findLocked(taskId);

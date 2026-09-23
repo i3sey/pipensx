@@ -25,6 +25,7 @@ extern "C" {
 #include <switch-ipcext.h>
 
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <condition_variable>
 #include <csignal>
@@ -707,6 +708,7 @@ int main(int argc, char** argv) {
         manager.setTorrserverUrl(settings.get().torrserverUrl);
         manager.setRealdebridApiKey(settings.get().realdebridApiKey);
         manager.setAlldebridApiKey(settings.get().alldebridApiKey);
+        manager.setActiveDebridProvider(settings.get().debridProvider);
         manager.setTorrentingEnabled(settings.get().torrentingEnabled);
         metadata.setImageNetwork(
             manager.hasActiveTransfer()
@@ -753,6 +755,40 @@ int main(int argc, char** argv) {
                     return false;
                 }
                 return ok;
+            });
+        webServer.setOneTapContextLookup(
+            [&installed, &metadata](const std::string& infoHash,
+                                    const std::string& titleId) {
+                pipensx::OneTapContext context;
+                context.titleId = titleId;
+                auto sameId = [](std::string left, std::string right) {
+                    for (char& c : left)
+                        c = static_cast<char>(
+                            std::toupper(static_cast<unsigned char>(c)));
+                    for (char& c : right)
+                        c = static_cast<char>(
+                            std::toupper(static_cast<unsigned char>(c)));
+                    return left == right;
+                };
+                if (!runOnUiThread([&] {
+                        context.titleInstalled = installed.contains(titleId);
+                        if (context.titleInstalled) {
+                            for (const auto& title : installed.titles()) {
+                                if (sameId(title.titleId, titleId)) {
+                                    context.installedVersion = title.version;
+                                    break;
+                                }
+                            }
+                        }
+                        context.installedDlcIds = installed.dlcTitleIds();
+                        if (const pipensx::GameMetadata* meta =
+                                metadata.findByInfoHash(infoHash, titleId))
+                            context.latestVersion = meta->latestVersion;
+                    })) {
+                    log_msg("[web] install context timed out for %s\n",
+                            infoHash.c_str());
+                }
+                return context;
             });
         webServer.updateCatalog(catalog.sharedEntries());
         // Every later adopt() (launch refresh, settings refresh, catalog tab)

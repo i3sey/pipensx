@@ -11,6 +11,7 @@
 
 #include <borealis.hpp>
 
+#include "app/add_release.hpp"
 #include "app/app_settings.hpp"
 #include "app/catalog_presentation.hpp"
 #include "app/game_update_install.hpp"
@@ -927,24 +928,6 @@ private:
         std::string debridId;
     };
 
-    static TorrentPreview previewFromDebridInfo(const DebridInfo& info,
-                                                const std::string& fallbackName,
-                                                uint64_t fallbackBytes) {
-        TorrentPreview preview;
-        preview.name = info.name.empty() ? fallbackName : info.name;
-        preview.totalBytes = info.bytes ? info.bytes : fallbackBytes;
-        preview.fileCount = static_cast<uint32_t>(info.files.size());
-        for (const DebridFile& file : info.files) {
-            const bool package = isPackageName(file.path);
-            preview.files.push_back({file.path, file.bytes, package,
-                                     isCompressedName(file.path),
-                                     isCartridgeName(file.path)});
-            preview.packageCount += package ? 1 : 0;
-            preview.cartridgeCount += isCartridgeName(file.path) ? 1 : 0;
-        }
-        return preview;
-    }
-
     static std::string portLayoutStatus(const TorrentPreview& preview) {
         return torrentHasLayeredFsPayload(preview)
             ? tr("pipensx/port_install/layout_layered")
@@ -1118,24 +1101,16 @@ private:
                 import.provider = providerKind;
                 import.debridId = debridId;
                 import.mode = mode;
-                if (forcePicker && !info.files.empty()) {
-                    TorrentPreview preview;
-                    preview.name = import.name;
-                    preview.totalBytes = import.totalBytes;
-                    preview.fileCount = static_cast<uint32_t>(info.files.size());
-                    for (const DebridFile& file : info.files) {
-                        const bool package = isPackageName(file.path);
-                        preview.files.push_back({file.path, file.bytes, package,
-                                                 isCompressedName(file.path),
-                                                 isCartridgeName(file.path)});
-                        preview.packageCount += package ? 1 : 0;
-                        preview.cartridgeCount += isCartridgeName(file.path) ? 1 : 0;
-                    }
+                TorrentPreview layoutPreview = previewFromDebridFiles(
+                    info, entry.title, entry.size);
+                import.name = layoutPreview.name;
+                import.totalBytes = layoutPreview.totalBytes;
+                if (forcePicker && !layoutPreview.files.empty()) {
                     StreamSelection selection = settings_->get().streamSelection;
                     log_msg("[DEBUG-debrid-picker] push id=%s files=%u\n",
-                            debridId.c_str(), preview.fileCount);
+                            debridId.c_str(), layoutPreview.fileCount);
                     brls::Application::pushActivity(new TorrentSelectionActivity(
-                        manager_, "", std::move(preview),
+                        manager_, "", std::move(layoutPreview),
                         TransferMode::StreamInstall, selection, {}, import,
                         [providerKind, key, debridId] {
                             removeDebridTransferAsync(providerKind, key, debridId);
@@ -1144,9 +1119,9 @@ private:
                             debridId.c_str());
                     return;
                 }
-                TorrentPreview layoutPreview = previewFromDebridInfo(
-                    info, entry.title, entry.size);
-                if (cardOneTapUsesPortInstall(layoutPreview)) {
+                const OneTapPlan plan =
+                    planCatalogOneTap(layoutPreview, oneTapContext());
+                if (plan.outcome == OneTapOutcome::QueuePort) {
                     auto pending = std::make_shared<PortImportPending>();
                     pending->debridMode = true;
                     pending->providerKind = providerKind;
@@ -1162,41 +1137,23 @@ private:
                     beginResolvedPortInstall(pending);
                     return;
                 }
-                SkippedExtraNotice extrasNotice = SkippedExtraNotice::None;
-                if (mode == TransferMode::StreamInstall && !info.files.empty()) {
-                    TorrentPreview preview;
-                    preview.name = import.name;
-                    preview.totalBytes = import.totalBytes;
-                    preview.fileCount = static_cast<uint32_t>(info.files.size());
-                    for (const DebridFile& file : info.files) {
-                        const bool package = isPackageName(file.path);
-                        preview.files.push_back({file.path, file.bytes, package,
-                                                 isCompressedName(file.path),
-                                                 isCartridgeName(file.path)});
-                        preview.packageCount += package ? 1 : 0;
-                        preview.cartridgeCount += isCartridgeName(file.path) ? 1 : 0;
-                    }
-                    import.fileSelection = smartInstallMask(preview);
-                    import.packageCount = 0;
-                    for (uint8_t action : import.fileSelection) {
-                        if (action == static_cast<uint8_t>(FileAction::Install))
-                            ++import.packageCount;
-                    }
-                    extrasNotice = skippedExtraNotice(preview, import.fileSelection);
-                    if (import.packageCount == 0) {
-                        operationMessage_ = tr("pipensx/detail/smart_open_options");
-                        refreshButtons();
-                        brls::Application::notify(operationMessage_);
-                        brls::Application::pushActivity(new TorrentSelectionActivity(
-                            manager_, "", std::move(preview),
-                            TransferMode::StreamInstall,
-                            settings_->get().streamSelection, {}, import,
-                            [providerKind, key, debridId] {
-                                removeDebridTransferAsync(providerKind, key, debridId);
-                            }));
-                        return;
-                    }
+                if (plan.outcome == OneTapOutcome::NeedsChooser) {
+                    operationMessage_ = oneTapBlockText(plan.block);
+                    refreshButtons();
+                    brls::Application::notify(operationMessage_);
+                    brls::Application::pushActivity(new TorrentSelectionActivity(
+                        manager_, "", std::move(layoutPreview),
+                        plan.chooserMode, settings_->get().streamSelection, {},
+                        import,
+                        [providerKind, key, debridId] {
+                            removeDebridTransferAsync(providerKind, key, debridId);
+                        }));
+                    return;
                 }
+                import.fileSelection = plan.fileSelection;
+                import.packageCount = plan.packageCount;
+                import.mode = plan.mode;
+                const SkippedExtraNotice extrasNotice = plan.extras;
                 std::string id;
                 std::string importError;
                 if (!manager_->importDebrid(import, id, importError)) {
@@ -1244,7 +1201,8 @@ private:
             return;
         }
 
-        if (cardOneTapUsesPortInstall(preview)) {
+        const OneTapPlan plan = planCatalogOneTap(preview, oneTapContext());
+        if (plan.outcome == OneTapOutcome::QueuePort) {
             auto pending = std::make_shared<PortImportPending>();
             pending->torrentPath = path;
             pending->preview = std::move(preview);
@@ -1252,38 +1210,17 @@ private:
             beginResolvedPortInstall(pending);
             return;
         }
-
-        // One-tap path. No installable packages -> open the picker in download
-        // mode so the user is not left at a dead end.
-        if (preview.packageCount == 0) {
-            operationMessage_ = preview.cartridgeCount > 0
-                ? tr("pipensx/detail/cartridge_only")
-                : tr("pipensx/detail/no_installable");
+        if (plan.outcome == OneTapOutcome::NeedsChooser) {
+            operationMessage_ = oneTapBlockText(plan.block);
             refreshButtons();
             brls::Application::notify(operationMessage_);
             openSelection(path, std::move(preview), std::move(initialPeers),
-                          TransferMode::DownloadOnly);
+                          plan.chooserMode);
             return;
         }
 
         const bool titleInstalled = installed_ && installed_->contains(titleId_);
-        std::vector<uint8_t> mask = smartInstallMask(preview);
-        bool hasInstall = false;
-        for (uint8_t action : mask) {
-            if (action == static_cast<uint8_t>(FileAction::Install)) {
-                hasInstall = true;
-                break;
-            }
-        }
-        if (!hasInstall) {
-            operationMessage_ = titleInstalled
-                ? tr("pipensx/detail/smart_open_options")
-                : tr("pipensx/detail/no_installable");
-            refreshButtons();
-            brls::Application::notify(operationMessage_);
-            openSelection(path, std::move(preview), std::move(initialPeers));
-            return;
-        }
+        const std::vector<uint8_t>& mask = plan.fileSelection;
 
         std::string id;
         std::string err;
@@ -1333,6 +1270,25 @@ private:
         brls::Application::pushActivity(new TorrentSelectionActivity(
             manager_, path, std::move(preview), preferred,
             selection, std::move(initialPeers)));
+    }
+
+    OneTapContext oneTapContext() const {
+        OneTapContext context;
+        context.titleId = titleId_;
+        context.titleInstalled = installed_ && installed_->contains(titleId_);
+        context.installedVersion = installedVersionForTitle();
+        context.latestVersion = latestVersionForEntry();
+        context.installedDlcIds = installedDlcIds();
+        return context;
+    }
+
+    std::string oneTapBlockText(OneTapBlock block) const {
+        if (block == OneTapBlock::CartridgeOnly)
+            return tr("pipensx/detail/cartridge_only");
+        if (block == OneTapBlock::NothingSelected &&
+            installed_ && installed_->contains(titleId_))
+            return tr("pipensx/detail/smart_open_options");
+        return tr("pipensx/detail/no_installable");
     }
 
     std::string installedVersionForTitle() const {

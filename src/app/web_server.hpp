@@ -50,6 +50,13 @@ public:
     // PIN: required on mutating endpoints; empty fails closed.
     void setPin(std::string pin);
     void setStreamSelection(StreamSelection selection);
+    // Test seam. Empty uses the real provider clients.
+    void setDebridProviderFactory(DebridProviderFactory factory);
+    // Console one-tap context for catalog Install. Called on the add worker.
+    // The Switch wiring hops to the UI thread; tests omit it.
+    void setOneTapContextLookup(
+        std::function<OneTapContext(const std::string& infoHash,
+                                    const std::string& titleId)> lookup);
 
     // Companion settings. AppSettings is UI-thread-only — never pass it in.
     // Getter/patcher run on the HTTP thread; Switch wiring hops to the UI
@@ -96,6 +103,7 @@ private:
     mutable std::mutex configMutex_;
     std::string pin_;
     StreamSelection streamSelection_ = StreamSelection::AllFiles;
+    DebridProviderFactory debridFactory_;
     SettingsGetter settingsGetter_;
     SettingsPatcher settingsPatcher_;
 

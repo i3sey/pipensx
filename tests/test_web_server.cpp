@@ -18,17 +18,54 @@ extern "C" {
 #include <unistd.h>
 #include <zlib.h>
 
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <csignal>
 #include <cstdio>
 #include <fstream>
+#include <memory>
 #include <string>
 #include <thread>
 
 using namespace pipensx;
 
 namespace {
+
+class ReadyProvider : public DebridProvider {
+public:
+    bool validate(std::string&) override { return true; }
+    bool createFromMagnet(const std::string&, std::string& id,
+                          std::string&) override {
+        id = "web-1";
+        return true;
+    }
+    bool createFromFile(const std::string&, std::string& id,
+                        std::string&) override {
+        id = "web-file";
+        return true;
+    }
+    bool fetchInfo(const std::string&, DebridInfo& info,
+                   std::string&) override {
+        info = DebridInfo{};
+        info.phase = DebridInfo::Phase::Ready;
+        info.name = "Phone Game";
+        info.bytes = 100;
+        info.files.push_back({"1", "game.nsp", 100});
+        return true;
+    }
+    bool selectFiles(const std::string&, const std::vector<std::string>&,
+                     std::string&) override {
+        return true;
+    }
+    bool resolveDownloadUrl(const std::string&, const DebridInfo&, size_t,
+                            const DebridFile&, std::string&,
+                            std::string&) override {
+        return false;
+    }
+    bool remove(const std::string&, std::string&) override { return true; }
+    const char* name() const override { return "stub"; }
+};
 
 std::string gTorrentBytes;
 
@@ -152,10 +189,12 @@ int main() {
     // The add endpoints are gated on torrenting, which is off by default; the
     // gate itself is asserted separately below.
     manager.setTorrentingEnabled(true);
-    auto fakeResolver = [](const WebAddJob&, const std::string& path,
+    auto resolveCalls = std::make_shared<std::atomic<int>>(0);
+    auto fakeResolver = [resolveCalls](const WebAddJob&, const std::string& path,
                            std::atomic<bool>&,
                            const MagnetResolver::ProgressCallback&,
                            std::vector<uint8_t>&, std::string&) {
+        resolveCalls->fetch_add(1);
         std::ofstream out(path, std::ios::binary);
         out.write(gTorrentBytes.data(), (std::streamsize)gTorrentBytes.size());
         return out.good();
@@ -324,7 +363,19 @@ int main() {
                                    "/api/add/torrent?mode=download",
                                    gTorrentBytes, pinHeader);
         assert(resp.find("409") != std::string::npos);
-        assert(responseBody(resp).find("torrenting is disabled") !=
+        assert(responseBody(resp).find("not configured") != std::string::npos);
+        assert(responseBody(resp).find("Direct BitTorrent stays off") !=
+               std::string::npos);
+        assert(manager.torrentingEnabled() == false);
+
+        resp = request(
+            port, "POST", "/api/add/magnet",
+            "{\"magnet\":\"magnet:?xt=urn:btih:"
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            "&tr=http://bt.t-ru.org/ann?magnet\",\"mode\":\"install\"}",
+            pinHeader);
+        assert(resp.find("409") != std::string::npos);
+        assert(responseBody(resp).find("Direct BitTorrent stays off") !=
                std::string::npos);
 
         resp = request(port, "GET", "/api/tasks");
@@ -492,6 +543,51 @@ int main() {
         assert(responseBody(resp).find("\"torboxConfigured\":false") !=
                std::string::npos);
         assert(companionSettings.get().torboxApiKey.empty());
+    }
+
+    // Torrenting stays off. A configured provider adds the catalog release
+    // through debrid, with the same one-tap file plan the console uses, and
+    // without resolving the magnet on the swarm.
+    {
+        const std::string hash(40, 'a');
+        manager.setTorrentingEnabled(false);
+        manager.setActiveDebridProvider(DebridProviderKind::TorBox);
+        manager.setTorboxApiKey("tb-test");
+        server.setDebridProviderFactory(
+            [](DebridProviderKind, const std::string&) {
+                return std::unique_ptr<DebridProvider>(new ReadyProvider());
+            });
+        CatalogEntry entry;
+        entry.infoHash = hash;
+        entry.title = "Phone Game";
+        entry.magnetUri = "magnet:?xt=urn:btih:" + hash;
+        server.updateCatalog(
+            std::make_shared<const std::vector<CatalogEntry>>(
+                std::vector<CatalogEntry>{entry}));
+        const int resolvesBefore = resolveCalls->load();
+        std::string resp = request(port, "POST", "/api/add/catalog",
+                                   "{\"infoHash\":\"" + hash +
+                                       "\",\"mode\":\"install\"}",
+                                   pinHeader);
+        assert(resp.find("202") != std::string::npos);
+        bool imported = waitFor([&] {
+            for (const DownloadTask& task : manager.snapshot()) {
+                if (task.id == hash && task.source == TaskSource::Debrid &&
+                    task.debridProvider == DebridProviderKind::TorBox &&
+                    task.mode == TransferMode::StreamInstall &&
+                    task.fileSelection.size() == 1 &&
+                    task.fileSelection[0] ==
+                        static_cast<uint8_t>(FileAction::Install))
+                    return true;
+            }
+            return false;
+        });
+        assert(imported);
+        assert(manager.torrentingEnabled() == false);
+        assert(resolveCalls->load() == resolvesBefore);
+        manager.setTorboxApiKey("");
+        std::string removeError;
+        assert(manager.remove(hash, true, removeError));
     }
 
     server.shutdown();

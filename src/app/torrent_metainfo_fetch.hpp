@@ -66,6 +66,12 @@ bool ensureTorrentFileForDebrid(const std::string& magnetUri,
                                 std::string& error,
                                 TorrentHttpGet* transport = nullptr);
 
+// Poll fetchInfo until the provider lists files, fails, or the deadline passes.
+bool pollDebridUntilFiles(DebridProvider& provider, const std::string& id,
+                          std::atomic<bool>& cancelled,
+                          std::chrono::steady_clock::time_point deadline,
+                          DebridInfo& info, std::string& error);
+
 // createFromMagnet + poll; on failure, ensureTorrentFile + createFromFile.
 // tmpTorrentPath is unlinked before return. onStage may be null.
 bool createDebridWithMetainfoFallback(

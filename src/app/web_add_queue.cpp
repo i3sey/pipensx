@@ -1,5 +1,6 @@
 #include "web_add_queue.hpp"
 
+#include "add_release.hpp"
 #include "install_space.hpp"
 
 extern "C" {
@@ -51,8 +52,10 @@ const char* webAddJobStateName(WebAddJobState state) {
     return "unknown";
 }
 
-WebAddQueue::WebAddQueue(DownloadManager& manager, Resolver resolver)
-    : manager_(manager), resolver_(std::move(resolver)) {
+WebAddQueue::WebAddQueue(DownloadManager& manager, Resolver resolver,
+                         DebridProviderFactory debridFactory)
+    : manager_(manager), resolver_(std::move(resolver)),
+      debridFactory_(std::move(debridFactory)) {
     if (!resolver_) {
         resolver_ = [](const WebAddJob& job, const std::string& path,
                        std::atomic<bool>& cancelled,
@@ -69,6 +72,18 @@ WebAddQueue::WebAddQueue(DownloadManager& manager, Resolver resolver)
 
 WebAddQueue::~WebAddQueue() { shutdown(); }
 
+void WebAddQueue::setDebridProviderFactory(DebridProviderFactory factory) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    debridFactory_ = std::move(factory);
+}
+
+void WebAddQueue::setOneTapContextLookup(
+    std::function<OneTapContext(const std::string& infoHash,
+                                const std::string& titleId)> lookup) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    oneTapLookup_ = std::move(lookup);
+}
+
 WebAddQueue::Job* WebAddQueue::findLocked(const std::string& jobId) {
     for (Job& job : jobs_)
         if (job.data.jobId == jobId) return &job;
@@ -79,7 +94,8 @@ std::string WebAddQueue::enqueue(std::string title, std::string magnetUri,
                                  std::string infoHashHex,
                                  std::vector<uint8_t> infoDict,
                                  TransferMode mode, StreamSelection selection,
-                                 std::string& error) {
+                                 std::string& error, AddInputKind input,
+                                 std::string titleId) {
     std::string hash = lowerAscii(std::move(infoHashHex));
     if (!hash.empty() && manager_.hasTask(hash)) {
         error = "This torrent is already in the download manager.";
@@ -94,6 +110,18 @@ std::string WebAddQueue::enqueue(std::string title, std::string magnetUri,
             }
         }
     }
+    ReleaseAdder adder(manager_);
+    const AddSourceChoice source = adder.choose(input);
+    if (!source.accepted) {
+        error = source.refusal;
+        return "";
+    }
+    if (!source.direct && hash.size() != 40) {
+        error = std::string(addSourceProviderName(source.provider)) +
+                " needs a 40-character info hash to add this, and this "
+                "magnet does not have one. Direct BitTorrent stays off.";
+        return "";
+    }
     Job job;
     job.data.jobId = "job-" + std::to_string(++serial_);
     job.data.title = title.empty() ? (hash.empty() ? "magnet" : hash)
@@ -101,6 +129,8 @@ std::string WebAddQueue::enqueue(std::string title, std::string magnetUri,
     job.data.infoHashHex = std::move(hash);
     job.data.magnetUri = std::move(magnetUri);
     job.data.infoDict = std::move(infoDict);
+    job.data.titleId = std::move(titleId);
+    job.data.input = input;
     job.data.requestedMode = mode;
     job.data.selection = selection;
     job.cancelled = std::make_shared<std::atomic<bool>>(false);
@@ -207,14 +237,62 @@ void WebAddQueue::runJob(const std::string& jobId) {
         if (job) job->data.progress = progress;
     };
 
-    // Resolving a magnet talks to the DHT and to peers, so it has to sit
-    // behind the same gate as the transfer itself — otherwise a phone could
-    // put the console on the torrent network while the user has torrenting
-    // switched off. The companion has no debrid path of its own yet.
-    if (!manager_.torrentingEnabled()) {
-        fail("Torrenting is disabled. Enable it in Settings, or add this "
-             "release from the console in debrid mode.",
-             WebAddJobState::Error);
+    // Re-read the saved source. A magnet resolve talks to the swarm, so it
+    // only runs when Direct is still selected. Debrid never enables that.
+    DebridProviderFactory factory;
+    std::function<OneTapContext(const std::string&, const std::string&)> lookup;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        factory = debridFactory_;
+        lookup = oneTapLookup_;
+    }
+    ReleaseAdder adder(manager_, std::move(factory));
+    const AddSourceChoice source = adder.choose(data.input);
+    if (!source.accepted) {
+        fail(source.refusal, WebAddJobState::Error);
+        return;
+    }
+
+    AddRequest request;
+    request.input = data.input;
+    request.title = data.title;
+    request.magnetUri = data.magnetUri;
+    request.infoHashHex = data.infoHashHex;
+    request.infoDict = data.infoDict;
+    request.titleId = data.titleId;
+    request.requestedMode = data.requestedMode;
+    request.selection = data.selection;
+    if (!source.direct && lookup && data.input == AddInputKind::Catalog &&
+        data.requestedMode == TransferMode::StreamInstall)
+        request.oneTap = lookup(data.infoHashHex, data.titleId);
+
+    auto finish = [&](const AddOutcome& outcome) {
+        if (cancelled->load()) {
+            fail("", WebAddJobState::Cancelled);
+            return;
+        }
+        if (!outcome.ok) {
+            fail(outcome.error.empty() ? "Import failed." : outcome.error,
+                 WebAddJobState::Error);
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            Job* job = findLocked(jobId);
+            if (job) {
+                job->data.state = WebAddJobState::Done;
+                job->data.taskId = outcome.taskId;
+                if (!outcome.name.empty())
+                    job->data.title = outcome.name;
+                job->data.finishedAtMs = nowMs();
+            }
+        }
+        log_msg("[web] job %s imported as %s\n", jobId.c_str(),
+                outcome.taskId.c_str());
+    };
+
+    if (!source.direct) {
+        finish(adder.addViaDebrid(request, *cancelled, {}));
         return;
     }
 
@@ -236,61 +314,16 @@ void WebAddQueue::runJob(const std::string& jobId) {
         return;
     }
 
-    TorrentPreview preview;
-    if (!DownloadManager::previewTorrent(path, preview, error)) {
-        ::unlink(path.c_str());
-        fail(error, WebAddJobState::Error);
-        return;
-    }
-    if (!data.infoHashHex.empty() &&
-        data.infoHashHex != lowerAscii(preview.infoHash)) {
-        ::unlink(path.c_str());
-        fail("Resolved torrent does not match the requested hash.",
-             WebAddJobState::Error);
-        return;
-    }
-
     {
         std::lock_guard<std::mutex> lock(mutex_);
         Job* job = findLocked(jobId);
-        if (job) {
+        if (job)
             job->data.state = WebAddJobState::Importing;
-            job->data.title = preview.name.empty() ? job->data.title
-                                                   : preview.name;
-        }
     }
-
-    // Same default-actions logic as the catalog batch installer
-    // (catalog_batch_installer.cpp): stream install with the settings-driven
-    // selection, falling back to a plain download when nothing is installable.
-    TransferMode mode = data.requestedMode;
-    std::vector<uint8_t> mask;
-    if (mode == TransferMode::StreamInstall) {
-        mode = defaultTransferMode(preview, mode);
-        mask = defaultInstallSelection(preview, mode, data.selection);
-        InstallSpaceEstimate space = estimateInstallSpace(preview, mask, mode);
-        if (space.packageFiles == 0 && mode != TransferMode::PortInstall)
-            mode = TransferMode::DownloadOnly;
-    }
-
-    std::string taskId;
-    bool ok = manager_.importTorrent(path, mode, mask, taskId, error,
-                                     initialPeers);
+    const AddOutcome outcome =
+        adder.importResolvedTorrent(request, path, initialPeers);
     ::unlink(path.c_str());
-    if (!ok) {
-        fail(error.empty() ? "Import failed." : error, WebAddJobState::Error);
-        return;
-    }
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        Job* job = findLocked(jobId);
-        if (job) {
-            job->data.state = WebAddJobState::Done;
-            job->data.taskId = taskId;
-            job->data.finishedAtMs = nowMs();
-        }
-    }
-    log_msg("[web] job %s imported as %s\n", jobId.c_str(), taskId.c_str());
+    finish(outcome);
 }
 
 }  // namespace pipensx

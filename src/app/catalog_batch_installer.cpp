@@ -1,4 +1,5 @@
 #include "catalog_batch_installer.hpp"
+#include "add_release.hpp"
 #include "download_manager.hpp"
 #include "nx_file_types.hpp"
 #include "torrent_metainfo_fetch.hpp"
@@ -39,22 +40,7 @@ void addEstimate(uint64_t& target, uint64_t value, bool& overflow) {
 }
 
 TorrentPreview previewFromDebrid(const DebridInfo& info) {
-    TorrentPreview p;
-    p.name = info.name;
-    p.totalBytes = info.bytes;
-    p.fileCount = static_cast<uint32_t>(info.files.size());
-    for (const DebridFile& f : info.files) {
-        TorrentPreview::File pf;
-        pf.path = f.path;
-        pf.length = f.bytes;
-        pf.package = isPackageName(f.path);
-        pf.compressed = isCompressedName(f.path);
-        pf.cartridge = isCartridgeName(f.path);
-        if (pf.package) ++p.packageCount;
-        if (pf.cartridge) ++p.cartridgeCount;
-        p.files.push_back(std::move(pf));
-    }
-    return p;
+    return previewFromDebridFiles(info);
 }
 
 } // namespace
@@ -157,11 +143,11 @@ BatchPreparation CatalogBatchInstaller::prepare(
             continue;
         }
 
-        TransferMode mode = defaultTransferMode(
-            preview, TransferMode::StreamInstall);
-        std::vector<uint8_t> mask = defaultInstallSelection(
-            preview, mode, selection);
-        InstallSpaceEstimate space = estimateInstallSpace(preview, mask, mode);
+        const SettingsInstallPlan planned = planSettingsInstall(
+            preview, TransferMode::StreamInstall, selection);
+        TransferMode mode = planned.mode;
+        std::vector<uint8_t> mask = planned.fileSelection;
+        InstallSpaceEstimate space = planned.space;
         if (space.packageFiles == 0 && mode != TransferMode::PortInstall) {
             if (selection == StreamSelection::PackagesOnly) {
                 ::unlink(path.c_str());
@@ -287,12 +273,11 @@ BatchPreparation CatalogBatchInstaller::prepareViaDebrid(
         }
         if (p.ready) {
             TorrentPreview preview = previewFromDebrid(p.info);
-            TransferMode mode = defaultTransferMode(
-                preview, TransferMode::StreamInstall);
-            std::vector<uint8_t> mask =
-                defaultInstallSelection(preview, mode, selection);
-            InstallSpaceEstimate space =
-                estimateInstallSpace(preview, mask, mode);
+            const SettingsInstallPlan planned = planSettingsInstall(
+                preview, TransferMode::StreamInstall, selection);
+            TransferMode mode = planned.mode;
+            std::vector<uint8_t> mask = planned.fileSelection;
+            InstallSpaceEstimate space = planned.space;
             if (space.packageFiles == 0 &&
                 mode != TransferMode::PortInstall) {
                 if (selection == StreamSelection::PackagesOnly) {

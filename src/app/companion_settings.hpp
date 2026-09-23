@@ -31,6 +31,7 @@ inline void applyCompanionSettingsRuntime(const AppSettingsData& values,
     manager.setTorrserverUrl(values.torrserverUrl);
     manager.setRealdebridApiKey(values.realdebridApiKey);
     manager.setAlldebridApiKey(values.alldebridApiKey);
+    manager.setActiveDebridProvider(values.debridProvider);
     applyProxySetting(values.proxyUrl);
 }
 

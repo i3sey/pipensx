@@ -267,6 +267,10 @@ $(BUILD_DIR)/src/app/companion_settings.o: src/app/companion_settings.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
 
+$(BUILD_DIR)/src/app/add_release.o: src/app/add_release.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
+
 $(BUILD_DIR)/src/app/web_add_queue.o: src/app/web_add_queue.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
@@ -278,8 +282,9 @@ $(BUILD_DIR)/tests/test_http_server: tests/test_http_server.cpp $(BUILD_DIR)/src
 
 $(BUILD_DIR)/tests/test_web_server: tests/test_web_server.cpp \
 		$(BUILD_DIR)/src/app/web_server.o $(BUILD_DIR)/src/app/companion_settings.o \
-		$(BUILD_DIR)/src/app/web_add_queue.o $(BUILD_DIR)/src/app/http_server.o \
-		src/app/app_settings.cpp \
+		$(BUILD_DIR)/src/app/add_release.o $(BUILD_DIR)/src/app/web_add_queue.o \
+		$(BUILD_DIR)/src/app/http_server.o \
+		src/app/app_settings.cpp src/app/game_update_install.cpp \
 		$(BUILD_DIR)/src/app/torrent_metainfo_fetch.o \
 		$(BUILD_DIR)/src/app/magnet_resolver.o src/app/install_space.cpp \
 		$(BUILD_DIR)/src/app/download_manager.o $(BUILD_DIR)/src/app/task_files.o \
@@ -295,6 +300,16 @@ $(BUILD_DIR)/tests/test_web_server: tests/test_web_server.cpp \
 		$(BUILD_DIR)/src/install/system_cleanup.o \
 		$(BUILD_DIR)/src/install/install_backend_pc.o \
 		$(filter-out $(BUILD_DIR)/src/main_pc.o,$(OBJS)) $(UTP_OBJS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) \
+		$(INSTALL_LDFLAGS) -lz -pthread
+
+$(BUILD_DIR)/tests/test_add_release: tests/test_add_release.cpp \
+		$(BUILD_DIR)/src/app/add_release.o \
+		src/app/game_update_install.cpp src/app/install_space.cpp \
+		$(BUILD_DIR)/src/app/torrent_metainfo_fetch.o \
+		$(BUILD_DIR)/src/app/magnet_resolver.o \
+		$(MANAGER_TEST_OBJS)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) \
 		$(INSTALL_LDFLAGS) -lz -pthread
@@ -413,6 +428,8 @@ $(BUILD_DIR)/tests/test_favorites: tests/test_favorites.cpp \
 
 $(BUILD_DIR)/tests/test_batch_install: tests/test_batch_install.cpp \
 		src/app/catalog_batch_installer.cpp src/app/install_space.cpp \
+		src/app/game_update_install.cpp \
+		$(BUILD_DIR)/src/app/add_release.o \
 		$(BUILD_DIR)/src/app/download_manager.o $(BUILD_DIR)/src/app/task_files.o \
 		$(BUILD_DIR)/src/app/web_seed_source.o \
 		$(BUILD_DIR)/src/app/stream_ram_budget.o $(BUILD_DIR)/src/app/stream_budget_arbiter.o \
@@ -660,8 +677,9 @@ webserver: $(BUILD_DIR)/tools/webserver
 
 $(BUILD_DIR)/tools/webserver: tools/web_server_main.cpp \
 		$(BUILD_DIR)/src/app/web_server.o $(BUILD_DIR)/src/app/companion_settings.o \
-		$(BUILD_DIR)/src/app/web_add_queue.o $(BUILD_DIR)/src/app/http_server.o \
-		src/app/app_settings.cpp \
+		$(BUILD_DIR)/src/app/add_release.o $(BUILD_DIR)/src/app/web_add_queue.o \
+		$(BUILD_DIR)/src/app/http_server.o \
+		src/app/app_settings.cpp src/app/game_update_install.cpp \
 		$(BUILD_DIR)/src/app/catalog_service.o $(BUILD_DIR)/src/app/catalog_refresh.o \
 		$(BUILD_DIR)/src/app/snapshot_zstd.o \
 		$(BUILD_DIR)/src/app/game_metadata_service.o \

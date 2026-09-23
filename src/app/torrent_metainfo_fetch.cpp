@@ -174,6 +174,13 @@ bool pollUntilFiles(DebridProvider& provider, const std::string& id,
 
 } // namespace
 
+bool pollDebridUntilFiles(DebridProvider& provider, const std::string& id,
+                          std::atomic<bool>& cancelled,
+                          std::chrono::steady_clock::time_point deadline,
+                          DebridInfo& info, std::string& error) {
+    return pollUntilFiles(provider, id, cancelled, deadline, info, error);
+}
+
 std::string itorrentsUrlForHash(const std::string& infoHashHex) {
     // itorrents.org 301-redirects to plain-http itorrents.net, which our
     // HTTPS-only curl pin rejects ("Unsupported protocol (in redirect)").
