@@ -314,7 +314,16 @@
     "status_fetching": "Obteniendo",
     "cell_fetching": "El servidor está recibiendo  {}%",
     "verify_started": "Verificación iniciada",
-    "verify_unavailable": "Verificación no disponible"
+    "verify_unavailable": "Verificación no disponible",
+    "action_leased": "Los archivos se están copiando a la tarjeta SD",
+    "action_committing": "El paquete se está confirmando y no se puede pausar",
+    "action_not_pausable": "Esta descarga no se puede pausar ahora",
+    "action_not_resumable": "Esta descarga no está en pausa",
+    "action_not_completed": "Solo se puede verificar una descarga terminada",
+    "action_debrid": "Una descarga de debrid no se puede verificar",
+    "action_not_queued": "Solo se puede mover una descarga en cola",
+    "action_removing": "Esta descarga ya se está eliminando",
+    "action_not_found": "Esta descarga ya no está en la lista"
   },
   "files": {
     "title": "Archivos descargados",

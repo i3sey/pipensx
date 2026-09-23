@@ -314,7 +314,16 @@
     "status_fetching": "获取中",
     "cell_fetching": "服务器正在获取此文件   {}%",
     "verify_started": "已开始校验",
-    "verify_unavailable": "无法校验"
+    "verify_unavailable": "无法校验",
+    "action_leased": "文件正在复制到 SD 卡",
+    "action_committing": "正在提交安装包，无法暂停",
+    "action_not_pausable": "此下载目前无法暂停",
+    "action_not_resumable": "此下载未处于暂停状态",
+    "action_not_completed": "只能校验已完成的下载",
+    "action_debrid": "Debrid 下载无法校验",
+    "action_not_queued": "只能移动队列中的下载",
+    "action_removing": "此下载已在删除中",
+    "action_not_found": "列表中已没有此下载"
   },
   "files": {
     "title": "已下载文件",

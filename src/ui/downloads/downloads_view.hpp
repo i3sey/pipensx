@@ -169,22 +169,19 @@ public:
         if (leased)
             add(tr("pipensx/deploy/cancel"), [this] { deploy_->cancel(); });
 
-        bool active = task.status == DownloadStatus::Queued ||
-                      task.status == DownloadStatus::Checking ||
-                      task.status == DownloadStatus::Fetching ||
-                      task.status == DownloadStatus::Downloading ||
-                      task.status == DownloadStatus::Installing ||
-                      task.status == DownloadStatus::Committing ||
-                      task.status == DownloadStatus::Verifying;
-        if (active)
+        const TaskCapabilities caps = taskCapabilities(task, leased);
+        if (caps.pause.allowed)
             add(tr("pipensx/common/pause"), [this, taskId] {
-                manager_->pause(taskId);
+                std::string error;
+                if (!manager_->pause(taskId, error))
+                    brls::Application::notify(taskActionReasonText(error));
                 startRefreshing(true);
             });
-        if (task.status == DownloadStatus::Paused ||
-            task.status == DownloadStatus::Error)
+        if (caps.resume.allowed)
             add(tr("pipensx/common/resume"), [this, taskId] {
-                manager_->resume(taskId);
+                std::string error;
+                if (!manager_->resume(taskId, error))
+                    brls::Application::notify(taskActionReasonText(error));
                 startRefreshing(true);
             });
         if (inspection && switchDeployFullyInstalled(*inspection)) {
@@ -202,16 +199,17 @@ public:
                                                     deploy_));
             });
         }
-        if (!leased && task.status == DownloadStatus::Completed)
+        if (caps.verify.allowed)
             add(tr("pipensx/common/verify"), [this, taskId] {
-                if (manager_->verify(taskId)) {
+                std::string error;
+                if (manager_->verify(taskId, error)) {
                     brls::Application::notify(tr("pipensx/downloads/verify_started"));
                 } else {
-                    brls::Application::notify(tr("pipensx/downloads/verify_unavailable"));
+                    brls::Application::notify(taskActionReasonText(error));
                 }
                 startRefreshing(true);
             });
-        if (task.status == DownloadStatus::Queued) {
+        if (caps.move.allowed) {
             std::vector<std::string> queuedIds;
             for (const auto& candidate : manager_->snapshotUi())
                 if (candidate.status == DownloadStatus::Queued)
@@ -257,7 +255,7 @@ public:
                     });
             }
         }
-        if (!leased && task.status != DownloadStatus::Removing)
+        if (caps.remove.allowed)
             add(tr("pipensx/common/remove"),
                     [this, taskId] { openRemoveDialog(taskId); });
 
@@ -327,18 +325,10 @@ private:
         return emptyState_;
     }
 
-    bool isPausable(DownloadStatus status) const {
-        return status == DownloadStatus::Queued ||
-               status == DownloadStatus::Checking ||
-               status == DownloadStatus::Fetching ||
-               status == DownloadStatus::Downloading ||
-               status == DownloadStatus::Installing ||
-               status == DownloadStatus::Verifying;
-    }
-
-    bool hasPausableTask(const std::vector<DownloadTask>& tasks) const {
+    bool hasPausableTask(const std::vector<DownloadTask>& tasks,
+                         const std::string& leasedId) const {
         for (const DownloadTask& task : tasks)
-            if (isPausable(task.status))
+            if (taskCapabilities(task, task.id == leasedId).pause.allowed)
                 return true;
         return false;
     }
@@ -356,7 +346,11 @@ private:
     // One Y action that flips with the queue: pause the active tasks, or resume
     // the paused/failed ones when nothing is running.
     void pauseResumeAll() {
-        if (hasPausableTask(manager_->snapshotUi()))
+        const SwitchDeploySnapshot deploy = deploy_ ? deploy_->snapshot()
+                                                    : SwitchDeploySnapshot{};
+        const std::string leased = deploy.active() ? deploy.taskId
+                                                   : std::string();
+        if (hasPausableTask(manager_->snapshotUi(), leased))
             pauseAll();
         else
             resumeAll();
@@ -414,7 +408,7 @@ private:
         }
         setTextIfChanged(summary_, summaryText(next));
         updateActionHint(brls::BUTTON_Y,
-                         hasPausableTask(next)
+                         hasPausableTask(next, activeDeployTask)
                              ? tr("pipensx/downloads/pause_all")
                              : tr("pipensx/downloads/resume_all"));
         uint64_t settingsGeneration = settings_ ? settings_->generation() : 0;

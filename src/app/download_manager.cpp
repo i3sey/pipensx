@@ -1,4 +1,5 @@
 #include "download_manager.hpp"
+#include "task_actions.hpp"
 #include "task_files.hpp"
 #include "request_gate.hpp"
 #include "stream_budget_arbiter.hpp"
@@ -1004,21 +1005,20 @@ bool DownloadManager::torrentingEnabled() const {
     return torrentingEnabled_.load();
 }
 
-bool DownloadManager::pause(const std::string& taskId) {
+bool DownloadManager::pause(const std::string& taskId, std::string& error) {
     std::unique_lock<std::mutex> lock(mutex_);
-    if (externallyLeasedLocked(taskId))
-        return false;
     DownloadTask* task = findLocked(taskId);
-    if (!task)
+    if (!task) {
+        error = taskActionReasonName(TaskActionReason::NotFound);
         return false;
-    if (task->status != DownloadStatus::Queued &&
-        task->status != DownloadStatus::Checking &&
-        task->status != DownloadStatus::Fetching &&
-        task->status != DownloadStatus::Downloading &&
-        task->status != DownloadStatus::Installing &&
-        task->status != DownloadStatus::Committing &&
-        task->status != DownloadStatus::Verifying)
+    }
+    const TaskAction decision =
+        taskCapabilities(*task, externallyLeasedLocked(taskId)).pause;
+    if (!decision.allowed) {
+        error = taskActionReasonName(decision.reason);
         return false;
+    }
+    error.clear();
     task->status = DownloadStatus::Paused;
     task->speedBytesPerSecond = 0;
     requestStateSaveLocked();
@@ -1026,14 +1026,20 @@ bool DownloadManager::pause(const std::string& taskId) {
     return true;
 }
 
-bool DownloadManager::resume(const std::string& taskId) {
+bool DownloadManager::resume(const std::string& taskId, std::string& error) {
     std::unique_lock<std::mutex> lock(mutex_);
-    if (externallyLeasedLocked(taskId))
-        return false;
     DownloadTask* task = findLocked(taskId);
-    if (!task || (task->status != DownloadStatus::Paused &&
-                  task->status != DownloadStatus::Error))
+    if (!task) {
+        error = taskActionReasonName(TaskActionReason::NotFound);
         return false;
+    }
+    const TaskAction decision =
+        taskCapabilities(*task, externallyLeasedLocked(taskId)).resume;
+    if (!decision.allowed) {
+        error = taskActionReasonName(decision.reason);
+        return false;
+    }
+    error.clear();
     task->status = DownloadStatus::Queued;
     task->error.clear();
     requestStateSaveLocked();
@@ -1045,14 +1051,8 @@ void DownloadManager::pauseAll() {
     std::unique_lock<std::mutex> lock(mutex_);
     bool changed = false;
     for (DownloadTask& task : tasks_) {
-        if (externallyLeasedLocked(task.id))
-            continue;
-        if (task.status != DownloadStatus::Queued &&
-            task.status != DownloadStatus::Checking &&
-            task.status != DownloadStatus::Fetching &&
-            task.status != DownloadStatus::Downloading &&
-            task.status != DownloadStatus::Installing &&
-            task.status != DownloadStatus::Verifying)
+        if (!taskCapabilities(task, externallyLeasedLocked(task.id))
+                 .pause.allowed)
             continue;
         task.status = DownloadStatus::Paused;
         task.speedBytesPerSecond = 0;
@@ -1068,10 +1068,8 @@ void DownloadManager::resumeAll() {
     std::unique_lock<std::mutex> lock(mutex_);
     bool changed = false;
     for (DownloadTask& task : tasks_) {
-        if (externallyLeasedLocked(task.id))
-            continue;
-        if (task.status != DownloadStatus::Paused &&
-            task.status != DownloadStatus::Error)
+        if (!taskCapabilities(task, externallyLeasedLocked(task.id))
+                 .resume.allowed)
             continue;
         task.status = DownloadStatus::Queued;
         task.error.clear();
@@ -1087,18 +1085,20 @@ bool DownloadManager::retry(const std::string& taskId) {
     return resume(taskId);
 }
 
-bool DownloadManager::verify(const std::string& taskId) {
+bool DownloadManager::verify(const std::string& taskId, std::string& error) {
     std::unique_lock<std::mutex> lock(mutex_);
-    if (externallyLeasedLocked(taskId))
-        return false;
     DownloadTask* task = findLocked(taskId);
-    if (!task || task->status != DownloadStatus::Completed)
+    if (!task) {
+        error = taskActionReasonName(TaskActionReason::NotFound);
         return false;
-    // A recheck rehashes against the local pieces. A debrid task has no
-    // pieces — requeueing it would silently re-download the whole thing from
-    // the provider, so there is nothing honest to offer here.
-    if (task->source == TaskSource::Debrid)
+    }
+    const TaskAction decision =
+        taskCapabilities(*task, externallyLeasedLocked(taskId)).verify;
+    if (!decision.allowed) {
+        error = taskActionReasonName(decision.reason);
         return false;
+    }
+    error.clear();
     task->status = DownloadStatus::Queued;
     task->error.clear();
     task->piecesVerified = 0;

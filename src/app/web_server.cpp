@@ -1,4 +1,5 @@
 #include "web_server.hpp"
+#include "task_actions.hpp"
 
 extern "C" {
 #include "../core/util.h"
@@ -268,10 +269,18 @@ bool WebServer::authorized(const HttpRequest& req) const {
     return diff == 0;
 }
 
+static Json taskActionJson(const TaskAction& action) {
+    Json j;
+    j["allowed"] = action.allowed;
+    j["reason"] = taskActionReasonName(action.reason);
+    return j;
+}
+
 std::string WebServer::buildStateJson() {
     Json state;
     state["version"] = version_;
     std::vector<DownloadTask> snapshot = manager_.snapshotUi();
+    const std::string leasedId = manager_.externalDeployTaskId();
     Json tasks = Json::array();
     uint64_t now = nowMs();
     for (const DownloadTask& t : snapshot) {
@@ -302,6 +311,15 @@ std::string WebServer::buildStateJson() {
         const auto eta = taskEtaSeconds(t, now);
         j["etaSeconds"] = eta ? *eta : 0;
         j["currentPackage"] = t.currentPackage;
+        const TaskCapabilities caps =
+            taskCapabilities(t, t.id == leasedId);
+        Json capabilities;
+        capabilities["pause"] = taskActionJson(caps.pause);
+        capabilities["resume"] = taskActionJson(caps.resume);
+        capabilities["verify"] = taskActionJson(caps.verify);
+        capabilities["remove"] = taskActionJson(caps.remove);
+        capabilities["move"] = taskActionJson(caps.move);
+        j["capabilities"] = std::move(capabilities);
         tasks.push_back(std::move(j));
     }
     state["tasks"] = std::move(tasks);
@@ -623,17 +641,11 @@ HttpResponse WebServer::handleTaskCommand(const std::string& id,
     std::string error;
     bool ok = false;
     if (command == "pause") {
-        ok = manager_.pause(id);
-        error = "task is not pausable right now";
-    } else if (command == "resume") {
-        ok = manager_.resume(id);
-        error = "task is not paused";
-    } else if (command == "retry") {
-        ok = manager_.retry(id);
-        error = "task is not in an error state";
+        ok = manager_.pause(id, error);
+    } else if (command == "resume" || command == "retry") {
+        ok = manager_.resume(id, error);
     } else if (command == "verify") {
-        ok = manager_.verify(id);
-        error = "task cannot be verified right now";
+        ok = manager_.verify(id, error);
     } else if (command == "move-front") {
         ok = manager_.moveToFront(id, error);
     } else if (command == "move-up") {

@@ -314,7 +314,16 @@
     "status_fetching": "Récupération",
     "cell_fetching": "Le serveur récupère ce contenu   {}%",
     "verify_started": "Vérification démarrée",
-    "verify_unavailable": "Vérification indisponible"
+    "verify_unavailable": "Vérification indisponible",
+    "action_leased": "Les fichiers sont en cours de copie sur la carte SD",
+    "action_committing": "Le paquet est en cours de validation et ne peut pas être mis en pause",
+    "action_not_pausable": "Ce téléchargement ne peut pas être mis en pause maintenant",
+    "action_not_resumable": "Ce téléchargement n'est pas en pause",
+    "action_not_completed": "Seule une tâche terminée peut être vérifiée",
+    "action_debrid": "Un téléchargement debrid ne peut pas être vérifié",
+    "action_not_queued": "Seule une tâche en file peut être déplacée",
+    "action_removing": "Ce téléchargement est déjà en cours de suppression",
+    "action_not_found": "Ce téléchargement n'est plus dans la liste"
   },
   "files": {
     "title": "Fichiers téléchargés",

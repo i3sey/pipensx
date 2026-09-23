@@ -260,18 +260,32 @@ public:
     std::string torboxApiKey() const;
     void setTorrentingEnabled(bool enabled);
     bool torrentingEnabled() const;
-    bool pause(const std::string& taskId);
-    bool resume(const std::string& taskId);
+    // `error` is a taskActionReasonName() code when the command is refused.
+    bool pause(const std::string& taskId, std::string& error);
+    bool pause(const std::string& taskId) {
+        std::string error;
+        return pause(taskId, error);
+    }
+    bool resume(const std::string& taskId, std::string& error);
+    bool resume(const std::string& taskId) {
+        std::string error;
+        return resume(taskId, error);
+    }
     bool retry(const std::string& taskId);
-    bool verify(const std::string& taskId);
+    bool verify(const std::string& taskId, std::string& error);
+    bool verify(const std::string& taskId) {
+        std::string error;
+        return verify(taskId, error);
+    }
     bool remove(const std::string& taskId, bool deleteData,
                 std::string& error);
     // Best-effort removal for remotely prepared items that never entered the
     // queue (for example, cancelling catalog batch preparation).
     void cleanupDebridAsync(DebridProviderKind provider,
                             const std::string& debridId);
-    // Pause every task pause() would accept except Committing (a NAND commit
-    // in flight is left alone). One lock, one state write.
+    // Pause every task the shared pause action allows. Committing is not
+    // pausable: a NAND commit already in flight is left alone. One lock,
+    // one state write.
     void pauseAll();
     // Requeue every Paused and Error task. One lock, one state write.
     void resumeAll();

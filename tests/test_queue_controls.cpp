@@ -175,6 +175,54 @@ void testMoveTask() {
     removeAll(root);
 }
 
+void testRefusedCommandsUseCapabilityReasons() {
+    const std::string root = tempRoot() + "-reasons";
+    removeAll(root);
+    mkdir(root.c_str(), 0755);
+    const std::string source = makeTorrent(root, "a.bin", "aaaa");
+    const std::string queueRoot = root + "/queue";
+    {
+        pipensx::DownloadManager manager(queueRoot, false);
+        std::string error;
+        std::string id;
+        assert(manager.importTorrent(source, pipensx::TransferMode::DownloadOnly,
+                                     id, error));
+        error.clear();
+        assert(!manager.verify(id, error));
+        assert(error == "not_completed");
+        assert(manager.snapshot()[0].status == DownloadStatus::Queued);
+
+        error.clear();
+        assert(!manager.resume(id, error));
+        assert(error == "not_resumable");
+
+        error = "stale";
+        assert(manager.pause(id, error));
+        assert(error.empty());
+        assert(manager.snapshot()[0].status == DownloadStatus::Paused);
+
+        error.clear();
+        assert(!manager.pause(id, error));
+        assert(error == "not_pausable");
+
+        error = "stale";
+        assert(manager.resume(id, error));
+        assert(error.empty());
+        assert(manager.snapshot()[0].status == DownloadStatus::Queued);
+
+        error.clear();
+        assert(!manager.pause("missing", error));
+        assert(error == "not_found");
+        error.clear();
+        assert(!manager.verify("missing", error));
+        assert(error == "not_found");
+        error.clear();
+        assert(!manager.resume("missing", error));
+        assert(error == "not_found");
+    }
+    removeAll(root);
+}
+
 void testPauseResumeAll() {
     const std::string root = tempRoot() + "-pause";
     removeAll(root);
@@ -432,6 +480,7 @@ int main() {
     testSummarizeQueueSpeedAndEta();
     testSummarizeQueueNoThroughputNoEta();
     testMoveTask();
+    testRefusedCommandsUseCapabilityReasons();
     testPauseResumeAll();
     testAsyncSaveFailureIsReportedAndLatestStateRecovers();
     testConcurrentSavesFinish();

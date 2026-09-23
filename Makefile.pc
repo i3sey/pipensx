@@ -383,6 +383,10 @@ $(BUILD_DIR)/tests/test_download_list: tests/test_download_list.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
 
+$(BUILD_DIR)/tests/test_task_actions: tests/test_task_actions.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
+
 $(BUILD_DIR)/tests/test_update_transaction: tests/test_update_transaction.c \
 		src/app/update_transaction.c src/core/sha256.c
 	@mkdir -p $(dir $@)

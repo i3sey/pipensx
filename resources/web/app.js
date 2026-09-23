@@ -41,6 +41,15 @@ const I18N = {
     "task.moveUp": "↑", "task.moveDown": "↓", "task.top": "Top",
     "task.pause": "Pause", "task.resume": "Resume", "task.retry": "Retry",
     "task.verify": "Verify", "task.remove": "Remove",
+    "action.leased": "Files are being copied to the SD card",
+    "action.committing": "The package is being committed and cannot be paused",
+    "action.not_pausable": "This download cannot be paused right now",
+    "action.not_resumable": "This download is not paused",
+    "action.not_completed": "Only a finished download can be verified",
+    "action.debrid": "A debrid download cannot be verified",
+    "action.not_queued": "Only a queued download can be moved",
+    "action.removing": "This download is already being removed",
+    "action.not_found": "This download is no longer in the list",
     "msg.addedQueue": "Added to the Switch queue", "msg.resolving": "Resolving on the Switch…",
     "msg.saved": "Settings saved", "msg.cleared": "Completed tasks cleared",
   },
@@ -79,6 +88,15 @@ const I18N = {
     "task.moveUp": "↑", "task.moveDown": "↓", "task.top": "Вверх",
     "task.pause": "Пауза", "task.resume": "Продолжить", "task.retry": "Повторить",
     "task.verify": "Проверить", "task.remove": "Удалить",
+    "action.leased": "Файлы копируются на карту памяти",
+    "action.committing": "Пакет фиксируется, пауза недоступна",
+    "action.not_pausable": "Эту загрузку сейчас нельзя поставить на паузу",
+    "action.not_resumable": "Эта загрузка не на паузе",
+    "action.not_completed": "Проверить можно только завершённую загрузку",
+    "action.debrid": "Загрузку через debrid нельзя проверить",
+    "action.not_queued": "Перемещать можно только задачу в очереди",
+    "action.removing": "Эта загрузка уже удаляется",
+    "action.not_found": "Этой загрузки больше нет в списке",
     "msg.addedQueue": "Добавлено в очередь Switch", "msg.resolving": "Распознаётся на Switch…",
     "msg.saved": "Настройки сохранены", "msg.cleared": "Готовые задачи убраны",
   },
@@ -412,17 +430,19 @@ function taskCard(tt, queueIdx) {
   const h = healthOf(tt);
   const btn = (label, cmd, cls = "") =>
     `<button class="btn ${cls}" data-task="${esc(tt.id)}" data-cmd="${cmd}">${esc(label)}</button>`;
+  const caps = tt.capabilities || {};
+  const allowed = (name) => !!(caps[name] && caps[name].allowed);
   const actions = [];
-  if (["Downloading", "Checking", "Queued", "Fetching"].includes(tt.status)) actions.push(btn(t("task.pause"), "pause"));
-  if (tt.status === "Paused") actions.push(btn(t("task.resume"), "resume", "btn-primary"));
-  if (tt.status === "Error") actions.push(btn(t("task.retry"), "retry", "btn-primary"));
-  if (tt.status === "Queued") {
+  if (allowed("pause")) actions.push(btn(t("task.pause"), "pause"));
+  if (tt.status === "Paused" && allowed("resume")) actions.push(btn(t("task.resume"), "resume", "btn-primary"));
+  if (tt.status === "Error" && allowed("resume")) actions.push(btn(t("task.retry"), "retry", "btn-primary"));
+  if (allowed("move")) {
     actions.push(`<button class="btn btn-sm" data-task="${esc(tt.id)}" data-cmd="move-up" title="move up">${t("task.moveUp")}</button>`);
     actions.push(`<button class="btn btn-sm" data-task="${esc(tt.id)}" data-cmd="move-down" title="move down">${t("task.moveDown")}</button>`);
     actions.push(btn(t("task.top"), "move-front"));
   }
-  if (["Paused", "Completed", "Error"].includes(tt.status)) actions.push(btn(t("task.verify"), "verify"));
-  actions.push(btn(t("task.remove"), "remove", "btn-danger"));
+  if (allowed("verify")) actions.push(btn(t("task.verify"), "verify"));
+  if (allowed("remove")) actions.push(btn(t("task.remove"), "remove", "btn-danger"));
 
   return `<div class="card task" data-id="${esc(tt.id)}">
     <div class="task-head">
@@ -580,6 +600,19 @@ $("bulk-clear").addEventListener("click", async () => {
   }
 });
 
+function explainRejection(code) {
+  if (!code) return "";
+  const key = "action." + code;
+  return (I18N[lang] && I18N[lang][key]) || I18N.en[key] || code;
+}
+async function reloadTasks() {
+  try {
+    const resp = await api("/api/tasks");
+    if (!resp.ok) return;
+    state = Object.assign(state, await resp.json());
+    renderDownloads();
+  } catch (e) { /* the next SSE frame still replaces a stale card */ }
+}
 document.addEventListener("click", async (e) => {
   const cmdBtn = e.target.closest("[data-cmd]");
   if (cmdBtn) {
@@ -589,8 +622,9 @@ document.addEventListener("click", async (e) => {
     const resp = await api(`/api/tasks/${id}/${cmd}`, { method: "POST" });
     if (!resp.ok && resp.status !== 401) {
       const body = await resp.json().catch(() => ({}));
-      toast(body.error || `${cmd} failed`, true);
+      toast(explainRejection(body.error) || `${cmd} failed`, true);
     }
+    if (resp.status !== 401) await reloadTasks();
     return;
   }
   const jobBtn = e.target.closest("[data-job]");
@@ -612,10 +646,11 @@ function confirmRemove(id) {
   $("rm-ok").onclick = async () => {
     const resp = await postJson(`/api/tasks/${id}/remove`, { deleteData: $("rm-data").checked });
     closeModal();
-    if (!resp.ok) {
+    if (!resp.ok && resp.status !== 401) {
       const body = await resp.json().catch(() => ({}));
-      toast(body.error || "remove failed", true);
+      toast(explainRejection(body.error) || "remove failed", true);
     }
+    if (resp.status !== 401) await reloadTasks();
   };
 }
 

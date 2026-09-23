@@ -314,7 +314,16 @@
     "status_fetching": "Fetching",
     "cell_fetching": "The server is fetching this   {}%",
     "verify_started": "Verification started",
-    "verify_unavailable": "Verification not available"
+    "verify_unavailable": "Verification not available",
+    "action_leased": "Files are being copied to the SD card",
+    "action_committing": "The package is being committed and cannot be paused",
+    "action_not_pausable": "This download cannot be paused right now",
+    "action_not_resumable": "This download is not paused",
+    "action_not_completed": "Only a finished download can be verified",
+    "action_debrid": "A debrid download cannot be verified",
+    "action_not_queued": "Only a queued download can be moved",
+    "action_removing": "This download is already being removed",
+    "action_not_found": "This download is no longer in the list"
   },
   "files": {
     "title": "Downloaded files",

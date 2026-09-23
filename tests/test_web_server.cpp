@@ -284,6 +284,17 @@ int main() {
         assert(body.find("\"wantedTotalBytes\":12") != std::string::npos);
         assert(body.find("\"wantedCompletedBytes\":0") != std::string::npos);
         assert(body.find("\"fetchProgress\":0.0") != std::string::npos);
+        // Queued torrent: pause and move are offered, verify is not.
+        assert(body.find("\"pause\":{\"allowed\":true,\"reason\":\"\"}") !=
+               std::string::npos);
+        assert(body.find("\"move\":{\"allowed\":true,\"reason\":\"\"}") !=
+               std::string::npos);
+        assert(body.find(
+                   "\"verify\":{\"allowed\":false,\"reason\":\"not_completed\"}") !=
+               std::string::npos);
+        assert(body.find(
+                   "\"resume\":{\"allowed\":false,\"reason\":\"not_resumable\"}") !=
+               std::string::npos);
 
         resp = request(port, "POST", "/api/add/torrent?mode=download",
                        gTorrentBytes, pinHeader);
@@ -316,6 +327,26 @@ int main() {
             request(port, "POST", "/api/tasks/" + torrentHash + "/move-front",
                     "", pinHeader);
         assert(resp.find("204") != std::string::npos);
+        resp = request(port, "POST", "/api/tasks/" + torrentHash + "/verify",
+                       "", pinHeader);
+        assert(resp.find("409") != std::string::npos);
+        assert(responseBody(resp).find("\"error\":\"not_completed\"") !=
+               std::string::npos);
+        resp = request(port, "GET", "/api/tasks");
+        assert(responseBody(resp).find("\"status\":\"Queued\"") !=
+               std::string::npos);
+        resp = request(port, "POST", "/api/tasks/" + torrentHash + "/pause",
+                       "", pinHeader);
+        assert(resp.find("204") != std::string::npos);
+        resp = request(port, "POST", "/api/tasks/" + torrentHash + "/pause",
+                       "", pinHeader);
+        assert(resp.find("409") != std::string::npos);
+        assert(responseBody(resp).find("\"error\":\"not_pausable\"") !=
+               std::string::npos);
+        resp = request(port, "GET", "/api/tasks");
+        assert(responseBody(resp).find(
+                   "\"pause\":{\"allowed\":false,\"reason\":\"not_pausable\"}") !=
+               std::string::npos);
         resp = request(port, "POST", "/api/tasks/nope/pause", "", pinHeader);
         assert(resp.find("404") != std::string::npos);
         resp = request(port, "POST", "/api/tasks/" + torrentHash + "/remove",

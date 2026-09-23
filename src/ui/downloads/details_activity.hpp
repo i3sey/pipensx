@@ -123,10 +123,11 @@ public:
             return true;
         });
         verifyButton_->registerClickAction([this](brls::View*) {
-            if (manager_->verify(taskId_)) {
+            std::string error;
+            if (manager_->verify(taskId_, error)) {
                 brls::Application::notify(tr("pipensx/downloads/verify_started"));
             } else {
-                brls::Application::notify(tr("pipensx/downloads/verify_unavailable"));
+                brls::Application::notify(taskActionReasonText(error));
             }
             refresh();
             return true;
@@ -272,11 +273,13 @@ private:
         const DownloadTask* task = currentTask();
         if (!task)
             return;
-        if (task->status == DownloadStatus::Paused ||
-            task->status == DownloadStatus::Error)
-            manager_->resume(taskId_);
-        else
-            manager_->pause(taskId_);
+        std::string error;
+        const bool ok = task->status == DownloadStatus::Paused ||
+                                task->status == DownloadStatus::Error
+                            ? manager_->resume(taskId_, error)
+                            : manager_->pause(taskId_, error);
+        if (!ok)
+            brls::Application::notify(taskActionReasonText(error));
         refresh();
     }
 
@@ -656,23 +659,15 @@ private:
         const SwitchDeploySnapshot deploy = deploy_ ? deploy_->snapshot()
                                                      : SwitchDeploySnapshot{};
         const bool leased = deploy.active() && deploy.taskId == taskId_;
-        bool paused = task.status == DownloadStatus::Paused ||
-                            task.status == DownloadStatus::Error;
-        bool active = task.status == DownloadStatus::Queued ||
-                      task.status == DownloadStatus::Checking ||
-                      task.status == DownloadStatus::Fetching ||
-                      task.status == DownloadStatus::Downloading ||
-                      task.status == DownloadStatus::Installing ||
-                      task.status == DownloadStatus::Committing ||
-                      task.status == DownloadStatus::Verifying;
-        setTextIfChanged(pauseButton_, paused ? tr("pipensx/common/resume")
-                                              : tr("pipensx/common/pause"));
-        setButtonAvailable(pauseButton_, !leased && (paused || active));
-
-        bool canVerify = task.status == DownloadStatus::Completed;
-        setButtonAvailable(verifyButton_, !leased && canVerify);
-        setButtonAvailable(removeButton_,
-                           !leased && task.status != DownloadStatus::Removing);
+        const TaskCapabilities caps = taskCapabilities(task, leased);
+        const bool resumable = task.status == DownloadStatus::Paused ||
+                               task.status == DownloadStatus::Error;
+        setTextIfChanged(pauseButton_, resumable ? tr("pipensx/common/resume")
+                                                 : tr("pipensx/common/pause"));
+        setButtonAvailable(pauseButton_,
+                           caps.pause.allowed || caps.resume.allowed);
+        setButtonAvailable(verifyButton_, caps.verify.allowed);
+        setButtonAvailable(removeButton_, caps.remove.allowed);
         const bool busyElsewhere = deploy.active() && deploy.taskId != taskId_;
         const bool packageBusy =
             !leased &&

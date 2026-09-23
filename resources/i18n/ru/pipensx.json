@@ -314,7 +314,16 @@
     "status_fetching": "Загрузка на сервисе",
     "cell_fetching": "Сервис загружает раздачу   {}%",
     "verify_started": "Проверка запущена",
-    "verify_unavailable": "Проверка недоступна"
+    "verify_unavailable": "Проверка недоступна",
+    "action_leased": "Файлы копируются на карту памяти",
+    "action_committing": "Пакет фиксируется, пауза недоступна",
+    "action_not_pausable": "Эту загрузку сейчас нельзя поставить на паузу",
+    "action_not_resumable": "Эта загрузка не на паузе",
+    "action_not_completed": "Проверить можно только завершённую загрузку",
+    "action_debrid": "Загрузку через debrid нельзя проверить",
+    "action_not_queued": "Перемещать можно только задачу в очереди",
+    "action_removing": "Эта загрузка уже удаляется",
+    "action_not_found": "Этой загрузки больше нет в списке"
   },
   "files": {
     "title": "Загруженные файлы",

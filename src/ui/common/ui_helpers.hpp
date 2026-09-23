@@ -18,6 +18,7 @@ extern "C" {
 #include "app/app_settings.hpp"
 #include "app/catalog_service.hpp"
 #include "app/download_manager.hpp"
+#include "app/task_actions.hpp"
 #include "app/game_metadata_service.hpp"
 #include "app/installed_title_service.hpp"
 #include "install/install_backend.hpp"
@@ -432,6 +433,30 @@ inline std::string placeholderLetter(const std::string& title) {
     if (length == 1)
         letter[0] = static_cast<char>(std::toupper(lead));
     return letter;
+}
+
+inline std::string taskActionReasonText(const std::string& reason) {
+    if (reason == "leased")
+        return tr("pipensx/downloads/action_leased");
+    if (reason == "committing")
+        return tr("pipensx/downloads/action_committing");
+    if (reason == "not_pausable")
+        return tr("pipensx/downloads/action_not_pausable");
+    if (reason == "not_resumable")
+        return tr("pipensx/downloads/action_not_resumable");
+    if (reason == "not_completed")
+        return tr("pipensx/downloads/action_not_completed");
+    if (reason == "debrid")
+        return tr("pipensx/downloads/action_debrid");
+    if (reason == "not_queued")
+        return tr("pipensx/downloads/action_not_queued");
+    if (reason == "removing")
+        return tr("pipensx/downloads/action_removing");
+    if (reason == "not_found")
+        return tr("pipensx/downloads/action_not_found");
+    if (reason.empty())
+        return tr("pipensx/downloads/action_not_pausable");
+    return reason;
 }
 
 inline void setShellHintStyle(brls::View* root) {

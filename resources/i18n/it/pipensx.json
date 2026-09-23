@@ -314,7 +314,16 @@
     "status_fetching": "Recupero",
     "cell_fetching": "Il server sta recuperando questo   {}%",
     "verify_started": "Verifica avviata",
-    "verify_unavailable": "Verifica non disponibile"
+    "verify_unavailable": "Verifica non disponibile",
+    "action_leased": "I file vengono copiati sulla scheda SD",
+    "action_committing": "Il pacchetto è in fase di conferma e non può essere messo in pausa",
+    "action_not_pausable": "Questo download non può essere messo in pausa ora",
+    "action_not_resumable": "Questo download non è in pausa",
+    "action_not_completed": "Si può verificare solo un download completato",
+    "action_debrid": "Un download debrid non può essere verificato",
+    "action_not_queued": "Si può spostare solo un download in coda",
+    "action_removing": "Questo download è già in rimozione",
+    "action_not_found": "Questo download non è più nell'elenco"
   },
   "files": {
     "title": "File scaricati",
