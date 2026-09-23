@@ -11,7 +11,11 @@ const I18N = {
     "dash.speed": "Speed", "dash.queue": "Queue", "dash.remaining": "Remaining", "dash.storage": "SD storage",
     "dash.traffic": "Traffic",
     "downloads.search": "Search downloads…", "downloads.all": "All", "downloads.active": "Active",
-    "downloads.pauseAll": "Pause all", "downloads.resumeAll": "Resume all", "downloads.clearDone": "Clear done",
+    "downloads.pauseAll": "Pause all", "downloads.resumeAll": "Resume all", "downloads.clearDone": "Clear entries",
+    "downloads.clearFiles": "Delete files",
+    "downloads.clearNone": "No completed entries.",
+    "downloads.clearEntriesAsk": "Remove {0} completed entries from the list? {1} in-use entries will be left. Downloaded files stay. Installed games and ports are not removed.",
+    "downloads.clearFilesAsk": "Delete downloaded files for {0} completed entries and free about {1}? {2} in-use entries will be left, including their files. Installed games and ports are not removed.",
     "downloads.alerts": "Alerts", "downloads.enableNotify": "Enable notifications",
     "downloads.empty": "No downloads yet.", "downloads.emptySub": "Add a magnet link or pick something from the catalog.",
     "downloads.browse": "Browse catalog",
@@ -51,14 +55,20 @@ const I18N = {
     "action.removing": "This download is already being removed",
     "action.not_found": "This download is no longer in the list",
     "msg.addedQueue": "Added to the Switch queue", "msg.resolving": "Resolving on the Switch…",
-    "msg.saved": "Settings saved", "msg.cleared": "Completed tasks cleared",
+    "msg.saved": "Settings saved",
+    "msg.clearedEntries": "Removed {0} entries. Left {1} because they are in use.",
+    "msg.clearedFiles": "Removed files for {0} entries. Left {1} because they are in use.",
   },
   ru: {
     "tabs.downloads": "Загрузки", "tabs.catalog": "Каталог", "tabs.add": "Добавить", "tabs.settings": "Настройки",
     "dash.speed": "Скорость", "dash.queue": "Очередь", "dash.remaining": "Осталось", "dash.storage": "Память SD",
     "dash.traffic": "Трафик",
     "downloads.search": "Поиск загрузок…", "downloads.all": "Все", "downloads.active": "Активные",
-    "downloads.pauseAll": "Пауза всем", "downloads.resumeAll": "Продолжить все", "downloads.clearDone": "Убрать готовые",
+    "downloads.pauseAll": "Пауза всем", "downloads.resumeAll": "Продолжить все", "downloads.clearDone": "Очистить записи",
+    "downloads.clearFiles": "Удалить файлы",
+    "downloads.clearNone": "Нет завершённых записей.",
+    "downloads.clearEntriesAsk": "Убрать {0} завершённых записей из списка? {1} занятых записей останутся. Скачанные файлы останутся. Установленные игры и порты не удаляются.",
+    "downloads.clearFilesAsk": "Удалить скачанные файлы у {0} завершённых записей и освободить около {1}? {2} занятых записей останутся вместе с файлами. Установленные игры и порты не удаляются.",
     "downloads.alerts": "Оповещения", "downloads.enableNotify": "Включить уведомления",
     "downloads.empty": "Пока нет загрузок.", "downloads.emptySub": "Добавьте magnet-ссылку или выберите игру из каталога.",
     "downloads.browse": "Открыть каталог",
@@ -98,15 +108,19 @@ const I18N = {
     "action.removing": "Эта загрузка уже удаляется",
     "action.not_found": "Этой загрузки больше нет в списке",
     "msg.addedQueue": "Добавлено в очередь Switch", "msg.resolving": "Распознаётся на Switch…",
-    "msg.saved": "Настройки сохранены", "msg.cleared": "Готовые задачи убраны",
+    "msg.saved": "Настройки сохранены",
+    "msg.clearedEntries": "Убрано записей: {0}. Пропущено занятых: {1}.",
+    "msg.clearedFiles": "Удалены файлы у {0} записей. Пропущено занятых: {1}.",
   },
 };
 let lang = localStorage.getItem("pipensxLang") || ((navigator.language || "en").toLowerCase().startsWith("ru") ? "ru" : "en");
+let clearUiReady = false;
 const t = (k) => (I18N[lang] && I18N[lang][k]) || I18N.en[k] || k;
 function applyI18n() {
   document.documentElement.lang = lang;
   document.querySelectorAll("[data-i18n]").forEach((el) => { el.textContent = t(el.dataset.i18n); });
   document.querySelectorAll("[data-i18n-ph]").forEach((el) => { el.placeholder = t(el.dataset.i18nPh); });
+  if (clearUiReady) updateClearButtons();
   $("lang-btn").textContent = lang.toUpperCase();
   $("alerts-state").textContent = alertsOn() ? "on" : "off";
 }
@@ -239,6 +253,7 @@ $("empty-browse")?.addEventListener("click", () => { location.hash = "#catalog";
 
 /* ---------- live state (SSE) ---------- */
 let state = { tasks: [], jobs: [], storage: null, summary: null, version: "" };
+clearUiReady = true;
 let lastStatuses = new Map();
 let events = null;
 const speedHist = []; // last N aggregate download speeds for the chart
@@ -504,6 +519,7 @@ function renderDownloads() {
   $("tasks").innerHTML = list.map((x) => taskCard(x, x.status === "Queued" ? ++qi : 0)).join("");
   $("tasks-empty").hidden = state.tasks.length > 0 || jobs.length > 0;
 
+  updateClearButtons();
   const activeCount = state.tasks.filter((x) => activeSet.has(x.status)).length;
   const dlBadge = $("dl-count");
   if (activeCount > 0) { dlBadge.hidden = false; dlBadge.textContent = activeCount; }
@@ -591,14 +607,70 @@ $("bulk-resume").addEventListener("click", async () => {
     headers: { "Content-Type": "application/json" }, body: "{}" });
   if (!r.ok && r.status !== 401) toast("resume-all failed", true);
 });
-$("bulk-clear").addEventListener("click", async () => {
-  const r = await postJson("/api/queue/clear-completed", { deleteData: false });
-  if (r.ok) toast(t("msg.cleared"));
-  else if (r.status !== 401) {
-    const b = await r.json().catch(() => ({}));
-    toast(b.error || "clear failed", true);
+function fill(template, values) {
+  return String(template).replace(/\{(\d+)\}/g, (_, i) => values[Number(i)] ?? "");
+}
+function clearPlan() {
+  let clearable = 0, skipped = 0, bytes = 0;
+  for (const task of (state && state.tasks) || []) {
+    if (task.status !== "Completed" && task.status !== "Installed") continue;
+    const reason = task.capabilities && task.capabilities.remove &&
+      task.capabilities.remove.reason;
+    if (reason === "leased") skipped += 1;
+    else {
+      clearable += 1;
+      bytes += Number(task.completedBytes) || 0;
+    }
   }
-});
+  return { clearable, skipped, bytes };
+}
+function updateClearButtons() {
+  const entries = $("bulk-clear");
+  const files = $("bulk-clear-files");
+  if (!entries || !files) return;
+  const plan = clearPlan();
+  entries.textContent = t("downloads.clearDone") + " (" + plan.clearable + ")";
+  files.textContent = t("downloads.clearFiles") +
+    (plan.clearable ? " (" + fmtBytes(plan.bytes) + ")" : "");
+}
+function askClear(deleteData) {
+  const plan = clearPlan();
+  if (plan.clearable === 0) {
+    toast(plan.skipped === 0
+      ? t("downloads.clearNone")
+      : fill(t(deleteData ? "msg.clearedFiles" : "msg.clearedEntries"),
+             [0, plan.skipped]));
+    return;
+  }
+  const message = deleteData
+    ? fill(t("downloads.clearFilesAsk"),
+           [plan.clearable, fmtBytes(plan.bytes), plan.skipped])
+    : fill(t("downloads.clearEntriesAsk"), [plan.clearable, plan.skipped]);
+  openModal(`<div class="modal-body">
+      <h3>${esc(deleteData ? t("downloads.clearFiles") : t("downloads.clearDone"))}</h3>
+      <div class="modal-sub">${esc(message)}</div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" id="clr-cancel">${esc(t("game.close"))}</button>
+      <button class="btn btn-danger" id="clr-ok">${esc(deleteData ? t("downloads.clearFiles") : t("downloads.clearDone"))}</button>
+    </div>`);
+  $("clr-cancel").onclick = closeModal;
+  $("clr-ok").onclick = async () => {
+    closeModal();
+    const r = await postJson("/api/queue/clear-completed", { deleteData });
+    if (r.ok) {
+      const body = await r.json().catch(() => ({}));
+      toast(fill(t(deleteData ? "msg.clearedFiles" : "msg.clearedEntries"),
+                 [body.cleared || 0, body.skippedBusy || 0]));
+      await reloadTasks();
+    } else if (r.status !== 401) {
+      const body = await r.json().catch(() => ({}));
+      toast(body.error || "clear failed", true);
+    }
+  };
+}
+$("bulk-clear").addEventListener("click", () => askClear(false));
+$("bulk-clear-files").addEventListener("click", () => askClear(true));
 
 function explainRejection(code) {
   if (!code) return "";

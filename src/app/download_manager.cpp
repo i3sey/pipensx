@@ -1228,7 +1228,9 @@ void DownloadManager::cleanupDebridAsync(DebridProviderKind provider,
     removeFromDebridAsync(provider, apiKey, debridId);
 }
 
-bool DownloadManager::clearCompleted(bool deleteData, std::string& error) {
+bool DownloadManager::clearCompleted(bool deleteData, std::string& error,
+                                     ClearCompletedResult* result) {
+    ClearCompletedResult stats;
     struct Cleanup {
         DebridProviderKind provider;
         std::string apiKey;
@@ -1239,29 +1241,50 @@ bool DownloadManager::clearCompleted(bool deleteData, std::string& error) {
         std::unique_lock<std::mutex> lock(mutex_);
         std::vector<std::string> ids;
         for (const DownloadTask& task : tasks_) {
-            if (externallyLeasedLocked(task.id))
-                continue;
-            if (task.status == DownloadStatus::Completed ||
-                task.status == DownloadStatus::Installed)
+            switch (classifyClearCompleted(task.status, task.id,
+                                           externalDeployTaskId_)) {
+            case ClearCompletedClass::Ignore:
+                break;
+            case ClearCompletedClass::Busy:
+                ++stats.skippedBusy;
+                break;
+            case ClearCompletedClass::Clear:
                 ids.push_back(task.id);
+                break;
+            }
         }
-        if (ids.empty())
-            return true;
         for (const std::string& id : ids) {
             DownloadTask* task = findLocked(id);
             if (!task)
                 continue;
+            // removeLocked unlocks while it deletes files, so a later entry
+            // can become leased or leave the finished states before we reach it.
+            if (classifyClearCompleted(task->status, task->id,
+                                       externalDeployTaskId_) !=
+                ClearCompletedClass::Clear) {
+                ++stats.skippedBusy;
+                continue;
+            }
             Cleanup cleanup{task->debridProvider, apiKeyFor(task->debridProvider),
                             task->debridId};
-            if (!removeLocked(lock, id, deleteData, error, false))
+            if (!removeLocked(lock, id, deleteData, error, false)) {
+                if (result)
+                    *result = stats;
                 return false;
+            }
+            ++stats.cleared;
             cleanups.push_back(std::move(cleanup));
         }
-        if (!persistState(lock, error))
+        if (stats.cleared > 0 && !persistState(lock, error)) {
+            if (result)
+                *result = stats;
             return false;
+        }
     }
     for (const Cleanup& cleanup : cleanups)
         removeFromDebridAsync(cleanup.provider, cleanup.apiKey, cleanup.debridId);
+    if (result)
+        *result = stats;
     return true;
 }
 

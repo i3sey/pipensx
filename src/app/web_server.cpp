@@ -505,9 +505,13 @@ HttpResponse WebServer::routeApi(const HttpRequest& req) {
                 deleteData = body.value("deleteData", false);
             }
             std::string error;
-            if (!manager_.clearCompleted(deleteData, error))
+            ClearCompletedResult result;
+            if (!manager_.clearCompleted(deleteData, error, &result))
                 return jsonError(409, error.empty() ? "rejected" : error);
-            return HttpResponse::empty(204);
+            Json body;
+            body["cleared"] = result.cleared;
+            body["skippedBusy"] = result.skippedBusy;
+            return HttpResponse::text(200, dumpJson(body));
         }
     }
     if (parts[0] == "jobs" && parts.size() == 3 && parts[2] == "cancel")

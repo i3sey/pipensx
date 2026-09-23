@@ -48,8 +48,11 @@ std::string makeTorrent(const std::string& directory, const std::string& name,
     return path;
 }
 
+using pipensx::ClearCompletedPlan;
+using pipensx::ClearCompletedResult;
 using pipensx::DownloadStatus;
 using pipensx::DownloadTask;
+using pipensx::planClearCompleted;
 
 DownloadTask task(DownloadStatus status) {
     DownloadTask t;
@@ -374,18 +377,21 @@ void testConcurrentSavesFinish() {
     removeAll(root);
 }
 
-void markFirstQueuedCompleted(const std::string& queueRoot) {
+void replaceFirstStatus(const std::string& queueRoot, const std::string& to) {
     const std::string path = queueRoot + "/queue.bencode";
     std::ifstream in(path, std::ios::binary);
     std::string data((std::istreambuf_iterator<char>(in)),
                      std::istreambuf_iterator<char>());
     const std::string from = "6:status6:queued";
-    const std::string to = "6:status9:completed";
     const auto pos = data.find(from);
     assert(pos != std::string::npos);
     data.replace(pos, from.size(), to);
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     out.write(data.data(), static_cast<std::streamsize>(data.size()));
+}
+
+void markFirstQueuedCompleted(const std::string& queueRoot) {
+    replaceFirstStatus(queueRoot, "6:status9:completed");
 }
 
 void testClearCompleted() {
@@ -418,7 +424,10 @@ void testClearCompleted() {
         assert(tasks[0].status == DownloadStatus::Completed);
         assert(tasks[1].status == DownloadStatus::Queued);
         std::string error;
-        assert(manager.clearCompleted(false, error));
+        ClearCompletedResult kept;
+        assert(manager.clearCompleted(false, error, &kept));
+        assert(kept.cleared == 1);
+        assert(kept.skippedBusy == 0);
         tasks = manager.snapshot();
         assert(tasks.size() == 1);
         assert(tasks[0].status == DownloadStatus::Queued);
@@ -434,10 +443,131 @@ void testClearCompleted() {
         pipensx::DownloadManager manager(queueRoot, false);
         std::string error;
         const std::string remainingPath = manager.snapshot()[0].dataPath;
-        assert(manager.clearCompleted(true, error));
+        ClearCompletedResult removed;
+        assert(manager.clearCompleted(true, error, &removed));
+        assert(removed.cleared == 1);
+        assert(removed.skippedBusy == 0);
         assert(manager.snapshot().empty());
         assert(access((keepPath + "/kept.bin").c_str(), F_OK) == 0);
         assert(access((remainingPath + "/gone.bin").c_str(), F_OK) != 0);
+    }
+    removeAll(root);
+}
+
+void testPlanClearCompleted() {
+    DownloadTask queued;
+    queued.id = "q";
+    queued.status = DownloadStatus::Queued;
+    DownloadTask downloading;
+    downloading.id = "d";
+    downloading.status = DownloadStatus::Downloading;
+    DownloadTask paused;
+    paused.id = "p";
+    paused.status = DownloadStatus::Paused;
+    DownloadTask completed;
+    completed.id = "c";
+    completed.status = DownloadStatus::Completed;
+    DownloadTask installed;
+    installed.id = "i";
+    installed.status = DownloadStatus::Installed;
+    DownloadTask leased;
+    leased.id = "l";
+    leased.status = DownloadStatus::Completed;
+
+    const ClearCompletedPlan plan = planClearCompleted(
+        {queued, downloading, paused, completed, installed, leased}, "l");
+    assert(plan.clearable == 2);
+    assert(plan.skippedBusy == 1);
+
+    const ClearCompletedPlan none = planClearCompleted({queued, downloading}, "");
+    assert(none.clearable == 0);
+    assert(none.skippedBusy == 0);
+}
+
+void testClearCompletedKeepsActiveAndLeased() {
+    const std::string root = tempRoot() + "-clear-lease";
+    removeAll(root);
+    mkdir(root.c_str(), 0755);
+    const std::string sourceA = makeTorrent(root, "a.bin", "aaaa");
+    const std::string sourceB = makeTorrent(root, "b.bin", "bbbb");
+    const std::string sourceC = makeTorrent(root, "c.bin", "cccc");
+    std::string queueRoot = root + "/queue";
+    std::string leasedPath;
+    std::string installedPath;
+    std::string queuedPath;
+    {
+        pipensx::DownloadManager manager(queueRoot, false);
+        std::string error;
+        std::string first, second, third;
+        assert(manager.importTorrent(sourceA, pipensx::TransferMode::DownloadOnly,
+                                     first, error));
+        assert(manager.importTorrent(sourceB, pipensx::TransferMode::DownloadOnly,
+                                     second, error));
+        assert(manager.importTorrent(sourceC, pipensx::TransferMode::DownloadOnly,
+                                     third, error));
+        const auto tasks = manager.snapshot();
+        assert(tasks.size() == 3);
+        leasedPath = tasks[0].dataPath;
+        installedPath = tasks[1].dataPath;
+        queuedPath = tasks[2].dataPath;
+        std::ofstream(leasedPath + "/leased.bin") << "leased";
+        std::ofstream(installedPath + "/installed.bin") << "installed";
+        std::ofstream(queuedPath + "/queued.bin") << "queued";
+        assert(manager.save(error));
+    }
+    replaceFirstStatus(queueRoot, "6:status9:completed");
+    replaceFirstStatus(queueRoot, "6:status9:installed");
+    {
+        pipensx::DownloadManager manager(queueRoot, false);
+        auto tasks = manager.snapshot();
+        assert(tasks.size() == 3);
+        assert(tasks[0].status == DownloadStatus::Completed);
+        assert(tasks[1].status == DownloadStatus::Installed);
+        assert(tasks[2].status == DownloadStatus::Queued);
+        std::string error;
+        auto lease = manager.beginExternalDeploy(tasks[0].id, error);
+        assert(lease.has_value());
+
+        ClearCompletedResult kept;
+        assert(manager.clearCompleted(false, error, &kept));
+        assert(kept.cleared == 1);
+        assert(kept.skippedBusy == 1);
+        tasks = manager.snapshot();
+        assert(tasks.size() == 2);
+        assert(tasks[0].id != tasks[1].id);
+        bool sawLeased = false;
+        bool sawQueued = false;
+        for (const auto& task : tasks) {
+            if (task.status == DownloadStatus::Completed)
+                sawLeased = true;
+            if (task.status == DownloadStatus::Queued)
+                sawQueued = true;
+        }
+        assert(sawLeased);
+        assert(sawQueued);
+        assert(access((leasedPath + "/leased.bin").c_str(), F_OK) == 0);
+        assert(access((installedPath + "/installed.bin").c_str(), F_OK) == 0);
+        assert(access((queuedPath + "/queued.bin").c_str(), F_OK) == 0);
+
+        ClearCompletedResult blocked;
+        assert(manager.clearCompleted(true, error, &blocked));
+        assert(blocked.cleared == 0);
+        assert(blocked.skippedBusy == 1);
+        assert(manager.snapshot().size() == 2);
+        assert(access((leasedPath + "/leased.bin").c_str(), F_OK) == 0);
+        assert(access((queuedPath + "/queued.bin").c_str(), F_OK) == 0);
+
+        lease.reset();
+        ClearCompletedResult removed;
+        assert(manager.clearCompleted(true, error, &removed));
+        assert(removed.cleared == 1);
+        assert(removed.skippedBusy == 0);
+        tasks = manager.snapshot();
+        assert(tasks.size() == 1);
+        assert(tasks[0].status == DownloadStatus::Queued);
+        assert(access((leasedPath + "/leased.bin").c_str(), F_OK) != 0);
+        assert(access((installedPath + "/installed.bin").c_str(), F_OK) == 0);
+        assert(access((queuedPath + "/queued.bin").c_str(), F_OK) == 0);
     }
     removeAll(root);
 }
@@ -485,6 +615,8 @@ int main() {
     testAsyncSaveFailureIsReportedAndLatestStateRecovers();
     testConcurrentSavesFinish();
     testClearCompleted();
+    testPlanClearCompleted();
+    testClearCompletedKeepsActiveAndLeased();
     testSystemCleanupGate();
     std::puts("queue controls tests passed");
     return 0;

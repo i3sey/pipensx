@@ -232,6 +232,17 @@ int main() {
         // reads stay open
         resp = request(port, "GET", "/api/tasks");
         assert(resp.find("200 OK") != std::string::npos);
+
+        resp = request(port, "POST", "/api/queue/clear-completed",
+                       "{\"deleteData\":false}", pinHeader);
+        assert(resp.find("200 OK") != std::string::npos);
+        assert(responseBody(resp).find("\"cleared\":0") != std::string::npos);
+        assert(responseBody(resp).find("\"skippedBusy\":0") !=
+               std::string::npos);
+        resp = request(port, "POST", "/api/queue/clear-completed",
+                       "{\"deleteData\":true}", pinHeader);
+        assert(resp.find("200 OK") != std::string::npos);
+        assert(responseBody(resp).find("\"cleared\":0") != std::string::npos);
     }
 
     // CSRF: a page served from somewhere else must not drive the console

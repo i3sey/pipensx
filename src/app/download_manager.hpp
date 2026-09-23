@@ -200,6 +200,56 @@ struct DebridImport {
     uint32_t packageCount = 0;         // selected packages (0 if mode DownloadOnly)
 };
 
+// Completed and Installed are the only statuses a bulk clear may remove.
+// Anything still running, queued, paused, or failed stays in the list.
+inline bool finishedDownloadStatus(DownloadStatus status) {
+    return status == DownloadStatus::Completed ||
+           status == DownloadStatus::Installed;
+}
+
+enum class ClearCompletedClass { Ignore, Clear, Busy };
+
+// A finished task whose files are being copied is Busy: clear leaves it
+// alone. leasedTaskId is DownloadManager::externalDeployTaskId().
+inline ClearCompletedClass classifyClearCompleted(
+    DownloadStatus status, const std::string& taskId,
+    const std::string& leasedTaskId) {
+    if (!finishedDownloadStatus(status))
+        return ClearCompletedClass::Ignore;
+    if (!leasedTaskId.empty() && taskId == leasedTaskId)
+        return ClearCompletedClass::Busy;
+    return ClearCompletedClass::Clear;
+}
+
+struct ClearCompletedPlan {
+    size_t clearable = 0;
+    size_t skippedBusy = 0;
+};
+
+inline ClearCompletedPlan planClearCompleted(
+    const std::vector<DownloadTask>& tasks,
+    const std::string& leasedTaskId) {
+    ClearCompletedPlan plan;
+    for (const DownloadTask& task : tasks) {
+        switch (classifyClearCompleted(task.status, task.id, leasedTaskId)) {
+        case ClearCompletedClass::Ignore:
+            break;
+        case ClearCompletedClass::Busy:
+            ++plan.skippedBusy;
+            break;
+        case ClearCompletedClass::Clear:
+            ++plan.clearable;
+            break;
+        }
+    }
+    return plan;
+}
+
+struct ClearCompletedResult {
+    size_t cleared = 0;
+    size_t skippedBusy = 0;
+};
+
 class DownloadManager {
 public:
     class ExternalDeployLease {
@@ -289,9 +339,12 @@ public:
     void pauseAll();
     // Requeue every Paused and Error task. One lock, one state write.
     void resumeAll();
-    // Drop Completed/Installed tasks. deleteData matches per-row remove.
-    // One lock and one state write; debrid account cleanup runs after unlock.
-    bool clearCompleted(bool deleteData, std::string& error);
+    // Drop Completed/Installed tasks. deleteData matches per-row remove and
+    // does not uninstall games or ports. A finished task leased for an
+    // external copy is left in place and counted in skippedBusy. One lock
+    // and one state write; debrid account cleanup runs after unlock.
+    bool clearCompleted(bool deleteData, std::string& error,
+                        ClearCompletedResult* result = nullptr);
 
     // Make a queued task the next one to start. The scheduler always claims
     // the first claimable Queued entry in list order, so "next up" is a

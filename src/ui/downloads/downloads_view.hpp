@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
@@ -12,6 +13,7 @@
 #include "app/download_list_refresh.hpp"
 #include "app/download_manager.hpp"
 #include "app/game_metadata_service.hpp"
+#include "app/storage_manager.hpp"
 #include "app/switch_deploy.hpp"
 #include "ui/common/message_cells.hpp"
 #include "ui/common/ui_helpers.hpp"
@@ -77,14 +79,6 @@ public:
         recycler_->setDataSource(dataSource_);
         recyclerHost_ = recyclerHost(recycler_);
         addView(recyclerHost_);
-        refresh();
-        timer_.setCallback([this] {
-            refresh();
-            if (fastRefresh_) {
-                fastRefresh_ = false;
-                timer_.setPeriod(750);
-            }
-        });
         registerAction(tr("pipensx/downloads/import"), brls::BUTTON_X,
                        [this](brls::View*) {
             openFilePicker();
@@ -94,6 +88,26 @@ public:
                        [this](brls::View*) {
             pauseResumeAll();
             return true;
+        });
+        // ZL/ZR hints are tappable, same as Import and Pause all. The count
+        // covers finished tasks the list itself may be hiding.
+        registerAction(tr("pipensx/downloads/clear_completed", size_t{0}),
+                       brls::BUTTON_LT, [this](brls::View*) {
+            confirmClearEntries();
+            return true;
+        });
+        registerAction(tr("pipensx/downloads/clear_files"), brls::BUTTON_RT,
+                       [this](brls::View*) {
+            confirmClearFiles();
+            return true;
+        });
+        refresh();
+        timer_.setCallback([this] {
+            refresh();
+            if (fastRefresh_) {
+                fastRefresh_ = false;
+                timer_.setPeriod(750);
+            }
         });
         startRefreshing();
     }
@@ -333,6 +347,121 @@ private:
         return false;
     }
 
+    void updateClearHints(const std::vector<DownloadTask>& all) {
+        const ClearCompletedPlan plan =
+            planClearCompleted(all, manager_->externalDeployTaskId());
+        const bool any = plan.clearable + plan.skippedBusy > 0;
+        if (clearHintsReady_ && plan.clearable == clearableShown_ &&
+            plan.skippedBusy == skippedShown_ && any == clearAvailable_)
+            return;
+        updateActionHint(brls::BUTTON_LT,
+                         tr("pipensx/downloads/clear_completed",
+                            plan.clearable));
+        setActionAvailable(brls::BUTTON_LT, any);
+        setActionAvailable(brls::BUTTON_RT, any);
+        clearableShown_ = plan.clearable;
+        skippedShown_ = plan.skippedBusy;
+        clearAvailable_ = any;
+        clearHintsReady_ = true;
+    }
+
+    void confirmClearEntries() {
+        if (clearInFlight_)
+            return;
+        const ClearCompletedPlan plan = planClearCompleted(
+            manager_->snapshotUi(), manager_->externalDeployTaskId());
+        if (plan.clearable == 0) {
+            brls::Application::notify(plan.skippedBusy == 0
+                ? tr("pipensx/downloads/clear_completed_none")
+                : tr("pipensx/downloads/clear_result", size_t{0},
+                     plan.skippedBusy));
+            return;
+        }
+        auto* dialog = new brls::Dialog(
+            tr("pipensx/downloads/clear_completed_question",
+               plan.clearable, plan.skippedBusy));
+        dialog->addButton(tr("pipensx/common/clear"), [this] {
+            runClear(false);
+        });
+        dialog->addButton(tr("pipensx/common/cancel"), [] {});
+        dialog->open();
+    }
+
+    void confirmClearFiles() {
+        if (clearInFlight_)
+            return;
+        const std::string leased = manager_->externalDeployTaskId();
+        const std::vector<DownloadTask> tasks = manager_->snapshotUi();
+        const ClearCompletedPlan plan = planClearCompleted(tasks, leased);
+        if (plan.clearable == 0) {
+            brls::Application::notify(plan.skippedBusy == 0
+                ? tr("pipensx/downloads/clear_completed_none")
+                : tr("pipensx/downloads/clear_files_result", size_t{0},
+                     plan.skippedBusy));
+            return;
+        }
+        std::vector<std::string> paths;
+        paths.reserve(plan.clearable);
+        for (const DownloadTask& task : tasks) {
+            if (classifyClearCompleted(task.status, task.id, leased) ==
+                ClearCompletedClass::Clear)
+                paths.push_back(task.dataPath);
+        }
+        const size_t clearable = plan.clearable;
+        const size_t skipped = plan.skippedBusy;
+        auto alive = alive_;
+        brls::async([this, alive, paths = std::move(paths), clearable,
+                     skipped]() {
+            uint64_t bytes = 0;
+            for (const std::string& path : paths) {
+                uint64_t size = 0;
+                if (!directorySize(path, size))
+                    continue;
+                bytes = size > UINT64_MAX - bytes ? UINT64_MAX : bytes + size;
+            }
+            brls::sync([this, alive, bytes, clearable, skipped] {
+                if (!alive->load() || clearInFlight_)
+                    return;
+                auto* dialog = new brls::Dialog(
+                    tr("pipensx/downloads/clear_files_question",
+                       clearable, formatBytes(bytes), skipped));
+                dialog->addButton(tr("pipensx/downloads/remove_delete"),
+                                  [this] { runClear(true); });
+                dialog->addButton(tr("pipensx/common/cancel"), [] {});
+                dialog->open();
+            });
+        });
+    }
+
+    void runClear(bool deleteData) {
+        if (clearInFlight_)
+            return;
+        clearInFlight_ = true;
+        DownloadManager* manager = manager_;
+        auto alive = alive_;
+        brls::async([this, alive, manager, deleteData] {
+            std::string error;
+            ClearCompletedResult result;
+            const bool ok = manager->clearCompleted(deleteData, error, &result);
+            brls::sync([this, alive, ok, error, result, deleteData] {
+                if (!alive->load())
+                    return;
+                clearInFlight_ = false;
+                if (!ok) {
+                    if (!error.empty())
+                        brls::Application::notify(error);
+                    startRefreshing(true);
+                    return;
+                }
+                brls::Application::notify(tr(
+                    deleteData ? "pipensx/downloads/clear_files_result"
+                               : "pipensx/downloads/clear_result",
+                    result.cleared, result.skippedBusy));
+                startRefreshing(true);
+            });
+        });
+    }
+
     void pauseAll() {
         manager_->pauseAll();
         startRefreshing(true);
@@ -398,6 +527,7 @@ private:
                                                          : SwitchDeploySnapshot{};
         const std::string activeDeployTask = deployState.active()
             ? deployState.taskId : std::string();
+        updateClearHints(next);
         if (settings_ && !settings_->get().showCompletedDownloads) {
             next.erase(std::remove_if(next.begin(), next.end(),
                 [&activeDeployTask](const DownloadTask& task) {
@@ -506,6 +636,11 @@ private:
     std::string activeDeployTask_;
     std::shared_ptr<std::atomic<bool>> alive_ =
         std::make_shared<std::atomic<bool>>(true);
+    bool clearInFlight_ = false;
+    bool clearHintsReady_ = false;
+    bool clearAvailable_ = false;
+    size_t clearableShown_ = 0;
+    size_t skippedShown_ = 0;
 };
 
 }  // namespace pipensx::ui

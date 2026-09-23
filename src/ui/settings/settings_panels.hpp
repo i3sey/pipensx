@@ -1334,6 +1334,7 @@ private:
         uint64_t completedBytes = 0;
         uint64_t orphanBytes = 0;
         uint64_t orphanDownloadBytes = 0;
+        size_t skippedBusy = 0;
         install::SystemCleanupSnapshot systemInstall;
         bool hasFinished = false;
     };
@@ -1342,6 +1343,7 @@ private:
         ScanPayload payload;
         payload.snapshot = scanStorageBreakdown(manager->rootPath());
         std::vector<DownloadTask> tasks = manager->snapshot();
+        const std::string leased = manager->externalDeployTaskId();
         std::vector<std::string> active;
         std::vector<std::string> activeData;
         active.reserve(tasks.size());
@@ -1349,16 +1351,23 @@ private:
         for (const DownloadTask& task : tasks) {
             active.push_back(task.id);
             activeData.push_back(task.dataPath);
-            if (task.status != DownloadStatus::Completed &&
-                task.status != DownloadStatus::Installed)
-                continue;
-            payload.hasFinished = true;
-            uint64_t size = 0;
-            if (directorySize(task.dataPath, size))
-                payload.completedBytes =
-                    size > UINT64_MAX - payload.completedBytes
-                        ? UINT64_MAX
-                        : payload.completedBytes + size;
+            switch (classifyClearCompleted(task.status, task.id, leased)) {
+            case ClearCompletedClass::Ignore:
+                break;
+            case ClearCompletedClass::Busy:
+                ++payload.skippedBusy;
+                break;
+            case ClearCompletedClass::Clear: {
+                payload.hasFinished = true;
+                uint64_t size = 0;
+                if (directorySize(task.dataPath, size))
+                    payload.completedBytes =
+                        size > UINT64_MAX - payload.completedBytes
+                            ? UINT64_MAX
+                            : payload.completedBytes + size;
+                break;
+            }
+            }
         }
         payload.orphanBytes =
             pipensx::orphanTorrentBytes(manager->torrentRoot(), active);
@@ -1379,6 +1388,7 @@ private:
         completedBytes_ = payload.completedBytes;
         orphanBytes_ = payload.orphanBytes;
         orphanDownloadBytes_ = payload.orphanDownloadBytes;
+        skippedBusy_ = payload.skippedBusy;
         systemInstall_ = payload.systemInstall;
         hasFinished_ = payload.hasFinished;
 
@@ -1553,12 +1563,14 @@ private:
         if (refreshInFlight_)
             return;
         if (!hasFinished_) {
-            brls::Application::notify(
-                tr("pipensx/storage/nothing_to_recover"));
+            brls::Application::notify(skippedBusy_ == 0
+                ? tr("pipensx/storage/nothing_to_recover")
+                : tr("pipensx/storage/clear_completed_done", size_t{0},
+                     skippedBusy_));
             return;
         }
         confirm(tr("pipensx/storage/clear_completed_confirm",
-                   formatBytes(completedBytes_)),
+                   formatBytes(completedBytes_), skippedBusy_),
                 [this] { clearCompleted(); });
     }
 
@@ -1665,14 +1677,16 @@ private:
 
     void clearCompleted() {
         std::string error;
-        if (!manager_->clearCompleted(true, error)) {
+        ClearCompletedResult result;
+        if (!manager_->clearCompleted(true, error, &result)) {
             diagnostic_error("storage", "completed", "error=%s",
                              error.c_str());
             if (!error.empty())
                 brls::Application::notify(error);
             return;
         }
-        brls::Application::notify(tr("pipensx/storage/cleared"));
+        brls::Application::notify(tr("pipensx/storage/clear_completed_done",
+                                     result.cleared, result.skippedBusy));
         refresh();
     }
 
@@ -1812,6 +1826,7 @@ private:
     uint64_t completedBytes_ = 0;
     uint64_t orphanBytes_ = 0;
     uint64_t orphanDownloadBytes_ = 0;
+    size_t skippedBusy_ = 0;
     install::SystemCleanupSnapshot systemInstall_;
     bool hasFinished_ = false;
     bool refreshInFlight_ = false;
