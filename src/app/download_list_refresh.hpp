@@ -31,6 +31,11 @@ struct DownloadRowPaint {
     uint64_t installedBytes = 0;
     uint64_t installTotalBytes = 0;
     uint64_t installSpeedBytesPerSecond = 0;
+    bool recoveryTrusted = false;
+    bool recoveryTrustedClaim = false;
+    bool recoveryBytePoint = false;
+    uint64_t recoveryUnitBytes = 0;
+    uint64_t recoveryUnitTotal = 0;
 
     static DownloadRowPaint from(const DownloadTask& task) {
         DownloadRowPaint paint;
@@ -53,6 +58,11 @@ struct DownloadRowPaint {
         paint.installedBytes = task.installedBytes;
         paint.installTotalBytes = task.installTotalBytes;
         paint.installSpeedBytesPerSecond = task.installSpeedBytesPerSecond;
+        paint.recoveryTrusted = task.recoveryTrusted;
+        paint.recoveryTrustedClaim = task.recoveryTrustedClaim;
+        paint.recoveryBytePoint = task.recoveryBytePoint;
+        paint.recoveryUnitBytes = task.recoveryUnitBytes;
+        paint.recoveryUnitTotal = task.recoveryUnitTotal;
         return paint;
     }
 
@@ -71,7 +81,12 @@ struct DownloadRowPaint {
                packagesInstalled == other.packagesInstalled &&
                installedBytes == other.installedBytes &&
                installTotalBytes == other.installTotalBytes &&
-               installSpeedBytesPerSecond == other.installSpeedBytesPerSecond;
+               installSpeedBytesPerSecond == other.installSpeedBytesPerSecond &&
+               recoveryTrusted == other.recoveryTrusted &&
+               recoveryTrustedClaim == other.recoveryTrustedClaim &&
+               recoveryBytePoint == other.recoveryBytePoint &&
+               recoveryUnitBytes == other.recoveryUnitBytes &&
+               recoveryUnitTotal == other.recoveryUnitTotal;
     }
 
     bool operator!=(const DownloadRowPaint& other) const {

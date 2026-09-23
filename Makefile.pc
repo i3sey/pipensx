@@ -220,6 +220,14 @@ $(BUILD_DIR)/tests/test_queue_controls: $(BUILD_DIR)/tests/test_queue_controls.o
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS) $(INSTALL_LDFLAGS) -pthread
 
+$(BUILD_DIR)/tests/test_recovery_persist.o: tests/test_recovery_persist.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+$(BUILD_DIR)/tests/test_recovery_persist: $(BUILD_DIR)/tests/test_recovery_persist.o $(MANAGER_TEST_OBJS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS) $(INSTALL_LDFLAGS) -pthread
+
 $(BUILD_DIR)/tests/test_package_stream: tests/test_package_stream.cpp \
 		$(BUILD_DIR)/src/install/package_stream.o $(BUILD_DIR)/src/install/install_backend_pc.o \
 		$(BUILD_DIR)/src/core/util.o
@@ -356,6 +364,10 @@ $(BUILD_DIR)/tests/test_image_upload_budget: tests/test_image_upload_budget.cpp
 
 # Header-only: exercises the inline progress fractions in download_manager.hpp.
 $(BUILD_DIR)/tests/test_task_progress: tests/test_task_progress.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $<
+
+$(BUILD_DIR)/tests/test_recovery_account: tests/test_recovery_account.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $<
 

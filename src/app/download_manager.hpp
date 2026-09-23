@@ -1,6 +1,7 @@
 #pragma once
 
 #include "debrid_provider.hpp"
+#include "recovery_account.hpp"
 
 #include <atomic>
 #include <condition_variable>
@@ -126,6 +127,14 @@ struct DownloadTask {
        Empty = untrusted (crash or mid-run) and the next start does a full
        hash scan. */
     std::vector<uint8_t> resumeBitfield;
+    /* Live recovery inputs. The state file stores the byte/unit fields and
+       the bitfield; recoveryTrustedClaim is only the in-memory window after
+       a claim has consumed the bitfield and before the next checkpoint. */
+    bool recoveryTrusted = false;
+    bool recoveryTrustedClaim = false;
+    bool recoveryBytePoint = false;
+    uint64_t recoveryUnitBytes = 0;
+    uint64_t recoveryUnitTotal = 0;
 };
 
 // (done, total) download-progress byte pair. Falls back to the raw engine
@@ -139,6 +148,77 @@ inline std::pair<uint64_t, uint64_t> downloadProgressBytes(
         return {done, task.wantedTotalBytes};
     }
     return {task.completedBytes, task.totalBytes};
+}
+
+inline RecoveryPhase recoveryPhaseOf(const DownloadTask& task) {
+    const bool installStatus = task.status == DownloadStatus::Installing ||
+                               task.status == DownloadStatus::Committing;
+    const bool installMode = task.mode != TransferMode::DownloadOnly;
+    // installedBytes alone is the last package's counter and must not turn a
+    // paused download of the next package into an install resume.
+    const bool openPackage =
+        installMode &&
+        (task.recoveryBytePoint || task.recoveryUnitBytes > 0) &&
+        (task.packageCount == 0 ||
+         task.packagesInstalled < task.packageCount);
+    if (installStatus ||
+        (openPackage && (task.status == DownloadStatus::Paused ||
+                         task.status == DownloadStatus::Queued ||
+                         task.status == DownloadStatus::Error ||
+                         task.status == DownloadStatus::Checking ||
+                         task.status == DownloadStatus::Verifying)))
+        return RecoveryPhase::Installing;
+    const auto downloaded = downloadProgressBytes(task);
+    if (downloaded.first == 0 && task.packagesInstalled == 0 &&
+        task.installedBytes == 0 && task.recoveryUnitBytes == 0 &&
+        !task.recoveryBytePoint)
+        return RecoveryPhase::Preparing;
+    return RecoveryPhase::Downloading;
+}
+
+inline RecoveryEvent recoveryEventOf(const DownloadTask& task) {
+    switch (task.status) {
+        case DownloadStatus::Checking:
+        case DownloadStatus::Verifying:
+            return RecoveryEvent::Resume;
+        case DownloadStatus::Paused:
+            return RecoveryEvent::Pause;
+        case DownloadStatus::Queued:
+            return RecoveryEvent::Restart;
+        case DownloadStatus::Error:
+            return RecoveryEvent::NetworkLoss;
+        default:
+            return RecoveryEvent::Resume;
+    }
+}
+
+inline bool recoveryTransferQuiet(DownloadStatus status) {
+    return status == DownloadStatus::Downloading ||
+           status == DownloadStatus::Installing ||
+           status == DownloadStatus::Committing ||
+           status == DownloadStatus::Fetching;
+}
+
+inline RecoveryAccount recoveryAccountOf(const DownloadTask& task) {
+    const auto downloaded = downloadProgressBytes(task);
+    RecoveryInput in;
+    in.source = task.source == TaskSource::Debrid ? RecoverySource::Debrid
+                                                  : RecoverySource::Direct;
+    in.mode = task.mode == TransferMode::PortInstall ? RecoveryMode::Port
+            : task.mode == TransferMode::StreamInstall ? RecoveryMode::Stream
+                                                       : RecoveryMode::DownloadOnly;
+    in.phase = recoveryPhaseOf(task);
+    in.event = recoveryEventOf(task);
+    in.downloadedBytes = downloaded.first;
+    in.downloadTotalBytes = downloaded.second;
+    in.packagesInstalled = task.packagesInstalled;
+    in.packageCount = task.packageCount;
+    in.unitBytes = task.recoveryUnitBytes;
+    in.unitTotal = task.recoveryUnitTotal;
+    in.trustedPieces = task.recoveryTrusted || task.recoveryTrustedClaim ||
+                       !task.resumeBitfield.empty();
+    in.bytePoint = task.recoveryBytePoint;
+    return accountRecovery(in);
 }
 
 // Stream-install progress fraction. While a package is installing or

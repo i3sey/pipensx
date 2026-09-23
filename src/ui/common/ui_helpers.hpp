@@ -371,6 +371,52 @@ inline std::string downloadStatusLabel(DownloadStatus status) {
     return tr("pipensx/common/unknown");
 }
 
+inline std::string recoveryNoticeText(const DownloadTask& task) {
+    const RecoveryAccount account = recoveryAccountOf(task);
+    switch (recoveryNotice(account, recoveryTransferQuiet(task.status))) {
+        case RecoveryNotice::Verifying:
+            return tr("pipensx/downloads/axis_verifying");
+        case RecoveryNotice::VerifyRework:
+            return tr("pipensx/downloads/recovery_verify",
+                      formatBytes(account.reworkBytes),
+                      formatBytes(account.savedBytes));
+        case RecoveryNotice::RereadPackage:
+            return tr("pipensx/downloads/recovery_reread",
+                      formatBytes(account.reworkBytes),
+                      account.packagesInstalled);
+        case RecoveryNotice::RefetchFile:
+            return tr("pipensx/downloads/recovery_refetch",
+                      formatBytes(account.reworkBytes),
+                      formatBytes(account.savedBytes));
+        case RecoveryNotice::Recopy:
+            return tr("pipensx/downloads/recovery_recopy",
+                      formatBytes(account.reworkBytes));
+        case RecoveryNotice::PieceResume:
+            return tr("pipensx/downloads/recovery_pieces");
+        case RecoveryNotice::ByteResume:
+            return tr("pipensx/downloads/recovery_byte");
+        case RecoveryNotice::None:
+            break;
+    }
+    return {};
+}
+
+inline std::string recoveryAxesText(const DownloadTask& task) {
+    const RecoveryAccount account = recoveryAccountOf(task);
+    std::string line;
+    if (account.showDownloaded)
+        line = tr("pipensx/downloads/axis_downloaded",
+                  formatBytes(account.downloadedBytes),
+                  formatBytes(account.downloadTotalBytes));
+    if (account.showInstalled) {
+        if (!line.empty())
+            line += "   ";
+        line += tr("pipensx/downloads/axis_installed",
+                   account.packagesInstalled, account.packageCount);
+    }
+    return line;
+}
+
 inline std::string taskStatusText(const DownloadTask& task) {
     auto withPercent = [](const std::string& label, int percent) {
         return label + " " + std::to_string(percent) + "%";
@@ -384,16 +430,12 @@ inline std::string taskStatusText(const DownloadTask& task) {
                                percentOf(
                                    static_cast<float>(task.fetchProgress)));
         case DownloadStatus::Checking:
-        case DownloadStatus::Verifying:
-            if (task.piecesTotal)
-                return withPercent(
-                    downloadStatusLabel(task.status),
-                    percentOf(static_cast<float>(task.piecesDone) /
-                              static_cast<float>(task.piecesTotal)));
-            return withPercent(downloadStatusLabel(task.status),
-                               percentOf(task.mode == TransferMode::StreamInstall
-                                             ? streamInstallProgressOf(task)
-                                             : progressOf(task)));
+        case DownloadStatus::Verifying: {
+            const RecoveryAccount account = recoveryAccountOf(task);
+            if (account.verifyingSaved || account.downloadedBytes > 0)
+                return tr("pipensx/downloads/axis_verifying");
+            return downloadStatusLabel(task.status);
+        }
         case DownloadStatus::Downloading:
             return withPercent(downloadStatusLabel(task.status),
                                percentOf(task.mode == TransferMode::StreamInstall

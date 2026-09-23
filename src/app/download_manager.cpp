@@ -239,6 +239,12 @@ DownloadTask copyTaskUi(const DownloadTask& src) {
     dst.installRateBaseBytes = src.installRateBaseBytes;
     dst.installRateBaseAtMs = src.installRateBaseAtMs;
     dst.currentPackage = src.currentPackage;
+    dst.recoveryTrusted = src.recoveryTrusted || src.recoveryTrustedClaim ||
+                          !src.resumeBitfield.empty();
+    dst.recoveryTrustedClaim = src.recoveryTrustedClaim;
+    dst.recoveryBytePoint = src.recoveryBytePoint;
+    dst.recoveryUnitBytes = src.recoveryUnitBytes;
+    dst.recoveryUnitTotal = src.recoveryUnitTotal;
     return dst;
 }
 
@@ -1393,6 +1399,13 @@ void DownloadManager::updateExternalPortInstall(
     task->currentPackage = currentPackage;
     updateTaskInstallProgress(*task, installedBytes, installTotalBytes, status,
                               now_ms());
+    // A port copy has no install journal. Finished packages stay installed;
+    // the open package or file copy starts again from its last checkpoint.
+    task->recoveryTrusted = false;
+    task->recoveryTrustedClaim = false;
+    task->recoveryBytePoint = false;
+    task->recoveryUnitBytes = installedBytes;
+    task->recoveryUnitTotal = installTotalBytes;
     if (packageCommitted)
         persistState(lock);
 }
@@ -1411,6 +1424,9 @@ void DownloadManager::finishExternalPortInstall(
     task->currentPackage.clear();
     task->installedBytes = 0;
     task->installTotalBytes = 0;
+    task->recoveryBytePoint = false;
+    task->recoveryUnitBytes = 0;
+    task->recoveryUnitTotal = 0;
     persistState(lock);
 }
 
@@ -1536,6 +1552,8 @@ std::string DownloadManager::serializeStateLocked() const {
         state << "9:debrid-id" << bstr(task.debridId);
         state << "5:error" << bstr(task.error);
         state << "2:id" << bstr(task.id);
+        state << "13:install-bytes" << bint(task.installedBytes);
+        state << "13:install-total" << bint(task.installTotalBytes);
         state << "8:metainfo" << bstr(task.metainfoPath);
         state << "4:mode" << bstr(persistedMode(task.mode));
         state << "4:name" << bstr(task.name);
@@ -1551,6 +1569,9 @@ std::string DownloadManager::serializeStateLocked() const {
                 : task.debridProvider == DebridProviderKind::AllDebrid
                 ? "alldebrid"
                 : "torbox");
+        state << "13:recovery-byte" << bint(task.recoveryBytePoint ? 1 : 0);
+        state << "13:recovery-unit" << bint(task.recoveryUnitBytes);
+        state << "19:recovery-unit-total" << bint(task.recoveryUnitTotal);
         if (!task.resumeBitfield.empty())
             state << "9:resume-bf"
                   << bstr(std::string(task.resumeBitfield.begin(),
@@ -1565,7 +1586,7 @@ std::string DownloadManager::serializeStateLocked() const {
         state << "e";
     }
     state << "e";
-    state << "7:versioni7e";
+    state << "7:versioni8e";
     state << "e";
     return state.str();
 }
@@ -1750,7 +1771,7 @@ void DownloadManager::load() {
         version.type != BE_INT ||
         (version.ival != 1 && version.ival != 2 && version.ival != 3 &&
          version.ival != 4 && version.ival != 5 && version.ival != 6 &&
-         version.ival != 7))
+         version.ival != 7 && version.ival != 8))
         return;
 
     be_node_t list;
@@ -1844,6 +1865,25 @@ void DownloadManager::load() {
             if (dictionaryInteger(item, "pieces-total", piecesTotal))
                 task.piecesTotal = static_cast<uint32_t>(piecesTotal);
         }
+        if (version.ival >= 8) {
+            uint64_t installBytes = 0;
+            uint64_t installTotal = 0;
+            uint64_t recoveryByte = 0;
+            uint64_t recoveryUnit = 0;
+            uint64_t recoveryUnitTotal = 0;
+            if (dictionaryInteger(item, "install-bytes", installBytes))
+                task.installedBytes = installBytes;
+            if (dictionaryInteger(item, "install-total", installTotal))
+                task.installTotalBytes = installTotal;
+            if (dictionaryInteger(item, "recovery-byte", recoveryByte))
+                task.recoveryBytePoint = recoveryByte != 0;
+            if (dictionaryInteger(item, "recovery-unit", recoveryUnit))
+                task.recoveryUnitBytes = recoveryUnit;
+            if (dictionaryInteger(item, "recovery-unit-total",
+                                  recoveryUnitTotal))
+                task.recoveryUnitTotal = recoveryUnitTotal;
+        }
+        task.recoveryTrusted = !task.resumeBitfield.empty();
         task.status = persistedStatus(status);
         if (task.status == DownloadStatus::Completed ||
             task.status == DownloadStatus::Installed)
@@ -2135,6 +2175,11 @@ void DownloadManager::schedulerMain() {
         // first checkpoint below falls back to a full scan.
         claim.resumeBitfield = std::move(task->resumeBitfield);
         task->resumeBitfield.clear();
+        // The engine holds the trusted bitfield. The state file does not,
+        // until the next checkpoint arms it again — a crash in between
+        // correctly falls back to a full scan.
+        task->recoveryTrustedClaim = !claim.resumeBitfield.empty();
+        task->recoveryTrusted = task->recoveryTrustedClaim;
         persistState(lock);
 
         auto slot = std::make_unique<RunnerSlot>();
@@ -2316,6 +2361,13 @@ void DownloadManager::runDebridTask(const ClaimedTask& claim) {
         bool packageCommitted = p.packagesInstalled != task->packagesInstalled;
         task->packagesInstalled = p.packagesInstalled;
         task->currentPackage = p.currentPackage;
+        if (p.hasRecovery) {
+            task->recoveryBytePoint = p.recoveryBytePoint;
+            task->recoveryUnitBytes = p.recoveryUnitBytes;
+            task->recoveryUnitTotal = p.recoveryUnitTotal;
+            task->recoveryTrusted = false;
+            task->recoveryTrustedClaim = false;
+        }
         if (task->status == DownloadStatus::Paused) {
             if (packageCommitted)
                 persistState(lock);
@@ -2676,6 +2728,29 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
             task->piecesDone = stat.num_pieces_done;
             task->piecesTotal = stat.num_pieces;
             task->piecesVerified = stat.num_pieces_verified;
+            task->recoveryTrusted = !task->resumeBitfield.empty() ||
+                                    task->recoveryTrustedClaim;
+            if (mode == TransferMode::StreamInstall && coordinator) {
+                if (coordinator->packageResumeActive()) {
+                    task->recoveryBytePoint = true;
+                    task->recoveryUnitBytes = coordinator->packageResumeBytes();
+                    if (task->installTotalBytes)
+                        task->recoveryUnitTotal = task->installTotalBytes;
+                } else if (task->status == DownloadStatus::Installing ||
+                           task->status == DownloadStatus::Committing) {
+                    task->recoveryBytePoint = false;
+                    task->recoveryUnitBytes = task->installedBytes;
+                    task->recoveryUnitTotal = task->installTotalBytes;
+                } else {
+                    task->recoveryBytePoint = false;
+                    task->recoveryUnitBytes = 0;
+                    task->recoveryUnitTotal = 0;
+                }
+            } else {
+                task->recoveryBytePoint = false;
+                task->recoveryUnitBytes = 0;
+                task->recoveryUnitTotal = 0;
+            }
             if (task->status != DownloadStatus::Removing &&
                 task->status != DownloadStatus::Paused &&
                 task->status != DownloadStatus::Installing &&

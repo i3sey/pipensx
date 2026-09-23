@@ -193,6 +193,34 @@ public:
                 setTextIfChanged(status_, tr("pipensx/deploy/cancelled"));
             }
         }
+        const bool deployActive = deploy && deploy->taskId == task.id &&
+                                  deploy->active();
+        if (!deployActive) {
+            const RecoveryAccount account = recoveryAccountOf(task);
+            const std::string notice = recoveryNoticeText(task);
+            if (!notice.empty() || account.showInstalled ||
+                account.verifyingSaved) {
+                std::string recovery = recoveryAxesText(task);
+                if (!notice.empty()) {
+                    if (!recovery.empty())
+                        recovery += "   ";
+                    recovery += notice;
+                }
+                if (task.status == DownloadStatus::Downloading) {
+                    const auto split = meta.find("   ");
+                    if (split != std::string::npos)
+                        recovery += meta.substr(split);
+                } else if (task.status == DownloadStatus::Installing ||
+                           task.status == DownloadStatus::Committing) {
+                    if (!task.currentPackage.empty())
+                        recovery += "   " + task.currentPackage;
+                } else if (task.status == DownloadStatus::Error &&
+                           !task.error.empty()) {
+                    recovery += "   " + task.error;
+                }
+                meta = recovery;
+            }
+        }
         setTextIfChanged(meta_, meta);
 
         if (!sameTask || !image_->hasArtwork()) {

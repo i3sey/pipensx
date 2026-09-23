@@ -324,6 +324,20 @@ std::string WebServer::buildStateJson() {
         const auto eta = taskEtaSeconds(t, now);
         j["etaSeconds"] = eta ? *eta : 0;
         j["currentPackage"] = t.currentPackage;
+        const RecoveryAccount recovery = recoveryAccountOf(t);
+        Json recoveryJson;
+        recoveryJson["work"] = recoveryWorkName(recovery.work);
+        recoveryJson["downloadedBytes"] = recovery.downloadedBytes;
+        recoveryJson["downloadTotalBytes"] = recovery.downloadTotalBytes;
+        recoveryJson["packagesInstalled"] = recovery.packagesInstalled;
+        recoveryJson["packageCount"] = recovery.packageCount;
+        recoveryJson["savedBytes"] = recovery.savedBytes;
+        recoveryJson["reworkBytes"] = recovery.reworkBytes;
+        recoveryJson["byteExact"] = recovery.byteExact;
+        recoveryJson["verifyingSaved"] = recovery.verifyingSaved;
+        recoveryJson["showDownloaded"] = recovery.showDownloaded;
+        recoveryJson["showInstalled"] = recovery.showInstalled;
+        j["recovery"] = std::move(recoveryJson);
         const TaskCapabilities caps =
             taskCapabilities(t, t.id == leasedId);
         Json capabilities;

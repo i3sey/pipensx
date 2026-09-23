@@ -652,6 +652,7 @@ private:
         producerOffset_ = journal.state.consumed;
         journalConsumed_ = journal.state.consumed;
         journalValid_ = true;
+        publishJournal();
         log_msg("[install] resuming package='%s' at %llu of %llu bytes\n",
                 file.path,
                 static_cast<unsigned long long>(journal.state.consumed),
@@ -701,6 +702,7 @@ private:
         }
         journalConsumed_ = consumed;
         journalValid_ = true;
+        publishJournal();
     }
 
     void clearJournal() {
@@ -708,7 +710,25 @@ private:
             install::removeInstallJournal(journalPath_);
         journalValid_ = false;
         journalConsumed_ = 0;
+        publishJournal();
     }
+
+    void publishJournal() {
+        journalConsumedPublished_.store(journalValid_ ? journalConsumed_ : 0,
+                                        std::memory_order_release);
+        journalValidPublished_.store(journalValid_, std::memory_order_release);
+    }
+
+public:
+    bool packageResumeActive() const {
+        return journalValidPublished_.load(std::memory_order_acquire);
+    }
+
+    uint64_t packageResumeBytes() const {
+        return journalConsumedPublished_.load(std::memory_order_acquire);
+    }
+
+private:
 
     bool processChunk(const InstallChunk& chunk) {
         const mi_file_t& file = metainfo_.files[chunk.fileIndex];
@@ -1083,6 +1103,8 @@ private:
     uint64_t arbiterLease_ = 0;
     uint64_t journalConsumed_ = 0;
     bool journalValid_ = false;
+    std::atomic<uint64_t> journalConsumedPublished_{0};
+    std::atomic<bool> journalValidPublished_{false};
     bool journalDiagnosticSent_ = false;
     bool abandonResume_ = false;
     std::atomic<bool> recoverableError_{false};

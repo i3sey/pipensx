@@ -29,6 +29,12 @@ struct DebridProgress {
     std::string currentPackage;
     uint64_t installedBytes = 0;
     uint64_t installTotalBytes = 0;
+    // Set when this sample knows how the current file or package will resume.
+    // Left false for provider cache-fill updates so they do not wipe it.
+    bool hasRecovery = false;
+    bool recoveryBytePoint = false;
+    uint64_t recoveryUnitBytes = 0;
+    uint64_t recoveryUnitTotal = 0;
 };
 
 struct DebridTaskSpec {

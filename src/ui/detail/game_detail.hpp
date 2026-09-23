@@ -540,7 +540,12 @@ private:
                 return tr("pipensx/detail/status_fetching",
                           percentOf(static_cast<float>(task.fetchProgress)));
             case DownloadStatus::Checking:
+            case DownloadStatus::Verifying: {
+                const RecoveryAccount account = recoveryAccountOf(task);
+                if (account.verifyingSaved || account.downloadedBytes > 0)
+                    return tr("pipensx/downloads/axis_verifying");
                 return tr("pipensx/downloads/status_checking");
+            }
             case DownloadStatus::Downloading: {
                 return tr("pipensx/detail/status_downloading",
                           percentOf(progressOf(task)));
@@ -550,9 +555,6 @@ private:
                 return tr("pipensx/detail/status_installing",
                           percentOf(installProgressOf(task)));
             }
-            case DownloadStatus::Verifying:
-                return tr("pipensx/detail/status_verifying",
-                          percentOf(progressOf(task)));
             case DownloadStatus::Paused: {
                 int pct = percentOf(progressOf(task));
                 return pct > 0

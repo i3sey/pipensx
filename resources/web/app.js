@@ -58,6 +58,15 @@ const I18N = {
     "msg.saved": "Settings saved",
     "msg.clearedEntries": "Removed {0} entries. Left {1} because they are in use.",
     "msg.clearedFiles": "Removed files for {0} entries. Left {1} because they are in use.",
+    "recovery.downloaded": "Downloaded",
+    "recovery.installed": "Installed",
+    "recovery.verifying": "Verifying saved data",
+    "recovery.verify": "Checking saved data again ({0}). Download stays at {1}.",
+    "recovery.reread": "The current package is read again ({0}). {1} package(s) stay installed.",
+    "recovery.refetch": "The current file is fetched again ({0}). Saved {1} stays.",
+    "recovery.recopy": "This copy starts again ({0}). Finished downloads stay.",
+    "recovery.pieces": "Continues from saved pieces, not from an exact byte.",
+    "recovery.byte": "Continues from the saved point in this file.",
   },
   ru: {
     "tabs.downloads": "Загрузки", "tabs.catalog": "Каталог", "tabs.add": "Добавить", "tabs.settings": "Настройки",
@@ -111,6 +120,15 @@ const I18N = {
     "msg.saved": "Настройки сохранены",
     "msg.clearedEntries": "Убрано записей: {0}. Пропущено занятых: {1}.",
     "msg.clearedFiles": "Удалены файлы у {0} записей. Пропущено занятых: {1}.",
+    "recovery.downloaded": "Скачано",
+    "recovery.installed": "Установлено",
+    "recovery.verifying": "Проверяем сохранённые данные",
+    "recovery.verify": "Сохранённые данные проверяются снова ({0}). Скачано остаётся {1}.",
+    "recovery.reread": "Текущий пакет читается заново ({0}). Установленные пакеты остаются: {1}.",
+    "recovery.refetch": "Текущий файл скачивается заново ({0}). Сохранено {1}.",
+    "recovery.recopy": "Копирование начинается заново ({0}). Уже скачанное остаётся.",
+    "recovery.pieces": "Продолжение с сохранённых частей, не с точного байта.",
+    "recovery.byte": "Продолжение с сохранённого места в этом файле.",
   },
 };
 let lang = localStorage.getItem("pipensxLang") || ((navigator.language || "en").toLowerCase().startsWith("ru") ? "ru" : "en");
@@ -413,6 +431,34 @@ function healthOf(tt) {
   return { cls: "excellent", label: "● " + fmtSpeed(tt.speedBps) };
 }
 
+function recoveryText(tt) {
+  const r = tt.recovery;
+  if (!r) return "";
+  const quiet = ["Downloading", "Installing", "Committing", "Fetching"].includes(tt.status);
+  const fill = (key, ...args) => args.reduce((s, a, i) => s.replace("{" + i + "}", a), t(key));
+  let notice = "";
+  if (r.work === "verify" && r.reworkBytes > 0)
+    notice = fill("recovery.verify", fmtBytes(r.reworkBytes), fmtBytes(r.savedBytes));
+  else if (r.work === "reread" && r.reworkBytes > 0)
+    notice = fill("recovery.reread", fmtBytes(r.reworkBytes), String(r.packagesInstalled));
+  else if (r.work === "refetch" && r.reworkBytes > 0)
+    notice = fill("recovery.refetch", fmtBytes(r.reworkBytes), fmtBytes(r.savedBytes));
+  else if (r.work === "recopy" && r.reworkBytes > 0)
+    notice = fill("recovery.recopy", fmtBytes(r.reworkBytes));
+  else if (!quiet && r.work === "pieces")
+    notice = t("recovery.pieces");
+  else if (!quiet && r.byteExact)
+    notice = t("recovery.byte");
+  else if (r.verifyingSaved)
+    notice = t("recovery.verifying");
+  if (!notice && !r.showInstalled && !r.verifyingSaved) return "";
+  const parts = [];
+  if (r.showDownloaded) parts.push(`${t("recovery.downloaded")} ${fmtBytes(r.downloadedBytes)} / ${fmtBytes(r.downloadTotalBytes)}`);
+  if (r.showInstalled) parts.push(`${t("recovery.installed")} ${r.packagesInstalled} / ${r.packageCount}`);
+  if (notice) parts.push(notice);
+  return parts.join(" · ");
+}
+
 function taskCard(tt, queueIdx) {
   const wantedTotal = tt.wantedTotalBytes || 0;
   const wantedDone = wantedTotal ? Math.min(tt.wantedCompletedBytes || 0, wantedTotal) : 0;
@@ -441,6 +487,7 @@ function taskCard(tt, queueIdx) {
   if (eta) meta.push("ETA " + eta);
   if (activeSet.has(tt.status)) meta.push(`${tt.peers || 0} peers`);
   if (tt.mode === "install" && tt.packageCount) meta.push(`pkg ${tt.packagesInstalled}/${tt.packageCount}`);
+  const recoveryLine = recoveryText(tt);
 
   const h = healthOf(tt);
   const btn = (label, cmd, cls = "") =>
@@ -467,6 +514,7 @@ function taskCard(tt, queueIdx) {
     ${tt.status === "Queued" && queueIdx > 0 ? `<div class="task-sub"><span class="queue-pos">#${queueIdx} ${lang === "ru" ? "в очереди" : "in queue"}</span></div>` : ""}
     <div class="bar"><div class="bar-fill ${barClass}" style="width:${pct}%"></div></div>
     <div class="task-meta">${meta.map(esc).join('<span class="dot">·</span>')}${h ? `<span class="health ${h.cls}">${esc(h.label)}</span>` : ""}</div>
+    ${recoveryLine ? `<div class="task-sub">${esc(recoveryLine)}</div>` : ""}
     ${tt.currentPackage ? `<div class="task-sub">${esc(tt.currentPackage)}</div>` : ""}
     ${tt.error ? `<div class="task-error">${esc(tt.error)}</div>` : ""}
     <div class="task-actions">${actions.join("")}</div>

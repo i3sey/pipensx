@@ -272,8 +272,11 @@ bool saveSplitResume(const std::string& localPath, uint64_t offset,
 // at the filesystem ceiling. It cannot be converted safely in place to the
 // fixed-size split format, so discard that one legacy partial and restart it.
 bool splitDownloadOffset(const std::string& localPath, uint64_t expected,
-                         uint64_t& offset, std::string& error) {
+                         uint64_t& offset, std::string& error,
+                         bool* restarted = nullptr) {
     offset = 0;
+    if (restarted)
+        *restarted = false;
     const bool markerPresent = splitResumeExists(localPath);
     if (markerPresent && !loadSplitResume(localPath, expected, offset)) {
         error = "The large-file download resume state is invalid. Delete its "
@@ -302,6 +305,8 @@ bool splitDownloadOffset(const std::string& localPath, uint64_t expected,
             offset = 0;
             log_msg("[storage] restarting legacy unsplit debrid file '%s'\n",
                     localPath.c_str());
+            if (restarted)
+                *restarted = true;
             return saveSplitResume(localPath, offset, error);
         }
         return true;
@@ -323,6 +328,8 @@ bool splitDownloadOffset(const std::string& localPath, uint64_t expected,
     if (S_ISREG(st.st_mode) && std::remove(localPath.c_str()) == 0) {
         log_msg("[storage] restarting legacy unsplit debrid file '%s'\n",
                 localPath.c_str());
+        if (restarted)
+            *restarted = true;
         return true;
     }
     error = std::string("Unable to replace the legacy large file: ") +
@@ -674,6 +681,10 @@ struct RunContext {
     bool filesSelected = false;
     std::unique_ptr<install::InstallBackend> backend;
     std::string error;
+    bool recoveryNoted = false;
+    bool recoveryBytePoint = false;
+    uint64_t recoveryUnitBytes = 0;
+    uint64_t recoveryUnitTotal = 0;
 
     // Compressed bytes pulled from the debrid link for the package currently
     // streaming. Added to completedSoFar so the download bar advances mid-
@@ -686,6 +697,23 @@ struct RunContext {
     }
     bool stop() const { return (*shouldStop)(); }
 };
+
+void noteFileRecovery(RunContext& ctx, bool bytePoint, uint64_t unitBytes,
+                      uint64_t unitTotal) {
+    ctx.recoveryNoted = true;
+    ctx.recoveryBytePoint = bytePoint;
+    ctx.recoveryUnitBytes = unitBytes;
+    ctx.recoveryUnitTotal = unitTotal;
+}
+
+void applyFileRecovery(DebridProgress& progress, const RunContext& ctx) {
+    if (!ctx.recoveryNoted)
+        return;
+    progress.hasRecovery = true;
+    progress.recoveryBytePoint = ctx.recoveryBytePoint;
+    progress.recoveryUnitBytes = ctx.recoveryUnitBytes;
+    progress.recoveryUnitTotal = ctx.recoveryUnitTotal;
+}
 
 Step ensureCreated(RunContext& ctx) {
     if (!ctx.spec.debridId.empty()) {
@@ -1120,6 +1148,7 @@ Step fetchSplitDownload(RunContext& ctx, const std::string& url,
         p.totalBytes = ctx.totalBytes;
         p.speedBytesPerSecond = speed;
         p.packagesInstalled = ctx.packagesInstalled;
+        applyFileRecovery(p, ctx);
         ctx.emit(p);
         return true;
     };
@@ -1167,7 +1196,11 @@ Step fetchSplitDownload(RunContext& ctx, const std::string& url,
 
 Step fetchAppend(RunContext& ctx, const std::string& url,
                  const std::string& localPath, uint64_t offset,
-                 uint64_t fileBytes, uint64_t baseCompleted) {
+                 uint64_t fileBytes, uint64_t baseCompleted,
+                 bool refetchWhole = false) {
+    const bool bytePoint = !refetchWhole && offset > 0 && offset < fileBytes;
+    noteFileRecovery(ctx, bytePoint, refetchWhole ? fileBytes : offset,
+                     fileBytes);
     if (needsSplitDownload(fileBytes))
         return fetchSplitDownload(ctx, url, localPath, offset, fileBytes,
                                   baseCompleted);
@@ -1212,6 +1245,7 @@ Step fetchAppend(RunContext& ctx, const std::string& url,
         p.totalBytes = ctx.totalBytes;
         p.speedBytesPerSecond = speed;
         p.packagesInstalled = ctx.packagesInstalled;
+        applyFileRecovery(p, ctx);
         ctx.emit(p);
         return true;
     };
@@ -1265,8 +1299,10 @@ Step downloadPlainFile(RunContext& ctx, size_t kthSelected,
     }
 
     uint64_t existing = 0;
+    bool restarted = false;
     if (needsSplitDownload(file.bytes)) {
-        if (!splitDownloadOffset(localPath, file.bytes, existing, ctx.error))
+        if (!splitDownloadOffset(localPath, file.bytes, existing, ctx.error,
+                                 &restarted))
             return Step::Failed;
         if (existing == file.bytes && !splitResumeExists(localPath))
             return Step::Ok;
@@ -1277,6 +1313,8 @@ Step downloadPlainFile(RunContext& ctx, size_t kthSelected,
         if (exists && existing > file.bytes) {
             std::ofstream truncate(localPath,
                                    std::ios::binary | std::ios::trunc);
+            restarted = true;
+            existing = 0;
         }
     }
 
@@ -1294,13 +1332,14 @@ Step downloadPlainFile(RunContext& ctx, size_t kthSelected,
     for (int attempt = 0; attempt < 2; ++attempt) {
         uint64_t offset = 0;
         if (needsSplitDownload(file.bytes)) {
-            if (!splitDownloadOffset(localPath, file.bytes, offset, ctx.error))
+            if (!splitDownloadOffset(localPath, file.bytes, offset, ctx.error,
+                                     &restarted))
                 return Step::Failed;
         } else {
             statSize(localPath, offset);
         }
         Step s = fetchAppend(ctx, url, localPath, offset, file.bytes,
-                             ctx.completedSoFar);
+                             ctx.completedSoFar, restarted);
         if (s == Step::Ok)
             break;
         if (s == Step::Stopped)
@@ -1375,6 +1414,10 @@ install::PackageCallbacks makeCallbacks(RunContext& ctx,
                 p.currentPackage = displayName;
                 p.installedBytes = backend->installedBytes();
                 p.installTotalBytes = backend->expectedBytes();
+                if (!ctx.recoveryBytePoint && p.installedBytes > 0)
+                    noteFileRecovery(ctx, false, p.installedBytes,
+                                     p.installTotalBytes);
+                applyFileRecovery(p, ctx);
                 ctx.emit(p);
             }
         } else {
@@ -1449,6 +1492,10 @@ Step attemptStreamInstall(RunContext& ctx, const DebridFile& file,
             clearJournal();
         }
     }
+    if (resumed)
+        noteFileRecovery(ctx, true, journalConsumed, file.bytes);
+    else
+        noteFileRecovery(ctx, false, 0, file.bytes);
 
     // Start the HTTP reader before beginPackage so TorrServer's sequential
     // cache and a WAN CDN handshake run during ncm/FS setup instead of after.
@@ -1506,6 +1553,7 @@ Step attemptStreamInstall(RunContext& ctx, const DebridFile& file,
             return;
         }
         journalConsumed = consumed;
+        noteFileRecovery(ctx, true, journalConsumed, file.bytes);
     };
 
     bool streamOk = true;
@@ -1572,6 +1620,7 @@ Step attemptStreamInstall(RunContext& ctx, const DebridFile& file,
     committing.currentPackage = displayName;
     committing.installedBytes = backend->installedBytes();
     committing.installTotalBytes = backend->expectedBytes();
+    applyFileRecovery(committing, ctx);
     ctx.emit(committing);
 
     if (!stream->finish()) {
@@ -1591,12 +1640,14 @@ Step attemptStreamInstall(RunContext& ctx, const DebridFile& file,
     }
     clearJournal();
     ctx.packagesInstalled += 1;
+    noteFileRecovery(ctx, false, 0, 0);
     DebridProgress done;
     done.status = DownloadStatus::Installing;
     done.totalBytes = ctx.totalBytes;
     done.completedBytes = ctx.completedSoFar + file.bytes;
     done.packagesInstalled = ctx.packagesInstalled;
     done.currentPackage = displayName;
+    applyFileRecovery(done, ctx);
     ctx.emit(done);
     return Step::Ok;
 }

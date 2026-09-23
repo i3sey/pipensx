@@ -47,6 +47,8 @@ public:
         progress_ = addLine(progressCard, theme::kFontBody);
         package_ = addLine(progressCard, theme::kFontSmall);
         package_->setTextColor(theme::textSecondary());
+        recovery_ = addLine(progressCard, theme::kFontSmall);
+        recovery_->setTextColor(theme::textSecondary());
         currentPackage_ = addLine(progressCard, theme::kFontSmall);
         currentPackage_->setSingleLine(true);
         currentPackage_->setAutoAnimate(false);
@@ -535,6 +537,11 @@ private:
             setTextIfChanged(status_, tr("pipensx/downloads/status_line",
                                          tr(phaseKey)));
             status_->setTextColor(theme::accent());
+        } else if (task->status == DownloadStatus::Checking ||
+                   task->status == DownloadStatus::Verifying) {
+            setTextIfChanged(status_, tr("pipensx/downloads/status_line",
+                                         taskStatusText(*task)));
+            status_->setTextColor(statusColor(task->status));
         } else {
             setTextIfChanged(status_, tr("pipensx/downloads/status_line",
                                          downloadStatusLabel(task->status)));
@@ -575,11 +582,28 @@ private:
                 totalBytes = wanted.second;
             }
         }
+        const RecoveryAccount account = task ? recoveryAccountOf(*task)
+                                             : RecoveryAccount{};
+        if (task && !deploying && !fetching && account.verifyingSaved &&
+            account.downloadTotalBytes) {
+            progress = std::min(
+                1.0f, static_cast<float>(account.downloadedBytes) /
+                          static_cast<float>(account.downloadTotalBytes));
+            doneBytes = account.downloadedBytes;
+            totalBytes = account.downloadTotalBytes;
+        }
         progressBar_->setProgress(progress);
-        setTextIfChanged(progress_, tr("pipensx/downloads/progress_line",
-                                       percentOf(progress),
-                                       formatBytes(doneBytes),
-                                       formatBytes(totalBytes)));
+        if (task && !deploying && !fetching &&
+            (account.verifyingSaved || account.showInstalled))
+            setTextIfChanged(progress_, recoveryAxesText(*task));
+        else
+            setTextIfChanged(progress_, tr("pipensx/downloads/progress_line",
+                                           percentOf(progress),
+                                           formatBytes(doneBytes),
+                                           formatBytes(totalBytes)));
+        setTextIfChanged(recovery_, task && !deploying
+                                        ? recoveryNoticeText(*task)
+                                        : std::string());
 
         const uint64_t now = now_ms();
         std::string eta;
@@ -765,6 +789,7 @@ private:
     ProgressBar* progressBar_;
     brls::Label* progress_;
     brls::Label* package_;
+    brls::Label* recovery_;
     brls::Label* currentPackage_;
     brls::Label* eta_;
     brls::Label* downloadSpeed_;
