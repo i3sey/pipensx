@@ -9,6 +9,7 @@
 #include <borealis.hpp>
 
 #include "app/app_settings.hpp"
+#include "app/download_list_refresh.hpp"
 #include "app/download_manager.hpp"
 #include "app/game_metadata_service.hpp"
 #include "app/switch_deploy.hpp"
@@ -418,34 +419,13 @@ private:
                              : tr("pipensx/downloads/resume_all"));
         uint64_t settingsGeneration = settings_ ? settings_->generation() : 0;
         bool settingsChanged = settingsGeneration != settingsGeneration_;
-        bool structureChanged = pendingReload_ || !initialized_ ||
-                                 settingsChanged ||
-                                 next.size() != tasks_.size() ||
-                                 activeDeployTask != activeDeployTask_;
-        bool progressChanged = deployState.generation != deployGeneration_;
-        if (!structureChanged) {
-            // Scan every task: bailing out on the first progress delta used to
-            // hide a later task's status change, so a section reshuffle went
-            // through the cheap path and the list jumped under the cursor.
-            for (size_t i = 0; i < next.size(); ++i) {
-                if (next[i].id != tasks_[i].id ||
-                    next[i].status != tasks_[i].status) {
-                    structureChanged = true;
-                    break;
-                }
-                progressChanged =
-                    progressChanged ||
-                    next[i].completedBytes != tasks_[i].completedBytes ||
-                    next[i].speedBytesPerSecond !=
-                        tasks_[i].speedBytesPerSecond ||
-                    next[i].installSpeedBytesPerSecond !=
-                        tasks_[i].installSpeedBytesPerSecond ||
-                    next[i].peers != tasks_[i].peers ||
-                    next[i].packagesInstalled != tasks_[i].packagesInstalled ||
-                    next[i].installedBytes != tasks_[i].installedBytes ||
-                    next[i].currentPackage != tasks_[i].currentPackage;
-            }
-        }
+        const DownloadListUpdate listed = downloadListUpdate(
+            tasks_, next, deployGeneration_, deployState.generation,
+            activeDeployTask_, activeDeployTask);
+        const bool structureChanged = pendingReload_ || !initialized_ ||
+                                       settingsChanged ||
+                                       listed == DownloadListUpdate::Reload;
+        const bool progressChanged = listed == DownloadListUpdate::Repaint;
         if (!structureChanged && !progressChanged) {
             logRefresh(false, false);
             return;
