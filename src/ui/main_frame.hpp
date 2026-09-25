@@ -607,7 +607,12 @@ private:
         if (display < 0 || display >= static_cast<int>(tabs_.size()))
             return;
         brls::View* view = ensureView(display);
+        // removeView detaches the page but leaves parent pointers in place, so
+        // a focused row keeps its screen frame. Borealis draws that highlight
+        // on top of the new tab (Help and About have nothing that takes it).
+        brls::View* outgoing = nullptr;
         if (active_ != display) {
+            outgoing = content_;
             if (content_)
                 contentHost_->removeView(content_, false);
             content_ = view;
@@ -618,9 +623,22 @@ private:
         }
         for (size_t i = 0; i < tabs_.size(); ++i)
             tabs_[i].item->setTabActive(static_cast<int>(i) == display);
-        if (focusContent && content_) {
-            brls::View* target = content_->getDefaultFocus();
-            brls::Application::giveFocus(target ? target : content_);
+        const bool stale =
+            outgoing &&
+            viewContains(outgoing, brls::Application::getCurrentFocus());
+        if (focusContent || stale) {
+            brls::View* target = content_ ? content_->getDefaultFocus() : nullptr;
+            // ScrollingFrame::getDefaultFocus() can return its content box
+            // when that box is not focusable. giveFocus then does nothing
+            // and the previous row keeps its highlight.
+            if (target && !target->getDefaultFocus())
+                target = nullptr;
+            if (target)
+                brls::Application::giveFocus(target);
+            if (outgoing &&
+                viewContains(outgoing, brls::Application::getCurrentFocus()))
+                brls::Application::giveFocus(
+                    tabs_[static_cast<size_t>(display)].item);
         }
     }
 

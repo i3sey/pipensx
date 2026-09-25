@@ -148,6 +148,10 @@ AboutView::AboutView() : brls::Box(brls::Axis::COLUMN) {
 
     auto* scroll = new brls::ScrollingFrame();
     scroll->setGrow(1);
+    // Nothing inside can take focus. NATURAL mode returns the content box
+    // anyway, giveFocus ignores it, and the previous tab's highlight stays.
+    // CENTERED returns this frame; its own highlight is already hidden.
+    scroll->setScrollingBehavior(brls::ScrollingBehavior::CENTERED);
     scroll->setContentView(content);
     addView(scroll);
 }
