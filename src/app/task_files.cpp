@@ -576,7 +576,8 @@ bool buildTaskFileInventory(const std::string& appRoot,
         }
         if (record.action == TaskFileAction::Skip) {
             file.state = TaskFileState::Skipped;
-        } else if (record.action == TaskFileAction::Install) {
+        } else if (record.action == TaskFileAction::Install &&
+                   record.package) {
             file.state = task.status == DownloadStatus::Installed
                 ? TaskFileState::Installed : TaskFileState::Pending;
         } else if (!result.settled) {
@@ -626,8 +627,10 @@ bool buildTaskFileInventory(const std::string& appRoot,
 void annotateTaskFileDestinations(TaskFileInventory& inventory) {
     std::map<std::string, std::string> nroRoots;
     for (const TaskFileInfo& file : inventory.files) {
-        if (file.action != TaskFileAction::Download || file.package ||
-            file.cartridge || !hasNroExtension(file.logicalPath))
+        if ((file.action != TaskFileAction::Download &&
+             file.action != TaskFileAction::Install) ||
+            file.package || file.cartridge ||
+            !hasNroExtension(file.logicalPath))
             continue;
         const std::vector<std::string> parts = splitLogical(file.logicalPath);
         if (parts.empty())

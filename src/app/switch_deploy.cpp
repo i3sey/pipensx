@@ -1095,11 +1095,20 @@ bool removeTreeBestEffort(const std::string& path) {
 } // namespace
 
 SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
-                                           const std::string& targetRoot) {
+                                           const std::string& targetRoot,
+                                           bool installExtrasOnly) {
     SwitchDeployInspection result;
     result.inventory = std::move(inventory);
     result.plan.taskId = result.inventory.taskId;
     result.plan.targetRoot = targetRoot;
+    auto extraCopies = [installExtrasOnly](const TaskFileInfo& file) {
+        if (file.package || file.cartridge)
+            return false;
+        if (installExtrasOnly)
+            return file.action == TaskFileAction::Install;
+        return file.action == TaskFileAction::Download ||
+               file.action == TaskFileAction::Install;
+    };
     const std::string sdRoot = sdRootForSwitchRoot(targetRoot);
     if (!result.inventory.settled) {
         setProblem(result, SwitchDeployProblem::NotReady,
@@ -1131,8 +1140,7 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
     // archive layouts behave differently and rejected multi-port releases.
     std::map<std::string, std::string> roots;
     for (const TaskFileInfo& file : result.inventory.files) {
-        if (file.action != TaskFileAction::Download || file.package ||
-            file.cartridge || file.state != TaskFileState::Present ||
+        if (!extraCopies(file) || file.state != TaskFileState::Present ||
             !hasNroExtension(file.logicalPath) ||
             !sourceFileSafe(result.inventory, file) ||
             !validNro(file.absolutePath))
@@ -1176,7 +1184,7 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
              !isLayeredFsExefsPath(file.logicalPath, &destinationRelative,
                                    &titleId)))
             continue;
-        if (file.action != TaskFileAction::Download) {
+        if (!extraCopies(file)) {
             ++result.plan.ignoredFiles;
             continue;
         }
@@ -1286,8 +1294,7 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
                                result.plan.performanceProfileDetected);
     }
     for (const TaskFileInfo& file : result.inventory.files) {
-        if (file.action != TaskFileAction::Download || file.package ||
-            file.cartridge || file.state != TaskFileState::Present ||
+        if (!extraCopies(file) || file.state != TaskFileState::Present ||
             !isPortArchiveName(file.logicalPath) ||
             !sourceFileSafe(result.inventory, file))
             continue;
@@ -1386,8 +1393,7 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
                 (file.action == TaskFileAction::Download ||
                  file.action == TaskFileAction::Install))
                 hasPackagePayload = true;
-            if (!file.package && !file.cartridge &&
-                file.action == TaskFileAction::Download &&
+            if (extraCopies(file) &&
                 (file.state == TaskFileState::Present ||
                  file.state == TaskFileState::Installed) &&
                 !isPortArchiveName(file.logicalPath))
@@ -1444,7 +1450,7 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
                 selectedRoot = &root;
         }
         if (!selectedRoot) {
-            if (file.action == TaskFileAction::Download &&
+            if (extraCopies(file) &&
                 !isPortArchiveName(file.logicalPath) &&
                 !isLayeredFsRomfsPath(file.logicalPath) &&
                 !isLayeredFsExefsPath(file.logicalPath))
@@ -1455,8 +1461,7 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
             isLayeredFsRomfsPath(file.logicalPath) ||
             isLayeredFsExefsPath(file.logicalPath))
             continue;
-        if (file.action != TaskFileAction::Download || file.package ||
-            file.cartridge) {
+        if (!extraCopies(file)) {
             ++result.plan.ignoredFiles;
             continue;
         }
@@ -1654,7 +1659,8 @@ SwitchDeployInspection SwitchDeployService::inspect(
         return result;
     }
     SwitchDeployInspection inspection =
-        inspectSwitchDeploy(std::move(inventory), targetRoot_);
+        inspectSwitchDeploy(std::move(inventory), targetRoot_,
+                            task->mode == TransferMode::StreamInstall);
     if (task->mode == TransferMode::PortInstall &&
         receiptState(taskId) == SwitchDeployReceiptState::Valid) {
         inspection.problem = SwitchDeployProblem::None;
@@ -1695,7 +1701,7 @@ bool SwitchDeployService::inventory(const std::string& taskId,
         return false;
     for (TaskFileInfo& file : inventory.files) {
         if (file.kind != SwitchPathKind::Archive ||
-            file.action != TaskFileAction::Download ||
+            file.action == TaskFileAction::Skip ||
             file.state != TaskFileState::Present ||
             file.absolutePath.empty())
             continue;
@@ -1813,7 +1819,8 @@ void SwitchDeployService::run(DownloadManager::ExternalDeployLease lease,
         portTransaction &&
         receiptState(lease.task().id) == SwitchDeployReceiptState::Valid;
     SwitchDeployInspection inspection = inspectSwitchDeploy(
-        std::move(inventory), targetRoot_);
+        std::move(inventory), targetRoot_,
+        lease.task().mode == TransferMode::StreamInstall);
     if (payloadReceiptValid) {
         // A failed package stage retries from the durable payload receipt.
         // Do not re-extract archives (which would now correctly conflict with

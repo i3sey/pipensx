@@ -232,6 +232,17 @@ inline bool isDeployableExtraPath(const std::string& path) {
            kind == SwitchPathKind::Archive;
 }
 
+// Extras the picker can mark Install: unpack/copy after the download,
+// rather than leaving the file in pipensx/downloads. Readme/nfo stay
+// Download-or-Skip only.
+inline bool extraAcceptsInstallAction(const std::string& path) {
+    const SwitchPathKind kind = classifySwitchPath(path);
+    return kind == SwitchPathKind::Nro ||
+           kind == SwitchPathKind::LayeredFsRomfs ||
+           kind == SwitchPathKind::Archive ||
+           isLayeredFsExefsPath(path);
+}
+
 inline bool isRarName(const std::string& name) {
     return hasFileExtension(name, ".rar");
 }

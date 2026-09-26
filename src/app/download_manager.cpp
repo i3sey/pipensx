@@ -635,7 +635,9 @@ bool DownloadManager::importTorrentActions(
                 ++installPackageCount;
         }
         if (action == actionValue(FileAction::Install) &&
-            !preview.files[i].package) {
+            !preview.files[i].package &&
+            !extraAcceptsInstallAction(
+                torrentLogicalPath(preview, preview.files[i]))) {
             error = "Only NSP/NSZ package files can be installed.";
             return false;
         }

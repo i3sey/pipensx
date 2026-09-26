@@ -12,6 +12,7 @@
 #include <borealis.hpp>
 
 #include "app/download_manager.hpp"
+#include "app/game_update_install.hpp"
 #include "app/install_space.hpp"
 #include "app/nx_file_types.hpp"
 #include "app/port_selection.hpp"
@@ -29,6 +30,7 @@ struct TorrentSelectionEntry {
     bool package = false;
     bool compressed = false;
     bool cartridge = false;
+    bool conflict = false;
     FileAction action = FileAction::Download;
 };
 
@@ -42,9 +44,13 @@ inline std::pair<std::string, std::string> splitPath(const std::string& path) {
 }
 
 inline std::string fileKindLabel(const TorrentSelectionEntry& entry) {
-    if (!entry.package)
-        return entry.cartridge ? tr("pipensx/torrent/kind_cartridge")
-                               : tr("pipensx/torrent/kind_other");
+    if (!entry.package) {
+        if (entry.cartridge)
+            return tr("pipensx/torrent/kind_cartridge");
+        if (extraAcceptsInstallAction(entry.path))
+            return tr("pipensx/torrent/kind_extra");
+        return tr("pipensx/torrent/kind_other");
+    }
     if (entry.compressed)
         return tr("pipensx/torrent/kind_nsz");
     return tr("pipensx/torrent/kind_nsp");
@@ -177,14 +183,17 @@ public:
         const auto [directory, name] = splitPath(entry.path);
         (void)directory;
         name_->setText(name);
-        name_->setTextColor(skipped ? theme::textDisabled()
-                                    : theme::textPrimary());
+        const NVGcolor nameColor = skipped ? theme::textDisabled()
+            : entry.conflict ? theme::error() : theme::textPrimary();
+        const NVGcolor metaColor = skipped ? theme::textDisabled()
+            : entry.conflict ? theme::error() : theme::textTertiary();
+        const NVGcolor sizeColor = skipped ? theme::textDisabled()
+            : entry.conflict ? theme::error() : theme::textSecondary();
+        name_->setTextColor(nameColor);
         meta_->setText(fileKindLabel(entry));
-        meta_->setTextColor(skipped ? theme::textDisabled()
-                                    : theme::textTertiary());
+        meta_->setTextColor(metaColor);
         size_->setText(formatBytes(entry.length));
-        size_->setTextColor(skipped ? theme::textDisabled()
-                                    : theme::textSecondary());
+        size_->setTextColor(sizeColor);
     }
 
     // What this cell is showing right now, as opposed to what the data source
@@ -317,13 +326,24 @@ public:
         name_->setText(group.name);
         meta_->setText(tr("pipensx/torrent/folder_files", group.indices.size()));
         size_->setText(formatBytes(bytes));
+        bool conflict = false;
+        for (size_t index : group.indices)
+            if (index < entries.size() && entries[index].conflict &&
+                entries[index].action == FileAction::Install)
+                conflict = true;
+        // Mixed folders draw the Skip glyph; painting them red on top of
+        // that reads as broken. Only a uniformly selected folder goes red.
         const bool dimmed = allSkip;
-        name_->setTextColor(dimmed ? theme::textDisabled()
-                                   : theme::textPrimary());
-        meta_->setTextColor(dimmed ? theme::textDisabled()
-                                   : theme::textTertiary());
-        size_->setTextColor(dimmed ? theme::textDisabled()
-                                   : theme::textSecondary());
+        const bool warn = conflict && (allInstall || allDownload);
+        const NVGcolor nameColor = dimmed ? theme::textDisabled()
+            : warn ? theme::error() : theme::textPrimary();
+        const NVGcolor metaColor = dimmed ? theme::textDisabled()
+            : warn ? theme::error() : theme::textTertiary();
+        const NVGcolor sizeColor = dimmed ? theme::textDisabled()
+            : warn ? theme::error() : theme::textSecondary();
+        name_->setTextColor(nameColor);
+        meta_->setTextColor(metaColor);
+        size_->setTextColor(sizeColor);
     }
 
     void onFocusGained() override {
@@ -375,6 +395,18 @@ public:
                 ? (entry.package ? FileAction::Install : FileAction::Download)
                 : FileAction::Skip;
         }
+    }
+
+    void markConflicts(const std::vector<uint8_t>& mask) {
+        for (size_t i = 0; i < entries_.size(); ++i)
+            entries_[i].conflict = i < mask.size() && mask[i] != 0;
+    }
+
+    bool hasConflict() const {
+        for (const auto& entry : entries_)
+            if (entry.conflict)
+                return true;
+        return false;
     }
 
     void selectPackagesOnly() {
@@ -554,14 +586,26 @@ public:
         portRoot_ = pipensx::candidatePortRoot(preview_);
         const bool portLayout =
             pipensx::torrentPortLayoutDetected(preview_);
-        if (portLayout) {
+        const bool extraLayout =
+            portLayout || pipensx::torrentHasInstallableExtras(preview_);
+        if (extraLayout) {
             portHint_ = new brls::Label();
             portHint_->setFontSize(theme::kFontCaption);
             portHint_->setTextColor(theme::accent());
             portHint_->setMarginBottom(8);
+            portHint_->setSingleLine(false);
             portHint_->setText(tr("pipensx/torrent/port_detected"));
             content->addView(portHint_);
         }
+
+        conflictHint_ = new brls::Label();
+        conflictHint_->setFontSize(theme::kFontCaption);
+        conflictHint_->setTextColor(theme::error());
+        conflictHint_->setMarginBottom(8);
+        conflictHint_->setSingleLine(false);
+        conflictHint_->setText(tr("pipensx/torrent/overlapping_updates"));
+        conflictHint_->setVisibility(brls::Visibility::GONE);
+        content->addView(conflictHint_);
 
         recycler_ = new brls::RecyclerFrame();
         recycler_->setGrow(1);
@@ -762,6 +806,7 @@ public:
             entries.push_back(std::move(entry));
         }
         dataSource_->setEntries(std::move(entries));
+        refreshConflicts();
         recycler_->reloadData();
     }
 
@@ -769,16 +814,16 @@ public:
         if (validationInFlight_)
             return;
         mutate();
-        repaintVisible();
         refreshSummary();
+        repaintVisible();
     }
 
     void setAllSelected(bool selected) {
         if (validationInFlight_)
             return;
         dataSource_->setAll(selected);
-        repaintVisible();
         refreshSummary();
+        repaintVisible();
     }
 
     void cycleFolderAtRow(int row) {
@@ -789,8 +834,8 @@ public:
             vr->kind != TorrentSelectionDataSource::VisibleKind::Folder)
             return;
         dataSource_->cycleFolder(vr->groupIndex);
-        repaintVisible();
         refreshSummary();
+        repaintVisible();
     }
 
     void repaintVisible() {
@@ -929,7 +974,17 @@ public:
         });
     }
 
+    void refreshConflicts() {
+        dataSource_->markConflicts(overlappingSelectionConflicts(
+            preview_, dataSource_->fileActions()));
+        if (conflictHint_)
+            conflictHint_->setVisibility(
+                dataSource_->hasConflict() ? brls::Visibility::VISIBLE
+                                           : brls::Visibility::GONE);
+    }
+
     void refreshSummary() {
+        refreshConflicts();
         size_t selected = dataSource_->selectedCount();
         size_t installs = dataSource_->installCount();
         size_t downloads = dataSource_->downloadCount();
@@ -1143,6 +1198,7 @@ public:
     brls::Label* summary_ = nullptr;
     StorageMeter* meter_ = nullptr;
     brls::Label* portHint_ = nullptr;
+    brls::Label* conflictHint_ = nullptr;
     brls::RecyclerFrame* recycler_ = nullptr;
     TorrentSelectionDataSource* dataSource_ = nullptr;
     brls::Button* selectPackages_ = nullptr;

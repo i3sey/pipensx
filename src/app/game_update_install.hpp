@@ -69,15 +69,12 @@ std::vector<uint8_t> selectUpdateFiles(const TorrentPreview& preview,
                                         const std::string& latestVersion,
                                         const std::string& titleId = {});
 
-// Builds the default one-tap install mask for a catalog release. When the base
-// title is not installed, base packages for that title and an exact bundled
-// update are selected while DLC/mod/extra packages are skipped. When the title
-// is already installed and a newer update is known (catalog latestVersion, or
-// the highest base/Patch [vN] in this torrent when that field is empty), only
-// an exact update package is selected. AddOnContent packages whose title id maps
-// to the selected base title are also installed when not already present
-// (installedDlcIds), so an installed game pulls its DLC without re-pulling the
-// base. If the intended base/update packages cannot be identified safely, the
+// Builds the default one-tap install mask for a catalog release. The update
+// is the highest base/Patch [vN] actually present in this torrent (catalog
+// latestVersion is only a fallback when the torrent has no tagged patch).
+// Duplicate DLC title ids keep the largest file. Translation zips, LayeredFS,
+// and extra patches stay Skip. When the title is already installed at or above
+// that patch, only missing DLC is selected. If nothing can be identified, the
 // caller should fall back to the manual chooser.
 std::vector<uint8_t> selectSmartInstallFiles(
     const TorrentPreview& preview,
@@ -86,6 +83,13 @@ std::vector<uint8_t> selectSmartInstallFiles(
     const std::string& latestVersion,
     const std::string& titleId = {},
     const std::vector<std::string>& installedDlcIds = {});
+
+// 1 for files marked Install that would overwrite another Install package:
+// two patches of the same title, two copies of the same DLC id, or two base
+// packages of the same title. Download/Skip never conflict. Same size as
+// preview.files.
+std::vector<uint8_t> overlappingSelectionConflicts(
+    const TorrentPreview& preview, const std::vector<uint8_t>& actions);
 
 // What a one-tap package install left on Skip, for the extras toast.
 // Installable: a zip/7z, LayeredFS romfs, exefs patch, or NRO. Choose files

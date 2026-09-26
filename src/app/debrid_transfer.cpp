@@ -399,9 +399,11 @@ bool selected(const DebridTaskSpec& spec, size_t index,
     if (spec.mode == TransferMode::StreamInstall && !isPackageName(file.path)) {
         if (!spec.selectionPaths.empty())
             return true;
-        return index < spec.fileSelection.size() &&
-               spec.fileSelection[index] ==
-                   static_cast<uint8_t>(FileAction::Download);
+        if (index >= spec.fileSelection.size())
+            return false;
+        const uint8_t action = spec.fileSelection[index];
+        return action == static_cast<uint8_t>(FileAction::Download) ||
+               action == static_cast<uint8_t>(FileAction::Install);
     }
     return true;
 }

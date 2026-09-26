@@ -110,6 +110,14 @@ inline bool torrentHasLayeredFsPayload(const TorrentPreview& preview) {
     return false;
 }
 
+inline bool torrentHasInstallableExtras(const TorrentPreview& preview) {
+    for (const TorrentPreview::File& file : preview.files)
+        if (!file.package && !file.cartridge &&
+            extraAcceptsInstallAction(torrentLogicalPath(preview, file)))
+            return true;
+    return false;
+}
+
 // True homebrew ports have an NRO (and maybe a zip). A retail dump plus a
 // rusifikator zip or LayeredFS tree is still a game torrent — stream-install
 // the NSP and leave extras optional. Zip/LayeredFS-only torrents stay ports.

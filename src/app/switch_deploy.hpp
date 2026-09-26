@@ -187,7 +187,8 @@ struct SwitchDeploySnapshot {
 enum class SwitchDeployReceiptState { None, Valid, Modified };
 
 SwitchDeployInspection inspectSwitchDeploy(
-    TaskFileInventory inventory, const std::string& targetRoot);
+    TaskFileInventory inventory, const std::string& targetRoot,
+    bool installExtrasOnly = false);
 
 class SwitchDeployService {
 public:

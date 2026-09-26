@@ -72,7 +72,8 @@ enum class FileAction : uint8_t {
 
 // Stream-install of a retail dump only pulls NSP/NSZ. Extra files (readme,
 // rusifikator zip, LayeredFS) stay skipped unless the picker set Download
-// or the torrent is a PortInstall.
+// (save to disk) or Install (save and unpack to SD) or the torrent is a
+// PortInstall.
 inline FileAction defaultFileAction(bool package, TransferMode mode) {
     if (mode == TransferMode::StreamInstall)
         return package ? FileAction::Install : FileAction::Skip;

@@ -614,6 +614,9 @@ int main() {
                         "install", "installed");
     TaskFileManifest streamManifest = manifest;
     streamManifest.taskId = streamId;
+    for (TaskFileRecord& file : streamManifest.files)
+        if (!file.package)
+            file.action = TaskFileAction::Install;
     assert(saveTaskFileManifest(streamRoot, streamManifest, error));
     DownloadManager streamManager(streamRoot, false);
     SwitchDeployService streamDeploy(streamManager, streamRoot, streamTarget);
@@ -637,6 +640,9 @@ int main() {
                         "install", "installed");
     TaskFileManifest autoManifest = manifest;
     autoManifest.taskId = autoId;
+    for (TaskFileRecord& file : autoManifest.files)
+        if (!file.package)
+            file.action = TaskFileAction::Install;
     assert(saveTaskFileManifest(autoRoot, autoManifest, error));
     DownloadManager autoManager(autoRoot, false);
     SwitchDeployService autoDeploy(autoManager, autoRoot, autoTarget);
@@ -722,6 +728,9 @@ int main() {
                         "install", "installed");
     TaskFileManifest rearmManifest = manifest;
     rearmManifest.taskId = rearmId;
+    for (TaskFileRecord& file : rearmManifest.files)
+        if (!file.package)
+            file.action = TaskFileAction::Install;
     assert(saveTaskFileManifest(rearmRoot, rearmManifest, error));
     DownloadManager rearmManager(rearmRoot, false);
     SwitchDeployService rearmDeploy(rearmManager, rearmRoot, rearmTarget);
