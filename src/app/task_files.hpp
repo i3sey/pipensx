@@ -1,5 +1,7 @@
 #pragma once
 
+#include "nx_file_types.hpp"
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -43,6 +45,15 @@ struct TaskFileManifest {
 struct TaskFileInfo : TaskFileRecord {
     std::string absolutePath;
     TaskFileState state = TaskFileState::Missing;
+    SwitchPathKind kind = SwitchPathKind::Junk;
+    // Predicted SD destination from the file name (no deploy inspect).
+    // Empty destinationRoot means the file stays in the task downloads folder
+    // or is a package committed to NCM.
+    std::string destinationRoot;
+    std::string destinationExample;
+    size_t destinationCount = 0;
+    bool staysInDownloads = false;
+    std::vector<std::string> destinationPaths;
 };
 
 struct TaskFileInventory {
@@ -53,6 +64,8 @@ struct TaskFileInventory {
     bool settled = false;
     bool completeManifest = true;
 };
+
+void annotateTaskFileDestinations(TaskFileInventory& inventory);
 
 TaskFileManifest makeTaskFileManifest(
     const std::string& taskId, const TorrentPreview& preview,

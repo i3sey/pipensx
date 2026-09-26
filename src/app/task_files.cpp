@@ -15,6 +15,7 @@ extern "C" {
 #include <cstring>
 #include <dirent.h>
 #include <fstream>
+#include <map>
 #include <set>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -191,6 +192,50 @@ std::string lowerAscii(std::string value) {
         if (ch >= 'A' && ch <= 'Z')
             ch = static_cast<char>(ch - 'A' + 'a');
     return value;
+}
+
+std::vector<std::string> splitLogical(const std::string& path) {
+    std::vector<std::string> parts;
+    size_t start = 0;
+    while (start <= path.size()) {
+        const size_t slash = path.find('/', start);
+        parts.push_back(path.substr(
+            start, slash == std::string::npos ? std::string::npos
+                                              : slash - start));
+        if (slash == std::string::npos)
+            break;
+        start = slash + 1;
+    }
+    return parts;
+}
+
+std::string joinLogical(const std::vector<std::string>& parts, size_t begin,
+                        size_t end) {
+    std::string result;
+    for (size_t i = begin; i < end; ++i) {
+        if (!result.empty())
+            result += '/';
+        result += parts[i];
+    }
+    return result;
+}
+
+std::string switchDestinationForRoot(const std::string& logicalPath,
+                                     const std::string& root) {
+    const std::vector<std::string> parts = splitLogical(logicalPath);
+    if (root.empty())
+        return joinLogical(parts, 0, parts.size());
+    const std::vector<std::string> rootParts = splitLogical(root);
+    std::string destination = rootParts.empty() ? std::string()
+                                                : rootParts.back();
+    const std::string suffix =
+        joinLogical(parts, rootParts.size(), parts.size());
+    if (!suffix.empty()) {
+        if (!destination.empty())
+            destination += '/';
+        destination += suffix;
+    }
+    return destination;
 }
 
 std::string escapedBytes(const std::string& value) {
@@ -531,7 +576,8 @@ bool buildTaskFileInventory(const std::string& appRoot,
         }
         if (record.action == TaskFileAction::Skip) {
             file.state = TaskFileState::Skipped;
-        } else if (record.action == TaskFileAction::Install) {
+        } else if (record.action == TaskFileAction::Install &&
+                   record.package) {
             file.state = task.status == DownloadStatus::Installed
                 ? TaskFileState::Installed : TaskFileState::Pending;
         } else if (!result.settled) {
@@ -573,8 +619,87 @@ bool buildTaskFileInventory(const std::string& appRoot,
                   return lowerA == lowerB ? a.logicalPath < b.logicalPath
                                           : lowerA < lowerB;
               });
+    annotateTaskFileDestinations(result);
     inventory = std::move(result);
     return true;
+}
+
+void annotateTaskFileDestinations(TaskFileInventory& inventory) {
+    std::map<std::string, std::string> nroRoots;
+    for (const TaskFileInfo& file : inventory.files) {
+        if ((file.action != TaskFileAction::Download &&
+             file.action != TaskFileAction::Install) ||
+            file.package || file.cartridge ||
+            !hasNroExtension(file.logicalPath))
+            continue;
+        const std::vector<std::string> parts = splitLogical(file.logicalPath);
+        if (parts.empty())
+            continue;
+        const std::string root = joinLogical(parts, 0, parts.size() - 1);
+        nroRoots.emplace(lowerAscii(root), root);
+    }
+    for (TaskFileInfo& file : inventory.files) {
+        file.kind = classifySwitchPath(file.logicalPath);
+        file.destinationRoot.clear();
+        file.destinationExample.clear();
+        file.destinationPaths.clear();
+        file.destinationCount = 0;
+        file.staysInDownloads = true;
+        if (file.action == TaskFileAction::Skip)
+            continue;
+        if (file.package || file.kind == SwitchPathKind::Package) {
+            file.kind = SwitchPathKind::Package;
+            file.staysInDownloads = false;
+            continue;
+        }
+        if (file.cartridge || file.kind == SwitchPathKind::Cartridge) {
+            file.kind = SwitchPathKind::Cartridge;
+            continue;
+        }
+        std::string layeredDest;
+        if (isLayeredFsRomfsPath(file.logicalPath, nullptr, nullptr,
+                                 &layeredDest)) {
+            file.kind = SwitchPathKind::LayeredFsRomfs;
+            file.destinationRoot = "/atmosphere";
+            file.destinationExample = layeredDest;
+            file.destinationPaths.push_back("/" + layeredDest);
+            file.destinationCount = 1;
+            file.staysInDownloads = false;
+            continue;
+        }
+        if (isLayeredFsExefsPath(file.logicalPath, &layeredDest)) {
+            file.destinationRoot = "/atmosphere";
+            file.destinationExample = layeredDest;
+            file.destinationPaths.push_back("/" + layeredDest);
+            file.destinationCount = 1;
+            file.staysInDownloads = false;
+            continue;
+        }
+        if (file.kind == SwitchPathKind::Archive) {
+            file.staysInDownloads = false;
+            continue;
+        }
+        const std::string folded = lowerAscii(file.logicalPath);
+        const std::pair<const std::string, std::string>* selectedRoot = nullptr;
+        for (const auto& root : nroRoots) {
+            const bool inside = root.first.empty() ||
+                folded == root.first ||
+                folded.rfind(root.first + "/", 0) == 0;
+            if (inside && (!selectedRoot ||
+                           root.first.size() > selectedRoot->first.size()))
+                selectedRoot = &root;
+        }
+        if (!selectedRoot)
+            continue;
+        const std::string dest =
+            switchDestinationForRoot(file.logicalPath, selectedRoot->second);
+        file.kind = SwitchPathKind::Nro;
+        file.destinationRoot = "/switch";
+        file.destinationExample = dest;
+        file.destinationPaths.push_back("/switch/" + dest);
+        file.destinationCount = 1;
+        file.staysInDownloads = false;
+    }
 }
 
 bool refreshTorrentManifestLocalPaths(const std::string& appRoot,

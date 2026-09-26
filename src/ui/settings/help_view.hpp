@@ -55,6 +55,10 @@ public:
           metadata_(metadata), installed_(installed) {
         auto* scroller = new brls::ScrollingFrame();
         scroller->setGrow(1);
+        // No focusable card inside. NATURAL mode hit-tests the content box
+        // and hands it back even though it cannot take focus, so the previous
+        // tab's highlight never moves. CENTERED returns this frame instead.
+        scroller->setScrollingBehavior(brls::ScrollingBehavior::CENTERED);
         auto* content = new brls::Box(brls::Axis::COLUMN);
         content->setPadding(20, 34, 20, 34);
         const char* rows[][2] = {
@@ -101,6 +105,9 @@ public:
         });
         footer->addView(report);
         addView(footer);
+        // Default index 0 is the scroller, which hides its highlight. Open
+        // on the report action so the cursor is visible.
+        setDefaultFocusedIndex(1);
     }
 
 private:

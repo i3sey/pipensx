@@ -61,8 +61,53 @@ int main() {
     assert(inventory.completeManifest);
     assert(inventory.files.size() == 2);
     assert(inventory.files[0].state == TaskFileState::Skipped);
+    assert(inventory.files[0].staysInDownloads);
     assert(inventory.files[1].state == TaskFileState::Present);
+    assert(inventory.files[1].kind == SwitchPathKind::Nro);
+    assert(inventory.files[1].destinationRoot == "/switch");
+    assert(inventory.files[1].destinationExample == "MyPort/MyPort.nro");
     assert(inventory.presentBytes == 4);
+
+    {
+        TaskFileInventory dest;
+        dest.settled = true;
+        auto add = [&](const std::string& path, TaskFileAction action,
+                       bool package = false) {
+            TaskFileInfo file;
+            file.logicalPath = path;
+            file.action = action;
+            file.package = package;
+            file.state = action == TaskFileAction::Skip
+                ? TaskFileState::Skipped : TaskFileState::Present;
+            dest.files.push_back(std::move(file));
+        };
+        add("Game.nro", TaskFileAction::Download);
+        add("data/x.bin", TaskFileAction::Download);
+        add("readme.txt", TaskFileAction::Skip);
+        add("game.nsp", TaskFileAction::Install, true);
+        add("atmosphere/contents/0100B00B51230000/romfs/loc.txt",
+            TaskFileAction::Download);
+        add("rus.zip", TaskFileAction::Download);
+        annotateTaskFileDestinations(dest);
+        assert(dest.files[0].kind == SwitchPathKind::Nro);
+        assert(dest.files[0].destinationRoot == "/switch");
+        assert(dest.files[0].destinationExample == "Game.nro");
+        assert(dest.files[1].kind == SwitchPathKind::Nro);
+        assert(dest.files[1].destinationRoot == "/switch");
+        assert(dest.files[1].destinationExample == "data/x.bin");
+        assert(!dest.files[1].staysInDownloads);
+        assert(dest.files[2].staysInDownloads);
+        assert(dest.files[3].kind == SwitchPathKind::Package);
+        assert(!dest.files[3].staysInDownloads);
+        assert(dest.files[3].destinationRoot.empty());
+        assert(dest.files[4].kind == SwitchPathKind::LayeredFsRomfs);
+        assert(dest.files[4].destinationRoot == "/atmosphere");
+        assert(dest.files[4].destinationExample.find(
+                   "atmosphere/contents/") == 0);
+        assert(dest.files[5].kind == SwitchPathKind::Archive);
+        assert(!dest.files[5].staysInDownloads);
+        assert(dest.files[5].destinationCount == 0);
+    }
 
     assert(taskFilePathIsSafe("Release/switch/MyPort/file.dat"));
     assert(!taskFilePathIsSafe("../switch/MyPort/file.dat"));

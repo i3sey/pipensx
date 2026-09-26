@@ -23,7 +23,6 @@ enum class SwitchDeployProblem {
     NotReady,
     LayoutNotFound,
     NotAPort,
-    AmbiguousLayout,
     UnsafePath,
     MissingSource,
     Conflict,
@@ -33,10 +32,21 @@ enum class SwitchDeployProblem {
     Io,
 };
 
+// Why an UnsafePath inspection failed. The deploy still stops; the UI uses
+// this only to pick a sentence. NameCollision covers FAT case-folds,
+// file/directory clashes, and names the card cannot store.
+enum class SwitchDeployUnsafeReason : uint8_t {
+    Generic,
+    NameCollision,
+    Symlink,
+    AppDirectory,
+};
+
 enum class SwitchDeployEntryState {
     Missing,
     ExistingIdentical,
     ExistingConflict,
+    WillOverwrite,
 };
 
 enum class SwitchDeployTarget : uint8_t {
@@ -64,7 +74,10 @@ struct SwitchDeployArchive {
     uint64_t unpackBytes = 0;
     uint64_t maxSolidBlockBytes = 0;
     size_t switchFiles = 0;
+    size_t layeredFiles = 0;
+    PortArchiveKind kind = PortArchiveKind::None;
     std::vector<std::string> destinationRelativePaths;
+    std::vector<uint8_t> destinationSdRoot;
     bool extractable = true;
     std::string detail;
 };
@@ -89,6 +102,8 @@ struct SwitchDeployPlan {
     size_t ignoredFiles = 0;
     size_t identicalFiles = 0;
     size_t conflictFiles = 0;
+    size_t layeredOverwriteFiles = 0;
+    size_t layeredForeignFiles = 0;
     bool layeredFs = false;
     bool performanceToolDetected = false;
     bool performanceProfileDetected = false;
@@ -99,6 +114,7 @@ struct SwitchDeployInspection {
     TaskFileInventory inventory;
     SwitchDeployPlan plan;
     SwitchDeployProblem problem = SwitchDeployProblem::None;
+    SwitchDeployUnsafeReason unsafeReason = SwitchDeployUnsafeReason::Generic;
     std::string detail;
 
     bool canStart() const { return problem == SwitchDeployProblem::None; }
@@ -143,6 +159,7 @@ enum class SwitchDeployPhase {
 struct SwitchDeploySnapshot {
     SwitchDeployPhase phase = SwitchDeployPhase::Idle;
     SwitchDeployProblem problem = SwitchDeployProblem::None;
+    SwitchDeployUnsafeReason unsafeReason = SwitchDeployUnsafeReason::Generic;
     std::string taskId;
     std::string currentPath;
     std::string detail;
@@ -170,7 +187,8 @@ struct SwitchDeploySnapshot {
 enum class SwitchDeployReceiptState { None, Valid, Modified };
 
 SwitchDeployInspection inspectSwitchDeploy(
-    TaskFileInventory inventory, const std::string& targetRoot);
+    TaskFileInventory inventory, const std::string& targetRoot,
+    bool installExtrasOnly = false);
 
 class SwitchDeployService {
 public:
@@ -213,7 +231,9 @@ private:
     void run(DownloadManager::ExternalDeployLease lease,
              bool includeArchives);
     void finish(SwitchDeployPhase phase, SwitchDeployProblem problem,
-                std::string detail);
+                std::string detail,
+                SwitchDeployUnsafeReason unsafeReason =
+                    SwitchDeployUnsafeReason::Generic);
     void cleanupInterruptedJob();
 
     DownloadManager& manager_;

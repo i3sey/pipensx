@@ -141,6 +141,7 @@ private:
         manager_->setTorrserverUrl(values.torrserverUrl);
         manager_->setRealdebridApiKey(values.realdebridApiKey);
         manager_->setAlldebridApiKey(values.alldebridApiKey);
+        manager_->setActiveDebridProvider(values.debridProvider);
         source_->refreshDetail();
     }
 

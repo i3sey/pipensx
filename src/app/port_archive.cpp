@@ -115,6 +115,8 @@ bool pathInside(const std::string& path, const std::string& root) {
 // are assigned to the nearest such ancestor, so nested helper applications do
 // not get copied twice. A legacy switch/ root remains a fallback for mixed
 // releases where the NRO is loose and an archive contains only extra data.
+// Members under atmosphere/contents/<tid>/romfs/ map onto the SD root as a
+// LayeredFS extra (typical rusifikator zip with no NRO).
 bool buildArchiveMapping(const std::vector<RawArchiveFile>& raw,
                          PortArchiveProbe& out) {
     std::vector<std::string> roots;
@@ -153,9 +155,15 @@ bool buildArchiveMapping(const std::vector<RawArchiveFile>& raw,
         if (source.empty())
             continue;
         std::string destination;
-        if (roots.empty()) {
-            destination = legacyDestination(source);
-        } else {
+        bool sdRoot = false;
+        // LayeredFS members always land on the SD root, even when an NRO
+        // sits at the archive root (empty extract root would otherwise
+        // swallow atmosphere/… into /switch). contents/ and titles/ roots
+        // are rewritten to atmosphere/contents/<tid>/romfs/. Exefs stays out
+        // of the automatic mapping.
+        if (isLayeredFsRomfsPath(source, nullptr, nullptr, &destination)) {
+            sdRoot = true;
+        } else if (!roots.empty()) {
             const std::string* selected = nullptr;
             for (const std::string& root : roots) {
                 if (!pathInside(source, root))
@@ -163,14 +171,16 @@ bool buildArchiveMapping(const std::vector<RawArchiveFile>& raw,
                 if (!selected || root.size() > selected->size())
                     selected = &root;
             }
-            if (!selected)
-                continue;
-            if (selected->empty()) {
-                destination = source;
-            } else {
-                destination = basenamePath(*selected);
-                destination += source.substr(selected->size());
+            if (selected) {
+                if (selected->empty()) {
+                    destination = source;
+                } else {
+                    destination = basenamePath(*selected);
+                    destination += source.substr(selected->size());
+                }
             }
+        } else {
+            destination = legacyDestination(source);
         }
         if (destination.empty() ||
             !taskFilePathIsFatCompatible(destination))
@@ -180,7 +190,8 @@ bool buildArchiveMapping(const std::vector<RawArchiveFile>& raw,
             out.error = "Writing inside the pipensx application directory is forbidden.";
             return false;
         }
-        const std::string folded = lowerAscii(destination);
+        const std::string folded = (sdRoot ? "sd:" : "switch:") +
+                                   lowerAscii(destination);
         if (std::find(foldedDestinations.begin(), foldedDestinations.end(),
                       folded) != foldedDestinations.end()) {
             out.error = "Archive destination paths collide on FAT.";
@@ -193,15 +204,26 @@ bool buildArchiveMapping(const std::vector<RawArchiveFile>& raw,
         foldedDestinations.push_back(folded);
         out.sourceFiles.push_back(source);
         out.files.push_back(destination);
-        ++out.switchFiles;
+        out.destinationSdRoot.push_back(sdRoot ? 1 : 0);
+        if (sdRoot)
+            ++out.layeredFiles;
+        else
+            ++out.switchFiles;
         out.unpackBytes += file.size;
     }
     if (out.files.empty()) {
         out.error = roots.empty()
-            ? "The archive has neither an NRO payload nor a switch directory."
+            ? "The archive has neither an NRO payload, a switch directory, "
+              "nor an Atmosphere LayeredFS tree."
             : "The archive has no files in an NRO application directory.";
         return false;
     }
+    if (out.switchFiles && out.layeredFiles)
+        out.kind = PortArchiveKind::Mixed;
+    else if (out.layeredFiles)
+        out.kind = PortArchiveKind::LayeredFs;
+    else
+        out.kind = PortArchiveKind::PortNro;
     return true;
 }
 
@@ -213,6 +235,28 @@ std::string archiveDestination(const PortArchiveProbe& probe,
         if (probe.sourceFiles[i] == normalized)
             return probe.files[i];
     return {};
+}
+
+bool archiveDestinationSdRoot(const PortArchiveProbe& probe,
+                              const std::string& relative) {
+    for (size_t i = 0; i < probe.files.size(); ++i) {
+        if (probe.files[i] != relative)
+            continue;
+        return i < probe.destinationSdRoot.size() &&
+               probe.destinationSdRoot[i] != 0;
+    }
+    return isLayeredFsRomfsPath(relative);
+}
+
+std::string extractAbsolutePath(const PortArchiveProbe& probe,
+                                const std::string& relative,
+                                const std::string& switchRoot,
+                                const std::string& sdRoot) {
+    const bool sd = archiveDestinationSdRoot(probe, relative);
+    const std::string& root = sd
+        ? (sdRoot.empty() ? switchRoot : sdRoot)
+        : switchRoot;
+    return root + "/" + relative;
 }
 
 // One mkdir level where EEXIST only counts when the name is already a
@@ -319,7 +363,7 @@ uint16_t readU16le(const uint8_t* p) {
 }
 
 bool extractZip(const std::string& archivePath, const std::string& targetRoot,
-                const PortArchiveProbe& probe,
+                const std::string& sdRoot, const PortArchiveProbe& probe,
                 const std::atomic<bool>& cancelled,
                 const std::function<void(uint64_t)>& progress,
                 const std::function<void(const std::string&)>& currentFile,
@@ -389,8 +433,10 @@ bool extractZip(const std::string& archivePath, const std::string& targetRoot,
                 error = "ZIP stored size mismatch.";
                 return false;
             }
-            if (!writeBytes(targetRoot + "/" + relative, compressed.data(),
-                            compressed.size(), cancelled, progress, error)) {
+            if (!writeBytes(extractAbsolutePath(probe, relative, targetRoot,
+                                                sdRoot),
+                            compressed.data(), compressed.size(), cancelled,
+                            progress, error)) {
                 std::fclose(file);
                 return false;
             }
@@ -413,8 +459,10 @@ bool extractZip(const std::string& archivePath, const std::string& targetRoot,
                 error = "ZIP inflate failed.";
                 return false;
             }
-            if (!writeBytes(targetRoot + "/" + relative, uncompressed.data(),
-                            uncompressed.size(), cancelled, progress, error)) {
+            if (!writeBytes(extractAbsolutePath(probe, relative, targetRoot,
+                                                sdRoot),
+                            uncompressed.data(), uncompressed.size(),
+                            cancelled, progress, error)) {
                 std::fclose(file);
                 return false;
             }
@@ -1002,7 +1050,7 @@ bool streamFolderDecode(const CSzArEx& db, UInt32 folderIndex,
 }
 
 bool extract7zRam(CSzArEx& db, ILookInStreamPtr inStream,
-                  const std::string& targetRoot,
+                  const std::string& targetRoot, const std::string& sdRoot,
                   const PortArchiveProbe& probe,
                   const std::atomic<bool>& cancelled,
                   const std::function<void(uint64_t)>& progress,
@@ -1045,8 +1093,10 @@ bool extract7zRam(CSzArEx& db, ILookInStreamPtr inStream,
             ok = false;
             break;
         }
-        if (!writeBytes(targetRoot + "/" + relative, outBuffer + offset,
-                        outSizeProcessed, cancelled, progress, error)) {
+        if (!writeBytes(extractAbsolutePath(probe, relative, targetRoot,
+                                            sdRoot),
+                        outBuffer + offset, outSizeProcessed, cancelled,
+                        progress, error)) {
             ok = false;
             break;
         }
@@ -1061,7 +1111,7 @@ bool extract7zRam(CSzArEx& db, ILookInStreamPtr inStream,
 }
 
 bool extract7z(const std::string& archivePath, const std::string& targetRoot,
-               const PortArchiveProbe& probe,
+               const std::string& sdRoot, const PortArchiveProbe& probe,
                const std::atomic<bool>& cancelled,
                const std::function<void(uint64_t)>& progress,
                const std::function<void(const std::string&)>& currentFile,
@@ -1132,7 +1182,8 @@ bool extract7z(const std::string& archivePath, const std::string& targetRoot,
                            db.UnpackPositions[db.FolderToFile[folderIndex]];
         file.range.end = file.range.start + SzArEx_GetFileSize(&db, i);
         file.range.relative = relative;
-        file.range.absolute = targetRoot + "/" + relative;
+        file.range.absolute = extractAbsolutePath(probe, relative, targetRoot,
+                                                  sdRoot);
         files.push_back(std::move(file));
     }
 
@@ -1141,9 +1192,9 @@ bool extract7z(const std::string& archivePath, const std::string& targetRoot,
         error = "The archive has no switch/ files to extract.";
         ok = false;
     } else if (!preferStream) {
-        ok = extract7zRam(db, &lookStream.vt, targetRoot, probe, cancelled,
-                          progress, currentFile, &allocImp, &allocTempImp,
-                          error);
+        ok = extract7zRam(db, &lookStream.vt, targetRoot, sdRoot, probe,
+                          cancelled, progress, currentFile, &allocImp,
+                          &allocTempImp, error);
     } else {
         std::sort(files.begin(), files.end(),
                   [](const WantedFile& a, const WantedFile& b) {
@@ -1205,7 +1256,8 @@ bool extract7z(const std::string& archivePath, const std::string& targetRoot,
                         ok = false;
                         break;
                     }
-                    if (!writeBytes(targetRoot + "/" + relative,
+                    if (!writeBytes(extractAbsolutePath(probe, relative,
+                                                        targetRoot, sdRoot),
                                     outBuffer + offset, outSizeProcessed,
                                     cancelled, progress, error)) {
                         ok = false;
@@ -1311,6 +1363,17 @@ bool extractPortArchive(const std::string& archivePath,
                         const std::function<void(uint64_t)>& progress,
                         const std::function<void(const std::string&)>& currentFile,
                         std::string& error) {
+    return extractPortArchive(archivePath, targetRoot, targetRoot, cancelled,
+                              progress, currentFile, error);
+}
+
+bool extractPortArchive(const std::string& archivePath,
+                        const std::string& targetRoot,
+                        const std::string& sdRoot,
+                        const std::atomic<bool>& cancelled,
+                        const std::function<void(uint64_t)>& progress,
+                        const std::function<void(const std::string&)>& currentFile,
+                        std::string& error) {
     PortArchiveProbe probe;
     if (!probePortArchive(archivePath, probe)) {
         error = probe.error;
@@ -1318,11 +1381,11 @@ bool extractPortArchive(const std::string& archivePath,
     }
     const std::string base = lowerAscii(basenameOf(archivePath));
     if (base == "switch.zip" || endsWithCi(archivePath, ".zip"))
-        return extractZip(archivePath, targetRoot, probe, cancelled, progress,
-                          currentFile, error);
+        return extractZip(archivePath, targetRoot, sdRoot, probe, cancelled,
+                          progress, currentFile, error);
     if (base == "switch.7z" || endsWithCi(archivePath, ".7z"))
-        return extract7z(archivePath, targetRoot, probe, cancelled, progress,
-                         currentFile, error);
+        return extract7z(archivePath, targetRoot, sdRoot, probe, cancelled,
+                         progress, currentFile, error);
     error = "Unsupported port archive type.";
     return false;
 }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "debrid_provider.hpp"
+#include "recovery_account.hpp"
 
 #include <atomic>
 #include <condition_variable>
@@ -71,7 +72,8 @@ enum class FileAction : uint8_t {
 
 // Stream-install of a retail dump only pulls NSP/NSZ. Extra files (readme,
 // rusifikator zip, LayeredFS) stay skipped unless the picker set Download
-// or the torrent is a PortInstall.
+// (save to disk) or Install (save and unpack to SD) or the torrent is a
+// PortInstall.
 inline FileAction defaultFileAction(bool package, TransferMode mode) {
     if (mode == TransferMode::StreamInstall)
         return package ? FileAction::Install : FileAction::Skip;
@@ -126,6 +128,14 @@ struct DownloadTask {
        Empty = untrusted (crash or mid-run) and the next start does a full
        hash scan. */
     std::vector<uint8_t> resumeBitfield;
+    /* Live recovery inputs. The state file stores the byte/unit fields and
+       the bitfield; recoveryTrustedClaim is only the in-memory window after
+       a claim has consumed the bitfield and before the next checkpoint. */
+    bool recoveryTrusted = false;
+    bool recoveryTrustedClaim = false;
+    bool recoveryBytePoint = false;
+    uint64_t recoveryUnitBytes = 0;
+    uint64_t recoveryUnitTotal = 0;
 };
 
 // (done, total) download-progress byte pair. Falls back to the raw engine
@@ -139,6 +149,77 @@ inline std::pair<uint64_t, uint64_t> downloadProgressBytes(
         return {done, task.wantedTotalBytes};
     }
     return {task.completedBytes, task.totalBytes};
+}
+
+inline RecoveryPhase recoveryPhaseOf(const DownloadTask& task) {
+    const bool installStatus = task.status == DownloadStatus::Installing ||
+                               task.status == DownloadStatus::Committing;
+    const bool installMode = task.mode != TransferMode::DownloadOnly;
+    // installedBytes alone is the last package's counter and must not turn a
+    // paused download of the next package into an install resume.
+    const bool openPackage =
+        installMode &&
+        (task.recoveryBytePoint || task.recoveryUnitBytes > 0) &&
+        (task.packageCount == 0 ||
+         task.packagesInstalled < task.packageCount);
+    if (installStatus ||
+        (openPackage && (task.status == DownloadStatus::Paused ||
+                         task.status == DownloadStatus::Queued ||
+                         task.status == DownloadStatus::Error ||
+                         task.status == DownloadStatus::Checking ||
+                         task.status == DownloadStatus::Verifying)))
+        return RecoveryPhase::Installing;
+    const auto downloaded = downloadProgressBytes(task);
+    if (downloaded.first == 0 && task.packagesInstalled == 0 &&
+        task.installedBytes == 0 && task.recoveryUnitBytes == 0 &&
+        !task.recoveryBytePoint)
+        return RecoveryPhase::Preparing;
+    return RecoveryPhase::Downloading;
+}
+
+inline RecoveryEvent recoveryEventOf(const DownloadTask& task) {
+    switch (task.status) {
+        case DownloadStatus::Checking:
+        case DownloadStatus::Verifying:
+            return RecoveryEvent::Resume;
+        case DownloadStatus::Paused:
+            return RecoveryEvent::Pause;
+        case DownloadStatus::Queued:
+            return RecoveryEvent::Restart;
+        case DownloadStatus::Error:
+            return RecoveryEvent::NetworkLoss;
+        default:
+            return RecoveryEvent::Resume;
+    }
+}
+
+inline bool recoveryTransferQuiet(DownloadStatus status) {
+    return status == DownloadStatus::Downloading ||
+           status == DownloadStatus::Installing ||
+           status == DownloadStatus::Committing ||
+           status == DownloadStatus::Fetching;
+}
+
+inline RecoveryAccount recoveryAccountOf(const DownloadTask& task) {
+    const auto downloaded = downloadProgressBytes(task);
+    RecoveryInput in;
+    in.source = task.source == TaskSource::Debrid ? RecoverySource::Debrid
+                                                  : RecoverySource::Direct;
+    in.mode = task.mode == TransferMode::PortInstall ? RecoveryMode::Port
+            : task.mode == TransferMode::StreamInstall ? RecoveryMode::Stream
+                                                       : RecoveryMode::DownloadOnly;
+    in.phase = recoveryPhaseOf(task);
+    in.event = recoveryEventOf(task);
+    in.downloadedBytes = downloaded.first;
+    in.downloadTotalBytes = downloaded.second;
+    in.packagesInstalled = task.packagesInstalled;
+    in.packageCount = task.packageCount;
+    in.unitBytes = task.recoveryUnitBytes;
+    in.unitTotal = task.recoveryUnitTotal;
+    in.trustedPieces = task.recoveryTrusted || task.recoveryTrustedClaim ||
+                       !task.resumeBitfield.empty();
+    in.bytePoint = task.recoveryBytePoint;
+    return accountRecovery(in);
 }
 
 // Stream-install progress fraction. While a package is installing or
@@ -198,6 +279,56 @@ struct DebridImport {
     TransferMode mode = TransferMode::DownloadOnly;
     std::vector<uint8_t> fileSelection;
     uint32_t packageCount = 0;         // selected packages (0 if mode DownloadOnly)
+};
+
+// Completed and Installed are the only statuses a bulk clear may remove.
+// Anything still running, queued, paused, or failed stays in the list.
+inline bool finishedDownloadStatus(DownloadStatus status) {
+    return status == DownloadStatus::Completed ||
+           status == DownloadStatus::Installed;
+}
+
+enum class ClearCompletedClass { Ignore, Clear, Busy };
+
+// A finished task whose files are being copied is Busy: clear leaves it
+// alone. leasedTaskId is DownloadManager::externalDeployTaskId().
+inline ClearCompletedClass classifyClearCompleted(
+    DownloadStatus status, const std::string& taskId,
+    const std::string& leasedTaskId) {
+    if (!finishedDownloadStatus(status))
+        return ClearCompletedClass::Ignore;
+    if (!leasedTaskId.empty() && taskId == leasedTaskId)
+        return ClearCompletedClass::Busy;
+    return ClearCompletedClass::Clear;
+}
+
+struct ClearCompletedPlan {
+    size_t clearable = 0;
+    size_t skippedBusy = 0;
+};
+
+inline ClearCompletedPlan planClearCompleted(
+    const std::vector<DownloadTask>& tasks,
+    const std::string& leasedTaskId) {
+    ClearCompletedPlan plan;
+    for (const DownloadTask& task : tasks) {
+        switch (classifyClearCompleted(task.status, task.id, leasedTaskId)) {
+        case ClearCompletedClass::Ignore:
+            break;
+        case ClearCompletedClass::Busy:
+            ++plan.skippedBusy;
+            break;
+        case ClearCompletedClass::Clear:
+            ++plan.clearable;
+            break;
+        }
+    }
+    return plan;
+}
+
+struct ClearCompletedResult {
+    size_t cleared = 0;
+    size_t skippedBusy = 0;
 };
 
 class DownloadManager {
@@ -260,24 +391,46 @@ public:
     std::string torboxApiKey() const;
     void setTorrentingEnabled(bool enabled);
     bool torrentingEnabled() const;
-    bool pause(const std::string& taskId);
-    bool resume(const std::string& taskId);
+    // Which debrid account the saved source uses when torrenting is off.
+    // The keys themselves stay on the setters above.
+    void setActiveDebridProvider(DebridProviderKind kind);
+    DebridProviderKind activeDebridProvider() const;
+    std::string activeDebridCredential() const;
+    // `error` is a taskActionReasonName() code when the command is refused.
+    bool pause(const std::string& taskId, std::string& error);
+    bool pause(const std::string& taskId) {
+        std::string error;
+        return pause(taskId, error);
+    }
+    bool resume(const std::string& taskId, std::string& error);
+    bool resume(const std::string& taskId) {
+        std::string error;
+        return resume(taskId, error);
+    }
     bool retry(const std::string& taskId);
-    bool verify(const std::string& taskId);
+    bool verify(const std::string& taskId, std::string& error);
+    bool verify(const std::string& taskId) {
+        std::string error;
+        return verify(taskId, error);
+    }
     bool remove(const std::string& taskId, bool deleteData,
                 std::string& error);
     // Best-effort removal for remotely prepared items that never entered the
     // queue (for example, cancelling catalog batch preparation).
     void cleanupDebridAsync(DebridProviderKind provider,
                             const std::string& debridId);
-    // Pause every task pause() would accept except Committing (a NAND commit
-    // in flight is left alone). One lock, one state write.
+    // Pause every task the shared pause action allows. Committing is not
+    // pausable: a NAND commit already in flight is left alone. One lock,
+    // one state write.
     void pauseAll();
     // Requeue every Paused and Error task. One lock, one state write.
     void resumeAll();
-    // Drop Completed/Installed tasks. deleteData matches per-row remove.
-    // One lock and one state write; debrid account cleanup runs after unlock.
-    bool clearCompleted(bool deleteData, std::string& error);
+    // Drop Completed/Installed tasks. deleteData matches per-row remove and
+    // does not uninstall games or ports. A finished task leased for an
+    // external copy is left in place and counted in skippedBusy. One lock
+    // and one state write; debrid account cleanup runs after unlock.
+    bool clearCompleted(bool deleteData, std::string& error,
+                        ClearCompletedResult* result = nullptr);
 
     // Make a queued task the next one to start. The scheduler always claims
     // the first claimable Queued entry in list order, so "next up" is a
@@ -426,6 +579,7 @@ private:
     std::string torrserverUrl_;
     std::string realdebridApiKey_;
     std::string alldebridApiKey_;
+    DebridProviderKind activeDebridProvider_ = DebridProviderKind::TorBox;
     // Off until someone opts in. The constructor starts the worker before any
     // caller can configure the manager, so a restored Queued torrent task is
     // eligible for pickup during that window — defaulting to true would let it

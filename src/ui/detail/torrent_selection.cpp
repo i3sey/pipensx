@@ -193,8 +193,15 @@ void TorrentSelectionDataSource::cycleFolder(size_t groupIndex) {
             allDownload = false;
     }
 
+    bool allInstallable = true;
+    for (size_t index : group.indices) {
+        const TorrentSelectionEntry& entry = entries_[index];
+        if (!entry.package && !extraAcceptsInstallAction(entry.path))
+            allInstallable = false;
+    }
+
     FileAction next;
-    if (allPackages) {
+    if (allPackages || allInstallable) {
         if (allInstall)
             next = FileAction::Download;
         else if (allDownload)
@@ -263,8 +270,8 @@ void TorrentSelectionDataSource::didSelectRowAt(brls::RecyclerFrame*,
     }
     cycleEntry(static_cast<int>(vr->entryIndex));
     if (owner_) {
-        owner_->repaintVisibleRow(index.row);
         owner_->refreshSummary();
+        owner_->repaintVisible();
     }
 }
 
@@ -274,7 +281,7 @@ void TorrentSelectionDataSource::cycleEntry(int entryIndex) {
         return;
     TorrentSelectionEntry& entry =
         entries_[static_cast<size_t>(entryIndex)];
-    if (entry.package) {
+    if (entry.package || extraAcceptsInstallAction(entry.path)) {
         entry.action = entry.action == FileAction::Install
             ? FileAction::Download
             : entry.action == FileAction::Download ? FileAction::Skip

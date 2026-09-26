@@ -5,6 +5,7 @@
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
+#include <map>
 #include <unordered_set>
 
 namespace pipensx {
@@ -171,7 +172,8 @@ std::string bundledUpdateVersion(const TorrentPreview& preview,
     uint64_t best = 0;
     bool have = false;
     for (const auto& file : preview.files) {
-        if (!file.package || !pathHasBaseOrPatchTitleId(file.path, titleId))
+        if (!file.package || !pathHasBaseOrPatchTitleId(file.path, titleId) ||
+            isLikelyModPackage(file.path))
             continue;
         uint64_t tag = 0;
         if (!fileVersionTag(file.path, tag) || tag == 0)
@@ -184,6 +186,52 @@ std::string bundledUpdateVersion(const TorrentPreview& preview,
     if (!have)
         return {};
     return std::to_string(best);
+}
+
+// Prefer a non-mod path, then the larger file, then the earlier index.
+size_t pickBestPackage(const TorrentPreview& preview,
+                       const std::vector<size_t>& candidates) {
+    size_t best = preview.files.size();
+    uint64_t bestLen = 0;
+    bool bestMod = true;
+    for (const size_t i : candidates) {
+        if (i >= preview.files.size())
+            continue;
+        const bool mod = isLikelyModPackage(preview.files[i].path);
+        const uint64_t len = preview.files[i].length;
+        const bool better =
+            best == preview.files.size() ||
+            (mod != bestMod && !mod) ||
+            (mod == bestMod && len > bestLen) ||
+            (mod == bestMod && len == bestLen && i < best);
+        if (better) {
+            best = i;
+            bestLen = len;
+            bestMod = mod;
+        }
+    }
+    return best;
+}
+
+std::string addOnContentId(const std::string& path,
+                           const std::string& wantedBase) {
+    if (wantedBase.empty())
+        return {};
+    for (const std::string& id : titleIdsInPath(path)) {
+        if (normalizeNxBaseTitleId(id) != wantedBase)
+            continue;
+        uint64_t parsed = 0;
+        if (!InstalledTitleService::parseTitleId(id, parsed))
+            continue;
+        if ((parsed & 0x1FFFULL) >= 0x1000ULL)
+            return id;
+    }
+    return {};
+}
+
+bool fileInstalling(const std::vector<uint8_t>& actions, size_t i) {
+    return i < actions.size() &&
+           actions[i] == static_cast<uint8_t>(FileAction::Install);
 }
 
 std::unordered_set<std::string> normalizedSet(
@@ -285,62 +333,118 @@ std::vector<uint8_t> selectSmartInstallFiles(
     std::vector<uint8_t> actions(
         preview.files.size(), static_cast<uint8_t>(FileAction::Skip));
 
-    std::string latest = latestVersion;
+    // Prefer the highest [vN] actually in this torrent so a stale catalog
+    // latestVersion cannot pin an older bundled patch (or miss a newer one).
+    std::string latest = bundledUpdateVersion(preview, titleId);
     uint64_t latestValue = 0;
     if (!parseDecimal(latest, latestValue) || latestValue == 0) {
-        latest = bundledUpdateVersion(preview, titleId);
+        latest = latestVersion;
         latestValue = 0;
         parseDecimal(latest, latestValue);
     }
 
-    // Base + exact update (the smart-install behaviour from #28).
-    if (titleInstalled) {
-        uint64_t installed = 0;
-        if (parseDecimal(installedVersion, installed) &&
-            latestValue > installed) {
-            const std::vector<size_t> updates =
-                smartUpdateMatches(preview, latest, titleId);
-            for (const size_t i : updates)
-                if (i < actions.size())
-                    actions[i] = static_cast<uint8_t>(FileAction::Install);
-        }
-    } else {
+    if (!titleInstalled) {
+        std::vector<size_t> bases;
         for (size_t i = 0; i < preview.files.size(); ++i)
             if (isBasePackageFile(preview.files[i], titleId))
-                actions[i] = static_cast<uint8_t>(FileAction::Install);
-        const std::vector<size_t> updates =
-            smartUpdateMatches(preview, latest, titleId);
-        for (const size_t i : updates)
-            if (i < actions.size())
-                actions[i] = static_cast<uint8_t>(FileAction::Install);
+                bases.push_back(i);
+        const size_t base = pickBestPackage(preview, bases);
+        if (base < actions.size())
+            actions[base] = static_cast<uint8_t>(FileAction::Install);
     }
 
-    // Smart DLC (#29): AddOnContent packages for the selected title that are
-    // not already installed. A DLC title id sets bit 12 (…1000) and carries its
-    // index in the low 12 bits, so it normalises onto the base title.
+    uint64_t installed = 0;
+    const bool haveInstalled = parseDecimal(installedVersion, installed);
+    const bool wantUpdate =
+        latestValue > 0 &&
+        (!titleInstalled || (haveInstalled && latestValue > installed));
+    if (wantUpdate) {
+        std::vector<size_t> updates =
+            smartUpdateMatches(preview, latest, titleId);
+        if (updates.empty())
+            updates = updateVersionMatches(preview, latest, titleId);
+        const size_t picked = pickBestPackage(preview, updates);
+        if (picked < actions.size())
+            actions[picked] = static_cast<uint8_t>(FileAction::Install);
+    }
+
+    // Unique AddOnContent per title id, largest file wins on duplicates.
     const std::string wantedBase = normalizeNxBaseTitleId(titleId);
     if (!wantedBase.empty()) {
         const std::unordered_set<std::string> installedDlc =
             normalizedSet(installedDlcIds);
+        std::map<std::string, size_t> bestDlc;
         for (size_t i = 0; i < preview.files.size(); ++i) {
-            if (!preview.files[i].package ||
-                actions[i] == static_cast<uint8_t>(FileAction::Install))
+            if (!preview.files[i].package)
                 continue;
-            for (const std::string& id : titleIdsInPath(preview.files[i].path)) {
-                if (normalizeNxBaseTitleId(id) != wantedBase)
-                    continue;
-                uint64_t parsed = 0;
-                InstalledTitleService::parseTitleId(id, parsed);
-                if ((parsed & 0x1FFFULL) >= 0x1000ULL &&
-                    installedDlc.count(id) == 0) {
-                    actions[i] = static_cast<uint8_t>(FileAction::Install);
-                    break;
-                }
+            const std::string id =
+                addOnContentId(preview.files[i].path, wantedBase);
+            if (id.empty() || installedDlc.count(id) != 0)
+                continue;
+            const auto found = bestDlc.find(id);
+            if (found == bestDlc.end()) {
+                bestDlc.emplace(id, i);
+                continue;
             }
+            const size_t current = found->second;
+            const size_t picked =
+                pickBestPackage(preview, {current, i});
+            found->second = picked;
         }
+        for (const auto& entry : bestDlc)
+            if (entry.second < actions.size())
+                actions[entry.second] = static_cast<uint8_t>(FileAction::Install);
     }
 
     return actions;
+}
+
+std::vector<uint8_t> overlappingSelectionConflicts(
+    const TorrentPreview& preview, const std::vector<uint8_t>& actions) {
+    std::vector<uint8_t> conflicts(preview.files.size(), 0);
+    std::map<std::string, std::vector<size_t>> bases;
+    std::map<std::string, std::vector<size_t>> patches;
+    std::map<std::string, std::vector<size_t>> dlc;
+    for (size_t i = 0; i < preview.files.size(); ++i) {
+        if (!preview.files[i].package || !fileInstalling(actions, i))
+            continue;
+        std::string baseId;
+        std::string dlcId;
+        for (const std::string& id : titleIdsInPath(preview.files[i].path)) {
+            uint64_t parsed = 0;
+            if (!InstalledTitleService::parseTitleId(id, parsed))
+                continue;
+            const uint64_t low = parsed & 0x1FFFULL;
+            if (low >= 0x1000ULL)
+                dlcId = id;
+            else if (low == 0 || low == 0x800ULL)
+                baseId = normalizeNxBaseTitleId(id);
+        }
+        if (!dlcId.empty()) {
+            dlc[dlcId].push_back(i);
+            continue;
+        }
+        if (baseId.empty())
+            continue;
+        if (isBasePackageFile(preview.files[i], baseId))
+            bases[baseId].push_back(i);
+        else
+            patches[baseId].push_back(i);
+    }
+    auto mark = [&conflicts](const std::vector<size_t>& group) {
+        if (group.size() < 2)
+            return;
+        for (const size_t i : group)
+            if (i < conflicts.size())
+                conflicts[i] = 1;
+    };
+    for (const auto& entry : bases)
+        mark(entry.second);
+    for (const auto& entry : patches)
+        mark(entry.second);
+    for (const auto& entry : dlc)
+        mark(entry.second);
+    return conflicts;
 }
 
 std::string updateMagnetFor(const std::string& infoHash,

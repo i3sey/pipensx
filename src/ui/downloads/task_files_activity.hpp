@@ -16,6 +16,51 @@
 
 namespace pipensx::ui {
 
+inline std::string taskFileRoleText(SwitchPathKind kind) {
+    switch (kind) {
+        case SwitchPathKind::Package:
+            return tr("pipensx/files/role_package");
+        case SwitchPathKind::Cartridge:
+            return tr("pipensx/files/role_cartridge");
+        case SwitchPathKind::Nro:
+            return tr("pipensx/files/role_nro");
+        case SwitchPathKind::LayeredFsRomfs:
+            return tr("pipensx/files/role_layeredfs");
+        case SwitchPathKind::Archive:
+            return tr("pipensx/files/role_archive");
+        case SwitchPathKind::Junk:
+            return tr("pipensx/files/role_junk");
+    }
+    return {};
+}
+
+inline std::string taskFileActionText(TaskFileAction action) {
+    switch (action) {
+        case TaskFileAction::Skip:
+            return tr("pipensx/files/action_skip");
+        case TaskFileAction::Download:
+            return tr("pipensx/files/action_download");
+        case TaskFileAction::Install:
+            return tr("pipensx/files/action_install");
+    }
+    return {};
+}
+
+inline std::string taskFileDestinationText(const TaskFileInfo& file) {
+    if (file.kind == SwitchPathKind::Package)
+        return tr("pipensx/files/dest_ncm");
+    if (file.staysInDownloads)
+        return tr("pipensx/files/dest_downloads");
+    if (file.kind == SwitchPathKind::Archive && file.destinationCount == 0)
+        return tr("pipensx/files/dest_extract");
+    std::string text = file.destinationExample.empty()
+        ? file.destinationRoot
+        : file.destinationExample;
+    if (file.destinationCount > 1)
+        text += " · " + tr("pipensx/files/dest_count", file.destinationCount);
+    return text;
+}
+
 inline std::string taskFileStateText(TaskFileState state) {
     switch (state) {
         case TaskFileState::Pending: return tr("pipensx/files/state_pending");
@@ -28,8 +73,9 @@ inline std::string taskFileStateText(TaskFileState state) {
     return {};
 }
 
-inline std::string deployProblemText(SwitchDeployProblem problem,
-                                     const std::string& detail) {
+inline std::string deployProblemText(
+    SwitchDeployProblem problem, const std::string& detail,
+    SwitchDeployUnsafeReason unsafeReason = SwitchDeployUnsafeReason::Generic) {
     const char* key = nullptr;
     switch (problem) {
         case SwitchDeployProblem::None: return {};
@@ -41,10 +87,18 @@ inline std::string deployProblemText(SwitchDeployProblem problem,
             key = "pipensx/deploy/problem_layout"; break;
         case SwitchDeployProblem::NotAPort:
             key = "pipensx/deploy/problem_not_port"; break;
-        case SwitchDeployProblem::AmbiguousLayout:
-            key = "pipensx/deploy/problem_ambiguous"; break;
         case SwitchDeployProblem::UnsafePath:
-            key = "pipensx/deploy/problem_unsafe"; break;
+            switch (unsafeReason) {
+                case SwitchDeployUnsafeReason::NameCollision:
+                    key = "pipensx/deploy/problem_unsafe_collision"; break;
+                case SwitchDeployUnsafeReason::Symlink:
+                    key = "pipensx/deploy/problem_unsafe_symlink"; break;
+                case SwitchDeployUnsafeReason::AppDirectory:
+                    key = "pipensx/deploy/problem_unsafe_appdir"; break;
+                case SwitchDeployUnsafeReason::Generic:
+                    key = "pipensx/deploy/problem_unsafe"; break;
+            }
+            break;
         case SwitchDeployProblem::MissingSource:
             key = "pipensx/deploy/problem_missing"; break;
         case SwitchDeployProblem::Conflict:
@@ -59,7 +113,17 @@ inline std::string deployProblemText(SwitchDeployProblem problem,
             key = "pipensx/deploy/problem_io"; break;
     }
     std::string text = tr(key);
-    if (!detail.empty())
+    // Collision, symlink, and the pipensx-folder refusal already say the
+    // whole thing. A canned English sentence in detail would repeat it;
+    // a path (it contains '/') is still worth showing.
+    const bool translatedReason =
+        problem == SwitchDeployProblem::UnsafePath &&
+        unsafeReason != SwitchDeployUnsafeReason::Generic;
+    const bool cannedRam =
+        problem == SwitchDeployProblem::NoRam &&
+        detail.rfind("Not enough free RAM", 0) == 0;
+    if (!detail.empty() && !cannedRam &&
+        !(translatedReason && detail.find('/') == std::string::npos))
         text += "\n" + detail;
     return text;
 }
@@ -68,7 +132,7 @@ class TaskFileCell : public brls::RecyclerCell {
 public:
     TaskFileCell() {
         setFocusable(true);
-        setHeight(82);
+        setHeight(104);
         setPadding(12, 20, 12, 20);
         setAxis(brls::Axis::COLUMN);
         path_ = new brls::Label();
@@ -83,12 +147,22 @@ public:
         meta_->setMarginTop(4);
         meta_->setTextColor(theme::textTertiary());
         addView(meta_);
+        dest_ = new brls::Label();
+        dest_->setSingleLine(true);
+        dest_->setAutoAnimate(false);
+        dest_->setFontSize(13);
+        dest_->setMarginTop(2);
+        dest_->setTextColor(theme::textTertiary());
+        addView(dest_);
     }
 
     void setFile(const TaskFileInfo& file) {
         path_->setText(file.logicalPath);
-        meta_->setText(taskFileStateText(file.state) + "   " +
+        meta_->setText(taskFileRoleText(file.kind) + " · " +
+                       taskFileActionText(file.action) + " · " +
+                       taskFileStateText(file.state) + " · " +
                        formatBytes(file.size));
+        dest_->setText(taskFileDestinationText(file));
         path_->setTextColor(file.state == TaskFileState::Missing ||
                                     file.state == TaskFileState::Unsafe
                                 ? theme::error() : theme::textPrimary());
@@ -107,6 +181,7 @@ public:
 private:
     brls::Label* path_;
     brls::Label* meta_;
+    brls::Label* dest_;
 };
 
 class TaskFilesMessageCell : public brls::RecyclerCell {
@@ -184,7 +259,7 @@ public:
 
         recycler_ = new brls::RecyclerFrame();
         recycler_->setGrow(1);
-        recycler_->estimatedRowHeight = 82;
+        recycler_->estimatedRowHeight = 104;
         recycler_->registerCell("File", [] { return new TaskFileCell(); });
         recycler_->registerCell("Message", [] {
             return new TaskFilesMessageCell();
@@ -242,7 +317,19 @@ public:
         if (!file)
             return;
         std::string text = file->logicalPath + "\n\n" +
-            taskFileStateText(file->state) + " · " + formatBytes(file->size);
+            taskFileRoleText(file->kind) + " · " +
+            taskFileActionText(file->action) + " · " +
+            taskFileStateText(file->state) + " · " + formatBytes(file->size) +
+            "\n" + taskFileDestinationText(*file);
+        if (!file->destinationPaths.empty()) {
+            text += "\n";
+            const size_t shown = std::min<size_t>(file->destinationPaths.size(),
+                                                  12);
+            for (size_t i = 0; i < shown; ++i)
+                text += "\n" + file->destinationPaths[i];
+            if (file->destinationPaths.size() > shown)
+                text += "\n…";
+        }
         if (!file->absolutePath.empty())
             text += "\n\n" + file->absolutePath;
         auto* dialog = new brls::Dialog(text);
@@ -386,7 +473,9 @@ public:
                                 : "pipensx/deploy/state_copy")
             : entry.state == SwitchDeployEntryState::ExistingIdentical
                 ? "pipensx/deploy/state_identical"
-                : "pipensx/deploy/state_conflict";
+                : entry.state == SwitchDeployEntryState::WillOverwrite
+                    ? "pipensx/deploy/state_overwrite"
+                    : "pipensx/deploy/state_conflict";
         state_->setText(tr(key) + " · " + formatBytes(entry.size));
         state_->setTextColor(entry.state ==
                                      SwitchDeployEntryState::ExistingConflict
@@ -476,14 +565,22 @@ public:
                                   ? theme::textSecondary() : theme::error());
         if (inspection_.problem != SwitchDeployProblem::None) {
             warning->setText(
-                deployProblemText(inspection_.problem, inspection_.detail));
+                deployProblemText(inspection_.problem, inspection_.detail,
+                                  inspection_.unsafeReason));
         } else if (inspection_.plan.layeredFs) {
+            std::string text;
+            if (inspection_.plan.layeredOverwriteFiles != 0 ||
+                inspection_.plan.layeredForeignFiles != 0)
+                text = tr("pipensx/deploy/layered_overlap");
             const char* key = inspection_.plan.performanceProfileDetected
                 ? "pipensx/deploy/layered_profile_found"
                 : inspection_.plan.performanceToolDetected
                     ? "pipensx/deploy/layered_profile_missing"
                     : "pipensx/deploy/layered_tool_missing";
-            warning->setText(tr(key));
+            if (!text.empty())
+                text += "\n";
+            text += tr(key);
+            warning->setText(text);
         } else {
             warning->setText(tr("pipensx/deploy/warning"));
         }

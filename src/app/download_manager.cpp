@@ -1,4 +1,5 @@
 #include "download_manager.hpp"
+#include "task_actions.hpp"
 #include "task_files.hpp"
 #include "request_gate.hpp"
 #include "stream_budget_arbiter.hpp"
@@ -238,6 +239,12 @@ DownloadTask copyTaskUi(const DownloadTask& src) {
     dst.installRateBaseBytes = src.installRateBaseBytes;
     dst.installRateBaseAtMs = src.installRateBaseAtMs;
     dst.currentPackage = src.currentPackage;
+    dst.recoveryTrusted = src.recoveryTrusted || src.recoveryTrustedClaim ||
+                          !src.resumeBitfield.empty();
+    dst.recoveryTrustedClaim = src.recoveryTrustedClaim;
+    dst.recoveryBytePoint = src.recoveryBytePoint;
+    dst.recoveryUnitBytes = src.recoveryUnitBytes;
+    dst.recoveryUnitTotal = src.recoveryUnitTotal;
     return dst;
 }
 
@@ -628,7 +635,9 @@ bool DownloadManager::importTorrentActions(
                 ++installPackageCount;
         }
         if (action == actionValue(FileAction::Install) &&
-            !preview.files[i].package) {
+            !preview.files[i].package &&
+            !extraAcceptsInstallAction(
+                torrentLogicalPath(preview, preview.files[i]))) {
             error = "Only NSP/NSZ package files can be installed.";
             return false;
         }
@@ -1004,21 +1013,35 @@ bool DownloadManager::torrentingEnabled() const {
     return torrentingEnabled_.load();
 }
 
-bool DownloadManager::pause(const std::string& taskId) {
+void DownloadManager::setActiveDebridProvider(DebridProviderKind kind) {
     std::unique_lock<std::mutex> lock(mutex_);
-    if (externallyLeasedLocked(taskId))
-        return false;
+    activeDebridProvider_ = kind;
+}
+
+DebridProviderKind DownloadManager::activeDebridProvider() const {
+    std::unique_lock<std::mutex> lock(mutex_);
+    return activeDebridProvider_;
+}
+
+std::string DownloadManager::activeDebridCredential() const {
+    std::unique_lock<std::mutex> lock(mutex_);
+    return apiKeyFor(activeDebridProvider_);
+}
+
+bool DownloadManager::pause(const std::string& taskId, std::string& error) {
+    std::unique_lock<std::mutex> lock(mutex_);
     DownloadTask* task = findLocked(taskId);
-    if (!task)
+    if (!task) {
+        error = taskActionReasonName(TaskActionReason::NotFound);
         return false;
-    if (task->status != DownloadStatus::Queued &&
-        task->status != DownloadStatus::Checking &&
-        task->status != DownloadStatus::Fetching &&
-        task->status != DownloadStatus::Downloading &&
-        task->status != DownloadStatus::Installing &&
-        task->status != DownloadStatus::Committing &&
-        task->status != DownloadStatus::Verifying)
+    }
+    const TaskAction decision =
+        taskCapabilities(*task, externallyLeasedLocked(taskId)).pause;
+    if (!decision.allowed) {
+        error = taskActionReasonName(decision.reason);
         return false;
+    }
+    error.clear();
     task->status = DownloadStatus::Paused;
     task->speedBytesPerSecond = 0;
     requestStateSaveLocked();
@@ -1026,14 +1049,20 @@ bool DownloadManager::pause(const std::string& taskId) {
     return true;
 }
 
-bool DownloadManager::resume(const std::string& taskId) {
+bool DownloadManager::resume(const std::string& taskId, std::string& error) {
     std::unique_lock<std::mutex> lock(mutex_);
-    if (externallyLeasedLocked(taskId))
-        return false;
     DownloadTask* task = findLocked(taskId);
-    if (!task || (task->status != DownloadStatus::Paused &&
-                  task->status != DownloadStatus::Error))
+    if (!task) {
+        error = taskActionReasonName(TaskActionReason::NotFound);
         return false;
+    }
+    const TaskAction decision =
+        taskCapabilities(*task, externallyLeasedLocked(taskId)).resume;
+    if (!decision.allowed) {
+        error = taskActionReasonName(decision.reason);
+        return false;
+    }
+    error.clear();
     task->status = DownloadStatus::Queued;
     task->error.clear();
     requestStateSaveLocked();
@@ -1045,14 +1074,8 @@ void DownloadManager::pauseAll() {
     std::unique_lock<std::mutex> lock(mutex_);
     bool changed = false;
     for (DownloadTask& task : tasks_) {
-        if (externallyLeasedLocked(task.id))
-            continue;
-        if (task.status != DownloadStatus::Queued &&
-            task.status != DownloadStatus::Checking &&
-            task.status != DownloadStatus::Fetching &&
-            task.status != DownloadStatus::Downloading &&
-            task.status != DownloadStatus::Installing &&
-            task.status != DownloadStatus::Verifying)
+        if (!taskCapabilities(task, externallyLeasedLocked(task.id))
+                 .pause.allowed)
             continue;
         task.status = DownloadStatus::Paused;
         task.speedBytesPerSecond = 0;
@@ -1068,10 +1091,8 @@ void DownloadManager::resumeAll() {
     std::unique_lock<std::mutex> lock(mutex_);
     bool changed = false;
     for (DownloadTask& task : tasks_) {
-        if (externallyLeasedLocked(task.id))
-            continue;
-        if (task.status != DownloadStatus::Paused &&
-            task.status != DownloadStatus::Error)
+        if (!taskCapabilities(task, externallyLeasedLocked(task.id))
+                 .resume.allowed)
             continue;
         task.status = DownloadStatus::Queued;
         task.error.clear();
@@ -1087,18 +1108,20 @@ bool DownloadManager::retry(const std::string& taskId) {
     return resume(taskId);
 }
 
-bool DownloadManager::verify(const std::string& taskId) {
+bool DownloadManager::verify(const std::string& taskId, std::string& error) {
     std::unique_lock<std::mutex> lock(mutex_);
-    if (externallyLeasedLocked(taskId))
-        return false;
     DownloadTask* task = findLocked(taskId);
-    if (!task || task->status != DownloadStatus::Completed)
+    if (!task) {
+        error = taskActionReasonName(TaskActionReason::NotFound);
         return false;
-    // A recheck rehashes against the local pieces. A debrid task has no
-    // pieces — requeueing it would silently re-download the whole thing from
-    // the provider, so there is nothing honest to offer here.
-    if (task->source == TaskSource::Debrid)
+    }
+    const TaskAction decision =
+        taskCapabilities(*task, externallyLeasedLocked(taskId)).verify;
+    if (!decision.allowed) {
+        error = taskActionReasonName(decision.reason);
         return false;
+    }
+    error.clear();
     task->status = DownloadStatus::Queued;
     task->error.clear();
     task->piecesVerified = 0;
@@ -1228,7 +1251,9 @@ void DownloadManager::cleanupDebridAsync(DebridProviderKind provider,
     removeFromDebridAsync(provider, apiKey, debridId);
 }
 
-bool DownloadManager::clearCompleted(bool deleteData, std::string& error) {
+bool DownloadManager::clearCompleted(bool deleteData, std::string& error,
+                                     ClearCompletedResult* result) {
+    ClearCompletedResult stats;
     struct Cleanup {
         DebridProviderKind provider;
         std::string apiKey;
@@ -1239,29 +1264,50 @@ bool DownloadManager::clearCompleted(bool deleteData, std::string& error) {
         std::unique_lock<std::mutex> lock(mutex_);
         std::vector<std::string> ids;
         for (const DownloadTask& task : tasks_) {
-            if (externallyLeasedLocked(task.id))
-                continue;
-            if (task.status == DownloadStatus::Completed ||
-                task.status == DownloadStatus::Installed)
+            switch (classifyClearCompleted(task.status, task.id,
+                                           externalDeployTaskId_)) {
+            case ClearCompletedClass::Ignore:
+                break;
+            case ClearCompletedClass::Busy:
+                ++stats.skippedBusy;
+                break;
+            case ClearCompletedClass::Clear:
                 ids.push_back(task.id);
+                break;
+            }
         }
-        if (ids.empty())
-            return true;
         for (const std::string& id : ids) {
             DownloadTask* task = findLocked(id);
             if (!task)
                 continue;
+            // removeLocked unlocks while it deletes files, so a later entry
+            // can become leased or leave the finished states before we reach it.
+            if (classifyClearCompleted(task->status, task->id,
+                                       externalDeployTaskId_) !=
+                ClearCompletedClass::Clear) {
+                ++stats.skippedBusy;
+                continue;
+            }
             Cleanup cleanup{task->debridProvider, apiKeyFor(task->debridProvider),
                             task->debridId};
-            if (!removeLocked(lock, id, deleteData, error, false))
+            if (!removeLocked(lock, id, deleteData, error, false)) {
+                if (result)
+                    *result = stats;
                 return false;
+            }
+            ++stats.cleared;
             cleanups.push_back(std::move(cleanup));
         }
-        if (!persistState(lock, error))
+        if (stats.cleared > 0 && !persistState(lock, error)) {
+            if (result)
+                *result = stats;
             return false;
+        }
     }
     for (const Cleanup& cleanup : cleanups)
         removeFromDebridAsync(cleanup.provider, cleanup.apiKey, cleanup.debridId);
+    if (result)
+        *result = stats;
     return true;
 }
 
@@ -1355,6 +1401,13 @@ void DownloadManager::updateExternalPortInstall(
     task->currentPackage = currentPackage;
     updateTaskInstallProgress(*task, installedBytes, installTotalBytes, status,
                               now_ms());
+    // A port copy has no install journal. Finished packages stay installed;
+    // the open package or file copy starts again from its last checkpoint.
+    task->recoveryTrusted = false;
+    task->recoveryTrustedClaim = false;
+    task->recoveryBytePoint = false;
+    task->recoveryUnitBytes = installedBytes;
+    task->recoveryUnitTotal = installTotalBytes;
     if (packageCommitted)
         persistState(lock);
 }
@@ -1373,6 +1426,9 @@ void DownloadManager::finishExternalPortInstall(
     task->currentPackage.clear();
     task->installedBytes = 0;
     task->installTotalBytes = 0;
+    task->recoveryBytePoint = false;
+    task->recoveryUnitBytes = 0;
+    task->recoveryUnitTotal = 0;
     persistState(lock);
 }
 
@@ -1498,6 +1554,8 @@ std::string DownloadManager::serializeStateLocked() const {
         state << "9:debrid-id" << bstr(task.debridId);
         state << "5:error" << bstr(task.error);
         state << "2:id" << bstr(task.id);
+        state << "13:install-bytes" << bint(task.installedBytes);
+        state << "13:install-total" << bint(task.installTotalBytes);
         state << "8:metainfo" << bstr(task.metainfoPath);
         state << "4:mode" << bstr(persistedMode(task.mode));
         state << "4:name" << bstr(task.name);
@@ -1513,6 +1571,9 @@ std::string DownloadManager::serializeStateLocked() const {
                 : task.debridProvider == DebridProviderKind::AllDebrid
                 ? "alldebrid"
                 : "torbox");
+        state << "13:recovery-byte" << bint(task.recoveryBytePoint ? 1 : 0);
+        state << "13:recovery-unit" << bint(task.recoveryUnitBytes);
+        state << "19:recovery-unit-total" << bint(task.recoveryUnitTotal);
         if (!task.resumeBitfield.empty())
             state << "9:resume-bf"
                   << bstr(std::string(task.resumeBitfield.begin(),
@@ -1527,7 +1588,7 @@ std::string DownloadManager::serializeStateLocked() const {
         state << "e";
     }
     state << "e";
-    state << "7:versioni7e";
+    state << "7:versioni8e";
     state << "e";
     return state.str();
 }
@@ -1712,7 +1773,7 @@ void DownloadManager::load() {
         version.type != BE_INT ||
         (version.ival != 1 && version.ival != 2 && version.ival != 3 &&
          version.ival != 4 && version.ival != 5 && version.ival != 6 &&
-         version.ival != 7))
+         version.ival != 7 && version.ival != 8))
         return;
 
     be_node_t list;
@@ -1806,6 +1867,25 @@ void DownloadManager::load() {
             if (dictionaryInteger(item, "pieces-total", piecesTotal))
                 task.piecesTotal = static_cast<uint32_t>(piecesTotal);
         }
+        if (version.ival >= 8) {
+            uint64_t installBytes = 0;
+            uint64_t installTotal = 0;
+            uint64_t recoveryByte = 0;
+            uint64_t recoveryUnit = 0;
+            uint64_t recoveryUnitTotal = 0;
+            if (dictionaryInteger(item, "install-bytes", installBytes))
+                task.installedBytes = installBytes;
+            if (dictionaryInteger(item, "install-total", installTotal))
+                task.installTotalBytes = installTotal;
+            if (dictionaryInteger(item, "recovery-byte", recoveryByte))
+                task.recoveryBytePoint = recoveryByte != 0;
+            if (dictionaryInteger(item, "recovery-unit", recoveryUnit))
+                task.recoveryUnitBytes = recoveryUnit;
+            if (dictionaryInteger(item, "recovery-unit-total",
+                                  recoveryUnitTotal))
+                task.recoveryUnitTotal = recoveryUnitTotal;
+        }
+        task.recoveryTrusted = !task.resumeBitfield.empty();
         task.status = persistedStatus(status);
         if (task.status == DownloadStatus::Completed ||
             task.status == DownloadStatus::Installed)
@@ -2097,6 +2177,11 @@ void DownloadManager::schedulerMain() {
         // first checkpoint below falls back to a full scan.
         claim.resumeBitfield = std::move(task->resumeBitfield);
         task->resumeBitfield.clear();
+        // The engine holds the trusted bitfield. The state file does not,
+        // until the next checkpoint arms it again — a crash in between
+        // correctly falls back to a full scan.
+        task->recoveryTrustedClaim = !claim.resumeBitfield.empty();
+        task->recoveryTrusted = task->recoveryTrustedClaim;
         persistState(lock);
 
         auto slot = std::make_unique<RunnerSlot>();
@@ -2278,6 +2363,13 @@ void DownloadManager::runDebridTask(const ClaimedTask& claim) {
         bool packageCommitted = p.packagesInstalled != task->packagesInstalled;
         task->packagesInstalled = p.packagesInstalled;
         task->currentPackage = p.currentPackage;
+        if (p.hasRecovery) {
+            task->recoveryBytePoint = p.recoveryBytePoint;
+            task->recoveryUnitBytes = p.recoveryUnitBytes;
+            task->recoveryUnitTotal = p.recoveryUnitTotal;
+            task->recoveryTrusted = false;
+            task->recoveryTrustedClaim = false;
+        }
         if (task->status == DownloadStatus::Paused) {
             if (packageCommitted)
                 persistState(lock);
@@ -2638,6 +2730,29 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
             task->piecesDone = stat.num_pieces_done;
             task->piecesTotal = stat.num_pieces;
             task->piecesVerified = stat.num_pieces_verified;
+            task->recoveryTrusted = !task->resumeBitfield.empty() ||
+                                    task->recoveryTrustedClaim;
+            if (mode == TransferMode::StreamInstall && coordinator) {
+                if (coordinator->packageResumeActive()) {
+                    task->recoveryBytePoint = true;
+                    task->recoveryUnitBytes = coordinator->packageResumeBytes();
+                    if (task->installTotalBytes)
+                        task->recoveryUnitTotal = task->installTotalBytes;
+                } else if (task->status == DownloadStatus::Installing ||
+                           task->status == DownloadStatus::Committing) {
+                    task->recoveryBytePoint = false;
+                    task->recoveryUnitBytes = task->installedBytes;
+                    task->recoveryUnitTotal = task->installTotalBytes;
+                } else {
+                    task->recoveryBytePoint = false;
+                    task->recoveryUnitBytes = 0;
+                    task->recoveryUnitTotal = 0;
+                }
+            } else {
+                task->recoveryBytePoint = false;
+                task->recoveryUnitBytes = 0;
+                task->recoveryUnitTotal = 0;
+            }
             if (task->status != DownloadStatus::Removing &&
                 task->status != DownloadStatus::Paused &&
                 task->status != DownloadStatus::Installing &&

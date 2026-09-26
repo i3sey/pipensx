@@ -1,4 +1,6 @@
 #include "web_server.hpp"
+#include "add_release.hpp"
+#include "task_actions.hpp"
 
 extern "C" {
 #include "../core/util.h"
@@ -208,6 +210,18 @@ void WebServer::setPin(std::string pin) {
     pin_ = std::move(pin);
 }
 
+void WebServer::setDebridProviderFactory(DebridProviderFactory factory) {
+    std::lock_guard<std::mutex> lock(configMutex_);
+    debridFactory_ = factory;
+    addQueue_.setDebridProviderFactory(std::move(factory));
+}
+
+void WebServer::setOneTapContextLookup(
+    std::function<OneTapContext(const std::string& infoHash,
+                                const std::string& titleId)> lookup) {
+    addQueue_.setOneTapContextLookup(std::move(lookup));
+}
+
 void WebServer::setStreamSelection(StreamSelection selection) {
     std::lock_guard<std::mutex> lock(configMutex_);
     streamSelection_ = selection;
@@ -268,10 +282,18 @@ bool WebServer::authorized(const HttpRequest& req) const {
     return diff == 0;
 }
 
+static Json taskActionJson(const TaskAction& action) {
+    Json j;
+    j["allowed"] = action.allowed;
+    j["reason"] = taskActionReasonName(action.reason);
+    return j;
+}
+
 std::string WebServer::buildStateJson() {
     Json state;
     state["version"] = version_;
     std::vector<DownloadTask> snapshot = manager_.snapshotUi();
+    const std::string leasedId = manager_.externalDeployTaskId();
     Json tasks = Json::array();
     uint64_t now = nowMs();
     for (const DownloadTask& t : snapshot) {
@@ -302,6 +324,29 @@ std::string WebServer::buildStateJson() {
         const auto eta = taskEtaSeconds(t, now);
         j["etaSeconds"] = eta ? *eta : 0;
         j["currentPackage"] = t.currentPackage;
+        const RecoveryAccount recovery = recoveryAccountOf(t);
+        Json recoveryJson;
+        recoveryJson["work"] = recoveryWorkName(recovery.work);
+        recoveryJson["downloadedBytes"] = recovery.downloadedBytes;
+        recoveryJson["downloadTotalBytes"] = recovery.downloadTotalBytes;
+        recoveryJson["packagesInstalled"] = recovery.packagesInstalled;
+        recoveryJson["packageCount"] = recovery.packageCount;
+        recoveryJson["savedBytes"] = recovery.savedBytes;
+        recoveryJson["reworkBytes"] = recovery.reworkBytes;
+        recoveryJson["byteExact"] = recovery.byteExact;
+        recoveryJson["verifyingSaved"] = recovery.verifyingSaved;
+        recoveryJson["showDownloaded"] = recovery.showDownloaded;
+        recoveryJson["showInstalled"] = recovery.showInstalled;
+        j["recovery"] = std::move(recoveryJson);
+        const TaskCapabilities caps =
+            taskCapabilities(t, t.id == leasedId);
+        Json capabilities;
+        capabilities["pause"] = taskActionJson(caps.pause);
+        capabilities["resume"] = taskActionJson(caps.resume);
+        capabilities["verify"] = taskActionJson(caps.verify);
+        capabilities["remove"] = taskActionJson(caps.remove);
+        capabilities["move"] = taskActionJson(caps.move);
+        j["capabilities"] = std::move(capabilities);
         tasks.push_back(std::move(j));
     }
     state["tasks"] = std::move(tasks);
@@ -487,9 +532,13 @@ HttpResponse WebServer::routeApi(const HttpRequest& req) {
                 deleteData = body.value("deleteData", false);
             }
             std::string error;
-            if (!manager_.clearCompleted(deleteData, error))
+            ClearCompletedResult result;
+            if (!manager_.clearCompleted(deleteData, error, &result))
                 return jsonError(409, error.empty() ? "rejected" : error);
-            return HttpResponse::empty(204);
+            Json body;
+            body["cleared"] = result.cleared;
+            body["skippedBusy"] = result.skippedBusy;
+            return HttpResponse::text(200, dumpJson(body));
         }
     }
     if (parts[0] == "jobs" && parts.size() == 3 && parts[2] == "cancel")
@@ -623,17 +672,11 @@ HttpResponse WebServer::handleTaskCommand(const std::string& id,
     std::string error;
     bool ok = false;
     if (command == "pause") {
-        ok = manager_.pause(id);
-        error = "task is not pausable right now";
-    } else if (command == "resume") {
-        ok = manager_.resume(id);
-        error = "task is not paused";
-    } else if (command == "retry") {
-        ok = manager_.retry(id);
-        error = "task is not in an error state";
+        ok = manager_.pause(id, error);
+    } else if (command == "resume" || command == "retry") {
+        ok = manager_.resume(id, error);
     } else if (command == "verify") {
-        ok = manager_.verify(id);
-        error = "task cannot be verified right now";
+        ok = manager_.verify(id, error);
     } else if (command == "move-front") {
         ok = manager_.moveToFront(id, error);
     } else if (command == "move-up") {
@@ -677,7 +720,8 @@ HttpResponse WebServer::handleAddMagnet(const HttpRequest& req) {
         selection = streamSelection_;
     }
     std::string jobId = addQueue_.enqueue("", magnet, spec.infoHashHex, {},
-                                          mode, selection, error);
+                                          mode, selection, error,
+                                          AddInputKind::Magnet);
     if (jobId.empty()) return jsonError(409, error);
     Json j;
     j["jobId"] = jobId;
@@ -695,6 +739,7 @@ HttpResponse WebServer::handleAddCatalog(const HttpRequest& req) {
 
     std::string title;
     std::string magnet;
+    std::string titleId;
     std::vector<uint8_t> infoDict;
     {
         std::lock_guard<std::mutex> lock(catalogMutex_);
@@ -705,6 +750,7 @@ HttpResponse WebServer::handleAddCatalog(const HttpRequest& req) {
         title = entry.title;
         magnet = entry.magnetUri;
         infoDict = entry.infoDict;
+        titleId = entry.titleId;
     }
     StreamSelection selection;
     {
@@ -714,7 +760,8 @@ HttpResponse WebServer::handleAddCatalog(const HttpRequest& req) {
     std::string error;
     std::string jobId =
         addQueue_.enqueue(std::move(title), std::move(magnet), hash,
-                          std::move(infoDict), mode, selection, error);
+                          std::move(infoDict), mode, selection, error,
+                          AddInputKind::Catalog, std::move(titleId));
     if (jobId.empty()) return jsonError(409, error);
     Json j;
     j["jobId"] = jobId;
@@ -727,11 +774,17 @@ HttpResponse WebServer::handleAddTorrent(const HttpRequest& req) {
     if (!parseMode(req.queryParam("mode"), mode))
         return jsonError(400, "mode must be \"install\" or \"download\"");
 
-    // Parsing the upload is offline, but the task it creates is a torrent one
-    // and the worker would just error it out. Say so now instead of accepting
-    // an upload that is going to fail a second later.
-    if (!manager_.torrentingEnabled())
-        return jsonError(409, "torrenting is disabled in Settings");
+    // Refuse before writing the upload when the saved source cannot take a
+    // .torrent. Direct stays off; a configured debrid provider accepts it.
+    DebridProviderFactory factory;
+    {
+        std::lock_guard<std::mutex> lock(configMutex_);
+        factory = debridFactory_;
+    }
+    ReleaseAdder adder(manager_, std::move(factory));
+    const AddSourceChoice source = adder.choose(AddInputKind::TorrentFile);
+    if (!source.accepted)
+        return jsonError(409, source.refusal);
 
     const std::string path =
         manager_.rootPath() + "/_web_upload_" +
@@ -751,25 +804,25 @@ HttpResponse WebServer::handleAddTorrent(const HttpRequest& req) {
         ::unlink(path.c_str());
         return jsonError(400, error.empty() ? "invalid torrent" : error);
     }
-    std::vector<uint8_t> mask;
-    if (mode == TransferMode::StreamInstall) {
-        StreamSelection selection;
-        {
-            std::lock_guard<std::mutex> lock(configMutex_);
-            selection = streamSelection_;
-        }
-        mode = defaultTransferMode(preview, mode);
-        mask = defaultInstallSelection(preview, mode, selection);
-        InstallSpaceEstimate space = estimateInstallSpace(preview, mask, mode);
-        if (space.packageFiles == 0 && mode != TransferMode::PortInstall)
-            mode = TransferMode::DownloadOnly;
+    StreamSelection selection;
+    {
+        std::lock_guard<std::mutex> lock(configMutex_);
+        selection = streamSelection_;
     }
-    std::string taskId;
-    bool ok = manager_.importTorrent(path, mode, mask, taskId, error);
+    AddRequest request;
+    request.input = AddInputKind::TorrentFile;
+    request.title = preview.name;
+    request.infoHashHex = preview.infoHash;
+    request.requestedMode = mode;
+    request.selection = selection;
+    std::atomic<bool> cancelled{false};
+    const AddOutcome outcome = adder.addTorrentFile(request, path, cancelled);
     ::unlink(path.c_str());
-    if (!ok) return jsonError(409, error.empty() ? "import failed" : error);
+    if (!outcome.ok)
+        return jsonError(409, outcome.error.empty() ? "import failed"
+                                                    : outcome.error);
     Json j;
-    j["taskId"] = taskId;
+    j["taskId"] = outcome.taskId;
     return HttpResponse::text(200, dumpJson(j));
 }
 

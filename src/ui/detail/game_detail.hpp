@@ -11,6 +11,7 @@
 
 #include <borealis.hpp>
 
+#include "app/add_release.hpp"
 #include "app/app_settings.hpp"
 #include "app/catalog_presentation.hpp"
 #include "app/game_update_install.hpp"
@@ -107,7 +108,10 @@ public:
           onClose_(std::move(onClose)),
           alive_(std::make_shared<std::atomic<bool>>(true)),
           cancelled_(std::make_shared<std::atomic<bool>>(false)),
-          autoInstall_(autoInstall), portInstall_(portInstall) {
+          autoInstall_(autoInstall) {
+        // The catalog tab still passes portInstall. The Install action is
+        // chosen after the file list resolves (cardOneTapUsesPortInstall).
+        (void)portInstall;
         const GameMetadata* found =
             metadata_->findByInfoHash(entry_.infoHash, entry_.titleId);
         presentation_ = resolveCatalogPresentation(entry_, found,
@@ -536,7 +540,12 @@ private:
                 return tr("pipensx/detail/status_fetching",
                           percentOf(static_cast<float>(task.fetchProgress)));
             case DownloadStatus::Checking:
+            case DownloadStatus::Verifying: {
+                const RecoveryAccount account = recoveryAccountOf(task);
+                if (account.verifyingSaved || account.downloadedBytes > 0)
+                    return tr("pipensx/downloads/axis_verifying");
                 return tr("pipensx/downloads/status_checking");
+            }
             case DownloadStatus::Downloading: {
                 return tr("pipensx/detail/status_downloading",
                           percentOf(progressOf(task)));
@@ -546,9 +555,6 @@ private:
                 return tr("pipensx/detail/status_installing",
                           percentOf(installProgressOf(task)));
             }
-            case DownloadStatus::Verifying:
-                return tr("pipensx/detail/status_verifying",
-                          percentOf(progressOf(task)));
             case DownloadStatus::Paused: {
                 int pct = percentOf(progressOf(task));
                 return pct > 0
@@ -822,10 +828,6 @@ private:
     void startInstall(bool forcePicker) {
         if (busy_)
             return;
-        if (portInstall_ && !forcePicker) {
-            startPortInstall();
-            return;
-        }
         if (debridModeActive(settings_)) {
             startDebridInstall(TransferMode::StreamInstall, forcePicker);
             return;
@@ -928,35 +930,21 @@ private:
         std::string debridId;
     };
 
-    static TorrentPreview previewFromDebridInfo(const DebridInfo& info,
-                                                const std::string& fallbackName,
-                                                uint64_t fallbackBytes) {
-        TorrentPreview preview;
-        preview.name = info.name.empty() ? fallbackName : info.name;
-        preview.totalBytes = info.bytes ? info.bytes : fallbackBytes;
-        preview.fileCount = static_cast<uint32_t>(info.files.size());
-        for (const DebridFile& file : info.files) {
-            const bool package = isPackageName(file.path);
-            preview.files.push_back({file.path, file.bytes, package,
-                                     isCompressedName(file.path),
-                                     isCartridgeName(file.path)});
-            preview.packageCount += package ? 1 : 0;
-            preview.cartridgeCount += isCartridgeName(file.path) ? 1 : 0;
-        }
-        return preview;
+    static std::string portLayoutStatus(const TorrentPreview& preview) {
+        return torrentHasLayeredFsPayload(preview)
+            ? tr("pipensx/port_install/layout_layered")
+            : torrentPortLayoutDetected(preview)
+                ? tr("pipensx/port_install/layout_detected")
+                : tr("pipensx/port_install/layout_missing");
     }
 
-    void startPortInstall() {
-        if (busy_)
-            return;
-        if (debridModeActive(settings_) &&
-            !ensureDebridLinked(settings_, manager_))
+    void beginResolvedPortInstall(
+        std::shared_ptr<PortImportPending> pending) {
+        if (!pending)
             return;
         setBusy(true);
         operationMessage_.clear();
         cancelled_->store(false);
-
-        auto pending = std::make_shared<PortImportPending>();
         auto host = std::make_shared<PortInstallDialogHost>();
         auto alive = alive_;
         auto cancelled = cancelled_;
@@ -979,195 +967,7 @@ private:
                     refreshButtons();
                 }
             });
-
-        if (debridModeActive(settings_)) {
-            startPortDebridIndex(host, pending);
-            return;
-        }
-
-        uint32_t serial = gCatalogTempSerial.fetch_add(1);
-        pending->torrentPath = manager_->rootPath() + "/_catalog_tmp_" +
-                               catalogLower(entry_.infoHash) + "_" +
-                               std::to_string(serial) + ".torrent";
-        std::string magnet = entry_.magnetUri;
-        std::vector<uint8_t> infoDict = entry_.infoDict;
-        std::string telemetryTag = catalogLower(entry_.infoHash);
-        uint64_t startedMs = now_ms();
-        std::string tmp = pending->torrentPath;
-        brls::async([this, alive, cancelled, magnet, infoDict, tmp, host,
-                     pending, telemetryTag, startedMs] {
-            std::string err;
-            MagnetResolver resolver;
-            auto progress = [alive, host, last = std::string()](
-                                const pipensx::MagnetProgress& p) mutable {
-                std::string text;
-                switch (p.stage) {
-                    case pipensx::MagnetProgress::Stage::FindingPeers:
-                        text = tr("pipensx/detail/finding_peers");
-                        break;
-                    case pipensx::MagnetProgress::Stage::Connecting:
-                        text = tr("pipensx/detail/contacting_peer",
-                                  p.peerIndex, p.peerCount);
-                        break;
-                    case pipensx::MagnetProgress::Stage::FetchingMetadata:
-                        text = tr("pipensx/detail/fetching_metadata",
-                                  p.completedPieces, p.totalPieces);
-                        break;
-                    case pipensx::MagnetProgress::Stage::Validating:
-                        text = tr("pipensx/detail/validating");
-                        break;
-                }
-                if (text == last)
-                    return;
-                last = text;
-                brls::sync([alive, host, text] {
-                    if (!alive->load() || !host->live || !host->live->load())
-                        return;
-                    if (host->status)
-                        host->status->setText(text);
-                });
-            };
-            std::vector<uint8_t> initialPeers;
-            bool ok = resolver.resolveToFile(
-                magnet, tmp, *cancelled, progress, err, &initialPeers,
-                infoDict.empty() ? nullptr : &infoDict);
-            telemetry_log("magnet", telemetryTag.c_str(),
-                          "event=resolve ok=%d cancelled=%d duration_ms=%llu "
-                          "verified_peers=%u",
-                          ok ? 1 : 0, cancelled->load() ? 1 : 0,
-                          (unsigned long long)(now_ms() - startedMs),
-                          static_cast<unsigned>(initialPeers.size() / 6));
-            brls::sync([this, alive, ok, err, tmp, host, pending,
-                        initialPeers = std::move(initialPeers)]() mutable {
-                if (!alive->load()) {
-                    ::unlink(tmp.c_str());
-                    return;
-                }
-                if (!host->live || !host->live->load()) {
-                    ::unlink(tmp.c_str());
-                    return;
-                }
-                std::string hash = catalogLower(entry_.infoHash);
-                if (!ok) {
-                    std::string reason = classifyResolveFailure(err);
-                    if (onFailure_)
-                        onFailure_(hash, reason);
-                    diagnostic_error("magnet", hash.c_str(), "error=%s",
-                                     err.c_str());
-                    if (host->status)
-                        host->status->setText(reason);
-                    ::unlink(tmp.c_str());
-                    pending->torrentPath.clear();
-                    return;
-                }
-                if (onFailure_)
-                    onFailure_(hash, "");
-                std::string error;
-                if (!DownloadManager::previewTorrent(tmp, pending->preview,
-                                                     error)) {
-                    if (host->status)
-                        host->status->setText(error);
-                    ::unlink(tmp.c_str());
-                    pending->torrentPath.clear();
-                    return;
-                }
-                pending->peers = std::move(initialPeers);
-                setPortInstallReady(
-                    *host,
-                    torrentHasLayeredFsPayload(pending->preview)
-                        ? tr("pipensx/port_install/layout_layered")
-                        : torrentPortLayoutDetected(pending->preview)
-                            ? tr("pipensx/port_install/layout_detected")
-                            : tr("pipensx/port_install/layout_missing"));
-            });
-        });
-    }
-
-    void startPortDebridIndex(
-        std::shared_ptr<PortInstallDialogHost> host,
-        std::shared_ptr<PortImportPending> pending) {
-        const AppSettingsData values = settings_->get();
-        pending->debridMode = true;
-        pending->providerKind = values.debridProvider;
-        pending->debridKey = activeDebridKey(values);
-        auto alive = alive_;
-        auto cancelled = cancelled_;
-        const CatalogEntry entry = entry_;
-        const std::string root = manager_->rootPath();
-        const uint32_t serial = gCatalogTempSerial.fetch_add(1);
-        brls::async([alive, cancelled, host, pending, entry, root, serial] {
-            auto provider = makeDebridProvider(pending->providerKind,
-                                               pending->debridKey);
-            std::string error;
-            std::string debridId;
-            DebridInfo info;
-            const std::string tmp =
-                root + "/_debrid_tmp_" + catalogLower(entry.infoHash) + "_" +
-                std::to_string(serial) + ".torrent";
-            const auto deadline = std::chrono::steady_clock::now() +
-                                  std::chrono::seconds(60);
-            auto onStage = [host, alive](DebridCreateStage stage) {
-                std::string text;
-                switch (stage) {
-                    case DebridCreateStage::FetchingTorrent:
-                        text = tr("pipensx/debrid/fetching_torrent");
-                        break;
-                    case DebridCreateStage::UploadingTorrent:
-                        text = tr("pipensx/debrid/submitting");
-                        break;
-                    case DebridCreateStage::SendingMagnet:
-                    default:
-                        text = tr("pipensx/debrid/sending_magnet");
-                        break;
-                }
-                brls::sync([host, alive, text] {
-                    if (alive->load() && host->live && host->live->load() &&
-                        host->status)
-                        host->status->setText(text);
-                });
-            };
-            const bool ok = createDebridWithMetainfoFallback(
-                *provider, entry.magnetUri, catalogLower(entry.infoHash),
-                entry.infoDict, tmp, *cancelled, deadline, debridId, info,
-                error, onStage);
-            brls::sync([alive, ok, error, info, debridId, host, pending,
-                        entry] {
-                if (!alive->load() || !host->live || !host->live->load()) {
-                    if (!debridId.empty())
-                        removeDebridTransferAsync(pending->providerKind,
-                                                  pending->debridKey,
-                                                  debridId);
-                    return;
-                }
-                if (!ok) {
-                    if (!debridId.empty())
-                        removeDebridTransferAsync(pending->providerKind,
-                                                  pending->debridKey,
-                                                  debridId);
-                    if (host->status)
-                        host->status->setText(
-                            error.empty()
-                                ? tr("pipensx/debrid/magnet_unavailable")
-                                : error);
-                    return;
-                }
-                pending->debridId = debridId;
-                pending->preview = previewFromDebridInfo(
-                    info, entry.title, entry.size);
-                pending->debrid.infoHash = catalogLower(entry.infoHash);
-                pending->debrid.name = pending->preview.name;
-                pending->debrid.totalBytes = pending->preview.totalBytes;
-                pending->debrid.provider = pending->providerKind;
-                pending->debrid.debridId = debridId;
-                setPortInstallReady(
-                    *host,
-                    torrentHasLayeredFsPayload(pending->preview)
-                        ? tr("pipensx/port_install/layout_layered")
-                        : torrentPortLayoutDetected(pending->preview)
-                            ? tr("pipensx/port_install/layout_detected")
-                            : tr("pipensx/port_install/layout_missing"));
-            });
-        });
+        setPortInstallReady(*host, portLayoutStatus(pending->preview));
     }
 
     void finishPortImport(PortImportPending& pending) {
@@ -1303,24 +1103,16 @@ private:
                 import.provider = providerKind;
                 import.debridId = debridId;
                 import.mode = mode;
-                if (forcePicker && !info.files.empty()) {
-                    TorrentPreview preview;
-                    preview.name = import.name;
-                    preview.totalBytes = import.totalBytes;
-                    preview.fileCount = static_cast<uint32_t>(info.files.size());
-                    for (const DebridFile& file : info.files) {
-                        const bool package = isPackageName(file.path);
-                        preview.files.push_back({file.path, file.bytes, package,
-                                                 isCompressedName(file.path),
-                                                 isCartridgeName(file.path)});
-                        preview.packageCount += package ? 1 : 0;
-                        preview.cartridgeCount += isCartridgeName(file.path) ? 1 : 0;
-                    }
+                TorrentPreview layoutPreview = previewFromDebridFiles(
+                    info, entry.title, entry.size);
+                import.name = layoutPreview.name;
+                import.totalBytes = layoutPreview.totalBytes;
+                if (forcePicker && !layoutPreview.files.empty()) {
                     StreamSelection selection = settings_->get().streamSelection;
                     log_msg("[DEBUG-debrid-picker] push id=%s files=%u\n",
-                            debridId.c_str(), preview.fileCount);
+                            debridId.c_str(), layoutPreview.fileCount);
                     brls::Application::pushActivity(new TorrentSelectionActivity(
-                        manager_, "", std::move(preview),
+                        manager_, "", std::move(layoutPreview),
                         TransferMode::StreamInstall, selection, {}, import,
                         [providerKind, key, debridId] {
                             removeDebridTransferAsync(providerKind, key, debridId);
@@ -1329,42 +1121,41 @@ private:
                             debridId.c_str());
                     return;
                 }
-                bool extrasSkipped = false;
-                if (mode == TransferMode::StreamInstall && !info.files.empty()) {
-                    TorrentPreview preview;
-                    preview.name = import.name;
-                    preview.totalBytes = import.totalBytes;
-                    preview.fileCount = static_cast<uint32_t>(info.files.size());
-                    for (const DebridFile& file : info.files) {
-                        const bool package = isPackageName(file.path);
-                        preview.files.push_back({file.path, file.bytes, package,
-                                                 isCompressedName(file.path),
-                                                 isCartridgeName(file.path)});
-                        preview.packageCount += package ? 1 : 0;
-                        preview.cartridgeCount += isCartridgeName(file.path) ? 1 : 0;
-                    }
-                    import.fileSelection = smartInstallMask(preview);
-                    import.packageCount = 0;
-                    for (uint8_t action : import.fileSelection) {
-                        if (action == static_cast<uint8_t>(FileAction::Install))
-                            ++import.packageCount;
-                    }
-                    extrasSkipped = selectionSkipsExtraFiles(
-                        preview, import.fileSelection);
-                    if (import.packageCount == 0) {
-                        operationMessage_ = tr("pipensx/detail/smart_open_options");
-                        refreshButtons();
-                        brls::Application::notify(operationMessage_);
-                        brls::Application::pushActivity(new TorrentSelectionActivity(
-                            manager_, "", std::move(preview),
-                            TransferMode::StreamInstall,
-                            settings_->get().streamSelection, {}, import,
-                            [providerKind, key, debridId] {
-                                removeDebridTransferAsync(providerKind, key, debridId);
-                            }));
-                        return;
-                    }
+                const OneTapPlan plan =
+                    planCatalogOneTap(layoutPreview, oneTapContext());
+                if (plan.outcome == OneTapOutcome::QueuePort) {
+                    auto pending = std::make_shared<PortImportPending>();
+                    pending->debridMode = true;
+                    pending->providerKind = providerKind;
+                    pending->debridKey = key;
+                    pending->debridId = debridId;
+                    pending->preview = std::move(layoutPreview);
+                    pending->debrid = import;
+                    pending->debrid.infoHash = catalogLower(entry.infoHash);
+                    pending->debrid.name = pending->preview.name;
+                    pending->debrid.totalBytes = pending->preview.totalBytes;
+                    pending->debrid.provider = providerKind;
+                    pending->debrid.debridId = debridId;
+                    beginResolvedPortInstall(pending);
+                    return;
                 }
+                if (plan.outcome == OneTapOutcome::NeedsChooser) {
+                    operationMessage_ = oneTapBlockText(plan.block);
+                    refreshButtons();
+                    brls::Application::notify(operationMessage_);
+                    brls::Application::pushActivity(new TorrentSelectionActivity(
+                        manager_, "", std::move(layoutPreview),
+                        plan.chooserMode, settings_->get().streamSelection, {},
+                        import,
+                        [providerKind, key, debridId] {
+                            removeDebridTransferAsync(providerKind, key, debridId);
+                        }));
+                    return;
+                }
+                import.fileSelection = plan.fileSelection;
+                import.packageCount = plan.packageCount;
+                import.mode = plan.mode;
+                const SkippedExtraNotice extrasNotice = plan.extras;
                 std::string id;
                 std::string importError;
                 if (!manager_->importDebrid(import, id, importError)) {
@@ -1372,13 +1163,8 @@ private:
                     operationMessage_ = importError;
                     brls::Application::notify(importError);
                 } else {
-                    statusLabel_->setText(
-                        extrasSkipped
-                            ? tr("pipensx/detail/installing_extras_skipped")
-                            : tr("pipensx/debrid/queued"));
-                    if (extrasSkipped)
-                        brls::Application::notify(
-                            tr("pipensx/detail/installing_extras_skipped_hint"));
+                    if (!notifyExtrasSkipped(extrasNotice))
+                        statusLabel_->setText(tr("pipensx/debrid/queued"));
                     if (onChange_)
                         onChange_();
                 }
@@ -1417,37 +1203,26 @@ private:
             return;
         }
 
-        // One-tap path. No installable packages -> open the picker in download
-        // mode so the user is not left at a dead end.
-        if (preview.packageCount == 0) {
-            operationMessage_ = preview.cartridgeCount > 0
-                ? tr("pipensx/detail/cartridge_only")
-                : tr("pipensx/detail/no_installable");
+        const OneTapPlan plan = planCatalogOneTap(preview, oneTapContext());
+        if (plan.outcome == OneTapOutcome::QueuePort) {
+            auto pending = std::make_shared<PortImportPending>();
+            pending->torrentPath = path;
+            pending->preview = std::move(preview);
+            pending->peers = std::move(initialPeers);
+            beginResolvedPortInstall(pending);
+            return;
+        }
+        if (plan.outcome == OneTapOutcome::NeedsChooser) {
+            operationMessage_ = oneTapBlockText(plan.block);
             refreshButtons();
             brls::Application::notify(operationMessage_);
             openSelection(path, std::move(preview), std::move(initialPeers),
-                          TransferMode::DownloadOnly);
+                          plan.chooserMode);
             return;
         }
 
         const bool titleInstalled = installed_ && installed_->contains(titleId_);
-        std::vector<uint8_t> mask = smartInstallMask(preview);
-        bool hasInstall = false;
-        for (uint8_t action : mask) {
-            if (action == static_cast<uint8_t>(FileAction::Install)) {
-                hasInstall = true;
-                break;
-            }
-        }
-        if (!hasInstall) {
-            operationMessage_ = titleInstalled
-                ? tr("pipensx/detail/smart_open_options")
-                : tr("pipensx/detail/no_installable");
-            refreshButtons();
-            brls::Application::notify(operationMessage_);
-            openSelection(path, std::move(preview), std::move(initialPeers));
-            return;
-        }
+        const std::vector<uint8_t>& mask = plan.fileSelection;
 
         std::string id;
         std::string err;
@@ -1456,22 +1231,18 @@ private:
                       : manager_->installTarget());
         if (manager_->importTorrentActions(path, mask, id, err, initialPeers)) {
             log_msg("[catalog] imported torrent %s\n", id.c_str());
-            const bool extrasSkipped = selectionSkipsExtraFiles(preview, mask);
-            if (extrasSkipped) {
-                statusLabel_->setText(
-                    tr("pipensx/detail/installing_extras_skipped"));
-                brls::Application::notify(
-                    tr("pipensx/detail/installing_extras_skipped_hint"));
-            } else if (titleInstalled) {
-                statusLabel_->setText(
-                    tr("pipensx/detail/smart_installing_update", destination));
-                brls::Application::notify(
-                    tr("pipensx/detail/smart_installing_update", destination));
-            } else {
-                statusLabel_->setText(
-                    tr("pipensx/detail/smart_installing_base", destination));
-                brls::Application::notify(
-                    tr("pipensx/detail/smart_installing_base", destination));
+            if (!notifyExtrasSkipped(skippedExtraNotice(preview, mask))) {
+                if (titleInstalled) {
+                    statusLabel_->setText(
+                        tr("pipensx/detail/smart_installing_update", destination));
+                    brls::Application::notify(
+                        tr("pipensx/detail/smart_installing_update", destination));
+                } else {
+                    statusLabel_->setText(
+                        tr("pipensx/detail/smart_installing_base", destination));
+                    brls::Application::notify(
+                        tr("pipensx/detail/smart_installing_base", destination));
+                }
             }
             if (onChange_)
                 onChange_();
@@ -1501,6 +1272,25 @@ private:
         brls::Application::pushActivity(new TorrentSelectionActivity(
             manager_, path, std::move(preview), preferred,
             selection, std::move(initialPeers)));
+    }
+
+    OneTapContext oneTapContext() const {
+        OneTapContext context;
+        context.titleId = titleId_;
+        context.titleInstalled = installed_ && installed_->contains(titleId_);
+        context.installedVersion = installedVersionForTitle();
+        context.latestVersion = latestVersionForEntry();
+        context.installedDlcIds = installedDlcIds();
+        return context;
+    }
+
+    std::string oneTapBlockText(OneTapBlock block) const {
+        if (block == OneTapBlock::CartridgeOnly)
+            return tr("pipensx/detail/cartridge_only");
+        if (block == OneTapBlock::NothingSelected &&
+            installed_ && installed_->contains(titleId_))
+            return tr("pipensx/detail/smart_open_options");
+        return tr("pipensx/detail/no_installable");
     }
 
     std::string installedVersionForTitle() const {
@@ -1587,6 +1377,19 @@ private:
         return installed_ ? installed_->dlcTitleIds() : std::vector<std::string>();
     }
 
+    // Sets the status line and the one-tap toast. Returns false when nothing
+    // extra was skipped, so the caller can show the ordinary queued text.
+    bool notifyExtrasSkipped(SkippedExtraNotice notice) {
+        if (notice == SkippedExtraNotice::None)
+            return false;
+        statusLabel_->setText(tr("pipensx/detail/installing_extras_skipped"));
+        brls::Application::notify(tr(
+            notice == SkippedExtraNotice::Installable
+                ? "pipensx/detail/installing_extras_skipped_hint"
+                : "pipensx/detail/installing_extras_skipped_junk_hint"));
+        return true;
+    }
+
     std::vector<uint8_t> smartInstallMask(
         const TorrentPreview& preview) const {
         const bool titleInstalled = installed_ && installed_->contains(titleId_);
@@ -1634,7 +1437,6 @@ private:
     std::vector<DownloadTask> cache_;
     bool busy_ = false;
     bool autoInstall_ = false;
-    bool portInstall_ = false;
 };
 
 }  // namespace pipensx::ui

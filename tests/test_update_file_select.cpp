@@ -13,9 +13,10 @@ using pipensx::CatalogEntry;
 using pipensx::FileAction;
 using pipensx::TorrentPreview;
 
-TorrentPreview::File package(const std::string& path) {
+TorrentPreview::File package(const std::string& path, uint64_t length = 0) {
     TorrentPreview::File file;
     file.path = path;
+    file.length = length;
     file.package = true;
     return file;
 }
@@ -180,9 +181,11 @@ void testComboDumpDoesNotSelectOtherTitlePatch() {
         static_cast<uint8_t>(FileAction::Skip),
         static_cast<uint8_t>(FileAction::Skip),
     });
+    // Catalog latestVersion for another title is ignored; the patch actually
+    // in this torrent for A (v131072) is what one-tap installs.
     expectSmartActions(preview, true, "0", "327680", "0100AAAA00000000", {
         static_cast<uint8_t>(FileAction::Skip),
-        static_cast<uint8_t>(FileAction::Skip),
+        static_cast<uint8_t>(FileAction::Install),
         static_cast<uint8_t>(FileAction::Skip),
         static_cast<uint8_t>(FileAction::Skip),
     });
@@ -345,7 +348,7 @@ void testSmartInstallInstalledTitleSkipsSameOrUnknownVersion() {
     assert(unknown[1] == static_cast<uint8_t>(FileAction::Skip));
 }
 
-void testSmartInstallInstalledTitleDoesNotUseHeuristicFallback() {
+void testSmartInstallInstalledTitleUsesHighestInTorrent() {
     TorrentPreview preview;
     preview.files = {package("Game [0100AAAA00000000][v0].nsp"),
                      package("Game Update [0100AAAA00000000][v131073].nsp")};
@@ -353,7 +356,7 @@ void testSmartInstallInstalledTitleDoesNotUseHeuristicFallback() {
         preview, true, "65536", "131072", "0100AAAA00000000");
     assert(actions.size() == 2);
     assert(actions[0] == static_cast<uint8_t>(FileAction::Skip));
-    assert(actions[1] == static_cast<uint8_t>(FileAction::Skip));
+    assert(actions[1] == static_cast<uint8_t>(FileAction::Install));
 }
 
 // Scene BOTW-style names: Patch title id …800, not the base …000. DLC must
@@ -392,6 +395,101 @@ void testSmartInstallUsesBundledPatchVersionWhenLatestEmpty() {
     });
 }
 
+void testSmartInstallPicksLargestDuplicateDlc() {
+    TorrentPreview preview;
+    preview.files = {
+        package("Game [0100AAAA00000000][v0].nsp", 100),
+        package("Game [0100AAAA00000800][v131072].nsp", 50),
+        package("29 DLC/DLC [0100AAAA00001001][v0].nsp", 121120),
+        package("Unsorted/[0100AAAA00001001][v0][DLC].nsp", 105632),
+        package("Unsorted/[0100AAAA00001002][v0][DLC].nsp", 105632)};
+    expectSmartActions(preview, false, "", "65536", "0100AAAA00000000", {
+        static_cast<uint8_t>(FileAction::Install),
+        static_cast<uint8_t>(FileAction::Install),
+        static_cast<uint8_t>(FileAction::Install),
+        static_cast<uint8_t>(FileAction::Skip),
+        static_cast<uint8_t>(FileAction::Install),
+    });
+}
+
+void testSmartInstallPrefersTorrentPatchOverStaleCatalog() {
+    TorrentPreview preview;
+    preview.files = {
+        package("Game [01002C9022770000][v0].nsz", 7000000000ull),
+        package("Old Russian/Game [01002C9022770800][v262144].nsz", 600000000),
+        package("Russian Language Text Mod/Game [01002C9022770800][v327680].nsz",
+                500000000),
+        package("Game [01002C9022770800][v393216].nsz", 569408383),
+        plain("Russian Language Text Mod/atmosphere.7z")};
+    expectSmartActions(preview, false, "", "327680", "01002C9022770000", {
+        static_cast<uint8_t>(FileAction::Install),
+        static_cast<uint8_t>(FileAction::Skip),
+        static_cast<uint8_t>(FileAction::Skip),
+        static_cast<uint8_t>(FileAction::Install),
+        static_cast<uint8_t>(FileAction::Skip),
+    });
+}
+
+void testOverlappingPatchesAreConflicts() {
+    TorrentPreview preview;
+    preview.files = {
+        package("Game [0100AAAA00000000][v0].nsp"),
+        package("Game [0100AAAA00000800][v131072].nsp"),
+        package("Game [0100AAAA00000800][v196608].nsp"),
+        package("DLC [0100AAAA00001001][v0].nsp")};
+    const std::vector<uint8_t> selected = {
+        static_cast<uint8_t>(FileAction::Install),
+        static_cast<uint8_t>(FileAction::Install),
+        static_cast<uint8_t>(FileAction::Install),
+        static_cast<uint8_t>(FileAction::Skip),
+    };
+    const std::vector<uint8_t> conflicts =
+        pipensx::overlappingSelectionConflicts(preview, selected);
+    assert(conflicts.size() == 4);
+    assert(conflicts[0] == 0);
+    assert(conflicts[1] == 1);
+    assert(conflicts[2] == 1);
+    assert(conflicts[3] == 0);
+}
+
+void testOverlappingDownloadsAreNotConflicts() {
+    TorrentPreview preview;
+    preview.files = {
+        package("Game [0100AAAA00000800][v131072].nsp"),
+        package("Game [0100AAAA00000800][v196608].nsp"),
+        package("DLC [0100AAAA00001001][v0].nsp")};
+    const std::vector<uint8_t> selected = {
+        static_cast<uint8_t>(FileAction::Download),
+        static_cast<uint8_t>(FileAction::Download),
+        static_cast<uint8_t>(FileAction::Install),
+    };
+    const std::vector<uint8_t> conflicts =
+        pipensx::overlappingSelectionConflicts(preview, selected);
+    assert(conflicts.size() == 3);
+    assert(conflicts[0] == 0);
+    assert(conflicts[1] == 0);
+    assert(conflicts[2] == 0);
+}
+
+void testOverlappingDuplicateDlcAreConflicts() {
+    TorrentPreview preview;
+    preview.files = {
+        package("Named/DLC [0100AAAA00001001][v0].nsp", 121),
+        package("Unsorted/[0100AAAA00001001][v0][DLC].nsp", 103),
+        package("Unsorted/[0100AAAA00001002][v0][DLC].nsp", 103)};
+    const std::vector<uint8_t> selected = {
+        static_cast<uint8_t>(FileAction::Install),
+        static_cast<uint8_t>(FileAction::Install),
+        static_cast<uint8_t>(FileAction::Install),
+    };
+    const std::vector<uint8_t> conflicts =
+        pipensx::overlappingSelectionConflicts(preview, selected);
+    assert(conflicts.size() == 3);
+    assert(conflicts[0] == 1);
+    assert(conflicts[1] == 1);
+    assert(conflicts[2] == 0);
+}
+
 void testMagnetPrefersCatalogEntry() {
     CatalogEntry entry;
     entry.infoHash = "E21269D03D34B557F63CE915DEA14F765C9C9798";
@@ -411,6 +509,55 @@ void testMagnetFallsBackToRuTrackerMagnetWhenNoCatalogEntry() {
                                     nullptr) ==
            "magnet:?xt=urn:btih:e21269d03d34b557f63ce915dea14f765c9c9798"
            "&tr=http://bt.t-ru.org/ann?magnet");
+}
+
+void testSkippedExtraNotice() {
+    TorrentPreview preview;
+    preview.files = {
+        package("Game [0100AAAA00B00000][v0].nsp"),
+        plain("readme.txt"),
+        plain("rusifikator.zip"),
+        plain("atmosphere/contents/0100AAAA00B00000/romfs/a.dat"),
+        plain("contents/0100AAAA00B00000/exefs/main.npdm"),
+        plain("voice.rar"),
+        plain("Русский/text.txt"),
+        plain("forwarder.nro"),
+    };
+    const uint8_t install = static_cast<uint8_t>(FileAction::Install);
+    const uint8_t skip = static_cast<uint8_t>(FileAction::Skip);
+    const uint8_t download = static_cast<uint8_t>(FileAction::Download);
+    assert(pipensx::skippedExtraNotice(
+               preview, {install, skip, skip, skip, skip, skip, skip, skip}) ==
+           pipensx::SkippedExtraNotice::Installable);
+    assert(pipensx::selectionSkipsExtraFiles(
+        preview, {install, skip, skip, skip, skip, skip, skip, skip}));
+    // Notes, rar, and a loose translation folder are not installed.
+    assert(pipensx::skippedExtraNotice(
+               preview,
+               {install, skip, download, download, download, skip, skip,
+                download}) == pipensx::SkippedExtraNotice::NotInstalled);
+    assert(pipensx::skippedExtraNotice(
+               preview,
+               {install, download, download, download, download, download,
+                download, download}) == pipensx::SkippedExtraNotice::None);
+    // No package is installing, so this is not the one-tap extras toast.
+    assert(pipensx::skippedExtraNotice(
+               preview, {skip, skip, skip, skip, skip, skip, skip, skip}) ==
+           pipensx::SkippedExtraNotice::None);
+    assert(pipensx::skippedExtraNotice(
+               preview,
+               {install, download, download, download, skip, download,
+                download, download}) ==
+           pipensx::SkippedExtraNotice::Installable);
+    assert(pipensx::skippedExtraNotice(
+               preview,
+               {install, download, skip, download, download, download,
+                download, download}) ==
+           pipensx::SkippedExtraNotice::Installable);
+    assert(pipensx::skippedExtraNotice(
+               preview,
+               {install, download, download, download, download, download,
+                download, skip}) == pipensx::SkippedExtraNotice::Installable);
 }
 
 void testUtf8TruncateBoundary() {
@@ -645,11 +792,17 @@ int main() {
     testSmartInstallSkipsSameTitleMods();
     testSmartInstallInstalledTitleInstallsOnlyNewerUpdate();
     testSmartInstallInstalledTitleSkipsSameOrUnknownVersion();
-    testSmartInstallInstalledTitleDoesNotUseHeuristicFallback();
+    testSmartInstallInstalledTitleUsesHighestInTorrent();
     testSmartInstallMatchesPatchTitleId();
     testSmartInstallUsesBundledPatchVersionWhenLatestEmpty();
+    testSmartInstallPicksLargestDuplicateDlc();
+    testSmartInstallPrefersTorrentPatchOverStaleCatalog();
+    testOverlappingPatchesAreConflicts();
+    testOverlappingDownloadsAreNotConflicts();
+    testOverlappingDuplicateDlcAreConflicts();
     testMagnetPrefersCatalogEntry();
     testMagnetFallsBackToRuTrackerMagnetWhenNoCatalogEntry();
+    testSkippedExtraNotice();
     testUtf8TruncateBoundary();
     testPreflightBotwWithMods();
     testPreflightBroforceWithoutMods();

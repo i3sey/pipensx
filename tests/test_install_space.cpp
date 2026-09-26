@@ -1,4 +1,6 @@
 #include "app/install_space.hpp"
+#include "app/nx_file_types.hpp"
+#include "app/port_selection.hpp"
 
 #include <cassert>
 #include <cstdio>
@@ -96,6 +98,8 @@ int main() {
         assert(estimate.requiredBytes == 2304);
     }
 
+    // A retail dump plus a payload archive is still stream-install: the zip
+    // is an extra, not a reason to treat the torrent as a port.
     {
         TorrentPreview preview;
         preview.files = {
@@ -104,12 +108,12 @@ int main() {
         };
         const TransferMode mode = defaultTransferMode(
             preview, TransferMode::StreamInstall);
-        assert(mode == TransferMode::PortInstall);
+        assert(mode == TransferMode::StreamInstall);
         std::vector<uint8_t> selection = defaultInstallSelection(
             preview, mode, StreamSelection::PackagesOnly);
         assert((selection == std::vector<uint8_t>{
-            static_cast<uint8_t>(FileAction::Download),
-            static_cast<uint8_t>(FileAction::Download),
+            static_cast<uint8_t>(FileAction::Install),
+            static_cast<uint8_t>(FileAction::Skip),
         }));
     }
 
@@ -271,6 +275,43 @@ int main() {
         unavailable.available = false;
         unavailable.freeBytes = 0;
         assert(catalogEntryFitsFreeSpace(1ULL << 40, unavailable));
+    }
+
+    assert(classifySwitchPath("game.nsp") == SwitchPathKind::Package);
+    assert(classifySwitchPath("rus.zip") == SwitchPathKind::Archive);
+    assert(classifySwitchPath(
+               "atmosphere/contents/0100B00B51230000/romfs/a") ==
+           SwitchPathKind::LayeredFsRomfs);
+    assert(classifySwitchPath("readme.txt") == SwitchPathKind::Junk);
+    assert(isDeployableExtraPath("rusifikator.7z"));
+    assert(!isDeployableExtraPath("readme.nfo"));
+
+    {
+        TorrentPreview preview;
+        preview.files = {
+            {"game.nsp", 1024, true, false, false},
+            {"rus.zip", 512, false, false, false},
+        };
+        const std::vector<uint8_t> hybrid = {
+            static_cast<uint8_t>(FileAction::Install),
+            static_cast<uint8_t>(FileAction::Download),
+        };
+        size_t packages = 0;
+        assert(!selectionIsPortTransaction(preview, hybrid, &packages));
+        assert(packages == 1);
+        const std::vector<uint8_t> port = {
+            static_cast<uint8_t>(FileAction::Download),
+            static_cast<uint8_t>(FileAction::Download),
+        };
+        preview.files = {
+            {"switch/Game/Game.nro", 256, false, false, false},
+            {"forwarder.nsp", 1024, true, false, false},
+        };
+        assert(selectionIsPortTransaction(preview, port, &packages));
+        assert(packages == 1);
+        const auto mask = selectPortInstallActions(preview);
+        assert(mask[0] == static_cast<uint8_t>(FileAction::Download));
+        assert(mask[1] == static_cast<uint8_t>(FileAction::Download));
     }
 
     std::puts("install space tests passed");

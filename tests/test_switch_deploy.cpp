@@ -4,12 +4,14 @@
 #include "../src/app/port_selection.hpp"
 #include "../src/app/switch_deploy.hpp"
 
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <optional>
 #include <thread>
 #include <utility>
@@ -229,6 +231,7 @@ int main() {
             {"notes.txt", 3, false, false, false},
         };
         assert(torrentHasPortArchive(preview));
+        assert(!torrentPortLayoutDetected(preview));
         const auto mask = selectPortInstallActions(preview);
         assert(mask[0] == static_cast<uint8_t>(FileAction::Download));
         assert(mask[1] == static_cast<uint8_t>(FileAction::Download));
@@ -258,7 +261,7 @@ int main() {
             {"readme.txt", 5, false, false, false},
         };
         assert(torrentHasLayeredFsPayload(preview));
-        assert(torrentPortLayoutDetected(preview));
+        assert(!torrentPortLayoutDetected(preview));
         const auto mask = selectPortInstallActions(preview);
         assert(mask.size() == 5);
         assert(mask[0] == static_cast<uint8_t>(FileAction::Download));
@@ -272,6 +275,90 @@ int main() {
             "atmosphere/contents/not-a-title/romfs/a"));
         assert(!isLayeredFsRomfsPath(
             "atmosphere/contents/0100b00b51230000/exefs/a"));
+        std::string canonical;
+        std::string titleFromPath;
+        assert(isLayeredFsRomfsPath(
+            "contents/0100b00b51230000/romfs/a", nullptr, &titleFromPath,
+            &canonical));
+        assert(titleFromPath == "0100b00b51230000");
+        assert(canonical ==
+               "atmosphere/contents/0100b00b51230000/romfs/a");
+        assert(isLayeredFsRomfsPath(
+            "pack/titles/0100B00B51230000/romfs/sub/a.bin", nullptr, nullptr,
+            &canonical));
+        assert(canonical ==
+               "atmosphere/contents/0100B00B51230000/romfs/sub/a.bin");
+        assert(!isLayeredFsRomfsPath("SaltySD/plugins/x.elf"));
+        assert(!isLayeredFsRomfsPath("Русский/readme.txt"));
+        assert(isLayeredFsExefsPath(
+            "atmosphere/contents/0100b00b51230000/exefs/main.npdm",
+            &canonical, &titleFromPath));
+        assert(titleFromPath == "0100b00b51230000");
+        assert(canonical ==
+               "atmosphere/contents/0100b00b51230000/exefs/main.npdm");
+        assert(isLayeredFsExefsPath(
+            "titles/0100b00b51230000/exefs/main", &canonical));
+        assert(canonical ==
+               "atmosphere/contents/0100b00b51230000/exefs/main");
+        assert(!isLayeredFsExefsPath(
+            "atmosphere/contents/0100b00b51230000/romfs/a"));
+    }
+    {
+        TorrentPreview nroOnly;
+        nroOnly.files = {{"Game.nro", 32, false, false, false}};
+        assert(cardOneTapUsesPortInstall(nroOnly));
+        TorrentPreview hybrid;
+        hybrid.files = {
+            {"game.nsp", 100, true, false, false},
+            {"Game.nro", 32, false, false, false},
+        };
+        assert(torrentPortLayoutDetected(hybrid));
+        assert(!cardOneTapUsesPortInstall(hybrid));
+        TorrentPreview titledNro;
+        titledNro.files = {
+            {"Game [0100B00B51230000].nsp", 100, true, false, false},
+        };
+        assert(!cardOneTapUsesPortInstall(titledNro));
+        TorrentPreview oldRoot;
+        oldRoot.files = {
+            {"contents/0100b00b51230000/romfs/a", 10, false, false, false},
+            {"titles/0100b00b51230000/romfs/b", 10, false, false, false},
+            {"atmosphere/contents/0100b00b51230000/exefs/main.npdm",
+             8, false, false, false},
+            {"readme.txt", 2, false, false, false},
+        };
+        assert(cardOneTapUsesPortInstall(oldRoot));
+        const auto mask = selectPortInstallActions(oldRoot);
+        assert(mask[0] == static_cast<uint8_t>(FileAction::Download));
+        assert(mask[1] == static_cast<uint8_t>(FileAction::Download));
+        assert(mask[2] == static_cast<uint8_t>(FileAction::Skip));
+        assert(mask[3] == static_cast<uint8_t>(FileAction::Skip));
+        std::vector<uint8_t> toggled(oldRoot.files.size(),
+                                     static_cast<uint8_t>(FileAction::Skip));
+        toggleExefsPatchActions(oldRoot, toggled);
+        assert(toggled[0] == static_cast<uint8_t>(FileAction::Skip));
+        assert(toggled[2] == static_cast<uint8_t>(FileAction::Download));
+        toggleExefsPatchActions(oldRoot, toggled);
+        assert(toggled[2] == static_cast<uint8_t>(FileAction::Skip));
+    }
+    {
+        TorrentPreview preview;
+        preview.multi = false;
+        preview.name = "FlatPort";
+        preview.files = {
+            {"Game.nro", 32, false, false, false},
+            {"data/x.bin", 9, false, false, false},
+            {"readme.txt", 4, false, false, false},
+        };
+        const auto roots = candidatePortPayloadRoots(preview);
+        assert(roots.size() == 1);
+        assert(roots[0].empty());
+        assert(torrentPortLayoutDetected(preview));
+        const auto mask = selectPortInstallActions(preview);
+        assert(mask.size() == 3);
+        assert(mask[0] == static_cast<uint8_t>(FileAction::Download));
+        assert(mask[1] == static_cast<uint8_t>(FileAction::Download));
+        assert(mask[2] == static_cast<uint8_t>(FileAction::Download));
     }
 
     assert(portArchiveSolidFitsRam(0, 0));
@@ -382,6 +469,7 @@ int main() {
     SwitchDeployInspection collision = inspectSwitchDeploy(
         std::move(collisionInventory), target);
     assert(collision.problem == SwitchDeployProblem::UnsafePath);
+    assert(collision.unsafeReason == SwitchDeployUnsafeReason::NameCollision);
 
     writeFile(data + "/sources/a", "A");
     writeFile(data + "/sources/b", "B");
@@ -396,8 +484,13 @@ int main() {
                data + "/sources/a", 1);
     addPresent(directoryCollision, "Release/switch/myport/data/b.bin",
                data + "/sources/b", 1);
-    assert(inspectSwitchDeploy(std::move(directoryCollision), target).problem ==
-           SwitchDeployProblem::UnsafePath);
+    {
+        SwitchDeployInspection directory =
+            inspectSwitchDeploy(std::move(directoryCollision), target);
+        assert(directory.problem == SwitchDeployProblem::UnsafePath);
+        assert(directory.unsafeReason ==
+               SwitchDeployUnsafeReason::NameCollision);
+    }
 
     TaskFileInventory prefixCollision;
     prefixCollision.taskId = "prefix-collision";
@@ -410,8 +503,42 @@ int main() {
                data + "/sources/a", 1);
     addPresent(prefixCollision, "Release/switch/MyPort/data/app.bin",
                data + "/sources/b", 1);
-    assert(inspectSwitchDeploy(std::move(prefixCollision), target).problem ==
-           SwitchDeployProblem::UnsafePath);
+    {
+        SwitchDeployInspection prefix =
+            inspectSwitchDeploy(std::move(prefixCollision), target);
+        assert(prefix.problem == SwitchDeployProblem::UnsafePath);
+        assert(prefix.unsafeReason == SwitchDeployUnsafeReason::NameCollision);
+    }
+
+    TaskFileInventory symlink;
+    symlink.taskId = "symlink";
+    symlink.rootPath = data;
+    symlink.settled = true;
+    symlink.completeManifest = true;
+    addPresent(symlink, "Release/switch/MyPort/MyPort.nro",
+               data + "/Release/switch/MyPort/MyPort.nro", nro.size());
+    symlink.files.back().state = TaskFileState::Unsafe;
+    {
+        SwitchDeployInspection linked =
+            inspectSwitchDeploy(std::move(symlink), target);
+        assert(linked.problem == SwitchDeployProblem::UnsafePath);
+        assert(linked.unsafeReason == SwitchDeployUnsafeReason::Symlink);
+    }
+
+    TaskFileInventory appDir;
+    appDir.taskId = "appdir";
+    appDir.rootPath = data;
+    appDir.settled = true;
+    appDir.completeManifest = true;
+    addPresent(appDir, "pipensx/Game.nro",
+               data + "/Release/switch/MyPort/MyPort.nro", nro.size());
+    {
+        SwitchDeployInspection forbidden =
+            inspectSwitchDeploy(std::move(appDir), target);
+        assert(forbidden.problem == SwitchDeployProblem::UnsafePath);
+        assert(forbidden.unsafeReason ==
+               SwitchDeployUnsafeReason::AppDirectory);
+    }
 
     writeFile(data + "/Other/switch/Other/Other.nro", nro);
     TaskFileInventory ambiguous;
@@ -487,6 +614,9 @@ int main() {
                         "install", "installed");
     TaskFileManifest streamManifest = manifest;
     streamManifest.taskId = streamId;
+    for (TaskFileRecord& file : streamManifest.files)
+        if (!file.package)
+            file.action = TaskFileAction::Install;
     assert(saveTaskFileManifest(streamRoot, streamManifest, error));
     DownloadManager streamManager(streamRoot, false);
     SwitchDeployService streamDeploy(streamManager, streamRoot, streamTarget);
@@ -510,6 +640,9 @@ int main() {
                         "install", "installed");
     TaskFileManifest autoManifest = manifest;
     autoManifest.taskId = autoId;
+    for (TaskFileRecord& file : autoManifest.files)
+        if (!file.package)
+            file.action = TaskFileAction::Install;
     assert(saveTaskFileManifest(autoRoot, autoManifest, error));
     DownloadManager autoManager(autoRoot, false);
     SwitchDeployService autoDeploy(autoManager, autoRoot, autoTarget);
@@ -595,6 +728,9 @@ int main() {
                         "install", "installed");
     TaskFileManifest rearmManifest = manifest;
     rearmManifest.taskId = rearmId;
+    for (TaskFileRecord& file : rearmManifest.files)
+        if (!file.package)
+            file.action = TaskFileAction::Install;
     assert(saveTaskFileManifest(rearmRoot, rearmManifest, error));
     DownloadManager rearmManager(rearmRoot, false);
     SwitchDeployService rearmDeploy(rearmManager, rearmRoot, rearmTarget);
@@ -1030,6 +1166,141 @@ int main() {
     }
 
     {
+        const std::string rusPath = data + "/rusifikator.zip";
+        const std::string loc = "RU";
+        writeFile(rusPath,
+                  writeStoredZip(
+                      {{"atmosphere/contents/0100B00B51230000/romfs/loc.txt",
+                        loc}}));
+        TaskFileInventory rusInventory;
+        rusInventory.taskId = "nsp-plus-rusifikator";
+        rusInventory.rootPath = data;
+        rusInventory.settled = true;
+        rusInventory.completeManifest = true;
+        TaskFileInfo nsp;
+        nsp.logicalPath = "game.nsp";
+        nsp.size = 4096;
+        nsp.package = true;
+        nsp.action = TaskFileAction::Install;
+        nsp.state = TaskFileState::Installed;
+        rusInventory.files.push_back(std::move(nsp));
+        addPresent(rusInventory, "rusifikator.zip", rusPath,
+                   fs::file_size(rusPath));
+        SwitchDeployInspection rusInspection =
+            inspectSwitchDeploy(std::move(rusInventory), target);
+        assert(rusInspection.canStart());
+        assert(rusInspection.plan.layeredFs);
+        assert(rusInspection.plan.archives.size() == 1);
+        assert(rusInspection.plan.archives[0].extractable);
+        assert(!rusInspection.plan.layeredTitleIds.empty());
+        std::atomic<bool> cancelled{false};
+        std::string extractError;
+        const std::string sdRoot = root + "/sd";
+        assert(extractPortArchive(rusPath, target, sdRoot, cancelled, nullptr,
+                                  nullptr, extractError));
+        assert(extractError.empty());
+        {
+            std::ifstream in(sdRoot + "/atmosphere/contents/"
+                                      "0100B00B51230000/romfs/loc.txt",
+                             std::ios::binary);
+            const std::string got((std::istreambuf_iterator<char>(in)),
+                                  std::istreambuf_iterator<char>());
+            assert(got == loc);
+        }
+        assert(rusInspection.plan.archives[0].kind ==
+               PortArchiveKind::LayeredFs);
+        assert(rusInspection.plan.archives[0].layeredFiles == 1);
+        assert(rusInspection.plan.archives[0].switchFiles == 0);
+    }
+
+    {
+        const std::string flatRoot = root + "-flat-nro";
+        const std::string flatTarget = flatRoot + "/sd/switch";
+        const std::string flatData = flatRoot + "/downloads/flat";
+        fs::remove_all(flatRoot);
+        fs::create_directories(flatTarget);
+        const std::string flatNro = nroBytes();
+        writeFile(flatData + "/Game.nro", flatNro);
+        writeFile(flatData + "/data/x.bin", "DATA");
+        writeFile(flatData + "/readme.txt", "HI");
+        TaskFileInventory flatInventory;
+        flatInventory.taskId = "flat-nro-data";
+        flatInventory.rootPath = flatData;
+        flatInventory.settled = true;
+        flatInventory.completeManifest = true;
+        addPresent(flatInventory, "Game.nro", flatData + "/Game.nro",
+                   flatNro.size());
+        addPresent(flatInventory, "data/x.bin", flatData + "/data/x.bin", 4);
+        addPresent(flatInventory, "readme.txt", flatData + "/readme.txt", 2);
+        SwitchDeployInspection flatInspection =
+            inspectSwitchDeploy(std::move(flatInventory), flatTarget);
+        assert(flatInspection.canStart());
+        assert(flatInspection.plan.files.size() == 3);
+        bool sawNro = false;
+        bool sawData = false;
+        bool sawReadme = false;
+        for (const SwitchDeployEntry& entry : flatInspection.plan.files) {
+            if (entry.destinationRelativePath == "Game.nro")
+                sawNro = true;
+            if (entry.destinationRelativePath == "data/x.bin")
+                sawData = true;
+            if (entry.destinationRelativePath == "readme.txt")
+                sawReadme = true;
+        }
+        assert(sawNro && sawData && sawReadme);
+        fs::remove_all(flatRoot);
+    }
+
+    {
+        const std::string mixedPath = data + "/mixed-port.zip";
+        const std::string mixedNro = nroBytes();
+        const std::string mixedLoc = "RU-MIX";
+        writeFile(mixedPath,
+                  writeStoredZip(
+                      {{"Game.nro", mixedNro},
+                       {"data/x.bin", "DATA"},
+                       {"atmosphere/contents/0100B00B51230000/romfs/loc.txt",
+                        mixedLoc}}));
+        TaskFileInventory mixedInventory;
+        mixedInventory.taskId = "mixed-nro-layeredfs-zip";
+        mixedInventory.rootPath = data;
+        mixedInventory.settled = true;
+        mixedInventory.completeManifest = true;
+        addPresent(mixedInventory, "mixed-port.zip", mixedPath,
+                   fs::file_size(mixedPath));
+        const std::string mixedSd = root + "/sd-mixed";
+        const std::string mixedSwitch = mixedSd + "/switch";
+        fs::create_directories(mixedSwitch);
+        SwitchDeployInspection mixedInspection =
+            inspectSwitchDeploy(std::move(mixedInventory), mixedSwitch);
+        assert(mixedInspection.canStart());
+        assert(mixedInspection.plan.archives.size() == 1);
+        assert(mixedInspection.plan.archives[0].extractable);
+        assert(mixedInspection.plan.archives[0].kind ==
+               PortArchiveKind::Mixed);
+        assert(mixedInspection.plan.archives[0].switchFiles == 2);
+        assert(mixedInspection.plan.archives[0].layeredFiles == 1);
+        assert(mixedInspection.plan.layeredFs);
+        std::atomic<bool> mixedCancelled{false};
+        std::string mixedError;
+        assert(extractPortArchive(mixedPath, mixedSwitch, mixedSd,
+                                  mixedCancelled, nullptr, nullptr,
+                                  mixedError));
+        assert(mixedError.empty());
+        assert(fs::exists(mixedSwitch + "/Game.nro"));
+        assert(fs::exists(mixedSwitch + "/data/x.bin"));
+        assert(!fs::exists(mixedSwitch + "/atmosphere"));
+        {
+            std::ifstream in(mixedSd + "/atmosphere/contents/"
+                                       "0100B00B51230000/romfs/loc.txt",
+                             std::ios::binary);
+            const std::string got((std::istreambuf_iterator<char>(in)),
+                                  std::istreambuf_iterator<char>());
+            assert(got == mixedLoc);
+        }
+    }
+
+    {
         TaskFileInventory nszInventory;
         nszInventory.taskId = "nsz-only";
         nszInventory.rootPath = data;
@@ -1180,6 +1451,59 @@ int main() {
         fs::remove_all(splitRoot);
     }
 
+    // contents/ and titles/ romfs roots deploy at the canonical Atmosphere
+    // path. An exefs member deploys only when it was selected for download.
+    {
+        const std::string altRoot = root + "/layered-alt";
+        const std::string altData = altRoot + "/downloads/task";
+        const std::string altTarget = altRoot + "/sd/switch";
+        fs::create_directories(altTarget);
+        const std::string contentsLogical =
+            "Release/contents/0100b00b51230000/romfs/common.rpf";
+        const std::string titlesLogical =
+            "Release/titles/0100B00B51230000/romfs/sub/voice.bin";
+        const std::string exefsLogical =
+            "Release/atmosphere/contents/0100b00b51230000/exefs/main.npdm";
+        writeFile(altData + "/" + contentsLogical, "ROM");
+        writeFile(altData + "/" + titlesLogical, "VOICE");
+        writeFile(altData + "/" + exefsLogical, "NPDM");
+        TaskFileInventory altInventory;
+        altInventory.taskId = "layered-alt";
+        altInventory.rootPath = altData;
+        altInventory.settled = true;
+        altInventory.completeManifest = true;
+        addPresent(altInventory, contentsLogical,
+                   altData + "/" + contentsLogical, 3);
+        addPresent(altInventory, titlesLogical,
+                   altData + "/" + titlesLogical, 5);
+        addPresent(altInventory, exefsLogical,
+                   altData + "/" + exefsLogical, 4);
+        altInventory.files[2].action = TaskFileAction::Skip;
+        SwitchDeployInspection altInspection =
+            inspectSwitchDeploy(std::move(altInventory), altTarget);
+        assert(altInspection.canStart());
+        assert(altInspection.plan.layeredFs);
+        assert(altInspection.plan.files.size() == 2);
+        assert(altInspection.plan.files[0].destinationRelativePath ==
+                   "atmosphere/contents/0100b00b51230000/romfs/common.rpf" ||
+               altInspection.plan.files[1].destinationRelativePath ==
+                   "atmosphere/contents/0100b00b51230000/romfs/common.rpf");
+        bool sawTitles = false;
+        bool sawExefs = false;
+        for (const SwitchDeployEntry& entry : altInspection.plan.files) {
+            if (entry.destinationRelativePath ==
+                "atmosphere/contents/0100B00B51230000/romfs/sub/voice.bin")
+                sawTitles = true;
+            if (entry.destinationRelativePath.find("exefs") !=
+                std::string::npos)
+                sawExefs = true;
+            assert(entry.target == SwitchDeployTarget::SdRoot);
+        }
+        assert(sawTitles);
+        assert(!sawExefs);
+        fs::remove_all(altRoot);
+    }
+
     // Atmosphere LayeredFS + NSP transaction: every RomFS member is selected,
     // moved (not copied) to the SD root, tied to the package CNMT title id,
     // and recorded with its destination root for exact uninstall.
@@ -1258,14 +1582,26 @@ int main() {
                        "atmosphere/contents/" + titleId + "/romfs/", 0) == 0);
         }
 
-        // Unknown files mean a mixed LayeredFS version/mod set. Installation
-        // is blocked rather than deleting user mods or merging versions.
+        // Translations overlap by filename: matching romfs files are
+        // overwritten, foreign mods in the same tree are left in place.
         const std::string unknown = layeredSd + "/atmosphere/contents/" +
             titleId + "/romfs/user-mod.rpf";
         writeFile(unknown, "KEEP-MOD");
+        writeFile(layeredSd + "/atmosphere/contents/" + titleId +
+                      "/romfs/common.rpf",
+                  "OLD-COMMON");
         layeredInspection = layeredDeploy.inspect(layeredId);
-        assert(layeredInspection.problem == SwitchDeployProblem::Conflict);
-        fs::remove(unknown);
+        assert(layeredInspection.canStart());
+        assert(layeredInspection.plan.layeredForeignFiles >= 1);
+        assert(layeredInspection.plan.layeredOverwriteFiles >= 1);
+        bool sawOverwrite = false;
+        for (const SwitchDeployEntry& entry : layeredInspection.plan.files) {
+            if (entry.destinationRelativePath.find("common.rpf") !=
+                std::string::npos)
+                sawOverwrite =
+                    entry.state == SwitchDeployEntryState::WillOverwrite;
+        }
+        assert(sawOverwrite);
 
         assert(layeredDeploy.start(layeredId, error));
         for (int i = 0; i < 500 && layeredDeploy.snapshot().active(); ++i)
@@ -1279,6 +1615,13 @@ int main() {
             "/romfs/switch/data.rpf";
         assert(fs::exists(deployedCommon));
         assert(fs::exists(deployedSwitch));
+        {
+            std::ifstream in(deployedCommon, std::ios::binary);
+            const std::string got((std::istreambuf_iterator<char>(in)),
+                                  std::istreambuf_iterator<char>());
+            assert(got == common);
+        }
+        assert(fs::exists(unknown));
         assert(!fs::exists(layeredData +
                            "/Release/atmosphere/contents/" + titleId +
                            "/romfs/common.rpf"));
@@ -1294,9 +1637,6 @@ int main() {
         assert(layeredPlan.switchFiles.empty());
         assert(layeredPlan.sdRootFiles.size() == 2);
         assert(layeredPlan.sdRootBytes == common.size() + switchAsset.size());
-        writeFile(layeredSd + "/atmosphere/contents/" + titleId +
-                      "/romfs/user-mod.rpf",
-                  "KEEP-MOD");
         PortUninstallReport layeredReport;
         assert(layeredUninstall.uninstallPort(
             layeredPlan, [](std::string&) { return true; }, layeredReport));

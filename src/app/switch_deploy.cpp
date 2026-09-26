@@ -682,10 +682,14 @@ bool sourceFileSafe(const TaskFileInventory& inventory,
 }
 
 void setProblem(SwitchDeployInspection& result, SwitchDeployProblem problem,
-                std::string detail) {
+                std::string detail,
+                SwitchDeployUnsafeReason reason =
+                    SwitchDeployUnsafeReason::Generic) {
     if (result.problem == SwitchDeployProblem::None) {
         result.problem = problem;
         result.detail = std::move(detail);
+        if (problem == SwitchDeployProblem::UnsafePath)
+            result.unsafeReason = reason;
     }
 }
 
@@ -791,6 +795,27 @@ bool copyFile(const SwitchDeployEntry& entry, const std::string& appRoot,
     std::remove(temporary.c_str());
 #endif
     std::remove(jobPath(appRoot).c_str());
+    return true;
+}
+
+bool removeRegularFileIfPresent(const std::string& path, std::string& error) {
+    struct stat existing {};
+    if (lstat(path.c_str(), &existing) != 0) {
+        if (errno == ENOENT)
+            return true;
+        error = std::string("Unable to inspect a LayeredFS destination (") +
+                std::strerror(errno) + ").";
+        return false;
+    }
+    if (S_ISLNK(existing.st_mode) || !S_ISREG(existing.st_mode)) {
+        error = "Refusing to overwrite a non-file LayeredFS destination.";
+        return false;
+    }
+    if (unlink(path.c_str()) != 0) {
+        error = std::string("Unable to replace a LayeredFS file (") +
+                std::strerror(errno) + ").";
+        return false;
+    }
     return true;
 }
 
@@ -1070,11 +1095,20 @@ bool removeTreeBestEffort(const std::string& path) {
 } // namespace
 
 SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
-                                           const std::string& targetRoot) {
+                                           const std::string& targetRoot,
+                                           bool installExtrasOnly) {
     SwitchDeployInspection result;
     result.inventory = std::move(inventory);
     result.plan.taskId = result.inventory.taskId;
     result.plan.targetRoot = targetRoot;
+    auto extraCopies = [installExtrasOnly](const TaskFileInfo& file) {
+        if (file.package || file.cartridge)
+            return false;
+        if (installExtrasOnly)
+            return file.action == TaskFileAction::Install;
+        return file.action == TaskFileAction::Download ||
+               file.action == TaskFileAction::Install;
+    };
     const std::string sdRoot = sdRootForSwitchRoot(targetRoot);
     if (!result.inventory.settled) {
         setProblem(result, SwitchDeployProblem::NotReady,
@@ -1094,7 +1128,8 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
     for (const TaskFileInfo& file : result.inventory.files) {
         if (file.state == TaskFileState::Unsafe) {
             setProblem(result, SwitchDeployProblem::UnsafePath,
-                       "The download contains a symlink or unsafe file.");
+                       "The download contains a symlink or unsafe file.",
+                       SwitchDeployUnsafeReason::Symlink);
             return result;
         }
     }
@@ -1105,8 +1140,7 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
     // archive layouts behave differently and rejected multi-port releases.
     std::map<std::string, std::string> roots;
     for (const TaskFileInfo& file : result.inventory.files) {
-        if (file.action != TaskFileAction::Download || file.package ||
-            file.cartridge || file.state != TaskFileState::Present ||
+        if (!extraCopies(file) || file.state != TaskFileState::Present ||
             !hasNroExtension(file.logicalPath) ||
             !sourceFileSafe(result.inventory, file) ||
             !validNro(file.absolutePath))
@@ -1136,13 +1170,21 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
     std::map<std::string, std::string> layeredRomfsRoots;
     std::set<std::string> layeredIds;
     for (const TaskFileInfo& file : result.inventory.files) {
-        size_t atmosphereOffset = 0;
+        std::string destinationRelative;
         std::string titleId;
+        const bool romfsMember =
+            isLayeredFsRomfsPath(file.logicalPath, nullptr, &titleId,
+                                 &destinationRelative);
+        if (!romfsMember) {
+            titleId.clear();
+            destinationRelative.clear();
+        }
         if (file.package || file.cartridge ||
-            !isLayeredFsRomfsPath(file.logicalPath, &atmosphereOffset,
-                                  &titleId))
+            (!romfsMember &&
+             !isLayeredFsExefsPath(file.logicalPath, &destinationRelative,
+                                   &titleId)))
             continue;
-        if (file.action != TaskFileAction::Download) {
+        if (!extraCopies(file)) {
             ++result.plan.ignoredFiles;
             continue;
         }
@@ -1152,13 +1194,9 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
                        file.logicalPath);
             return result;
         }
-        std::string destinationRelative =
-            file.logicalPath.substr(atmosphereOffset);
-        std::replace(destinationRelative.begin(), destinationRelative.end(),
-                     '\\', '/');
         if (!taskFilePathIsFatCompatible(destinationRelative)) {
             setProblem(result, SwitchDeployProblem::UnsafePath,
-                       file.logicalPath);
+                       file.logicalPath, SwitchDeployUnsafeReason::NameCollision);
             return result;
         }
         for (char& ch : titleId)
@@ -1178,7 +1216,8 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
         const std::string plannedKey = "sd:" + foldedDestination;
         if (!plannedFiles.emplace(plannedKey, destinationRelative).second) {
             setProblem(result, SwitchDeployProblem::UnsafePath,
-                       "LayeredFS destination paths collide on FAT.");
+                       "LayeredFS destination paths collide on FAT.",
+                       SwitchDeployUnsafeReason::NameCollision);
             return result;
         }
         layeredExpected.insert(foldedDestination);
@@ -1206,9 +1245,13 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
                 return result;
             }
             entry.state = SwitchDeployEntryState::Missing;
-        } else if (!logicalFilePresent(entry.destinationPath, entry.size)) {
+        } else if (S_ISLNK(destination.st_mode) ||
+                   !S_ISREG(destination.st_mode)) {
             entry.state = SwitchDeployEntryState::ExistingConflict;
             ++result.plan.conflictFiles;
+        } else if (!logicalFilePresent(entry.destinationPath, entry.size)) {
+            entry.state = SwitchDeployEntryState::WillOverwrite;
+            ++result.plan.layeredOverwriteFiles;
         } else {
             std::array<uint8_t, 32> destinationDigest {};
             if (!hashLogicalFile(entry.sourcePath, entry.size, entry.sha256) ||
@@ -1223,8 +1266,8 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
                 ++result.plan.identicalFiles;
                 result.plan.bytesToMove -= entry.size;
             } else {
-                entry.state = SwitchDeployEntryState::ExistingConflict;
-                ++result.plan.conflictFiles;
+                entry.state = SwitchDeployEntryState::WillOverwrite;
+                ++result.plan.layeredOverwriteFiles;
             }
         }
         result.plan.files.push_back(std::move(entry));
@@ -1242,10 +1285,8 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
                 return result;
             }
             for (const std::string& path : existing) {
-                if (layeredExpected.count(path) == 0) {
-                    ++result.plan.conflictFiles;
-                    break;
-                }
+                if (layeredExpected.count(path) == 0)
+                    ++result.plan.layeredForeignFiles;
             }
         }
         detectPerformanceState(sdRoot, result.plan.layeredTitleIds,
@@ -1253,8 +1294,7 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
                                result.plan.performanceProfileDetected);
     }
     for (const TaskFileInfo& file : result.inventory.files) {
-        if (file.action != TaskFileAction::Download || file.package ||
-            file.cartridge || file.state != TaskFileState::Present ||
+        if (!extraCopies(file) || file.state != TaskFileState::Present ||
             !isPortArchiveName(file.logicalPath) ||
             !sourceFileSafe(result.inventory, file))
             continue;
@@ -1267,29 +1307,57 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
             archive.unpackBytes = probe.unpackBytes;
             archive.maxSolidBlockBytes = probe.maxSolidBlockBytes;
             archive.switchFiles = probe.switchFiles;
+            archive.layeredFiles = probe.layeredFiles;
+            archive.kind = probe.kind;
             archive.destinationRelativePaths = probe.files;
+            archive.destinationSdRoot = probe.destinationSdRoot;
             archive.extractable = true;
-            for (const std::string& relative : probe.files) {
-                const std::string folded = "switch:" + lowerAscii(relative);
+            for (size_t i = 0; i < probe.files.size(); ++i) {
+                const std::string& relative = probe.files[i];
+                const bool sdRootDest =
+                    i < probe.destinationSdRoot.size() &&
+                    probe.destinationSdRoot[i] != 0;
+                const std::string& destRoot = sdRootDest ? sdRoot : targetRoot;
+                const std::string folded =
+                    std::string(sdRootDest ? "sd:" : "switch:") +
+                    lowerAscii(relative);
                 auto duplicate = plannedFiles.find(folded);
                 if (duplicate != plannedFiles.end()) {
                     setProblem(result, SwitchDeployProblem::UnsafePath,
-                               "Payload destination paths collide on FAT.");
+                               "Payload destination paths collide on FAT.",
+                               SwitchDeployUnsafeReason::NameCollision);
                     return result;
                 }
                 plannedFiles.emplace(folded, relative);
-                if (!destinationParentsSafe(targetRoot, relative)) {
+                if (!destinationParentsSafe(destRoot, relative)) {
                     setProblem(result, SwitchDeployProblem::UnsafePath,
                                relative);
                     return result;
                 }
                 struct stat destination {};
-                if (lstat((targetRoot + "/" + relative).c_str(),
+                if (lstat((destRoot + "/" + relative).c_str(),
                           &destination) == 0) {
-                    ++result.plan.conflictFiles;
+                    if (sdRootDest && S_ISREG(destination.st_mode) &&
+                        !S_ISLNK(destination.st_mode)) {
+                        ++result.plan.layeredOverwriteFiles;
+                    } else {
+                        ++result.plan.conflictFiles;
+                    }
                 } else if (errno != ENOENT) {
                     setProblem(result, SwitchDeployProblem::Io, relative);
                     return result;
+                }
+                if (sdRootDest) {
+                    size_t atmosphereOffset = 0;
+                    std::string titleId;
+                    if (isLayeredFsRomfsPath(relative, &atmosphereOffset,
+                                             &titleId)) {
+                        for (char& ch : titleId)
+                            if (ch >= 'a' && ch <= 'f')
+                                ch = static_cast<char>(ch - 'a' + 'A');
+                        layeredIds.insert(titleId);
+                        result.plan.layeredFs = true;
+                    }
                 }
             }
         } else {
@@ -1305,6 +1373,14 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
             result.plan.bytesToCopy += need;
         }
     }
+    if (!layeredIds.empty()) {
+        result.plan.layeredFs = true;
+        result.plan.layeredTitleIds.assign(layeredIds.begin(),
+                                           layeredIds.end());
+        detectPerformanceState(sdRoot, result.plan.layeredTitleIds,
+                               result.plan.performanceToolDetected,
+                               result.plan.performanceProfileDetected);
+    }
     const bool hasExtractableArchive = std::any_of(
         result.plan.archives.begin(), result.plan.archives.end(),
         [](const SwitchDeployArchive& archive) { return archive.extractable; });
@@ -1317,8 +1393,7 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
                 (file.action == TaskFileAction::Download ||
                  file.action == TaskFileAction::Install))
                 hasPackagePayload = true;
-            if (!file.package && !file.cartridge &&
-                file.action == TaskFileAction::Download &&
+            if (extraCopies(file) &&
                 (file.state == TaskFileState::Present ||
                  file.state == TaskFileState::Installed) &&
                 !isPortArchiveName(file.logicalPath))
@@ -1329,7 +1404,8 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
                        "This download contains native packages only.");
         } else if (!hasLooseFiles && !result.plan.archives.empty()) {
             setProblem(result, SwitchDeployProblem::NotAPort,
-                       "The selected archives contain no NRO port payload.");
+                       "The selected archives contain no NRO or Atmosphere "
+                       "LayeredFS payload.");
         } else {
             setProblem(result, SwitchDeployProblem::LayoutNotFound,
                        "A downloadable application directory with a valid "
@@ -1374,14 +1450,18 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
                 selectedRoot = &root;
         }
         if (!selectedRoot) {
-            if (file.action == TaskFileAction::Download &&
+            if (extraCopies(file) &&
                 !isPortArchiveName(file.logicalPath) &&
-                !isLayeredFsRomfsPath(file.logicalPath))
+                !isLayeredFsRomfsPath(file.logicalPath) &&
+                !isLayeredFsExefsPath(file.logicalPath))
                 ++result.plan.ignoredFiles;
             continue;
         }
-        if (file.action != TaskFileAction::Download || file.package ||
-            file.cartridge) {
+        if (isPortArchiveName(file.logicalPath) ||
+            isLayeredFsRomfsPath(file.logicalPath) ||
+            isLayeredFsExefsPath(file.logicalPath))
+            continue;
+        if (!extraCopies(file)) {
             ++result.plan.ignoredFiles;
             continue;
         }
@@ -1414,7 +1494,7 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
         }
         if (!taskFilePathIsFatCompatible(destinationRelative)) {
             setProblem(result, SwitchDeployProblem::UnsafePath,
-                       file.logicalPath);
+                       file.logicalPath, SwitchDeployUnsafeReason::NameCollision);
             return result;
         }
         const std::vector<std::string> destinationParts =
@@ -1422,7 +1502,8 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
         if (destinationParts.empty() ||
             asciiEqual(destinationParts.front(), "pipensx")) {
             setProblem(result, SwitchDeployProblem::UnsafePath,
-                       "Writing inside the pipensx application directory is forbidden.");
+                       "Writing inside the pipensx application directory is forbidden.",
+                       SwitchDeployUnsafeReason::AppDirectory);
             return result;
         }
         std::string layoutPath;
@@ -1442,8 +1523,8 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
                             : collision->second.file == isFile
                                   ? "The layout contains a duplicate destination path."
                                   : "The layout contains a file/directory conflict.";
-                    setProblem(result, SwitchDeployProblem::UnsafePath,
-                               detail);
+                    setProblem(result, SwitchDeployProblem::UnsafePath, detail,
+                               SwitchDeployUnsafeReason::NameCollision);
                     return result;
                 }
             } else {
@@ -1457,7 +1538,8 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
         auto planned = plannedFiles.find(plannedKey);
         if (planned != plannedFiles.end()) {
             setProblem(result, SwitchDeployProblem::UnsafePath,
-                       "Payload destination paths collide on FAT.");
+                       "Payload destination paths collide on FAT.",
+                       SwitchDeployUnsafeReason::NameCollision);
             return result;
         }
         plannedFiles.emplace(plannedKey, destinationRelative);
@@ -1577,10 +1659,12 @@ SwitchDeployInspection SwitchDeployService::inspect(
         return result;
     }
     SwitchDeployInspection inspection =
-        inspectSwitchDeploy(std::move(inventory), targetRoot_);
+        inspectSwitchDeploy(std::move(inventory), targetRoot_,
+                            task->mode == TransferMode::StreamInstall);
     if (task->mode == TransferMode::PortInstall &&
         receiptState(taskId) == SwitchDeployReceiptState::Valid) {
         inspection.problem = SwitchDeployProblem::None;
+        inspection.unsafeReason = SwitchDeployUnsafeReason::Generic;
         inspection.detail.clear();
         inspection.plan.files.clear();
         inspection.plan.archives.clear();
@@ -1613,7 +1697,43 @@ bool SwitchDeployService::inventory(const std::string& taskId,
         error = "Download task not found.";
         return false;
     }
-    return buildTaskFileInventory(appRoot_, *task, inventory, error);
+    if (!buildTaskFileInventory(appRoot_, *task, inventory, error))
+        return false;
+    for (TaskFileInfo& file : inventory.files) {
+        if (file.kind != SwitchPathKind::Archive ||
+            file.action == TaskFileAction::Skip ||
+            file.state != TaskFileState::Present ||
+            file.absolutePath.empty())
+            continue;
+        PortArchiveProbe probe;
+        if (!probePortArchive(file.absolutePath, probe) || !probe.ok)
+            continue;
+        file.destinationPaths.clear();
+        bool switchDest = false;
+        bool atmosphereDest = false;
+        for (size_t i = 0; i < probe.files.size(); ++i) {
+            const bool sdRootDest =
+                i < probe.destinationSdRoot.size() &&
+                probe.destinationSdRoot[i] != 0;
+            const std::string prefix = sdRootDest ? "/" : "/switch/";
+            file.destinationPaths.push_back(prefix + probe.files[i]);
+            if (sdRootDest)
+                atmosphereDest = true;
+            else
+                switchDest = true;
+        }
+        file.destinationCount = file.destinationPaths.size();
+        if (atmosphereDest && switchDest)
+            file.destinationRoot = "/atmosphere + /switch";
+        else if (atmosphereDest)
+            file.destinationRoot = "/atmosphere";
+        else if (switchDest)
+            file.destinationRoot = "/switch";
+        if (!file.destinationPaths.empty())
+            file.destinationExample = file.destinationPaths.front();
+        file.staysInDownloads = false;
+    }
+    return true;
 }
 
 bool SwitchDeployService::start(const std::string& taskId,
@@ -1699,12 +1819,14 @@ void SwitchDeployService::run(DownloadManager::ExternalDeployLease lease,
         portTransaction &&
         receiptState(lease.task().id) == SwitchDeployReceiptState::Valid;
     SwitchDeployInspection inspection = inspectSwitchDeploy(
-        std::move(inventory), targetRoot_);
+        std::move(inventory), targetRoot_,
+        lease.task().mode == TransferMode::StreamInstall);
     if (payloadReceiptValid) {
         // A failed package stage retries from the durable payload receipt.
         // Do not re-extract archives (which would now correctly conflict with
         // their own files); only the remaining local packages are retried.
         inspection.problem = SwitchDeployProblem::None;
+        inspection.unsafeReason = SwitchDeployUnsafeReason::Generic;
         inspection.detail.clear();
         inspection.plan.files.clear();
         inspection.plan.archives.clear();
@@ -1723,7 +1845,7 @@ void SwitchDeployService::run(DownloadManager::ExternalDeployLease lease,
     }
     if (!inspection.canStart()) {
         finish(SwitchDeployPhase::Failed, inspection.problem,
-               std::move(inspection.detail));
+               std::move(inspection.detail), inspection.unsafeReason);
         return;
     }
     SwitchDeployPlan plan = std::move(inspection.plan);
@@ -1806,8 +1928,17 @@ void SwitchDeployService::run(DownloadManager::ExternalDeployLease lease,
         plan.files.begin(), plan.files.end(),
         [](const SwitchDeployEntry& entry) {
             return entry.moveSource &&
-                   entry.state == SwitchDeployEntryState::Missing;
+                   entry.state != SwitchDeployEntryState::ExistingIdentical;
         });
+    for (const SwitchDeployEntry& entry : plan.files) {
+        if (entry.state != SwitchDeployEntryState::WillOverwrite)
+            continue;
+        if (!removeRegularFileIfPresent(entry.destinationPath, error)) {
+            finish(SwitchDeployPhase::Failed, SwitchDeployProblem::Io,
+                   std::move(error));
+            return;
+        }
+    }
     bool moveJournalActive = false;
     if (hasMoveFiles) {
         if (!saveMoveJob(appRoot_, plan.taskId, plan.files)) {
@@ -1861,6 +1992,15 @@ void SwitchDeployService::run(DownloadManager::ExternalDeployLease lease,
     for (SwitchDeployEntry& entry : plan.files) {
         if (entry.state == SwitchDeployEntryState::ExistingIdentical)
             continue;
+        if (entry.state == SwitchDeployEntryState::WillOverwrite &&
+            !removeRegularFileIfPresent(entry.destinationPath, error)) {
+            const bool restored = rollbackMoves();
+            if (!restored)
+                error += " Some moved files could not be restored; recovery will retry at next launch.";
+            finish(SwitchDeployPhase::Failed, SwitchDeployProblem::Io,
+                   std::move(error));
+            return;
+        }
         if (cancelled_.load(std::memory_order_relaxed)) {
             const bool restored = rollbackMoves();
             finish(SwitchDeployPhase::Cancelled,
@@ -1921,6 +2061,24 @@ void SwitchDeployService::run(DownloadManager::ExternalDeployLease lease,
             snapshot_.currentPath = archive.sourceRelativePath;
             ++snapshot_.generation;
         }
+        const std::string sdRoot = sdRootForSwitchRoot(targetRoot_);
+        for (size_t i = 0; i < archive.destinationRelativePaths.size(); ++i) {
+            const bool sdRootDest =
+                i < archive.destinationSdRoot.size() &&
+                archive.destinationSdRoot[i] != 0;
+            if (!sdRootDest)
+                continue;
+            if (!removeRegularFileIfPresent(
+                    sdRoot + "/" + archive.destinationRelativePaths[i],
+                    error)) {
+                const bool restored = rollbackMoves();
+                if (!restored)
+                    error += " Some moved files could not be restored; recovery will retry at next launch.";
+                finish(SwitchDeployPhase::Failed, SwitchDeployProblem::Io,
+                       std::move(error));
+                return;
+            }
+        }
         log_msg("[deploy] extracting %s solid=%llu unpack=%llu files=%zu\n",
                 archive.sourceRelativePath.c_str(),
                 static_cast<unsigned long long>(archive.maxSolidBlockBytes),
@@ -1938,7 +2096,8 @@ void SwitchDeployService::run(DownloadManager::ExternalDeployLease lease,
             snapshot_.currentPath = path;
             ++snapshot_.generation;
         };
-        if (!extractPortArchive(archive.sourcePath, targetRoot_, cancelled_,
+        if (!extractPortArchive(archive.sourcePath, targetRoot_,
+                                sdRootForSwitchRoot(targetRoot_), cancelled_,
                                 progress, current, error)) {
             const bool restored = rollbackMoves();
             if (!restored)
@@ -2045,7 +2204,8 @@ void SwitchDeployService::run(DownloadManager::ExternalDeployLease lease,
 
 void SwitchDeployService::finish(SwitchDeployPhase phase,
                                  SwitchDeployProblem problem,
-                                 std::string detail) {
+                                 std::string detail,
+                                 SwitchDeployUnsafeReason unsafeReason) {
     std::string taskId;
     std::string loggedDetail;
     std::remove(jobPath(appRoot_).c_str());
@@ -2054,6 +2214,8 @@ void SwitchDeployService::finish(SwitchDeployPhase phase,
         taskId = snapshot_.taskId;
         snapshot_.phase = phase;
         snapshot_.problem = problem;
+        snapshot_.unsafeReason = problem == SwitchDeployProblem::UnsafePath
+            ? unsafeReason : SwitchDeployUnsafeReason::Generic;
         snapshot_.detail = std::move(detail);
         snapshot_.currentPath.clear();
         ++snapshot_.generation;
@@ -2114,7 +2276,9 @@ SwitchDeployReceiptState SwitchDeployService::receiptState(
     // Unpacked members carry no recorded size or digest — existence is all
     // the receipt can verify.
     for (const std::string& relative : unpacked) {
-        const std::string path = targetRoot_ + "/" + relative;
+        const std::string& root = isLayeredFsRomfsPath(relative)
+            ? sdRoot : targetRoot_;
+        const std::string path = root + "/" + relative;
         struct stat st {};
         if (lstat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode) ||
             S_ISLNK(st.st_mode))
@@ -2144,6 +2308,7 @@ void SwitchDeployService::markInspecting(const std::string& taskId) {
     snapshot_.phase = SwitchDeployPhase::Preparing;
     snapshot_.taskId = taskId;
     snapshot_.problem = SwitchDeployProblem::None;
+    snapshot_.unsafeReason = SwitchDeployUnsafeReason::Generic;
     snapshot_.currentPath.clear();
     snapshot_.detail.clear();
     snapshot_.bytesCopied = 0;
@@ -2175,8 +2340,8 @@ void SwitchDeployService::clearInspecting(const std::string& taskId) {
         if (!task || !taskReadyForSwitchDeploy(*task))
             return false;
         const bool markerArmed = autoCopyArmed(taskId);
-        const bool autoArmed = markerArmed ||
-                               task->mode == TransferMode::PortInstall;
+        bool autoArmed = markerArmed ||
+                         task->mode == TransferMode::PortInstall;
         if (task->mode != TransferMode::StreamInstall && !autoArmed)
             return false;
         // A saved receipt means this task was already copied to /switch once.
@@ -2200,10 +2365,18 @@ void SwitchDeployService::clearInspecting(const std::string& taskId) {
                 inspection.canStart() ? 1 : 0, inspection.plan.files.size(),
                 inspection.plan.archives.size(),
                 inspection.detail.empty() ? "-" : inspection.detail.c_str());
+        if (task->mode == TransferMode::StreamInstall &&
+            inspection.canStart() &&
+            (inspection.plan.layeredFs ||
+             std::any_of(inspection.plan.archives.begin(),
+                         inspection.plan.archives.end(),
+                         [](const SwitchDeployArchive& archive) {
+                             return archive.extractable;
+                         })))
+            autoArmed = true;
         if (autoArmed) {
             const bool missingLayout =
-                inspection.problem == SwitchDeployProblem::LayoutNotFound ||
-                inspection.problem == SwitchDeployProblem::AmbiguousLayout;
+                inspection.problem == SwitchDeployProblem::LayoutNotFound;
             if (!inspection.canStart() &&
                 !switchDeployOffersCopy(inspection.problem) && !missingLayout) {
                 clearInspecting(taskId);
@@ -2503,13 +2676,23 @@ bool PortUninstallService::plan(const std::string& titleId,
             }
         }
         for (const std::string& path : unpacked) {
-            switchFiles.insert(path);
+            const bool layered = isLayeredFsRomfsPath(path);
+            if (layered)
+                sdRootFiles.insert(path);
+            else
+                switchFiles.insert(path);
             // The receipt records sizes only for the copied files; stat the
             // extracted members so the dialog reports the real footprint.
-            const std::string full = targetRoot_ + "/" + path;
+            const std::string full =
+                (layered ? sdRootForSwitchRoot(targetRoot_) : targetRoot_) +
+                "/" + path;
             struct stat st {};
-            if (lstat(full.c_str(), &st) == 0 && S_ISREG(st.st_mode))
-                switchBytes += static_cast<uint64_t>(st.st_size);
+            if (lstat(full.c_str(), &st) == 0 && S_ISREG(st.st_mode)) {
+                if (layered)
+                    sdRootBytes += static_cast<uint64_t>(st.st_size);
+                else
+                    switchBytes += static_cast<uint64_t>(st.st_size);
+            }
         }
         for (const ReceiptFile& file : files) {
             if (file.target == SwitchDeployTarget::SdRoot) {

@@ -5,6 +5,7 @@
 
 #include <borealis.hpp>
 
+#include "app/download_list_refresh.hpp"
 #include "app/download_manager.hpp"
 #include "app/switch_deploy.hpp"
 #include "ui/common/async_image.hpp"
@@ -84,43 +85,22 @@ public:
     void setTask(const DownloadTask& task, GameMetadataService* service,
                  const SwitchDeploySnapshot* deploy = nullptr) {
         updateActionHint(brls::BUTTON_A, tr("pipensx/common/more"));
-        const auto wanted = downloadProgressBytes(task);
         const uint64_t deployGen = deploy ? deploy->generation : 0;
         const uint64_t deployBytes = deploy && deploy->taskId == task.id
             ? deploy->bytesCopied : 0;
+        const DownloadRowPaint nextPaint = DownloadRowPaint::from(task);
         const bool sameTask = paintedId_ == task.id;
-        if (sameTask &&
-            paintedStatus_ == task.status &&
-            paintedCompleted_ == wanted.first &&
-            paintedTotal_ == wanted.second &&
-            paintedSpeed_ == task.speedBytesPerSecond &&
-            paintedInstallSpeed_ == task.installSpeedBytesPerSecond &&
-            paintedPeers_ == task.peers &&
-            paintedPackages_ == task.packagesInstalled &&
-            paintedPackageCount_ == task.packageCount &&
-            paintedInstalled_ == task.installedBytes &&
-            paintedCurrentPackage_ == task.currentPackage &&
-            paintedError_ == task.error &&
-            paintedFetch_ == task.fetchProgress &&
-            paintedDeployGen_ == deployGen &&
-            paintedDeployBytes_ == deployBytes)
+        if (sameTask && paintedStatus_ == task.status && painted_ == nextPaint &&
+            paintedDeployGen_ == deployGen && paintedDeployBytes_ == deployBytes)
             return;
 
         paintedId_ = task.id;
         paintedStatus_ = task.status;
-        paintedCompleted_ = wanted.first;
-        paintedTotal_ = wanted.second;
-        paintedSpeed_ = task.speedBytesPerSecond;
-        paintedInstallSpeed_ = task.installSpeedBytesPerSecond;
-        paintedPeers_ = task.peers;
-        paintedPackages_ = task.packagesInstalled;
-        paintedPackageCount_ = task.packageCount;
-        paintedInstalled_ = task.installedBytes;
-        paintedCurrentPackage_ = task.currentPackage;
-        paintedError_ = task.error;
-        paintedFetch_ = task.fetchProgress;
+        painted_ = nextPaint;
         paintedDeployGen_ = deployGen;
         paintedDeployBytes_ = deployBytes;
+
+        const auto wanted = downloadProgressBytes(task);
 
         setTextIfChanged(title_, task.name);
         setTextIfChanged(placeholder_, placeholderLetter(task.name));
@@ -213,6 +193,34 @@ public:
                 setTextIfChanged(status_, tr("pipensx/deploy/cancelled"));
             }
         }
+        const bool deployActive = deploy && deploy->taskId == task.id &&
+                                  deploy->active();
+        if (!deployActive) {
+            const RecoveryAccount account = recoveryAccountOf(task);
+            const std::string notice = recoveryNoticeText(task);
+            if (!notice.empty() || account.showInstalled ||
+                account.verifyingSaved) {
+                std::string recovery = recoveryAxesText(task);
+                if (!notice.empty()) {
+                    if (!recovery.empty())
+                        recovery += "   ";
+                    recovery += notice;
+                }
+                if (task.status == DownloadStatus::Downloading) {
+                    const auto split = meta.find("   ");
+                    if (split != std::string::npos)
+                        recovery += meta.substr(split);
+                } else if (task.status == DownloadStatus::Installing ||
+                           task.status == DownloadStatus::Committing) {
+                    if (!task.currentPackage.empty())
+                        recovery += "   " + task.currentPackage;
+                } else if (task.status == DownloadStatus::Error &&
+                           !task.error.empty()) {
+                    recovery += "   " + task.error;
+                }
+                meta = recovery;
+            }
+        }
         setTextIfChanged(meta_, meta);
 
         if (!sameTask || !image_->hasArtwork()) {
@@ -250,17 +258,7 @@ private:
         std::make_shared<ImageRequestState>();
     std::string paintedId_;
     DownloadStatus paintedStatus_ = DownloadStatus::Queued;
-    uint64_t paintedCompleted_ = 0;
-    uint64_t paintedTotal_ = 0;
-    uint64_t paintedSpeed_ = 0;
-    uint64_t paintedInstallSpeed_ = 0;
-    uint32_t paintedPeers_ = 0;
-    uint32_t paintedPackages_ = 0;
-    uint32_t paintedPackageCount_ = 0;
-    uint64_t paintedInstalled_ = 0;
-    std::string paintedCurrentPackage_;
-    std::string paintedError_;
-    double paintedFetch_ = 0;
+    DownloadRowPaint painted_;
     uint64_t paintedDeployGen_ = 0;
     uint64_t paintedDeployBytes_ = 0;
 };

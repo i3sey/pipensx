@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
@@ -9,8 +10,10 @@
 #include <borealis.hpp>
 
 #include "app/app_settings.hpp"
+#include "app/download_list_refresh.hpp"
 #include "app/download_manager.hpp"
 #include "app/game_metadata_service.hpp"
+#include "app/storage_manager.hpp"
 #include "app/switch_deploy.hpp"
 #include "ui/common/message_cells.hpp"
 #include "ui/common/ui_helpers.hpp"
@@ -76,14 +79,6 @@ public:
         recycler_->setDataSource(dataSource_);
         recyclerHost_ = recyclerHost(recycler_);
         addView(recyclerHost_);
-        refresh();
-        timer_.setCallback([this] {
-            refresh();
-            if (fastRefresh_) {
-                fastRefresh_ = false;
-                timer_.setPeriod(750);
-            }
-        });
         registerAction(tr("pipensx/downloads/import"), brls::BUTTON_X,
                        [this](brls::View*) {
             openFilePicker();
@@ -93,6 +88,26 @@ public:
                        [this](brls::View*) {
             pauseResumeAll();
             return true;
+        });
+        // ZL/ZR hints are tappable, same as Import and Pause all. The count
+        // covers finished tasks the list itself may be hiding.
+        registerAction(tr("pipensx/downloads/clear_completed", size_t{0}),
+                       brls::BUTTON_LT, [this](brls::View*) {
+            confirmClearEntries();
+            return true;
+        });
+        registerAction(tr("pipensx/downloads/clear_files"), brls::BUTTON_RT,
+                       [this](brls::View*) {
+            confirmClearFiles();
+            return true;
+        });
+        refresh();
+        timer_.setCallback([this] {
+            refresh();
+            if (fastRefresh_) {
+                fastRefresh_ = false;
+                timer_.setPeriod(750);
+            }
         });
         startRefreshing();
     }
@@ -168,22 +183,19 @@ public:
         if (leased)
             add(tr("pipensx/deploy/cancel"), [this] { deploy_->cancel(); });
 
-        bool active = task.status == DownloadStatus::Queued ||
-                      task.status == DownloadStatus::Checking ||
-                      task.status == DownloadStatus::Fetching ||
-                      task.status == DownloadStatus::Downloading ||
-                      task.status == DownloadStatus::Installing ||
-                      task.status == DownloadStatus::Committing ||
-                      task.status == DownloadStatus::Verifying;
-        if (active)
+        const TaskCapabilities caps = taskCapabilities(task, leased);
+        if (caps.pause.allowed)
             add(tr("pipensx/common/pause"), [this, taskId] {
-                manager_->pause(taskId);
+                std::string error;
+                if (!manager_->pause(taskId, error))
+                    brls::Application::notify(taskActionReasonText(error));
                 startRefreshing(true);
             });
-        if (task.status == DownloadStatus::Paused ||
-            task.status == DownloadStatus::Error)
+        if (caps.resume.allowed)
             add(tr("pipensx/common/resume"), [this, taskId] {
-                manager_->resume(taskId);
+                std::string error;
+                if (!manager_->resume(taskId, error))
+                    brls::Application::notify(taskActionReasonText(error));
                 startRefreshing(true);
             });
         if (inspection && switchDeployFullyInstalled(*inspection)) {
@@ -201,16 +213,17 @@ public:
                                                     deploy_));
             });
         }
-        if (!leased && task.status == DownloadStatus::Completed)
+        if (caps.verify.allowed)
             add(tr("pipensx/common/verify"), [this, taskId] {
-                if (manager_->verify(taskId)) {
+                std::string error;
+                if (manager_->verify(taskId, error)) {
                     brls::Application::notify(tr("pipensx/downloads/verify_started"));
                 } else {
-                    brls::Application::notify(tr("pipensx/downloads/verify_unavailable"));
+                    brls::Application::notify(taskActionReasonText(error));
                 }
                 startRefreshing(true);
             });
-        if (task.status == DownloadStatus::Queued) {
+        if (caps.move.allowed) {
             std::vector<std::string> queuedIds;
             for (const auto& candidate : manager_->snapshotUi())
                 if (candidate.status == DownloadStatus::Queued)
@@ -256,7 +269,7 @@ public:
                     });
             }
         }
-        if (!leased && task.status != DownloadStatus::Removing)
+        if (caps.remove.allowed)
             add(tr("pipensx/common/remove"),
                     [this, taskId] { openRemoveDialog(taskId); });
 
@@ -326,20 +339,127 @@ private:
         return emptyState_;
     }
 
-    bool isPausable(DownloadStatus status) const {
-        return status == DownloadStatus::Queued ||
-               status == DownloadStatus::Checking ||
-               status == DownloadStatus::Fetching ||
-               status == DownloadStatus::Downloading ||
-               status == DownloadStatus::Installing ||
-               status == DownloadStatus::Verifying;
-    }
-
-    bool hasPausableTask(const std::vector<DownloadTask>& tasks) const {
+    bool hasPausableTask(const std::vector<DownloadTask>& tasks,
+                         const std::string& leasedId) const {
         for (const DownloadTask& task : tasks)
-            if (isPausable(task.status))
+            if (taskCapabilities(task, task.id == leasedId).pause.allowed)
                 return true;
         return false;
+    }
+
+    void updateClearHints(const std::vector<DownloadTask>& all) {
+        const ClearCompletedPlan plan =
+            planClearCompleted(all, manager_->externalDeployTaskId());
+        const bool any = plan.clearable + plan.skippedBusy > 0;
+        if (clearHintsReady_ && plan.clearable == clearableShown_ &&
+            plan.skippedBusy == skippedShown_ && any == clearAvailable_)
+            return;
+        updateActionHint(brls::BUTTON_LT,
+                         tr("pipensx/downloads/clear_completed",
+                            plan.clearable));
+        setActionAvailable(brls::BUTTON_LT, any);
+        setActionAvailable(brls::BUTTON_RT, any);
+        clearableShown_ = plan.clearable;
+        skippedShown_ = plan.skippedBusy;
+        clearAvailable_ = any;
+        clearHintsReady_ = true;
+    }
+
+    void confirmClearEntries() {
+        if (clearInFlight_)
+            return;
+        const ClearCompletedPlan plan = planClearCompleted(
+            manager_->snapshotUi(), manager_->externalDeployTaskId());
+        if (plan.clearable == 0) {
+            brls::Application::notify(plan.skippedBusy == 0
+                ? tr("pipensx/downloads/clear_completed_none")
+                : tr("pipensx/downloads/clear_result", size_t{0},
+                     plan.skippedBusy));
+            return;
+        }
+        auto* dialog = new brls::Dialog(
+            tr("pipensx/downloads/clear_completed_question",
+               plan.clearable, plan.skippedBusy));
+        dialog->addButton(tr("pipensx/common/clear"), [this] {
+            runClear(false);
+        });
+        dialog->addButton(tr("pipensx/common/cancel"), [] {});
+        dialog->open();
+    }
+
+    void confirmClearFiles() {
+        if (clearInFlight_)
+            return;
+        const std::string leased = manager_->externalDeployTaskId();
+        const std::vector<DownloadTask> tasks = manager_->snapshotUi();
+        const ClearCompletedPlan plan = planClearCompleted(tasks, leased);
+        if (plan.clearable == 0) {
+            brls::Application::notify(plan.skippedBusy == 0
+                ? tr("pipensx/downloads/clear_completed_none")
+                : tr("pipensx/downloads/clear_files_result", size_t{0},
+                     plan.skippedBusy));
+            return;
+        }
+        std::vector<std::string> paths;
+        paths.reserve(plan.clearable);
+        for (const DownloadTask& task : tasks) {
+            if (classifyClearCompleted(task.status, task.id, leased) ==
+                ClearCompletedClass::Clear)
+                paths.push_back(task.dataPath);
+        }
+        const size_t clearable = plan.clearable;
+        const size_t skipped = plan.skippedBusy;
+        auto alive = alive_;
+        brls::async([this, alive, paths = std::move(paths), clearable,
+                     skipped]() {
+            uint64_t bytes = 0;
+            for (const std::string& path : paths) {
+                uint64_t size = 0;
+                if (!directorySize(path, size))
+                    continue;
+                bytes = size > UINT64_MAX - bytes ? UINT64_MAX : bytes + size;
+            }
+            brls::sync([this, alive, bytes, clearable, skipped] {
+                if (!alive->load() || clearInFlight_)
+                    return;
+                auto* dialog = new brls::Dialog(
+                    tr("pipensx/downloads/clear_files_question",
+                       clearable, formatBytes(bytes), skipped));
+                dialog->addButton(tr("pipensx/downloads/remove_delete"),
+                                  [this] { runClear(true); });
+                dialog->addButton(tr("pipensx/common/cancel"), [] {});
+                dialog->open();
+            });
+        });
+    }
+
+    void runClear(bool deleteData) {
+        if (clearInFlight_)
+            return;
+        clearInFlight_ = true;
+        DownloadManager* manager = manager_;
+        auto alive = alive_;
+        brls::async([this, alive, manager, deleteData] {
+            std::string error;
+            ClearCompletedResult result;
+            const bool ok = manager->clearCompleted(deleteData, error, &result);
+            brls::sync([this, alive, ok, error, result, deleteData] {
+                if (!alive->load())
+                    return;
+                clearInFlight_ = false;
+                if (!ok) {
+                    if (!error.empty())
+                        brls::Application::notify(error);
+                    startRefreshing(true);
+                    return;
+                }
+                brls::Application::notify(tr(
+                    deleteData ? "pipensx/downloads/clear_files_result"
+                               : "pipensx/downloads/clear_result",
+                    result.cleared, result.skippedBusy));
+                startRefreshing(true);
+            });
+        });
     }
 
     void pauseAll() {
@@ -355,7 +475,11 @@ private:
     // One Y action that flips with the queue: pause the active tasks, or resume
     // the paused/failed ones when nothing is running.
     void pauseResumeAll() {
-        if (hasPausableTask(manager_->snapshotUi()))
+        const SwitchDeploySnapshot deploy = deploy_ ? deploy_->snapshot()
+                                                    : SwitchDeploySnapshot{};
+        const std::string leased = deploy.active() ? deploy.taskId
+                                                   : std::string();
+        if (hasPausableTask(manager_->snapshotUi(), leased))
             pauseAll();
         else
             resumeAll();
@@ -403,6 +527,7 @@ private:
                                                          : SwitchDeploySnapshot{};
         const std::string activeDeployTask = deployState.active()
             ? deployState.taskId : std::string();
+        updateClearHints(next);
         if (settings_ && !settings_->get().showCompletedDownloads) {
             next.erase(std::remove_if(next.begin(), next.end(),
                 [&activeDeployTask](const DownloadTask& task) {
@@ -413,39 +538,18 @@ private:
         }
         setTextIfChanged(summary_, summaryText(next));
         updateActionHint(brls::BUTTON_Y,
-                         hasPausableTask(next)
+                         hasPausableTask(next, activeDeployTask)
                              ? tr("pipensx/downloads/pause_all")
                              : tr("pipensx/downloads/resume_all"));
         uint64_t settingsGeneration = settings_ ? settings_->generation() : 0;
         bool settingsChanged = settingsGeneration != settingsGeneration_;
-        bool structureChanged = pendingReload_ || !initialized_ ||
-                                 settingsChanged ||
-                                 next.size() != tasks_.size() ||
-                                 activeDeployTask != activeDeployTask_;
-        bool progressChanged = deployState.generation != deployGeneration_;
-        if (!structureChanged) {
-            // Scan every task: bailing out on the first progress delta used to
-            // hide a later task's status change, so a section reshuffle went
-            // through the cheap path and the list jumped under the cursor.
-            for (size_t i = 0; i < next.size(); ++i) {
-                if (next[i].id != tasks_[i].id ||
-                    next[i].status != tasks_[i].status) {
-                    structureChanged = true;
-                    break;
-                }
-                progressChanged =
-                    progressChanged ||
-                    next[i].completedBytes != tasks_[i].completedBytes ||
-                    next[i].speedBytesPerSecond !=
-                        tasks_[i].speedBytesPerSecond ||
-                    next[i].installSpeedBytesPerSecond !=
-                        tasks_[i].installSpeedBytesPerSecond ||
-                    next[i].peers != tasks_[i].peers ||
-                    next[i].packagesInstalled != tasks_[i].packagesInstalled ||
-                    next[i].installedBytes != tasks_[i].installedBytes ||
-                    next[i].currentPackage != tasks_[i].currentPackage;
-            }
-        }
+        const DownloadListUpdate listed = downloadListUpdate(
+            tasks_, next, deployGeneration_, deployState.generation,
+            activeDeployTask_, activeDeployTask);
+        const bool structureChanged = pendingReload_ || !initialized_ ||
+                                       settingsChanged ||
+                                       listed == DownloadListUpdate::Reload;
+        const bool progressChanged = listed == DownloadListUpdate::Repaint;
         if (!structureChanged && !progressChanged) {
             logRefresh(false, false);
             return;
@@ -532,6 +636,11 @@ private:
     std::string activeDeployTask_;
     std::shared_ptr<std::atomic<bool>> alive_ =
         std::make_shared<std::atomic<bool>>(true);
+    bool clearInFlight_ = false;
+    bool clearHintsReady_ = false;
+    bool clearAvailable_ = false;
+    size_t clearableShown_ = 0;
+    size_t skippedShown_ = 0;
 };
 
 }  // namespace pipensx::ui

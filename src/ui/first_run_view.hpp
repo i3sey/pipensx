@@ -540,6 +540,7 @@ private:
             return;
         }
         manager_->setTorrentingEnabled(torrenting);
+        manager_->setActiveDebridProvider(provider);
         OnComplete onComplete = std::move(onComplete_);
         brls::Application::popActivity(brls::TransitionAnimation::FADE,
             [onComplete, provider, torrenting] {

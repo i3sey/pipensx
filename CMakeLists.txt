@@ -161,6 +161,7 @@ set(APP_SERVICE_SOURCES
     src/app/magnet_resolver.cpp
     src/app/torrent_metainfo_fetch.cpp
     src/app/http_server.cpp
+    src/app/add_release.cpp
     src/app/web_add_queue.cpp
     src/app/web_server.cpp
     src/app/companion_settings.cpp

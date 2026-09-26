@@ -47,6 +47,8 @@ public:
         progress_ = addLine(progressCard, theme::kFontBody);
         package_ = addLine(progressCard, theme::kFontSmall);
         package_->setTextColor(theme::textSecondary());
+        recovery_ = addLine(progressCard, theme::kFontSmall);
+        recovery_->setTextColor(theme::textSecondary());
         currentPackage_ = addLine(progressCard, theme::kFontSmall);
         currentPackage_->setSingleLine(true);
         currentPackage_->setAutoAnimate(false);
@@ -123,10 +125,11 @@ public:
             return true;
         });
         verifyButton_->registerClickAction([this](brls::View*) {
-            if (manager_->verify(taskId_)) {
+            std::string error;
+            if (manager_->verify(taskId_, error)) {
                 brls::Application::notify(tr("pipensx/downloads/verify_started"));
             } else {
-                brls::Application::notify(tr("pipensx/downloads/verify_unavailable"));
+                brls::Application::notify(taskActionReasonText(error));
             }
             refresh();
             return true;
@@ -272,11 +275,13 @@ private:
         const DownloadTask* task = currentTask();
         if (!task)
             return;
-        if (task->status == DownloadStatus::Paused ||
-            task->status == DownloadStatus::Error)
-            manager_->resume(taskId_);
-        else
-            manager_->pause(taskId_);
+        std::string error;
+        const bool ok = task->status == DownloadStatus::Paused ||
+                                task->status == DownloadStatus::Error
+                            ? manager_->resume(taskId_, error)
+                            : manager_->pause(taskId_, error);
+        if (!ok)
+            brls::Application::notify(taskActionReasonText(error));
         refresh();
     }
 
@@ -479,7 +484,8 @@ private:
             } else if (state.phase == SwitchDeployPhase::Failed) {
                 setTextIfChanged(deployPhase_,
                                  deployProblemText(state.problem,
-                                                   state.detail));
+                                                   state.detail,
+                                                   state.unsafeReason));
                 deployPhase_->setTextColor(theme::error());
                 setTextIfChanged(deployStatus_, "");
             } else if (state.phase == SwitchDeployPhase::Cancelled) {
@@ -531,6 +537,11 @@ private:
             setTextIfChanged(status_, tr("pipensx/downloads/status_line",
                                          tr(phaseKey)));
             status_->setTextColor(theme::accent());
+        } else if (task->status == DownloadStatus::Checking ||
+                   task->status == DownloadStatus::Verifying) {
+            setTextIfChanged(status_, tr("pipensx/downloads/status_line",
+                                         taskStatusText(*task)));
+            status_->setTextColor(statusColor(task->status));
         } else {
             setTextIfChanged(status_, tr("pipensx/downloads/status_line",
                                          downloadStatusLabel(task->status)));
@@ -571,11 +582,28 @@ private:
                 totalBytes = wanted.second;
             }
         }
+        const RecoveryAccount account = task ? recoveryAccountOf(*task)
+                                             : RecoveryAccount{};
+        if (task && !deploying && !fetching && account.verifyingSaved &&
+            account.downloadTotalBytes) {
+            progress = std::min(
+                1.0f, static_cast<float>(account.downloadedBytes) /
+                          static_cast<float>(account.downloadTotalBytes));
+            doneBytes = account.downloadedBytes;
+            totalBytes = account.downloadTotalBytes;
+        }
         progressBar_->setProgress(progress);
-        setTextIfChanged(progress_, tr("pipensx/downloads/progress_line",
-                                       percentOf(progress),
-                                       formatBytes(doneBytes),
-                                       formatBytes(totalBytes)));
+        if (task && !deploying && !fetching &&
+            (account.verifyingSaved || account.showInstalled))
+            setTextIfChanged(progress_, recoveryAxesText(*task));
+        else
+            setTextIfChanged(progress_, tr("pipensx/downloads/progress_line",
+                                           percentOf(progress),
+                                           formatBytes(doneBytes),
+                                           formatBytes(totalBytes)));
+        setTextIfChanged(recovery_, task && !deploying
+                                        ? recoveryNoticeText(*task)
+                                        : std::string());
 
         const uint64_t now = now_ms();
         std::string eta;
@@ -655,23 +683,15 @@ private:
         const SwitchDeploySnapshot deploy = deploy_ ? deploy_->snapshot()
                                                      : SwitchDeploySnapshot{};
         const bool leased = deploy.active() && deploy.taskId == taskId_;
-        bool paused = task.status == DownloadStatus::Paused ||
-                            task.status == DownloadStatus::Error;
-        bool active = task.status == DownloadStatus::Queued ||
-                      task.status == DownloadStatus::Checking ||
-                      task.status == DownloadStatus::Fetching ||
-                      task.status == DownloadStatus::Downloading ||
-                      task.status == DownloadStatus::Installing ||
-                      task.status == DownloadStatus::Committing ||
-                      task.status == DownloadStatus::Verifying;
-        setTextIfChanged(pauseButton_, paused ? tr("pipensx/common/resume")
-                                              : tr("pipensx/common/pause"));
-        setButtonAvailable(pauseButton_, !leased && (paused || active));
-
-        bool canVerify = task.status == DownloadStatus::Completed;
-        setButtonAvailable(verifyButton_, !leased && canVerify);
-        setButtonAvailable(removeButton_,
-                           !leased && task.status != DownloadStatus::Removing);
+        const TaskCapabilities caps = taskCapabilities(task, leased);
+        const bool resumable = task.status == DownloadStatus::Paused ||
+                               task.status == DownloadStatus::Error;
+        setTextIfChanged(pauseButton_, resumable ? tr("pipensx/common/resume")
+                                                 : tr("pipensx/common/pause"));
+        setButtonAvailable(pauseButton_,
+                           caps.pause.allowed || caps.resume.allowed);
+        setButtonAvailable(verifyButton_, caps.verify.allowed);
+        setButtonAvailable(removeButton_, caps.remove.allowed);
         const bool busyElsewhere = deploy.active() && deploy.taskId != taskId_;
         const bool packageBusy =
             !leased &&
@@ -769,6 +789,7 @@ private:
     ProgressBar* progressBar_;
     brls::Label* progress_;
     brls::Label* package_;
+    brls::Label* recovery_;
     brls::Label* currentPackage_;
     brls::Label* eta_;
     brls::Label* downloadSpeed_;
