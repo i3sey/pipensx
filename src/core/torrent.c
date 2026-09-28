@@ -82,6 +82,13 @@
 #define STRIKE_GRACE_MS        2000
 #define TIMEOUT_COOLDOWN_BASE_MS 2000
 #define TIMEOUT_COOLDOWN_MAX_MS  10000
+/* After the install gate releases (rate_freeze 1->0) the request pipelines
+   are still refilling — the gate re-anchored its admission edge and the
+   first 1 s rate sample would measure that refill trickle, ratcheting the
+   EMA (and with it the pipeline depth) down a notch per throttle cycle.
+   Samples inside this window after a lift are discarded like frozen ones
+   (bugfix-guide 2026-09-28 F1: speed ratcheted to a stop over ~1 h). */
+#define RATE_FREEZE_RESUME_GUARD_MS 2000
 #define TIMEOUT_DISCONNECT_STRIKES 3
 #define TIMEOUT_DISCONNECT_IDLE_MS (REQUEST_TIMEOUT_MS * 2)
 #define MAX_HEDGES_PER_TICK   16
@@ -211,6 +218,10 @@ struct torrent {
        7.2): peers idle through no fault of their own, so per-peer rate EMAs
        hold instead of decaying to bootstrap. */
     int      rate_freeze;
+    /* Samples left to discard after a rate_freeze lift, ms of the 1 s
+       sampling clock (RATE_FREEZE_RESUME_GUARD_MS); consumed by
+       sample_peer_rates. */
+    uint64_t rate_resume_guard_ms;
     uint32_t hedge_after_ms;
     uint32_t hedge_effective_ms; /* last adaptive threshold, for telemetry */
     uint32_t schedule_cursor;
@@ -1968,12 +1979,24 @@ void torrent_destroy(torrent_t *t) {
    needs no telemetry to be enabled. While the install gate curtails
    requests (rate_freeze, PERF_PLAN 7.2) a peer's low throughput says
    nothing about the peer: keep the EMA and discard the interval, so
-   pipelines regain their pre-gate depth immediately on resume. */
+   pipelines regain their pre-gate depth immediately on resume. The first
+   interval after a lift is still refill (the gate re-anchored its edge and
+   the pipelines are filling back up), so it is discarded too — sampling a
+   half-empty pipeline would ratchet the EMA and the pipeline depth down on
+   every throttle cycle until the swarm crawled to a stop (F1). */
 static void sample_peer_rates(torrent_t *t, uint64_t elapsed_ms, uint64_t now) {
     for (int i = 0; i < MAX_ACTIVE_PEERS; i++) {
         peer_t *p = t->peers[i];
         if (!p) continue;
         if (t->rate_freeze) {
+            t->rate_resume_guard_ms = 0;
+            p->rate_last_downloaded = p->downloaded;
+            continue;
+        }
+        if (t->rate_resume_guard_ms) {
+            uint64_t consumed = elapsed_ms > t->rate_resume_guard_ms
+                              ? t->rate_resume_guard_ms : elapsed_ms;
+            t->rate_resume_guard_ms -= consumed;
             p->rate_last_downloaded = p->downloaded;
             continue;
         }
@@ -1999,6 +2022,29 @@ static void sample_peer_rates(torrent_t *t, uint64_t elapsed_ms, uint64_t now) {
         p->dl_rate_bps = next;
         p->rate_last_downloaded = p->downloaded;
     }
+}
+
+/* Penalty for a peer whose requests just expired: strike + request
+   cooldown (TIMEOUT_DISCONNECT_STRIKES then drops the peer). Skipped when
+   the expiry says nothing about the peer: while the install gate curtails
+   admission (rate_freeze) a drained pipeline times out on gate pacing, not
+   peer health — punishing it here ratcheted slow-WiFi swarms into
+   cooldown cycles and a dead download (F1). Same for a peer that is
+   actively delivering: the expired requests were just queued too deep.
+   Expired blocks always return to the pool either way; only the penalty
+   is skipped. */
+static uint64_t request_expiry_penalty(torrent_t *t, peer_t *p, uint64_t now) {
+    if (t->rate_freeze)
+        return 0;
+    if (p->last_piece_ms && p->last_piece_ms <= now &&
+        now - p->last_piece_ms < STRIKE_GRACE_MS)
+        return 0;
+    if (p->timeout_strikes != UINT32_MAX)
+        p->timeout_strikes++;
+    uint64_t cooldown = TIMEOUT_COOLDOWN_BASE_MS *
+                        (uint64_t)p->timeout_strikes;
+    return cooldown > TIMEOUT_COOLDOWN_MAX_MS ? TIMEOUT_COOLDOWN_MAX_MS
+                                              : cooldown;
 }
 
 int torrent_tick(torrent_t *t) {
@@ -2061,6 +2107,7 @@ int torrent_tick(torrent_t *t) {
         int unchoked = 0;
         int inflight = 0;
         int utp_active = 0;
+        int cooldown_peers = 0, penalized_peers = 0;
         for (int i = 0; i < MAX_ACTIVE_PEERS; i++) {
             peer_t *p = t->peers[i];
             if (!p || p->state != PS_ACTIVE)
@@ -2071,11 +2118,19 @@ int torrent_tick(torrent_t *t) {
             if (!p->am_choked)
                 unchoked++;
             inflight += p->pipeline_len;
+            if (p->request_cooldown_until_ms > now) cooldown_peers++;
+            if (p->timeout_strikes > 0) penalized_peers++;
         }
+        /* frozen/cooldown/penalized name the usual suspects behind a speed
+           collapse to zero (F1): frozen=1 means the install request gate is
+           pacing admission (throttle or emergency pause), high
+           cooldown/penalized counts mean timeout strikes are starving the
+           swarm — both visible in a plain QR log grep. */
         log_msg("[torrent] health active=%d utp=%d unchoked=%d inflight=%d "
-                "expired=%u speed=%llu\n",
+                "expired=%u speed=%llu frozen=%d cooldown=%d penalized=%d\n",
                 active, utp_active, unchoked, inflight, t->expired_requests,
-                (unsigned long long)t->speed_bps);
+                (unsigned long long)t->speed_bps, t->rate_freeze,
+                cooldown_peers, penalized_peers);
         t->expired_requests = 0;
         t->last_health_ms = now;
     }
@@ -2297,22 +2352,10 @@ int torrent_tick(torrent_t *t) {
             t->expired_requests += (uint32_t)expired;
             t->telemetry_expired_requests += (uint32_t)expired;
             p->telemetry_expired_requests += (uint32_t)expired;
-            /* A peer that delivered a block within the grace window is
-               working through its queue; the expired requests were just
-               queued too deep. Release them without a strike — the
-               cooldown would starve a productive peer. */
-            int graced = p->last_piece_ms && p->last_piece_ms <= now2 &&
-                         now2 - p->last_piece_ms < STRIKE_GRACE_MS;
-            uint64_t cooldown = 0;
-            if (!graced) {
-                if (p->timeout_strikes != UINT32_MAX)
-                    p->timeout_strikes++;
-                cooldown = TIMEOUT_COOLDOWN_BASE_MS *
-                           (uint64_t)p->timeout_strikes;
-                if (cooldown > TIMEOUT_COOLDOWN_MAX_MS)
-                    cooldown = TIMEOUT_COOLDOWN_MAX_MS;
+            uint64_t cooldown = request_expiry_penalty(t, p, now2);
+            int graced = cooldown == 0;
+            if (cooldown)
                 p->request_cooldown_until_ms = now2 + cooldown;
-            }
             telemetry_log("peer", t->telemetry_tag,
                 "event=request_timeout expired=%d strikes=%u "
                 "cooldown_ms=%llu pipeline=%d graced=%d",
@@ -2385,9 +2428,14 @@ void torrent_set_rate_freeze(torrent_t *t, int freeze) {
     if (!t)
         return;
     freeze = freeze ? 1 : 0;
-    if (t->rate_freeze != freeze)
+    if (t->rate_freeze != freeze) {
         log_msg("[torrent] peer rate sampling %s\n",
                 freeze ? "frozen (request gate)" : "resumed");
+        /* The first post-resume interval is pipeline refill, not peer
+           throughput — discard it before sampling again (F1). */
+        if (!freeze)
+            t->rate_resume_guard_ms = RATE_FREEZE_RESUME_GUARD_MS;
+    }
     t->rate_freeze = freeze;
 }
 

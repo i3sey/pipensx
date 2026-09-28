@@ -299,6 +299,23 @@ public:
         return requestGate_.state() != pipensx::RequestGate::State::Free;
     }
 
+    // Why requestsCurtailed() holds, for the [torrent] freeze log (F1):
+    // "throttled" = admission paced at the install drain rate, "paused" =
+    // emergency ceiling with the buffer at 100%. The gate cannot latch:
+    // both states release as soon as the install worker drains the buffer
+    // below the hysteresis thresholds (see test_request_gate.cpp).
+    const char* requestGateStateName() const {
+        std::lock_guard<std::mutex> lock(queueMutex_);
+        switch (requestGate_.state()) {
+            case pipensx::RequestGate::State::Throttled:
+                return "throttled";
+            case pipensx::RequestGate::State::Paused:
+                return "paused";
+            default:
+                return "free";
+        }
+    }
+
     // Live budget resize from the arbiter when the active-slot or lease
     // population changes. Runs on whichever thread triggered the change;
     // queueMutex_ serialises it against the sink, the install worker and the

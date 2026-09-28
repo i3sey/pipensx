@@ -2628,6 +2628,11 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
     constexpr uint64_t kResumeCheckpointMs = 5000;
     uint64_t lastCheckpointMs = now_ms();
     uint32_t lastCheckpointPieces = 0;
+    // F1: name the freeze reason in the [torrent] log when the install
+    // gate starts/stops pacing admission, so a QR report shows whether a
+    // speed collapse was gate-driven (throttled/paused) or peer-driven.
+    const char* lastGateState = "free";
+    bool lastFreeze = false;
     uint64_t lastCheckpointBytes = 0;
     bool downloadingSeen = false;
     while (!stopping_) {
@@ -2701,8 +2706,15 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
                 coordinator->adaptiveLookahead(stat.num_active_peers));
             torrent_set_piece_buf_limit(
                 torrent, coordinator->maxInflightPieces());
-            torrent_set_rate_freeze(
-                torrent, coordinator->requestsCurtailed() ? 1 : 0);
+            const bool curtailed = coordinator->requestsCurtailed();
+            torrent_set_rate_freeze(torrent, curtailed ? 1 : 0);
+            const char* gateState = coordinator->requestGateStateName();
+            if (gateState != lastGateState || curtailed != lastFreeze) {
+                log_msg("[torrent] install request gate %s, rate_freeze=%d\n",
+                        gateState, curtailed ? 1 : 0);
+                lastGateState = gateState;
+                lastFreeze = curtailed;
+            }
         }
         {
             std::unique_lock<std::mutex> lock(mutex_);

@@ -351,6 +351,82 @@ static void test_rate_freeze_preserves_peer_dl_rate(void) {
     assert(peer.rate_last_downloaded == peer.downloaded);
 }
 
+/* F1: lifting the freeze through the setter arms a refill guard — the
+   first post-resume intervals measure pipelines still filling from the
+   re-anchored gate edge, so they must be discarded instead of ratcheting
+   the EMA (and the pipeline depth) down on every throttle cycle. */
+static void test_rate_freeze_resume_guard_discards_refill_interval(void) {
+    torrent_t torrent = {0};
+    peer_t peer = {0};
+    peer.state = PS_ACTIVE;
+    peer.dl_rate_bps = 4 * 1024 * 1024;
+    torrent.peers[0] = &peer;
+
+    torrent_set_rate_freeze(&torrent, 1);
+    peer.downloaded += 100 * 1024;
+    sample_peer_rates(&torrent, 1000, 0);
+    uint64_t held = peer.dl_rate_bps;
+
+    torrent_set_rate_freeze(&torrent, 0);
+    assert(torrent.rate_resume_guard_ms == RATE_FREEZE_RESUME_GUARD_MS);
+
+    /* Refill trickle right after the lift: discarded, EMA holds. */
+    peer.downloaded += 100 * 1024;
+    sample_peer_rates(&torrent, 1000, 0);
+    assert(peer.dl_rate_bps == held);
+    assert(torrent.rate_resume_guard_ms < RATE_FREEZE_RESUME_GUARD_MS);
+
+    /* Still inside the guard window (2 s = two 1 s samples). */
+    peer.downloaded += 8 * 1024 * 1024;
+    sample_peer_rates(&torrent, 1000, 0);
+    assert(peer.dl_rate_bps == held);
+    assert(torrent.rate_resume_guard_ms == 0);
+
+    /* Guard expired: a healthy interval samples normally and grows. */
+    peer.downloaded += 8 * 1024 * 1024;
+    sample_peer_rates(&torrent, 1000, 0);
+    assert(peer.dl_rate_bps > held);
+
+    /* Re-freezing clears a stale guard so it cannot eat live samples. */
+    torrent_set_rate_freeze(&torrent, 1);
+    torrent_set_rate_freeze(&torrent, 0);
+    assert(torrent.rate_resume_guard_ms == RATE_FREEZE_RESUME_GUARD_MS);
+    torrent_set_rate_freeze(&torrent, 1);
+    peer.downloaded += 100 * 1024;
+    sample_peer_rates(&torrent, 1000, 0);
+    assert(torrent.rate_resume_guard_ms == 0);
+}
+
+/* F1: while the install gate curtails admission a request timeout says
+   nothing about the peer — the penalty (strike + cooldown, then disconnect)
+   must be skipped, otherwise slow-WiFi swarms ratchet into cooldown cycles. */
+static void test_expiry_penalty_skipped_for_gate_freeze(void) {
+    torrent_t torrent = {0};
+    peer_t peer = {0};
+    peer.state = PS_ACTIVE;
+
+    torrent.rate_freeze = 1;
+    assert(request_expiry_penalty(&torrent, &peer, 10000) == 0);
+    assert(peer.timeout_strikes == 0);
+
+    torrent.rate_freeze = 0;
+    uint64_t cooldown = request_expiry_penalty(&torrent, &peer, 10000);
+    assert(peer.timeout_strikes == 1);
+    assert(cooldown == TIMEOUT_COOLDOWN_BASE_MS);
+
+    /* A peer that delivered within the grace window stays unpenalised. */
+    peer.last_piece_ms = 9500;
+    assert(request_expiry_penalty(&torrent, &peer, 10000) == 0);
+    assert(peer.timeout_strikes == 1);
+
+    /* Strikes cap the cooldown and saturate the counter. */
+    peer.last_piece_ms = 0;
+    peer.timeout_strikes = 9;
+    cooldown = request_expiry_penalty(&torrent, &peer, 10000);
+    assert(peer.timeout_strikes == 10);
+    assert(cooldown == TIMEOUT_COOLDOWN_MAX_MS);
+}
+
 static void test_probe_window_until_first_block(void) {
     torrent_t torrent = {0};
     torrent.request_pipeline_limit = 256;
@@ -635,6 +711,8 @@ int main(void) {
     test_last_piece_age_marks_missing_sample();
     test_adaptive_hedge_follows_median_latency();
     test_rate_freeze_preserves_peer_dl_rate();
+    test_rate_freeze_resume_guard_discards_refill_interval();
+    test_expiry_penalty_skipped_for_gate_freeze();
     test_probe_window_until_first_block();
     test_window_binding_growth();
     test_stat_counts_active_peers();
