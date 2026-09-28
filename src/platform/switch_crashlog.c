@@ -6,7 +6,9 @@
 #include <stdio.h>
 #include <unistd.h>
 
-static const char *g_stage = "before main";
+/* volatile: also read by the watchdog thread (ANR dumps). Pointer-sized
+ * aligned loads/stores are atomic on the targets we build for. */
+static const char *volatile g_stage = "before main";
 
 static void fatal_signal(int signal_number) {
     char message[256];
@@ -29,4 +31,8 @@ void switch_crashlog_install(void) {
 
 void switch_crashlog_stage(const char *stage) {
     g_stage = stage;
+}
+
+const char *switch_crashlog_last_stage(void) {
+    return g_stage;
 }

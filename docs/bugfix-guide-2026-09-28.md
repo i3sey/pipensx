@@ -48,12 +48,33 @@
   (включая live `test_manager`) и `make switch` — зелёные. Часовой сид-тест с
   дросселированием — на железе.
 
-### F2. Фриз/краш в приложении (Mamba 19.09, H J 27.09, Audient 28.09)
+### F2. Фриз/краш в приложении (Mamba 19.09, H J 27.09, Audient 28.09) — 🛠 ЧАСТИЧНО: ANR-диагностика 28.09, корень — по следующему логу репортёра
 - Лог 57BB (H J, v1.6.2): стартап чистый до `tab=help/about`, ошибок нет — виснет позже.
 - Фикс: сначала добыть логи (QR-отчёт у H J уже есть, запросить у Mamba/Audient);
   смотреть `[diagnostic] level=error`, затем ANR-точку (UI-поток vs install/dht).
 - Проверка: прогон навигации games→ports→downloads→installed→settings→help→about
   без фриза; `8b0c379` уже разблокировал стартап — не откатить.
+- **Что сделано (28.09).** Чистый лог после `tab=help/about` означает, что фриз
+  случился в нелогируемом месте: watchdog (B5) сталл ловил, но писал только
+  `[watchdog] main loop stall` — мимо triage-сигнала `[diagnostic]`, который
+  первично грепают в QR-репортах. Сделано: watchdog теперь пишет
+  `[diagnostic] level=error stage=anr tag=main_loop event=ui_stall stall_ms=…
+  stage=<последняя UI-стадия, новый switch_crashlog_last_stage()>
+  transfer_active=… install_active=… deploy_phase=<имя>` — флаги
+  install/transfer/deploy главный цикл уже считает раз в 250 мс и
+  републикует в атомики; watchdog читает их без мьютексов (вызывать геттеры
+  manager/deploy из дампа нельзя — зависли бы на том же локе, что и UI).
+  Дамп повторяется каждые 10 с (растущий stall_ms отличает подёргивание
+  кадра от мёртвого main loop), при восстановлении — snapshot
+  `event=ui_recovered stall_ms=…`. QR-репорты сохраняют `[diagnostic]`, так
+  что следующий репорт от Mamba/Audient/H J покажет ANR-точку напрямую
+  (UI-поток vs install/dht). Аудит кода: help/about — чистый UI без
+  блокировок; кандидаты `catalog_view.hpp` (metadataFetch.join) и
+  `debrid_ui.hpp` (future.get) висят в воркерах, не на UI-потоке. PC-шиму
+  добавлен `switch_crashlog_last_stage`. Тесты: `make -f Makefile.pc test`
+  (включая live `test_manager`) и `make switch` — зелёные. Навигационный
+  прогон по сценарию из «Проверка» — на железе. Дальше: запросить QR-логи у
+  Mamba/Audient и триажить `stage=anr`.
 
 ### F3. «Торрент уже есть» — нельзя докачать файлы (Miroslav 22.09, dev: «поправлю»)
 - Код: `DownloadManager::importTorrentActions` (`download_manager.cpp:583`),

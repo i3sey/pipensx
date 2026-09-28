@@ -104,6 +104,23 @@ constexpr const char* InstalledNroPath =
 constexpr const char* RelocationBackupPath =
     "sdmc:/switch/pipensx/pipensx.nro.relocation-backup";
 
+// Watchdog ANR dumps name the deploy phase verbatim so a triage grep can
+// tell "install/commit in flight" from "idle" without decoding an int.
+const char* anrDeployPhaseName(int phase) {
+    switch (static_cast<pipensx::SwitchDeployPhase>(phase)) {
+        case pipensx::SwitchDeployPhase::Idle:               return "idle";
+        case pipensx::SwitchDeployPhase::Preparing:          return "preparing";
+        case pipensx::SwitchDeployPhase::Copying:            return "copying";
+        case pipensx::SwitchDeployPhase::Extracting:         return "extracting";
+        case pipensx::SwitchDeployPhase::InstallingPackages: return "installing_packages";
+        case pipensx::SwitchDeployPhase::CommittingPackage:  return "committing_package";
+        case pipensx::SwitchDeployPhase::Completed:          return "completed";
+        case pipensx::SwitchDeployPhase::Failed:             return "failed";
+        case pipensx::SwitchDeployPhase::Cancelled:          return "cancelled";
+    }
+    return "unknown";
+}
+
 // AppSettingsData::language -> the borealis locale to load. LOCALE_AUTO makes
 // SwitchPlatform read the console's system language, so a Russian console gets
 // a Russian UI with no user action; anything we do not ship a locale directory
@@ -920,15 +937,28 @@ int main(int argc, char** argv) {
         uint64_t saverShownMs = 0;
         bool screenOffAttempted = false;
         // Watchdog against hanging the system (B5): the UI thread pets
-        // `uiHeartbeat` every frame; this thread only logs a stall and
-        // forces the panel back on so a hang can never present as a dead
-        // black screen (cf. Max 05.09 "emunand won't boot"). It never pops
-        // activities or touches the download queue — dismissal stays on the
-        // UI thread in the idle block below.
+        // `uiHeartbeat` every frame; this thread logs a stall as a
+        // [diagnostic] level=error ANR record (F2) — the last UI stage plus
+        // install/deploy/torrent activity — and forces the panel back on so
+        // a hang can never present as a dead black screen (cf. Max 05.09
+        // "emunand won't boot"). It never pops activities or touches the
+        // download queue — dismissal stays on the UI thread in the idle
+        // block below.
         std::atomic<uint64_t> uiHeartbeat{now_ms()};
         std::atomic<bool> watchdogStop{false};
+        // ANR context (F2): the main loop republishes these lock-free every
+        // 250 ms from state it already computes. The watchdog must not call
+        // manager/deploy getters here — they take the same mutexes a stuck
+        // UI thread (or a worker it joins on) may hold, and the dump would
+        // hang on the very lock that caused the stall.
+        std::atomic<bool> anrTransferActive{false};
+        std::atomic<bool> anrInstallActive{false};
+        std::atomic<int> anrDeployPhase{
+            static_cast<int>(pipensx::SwitchDeployPhase::Idle)};
         std::thread watchdogThread([&] {
             bool stallActive = false;
+            uint64_t stallSinceMs = 0;
+            uint64_t lastAnrLogMs = 0;
             while (!watchdogStop.load(std::memory_order_relaxed)) {
                 std::this_thread::sleep_for(std::chrono::seconds(1));
                 if (watchdogStop.load(std::memory_order_relaxed))
@@ -939,6 +969,10 @@ int main(int argc, char** argv) {
                 if (now - heartbeat > 10000) {
                     if (!stallActive) {
                         stallActive = true;
+                        // The stall began when the UI last petted the
+                        // heartbeat; `now` would overstate by up to one
+                        // watchdog poll.
+                        stallSinceMs = heartbeat;
                         log_msg("[watchdog] main loop stall %llums, "
                                 "forcing backlight on\n",
                                 (unsigned long long)(now - heartbeat));
@@ -947,8 +981,46 @@ int main(int argc, char** argv) {
                         // afterwards is a harmless second call.
                         pipensx::switchBacklightOn();
                     }
+                    // Re-log every 10 s while the UI stays stuck: a growing
+                    // stall_ms separates a transient frame stall from a dead
+                    // main loop, and repeated lines prove the watchdog is
+                    // still alive. diagnostic_error also log_flush()es, so
+                    // the record survives a hard power-off for the next QR
+                    // report — where [diagnostic] is the primary triage
+                    // signal (stage=anr, tag=main_loop).
+                    if (lastAnrLogMs == 0 || now - lastAnrLogMs >= 10000) {
+                        lastAnrLogMs = now;
+                        diagnostic_error("anr", "main_loop",
+                                         "event=ui_stall stall_ms=%llu "
+                                         "stage=%s transfer_active=%d "
+                                         "install_active=%d deploy_phase=%s",
+                                         (unsigned long long)(now -
+                                                              stallSinceMs),
+                                         switch_crashlog_last_stage(),
+                                         anrTransferActive.load(
+                                             std::memory_order_relaxed)
+                                             ? 1 : 0,
+                                         anrInstallActive.load(
+                                             std::memory_order_relaxed)
+                                             ? 1 : 0,
+                                         anrDeployPhaseName(anrDeployPhase.load(
+                                             std::memory_order_relaxed)));
+                    }
                 } else {
-                    stallActive = false;
+                    if (stallActive) {
+                        stallActive = false;
+                        const uint64_t stallMs = heartbeat - stallSinceMs;
+                        lastAnrLogMs = 0;
+                        log_msg("[watchdog] main loop recovered after "
+                                "%llums\n",
+                                (unsigned long long)stallMs);
+                        // Snapshots are kept in QR reports like errors, so
+                        // the recovery is visible even when the stall lines
+                        // were trimmed from the tail.
+                        diagnostic_snapshot("anr", "main_loop",
+                                            "event=ui_recovered stall_ms=%llu",
+                                            (unsigned long long)stallMs);
+                    }
                 }
             }
         });
@@ -989,6 +1061,16 @@ int main(int argc, char** argv) {
                         pipensx::SwitchDeployPhase::InstallingPackages ||
                     deployState.phase ==
                         pipensx::SwitchDeployPhase::CommittingPackage;
+                // ANR context for the watchdog (F2): republished from state
+                // this poll already computed, lock-free, so the watchdog's
+                // stall dump never blocks on a mutex the stuck UI thread may
+                // hold.
+                anrTransferActive.store(activeTransfer,
+                                        std::memory_order_relaxed);
+                anrInstallActive.store(installActive,
+                                       std::memory_order_relaxed);
+                anrDeployPhase.store(static_cast<int>(deployState.phase),
+                                     std::memory_order_relaxed);
                 if (installActive != imageInstallActive) {
                     imageInstallActive = installActive;
                     configureImageCache(installActive);

@@ -15,4 +15,11 @@ void switch_crashlog_stage(const char* stage) {
     (void)stage; /* startupStage() already mirrors stages into the app log */
 }
 
+const char* switch_crashlog_last_stage(void) {
+    /* Mirrors the Switch build's "before main" default; PC builds never hit
+     * the watchdog ANR path (main_switch.cpp is Switch-only), so a constant
+     * keeps the interface honest without tracking UI stages. */
+    return "before main";
+}
+
 } // extern "C"
