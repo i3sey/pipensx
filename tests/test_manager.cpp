@@ -1,8 +1,10 @@
 #include "../src/app/download_manager.hpp"
 #include "../src/app/task_files.hpp"
+#include "../src/install/install_journal.hpp"
 
 extern "C" {
 #include "../src/core/sha1.h"
+#include "../src/core/util.h"
 }
 
 #include <cassert>
@@ -10,6 +12,7 @@ extern "C" {
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <sys/stat.h>
 #include <thread>
@@ -503,8 +506,102 @@ static void testTaskEtaUsesFreshProgressDomain() {
     assert(!pipensx::taskEtaSeconds(task, 7000));
 }
 
+static std::string readTextFile(const std::string& path) {
+    std::ifstream input(path, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(input),
+                       std::istreambuf_iterator<char>());
+}
+
+// F5: a console reboot during an install runs no teardown. The liveness
+// marker, written before the first package byte, is what survives; the
+// startup pass must turn it into the [diagnostic] QR triage looks for —
+// naming the interrupted install and the last memory / target headroom —
+// and drop it so the next boot does not repeat the report. Without a marker
+// the same restart must stay silent.
+static void testUncleanInstallShutdownIsReported() {
+    const std::string root = "/tmp/pipensx-manager-reboot-test";
+    const std::string logPath = root + ".log";
+    removeAll(root);
+    makeDir(root);
+    makeDir(root + "/torrents");
+    makeDir(root + "/downloads");
+    makeDir(root + "/downloads/example-aabbccdd");
+    unlink(logPath.c_str());
+
+    const std::string torrentPath =
+        makeTorrent(root + "/torrents", "package.nsp", "payload");
+    const std::string taskId = "aabbccddaabbccddaabbccddaabbccddaabbccdd";
+    const std::string state =
+        "d5:tasksl"
+        "d"
+        "4:data" + bstr(root + "/downloads/example-aabbccdd") +
+        "5:error0:"
+        "2:id40:" + taskId +
+        "8:metainfo" + bstr(torrentPath) +
+        "4:mode7:install"
+        "4:name7:Example"
+        "13:package-counti1e"
+        "13:packages-donei0e"
+        "9:selection" +
+        bstr(std::string(1, static_cast<char>(pipensx::FileAction::Install))) +
+        "6:status6:queued"
+        "5:totali1000000e"
+        "e"
+        "e"
+        "7:versioni4e"
+        "e";
+    writeFile(root + "/queue.bencode", state);
+
+    pipensx::install::InstallMarker marker;
+    marker.taskId = taskId;
+    marker.packageId = "package.nsp";
+    marker.packageSize = 40ull * 1024 * 1024;
+    marker.consumed = 6ull * 1024 * 1024;
+    marker.heapAvailableBytes = 123ull * 1024 * 1024;
+    marker.kernelHeadroomBytes = 456ull * 1024 * 1024;
+    marker.storageFreeBytes = 7ull * 1024 * 1024 * 1024;
+    const std::string markerPath =
+        pipensx::install::installMarkerPath(root, taskId);
+    assert(pipensx::install::saveInstallMarker(markerPath, marker));
+
+    log_init(logPath.c_str());
+    {
+        DownloadManager manager(root, false);
+        assert(manager.snapshot().size() == 1);
+    }
+    log_flush();
+    log_close();
+    const std::string log = readTextFile(logPath);
+    assert(log.find("[diagnostic] schema=1 level=error stage=install "
+                    "tag=reboot event=unclean_shutdown") !=
+           std::string::npos);
+    assert(log.find("task=" + taskId) != std::string::npos);
+    assert(log.find("package=package.nsp") != std::string::npos);
+    assert(log.find("consumed_bytes=6291456") != std::string::npos);
+    assert(log.find("heap_bytes=128974848") != std::string::npos);
+    assert(log.find("kernel_headroom_bytes=478150656") != std::string::npos);
+    assert(log.find("target_free_bytes=7516192768") != std::string::npos);
+    // Reported and dropped: a second boot must not repeat the same report.
+    assert(!pipensx::install::loadInstallMarker(markerPath, marker));
+
+    log_init(logPath.c_str());
+    assert(log_clear());
+    {
+        DownloadManager manager(root, false);
+        assert(manager.snapshot().size() == 1);
+    }
+    log_flush();
+    log_close();
+    assert(readTextFile(logPath).find("event=unclean_shutdown") ==
+           std::string::npos);
+
+    removeAll(root);
+    unlink(logPath.c_str());
+}
+
 int main() {
     testTaskEtaUsesFreshProgressDomain();
+    testUncleanInstallShutdownIsReported();
     char rootTemplate[] = "/tmp/pipensx-manager-XXXXXX";
     char* root = mkdtemp(rootTemplate);
     assert(root);

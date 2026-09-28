@@ -482,6 +482,7 @@ DownloadManager::DownloadManager(std::string rootPath, bool startWorker)
     // B-dismissed update-file choosers leave orphaned resolve temp files.
     sweepTempTorrents(rootPath_, "_update_tmp_");
     load();
+    reportInterruptedInstalls();
     persistenceWorkerStarted_ = true;
     persistenceWorker_ =
         std::thread(&DownloadManager::persistenceMain, this);
@@ -494,6 +495,58 @@ DownloadManager::DownloadManager(std::string rootPath, bool startWorker)
 DownloadManager::~DownloadManager() {
     shutdown();
     shutdownPersistence();
+}
+
+// F5: the install liveness marker is written before a package stream's first
+// byte and removed by every clean teardown. One left in the working root can
+// only be the previous session dying mid-install — a console reboot, panic or
+// hard power-off. That death also killed the log line that would have named
+// the cause, so the marker's last memory / target headroom is reported here
+// as the startup [diagnostic] record QR triage looks for. The stale marker is
+// then dropped: it has served its purpose, and a resumed install re-arms a
+// fresh one.
+void DownloadManager::reportInterruptedInstalls() {
+    DIR* dir = opendir(rootPath_.c_str());
+    if (!dir)
+        return;
+    const std::string prefix = "install-active-";
+    const std::string suffix = ".bencode";
+    std::vector<std::string> markers;
+    while (struct dirent* entry = readdir(dir)) {
+        const std::string name = entry->d_name;
+        if (name.size() <= prefix.size() + suffix.size() ||
+            name.compare(0, prefix.size(), prefix) != 0 ||
+            name.compare(name.size() - suffix.size(), suffix.size(),
+                         suffix) != 0)
+            continue;
+        markers.push_back(rootPath_ + "/" + name);
+    }
+    closedir(dir);
+    for (const std::string& path : markers) {
+        install::InstallMarker marker;
+        if (!install::loadInstallMarker(path, marker)) {
+            log_msg("[install] unreadable install marker '%s'; dropped\n",
+                    path.c_str());
+            install::removeInstallMarker(path);
+            continue;
+        }
+        diagnostic_error(
+            "install", "reboot",
+            "event=unclean_shutdown task=%s package=%s consumed_bytes=%llu "
+            "package_bytes=%llu heap_bytes=%llu kernel_headroom_bytes=%llu "
+            "target_free_bytes=%llu",
+            marker.taskId.c_str(), marker.packageId.c_str(),
+            (unsigned long long)marker.consumed,
+            (unsigned long long)marker.packageSize,
+            (unsigned long long)marker.heapAvailableBytes,
+            (unsigned long long)marker.kernelHeadroomBytes,
+            (unsigned long long)marker.storageFreeBytes);
+        log_msg("[install] previous session ended without a clean teardown "
+                "during install of '%s' (task=%s); stream position %llu bytes\n",
+                marker.packageId.c_str(), marker.taskId.c_str(),
+                (unsigned long long)marker.consumed);
+        install::removeInstallMarker(path);
+    }
 }
 
 DownloadManager::ExternalDeployLease::ExternalDeployLease(
@@ -1814,19 +1867,31 @@ std::string DownloadManager::serializeStateLocked() const {
 
 bool DownloadManager::writeStateFile(const std::string& payload,
                                      std::string& error) const {
-    std::string temporary = statePath_ + ".tmp";
-    {
-        std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
-        if (!output) {
-            error = "Unable to open queue state for writing.";
-            return false;
-        }
-        output << payload;
-        output.flush();
-        if (!output.good()) {
-            error = "Unable to write queue state.";
-            return false;
-        }
+    const std::string temporary = statePath_ + ".tmp";
+    std::FILE* file = std::fopen(temporary.c_str(), "wb");
+    if (!file) {
+        error = "Unable to open queue state for writing.";
+        return false;
+    }
+    bool ok = std::fwrite(payload.data(), 1, payload.size(), file) ==
+              payload.size();
+    if (!ok && !errno)
+        errno = EIO;
+    ok = std::fflush(file) == 0 && ok;
+#if !defined(_WIN32)
+    // F5: a console reboot mid-install must not swallow the queue state; the
+    // task has to survive on disk for the journaled resume to be found.
+    // Best effort (some FAT paths reject fsync) — the stream was already
+    // flushed, so a failure only costs the durability promise.
+    if (ok)
+        fsync(fileno(file));
+#endif
+    ok = std::fclose(file) == 0 && ok;
+    if (!ok) {
+        error = std::string("Unable to write queue state: ") +
+                std::strerror(errno ? errno : EIO);
+        unlink(temporary.c_str());
+        return false;
     }
     if (rename(temporary.c_str(), statePath_.c_str()) != 0) {
         int renameErrno = errno;

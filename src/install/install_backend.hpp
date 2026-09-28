@@ -72,6 +72,12 @@ public:
     // before any title metadata is committed. Declared last so adding it does
     // not shift the vtable slots of any pre-existing virtual.
     virtual uint64_t packageApplicationId() const { return 0; }
+
+    // F5: free bytes on the install target right now (0 = unknown). Sampled
+    // into the install liveness marker so a reboot mid-install can report
+    // whether the target was running out of space. Declared last for the
+    // same vtable reason as packageApplicationId().
+    virtual uint64_t freeSpaceBytes() const { return 0; }
 };
 
 std::unique_ptr<InstallBackend> createInstallBackend(

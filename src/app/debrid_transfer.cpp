@@ -1446,13 +1446,19 @@ Step attemptStreamInstall(RunContext& ctx, const DebridFile& file,
     install::InstallBackend* backend = ctx.backend.get();
     const std::string journalPath =
         install::installJournalPath(ctx.spec.workingRoot, ctx.spec.taskId);
+    const std::string markerPath =
+        install::installMarkerPath(ctx.spec.workingRoot, ctx.spec.taskId);
     constexpr uint64_t kJournalIntervalBytes = 32ull * 1024 * 1024;
+    // F5: first safe point lands much earlier than the steady-state interval
+    // (see PackageCoordinator::maybeCheckpoint).
+    constexpr uint64_t kJournalFirstIntervalBytes = 4ull * 1024 * 1024;
     const bool compressed = isCompressedName(file.path);
     uint64_t fetchOffset = 0;
     uint64_t journalConsumed = 0;
 
     auto clearJournal = [&] {
         install::removeInstallJournal(journalPath);
+        install::removeInstallMarker(markerPath);
         journalConsumed = 0;
     };
 
@@ -1466,6 +1472,31 @@ Step attemptStreamInstall(RunContext& ctx, const DebridFile& file,
             ctx.spec.taskId);
     };
     std::unique_ptr<install::PackageStream> stream;
+
+    // F5: refresh the install liveness marker from the current safe point.
+    // A marker left on disk means the next session must report an unclean
+    // shutdown of this install; its memory / target headroom is the
+    // post-mortem the dying session could not write itself.
+    auto writeMarker = [&](uint64_t consumed) {
+        install::InstallMarker marker;
+        marker.taskId = ctx.spec.taskId;
+        marker.packageId = file.path;
+        marker.packageSize = file.bytes;
+        marker.consumed = consumed;
+        const StreamRamMemorySnapshot memory = detectStreamRamMemorySnapshot();
+        marker.heapAvailableBytes = memory.heapDetected
+            ? memory.heapAvailableBytes : 0;
+        marker.kernelHeadroomBytes = memory.kernelHeadroomDetected
+            ? memory.kernelHeadroomBytes : 0;
+        marker.storageFreeBytes = backend ? backend->freeSpaceBytes() : 0;
+        std::string markerError;
+        if (!install::saveInstallMarker(markerPath, marker, &markerError)) {
+            log_msg("[debrid] marker write failed '%s': %s\n",
+                    markerPath.c_str(),
+                    markerError.empty() ? "unknown error"
+                                        : markerError.c_str());
+        }
+    };
 
     install::InstallJournal saved;
     bool resumed = false;
@@ -1498,6 +1529,8 @@ Step attemptStreamInstall(RunContext& ctx, const DebridFile& file,
         noteFileRecovery(ctx, true, journalConsumed, file.bytes);
     else
         noteFileRecovery(ctx, false, 0, file.bytes);
+    if (resumed)
+        writeMarker(journalConsumed);
 
     // Start the HTTP reader before beginPackage so TorrServer's sequential
     // cache and a WAN CDN handshake run during ncm/FS setup instead of after.
@@ -1527,13 +1560,18 @@ Step attemptStreamInstall(RunContext& ctx, const DebridFile& file,
             return Step::Failed;
         }
         stream = makeStream();
+        // F5: the stream is live from here; record the session before the
+        // first byte so a reboot at any point is attributable.
+        writeMarker(0);
     }
 
     auto maybeCheckpoint = [&](bool force) {
         if (!stream)
             return;
         const uint64_t consumed = stream->consumed();
-        if (!force && consumed < journalConsumed + kJournalIntervalBytes)
+        const uint64_t interval = journalConsumed == 0
+            ? kJournalFirstIntervalBytes : kJournalIntervalBytes;
+        if (!force && consumed < journalConsumed + interval)
             return;
         if (force && consumed <= journalConsumed)
             return;
@@ -1556,6 +1594,9 @@ Step attemptStreamInstall(RunContext& ctx, const DebridFile& file,
         }
         journalConsumed = consumed;
         noteFileRecovery(ctx, true, journalConsumed, file.bytes);
+        // Same safe point as the journal, so the startup report names the
+        // exact byte the resumed install continues from.
+        writeMarker(journal.state.consumed);
     };
 
     bool streamOk = true;
@@ -1601,6 +1642,7 @@ Step attemptStreamInstall(RunContext& ctx, const DebridFile& file,
         if (ctx.stop()) {
             maybeCheckpoint(true);
             backend->suspendPackage();
+            install::removeInstallMarker(markerPath);
             return Step::Stopped;
         }
         backend->rollbackPackage();

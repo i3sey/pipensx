@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstring>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <unistd.h>
 
 namespace pipensx::install {
@@ -304,6 +305,14 @@ public:
     uint64_t installedBytes() const override { return installed_; }
     uint64_t expectedBytes() const override { return expected_; }
     const std::string& error() const override { return error_; }
+    uint64_t freeSpaceBytes() const override {
+        struct statvfs vfs {};
+        const std::string probe = directory_.empty() ? root_ : directory_;
+        if (probe.empty() || statvfs(probe.c_str(), &vfs) != 0)
+            return 0;
+        return static_cast<uint64_t>(vfs.f_bavail) *
+               static_cast<uint64_t>(vfs.f_frsize);
+    }
 
 private:
     std::string root_;

@@ -534,6 +534,10 @@ private:
     };
 
     void load();
+    // F5: report install liveness markers left by a previous session that
+    // died mid-install (console reboot, panic, hard power-off). Startup-only,
+    // before any task can start a new install.
+    void reportInterruptedInstalls();
     void schedulerMain();
     // F3: a repeated import of an infoHash the manager already holds merges
     // the incoming per-file actions into the existing task (download the

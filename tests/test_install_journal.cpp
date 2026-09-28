@@ -195,6 +195,90 @@ void testFileHelpers() {
     assert(pipensx::install::removeInstallJournal(path));  // idempotent
 }
 
+using pipensx::install::InstallMarker;
+
+void expectMarkerEqual(const InstallMarker& a, const InstallMarker& b) {
+    assert(a.taskId == b.taskId);
+    assert(a.packageId == b.packageId);
+    assert(a.packageSize == b.packageSize);
+    assert(a.consumed == b.consumed);
+    assert(a.heapAvailableBytes == b.heapAvailableBytes);
+    assert(a.kernelHeadroomBytes == b.kernelHeadroomBytes);
+    assert(a.storageFreeBytes == b.storageFreeBytes);
+}
+
+InstallMarker makeMarkerSample() {
+    InstallMarker marker;
+    marker.taskId = "00112233445566778899aabbccddeeff00112233";
+    marker.packageId = "Game/update.nsp";
+    marker.packageSize = 40ull * 1024 * 1024 * 1024;
+    marker.consumed = 6ull * 1024 * 1024;
+    marker.heapAvailableBytes = 123ull * 1024 * 1024;
+    marker.kernelHeadroomBytes = 456ull * 1024 * 1024;
+    marker.storageFreeBytes = 7ull * 1024 * 1024 * 1024;
+    return marker;
+}
+
+void testMarkerRoundtrip() {
+    InstallMarker marker = makeMarkerSample();
+    const std::string blob = marker.serialize();
+    InstallMarker loaded;
+    assert(loaded.load(blob.data(), blob.size()));
+    expectMarkerEqual(marker, loaded);
+
+    // Unknown headroom (probe unavailable) is preserved as 0.
+    marker = makeMarkerSample();
+    marker.heapAvailableBytes = 0;
+    marker.kernelHeadroomBytes = 0;
+    marker.storageFreeBytes = 0;
+    const std::string unknown = marker.serialize();
+    assert(loaded.load(unknown.data(), unknown.size()));
+    expectMarkerEqual(marker, loaded);
+}
+
+void testMarkerRejectsMalformed() {
+    const std::string blob = makeMarkerSample().serialize();
+    for (size_t size = 0; size < blob.size(); ++size) {
+        InstallMarker loaded;
+        assert(!loaded.load(blob.data(), size));
+    }
+    {
+        std::string bad = blob + "x";  // trailing garbage
+        InstallMarker loaded;
+        assert(!loaded.load(bad.data(), bad.size()));
+    }
+    {
+        std::string bad = blob;
+        const size_t pos = bad.rfind("1:vi1e");
+        assert(pos != std::string::npos);
+        bad[pos + 4] = '2';  // wrong version
+        InstallMarker loaded;
+        assert(!loaded.load(bad.data(), bad.size()));
+    }
+    {
+        InstallMarker loaded = makeMarkerSample();
+        assert(!loaded.load(blob.data(), blob.size() - 1));
+        expectMarkerEqual(loaded, makeMarkerSample());
+    }
+}
+
+void testMarkerFileHelpers() {
+    const std::string real = "/tmp/pipensx_test_install_marker.bin";
+    std::remove(real.c_str());
+    InstallMarker marker = makeMarkerSample();
+    assert(pipensx::install::saveInstallMarker(real, marker));
+    InstallMarker loaded;
+    assert(pipensx::install::loadInstallMarker(real, loaded));
+    expectMarkerEqual(marker, loaded);
+    marker.consumed += 4096;
+    assert(pipensx::install::saveInstallMarker(real, marker));
+    assert(pipensx::install::loadInstallMarker(real, loaded));
+    expectMarkerEqual(marker, loaded);
+    assert(pipensx::install::removeInstallMarker(real));
+    assert(!pipensx::install::loadInstallMarker(real, loaded));
+    assert(pipensx::install::removeInstallMarker(real));  // idempotent
+}
+
 } // namespace
 
 int main() {
@@ -203,6 +287,9 @@ int main() {
     testTruncationNeverLoads();
     testRejectsMalformed();
     testFileHelpers();
+    testMarkerRoundtrip();
+    testMarkerRejectsMalformed();
+    testMarkerFileHelpers();
     std::cout << "install journal tests passed\n";
     return 0;
 }

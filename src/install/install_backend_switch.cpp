@@ -1273,6 +1273,19 @@ public:
     uint64_t expectedBytes() const override { return expected_; }
     const std::string& error() const override { return error_; }
 
+    // F5 reboot forensics: free space on the install target. NcmContentStorage
+    // acts on the open handle, so this is only meaningful while a package is
+    // active; the marker writer always samples it at a safe point.
+    uint64_t freeSpaceBytes() const override {
+        if (!active_)
+            return 0;
+        s64 freeSpace = 0;
+        if (R_FAILED(ncmContentStorageGetFreeSpaceSize(&storage_, &freeSpace)) ||
+            freeSpace < 0)
+            return 0;
+        return static_cast<uint64_t>(freeSpace);
+    }
+
 private:
     // PERF_PLAN 3.4: parse the CNMT as soon as its NCA completes, so delta
     // fragments that follow it in the PFS0 can be skipped by shouldSkipFile
@@ -1462,6 +1475,19 @@ private:
         error_ = text;
         log_msg("[install] error: %s file='%s' package='%s'\n",
                 error_.c_str(), currentName_.c_str(), packageName_.c_str());
+        // F5: an NCM failure this severe is a console-reboot candidate, and
+        // [install] lines are not what QR triage keeps — one structured
+        // [diagnostic] per package with the raw NCM result.
+        if (!ncmDiagnosticSent_) {
+            ncmDiagnosticSent_ = true;
+            diagnostic_error("install", "ncm",
+                             "event=error rc=0x%08x message=%s file=%s "
+                             "package=%s installed=%llu expected=%llu",
+                             rc, message, currentName_.c_str(),
+                             packageName_.c_str(),
+                             (unsigned long long)installed_,
+                             (unsigned long long)expected_);
+        }
     }
 
     void placeholderErrorResult(const char* message, Result rc,
@@ -1554,6 +1580,7 @@ private:
         applicationRecordTouched_ = false;
         applicationId_ = 0;
         previousRecords_.clear();
+        ncmDiagnosticSent_ = false;
     }
 
     std::string root_;
@@ -1565,7 +1592,9 @@ private:
     std::string currentName_;
     std::string auxiliaryKind_;
     std::string error_;
-    NcmContentStorage storage_ {};
+    // mutable: the ncm IPC wrappers take a non-const handle even for pure
+    // queries (freeSpaceBytes() is logically const).
+    mutable NcmContentStorage storage_ {};
     NcmContentMetaDatabase database_ {};
     NcmContentMetaKey committedKey_ {};
     std::vector<Content> contents_;
@@ -1606,6 +1635,8 @@ private:
     bool hashActive_ = false;
     bool metaCommitted_ = false;
     bool applicationRecordTouched_ = false;
+    // F5: only the first NCM failure of a package becomes a [diagnostic].
+    bool ncmDiagnosticSent_ = false;
 };
 
 } // namespace

@@ -118,6 +118,7 @@ public:
         buildPieceOrder();
         if (streamInstall_ && error_.empty() && packageCount_ > completedPackages_) {
             journalPath_ = install::installJournalPath(workingRoot, taskId_);
+            markerPath_ = install::installMarkerPath(workingRoot, taskId_);
             tryResume();
             StreamRamBudget budget;
             arbiterLease_ = arbiter_->acquire(
@@ -198,17 +199,22 @@ public:
     ~PackageCoordinator() {
         cancel();
         arbiter_->release(arbiterLease_);
-        if (!backend_)
+        if (!backend_) {
+            clearMarker();
             return;
+        }
         // F-B: an interruption with a journaled safe point keeps the partial
         // install on disk for a later resume; anything else rolls back and
-        // drops the journal.
+        // drops the journal. F5: either way the liveness marker is cleared —
+        // a marker only survives an unclean session end (reboot / kill).
         if (journalValid_ && !abandonResume_ &&
             (error().empty() || recoverableError_.load())) {
             backend_->suspendPackage();
+            clearMarker();
             return;
         }
         backend_->rollbackPackage();
+        clearMarker();
         if (!journalPath_.empty())
             install::removeInstallJournal(journalPath_);
     }
@@ -681,6 +687,45 @@ private:
             file.path,
             static_cast<unsigned long long>(journal.state.consumed),
             static_cast<unsigned long long>(file.length));
+        // Re-arm the liveness marker before any new bytes flow: a reboot in
+        // this session must again be attributable to this install.
+        writeMarker(journal.state.consumed);
+    }
+
+    // F5: persist / refresh the liveness marker. Written when a package
+    // stream starts (before the first journal safe point exists) and at
+    // every journal save, removed by the destructor and on every rollback.
+    // A marker still on disk at the next startup means the previous session
+    // died mid-install, and its memory / target headroom is the only
+    // post-mortem a console reboot cannot take with it.
+    void writeMarker(uint64_t consumed) {
+        if (markerPath_.empty() || activeFileIndex_ == UINT32_MAX)
+            return;
+        install::InstallMarker marker;
+        marker.taskId = taskId_;
+        const mi_file_t& file = metainfo_.files[activeFileIndex_];
+        marker.packageId = file.path;
+        marker.packageSize = static_cast<uint64_t>(file.length);
+        marker.consumed = consumed;
+        const StreamRamMemorySnapshot memory = detectStreamRamMemorySnapshot();
+        marker.heapAvailableBytes = memory.heapDetected
+            ? memory.heapAvailableBytes : 0;
+        marker.kernelHeadroomBytes = memory.kernelHeadroomDetected
+            ? memory.kernelHeadroomBytes : 0;
+        if (backend_)
+            marker.storageFreeBytes = backend_->freeSpaceBytes();
+        std::string markerError;
+        if (!install::saveInstallMarker(markerPath_, marker, &markerError)) {
+            log_msg("[install] marker write failed '%s': %s\n",
+                    markerPath_.c_str(),
+                    markerError.empty() ? "unknown error"
+                                        : markerError.c_str());
+        }
+    }
+
+    void clearMarker() {
+        if (!markerPath_.empty())
+            install::removeInstallMarker(markerPath_);
     }
 
     // F-B: persist a resume point from the install worker. When `force` is
@@ -690,7 +735,14 @@ private:
         if (!stream_ || activeFileIndex_ == UINT32_MAX)
             return;
         uint64_t consumed = stream_->consumed();
-        if (!force && consumed < journalConsumed_ + kJournalIntervalBytes)
+        // F5: the very first safe point is taken much earlier than the
+        // steady-state interval. Before it exists, a reboot mid-install
+        // restarts the package from zero and orphans its NCM placeholder;
+        // 4 MiB is late enough for the PFS0 header to be parsed and early
+        // enough that a crash "a few MB in" (the reported reboot) resumes.
+        const uint64_t interval = journalConsumed_ == 0
+            ? kJournalFirstIntervalBytes : kJournalIntervalBytes;
+        if (!force && consumed < journalConsumed_ + interval)
             return;
         if (force && consumed <= journalConsumed_)
             return;
@@ -722,11 +774,15 @@ private:
         journalConsumed_ = consumed;
         journalValid_ = true;
         publishJournal();
+        // Same safe point as the journal: the startup report then names the
+        // exact byte the resumed install continues from.
+        writeMarker(journal.state.consumed);
     }
 
     void clearJournal() {
         if (!journalPath_.empty())
             install::removeInstallJournal(journalPath_);
+        clearMarker();
         journalValid_ = false;
         journalConsumed_ = 0;
         publishJournal();
@@ -766,6 +822,9 @@ private:
             if (progress_)
                 progress_(completedPackages_, currentPackage_, 0, 0,
                           DownloadStatus::Installing);
+            // F5: the stream is live from here — record the session before
+            // the first byte so a reboot at any point is attributable.
+            writeMarker(0);
         }
         if (activeFileIndex_ != chunk.fileIndex ||
             chunk.fileOffset != stream_->consumed())
@@ -1117,7 +1176,10 @@ private:
     // constructor (before the worker starts), the install worker and the
     // destructor (after the worker joined) — no lock needed.
     static constexpr uint64_t kJournalIntervalBytes = 32ull * 1024 * 1024;
+    // F5: first safe point of a package stream (see maybeCheckpoint).
+    static constexpr uint64_t kJournalFirstIntervalBytes = 4ull * 1024 * 1024;
     std::string journalPath_;
+    std::string markerPath_;
     StreamBudgetArbiter* arbiter_ = nullptr;
     uint64_t arbiterLease_ = 0;
     uint64_t journalConsumed_ = 0;

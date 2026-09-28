@@ -278,24 +278,16 @@ bool InstallJournal::load(const char* data, size_t size) {
 
 namespace {
 
-void setJournalError(std::string* error, const char* what,
-                     const std::string& path, int err) {
-    if (!error)
-        return;
-    *error = std::string(what) + " '" + path + "': " + strerror(err);
-}
-
-} // namespace
-
-bool saveInstallJournal(const std::string& path,
-                        const InstallJournal& journal,
-                        std::string* error) {
-    const std::string blob = journal.serialize();
+// Atomic durable write (temp file, fsync, remove+rename over the target).
+// Backs both the resume journal and the F5 liveness marker.
+bool writeAtomic(const std::string& path, const std::string& blob,
+                 const char* what, std::string* error) {
     const std::string tmp = path + ".tmp";
     std::FILE* file = std::fopen(tmp.c_str(), "wb");
     if (!file) {
-        setJournalError(error, "cannot open install journal temp file", tmp,
-                        errno);
+        if (error)
+            *error = std::string("cannot open ") + what + " '" + tmp +
+                     "': " + strerror(errno);
         return false;
     }
     bool ok = std::fwrite(blob.data(), 1, blob.size(), file) == blob.size();
@@ -304,12 +296,13 @@ bool saveInstallJournal(const std::string& path,
     ok = std::fflush(file) == 0 && ok;
 #if !defined(_WIN32)
     if (ok)
-        fsync(fileno(file));  // best effort; journal loss only costs a restart
+        fsync(fileno(file));  // best effort; a lost write only costs a restart
 #endif
     ok = std::fclose(file) == 0 && ok;
     if (!ok) {
-        setJournalError(error, "cannot write install journal temp file", tmp,
-                        errno ? errno : EIO);
+        if (error)
+            *error = std::string("cannot write ") + what + " '" + tmp +
+                     "': " + strerror(errno ? errno : EIO);
         std::remove(tmp.c_str());
         return false;
     }
@@ -320,28 +313,106 @@ bool saveInstallJournal(const std::string& path,
     // the resume journal and forces a re-stream, same as a lost write.
     std::remove(path.c_str());
     if (std::rename(tmp.c_str(), path.c_str()) != 0) {
-        setJournalError(error, "cannot rename install journal", path, errno);
+        if (error)
+            *error = std::string("cannot rename ") + what + " '" + path +
+                     "': " + strerror(errno);
         std::remove(tmp.c_str());
         return false;
     }
     return true;
 }
 
-bool loadInstallJournal(const std::string& path, InstallJournal& journal) {
+bool readBlob(const std::string& path, std::vector<char>& blob) {
     std::FILE* file = std::fopen(path.c_str(), "rb");
     if (!file)
         return false;
-    std::vector<char> blob;
+    blob.clear();
     char buffer[4096];
     size_t count = 0;
     while ((count = std::fread(buffer, 1, sizeof buffer, file)) > 0)
         blob.insert(blob.end(), buffer, buffer + count);
     const bool readOk = std::ferror(file) == 0;
     std::fclose(file);
-    return readOk && journal.load(blob.data(), blob.size());
+    return readOk;
+}
+
+} // namespace
+
+bool saveInstallJournal(const std::string& path,
+                        const InstallJournal& journal,
+                        std::string* error) {
+    return writeAtomic(path, journal.serialize(), "install journal", error);
+}
+
+bool loadInstallJournal(const std::string& path, InstallJournal& journal) {
+    std::vector<char> blob;
+    return readBlob(path, blob) && journal.load(blob.data(), blob.size());
 }
 
 bool removeInstallJournal(const std::string& path) {
+    return std::remove(path.c_str()) == 0 || errno == ENOENT;
+}
+
+std::string InstallMarker::serialize() const {
+    std::string out;
+    out += 'd';
+    putKey(out, "consumed");
+    putInt(out, consumed);
+    putKey(out, "heap");
+    putInt(out, heapAvailableBytes);
+    putKey(out, "kernel");
+    putInt(out, kernelHeadroomBytes);
+    putKey(out, "package");
+    putStr(out, packageId);
+    putKey(out, "size");
+    putInt(out, packageSize);
+    putKey(out, "targetfree");
+    putInt(out, storageFreeBytes);
+    putKey(out, "task");
+    putStr(out, taskId);
+    putKey(out, "v");
+    putInt(out, static_cast<uint64_t>(kVersion));
+    out += 'e';
+    return out;
+}
+
+bool InstallMarker::load(const char* data, size_t size) {
+    const char* p = data;
+    be_node_t root;
+    if (!data || !be_decode(&p, data + size, &root) || root.type != BE_DICT)
+        return false;
+    if (p != data + size)  // trailing garbage: not our file
+        return false;
+
+    InstallMarker parsed;
+    uint64_t version = 0;
+    if (!getU64(root, "v", version) ||
+        version != static_cast<uint64_t>(kVersion))
+        return false;
+    if (!getU64(root, "consumed", parsed.consumed) ||
+        !getU64(root, "heap", parsed.heapAvailableBytes) ||
+        !getU64(root, "kernel", parsed.kernelHeadroomBytes) ||
+        !getStr(root, "package", parsed.packageId) ||
+        !getU64(root, "size", parsed.packageSize) ||
+        !getU64(root, "targetfree", parsed.storageFreeBytes) ||
+        !getStr(root, "task", parsed.taskId))
+        return false;
+
+    *this = std::move(parsed);
+    return true;
+}
+
+bool saveInstallMarker(const std::string& path, const InstallMarker& marker,
+                       std::string* error) {
+    return writeAtomic(path, marker.serialize(), "install marker", error);
+}
+
+bool loadInstallMarker(const std::string& path, InstallMarker& marker) {
+    std::vector<char> blob;
+    return readBlob(path, blob) && marker.load(blob.data(), blob.size());
+}
+
+bool removeInstallMarker(const std::string& path) {
     return std::remove(path.c_str()) == 0 || errno == ENOENT;
 }
 

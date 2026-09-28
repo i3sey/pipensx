@@ -154,11 +154,49 @@
   `make -f Makefile.pc test` (включая live `test_manager`), `make switch`
   и `make pc` — зелёные. Прогон «8 обновлений одной X» — на железе.
 
-### F5. Перезагрузка консоли во время установки (Kiru 19/21.09)
+### F5. Перезагрузка консоли во время установки (Kiru 19/21.09) — ✅ ИСПРАВЛЕНО 28.09
 - Защиты нет; `b223e30` убрал только stall-аллокации (`placeholder_grow.hpp`).
 - Фикс: журнал install (`install_journal.cpp`) должен переживать ребут
   (resume после перезапуска), плюс явная диагностика причины ребута (память/NCM).
 - Проверка: kill во время установки → перезапуск → продолжение, а не «начать заново».
+- **Что сделано (28.09).** Ребут переживают оба артефакта, и он же становится
+  видимым в QR-логе. (1) Liveness-маркер `install-active-<taskId>.bencode`
+  (`InstallMarker` в `install_journal.cpp`, общий с журналом атомарный писатель:
+  временный файл → fsync → remove+rename для FAT32) пишется, как только
+  пакетный стрим становится живым — до первого байта, в
+  `PackageCoordinator::processChunk` и `DebridTransfer::attemptStreamInstall`, —
+  и обновляется на каждой чекпоинт-точке вместе с журналом. Любой чистый
+  teardown снимает маркер (destructor/`clearJournal`, pause, commit, rollback,
+  удаление задачи), поэтому маркер, доживший до следующего запуска, может быть
+  только следствием сессии, которую убил ребут/паника/жёсткое выключение.
+  Вместе с ним сохраняются последние память и место: heap и kernel headroom
+  (`detectStreamRamMemorySnapshot`) и свободное место целевого хранилища
+  (новый `InstallBackend::freeSpaceBytes()`: ncm-free на Switch, statvfs на
+  PC). При старте `DownloadManager::reportInterruptedInstalls()` сканирует
+  рабочий корень и пишет `[diagnostic] schema=1 level=error stage=install
+  tag=reboot event=unclean_shutdown task=… package=… consumed_bytes=…
+  package_bytes=… heap_bytes=… kernel_headroom_bytes=… target_free_bytes=…`
+  (диагностика остаётся в QR-отчётах, обычные `[install]`-строки — нет), после
+  чего маркер удаляется: второй запуск отчёт не повторяет, а возобновлённая
+  установка тут же вооружает новый маркер. (2) Резюм после ребута: первая
+  безопасная точка стрима берётся на 4 МиБ вместо 32 МиБ
+  (`kJournalFirstIntervalBytes`), поэтому kill «через пару МБ» (или ранний
+  ребут) продолжает с точки, а не с нуля и не оставляет осиротевший
+  NCM-placeholder; сохранение очереди (`queue.bencode`) теперь fsync-ится,
+  чтобы задача пережила жёсткий ребут и журнал нашёлся. (3) NCM-ошибки в
+  `install_backend_switch.cpp` дублируются структурной `[diagnostic]
+  level=error stage=install tag=ncm event=error rc=0x…` (один раз на пакет) —
+  для триажа «память/NCM» по причине ребута. Тесты:
+  `test_package_coordinator` — симуляция жёсткого kill (координатор намеренно
+  утекает, destructor не выполняется) → следующий координатор продолжает с
+  журнальной точки, маркер вооружён и снят после commit, плюс чистый pause
+  снимает маркер, но сохраняет журнал; `test_manager` — маркер на диске →
+  ровно один `event=unclean_shutdown` с forensics, второй старт молчит;
+  `test_install_journal` — marker round-trip, строгость и файловые хелперы.
+  `make -f Makefile.pc test` (включая live `test_manager`), `make pc`,
+  `make switch` — зелёные. На железе: kill консоли во время установки →
+  перезапуск → продолжение с точки и строка `tag=reboot` в
+  Help → Report a bug.
 
 ### F6. Апдейтер «failed to update» (Chris 19.09, после фиксов NRO)
 - Механика двух NRO закрыта (`4b6bab4`, `8b0c379`), но ветки `install_failed` /
