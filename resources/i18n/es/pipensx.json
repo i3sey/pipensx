@@ -504,7 +504,8 @@
     "count": "{} actualizaciones disponibles",
     "update_all": "Actualizar todo",
     "update_all_empty": "No hay actualizaciones que instalar.",
-    "update_all_started": "Encolando {} actualizaciones…"
+    "update_all_started": "Encolando {} actualizaciones…",
+    "update_all_progress": "Encolando actualización {0} de {1}…"
   },
   "batch": {
     "frame_title": "Instalación por lotes",

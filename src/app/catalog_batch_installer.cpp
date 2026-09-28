@@ -1,6 +1,7 @@
 #include "catalog_batch_installer.hpp"
 #include "add_release.hpp"
 #include "download_manager.hpp"
+#include "game_update_install.hpp"
 #include "nx_file_types.hpp"
 #include "torrent_metainfo_fetch.hpp"
 
@@ -41,6 +42,41 @@ void addEstimate(uint64_t& target, uint64_t value, bool& overflow) {
 
 TorrentPreview previewFromDebrid(const DebridInfo& info) {
     return previewFromDebridFiles(info);
+}
+
+// Fills a DebridImport for an already-created provider transfer, mirroring
+// enqueueViaDebrid's shape for the stream-install mask the caller carries.
+DebridImport debridImportFor(const PreparedCatalogInstall& item,
+                             DebridProviderKind providerKind) {
+    DebridImport import;
+    import.infoHash = lowerAscii(item.entry.infoHash);
+    import.name = item.preview.name.empty() ? item.entry.title
+                                            : item.preview.name;
+    import.totalBytes = item.preview.totalBytes;
+    import.debridId = item.debridId;
+    import.provider = providerKind;
+    import.mode = item.mode;
+    import.fileSelection = item.selection;
+    import.packageCount = item.space.packageFiles;
+    return import;
+}
+
+// Number of package files the mask actually installs. The update mask must
+// carry at least one, otherwise the release carries nothing identifiable.
+uint32_t countInstalledPackages(const TorrentPreview& preview,
+                                const std::vector<uint8_t>& mask) {
+    uint32_t count = 0;
+    for (size_t i = 0; i < preview.files.size() && i < mask.size(); ++i)
+        if (preview.files[i].package &&
+            mask[i] == static_cast<uint8_t>(FileAction::Install))
+            ++count;
+    return count;
+}
+
+std::string updateNothingSelectedError() {
+    OneTapPlan plan;
+    plan.block = OneTapBlock::NothingSelected;
+    return oneTapBlockedMessage(plan);
 }
 
 } // namespace
@@ -199,6 +235,234 @@ BatchEnqueueResult CatalogBatchInstaller::enqueue(
         }
         ::unlink(item.torrentPath.c_str());
         item.torrentPath.clear();
+    }
+    return result;
+}
+
+BatchPreparation CatalogBatchInstaller::prepareUpdates(
+    const std::vector<UpdateQueueTarget>& targets,
+    std::atomic<bool>& cancelled,
+    const ProgressCallback& progress) const {
+    BatchPreparation result;
+    if (!resolver_) {
+        for (const UpdateQueueTarget& target : targets)
+            result.failures_.push_back(
+                {target.entry, "Torrent resolver is unavailable."});
+        return result;
+    }
+
+    for (size_t index = 0; index < targets.size(); ++index) {
+        const UpdateQueueTarget& target = targets[index];
+        if (cancelled.load()) {
+            result.cancelled_ = true;
+            break;
+        }
+
+        // Mirrors the detail-card flow: the metadata index is RuTracker-
+        // derived, so a bundle without a magnet still resolves through the
+        // canonical mirror announce.
+        CatalogEntry entry = target.entry;
+        if (entry.magnetUri.empty())
+            entry.magnetUri =
+                updateMagnetFor(lowerAscii(entry.infoHash), nullptr);
+        const uint64_t serial = gBatchTempSerial.fetch_add(1);
+        const std::string hash = lowerAscii(entry.infoHash);
+        const std::string path = rootPath_ + "/_catalog_batch_" +
+                                 (hash.empty() ? "unknown" : hash) + "_" +
+                                 std::to_string(serial) + ".torrent";
+        auto forwardProgress = [&, index](const MagnetProgress& magnet) {
+            if (progress)
+                progress({index + 1, targets.size(), entry.title, magnet});
+        };
+        if (progress)
+            progress({index + 1, targets.size(), entry.title, {}});
+
+        std::string error;
+        std::vector<uint8_t> initialPeers;
+        if (!resolver_(entry, path, cancelled, forwardProgress,
+                       initialPeers, error)) {
+            ::unlink(path.c_str());
+            if (cancelled.load()) {
+                result.cancelled_ = true;
+                break;
+            }
+            result.failures_.push_back(
+                {entry, error.empty() ? "Unable to resolve torrent metadata."
+                                      : error});
+            continue;
+        }
+        TorrentPreview preview;
+        if (!DownloadManager::previewTorrent(path, preview, error)) {
+            ::unlink(path.c_str());
+            result.failures_.push_back({entry, error});
+            continue;
+        }
+        if (!hash.empty() && hash != lowerAscii(preview.infoHash)) {
+            ::unlink(path.c_str());
+            result.failures_.push_back(
+                {entry, "Resolved torrent does not match the catalog entry."});
+            continue;
+        }
+
+        // Same mask the one-tap update installs: the bundled patch above the
+        // installed version plus missing DLC. Base is installed by
+        // construction, so it is never selected again (F7).
+        const OneTapContext& oneTap = target.oneTap;
+        const std::vector<uint8_t> mask = selectSmartInstallFiles(
+            preview, oneTap.titleInstalled, oneTap.installedVersion,
+            oneTap.latestVersion, oneTap.titleId, oneTap.installedDlcIds);
+        if (countInstalledPackages(preview, mask) == 0) {
+            ::unlink(path.c_str());
+            result.failures_.push_back(
+                {entry, updateNothingSelectedError()});
+            continue;
+        }
+        const InstallSpaceEstimate space = estimateInstallSpace(
+            preview, mask, TransferMode::StreamInstall);
+        if (space.overflow) {
+            ::unlink(path.c_str());
+            result.failures_.push_back(
+                {entry, "Selected size is too large."});
+            continue;
+        }
+
+        PreparedCatalogInstall item;
+        item.entry = entry;
+        item.torrentPath = path;
+        item.preview = std::move(preview);
+        item.selection = mask;
+        item.initialPeers = std::move(initialPeers);
+        item.mode = TransferMode::StreamInstall;
+        item.space = space;
+        result.items_.push_back(std::move(item));
+    }
+    return result;
+}
+
+BatchPreparation CatalogBatchInstaller::prepareUpdatesViaDebrid(
+    const std::vector<UpdateQueueTarget>& targets,
+    DebridProvider& provider,
+    std::atomic<bool>& cancelled,
+    const ProgressCallback& progress,
+    DebridBatchTiming timing) const {
+    BatchPreparation result;
+    for (size_t index = 0; index < targets.size(); ++index) {
+        const UpdateQueueTarget& target = targets[index];
+        if (cancelled.load()) {
+            result.cancelled_ = true;
+            return result;
+        }
+        if (progress)
+            progress({index + 1, targets.size(), target.entry.title, {}});
+        const std::string hash = lowerAscii(target.entry.infoHash);
+        const uint64_t serial = gBatchTempSerial.fetch_add(1);
+        const std::string tmp = rootPath_ + "/_debrid_batch_" +
+                                (hash.empty() ? "unknown" : hash) + "_" +
+                                std::to_string(serial) + ".torrent";
+        const std::string magnet = target.entry.magnetUri.empty()
+            ? updateMagnetFor(hash, nullptr)
+            : target.entry.magnetUri;
+        const auto deadline =
+            std::chrono::steady_clock::now() +
+            std::chrono::milliseconds(timing.resolveWindowMs);
+        std::string id;
+        DebridInfo info;
+        std::string err;
+        if (!createDebridWithMetainfoFallback(
+                provider, magnet, hash, target.entry.infoDict, tmp, cancelled,
+                deadline, id, info, err)) {
+            if (cancelled.load()) {
+                result.cancelled_ = true;
+                return result;
+            }
+            result.failures_.push_back(
+                {target.entry, err.empty() ? kMagnetUnavailableError : err});
+            continue;
+        }
+        if (info.phase == DebridInfo::Phase::Failed) {
+            std::string ignored;
+            provider.remove(id, ignored);
+            result.failures_.push_back({target.entry, kMagnetUnavailableError});
+            continue;
+        }
+
+        TorrentPreview preview =
+            previewFromDebridFiles(info, target.entry.title,
+                                   target.entry.size);
+        const OneTapContext& oneTap = target.oneTap;
+        const std::vector<uint8_t> mask = selectSmartInstallFiles(
+            preview, oneTap.titleInstalled, oneTap.installedVersion,
+            oneTap.latestVersion, oneTap.titleId, oneTap.installedDlcIds);
+        if (countInstalledPackages(preview, mask) == 0) {
+            std::string ignored;
+            provider.remove(id, ignored);
+            result.failures_.push_back(
+                {target.entry, updateNothingSelectedError()});
+            continue;
+        }
+
+        PreparedCatalogInstall item;
+        item.entry = target.entry;
+        item.preview = std::move(preview);
+        item.selection = mask;
+        item.mode = TransferMode::StreamInstall;
+        item.space = estimateInstallSpace(preview, item.selection,
+                                          TransferMode::StreamInstall);
+        item.source = InstallSource::Debrid;
+        item.debridId = id;
+        result.items_.push_back(std::move(item));
+    }
+    return result;
+}
+
+BatchEnqueueResult CatalogBatchInstaller::enqueueUpdates(
+    BatchPreparation& prepared,
+    DownloadManager& manager,
+    DebridProviderKind providerKind,
+    DebridProvider* provider) const {
+    BatchEnqueueResult result;
+    for (PreparedCatalogInstall& item : prepared.items_) {
+        if (!item.selected) {
+            ++result.skipped;
+            continue;
+        }
+        std::string taskId;
+        std::string error;
+        bool ok = false;
+        if (item.source == InstallSource::Debrid) {
+            if (!provider) {
+                result.failures.push_back(
+                    {item.entry, "Debrid provider is unavailable."});
+                continue;
+            }
+            ok = manager.importDebrid(
+                debridImportFor(item, providerKind), taskId, error);
+            if (!ok) {
+                std::string ignored;
+                provider->remove(item.debridId, ignored);
+            }
+        } else {
+            ok = manager.importTorrentActions(item.torrentPath, item.selection,
+                                              taskId, error,
+                                              item.initialPeers);
+            ::unlink(item.torrentPath.c_str());
+            item.torrentPath.clear();
+            // F3: a repeated import that adds nothing new refuses with
+            // "already in the download manager" — that is a skip, not a
+            // failure, so "Update all" stays idempotent.
+            if (!ok && lowerAscii(error).find(
+                           "already in the download manager") !=
+                           std::string::npos) {
+                ++result.skipped;
+                continue;
+            }
+        }
+        if (ok) {
+            result.taskIds.push_back(std::move(taskId));
+            result.queuedInfoHashes.push_back(item.entry.infoHash);
+        } else {
+            result.failures.push_back({item.entry, std::move(error)});
+        }
     }
     return result;
 }

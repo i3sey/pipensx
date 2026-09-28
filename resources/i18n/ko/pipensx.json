@@ -504,7 +504,8 @@
     "count": "사용 가능한 업데이트 {}개",
     "update_all": "모두 업데이트",
     "update_all_empty": "설치할 업데이트가 없습니다.",
-    "update_all_started": "업데이트 {}개를 대기열에 추가하는 중…"
+    "update_all_started": "업데이트 {}개를 대기열에 추가하는 중…",
+    "update_all_progress": "업데이트 {0}/{1}개를 대기열에 추가하는 중…"
   },
   "batch": {
     "frame_title": "일괄 설치",

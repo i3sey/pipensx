@@ -504,7 +504,8 @@
     "count": "{} updates available",
     "update_all": "Update all",
     "update_all_empty": "No updates to install.",
-    "update_all_started": "Queuing {} updates…"
+    "update_all_started": "Queuing {} updates…",
+    "update_all_progress": "Queuing update {0} of {1}…"
   },
   "batch": {
     "frame_title": "Batch install",

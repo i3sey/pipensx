@@ -504,7 +504,8 @@
     "count": "{} aggiornamenti disponibili",
     "update_all": "Aggiorna tutto",
     "update_all_empty": "Nessun aggiornamento da installare.",
-    "update_all_started": "In coda {} aggiornamenti…"
+    "update_all_started": "In coda {} aggiornamenti…",
+    "update_all_progress": "Aggiornamento {0} di {1} in coda…"
   },
   "batch": {
     "frame_title": "Installazione batch",

@@ -504,7 +504,8 @@
     "count": "{} 个可用更新",
     "update_all": "全部更新",
     "update_all_empty": "没有可安装的更新。",
-    "update_all_started": "正在排队 {} 个更新…"
+    "update_all_started": "正在排队 {} 个更新…",
+    "update_all_progress": "正在排队第 {0} 个更新，共 {1} 个…"
   },
   "batch": {
     "frame_title": "批量安装",

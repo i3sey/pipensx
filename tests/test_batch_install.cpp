@@ -41,6 +41,60 @@ static bool copyFile(const std::string& source, const std::string& target) {
     return input.good() || input.eof();
 }
 
+static std::string bstr(const std::string& value) {
+    return std::to_string(value.size()) + ":" + value;
+}
+
+// Multi-package release in the shape selectSmartInstallFiles plans against:
+// base v0, patch v131072, a DLC add-on and a plain file. The tag only lands
+// in the display name, so two tags yield distinct infohashes with identical
+// file lists.
+static std::string makeUpdateTorrent(const std::string& directory,
+                                     const std::string& tag) {
+    const std::string payload = "aaaabbbbcccc";
+    uint8_t digest[20];
+    sha1(reinterpret_cast<const uint8_t*>(payload.data()), payload.size(),
+         digest);
+
+    std::string torrent = "d8:announce14:http://tracker4:infod5:filesl";
+    for (const char* name :
+         {"Game [0100AAAA00000000][v0].nsp",
+          "Game [0100AAAA00000000][v131072].nsp",
+          "DLC [0100AAAA00000001][v131072].nsp", "readme.txt"}) {
+        torrent += "d6:lengthi4e4:pathl" + bstr(name) + "ee";
+    }
+    torrent += "e4:name" + bstr("Game" + tag) +
+               "12:piece lengthi16e6:pieces20:";
+    torrent.append(reinterpret_cast<const char*>(digest), 20);
+    torrent += "ee";
+
+    std::string path = directory + "/update" + tag + ".torrent";
+    std::ofstream output(path, std::ios::binary);
+    output.write(torrent.data(), static_cast<std::streamsize>(torrent.size()));
+    return path;
+}
+
+// A release without any update tag above the installed version: the bulk
+// update path has nothing identifiable to install.
+static std::string makeBaseOnlyTorrent(const std::string& directory) {
+    const std::string payload = "aaaabbbbcccc";
+    uint8_t digest[20];
+    sha1(reinterpret_cast<const uint8_t*>(payload.data()), payload.size(),
+         digest);
+
+    std::string torrent = "d8:announce14:http://tracker4:infod5:filesl";
+    torrent += "d6:lengthi4e4:pathl" + bstr("Game [0100AAAA00000000][v0].nsp") + "ee";
+    torrent += "d6:lengthi4e4:pathl" + bstr("readme.txt") + "ee";
+    torrent += "e4:name4:Game12:piece lengthi16e6:pieces20:";
+    torrent.append(reinterpret_cast<const char*>(digest), 20);
+    torrent += "ee";
+
+    std::string path = directory + "/baseonly.torrent";
+    std::ofstream output(path, std::ios::binary);
+    output.write(torrent.data(), static_cast<std::streamsize>(torrent.size()));
+    return path;
+}
+
 int main() {
     char rootTemplate[] = "/tmp/pipensx-batch-XXXXXX";
     char* root = mkdtemp(rootTemplate);
@@ -303,6 +357,127 @@ int main() {
         rmdir((appRoot + "/torrents").c_str());
         rmdir((appRoot + "/downloads").c_str());
         rmdir(appRoot.c_str());
+    }
+
+    // --- F4 "Update all": the bulk queue plans and enqueues exactly the
+    // one-tap update selection, reports unidentifiable releases, queues N
+    // updates in one action and stays idempotent through the F3 merge. ---
+    {
+        const std::string updateA = makeUpdateTorrent(root, "A");
+        const std::string updateB = makeUpdateTorrent(root, "B");
+        const std::string baseOnly = makeBaseOnlyTorrent(root);
+        TorrentPreview previewA;
+        assert(DownloadManager::previewTorrent(updateA, previewA, error));
+        TorrentPreview previewB;
+        assert(DownloadManager::previewTorrent(updateB, previewB, error));
+        TorrentPreview basePreview;
+        assert(DownloadManager::previewTorrent(baseOnly, basePreview, error));
+
+        CatalogEntry entryA;
+        entryA.title = "Game A";
+        entryA.infoHash = previewA.infoHash;
+        CatalogEntry entryB;
+        entryB.title = "Game B";
+        entryB.infoHash = previewB.infoHash;
+        CatalogEntry entryBase;
+        entryBase.title = "Base Only";
+        entryBase.infoHash = basePreview.infoHash;
+
+        auto makeTarget = [](const CatalogEntry& entry) {
+            UpdateQueueTarget target;
+            target.entry = entry;
+            // No magnet: the bulk path must fall back to the canonical
+            // mirror announce (updateMagnetFor).
+            target.entry.magnetUri.clear();
+            target.oneTap.titleInstalled = true;
+            target.oneTap.installedVersion = "65536";
+            target.oneTap.latestVersion = "131072";
+            target.oneTap.titleId = "0100AAAA00000000";
+            return target;
+        };
+
+        std::string resolvedMagnet;
+        CatalogBatchInstaller installer(
+            root,
+            [&](const CatalogEntry& entry, const std::string& target,
+                std::atomic<bool>&, const MagnetResolver::ProgressCallback&,
+                std::vector<uint8_t>&, std::string&) {
+                resolvedMagnet = entry.magnetUri;
+                if (entry.infoHash == entryA.infoHash)
+                    return copyFile(updateA, target);
+                if (entry.infoHash == entryB.infoHash)
+                    return copyFile(updateB, target);
+                return copyFile(baseOnly, target);
+            });
+        std::atomic<bool> cancelled{false};
+
+        // Installed title, base v0 + patch v131072 + DLC in one release,
+        // installed at v65536: only the patch is the update. The base is
+        // never re-selected (F7 — bulk cannot create the update-without-base
+        // trap because targets are installed titles), and the mirror-less
+        // entry still resolved through the canonical announce.
+        BatchPreparation prepared =
+            installer.prepareUpdates({makeTarget(entryA)}, cancelled, {});
+        assert(prepared.failures().empty());
+        assert(prepared.items().size() == 1);
+        assert(prepared.items()[0].mode == TransferMode::StreamInstall);
+        const std::vector<uint8_t> expected{
+            static_cast<uint8_t>(FileAction::Skip),
+            static_cast<uint8_t>(FileAction::Install),
+            static_cast<uint8_t>(FileAction::Skip),
+            static_cast<uint8_t>(FileAction::Skip)};
+        assert(prepared.items()[0].selection == expected);
+        assert(resolvedMagnet.rfind("magnet:?xt=urn:btih:", 0) == 0);
+
+        // Nothing above the installed version is identifiable: reported
+        // with the chooser explanation, never guessed into an install.
+        BatchPreparation basePrepared =
+            installer.prepareUpdates({makeTarget(entryBase)}, cancelled, {});
+        assert(basePrepared.items().empty());
+        assert(basePrepared.failures().size() == 1);
+        OneTapPlan nothingSelected;
+        nothingSelected.block = OneTapBlock::NothingSelected;
+        assert(basePrepared.failures()[0].error ==
+               oneTapBlockedMessage(nothingSelected));
+
+        // One action queues every update.
+        const std::string appRoot = std::string(root) + "/app";
+        DownloadManager manager(appRoot, false);
+        BatchPreparation twoTargets = installer.prepareUpdates(
+            {makeTarget(entryA), makeTarget(entryB)}, cancelled, {});
+        assert(twoTargets.items().size() == 2);
+        BatchEnqueueResult queued =
+            installer.enqueueUpdates(twoTargets, manager);
+        assert(queued.failures.empty());
+        assert(queued.skipped == 0);
+        assert(queued.taskIds.size() == 2);
+        assert(manager.snapshot().size() == 2);
+        for (const DownloadTask& task : manager.snapshot()) {
+            assert(task.mode == TransferMode::StreamInstall);
+            assert(task.fileSelection == expected);
+        }
+
+        // Repeating "Update all" with nothing new lands in the F3 merge
+        // path: "already in the download manager" is a skip, not a failure.
+        BatchPreparation repeat =
+            installer.prepareUpdates({makeTarget(entryA)}, cancelled, {});
+        assert(repeat.items().size() == 1);
+        BatchEnqueueResult again = installer.enqueueUpdates(repeat, manager);
+        assert(again.failures.empty());
+        assert(again.skipped == 1);
+        assert(manager.snapshot().size() == 2);
+
+        for (const std::string& id : queued.taskIds) {
+            assert(manager.remove(id, true, error));
+        }
+        unlink((appRoot + "/queue.bencode").c_str());
+        rmdir((appRoot + "/torrents").c_str());
+        rmdir((appRoot + "/downloads").c_str());
+        rmdir(appRoot.c_str());
+
+        unlink(updateA.c_str());
+        unlink(updateB.c_str());
+        unlink(baseOnly.c_str());
     }
 
     unlink(source.c_str());

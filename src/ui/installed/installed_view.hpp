@@ -9,6 +9,7 @@
 #include <borealis.hpp>
 
 #include "app/app_settings.hpp"
+#include "app/catalog_batch_installer.hpp"
 #include "app/catalog_service.hpp"
 #include "app/download_manager.hpp"
 #include "app/favorites_service.hpp"
@@ -405,6 +406,14 @@ public:
             updates_->stale(installed_->generation(),
                             settings_->get().lastMetadataRefreshMs))
             checkAllTitles();
+
+        // F4: "Update all" (X) queues every non-ignored update in one
+        // action — the bulk entry the single-row Install complements.
+        registerAction(tr("pipensx/updates/update_all"), brls::BUTTON_X,
+                       [this](brls::View*) {
+                           queueAllUpdates();
+                           return true;
+                       });
     }
 
     void willAppear(bool resetState) override {
@@ -637,6 +646,123 @@ private:
             brls::Application::notify(
                 tr("pipensx/installed/update_preflight_mods", titleId));
         openCatalogPage(titleId, /*autoInstall=*/!needReview, foundVersion);
+    }
+
+    // F4 "Update all" (X): one action queues every non-ignored update in
+    // the Updates section. Targets are installed titles by construction, so
+    // the bulk path can only add a missing patch or DLC on top of an
+    // installed base — it never queues an update for a title without its
+    // base (F7) and never re-downloads an installed base. Titles whose
+    // update package cannot be identified are reported, not guessed.
+    void queueAllUpdates() {
+        if (refreshing_ || uninstallInFlight_ || updateAllInFlight_)
+            return;
+        std::vector<UpdateQueueTarget> targets;
+        size_t missing = 0;
+        for (const InstalledTitle& title : dataSource_->updateTitles()) {
+            if (updates_->isIgnored(title.titleId))
+                continue;
+            std::string foundVersion;
+            const auto it = updates_->results().find(title.titleId);
+            if (it != updates_->results().end())
+                foundVersion = it->second.foundVersion;
+            const CatalogEntry* entry =
+                catalogEntryForTitle(title.titleId, foundVersion);
+            if (!entry) {
+                ++missing;
+                continue;
+            }
+            UpdateQueueTarget target;
+            target.entry = *entry;
+            if (!title.titleId.empty())
+                target.entry.titleId = title.titleId;
+            target.oneTap.titleInstalled = true;
+            target.oneTap.installedVersion = title.version;
+            target.oneTap.latestVersion = foundVersion;
+            target.oneTap.titleId = title.titleId;
+            if (installed_)
+                target.oneTap.installedDlcIds = installed_->dlcTitleIds();
+            targets.push_back(std::move(target));
+        }
+        if (targets.empty()) {
+            brls::Application::notify(tr(missing > 0
+                                             ? "pipensx/installed/update_no_bundle"
+                                             : "pipensx/updates/update_all_empty"));
+            return;
+        }
+        if (missing > 0)
+            brls::Application::notify(
+                tr("pipensx/installed/update_no_bundle"));
+        updateAllInFlight_ = true;
+        brls::Application::notify(
+            tr("pipensx/updates/update_all_started", targets.size()));
+        status_->setText(tr("pipensx/updates/update_all_started",
+                            targets.size()));
+
+        const bool debrid = settings_ && debridModeActive(settings_);
+        DebridProviderKind providerKind = DebridProviderKind::TorBox;
+        std::shared_ptr<DebridProvider> provider;
+        if (debrid) {
+            const AppSettingsData values = settings_->get();
+            providerKind = values.debridProvider;
+            provider.reset(makeDebridProvider(providerKind,
+                                              activeDebridKey(values))
+                               .release());
+            if (!provider) {
+                updateAllInFlight_ = false;
+                brls::Application::notify(
+                    std::string(addSourceProviderName(providerKind)) +
+                    " is not available.");
+                return;
+            }
+        }
+
+        auto alive = alive_;
+        auto cancelled = std::make_shared<std::atomic<bool>>(false);
+        auto installer = std::make_shared<CatalogBatchInstaller>(
+            manager_->rootPath(),
+            [](const CatalogEntry& entry, const std::string& path,
+               std::atomic<bool>& cancelFlag,
+               const MagnetResolver::ProgressCallback& progress,
+               std::vector<uint8_t>& initialPeers, std::string& error) {
+                MagnetResolver instance;
+                return instance.resolveToFile(
+                    entry.magnetUri, path, cancelFlag, progress, error,
+                    &initialPeers,
+                    entry.infoDict.empty() ? nullptr : &entry.infoDict);
+            });
+        DownloadManager* manager = manager_;
+        brls::async([this, alive, cancelled, installer, manager,
+                     targets = std::move(targets), debrid, providerKind,
+                     provider]() mutable {
+            auto progress = [this, alive](const BatchPrepareProgress& step) {
+                brls::sync([this, alive, step] {
+                    if (!alive->load())
+                        return;
+                    status_->setText(tr("pipensx/updates/update_all_progress",
+                                        step.index, step.total));
+                });
+            };
+            BatchPreparation prepared =
+                debrid
+                    ? installer->prepareUpdatesViaDebrid(
+                        targets, *provider, *cancelled, progress)
+                    : installer->prepareUpdates(targets, *cancelled,
+                                                progress);
+            BatchEnqueueResult result =
+                debrid
+                    ? installer->enqueueUpdates(prepared, *manager,
+                                                providerKind, provider.get())
+                    : installer->enqueueUpdates(prepared, *manager);
+            brls::sync([this, alive, result = std::move(result)]() mutable {
+                if (!alive->load())
+                    return;
+                updateAllInFlight_ = false;
+                for (const BatchItemFailure& failure : result.failures)
+                    brls::Application::notify(failure.error);
+                reload();
+            });
+        });
     }
 
     void confirmUninstall(InstalledTitle title) {
@@ -946,6 +1072,7 @@ private:
     std::shared_ptr<std::atomic<bool>> alive_;
     bool refreshing_ = false;
     bool uninstallInFlight_ = false;
+    bool updateAllInFlight_ = false;
     bool pendingReload_ = false;
     std::string pendingFocusedTitleId_;
     brls::IndexPath pendingFocusedIndex_{0, 0};

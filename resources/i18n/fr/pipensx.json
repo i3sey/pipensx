@@ -504,7 +504,8 @@
     "count": "{} mises à jour disponibles",
     "update_all": "Tout mettre à jour",
     "update_all_empty": "Aucune mise à jour à installer.",
-    "update_all_started": "Mise en file de {} mises à jour…"
+    "update_all_started": "Mise en file de {} mises à jour…",
+    "update_all_progress": "Mise en file de la mise à jour {0} sur {1}…"
   },
   "batch": {
     "frame_title": "Installation par lots",

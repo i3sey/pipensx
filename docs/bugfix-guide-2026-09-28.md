@@ -115,13 +115,44 @@
   `make switch` и `make pc` — зелёные. Прогон повторного импорта через
   Add/выбор файлов — на железе.
 
-### F4. «Скачать все» обновления ничего не делает (Dima 24.09)
+### F4. «Скачать все» обновления ничего не делает (Dima 24.09) — ✅ ИСПРАВЛЕНО 28.09
 - Причина: bulk-download вырезан `47d6aa5`, в `installed_view.hpp` остался только
   одиночный `installUpdate()` (`:508,:611`); строки `update_all*` в локалях мёртвые
   (`grep update_all src/ tests/` — пусто).
 - Фикс: либо вернуть очередь всех апдейтов, либо убрать мёртвые строки и кнопку.
   Если возвращать — учесть F7 (проверка base перед update).
 - Проверка: 8 обновлений уходят в очередь одним действием; `check_i18n.py`.
+- **Что сделано (28.09).** Возвращена очередь, а не удаление кнопки — под
+  критерий «8 обновлений уходят в очередь одним действием». X на вкладке
+  Установленные снова «Update all»: цель — каждый не-игнорируемый тайтл
+  секции Updates с его version-matched бандлом (`catalogEntryForTitle`),
+  головной конвейер — новые `CatalogBatchInstaller::prepareUpdates` /
+  `prepareUpdatesViaDebrid` / `enqueueUpdates` (`catalog_batch_installer.{hpp,cpp}`),
+  без UI. Маска — та же, что у one-tap апдейта: `selectSmartInstallFiles`
+  с `titleInstalled=true`, installed и latest версиями — ставит только патч
+  выше установленной версии и недостающие DLC; base не выбирается никогда.
+  F7 учтён конструктивно: цели берутся из списка установленных, поэтому base
+  по определению стоит (масса не может создать ловушку «апдейт без базы»),
+  а релиз, в котором апдейт-пакет не опознаётся, уходит в отчёт с текстом
+  chooser'а («Nothing in this release can be installed automatically…»),
+  не в угаданную установку; пустой installed version тоже не тянет патч
+  (only-DLC → отчёт). Дебрид-режим не отрезан: при активном дебриде на каждый
+  тайтл создаётся трансфер (`createDebridWithMetainfoFallback`) и планируется
+  та же маска, неудачные трансферы снимаются с провайдера и репортятся.
+  Enqueue через `importTorrentActions`, так что повторный «Update all»
+  попадает в merge-путь F3: повтор, не добавляющий ничего нового,
+  отказывается «already in the download manager» и считается skipped,
+  а не ошибкой — массовое действие идемпотентно. Прогресс: тост
+  «Queuing N updates…», статус-строка «Queuing update i of N…» (новый ключ
+  `pipensx/updates/update_all_progress` — en-US первым, зеркала во все
+  локали, `check_i18n.py` зелёный), тосты по фейлам, reload по завершении.
+  Магнит без URI фолбэкится через `updateMagnetFor` (каноничный rutracker-
+  анонс), хэш скачанного торрента сверяется с записью каталога. Тесты
+  (`test_batch_install.cpp`): маска = только патч (base Skip), nothing-
+  identifiable → фейл с текстом chooser'а, 2 апдейта → 2 задачи одним
+  enqueue (маска и StreamInstall на задачах), повтор → skipped=1/фейлов 0.
+  `make -f Makefile.pc test` (включая live `test_manager`), `make switch`
+  и `make pc` — зелёные. Прогон «8 обновлений одной X» — на железе.
 
 ### F5. Перезагрузка консоли во время установки (Kiru 19/21.09)
 - Защиты нет; `b223e30` убрал только stall-аллокации (`placeholder_grow.hpp`).

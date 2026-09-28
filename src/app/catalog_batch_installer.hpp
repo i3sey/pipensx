@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "add_release.hpp"
 #include "catalog_service.hpp"
 #include "debrid_provider.hpp"
 #include "install_space.hpp"
@@ -31,6 +32,17 @@ struct PreparedCatalogInstall {
 struct BatchItemFailure {
     CatalogEntry entry;
     std::string error;
+};
+
+// One "Update all" target (bugfix guide F4): the version-matched release
+// bundle of an already-installed title plus the one-tap facts the update
+// mask needs. Targets are built from the installed list, so the base game
+// is present by construction and selectSmartInstallFiles can only add the
+// missing patch and DLC — bulk queueing never installs an update for a
+// title without its base (F7) and never re-downloads an installed base.
+struct UpdateQueueTarget {
+    CatalogEntry entry;
+    OneTapContext oneTap;
 };
 
 struct BatchPrepareProgress {
@@ -90,6 +102,36 @@ public:
                              const ProgressCallback& progress) const;
     BatchEnqueueResult enqueue(BatchPreparation& prepared,
                                DownloadManager& manager) const;
+
+    // F4 "Update all": prepare every target the way the detail-card one-tap
+    // does — resolve, then the update-aware smart mask instead of the
+    // settings-driven batch mask. A release whose update package cannot be
+    // identified is reported as a failure (the chooser explanation), never
+    // guessed into a wrong install.
+    BatchPreparation prepareUpdates(
+        const std::vector<UpdateQueueTarget>& targets,
+        std::atomic<bool>& cancelled,
+        const ProgressCallback& progress) const;
+
+    // Debrid twin of prepareUpdates: one transfer per target, planned with
+    // the same update-aware mask. Transfers whose metadata does not arrive
+    // inside the window are removed and reported.
+    BatchPreparation prepareUpdatesViaDebrid(
+        const std::vector<UpdateQueueTarget>& targets,
+        DebridProvider& provider,
+        std::atomic<bool>& cancelled,
+        const ProgressCallback& progress,
+        DebridBatchTiming timing = {}) const;
+
+    // Update enqueue: torrent items go through importTorrentActions, so a
+    // repeated "Update all" lands in the merge path and a repeat that adds
+    // nothing new refuses with "already in the download manager" — counted
+    // as skipped, not failed. Debrid items go through importDebrid.
+    BatchEnqueueResult enqueueUpdates(
+        BatchPreparation& prepared,
+        DownloadManager& manager,
+        DebridProviderKind providerKind = DebridProviderKind::TorBox,
+        DebridProvider* provider = nullptr) const;
 
     BatchPreparation prepareViaDebrid(
         const std::vector<CatalogEntry>& entries,
