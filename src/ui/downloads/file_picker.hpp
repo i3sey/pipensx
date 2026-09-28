@@ -26,6 +26,10 @@ struct FileEntry {
     std::string name;
     std::string path;
     bool directory = false;
+    // False for regular files without the .torrent extension. They are still
+    // listed (dimmed) so a mistyped or browser-mangled filename is visible
+    // instead of leaving the folder looking empty (issue #87).
+    bool torrent = false;
 };
 
 class FilePickerActivity;
@@ -58,6 +62,9 @@ public:
         label_->setText(entry.directory
                             ? tr("pipensx/picker/folder", entry.name)
                                         : entry.name);
+        label_->setTextColor(entry.directory || entry.torrent
+                                 ? theme::textSecondary()
+                                 : theme::textTertiary());
     }
     void onFocusGained() override {
         brls::RecyclerCell::onFocusGained();
@@ -202,6 +209,7 @@ private:
             const uint64_t startedUs = telemetry_enabled() ? now_us() : 0;
             std::vector<FileEntry> directories;
             std::vector<FileEntry> files;
+            size_t torrentCount = 0;
             DIR* dir = opendir(path.c_str());
             const bool opened = dir != nullptr;
             if (dir) {
@@ -216,14 +224,21 @@ private:
                     struct stat st {};
                     if (stat(child.c_str(), &st) != 0)
                         continue;
-                    if (S_ISDIR(st.st_mode))
+                    if (S_ISDIR(st.st_mode)) {
                         directories.push_back({item->d_name, child, true});
-                    else if (hasTorrentExtension(item->d_name))
-                        files.push_back({item->d_name, child, false});
+                    } else {
+                        const bool torrent =
+                            hasTorrentExtension(item->d_name);
+                        torrentCount += torrent ? 1 : 0;
+                        files.push_back(
+                            {item->d_name, child, false, torrent});
+                    }
                 }
                 closedir(dir);
             }
             auto byName = [](const FileEntry& a, const FileEntry& b) {
+                if (a.torrent != b.torrent)
+                    return a.torrent > b.torrent;
                 return a.name < b.name;
             };
             std::sort(directories.begin(), directories.end(), byName);
@@ -237,9 +252,10 @@ private:
             if (startedUs)
                 telemetry_log(
                     "ui", "file_picker",
-                    "event=list duration_us=%llu entries=%zu opened=%d",
+                    "event=list duration_us=%llu entries=%zu torrents=%zu "
+                    "opened=%d",
                     static_cast<unsigned long long>(now_us() - startedUs),
-                    entries.size(), opened ? 1 : 0);
+                    entries.size(), torrentCount, opened ? 1 : 0);
             brls::sync([this, alive, generation, path, opened,
                         previousFocus, restoreFocus,
                         entries = std::move(entries)]() mutable {
