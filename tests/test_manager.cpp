@@ -116,6 +116,35 @@ static std::string makeSelectiveScanTorrent(const std::string& directory) {
     return path;
 }
 
+// Two files, one piece each (piece length = file length). Drives the F3
+// merge tests: a re-import over an existing task where a package and a
+// plain data file must merge independently. Name the files to control
+// package ranks (update.nsp ranks after base.nsp).
+static std::string makeMergeTorrent(const std::string& directory,
+                                    const std::string& firstName,
+                                    const std::string& secondName) {
+    const std::string a = "NSPBASE!";
+    const std::string b = "EXTRADATA";
+    uint8_t digesta[20], digestb[20];
+    sha1(reinterpret_cast<const uint8_t*>(a.data()), a.size(), digesta);
+    sha1(reinterpret_cast<const uint8_t*>(b.data()), b.size(), digestb);
+
+    std::string torrent = "d8:announce14:http://tracker4:infod5:filesl";
+    torrent += "d6:lengthi8e4:pathl" + bstr(firstName) + "ee";
+    torrent += "d6:lengthi8e4:pathl" + bstr(secondName) + "ee";
+    torrent += "e4:name12:merge-bundle12:piece lengthi8e6:pieces40:";
+    torrent.append(reinterpret_cast<const char*>(digesta), 20);
+    torrent.append(reinterpret_cast<const char*>(digestb), 20);
+    torrent += "ee";
+
+    const std::string path = directory + "/merge-bundle-" + firstName +
+                             "-" + secondName + ".torrent";
+    std::ofstream output(path, std::ios::binary);
+    output.write(torrent.data(), static_cast<std::streamsize>(torrent.size()));
+    output.close();
+    return path;
+}
+
 static void copyFile(const std::string& source, const std::string& destination) {
     std::ifstream input(source, std::ios::binary);
     std::ofstream output(destination, std::ios::binary);
@@ -609,6 +638,200 @@ int main() {
         removeAll(debridRoot);
     }
 
+    // F3: a re-import of a torrent that is already queued merges the new
+    // selection into the existing task (download the missing files) instead
+    // of dying on "This torrent is already in the download manager".
+    {
+        const std::string mergeRoot = std::string(root) + "/merge-app";
+        std::string mergeSource =
+            makeMergeTorrent(root, "base.nsp", "extra.bin");
+        DownloadManager manager(mergeRoot, false);
+        std::string mergeTaskId;
+        std::vector<uint8_t> first{
+            static_cast<uint8_t>(FileAction::Install),
+            static_cast<uint8_t>(FileAction::Skip),
+        };
+        assert(manager.importTorrentActions(mergeSource, first, mergeTaskId,
+                                           error));
+        assert(manager.snapshot()[0].mode == TransferMode::StreamInstall);
+
+        // Re-import with a different selection: the extra file is added to
+        // the SAME task, nothing is demoted, and the id does not change.
+        std::string mergedTaskId;
+        std::vector<uint8_t> second{
+            static_cast<uint8_t>(FileAction::Skip),
+            static_cast<uint8_t>(FileAction::Download),
+        };
+        assert(manager.importTorrentActions(mergeSource, second,
+                                           mergedTaskId, error));
+        assert(mergedTaskId == mergeTaskId);
+        auto tasks = manager.snapshot();
+        assert(tasks.size() == 1);
+        assert(tasks[0].status == DownloadStatus::Queued);
+        assert(tasks[0].mode == TransferMode::StreamInstall);
+        assert((tasks[0].fileSelection == std::vector<uint8_t>{
+            static_cast<uint8_t>(FileAction::Install),
+            static_cast<uint8_t>(FileAction::Download),
+        }));
+        // The merged mask is the manifest the details screen shows.
+        pipensx::TaskFileManifest manifest;
+        assert(pipensx::loadTaskFileManifest(mergeRoot, mergeTaskId,
+                                             manifest, error));
+        assert(manifest.files.size() == 2);
+        assert(manifest.files[1].action ==
+               pipensx::TaskFileAction::Download);
+
+        // A re-import that adds nothing new still says "already in the
+        // download manager" — the UI's already-in-downloads surface.
+        assert(!manager.importTorrentActions(mergeSource, second,
+                                            mergedTaskId, error));
+        assert(error == "This torrent is already in the download manager.");
+
+        // A DownloadOnly task that gains an Install package upgrades its
+        // mode so the package actually installs instead of erroring in the
+        // coordinator ("Only NSP/NSZ package files can be installed" would
+        // blame the file when the mode is the problem).
+        std::string upgradeSource =
+            makeMergeTorrent(root, "base2.nsp", "extra2.bin");
+        std::string downloadTaskId;
+        std::vector<uint8_t> downloadOnly{
+            static_cast<uint8_t>(FileAction::Skip),
+            static_cast<uint8_t>(FileAction::Download),
+        };
+        assert(manager.importTorrentActions(upgradeSource, downloadOnly,
+                                           downloadTaskId, error));
+        assert(downloadTaskId != mergeTaskId);
+        assert(manager.snapshot()[1].mode == TransferMode::DownloadOnly);
+        std::vector<uint8_t> withInstall{
+            static_cast<uint8_t>(FileAction::Install),
+            static_cast<uint8_t>(FileAction::Skip),
+        };
+        assert(manager.importTorrentActions(upgradeSource, withInstall,
+                                           mergedTaskId, error));
+        assert(mergedTaskId == downloadTaskId);
+        tasks = manager.snapshot();
+        assert(tasks[1].mode == TransferMode::StreamInstall);
+        assert((tasks[1].fileSelection == std::vector<uint8_t>{
+            static_cast<uint8_t>(FileAction::Install),
+            static_cast<uint8_t>(FileAction::Download),
+        }));
+        assert(manager.remove(mergeTaskId, true, error));
+        assert(manager.remove(downloadTaskId, true, error));
+        removeAll(mergeRoot);
+    }
+
+    // F3: an added package may not slide in front of an already-installed
+    // one — the coordinator SKIPs the first packagesDone entries of the
+    // rank-sorted install order, so the newcomer is demoted to Download and
+    // the installed prefix stays exact.
+    {
+        const std::string prefixRoot = std::string(root) + "/merge-prefix-app";
+        {
+            DownloadManager createDirs(prefixRoot, false);
+        }
+        std::string prefixSource =
+            makeMergeTorrent(root, "update.nsp", "base.nsp");
+        pipensx::TorrentPreview preview;
+        assert(DownloadManager::previewTorrent(prefixSource, preview, error));
+        std::string metainfoPath =
+            prefixRoot + "/torrents/" + preview.infoHash + ".torrent";
+        std::string dataPath = prefixRoot + "/downloads/merge-bundle-" +
+                               preview.infoHash.substr(0, 8);
+        copyFile(prefixSource, metainfoPath);
+
+        // update.nsp installed (packages-done 1), base.nsp not selected.
+        std::string selection("\x02\x00", 2);
+        std::string queue = "d5:tasksl";
+        queue += "d";
+        queue += "4:data" + bstr(dataPath);
+        queue += "5:error" + bstr("");
+        queue += "2:id" + bstr(preview.infoHash);
+        queue += "8:metainfo" + bstr(metainfoPath);
+        queue += "4:mode" + bstr("install");
+        queue += "4:name" + bstr(preview.name);
+        queue += "13:package-counti1e";
+        queue += "13:packages-donei1e";
+        queue += "9:selection" + bstr(selection);
+        queue += "6:status" + bstr("paused");
+        queue += "5:totali16e";
+        queue += "e";
+        queue += "e7:versioni8ee";
+        std::ofstream output(prefixRoot + "/queue.bencode",
+                             std::ios::binary | std::ios::trunc);
+        output << queue;
+        output.close();
+
+        DownloadManager manager(prefixRoot, false);
+        auto tasks = manager.snapshot();
+        assert(tasks.size() == 1);
+        assert(tasks[0].packagesInstalled == 1);
+        assert(tasks[0].mode == TransferMode::StreamInstall);
+
+        std::vector<uint8_t> both{
+            static_cast<uint8_t>(FileAction::Install),
+            static_cast<uint8_t>(FileAction::Install),
+        };
+        std::string prefixTaskId;
+        assert(manager.importTorrentActions(prefixSource, both,
+                                           prefixTaskId, error));
+        assert(prefixTaskId == preview.infoHash);
+        tasks = manager.snapshot();
+        assert(tasks[0].packagesInstalled == 1);
+        assert(tasks[0].mode == TransferMode::StreamInstall);
+        assert((tasks[0].fileSelection == std::vector<uint8_t>{
+            static_cast<uint8_t>(FileAction::Install),
+            static_cast<uint8_t>(FileAction::Download),
+        }));
+        assert(manager.remove(prefixTaskId, true, error));
+        removeAll(prefixRoot);
+    }
+
+    // F3: a repeated debrid import merges into the existing debrid task,
+    // and a task with no stored metainfo gains it from the incoming import
+    // (the claim needs it to convey the selection to the provider).
+    {
+        const std::string debridMergeRoot =
+            std::string(root) + "/merge-debrid-app";
+        std::string debridSource =
+            makeMergeTorrent(root, "base.nsp", "extra.bin");
+        pipensx::TorrentPreview preview;
+        assert(DownloadManager::previewTorrent(debridSource, preview, error));
+        DownloadManager manager(debridMergeRoot, false);
+
+        pipensx::DebridImport bare;
+        bare.infoHash = preview.infoHash;
+        bare.name = preview.name;
+        bare.totalBytes = preview.totalBytes;
+        bare.debridId = "merge-debrid";
+        bare.mode = TransferMode::DownloadOnly;
+        std::string bareTaskId;
+        assert(manager.importDebrid(bare, bareTaskId, error));
+        assert(manager.snapshot()[0].metainfoPath.empty());
+
+        pipensx::DebridImport expanded;
+        expanded.infoHash = preview.infoHash;
+        expanded.name = preview.name;
+        expanded.totalBytes = preview.totalBytes;
+        expanded.debridId = "merge-debrid";
+        expanded.torrentPath = debridSource;
+        expanded.mode = TransferMode::DownloadOnly;
+        expanded.fileSelection = {
+            static_cast<uint8_t>(FileAction::Install),
+            static_cast<uint8_t>(FileAction::Download),
+        };
+        std::string expandedTaskId;
+        assert(manager.importDebrid(expanded, expandedTaskId, error));
+        assert(expandedTaskId == bareTaskId);
+        auto tasks = manager.snapshot();
+        assert(tasks.size() == 1);
+        assert(tasks[0].mode == TransferMode::StreamInstall);
+        assert(tasks[0].metainfoPath ==
+               debridMergeRoot + "/torrents/" + preview.infoHash + ".torrent");
+        assert((tasks[0].fileSelection == expanded.fileSelection));
+        assert(manager.remove(bareTaskId, true, error));
+        removeAll(debridMergeRoot);
+    }
+
     {
         DownloadManager manager(activeRoot, true);
         manager.setTorrentingEnabled(true);  // torrenting is off by default
@@ -878,6 +1101,67 @@ int main() {
                    std::vector<uint8_t>(1, 0));
         }
         assert(manager.remove(crashId, true, error));
+    }
+
+    // F3: merging into a RUNNING task parks it, the runner requeues on the
+    // way out (it can see its claim no longer matches), and the merged mask
+    // is claimed again without a manual resume. The fast-resume bitfield
+    // must stay cleared across the teardown: its old bits pre-mark the
+    // added file's piece as done (skipped-range preset), which would
+    // silently skip downloading it.
+    {
+        std::string mergeLiveRoot = std::string(root) + "/merge-live-app";
+        std::string mergeLiveSource =
+            makeMergeTorrent(root, "base3.nsp", "extra3.bin");
+        DownloadManager manager(mergeLiveRoot, true);
+        manager.setTorrentingEnabled(true);  // torrenting is off by default
+        std::string liveId;
+        std::vector<uint8_t> first{
+            static_cast<uint8_t>(FileAction::Install),
+            static_cast<uint8_t>(FileAction::Skip),
+        };
+        assert(manager.importTorrentActions(mergeLiveSource, first, liveId,
+                                           error));
+        bool running = false;
+        for (int i = 0; i < 500 && !running; ++i) {
+            auto task = manager.snapshot()[0];
+            running = task.status == DownloadStatus::Downloading;
+            if (!running)
+                usleep(10000);
+        }
+        assert(running);
+
+        std::vector<uint8_t> second{
+            static_cast<uint8_t>(FileAction::Install),
+            static_cast<uint8_t>(FileAction::Download),
+        };
+        std::string liveId2;
+        assert(manager.importTorrentActions(mergeLiveSource, second,
+                                           liveId2, error));
+        assert(liveId2 == liveId);
+        // The merge parked the running task; the runner requeues it on the
+        // way out and the scheduler immediately re-claims (the Queued
+        // window is far too short to observe) — so the passing state is
+        // Checking/Downloading again, not Paused, with no manual resume.
+        bool reclaimed = false;
+        DownloadTask task;
+        for (int i = 0; i < 1000 && !reclaimed; ++i) {
+            task = manager.snapshot()[0];
+            reclaimed = task.status == DownloadStatus::Checking ||
+                        task.status == DownloadStatus::Downloading;
+            if (!reclaimed)
+                usleep(10000);
+        }
+        assert(reclaimed);
+        assert(task.status != DownloadStatus::Paused);
+        assert((task.fileSelection == second));
+        // The stale fast-resume bits are gone: the checkpoint only re-arms
+        // 5 s into the new Downloading stretch, so a fresh reclaim still
+        // reports the disarmed (full rescan) state.
+        assert(task.resumeBitfield.empty());
+        manager.shutdown();
+        assert(manager.remove(liveId, true, error));
+        removeAll(mergeLiveRoot);
     }
 
     // Pause must keep the progress bar across an app restart. v5 only

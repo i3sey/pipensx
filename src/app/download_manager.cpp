@@ -558,6 +558,185 @@ bool DownloadManager::previewTorrent(const std::string& path,
     return true;
 }
 
+// F3: rank-sorted install order for the Install packages of a mask —
+// mirrors the stable sort in PackageCoordinator (base before update,
+// source order as tie-break).
+static std::vector<uint32_t> installOrderOf(const TorrentPreview& preview,
+                                            const std::vector<uint8_t>& mask) {
+    std::vector<uint32_t> order;
+    for (uint32_t i = 0; i < mask.size() && i < preview.files.size(); ++i)
+        if (preview.files[i].package &&
+            mask[i] == actionValue(FileAction::Install))
+            order.push_back(i);
+    std::stable_sort(order.begin(), order.end(),
+                     [&preview](uint32_t a, uint32_t b) {
+                         const int ra = packageInstallRank(preview.files[a].path);
+                         const int rb = packageInstallRank(preview.files[b].path);
+                         if (ra != rb)
+                             return ra < rb;
+                         return a < b;
+                     });
+    return order;
+}
+
+bool DownloadManager::runnerActiveLocked(const std::string& id) const {
+    for (const auto& runner : runners_)
+        if (runner && runner->taskId == id && !runner->done)
+            return true;
+    return false;
+}
+
+bool DownloadManager::mergeImportSelection(DownloadTask& task,
+                                           const TorrentPreview* preview,
+                                           const std::vector<uint8_t>&
+                                               incomingActions,
+                                           TransferMode incomingMode,
+                                           std::string& error) {
+    // The decline error is load-bearing: the UI greps for it to surface
+    // "already in downloads" (game_detail.hpp finishImport). A declined
+    // merge is the honest answer for a re-import that adds nothing.
+    const auto decline = [this, &task, &error](const char* why) {
+        error = "This torrent is already in the download manager.";
+        log_msg("[manager] import merge declined for %s: %s\n",
+                task.id.c_str(), why);
+        return false;
+    };
+    if (task.status == DownloadStatus::Removing)
+        return decline("task is being removed");
+    if (task.status == DownloadStatus::Committing)
+        return decline("NAND commit in flight");
+    if (externallyLeasedLocked(task.id))
+        return decline("task files are leased to the deployer");
+
+    std::vector<uint8_t> incoming = incomingActions;
+    if (incoming.empty()) {
+        if (!preview)
+            return decline("no metadata to derive a selection from");
+        incoming.resize(preview->files.size());
+        for (size_t i = 0; i < incoming.size(); ++i)
+            incoming[i] = actionValue(defaultFileAction(
+                preview->files[i].package, incomingMode));
+    }
+    // Debrid tasks added without a picker store an empty mask meaning
+    // "everything, default actions". Materialize it so the union has a
+    // baseline: the merge then lands only when the re-import actually
+    // changes behavior (e.g. install a package the task was only
+    // downloading).
+    std::vector<uint8_t> effective = task.fileSelection;
+    if (effective.empty()) {
+        if (!preview)
+            return decline("no metadata to materialize the stored selection");
+        effective.resize(preview->files.size());
+        for (size_t i = 0; i < effective.size(); ++i)
+            effective[i] = actionValue(defaultFileAction(
+                preview->files[i].package, task.mode));
+    }
+    if (effective.size() != incoming.size() || !preview ||
+        preview->files.size() != incoming.size())
+        return decline("selection size does not match the stored task");
+    std::vector<uint8_t> merged = effective;
+    for (size_t i = 0; i < merged.size(); ++i)
+        merged[i] = std::max(merged[i], incoming[i]);
+
+    // Mode reconciliation. PortInstall retains packages on disk for the
+    // post-deploy install stage (never SINK), so an added package rides
+    // along as Download. A task that gained an Install package while in
+    // DownloadOnly mode upgrades to StreamInstall; packagesInstalled is
+    // necessarily 0 there, so no installed prefix has to stay aligned.
+    if (task.mode == TransferMode::PortInstall) {
+        for (size_t i = 0; i < merged.size(); ++i)
+            if (preview->files[i].package)
+                merged[i] = actionValue(FileAction::Download);
+    }
+    if (task.packagesInstalled > 0 &&
+        task.mode == TransferMode::StreamInstall) {
+        // The coordinator SKIPs the first packagesInstalled entries of the
+        // rank-sorted install order — those are the packages already on the
+        // console. A package the merge added must not slide in front of an
+        // installed one; it is demoted to Download (its bytes still land on
+        // disk) instead of shifting the installed prefix.
+        const std::vector<uint32_t> oldOrder =
+            installOrderOf(*preview, effective);
+        while (true) {
+            const std::vector<uint32_t> newOrder =
+                installOrderOf(*preview, merged);
+            if (newOrder.size() < task.packagesInstalled ||
+                oldOrder.size() < task.packagesInstalled)
+                break;
+            const std::vector<uint32_t> prefix(
+                newOrder.begin(),
+                newOrder.begin() + task.packagesInstalled);
+            const std::vector<uint32_t> installed(
+                oldOrder.begin(),
+                oldOrder.begin() + task.packagesInstalled);
+            if (prefix == installed)
+                break;
+            bool demoted = false;
+            for (uint32_t idx : prefix) {
+                if (std::find(oldOrder.begin(), oldOrder.end(), idx) ==
+                    oldOrder.end()) {
+                    merged[idx] = actionValue(FileAction::Download);
+                    demoted = true;
+                    log_msg("[manager] merge demotes added package %s to "
+                            "download to keep installed package order\n",
+                            preview->files[idx].path.c_str());
+                    break;
+                }
+            }
+            if (!demoted)
+                break;
+        }
+    }
+    if (merged == effective)
+        return decline("selection adds no new files");
+
+    const bool installPackageAdded = [&] {
+        for (size_t i = 0; i < merged.size(); ++i)
+            if (preview->files[i].package &&
+                merged[i] == actionValue(FileAction::Install))
+                return true;
+        return false;
+    }();
+    if (installPackageAdded && task.mode == TransferMode::DownloadOnly)
+        task.mode = TransferMode::StreamInstall;
+    task.fileSelection = std::move(merged);
+    // Stale fast-resume bits: the saved bitfield pre-marks previously
+    // skipped pieces done (skipped-range preset). Presetting it over the
+    // expanded selection would mark the added files' pieces done-unreadable
+    // and they would never download. Drop it — the next start rescans,
+    // reclaiming existing pieces by hash, so nothing is lost.
+    task.resumeBitfield.clear();
+    task.recoveryTrusted = false;
+    task.recoveryTrustedClaim = false;
+    if (runnerActiveLocked(task.id)) {
+        // The active runner works from its claim snapshot; park the task so
+        // it tears down. runTask (and the debrid runner) requeue on the way
+        // out once they see the selection no longer matches their claim.
+        task.status = DownloadStatus::Paused;
+        task.speedBytesPerSecond = 0;
+    } else if (task.status != DownloadStatus::Queued) {
+        task.status = DownloadStatus::Queued;
+        task.error.clear();
+    }
+    condition_.notify_all();
+
+    // Refresh the per-file manifest so the download details show the added
+    // files.
+    std::string manifestError;
+    if (!saveTaskFileManifest(
+            rootPath_, makeTaskFileManifest(task.id, *preview,
+                                            task.fileSelection),
+            manifestError))
+        diagnostic_error("task_files", "save", "task=%s error=%s",
+                         task.id.c_str(), manifestError.c_str());
+    log_msg("[manager] merged import into task %s: %zu files, mode=%s\n",
+            task.id.c_str(), task.fileSelection.size(),
+            task.mode == TransferMode::StreamInstall ? "install"
+                : task.mode == TransferMode::PortInstall ? "port"
+                                                         : "download");
+    return true;
+}
+
 bool DownloadManager::importTorrent(const std::string& path,
                                     TransferMode mode,
                                     const std::vector<uint8_t>& selectedFiles,
@@ -661,9 +840,19 @@ bool DownloadManager::importTorrentActions(
                                   : TransferMode::DownloadOnly;
 
     std::unique_lock<std::mutex> lock(mutex_);
-    if (findLocked(preview.infoHash)) {
-        error = "This torrent is already in the download manager.";
-        return false;
+    if (DownloadTask* existing = findLocked(preview.infoHash)) {
+        // F3: the torrent is already queued — merge the selection instead of
+        // losing the request (or the task's progress) outright.
+        if (!mergeImportSelection(*existing, &preview, selection, mode, error))
+            return false;
+        taskId = existing->id;
+        // The merge already notified the scheduler; persisting keeps the
+        // merged selection across a crash. A persist failure is reported
+        // through the persistence-error machinery — the in-memory merge
+        // still stands.
+        std::string persistError;
+        persistState(lock, persistError);
+        return true;
     }
 
     std::string metainfoPath = torrentRoot_ + "/" + preview.infoHash + ".torrent";
@@ -795,9 +984,39 @@ bool DownloadManager::importDebrid(const DebridImport& import,
         }
     }
     std::unique_lock<std::mutex> lock(mutex_);
-    if (findLocked(import.infoHash)) {
-        error = "This torrent is already in the download manager.";
-        return false;
+    if (DownloadTask* existing = findLocked(import.infoHash)) {
+        // F3: merge the repeated debrid import into the task that already
+        // owns this infoHash instead of refusing it.
+        TorrentPreview mergePreview;
+        const TorrentPreview* previewForMerge = nullptr;
+        std::string previewError;
+        if (!import.torrentPath.empty()
+                ? previewTorrent(import.torrentPath, mergePreview,
+                                 previewError)
+                : (!existing->metainfoPath.empty() &&
+                   previewTorrent(existing->metainfoPath, mergePreview,
+                                  previewError)))
+            previewForMerge = &mergePreview;
+        if (!mergeImportSelection(*existing, previewForMerge, importSelection,
+                                  importMode, error))
+            return false;
+        // A debrid task with no stored metainfo gains one from the incoming
+        // import: the claim needs it to convey selectionPaths to the
+        // provider. Best-effort — a bare magnet still works, just without
+        // the per-file selection.
+        if (existing->metainfoPath.empty() && !import.torrentPath.empty()) {
+            const std::string metainfoPath =
+                torrentRoot_ + "/" + import.infoHash + ".torrent";
+            if (copyFile(import.torrentPath, metainfoPath))
+                existing->metainfoPath = metainfoPath;
+            else
+                diagnostic_error("manager", "merge-metainfo",
+                                 "task=%s", import.infoHash.c_str());
+        }
+        taskId = existing->id;
+        std::string persistError;
+        persistState(lock, persistError);
+        return true;
     }
 
     std::string metainfoPath;
@@ -2435,6 +2654,12 @@ void DownloadManager::runDebridTask(const ClaimedTask& claim) {
                 task->error = runError;
             }
             task->speedBytesPerSecond = 0;
+            // F3: a mid-run re-import merged an expanded selection and
+            // parked the transfer; requeue so the merged mask is claimed
+            // without a manual resume.
+            if (task->status == DownloadStatus::Paused &&
+                claim.fileSelection != task->fileSelection)
+                task->status = DownloadStatus::Queued;
             persistState(lock);
             return;
         }
@@ -2823,7 +3048,12 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
                     // An empty bitfield means the startup scan is still
                     // running: the bytes alone still rescue the bar, and the
                     // scan result arms the bitfield on the next interval.
-                    if (!checkpointBitfield.empty())
+                    // F3: a mid-run re-import expanded the selection and
+                    // cleared the fast-resume bitfield on purpose — the old
+                    // bits pre-mark the added files' pieces as done, so they
+                    // must never be re-armed over the merged mask.
+                    if (!checkpointBitfield.empty() &&
+                        claim.fileSelection == task->fileSelection)
                         task->resumeBitfield = checkpointBitfield;
                     lastCheckpointMs = now_ms();
                     lastCheckpointPieces = task->piecesDone;
@@ -2897,13 +3127,26 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
             removeLocked(lock, activeId, deleteData, removeError);
         } else if (task) {
             task->speedBytesPerSecond = 0;
+            // F3: a mid-run re-import expanded the selection; the merge
+            // cleared the fast-resume bitfield because the old bits pre-mark
+            // the added files' pieces as done (skipped-range preset). Keep
+            // it cleared — the next start rescans and reclaims existing
+            // pieces by hash.
+            const bool selectionMerged =
+                claim.fileSelection != task->fileSelection;
             // Arm fast resume for an interrupted task (pause / error /
             // shutdown). A finished task never re-runs and verify() must
             // do a real rehash, so it stays disarmed.
-            if (finished)
+            if (finished || selectionMerged)
                 task->resumeBitfield.clear();
             else
                 task->resumeBitfield = std::move(teardownBitfield);
+            // The merge parked a running task as Paused so this teardown
+            // could happen; requeue so the merged mask is picked up without
+            // a manual resume.
+            if (selectionMerged && !finished &&
+                task->status == DownloadStatus::Paused)
+                task->status = DownloadStatus::Queued;
             persistState(lock);
             if (finished) {
                 DownloadTask done = *task;

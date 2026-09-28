@@ -535,6 +535,19 @@ private:
 
     void load();
     void schedulerMain();
+    // F3: a repeated import of an infoHash the manager already holds merges
+    // the incoming per-file actions into the existing task (download the
+    // missing files) instead of refusing. Declines — with the historical
+    // "already in the download manager" error — when the import adds nothing
+    // new or the task cannot take a merge right now. Caller holds mutex_;
+    // the task is left Queued (or Paused when a runner must tear down
+    // first) and persisted by the caller.
+    bool mergeImportSelection(DownloadTask& task,
+                              const TorrentPreview* preview,
+                              const std::vector<uint8_t>& incomingActions,
+                              TransferMode incomingMode, std::string& error);
+    // True when an (unfinished) runner thread currently owns the task.
+    bool runnerActiveLocked(const std::string& id) const;
     void runTask(RunnerSlot* slot, ClaimedTask claim);
     // The debrid half of runTask: no engine, no peers, no arbiter slot — the
     // provider fetches the torrent and we pull the result over HTTPS.
