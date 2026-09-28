@@ -163,7 +163,8 @@ ssize_t net_send(socket_t fd, const uint8_t *buf, size_t len) {
                          );
         if (n < 0) {
             if (errno == EINTR) continue;
-            if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+            if (errno == EAGAIN || errno == EWOULDBLOCK || errno == ENOBUFS)
+                break;
             return -1;
         }
         if (n == 0) break;
@@ -177,5 +178,13 @@ int net_recv(socket_t fd, uint8_t *buf, size_t len) {
     do {
         n = recv(fd, buf, len, 0);
     } while (n < 0 && errno == EINTR);
+    if (n < 0 && errno == ENOBUFS) {
+        /* The Switch bsd service buffers come from a shared pool; heavy
+           peer churn plus per-peer SO_RCVBUF reservations exhaust it and
+           recv() fails with ENOBUFS while the connection itself is fine.
+           Surface it as EAGAIN so peer_recv parks the peer instead of
+           tearing it down (the log showed handshake-then-close storms). */
+        errno = EAGAIN;
+    }
     return (int)n;
 }

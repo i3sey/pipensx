@@ -493,12 +493,19 @@ static void cb_block(void *ud, uint32_t idx, uint32_t off,
     int already_had_block = piece_mgr_has_block(t->pm, idx, block);
     int duplicated = piece_mgr_block_request_count(t->pm, idx, block) > 1;
     int result = piece_mgr_got_block(t->pm, idx, off, data, len);
-    if (result >= 1 && !already_had_block)
-        t->last_payload_ms = now_ms();
-    if (result >= 1 && duplicated)
-        cancel_duplicate_requests(t, idx, off, len);
-    if (result == 2)
-        broadcast_have(t, idx);
+    if (result == 3) {
+        /* Transient piece-buffer drop: the block is not stored and its
+           request count was cleared for re-picking. The pipeline entries
+           stay live, so duplicate (hedged) requests must NOT be cancelled
+           here and the bytes must not count as received. */
+    } else {
+        if (result >= 1 && !already_had_block)
+            t->last_payload_ms = now_ms();
+        if (result >= 1 && duplicated)
+            cancel_duplicate_requests(t, idx, off, len);
+        if (result == 2)
+            broadcast_have(t, idx);
+    }
     if (started_us) {
         uint64_t elapsed_us = now_us() - started_us;
         t->telemetry_cb_bytes += len;
@@ -576,10 +583,14 @@ int torrent_submit_web_piece(torrent_t *t, uint32_t piece,
                         : "web-seed piece processing failed");
             return -1;
         }
-        t->downloaded  += blen;
-        t->speed_bytes += blen;
-        received += blen;
-        result = r;
+        if (r != 3) {
+            /* A transient piece-buffer drop must not count as payload —
+               the block was discarded and a later submit re-fills it. */
+            t->downloaded  += blen;
+            t->speed_bytes += blen;
+            received += blen;
+            result = r;
+        }
     }
     if (received)
         t->last_payload_ms = now_ms();

@@ -128,11 +128,14 @@ void piece_mgr_mark_pending(piece_mgr_t *pm, uint32_t idx);
  * Receive a block.  Returns:
  *   2 = piece complete and verified inline (worker unavailable; have_bf
  *       updated)
- *   1 = block stored, or a transient drop (piece-buffer OOM). On the last
- *       block of a piece the slot moves to PS_HASHING and verification
- *       completes asynchronously in piece_mgr_drain_hash_results /
- *       piece_mgr_hash_flush. A drop does not set storage_error; the
- *       block is left unreceived so the scheduler can ask again.
+ *   1 = block stored. On the last block of a piece the slot moves to
+ *       PS_HASHING and verification completes asynchronously in
+ *       piece_mgr_drain_hash_results / piece_mgr_hash_flush.
+ *   3 = transient drop (piece-buffer OOM): the block was NOT stored, no
+ *       request bookkeeping was cleared, and storage_error is untouched —
+ *       the caller must not count the bytes as received nor cancel
+ *       duplicate (hedged) requests, so the scheduler can ask again once
+ *       a buffer returns to the pool.
  *   0 = inline hash mismatch (piece reset)
  *  -1 = error (bad params etc.)
  */

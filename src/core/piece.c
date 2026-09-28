@@ -476,11 +476,12 @@ int piece_mgr_got_block(piece_mgr_t *pm, uint32_t idx, uint32_t offset,
             /* Transient: do not piece_fail — torrent.c treats storage_error
                as fatal and would kill the download. Drop this block and
                clear its request so the picker can ask again after a buffer
-               returns to the pool. */
+               returns to the pool. Status 3 tells the caller the block was
+               NOT stored, so hedged duplicates must survive. */
             log_msg("[piece] out of memory for piece buffer (piece %u) "
                     "— dropping block\n", idx);
             piece_mgr_clear_all_block_requests(pm, idx, blk);
-            return 1;
+            return 3;
         }
     }
     slot_set_state(pm, sl, PS_PENDING);

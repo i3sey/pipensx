@@ -1370,9 +1370,11 @@ static void test_piece_buffer_oom_is_transient(void) {
 
     uint8_t data[BLOCK_SIZE];
     memset(data, 0xab, sizeof(data));
-    /* First get plus the drain-and-retry get inside got_block. */
+    /* First get plus the drain-and-retry get inside got_block. Status 3:
+       dropped, not stored — the caller must re-ask instead of treating
+       the block as received (issue #86 hardening). */
     piece_mgr_debug_fail_next_allocs(2);
-    assert(piece_mgr_got_block(pm, 0, 0, data, BLOCK_SIZE) == 1);
+    assert(piece_mgr_got_block(pm, 0, 0, data, BLOCK_SIZE) == 3);
     assert(pm->slots[0].buf == NULL);
     assert(!piece_mgr_has_block(pm, 0, 0));
     assert(piece_mgr_block_request_count(pm, 0, 0) == 0);
