@@ -123,8 +123,7 @@ inline std::string playerFilterLabel(PlayerFilter filter) {
 
 // Detail-page fact: "up to 4 - split screen, local co-op". Empty when the
 // index knows neither a player count nor a mode, so the row disappears.
-inline std::string playersFact(const GameMetadata* metadata) {
-    if (!metadata)
+inline std::string playersFact(const GameMetadata* metadata) {    if (!metadata)
         return {};
     std::string count;
     if (metadata->players >= 2)
@@ -142,6 +141,39 @@ inline std::string playersFact(const GameMetadata* metadata) {
     if (joined.empty())
         return count;
     return count + " • " + joined;
+}
+
+// Structured player fact from the catalogue entry itself ("up to 4 •
+// Online"). Fallback for releases the metadata index does not cover; empty
+// when the entry carries no player data, so the row disappears.
+inline std::string catalogPlayersFact(const CatalogEntry& entry) {
+    if (entry.playersMax == 0)
+        return {};
+    std::string count;
+    if (entry.playersMax >= 2)
+        count = tr("pipensx/detail/players_up_to",
+                   std::to_string(entry.playersMax));
+    else
+        count = tr("pipensx/detail/players_single");
+    if (entry.playersOnline)
+        count += " • " + tr("pipensx/catalog/players_online");
+    return count;
+}
+
+// BCP-47 codes as a display list ("EN, RU"). Locale-neutral join, so the
+// presentation layer stays free of translation calls.
+inline std::string joinLanguageCodes(const std::vector<std::string>& codes) {
+    std::string out;
+    for (const std::string& code : codes) {
+        if (code.empty())
+            continue;
+        if (!out.empty())
+            out += ", ";
+        for (char c : code)
+            out += static_cast<char>(
+                (c >= 'a' && c <= 'z') ? c - ('a' - 'A') : c);
+    }
+    return out;
 }
 
 inline std::string shortDescription(const std::string& value) {

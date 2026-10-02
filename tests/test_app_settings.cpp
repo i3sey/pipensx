@@ -471,8 +471,8 @@ void testCatalogSourceUrlValidation() {
         "https://user:pass@cdn.example.com/repo/catalog.json"));
     assert(!isValidCatalogSourceUrl(std::string(513, 'a')));
     assert(effectiveCatalogSourceUrl("") ==
-           "https://raw.githubusercontent.com/Langegen/switch-games/"
-           "refs/heads/main/switch_games.json");
+           "https://github.com/i3sey/pipensx-catalog/releases/latest/download/"
+           "catalog.json");
     assert(effectiveCatalogSourceUrl("https://cdn.example.com/x.json") ==
            "https://cdn.example.com/x.json");
 }

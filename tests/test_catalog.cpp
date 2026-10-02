@@ -8,6 +8,7 @@
 extern "C" {
 #include "core/metainfo.h"
 #include "core/sha1.h"
+#include "core/sha256.h"
 #include "core/tracker.h"
 }
 
@@ -33,6 +34,8 @@ extern "C" {
 using pipensx::AppSettings;
 using pipensx::CatalogEntry;
 using pipensx::CatalogHealth;
+using pipensx::CatalogManifest;
+using pipensx::defaultCatalogManifestUrl;
 using pipensx::CatalogPresentation;
 using pipensx::CatalogRefreshBatch;
 using pipensx::CatalogService;
@@ -2153,26 +2156,44 @@ void runLiveResolutionIfRequested() {
 } // namespace
 
 // Trusted-source allowlist gating every network catalog fetch: only the
-// Langegen switch-games repo on GitHub's raw host is accepted; look-alike
-// hosts, wrong repos, plain HTTP and path-prefix tricks are rejected.
+// own pipensx-catalog repo (release channel + raw) is accepted for the
+// default source; look-alike hosts, wrong repos, plain HTTP and
+// path-prefix tricks are rejected. Redirects of the built-in channel are
+// checked against a separate allowlist covering the GitHub release-asset
+// hosts.
 void testTrustedSourceAllowlist() {
     const std::string kDefault = defaultCatalogSourceUrl();
+    assert(kDefault ==
+           "https://github.com/i3sey/pipensx-catalog/releases/latest/"
+           "download/catalog.json");
+    assert(defaultCatalogManifestUrl() ==
+           "https://github.com/i3sey/pipensx-catalog/releases/latest/"
+           "download/manifest.json");
     assert(CatalogService::isTrustedSource(
-        "https://raw.githubusercontent.com/Langegen/switch-games/"
-        "refs/heads/main/switch_games.json",
+        "https://github.com/i3sey/pipensx-catalog/releases/latest/download/"
+        "catalog.json",
+        kDefault));
+    assert(CatalogService::isTrustedSource(
+        "https://raw.githubusercontent.com/i3sey/pipensx-catalog/refs/heads/"
+        "main/catalog.json",
         kDefault));
 
     assert(!CatalogService::isTrustedSource(
-        "http://raw.githubusercontent.com/Langegen/switch-games/main/x.json",
+        "https://raw.githubusercontent.com/Langegen/switch-games/"
+        "refs/heads/main/switch_games.json",
         kDefault));
     assert(!CatalogService::isTrustedSource(
-        "https://raw.githubusercontent.com/evil/switch-games/main/x.json",
+        "http://github.com/i3sey/pipensx-catalog/releases/latest/download/"
+        "catalog.json",
         kDefault));
     assert(!CatalogService::isTrustedSource(
-        "https://github.com/bqio/switch-dumps/releases/download/v1/catalog.json",
+        "https://raw.githubusercontent.com/evil/pipensx-catalog/main/x.json",
         kDefault));
     assert(!CatalogService::isTrustedSource(
-        "https://raw.githubusercontent.com.evil.example/Langegen/switch-games/x",
+        "https://github.com/evil/pipensx-catalog/releases/download/v1/x.json",
+        kDefault));
+    assert(!CatalogService::isTrustedSource(
+        "https://raw.githubusercontent.com.evil.example/i3sey/pipensx-catalog/x",
         kDefault));
     assert(!CatalogService::isTrustedSource("", kDefault));
 
@@ -2197,6 +2218,218 @@ void testTrustedSourceAllowlist() {
         "release-asset/file"));
     assert(!GameMetadataService::isTrustedRedirect(
         "https://release-assets.githubusercontent.com.evil.example/file"));
+}
+
+// Redirect allowlist of the built-in catalog channel: the repo itself plus
+// the GitHub release-asset hosts that `releases/latest/download` points to.
+// Look-alike hosts are rejected.
+void testCatalogTrustedRedirect() {
+    assert(CatalogService::isTrustedRedirect(
+        "https://github.com/i3sey/pipensx-catalog/releases/download/v1/"
+        "catalog.json"));
+    assert(CatalogService::isTrustedRedirect(
+        "https://raw.githubusercontent.com/i3sey/pipensx-catalog/main/"
+        "catalog.json"));
+    assert(CatalogService::isTrustedRedirect(
+        "https://release-assets.githubusercontent.com/github-production-"
+        "release-asset/file"));
+    assert(CatalogService::isTrustedRedirect(
+        "https://objects.githubusercontent.com/github-production-"
+        "release-asset/file"));
+    assert(!CatalogService::isTrustedRedirect(
+        "https://release-assets.githubusercontent.com.evil.example/file"));
+    assert(!CatalogService::isTrustedRedirect(
+        "https://objects.githubusercontent.com.evil.example/file"));
+    assert(!CatalogService::isTrustedRedirect(
+        "https://github.com/evil/pipensx-catalog/releases/download/v1/x"));
+    assert(!CatalogService::isTrustedRedirect(""));
+}
+
+// Manifest of the default release channel: schema 2 with matching
+// sha256/bytes/entries. Wrong schemas, bad hashes and out-of-limit
+// sizes/counts are rejected before any catalog byte is trusted.
+void testCatalogManifestParsing() {
+    const char* valid =
+        "{\"schemaVersion\":2,\"generatedAt\":\"2026-10-02T12:00:00Z\","
+        "\"catalogCommit\":\"abc\",\"sourceCommit\":\"def\",\"catalog\":{"
+        "\"url\":\"https://github.com/i3sey/pipensx-catalog/releases/latest/"
+        "download/catalog.json\","
+        "\"sha256\":\"0123456789abcdef0123456789abcdef0123456789abcdef01234567"
+        "89abcdef\",\"bytes\":100,\"entries\":7}}";
+    CatalogManifest manifest;
+    std::string error;
+    assert(CatalogService::parseManifest(valid, manifest, error));
+    assert(manifest.schemaVersion == 2);
+    assert(manifest.catalogBytes == 100);
+    assert(manifest.catalogEntries == 7);
+    assert(manifest.catalogSha256 ==
+           "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
+
+    const char* bad[] = {
+        "[]",
+        "{}",
+        "{\"schemaVersion\":1,\"catalog\":{\"sha256\":\"",
+        "{\"schemaVersion\":2}",
+        "{\"schemaVersion\":2,\"catalog\":{}}",
+        // short hash
+        "{\"schemaVersion\":2,\"catalog\":{\"sha256\":\"abc\",\"bytes\":100,"
+        "\"entries\":7}}",
+        // zero bytes / entries
+        "{\"schemaVersion\":2,\"catalog\":{\"sha256\":\"0123456789abcdef01234"
+        "56789abcdef0123456789abcdef0123456789abcdef\",\"bytes\":0,"
+        "\"entries\":7}}",
+        "{\"schemaVersion\":2,\"catalog\":{\"sha256\":\"0123456789abcdef01234"
+        "56789abcdef0123456789abcdef0123456789abcdef\",\"bytes\":100,"
+        "\"entries\":0}}",
+    };
+    for (const char* body : bad) {
+        CatalogManifest rejected;
+        std::string rejectError;
+        assert(!CatalogService::parseManifest(body, rejected, rejectError));
+        assert(!rejectError.empty());
+    }
+}
+
+// Downloaded bytes must match the manifest exactly: byte count and SHA-256.
+void testCatalogBodyVerification() {
+    const std::string body = "[{\"title\":\"x\"}]\n";
+    uint8_t digest[32];
+    sha256(body.data(), body.size(), digest);
+    static const char digits[] = "0123456789abcdef";
+    std::string hex(64, '0');
+    for (size_t i = 0; i < 32; ++i) {
+        hex[i * 2] = digits[digest[i] >> 4];
+        hex[i * 2 + 1] = digits[digest[i] & 15];
+    }
+    CatalogManifest manifest;
+    manifest.schemaVersion = 2;
+    manifest.catalogSha256 = hex;
+    manifest.catalogBytes = body.size();
+    manifest.catalogEntries = 1;
+    std::string error;
+    assert(CatalogService::verifyCatalogBody(body, manifest, error));
+
+    CatalogManifest shortManifest = manifest;
+    shortManifest.catalogBytes = body.size() + 1;
+    assert(
+        !CatalogService::verifyCatalogBody(body, shortManifest, error));
+
+    CatalogManifest tampered = manifest;
+    tampered.catalogSha256[0] = tampered.catalogSha256[0] == 'a' ? 'b' : 'a';
+    assert(!CatalogService::verifyCatalogBody(body, tampered, error));
+}
+
+// Canonical numeric size_bytes wins over the legacy size field; the legacy
+// string/number size still parses when size_bytes is absent.
+void testCatalogSizeBytesPriority() {
+    const char* json =
+        "[{"
+        "\"title\":\"Sized\","
+        "\"magnet\":\"magnet:?xt=urn:btih:"
+        "8B8016FD97F08E2CC46E3B104B72EC758173C3C9&tr="
+        "http%3A%2F%2Fbt.t-ru.org%2Fann%3Fmagnet\","
+        "\"cover\":\"https://example.invalid/cover.png\","
+        "\"size\":\"5.19 GB\","
+        "\"size_bytes\":58720256"
+        "}]";
+    std::vector<CatalogEntry> entries;
+    std::string error;
+    assert(CatalogService::parseJson(json, entries, error));
+    assert(entries.size() == 1);
+    assert(entries[0].size == 58720256);
+}
+
+// Structured pipensx-catalog v2 fields land in the entry; entries without
+// them keep empty/zero values so the detail card can fall back to the
+// free-text fields.
+void testCatalogV2FieldsParsing() {
+    const char* json =
+        "[{"
+        "\"title\":\"V2\","
+        "\"magnet\":\"magnet:?xt=urn:btih:"
+        "8B8016FD97F08E2CC46E3B104B72EC758173C3C9&tr="
+        "http%3A%2F%2Fbt.t-ru.org%2Fann%3Fmagnet\","
+        "\"cover\":\"https://example.invalid/cover.png\","
+        "\"size_bytes\":123,\"package_type\":\"nsz\",\"version\":\"1.0.1\","
+        "\"languages\":{\"interface\":[\"en\",\"ru\"],\"voice\":[],"
+        "\"note\":\"\"},"
+        "\"players\":{\"min\":1,\"max\":4,\"online\":true},"
+        "\"performance_note\":\"60 fps\","
+        "\"published_date\":1759300000"
+        "}]";
+    std::vector<CatalogEntry> entries;
+    std::string error;
+    assert(CatalogService::parseJson(json, entries, error));
+    assert(entries.size() == 1);
+    const CatalogEntry& e = entries[0];
+    assert(e.packageType == "nsz");
+    assert(e.version == "1.0.1");
+    assert(e.languagesInterface.size() == 2);
+    assert(e.languagesInterface[0] == "en");
+    assert(e.languagesVoice.empty());
+    assert(e.playersMin == 1);
+    assert(e.playersMax == 4);
+    assert(e.playersOnline);
+    assert(e.performanceNote == "60 fps");
+    assert(e.publishedAt == 1759300000);
+}
+
+// Older dumps may encode unix times as decimal strings; they still parse.
+void testCatalogDateStringTolerance() {
+    const char* json =
+        "[{"
+        "\"title\":\"Dated\","
+        "\"magnet\":\"magnet:?xt=urn:btih:"
+        "8B8016FD97F08E2CC46E3B104B72EC758173C3C9&tr="
+        "http%3A%2F%2Fbt.t-ru.org%2Fann%3Fmagnet\","
+        "\"cover\":\"https://example.invalid/cover.png\","
+        "\"size_bytes\":123,\"published_date\":\"1759300000\""
+        "}]";
+    std::vector<CatalogEntry> entries;
+    std::string error;
+    assert(CatalogService::parseJson(json, entries, error));
+    assert(entries.size() == 1);
+    assert(entries[0].publishedAt == 1759300000);
+}
+
+// The detail card resolves structured v2 facts from the entry: package,
+// version, languages, players. A structured performance note wins over the
+// legacy free-text performance; without it the legacy text stays.
+void testCatalogV2PresentationResolution() {
+    CatalogEntry entry;
+    entry.title = "V2 game";
+    entry.packageType = "nsz";
+    entry.version = "1.0.1";
+    entry.languagesInterface = {"en", "ru"};
+    entry.languagesVoice = {"en"};
+    entry.playersMin = 1;
+    entry.playersMax = 4;
+    entry.playersOnline = true;
+    entry.performance = "legacy note";
+    entry.performanceNote = "60 fps";
+    CatalogPresentation resolved =
+        resolveCatalogPresentation(entry, nullptr);
+    assert(resolved.packageType == "nsz");
+    assert(resolved.version == "1.0.1");
+    assert((resolved.languagesInterface ==
+            std::vector<std::string>{"en", "ru"}));
+    assert((resolved.languagesVoice == std::vector<std::string>{"en"}));
+    assert(resolved.playersMin == 1);
+    assert(resolved.playersMax == 4);
+    assert(resolved.playersOnline);
+    assert(resolved.performance == "60 fps");
+
+    CatalogEntry legacy;
+    legacy.title = "Old game";
+    legacy.performance = "legacy note";
+    CatalogPresentation fallback =
+        resolveCatalogPresentation(legacy, nullptr);
+    assert(fallback.packageType.empty());
+    assert(fallback.version.empty());
+    assert(fallback.languagesInterface.empty());
+    assert(fallback.playersMax == 0);
+    assert(!fallback.playersOnline);
+    assert(fallback.performance == "legacy note");
 }
 
 // The Langegen switch_games.json shape: magnet under "magnet", cover under
@@ -2283,7 +2516,7 @@ void testLangegenLanguageFields() {
     assert(entries[0].voiceLang == std::string(256, 'x'));
 }
 
-void testBundledLangegenSnapshotLoadsWithoutNetwork() {
+void testBundledCatalogSnapshotLoadsWithoutNetwork() {
     const std::string root = "/tmp/pipensx-bundled-catalog-" +
         std::to_string(static_cast<long long>(getpid()));
     mkdir(root.c_str(), 0755);
@@ -2625,10 +2858,17 @@ void testMetadataSharedIndexSurvivesAdopt() {
 int main() {
     testMagnetParsing();
     testTrustedSourceAllowlist();
+    testCatalogTrustedRedirect();
+    testCatalogManifestParsing();
+    testCatalogBodyVerification();
+    testCatalogSizeBytesPriority();
+    testCatalogV2FieldsParsing();
+    testCatalogDateStringTolerance();
+    testCatalogV2PresentationResolution();
     testCatalogParsing();
     testLangegenSchemaParsing();
     testLangegenLanguageFields();
-    testBundledLangegenSnapshotLoadsWithoutNetwork();
+    testBundledCatalogSnapshotLoadsWithoutNetwork();
     testCachedCatalogSnapshotFromCache();
     testBundledMetadataSnapshotLoadsWithoutNetwork();
     testCatalogBrowseBuilder();

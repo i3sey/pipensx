@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.13)
 
 set(PIPENSX_CATALOG_SNAPSHOT
     "${CMAKE_CURRENT_SOURCE_DIR}/resources/catalog/switch_games.json"
-    CACHE FILEPATH "Bundled Langegen catalog snapshot for offline first launch")
+    CACHE FILEPATH "Bundled pipensx-catalog snapshot for offline first launch")
 set(PIPENSX_METADATA_INDEX
     "${CMAKE_CURRENT_SOURCE_DIR}/resources/catalog/game_metadata_index.json"
     CACHE FILEPATH "Bundled game metadata index snapshot for offline first launch")
@@ -447,7 +447,7 @@ file(COPY
     DESTINATION ${ROMFS_DIR}
 )
 # Never reuse catalog data left in an existing build directory. Public builds
-# ship both the Langegen torrent catalog and the metadata index snapshots for
+# ship both the pipensx-catalog snapshot and the metadata index snapshots for
 # offline first launch.
 file(REMOVE_RECURSE ${ROMFS_DIR}/catalog)
 get_filename_component(PIPENSX_CATALOG_SNAPSHOT_ABS

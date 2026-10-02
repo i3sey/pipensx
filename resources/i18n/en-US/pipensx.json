@@ -164,6 +164,9 @@
     "fact_genre": "Genre",
     "fact_players": "Players",
     "fact_multiplayer": "Multiplayer",
+    "fact_package": "Package",
+    "fact_version": "Version",
+    "fact_languages": "Languages",
     "fact_interface_lang": "Interface language",
     "fact_voice_lang": "Voice",
     "fact_performance": "Performance",
@@ -617,7 +620,7 @@
     "show_home_note": "Featured spotlight on its own tab. Off by default.",
     "auto_refresh": "Auto-refresh daily",
     "catalog_source": "Catalog source",
-    "catalog_source_default": "Default (Langegen)",
+    "catalog_source_default": "Default (pipensx-catalog)",
     "catalog_source_detail": "HTTPS URL to a catalog JSON file — leave empty for the built-in source",
     "catalog_source_invalid": "Enter an https:// URL to a catalog JSON file.",
     "update_now": "Update now",
@@ -736,7 +739,7 @@
     "disclaimer": "pipensx is an independent open-source project and is not affiliated with Nintendo."
   },
   "disclaimer": {
-    "catalog": "The catalog is a list of RuTracker releases collected by @Langegen. pipensx is not affiliated with RuTracker or @Langegen.\n\nThe catalog will update now. This can take a while.",
+    "catalog": "The catalog is a list of RuTracker releases assembled by the pipensx-catalog project. pipensx is not affiliated with Nintendo, RuTracker, or the catalog provider.\n\nThe catalog will update now. This can take a while.",
     "catalog_direct": "Downloading straight from the swarm may not work over mobile data, a VPN, or similar networks.",
     "ok_wait": "OK ({})"
   },

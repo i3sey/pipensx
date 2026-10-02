@@ -28,25 +28,37 @@ struct CatalogEntry {
     std::string posterUrl;
     std::vector<std::string> screenshots;
     std::string healthReason;
-    /* Inline catalogue metadata carried by the Langegen switch_games.json
-       source. An optional metadata index is keyed by info-hash and may not
-       match these entries, so the detail card falls back to these fields for
-       its facts table, description and cover. Empty when absent. */
+    /* Inline catalogue metadata carried by the catalogue source. An optional
+       metadata index is keyed by info-hash and may not match these entries,
+       so the detail card falls back to these fields for its facts table,
+       description and cover. Empty when absent. */
     std::string year;
     std::string genre;
     std::string developer;
     std::string publisher;
     std::string description;
-    /* Langegen fields added after the first switch_games dump: Nintendo
-       title id when known, CFW/firmware note, and a free-text multiplayer
-       summary (Russian scrape text — not structured player modes).
-       interface_lang / voice_lang are Russian releaser notes; the detail
-       card shows them only in the Russian locale. */
+    /* Catalogue fields kept from the first dumps: Nintendo title id when
+       known, CFW/firmware note, and a free-text multiplayer summary
+       (scrape text — not structured player modes). interface_lang /
+       voice_lang are releaser notes; the detail card shows them only in the
+       Russian locale. */
     std::string titleId;
     std::string performance;
     std::string multiplayer;
     std::string interfaceLang;
     std::string voiceLang;
+    /* Structured pipensx-catalog v2 fields. Absent (empty/zero) in entries
+       parsed from older snapshots; the detail card falls back to the
+       free-text fields above when these are missing. */
+    std::string packageType;
+    std::string version;
+    std::vector<std::string> languagesInterface;
+    std::vector<std::string> languagesVoice;
+    std::string languageNote;
+    uint32_t playersMin = 0;
+    uint32_t playersMax = 0;
+    bool playersOnline = false;
+    std::string performanceNote;
     /* Pre-resolved bencoded info dictionary (RF_ACCESS_PLAN П2.1), decoded
        from the catalog's base64 "info_dict" and SHA-1-verified against the
        magnet hash at parse time. Empty when the catalog carries none. */
@@ -86,8 +98,21 @@ struct RetiredCatalogSnapshot {
     std::unordered_map<std::string, size_t> infoHashIndex;
 };
 
-// Built-in Langegen switch_games.json URL used when catalogSourceUrl is empty.
+// Built-in pipensx-catalog release channel used when catalogSourceUrl is
+// empty: a tiny manifest fetched first, the ~20 MB catalog only when its
+// SHA-256 changed (manifest-delta). A custom catalogSourceUrl stays a single
+// JSON fetched without any manifest check.
 std::string defaultCatalogSourceUrl();
+std::string defaultCatalogManifestUrl();
+
+// Verified manifest of the default release channel (schemaVersion 2:
+// catalog.sha256/bytes/entries checked before adopt).
+struct CatalogManifest {
+    uint32_t schemaVersion = 0;
+    std::string catalogSha256; // lowercase hex, 64 chars
+    size_t catalogBytes = 0;
+    size_t catalogEntries = 0;
+};
 
 class CatalogService {
 public:
@@ -164,10 +189,24 @@ public:
                           const std::atomic<bool>* cancelled = nullptr);
 
     // True when `url` is allowed to serve catalog bytes for `sourceUrl`.
-    // Built-in Langegen keeps the historical repo-prefix allowlist; a custom
-    // source trusts only redirects within the source file's directory.
+    // The built-in channel keeps a repo-prefix allowlist; a custom source
+    // trusts only redirects within the source file's directory.
     static bool isTrustedSource(const std::string& url,
                                 const std::string& sourceUrl);
+    // True when `url` may serve the built-in channel after a redirect:
+    // the catalog repo itself plus the GitHub release-asset hosts that
+    // `releases/latest/download` redirects to.
+    static bool isTrustedRedirect(const std::string& url);
+
+    // Parse a catalog manifest body (pure, unit-tested). Rejects wrong
+    // schema versions and out-of-limit sizes/counts.
+    static bool parseManifest(const std::string& body,
+                              CatalogManifest& manifest, std::string& error);
+    // Check downloaded catalog bytes against a parsed manifest: exact size
+    // and SHA-256. Entry-count agreement is checked after parseJson.
+    static bool verifyCatalogBody(const std::string& body,
+                                  const CatalogManifest& manifest,
+                                  std::string& error);
 
 private:
     bool loadFileSnapshot(const std::string& path, const std::string& label,
@@ -175,10 +214,16 @@ private:
                           std::string& error) const;
     static void buildIndex(const std::vector<CatalogEntry>& entries,
                            std::unordered_map<std::string, size_t>& index);
+    // Built-in release channel: manifest fetch, SHA-256 delta against the
+    // cached manifest, verified catalog download. Never touches live state.
+    bool fetchDefaultChannel(std::vector<CatalogEntry>& parsed,
+                             std::string& error,
+                             const std::atomic<bool>* cancelled);
 
     std::string rootPath_;
     std::string catalogRoot_;
     std::string cachePath_;
+    std::string manifestPath_;
     std::string bundledPath_;
     // Never null — starts as an empty vector. Reassigned only on the UI
     // thread (see adopt()).

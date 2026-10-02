@@ -35,7 +35,7 @@ inline constexpr float kCoverHeight = kCoverSize;
 // Icon inside the card uses the same rounding as the card itself so the
 // whole plate reads as one piece.
 inline constexpr float kIconRadius = theme::kRadiusMedium;
-// Langegen/games covers are Nintendo box-art images (~393x640), not square
+// Catalogue covers are Nintendo box-art images (~393x640), not square
 // eShop icons. FIT them inside the square slot.
 inline constexpr float kGameCoverWidth = 114.0f;
 // Inset + cover + name line (17px) + sub line (15px) + inner margins,

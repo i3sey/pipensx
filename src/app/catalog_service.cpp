@@ -1,10 +1,12 @@
 #include "catalog_service.hpp"
+#include "catalog_urls.hpp"
 #include "curl_https.hpp"
 #include "magnet_resolver.hpp"
 #include "snapshot_zstd.hpp"
 
 extern "C" {
 #include "../core/sha1.h"
+#include "../core/sha256.h"
 #include "../core/util.h"
 }
 
@@ -23,16 +25,15 @@ extern "C" {
 
 namespace pipensx {
 
-const char kDefaultCatalogSourceUrl[] =
-    "https://raw.githubusercontent.com/Langegen/switch-games/"
-    "refs/heads/main/switch_games.json";
 
 namespace {
 
-// Live Langegen switch_games.json is ~27 MiB (2026-08); leave headroom.
+// Own catalog is ~23 MiB (7045 entries, 2026-10); leave headroom.
 constexpr size_t kMaxCatalogBytes = 48 * 1024 * 1024;
 constexpr size_t kMaxCatalogEntries = 20000;
 constexpr size_t kMaxInfoDictBytes = 8 * 1024 * 1024;
+// The manifest is ~500 bytes of JSON; anything larger is not ours.
+constexpr size_t kMaxManifestBytes = 64 * 1024;
 constexpr const char kCachedCatalogLabel[] = "cached catalog";
 constexpr const char kBundledCatalogLabel[] = "bundled catalog";
 
@@ -214,8 +215,20 @@ bool httpGet(const std::string& url, std::string& body, std::string& error,
         return false;
     }
     if (!CatalogService::isTrustedSource(effectiveUrl, sourceUrl)) {
-        error = "Catalog download redirected to an untrusted host.";
-        return false;
+        bool trusted = false;
+        if (sourceUrl == kDefaultCatalogUrl ||
+            sourceUrl == kDefaultCatalogManifestUrl) {
+            // `releases/latest/download` answers with a redirect to a
+            // release-asset host outside the source directory, so the
+            // built-in channel checks the redirect allowlist instead.
+            trusted = CatalogService::isTrustedRedirect(effectiveUrl);
+        } else {
+            trusted = CatalogService::isTrustedSource(effectiveUrl, sourceUrl);
+        }
+        if (!trusted) {
+            error = "Catalog download redirected to an untrusted host.";
+            return false;
+        }
     }
     body = std::move(buffer.data);
     return true;
@@ -297,8 +310,37 @@ int64_t readSigned(const nlohmann::json& item, const char* key) {
     return item[key].get<int64_t>();
 }
 
+// Unix time that older dumps may encode as a decimal string. Stops at the
+// first non-digit, like readFlexibleUnsigned; returns 0 when absent.
+int64_t readFlexibleSigned(const nlohmann::json& item, const char* key) {
+    if (!item.contains(key))
+        return 0;
+    if (item[key].is_string()) {
+        const std::string& text = item[key].get_ref<const std::string&>();
+        size_t i = 0;
+        bool negative = false;
+        if (i < text.size() && (text[i] == '-' || text[i] == '+')) {
+            negative = text[i] == '-';
+            ++i;
+        }
+        int64_t value = 0;
+        bool sawDigit = false;
+        for (; i < text.size(); ++i) {
+            char c = text[i];
+            if (c < '0' || c > '9')
+                break;
+            sawDigit = true;
+            value = value * 10 + (c - '0');
+        }
+        if (!sawDigit)
+            return 0;
+        return negative ? -value : value;
+    }
+    return readSigned(item, key);
+}
+
 // A plain string value, trimmed to `limit` bytes; empty when absent or not a
-// string. Used for the Langegen inline metadata (year/genre/publisher/…).
+// string. Used for the inline catalogue metadata (year/genre/publisher/…).
 std::string readString(const nlohmann::json& item, const char* key,
                        size_t limit) {
     if (!item.contains(key) || !item[key].is_string())
@@ -309,8 +351,8 @@ std::string readString(const nlohmann::json& item, const char* key,
     return value;
 }
 
-// Numeric id that the source may encode as a JSON number (bqio) or a decimal
-// string (Langegen "topic_id":"6878751").
+// Numeric id that the source may encode as a JSON number or a decimal
+// string ("topic_id":"6878751").
 uint64_t readFlexibleUnsigned(const nlohmann::json& item, const char* key) {
     if (!item.contains(key))
         return 0;
@@ -374,8 +416,9 @@ uint64_t parseSizeToBytes(const std::string& text) {
     return static_cast<uint64_t>(bytes + 0.5);
 }
 
-// The catalogue size field: a JSON number of bytes (bqio) or a human string
-// (Langegen "size":"5.19 GB").
+// The catalogue size field: a JSON number of bytes, a canonical "size_bytes"
+// (preferred, read first by the caller), or a legacy human string
+// ("size":"5.19 GB").
 uint64_t readFlexibleSize(const nlohmann::json& item, const char* key) {
     if (!item.contains(key))
         return 0;
@@ -387,7 +430,11 @@ uint64_t readFlexibleSize(const nlohmann::json& item, const char* key) {
 } // namespace
 
 std::string defaultCatalogSourceUrl() {
-    return kDefaultCatalogSourceUrl;
+    return kDefaultCatalogUrl;
+}
+
+std::string defaultCatalogManifestUrl() {
+    return kDefaultCatalogManifestUrl;
 }
 
 namespace {
@@ -400,8 +447,9 @@ std::string catalogSourceTrustPrefix(const std::string& url) {
 }
 
 std::string catalogSourceLabel(const std::string& sourceUrl) {
-    if (sourceUrl == kDefaultCatalogSourceUrl)
-        return "Langegen switch-games";
+    if (sourceUrl == kDefaultCatalogUrl ||
+        sourceUrl == kDefaultCatalogManifestUrl)
+        return "pipensx-catalog";
     if (sourceUrl.size() > 8 && sourceUrl.compare(0, 8, "https://") == 0)
         return sourceUrl.substr(8);
     return sourceUrl;
@@ -413,6 +461,7 @@ CatalogService::CatalogService(std::string rootPath, std::string bundledPath)
     : rootPath_(std::move(rootPath)),
       catalogRoot_(rootPath_ + "/catalog"),
       cachePath_(catalogRoot_ + "/catalog.json"),
+      manifestPath_(catalogRoot_ + "/manifest.json"),
       bundledPath_(std::move(bundledPath)) {
     makeDirectories(catalogRoot_);
 }
@@ -443,9 +492,9 @@ bool CatalogService::parseJson(const std::string& json,
             entries.clear();
             return false;
         }
-        // The Langegen source names the magnet "magnet" and the cover "cover";
-        // the older bqio dumps used "magnetURI" and "poster". Accept either so
-        // a cached bqio snapshot still parses.
+        // The pre-v2 source names the magnet "magnet" and the cover "cover";
+        // older dumps used "magnetURI" and "poster". Accept either so a
+        // cached legacy snapshot still parses.
         const char* magnetKey = item.contains("magnet") ? "magnet" : "magnetURI";
         if (!item.is_object() ||
             !item.contains("title") || !item["title"].is_string() ||
@@ -475,17 +524,19 @@ bool CatalogService::parseJson(const std::string& json,
                     entry.screenshots.push_back(std::move(url));
             }
         }
-        entry.size = readFlexibleSize(item, "size");
+        entry.size = readUnsigned(item, "size_bytes");
+        if (entry.size == 0)
+            entry.size = readFlexibleSize(item, "size");
         entry.topicId = readFlexibleUnsigned(item, "topic_id");
-        // Langegen inline metadata: shown on the detail card, which never
+        // Inline catalogue metadata: shown on the detail card, which never
         // matches these entries in the bundled game_metadata_index.
         entry.year = readString(item, "year", 32);
         entry.genre = readString(item, "genre", 256);
         entry.developer = readString(item, "developer", 256);
         entry.publisher = readString(item, "publisher", 256);
-        // 3967 of 4141 Langegen descriptions start with a scraped ": "
-        // separator. Harmless while the English metadata prose won; it leads
-        // every detail card once a Russian UI prefers the catalogue text.
+        // Old scrapes leave a ": " separator in front of most descriptions.
+        // Harmless while the English metadata prose won; it leads every
+        // detail card once a Russian UI prefers the catalogue text.
         entry.description = readString(item, "description", 4096);
         if (entry.description.rfind(": ", 0) == 0)
             entry.description.erase(0, 2);
@@ -498,15 +549,55 @@ bool CatalogService::parseJson(const std::string& json,
         entry.multiplayer = readString(item, "multiplayer", 128);
         entry.interfaceLang = readString(item, "interface_lang", 256);
         entry.voiceLang = readString(item, "voice_lang", 256);
+        // Structured pipensx-catalog v2 fields. Older snapshots carry only
+        // the free-text fields above; missing v2 keys stay empty/zero and
+        // the detail card falls back.
+        entry.packageType = readString(item, "package_type", 16);
+        entry.version = readString(item, "version", 32);
+        if (entry.version.empty())
+            entry.version = readString(item, "version_name", 32);
+        if (item.contains("languages") && item["languages"].is_object()) {
+            const auto& languages = item["languages"];
+            for (const char* key : {"interface", "voice"}) {
+                if (!languages.contains(key) || !languages[key].is_array())
+                    continue;
+                std::vector<std::string>* target =
+                    key[0] == 'i' ? &entry.languagesInterface
+                                  : &entry.languagesVoice;
+                for (const auto& value : languages[key]) {
+                    if (!value.is_string() || target->size() >= 16)
+                        continue;
+                    std::string code = value.get<std::string>();
+                    if (!code.empty() && code.size() <= 16)
+                        target->push_back(std::move(code));
+                }
+            }
+            if (languages.contains("note") && languages["note"].is_string()) {
+                entry.languageNote = languages["note"].get<std::string>();
+                if (entry.languageNote.size() > 256)
+                    entry.languageNote.resize(256);
+            }
+        }
+        if (item.contains("players") && item["players"].is_object()) {
+            const auto& players = item["players"];
+            if (players.contains("min") && players["min"].is_number_unsigned())
+                entry.playersMin = players["min"].get<uint32_t>();
+            if (players.contains("max") && players["max"].is_number_unsigned())
+                entry.playersMax = players["max"].get<uint32_t>();
+            if (players.contains("online") && players["online"].is_boolean())
+                entry.playersOnline = players["online"].get<bool>();
+        }
+        entry.performanceNote = readString(item, "performance_note", 256);
         entry.forumId = static_cast<uint32_t>(readUnsigned(item, "forum_id"));
         entry.trackerId =
             static_cast<uint32_t>(readUnsigned(item, "tracker_id"));
         entry.peerCount =
             static_cast<uint32_t>(readUnsigned(item, "peer_count"));
-        entry.publishedAt = readSigned(item, "published_date");
-        entry.sourceUpdatedAt = readSigned(item, "source_updated_at");
-        entry.catalogGeneratedAt = readSigned(item, "catalog_generated_at");
-        entry.lastCheckedAt = readSigned(item, "last_checked_at");
+        entry.publishedAt = readFlexibleSigned(item, "published_date");
+        entry.sourceUpdatedAt = readFlexibleSigned(item, "source_updated_at");
+        entry.catalogGeneratedAt =
+            readFlexibleSigned(item, "catalog_generated_at");
+        entry.lastCheckedAt = readFlexibleSigned(item, "last_checked_at");
         entry.health = parseHealth(item);
         if (item.contains("metadata_ok") && item["metadata_ok"].is_boolean())
             entry.metadataOk = item["metadata_ok"].get<bool>();
@@ -621,13 +712,17 @@ bool CatalogService::load(std::string& error) {
 
 bool CatalogService::isTrustedSource(const std::string& url,
                                      const std::string& sourceUrl) {
-    if (sourceUrl == kDefaultCatalogSourceUrl) {
-        // Host (with path prefix) allowed to serve catalog bytes. Only the
-        // Langegen switch-games repo on GitHub's raw host; every network fetch
-        // is gated on this so a redirect or MITM to another host is refused
-        // before any parse.
+    if (sourceUrl == kDefaultCatalogUrl ||
+        sourceUrl == kDefaultCatalogManifestUrl) {
+        // Hosts (with path prefixes) allowed to serve the built-in channel.
+        // Only the pipensx-catalog repo; every network fetch is gated on
+        // this so a redirect or MITM to another host is refused before
+        // any parse. Asset-host redirects are checked separately in
+        // isTrustedRedirect() because `releases/latest/download` leaves
+        // the source directory.
         static const char* const kPrefixes[] = {
-            "https://raw.githubusercontent.com/Langegen/switch-games/",
+            "https://github.com/i3sey/pipensx-catalog/releases/",
+            "https://raw.githubusercontent.com/i3sey/pipensx-catalog/",
         };
         for (const char* prefix : kPrefixes)
             if (url.rfind(prefix, 0) == 0)
@@ -636,6 +731,89 @@ bool CatalogService::isTrustedSource(const std::string& url,
     }
     const std::string prefix = catalogSourceTrustPrefix(sourceUrl);
     return !prefix.empty() && url.rfind(prefix, 0) == 0;
+}
+
+bool CatalogService::isTrustedRedirect(const std::string& url) {
+    static const char* const kPrefixes[] = {
+        "https://github.com/i3sey/pipensx-catalog/releases/",
+        "https://raw.githubusercontent.com/i3sey/pipensx-catalog/",
+        "https://release-assets.githubusercontent.com/",
+        "https://objects.githubusercontent.com/",
+    };
+    for (const char* prefix : kPrefixes)
+        if (url.rfind(prefix, 0) == 0)
+            return true;
+    return false;
+}
+
+bool CatalogService::parseManifest(const std::string& body,
+                                   CatalogManifest& manifest,
+                                   std::string& error) {
+    manifest = {};
+    nlohmann::json root = nlohmann::json::parse(body, nullptr, false);
+    if (root.is_discarded() || !root.is_object()) {
+        error = "Catalog manifest is not a JSON object.";
+        return false;
+    }
+    if (!root.contains("schemaVersion") ||
+        !root["schemaVersion"].is_number_unsigned() ||
+        root["schemaVersion"].get<uint32_t>() != 2) {
+        error = "Catalog manifest has an unsupported schema.";
+        return false;
+    }
+    if (!root.contains("catalog") || !root["catalog"].is_object()) {
+        error = "Catalog manifest catalog fields are invalid.";
+        return false;
+    }
+    const nlohmann::json& catalog = root["catalog"];
+    if (!catalog.contains("sha256") || !catalog["sha256"].is_string() ||
+        !catalog.contains("bytes") || !catalog["bytes"].is_number_unsigned() ||
+        !catalog.contains("entries") ||
+        !catalog["entries"].is_number_unsigned()) {
+        error = "Catalog manifest catalog fields are invalid.";
+        return false;
+    }
+    std::string sha = catalog["sha256"].get<std::string>();
+    std::transform(sha.begin(), sha.end(), sha.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    const size_t bytes = catalog["bytes"].get<size_t>();
+    const size_t entries = catalog["entries"].get<size_t>();
+    if (sha.size() != 64 ||
+        !std::all_of(sha.begin(), sha.end(),
+                      [](unsigned char c) { return std::isxdigit(c) != 0; }) ||
+        bytes == 0 || bytes > kMaxCatalogBytes || entries == 0 ||
+        entries > kMaxCatalogEntries) {
+        error = "Catalog manifest catalog fields are invalid.";
+        return false;
+    }
+    manifest.schemaVersion = 2;
+    manifest.catalogSha256 = std::move(sha);
+    manifest.catalogBytes = bytes;
+    manifest.catalogEntries = entries;
+    return true;
+}
+
+bool CatalogService::verifyCatalogBody(const std::string& body,
+                                       const CatalogManifest& manifest,
+                                       std::string& error) {
+    if (body.size() != manifest.catalogBytes) {
+        error = "Catalog size does not match the manifest.";
+        return false;
+    }
+    uint8_t digest[32];
+    sha256(body.data(), body.size(), digest);
+    static const char digits[] = "0123456789abcdef";
+    std::string hex(64, '0');
+    for (size_t i = 0; i < 32; ++i) {
+        hex[i * 2] = digits[digest[i] >> 4];
+        hex[i * 2 + 1] = digits[digest[i] & 15];
+    }
+    if (hex != manifest.catalogSha256) {
+        error = "Catalog SHA-256 does not match the manifest.";
+        return false;
+    }
+    return true;
 }
 
 bool CatalogService::fetchLatest(std::vector<CatalogEntry>& parsed,
@@ -652,6 +830,9 @@ bool CatalogService::fetchLatest(std::vector<CatalogEntry>& parsed,
         error = "Catalog URL is not on the trusted host list.";
         return false;
     }
+    if (sourceUrl == kDefaultCatalogUrl ||
+        sourceUrl == kDefaultCatalogManifestUrl)
+        return fetchDefaultChannel(parsed, error, cancelled);
     std::string catalogBody;
     if (!httpGet(sourceUrl, catalogBody, error, sourceUrl, cancelled))
         return false;
@@ -662,6 +843,85 @@ bool CatalogService::fetchLatest(std::vector<CatalogEntry>& parsed,
         return false;
     }
     if (!writeAtomic(cachePath_, catalogBody, error, cancelled))
+        return false;
+    if (failIfCancelled(cancelled, error)) {
+        parsed.clear();
+        return false;
+    }
+    return true;
+}
+
+// Built-in release channel: fetch the tiny manifest first; skip the ~20 MB
+// catalog download entirely when the cached SHA-256 already matches.
+// Downloaded bytes are verified (size + SHA-256 + entry count) before adopt,
+// so a broken or substituted file never reaches the cache.
+bool CatalogService::fetchDefaultChannel(
+    std::vector<CatalogEntry>& parsed, std::string& error,
+    const std::atomic<bool>* cancelled) {
+    parsed.clear();
+    std::string manifestBody;
+    if (!httpGet(kDefaultCatalogManifestUrl, manifestBody, error,
+                 kDefaultCatalogManifestUrl, cancelled))
+        return false;
+    if (manifestBody.empty() || manifestBody.size() > kMaxManifestBytes) {
+        error = "Catalog manifest is empty or too large.";
+        return false;
+    }
+    CatalogManifest manifest;
+    if (!parseManifest(manifestBody, manifest, error))
+        return false;
+    if (failIfCancelled(cancelled, error))
+        return false;
+    {
+        // Manifest-delta: the catalog is immutable per SHA-256, so a cache
+        // hit means the bytes on disk are exactly the release bytes.
+        std::string cachedManifestBody;
+        std::string manifestError;
+        CatalogManifest cachedManifest;
+        if (readFile(manifestPath_, cachedManifestBody, manifestError) &&
+            parseManifest(cachedManifestBody, cachedManifest, manifestError) &&
+            cachedManifest.catalogSha256 == manifest.catalogSha256) {
+            std::string cachedBody;
+            std::string cacheError;
+            if (readFile(cachePath_, cachedBody, cacheError) &&
+                verifyCatalogBody(cachedBody, manifest, cacheError) &&
+                parseJson(cachedBody, parsed, cacheError, cancelled)) {
+                if (parsed.size() != manifest.catalogEntries) {
+                    error = "Cached catalog entry count does not match the "
+                            "manifest.";
+                    parsed.clear();
+                    return false;
+                }
+                log_msg("[catalog] manifest unchanged (%s), "
+                        "catalog kept from cache\n",
+                        manifest.catalogSha256.substr(0, 12).c_str());
+                return true;
+            }
+            log_msg("[catalog] cached catalog unusable (%s), "
+                    "downloading release\n",
+                    cacheError.c_str());
+        }
+    }
+    std::string catalogBody;
+    if (!httpGet(kDefaultCatalogUrl, catalogBody, error,
+                 kDefaultCatalogUrl, cancelled))
+        return false;
+    if (!verifyCatalogBody(catalogBody, manifest, error))
+        return false;
+    if (!parseJson(catalogBody, parsed, error, cancelled))
+        return false;
+    if (parsed.size() != manifest.catalogEntries) {
+        error = "Catalog entry count does not match the manifest.";
+        parsed.clear();
+        return false;
+    }
+    if (failIfCancelled(cancelled, error)) {
+        parsed.clear();
+        return false;
+    }
+    if (!writeAtomic(cachePath_, catalogBody, error, cancelled))
+        return false;
+    if (!writeAtomic(manifestPath_, manifestBody, error, cancelled))
         return false;
     if (failIfCancelled(cancelled, error)) {
         parsed.clear();
@@ -732,7 +992,7 @@ RetiredCatalogSnapshot CatalogService::adopt(
     infoHashIndex_ = std::move(snapshot.infoHashIndex);
     ++generation_;
     sourceLabel_ = snapshot.sourceLabel.empty()
-        ? catalogSourceLabel(sourceUrl.empty() ? kDefaultCatalogSourceUrl
+        ? catalogSourceLabel(sourceUrl.empty() ? kDefaultCatalogUrl
                                                : sourceUrl)
         : std::move(snapshot.sourceLabel);
     snapshotEpochSec_ = snapshot.snapshotEpochSec > 0

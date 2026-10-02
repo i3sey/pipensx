@@ -5,8 +5,8 @@
 //   make -f Makefile.pc webserver
 //   ./tools/webserver [port] [--root DIR] [--catalog FILE.json] [--pin PIN]
 //
-// Default root is ./web-test-root (created); --catalog loads a Langegen
-// switch_games.json (or any CatalogService-parsable file) into /api/catalog.
+// Default root is ./web-test-root (created); --catalog loads a catalog JSON
+// (or any CatalogService-parsable file) into /api/catalog.
 
 #include "app/app_settings.hpp"
 #include "app/catalog_service.hpp"

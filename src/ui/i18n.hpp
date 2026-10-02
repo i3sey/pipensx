@@ -26,7 +26,7 @@ inline std::string tr(const char* key, Args&&... args) {
     return brls::getStr(key, std::forward<Args>(args)...);
 }
 
-// The metadata index is English and the Langegen catalogue is Russian, so a
+// The metadata index is English and the catalogue is Russian, so a
 // Russian UI reads better from the catalogue's own prose. Matches "ru" and any
 // future regional variant of it.
 inline bool preferCatalogNativeText() {

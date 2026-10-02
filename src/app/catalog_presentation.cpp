@@ -195,8 +195,18 @@ CatalogPresentation resolveCatalogPresentation(
         ? metadata->releaseDate : entry.year;
     result.genre = metadata && !metadata->categories.empty()
         ? join(metadata->categories) : entry.genre;
-    result.performance = entry.performance;
+    // Structured note wins; legacy free-text scrape stays the fallback for
+    // snapshots and custom sources that predate the v2 fields.
+    result.performance = !entry.performanceNote.empty() ? entry.performanceNote
+                                                       : entry.performance;
     result.multiplayer = entry.multiplayer;
+    result.packageType = entry.packageType;
+    result.version = entry.version;
+    result.languagesInterface = entry.languagesInterface;
+    result.languagesVoice = entry.languagesVoice;
+    result.playersMin = entry.playersMin;
+    result.playersMax = entry.playersMax;
+    result.playersOnline = entry.playersOnline;
     result.screenshots = mergeScreenshotUrls(metadata, entry, 6);
     return result;
 }

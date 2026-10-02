@@ -164,6 +164,9 @@
     "fact_genre": "Genre",
     "fact_players": "Joueurs",
     "fact_multiplayer": "Multijoueur",
+    "fact_package": "Paquet",
+    "fact_version": "Version",
+    "fact_languages": "Langues",
     "fact_interface_lang": "Langue de l'interface",
     "fact_voice_lang": "Voix",
     "fact_performance": "Performances",
@@ -617,7 +620,7 @@
     "show_home_note": "Focus dédié sur son propre onglet. Désactivé par défaut.",
     "auto_refresh": "Actualisation auto quotidienne",
     "catalog_source": "Source du catalogue",
-    "catalog_source_default": "Par défaut (Langegen)",
+    "catalog_source_default": "Par défaut (pipensx-catalog)",
     "catalog_source_detail": "URL HTTPS vers un JSON de catalogue — laissez vide pour la source intégrée",
     "catalog_source_invalid": "Saisissez une URL https:// vers un fichier JSON de catalogue.",
     "update_now": "Mettre à jour maintenant",
@@ -736,7 +739,7 @@
     "disclaimer": "pipensx est un projet open source indépendant et n'est pas affilié à Nintendo."
   },
   "disclaimer": {
-    "catalog": "Le catalogue est une liste de sorties RuTracker collectée par @Langegen. pipensx n'est affilié ni à RuTracker ni à @Langegen.\n\nLe catalogue va se mettre à jour maintenant. Cela peut prendre un moment.",
+    "catalog": "Le catalogue est une liste de sorties RuTracker assemblée par le projet pipensx-catalog. pipensx n'est affilié ni à Nintendo, ni à RuTracker, ni au fournisseur du catalogue.\n\nLe catalogue va se mettre à jour maintenant. Cela peut prendre un moment.",
     "catalog_direct": "Le téléchargement direct depuis l'essaim peut ne pas fonctionner en 4G/5G, via un VPN ou un réseau similaire.",
     "ok_wait": "OK ({})"
   },

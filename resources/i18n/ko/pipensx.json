@@ -164,6 +164,9 @@
     "fact_genre": "장르",
     "fact_players": "플레이어",
     "fact_multiplayer": "멀티플레이",
+    "fact_package": "패키지",
+    "fact_version": "버전",
+    "fact_languages": "언어",
     "fact_interface_lang": "인터페이스 언어",
     "fact_voice_lang": "음성",
     "fact_performance": "성능",
@@ -617,7 +620,7 @@
     "show_home_note": "추천 작품을 별도 탭에 표시합니다. 기본값은 꺼짐입니다.",
     "auto_refresh": "매일 자동 새로고침",
     "catalog_source": "카탈로그 출처",
-    "catalog_source_default": "기본값 (Langegen)",
+    "catalog_source_default": "기본값 (pipensx-catalog)",
     "catalog_source_detail": "카탈로그 JSON 파일의 HTTPS URL — 비워 두면 내장 출처를 사용합니다",
     "catalog_source_invalid": "카탈로그 JSON 파일의 https:// 주소를 입력하세요.",
     "update_now": "지금 업데이트",
@@ -736,7 +739,7 @@
     "disclaimer": "pipensx는 독립적인 오픈소스 프로젝트이며 닌텐도와 관련이 없습니다."
   },
   "disclaimer": {
-    "catalog": "이 카탈로그는 @Langegen이 수집한 RuTracker 릴리스 목록입니다. pipensx는 RuTracker나 @Langegen과 관련이 없습니다.\n\n지금 카탈로그를 업데이트합니다. 시간이 걸릴 수 있습니다.",
+    "catalog": "이 카탈로그는 pipensx-catalog 프로젝트가 수집한 RuTracker 릴리스 목록입니다. pipensx는 Nintendo, RuTracker 또는 카탈로그 제공자와 관련이 없습니다.\n\n지금 카탈로그를 업데이트합니다. 시간이 걸릴 수 있습니다.",
     "catalog_direct": "스웜에서 직접 다운로드하는 방식은 모바일 데이터, VPN 등의 네트워크에서는 동작하지 않을 수 있습니다.",
     "ok_wait": "확인 ({})"
   },

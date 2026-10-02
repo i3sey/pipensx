@@ -118,6 +118,8 @@ public:
                                                    catalogTextPreference());
         titleId_ = presentation_.titleId;
         playersFact_ = playersFact(found);
+        if (playersFact_.empty())
+            playersFact_ = catalogPlayersFact(entry_);
 
         // F3: eShop-style two-column page. Left column is fixed (cover +
         // install button + size/status); the right column scrolls on its own.
@@ -433,6 +435,8 @@ private:
         addFactRow(table, tr("pipensx/detail/fact_players"), playersFact_);
         addFactRow(table, tr("pipensx/detail/fact_multiplayer"),
                    presentation_.multiplayer);
+        addFactRow(table, tr("pipensx/detail/fact_languages"),
+                   languagesFact());
         if (preferCatalogNativeText()) {
             addFactRow(table, tr("pipensx/detail/fact_interface_lang"),
                        entry_.interfaceLang);
@@ -444,6 +448,10 @@ private:
         addFactRow(table, tr("pipensx/detail/fact_size"),
                    entry_.size ? formatBytes(entry_.size)
                                : tr("pipensx/common/unknown"));
+        addFactRow(table, tr("pipensx/detail/fact_package"),
+                   packageFact());
+        addFactRow(table, tr("pipensx/detail/fact_version"),
+                   presentation_.version);
         addFactRow(table, tr("pipensx/detail/fact_title_id"), titleId_);
         addFactRow(table, tr("pipensx/detail/fact_dlc"), dlcFact());
         right->addView(table);
@@ -455,6 +463,30 @@ private:
             return {};
         return tr("pipensx/detail/dlc_installed",
                   installed_->dlcCountForBase(titleId_));
+    }
+
+    // Structured language fact ("EN, RU", voice appended when it differs).
+    // Empty for pre-v2 snapshots, so the row disappears.
+    std::string languagesFact() const {
+        const std::string interface =
+            joinLanguageCodes(presentation_.languagesInterface);
+        if (interface.empty())
+            return {};
+        const std::string voice =
+            joinLanguageCodes(presentation_.languagesVoice);
+        if (voice.empty() || voice == interface)
+            return interface;
+        return interface + " (" + tr("pipensx/detail/fact_voice_lang") +
+               ": " + voice + ")";
+    }
+
+    // Package format fact ("NSZ"). Empty for pre-v2 snapshots.
+    std::string packageFact() const {
+        std::string out;
+        for (char c : presentation_.packageType)
+            out += static_cast<char>(
+                (c >= 'a' && c <= 'z') ? c - ('a' - 'A') : c);
+        return out;
     }
 
     void addFactRow(brls::Box* table, const std::string& name,

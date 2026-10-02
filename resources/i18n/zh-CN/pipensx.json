@@ -164,6 +164,9 @@
     "fact_genre": "类型",
     "fact_players": "玩家",
     "fact_multiplayer": "多人",
+    "fact_package": "安装包",
+    "fact_version": "版本",
+    "fact_languages": "语言",
     "fact_interface_lang": "界面语言",
     "fact_voice_lang": "语音",
     "fact_performance": "性能",
@@ -617,7 +620,7 @@
     "show_home_note": "精选内容单独成页。默认关闭。",
     "auto_refresh": "每日自动刷新",
     "catalog_source": "目录来源",
-    "catalog_source_default": "默认（Langegen）",
+    "catalog_source_default": "默认（pipensx-catalog）",
     "catalog_source_detail": "指向目录 JSON 文件的 HTTPS 地址 — 留空以使用内置来源",
     "catalog_source_invalid": "请输入指向目录 JSON 文件的 https:// 地址。",
     "update_now": "立即更新",
@@ -736,7 +739,7 @@
     "disclaimer": "pipensx 是一个独立的开源项目，与任天堂无关联。"
   },
   "disclaimer": {
-    "catalog": "目录是 @Langegen 收集的 RuTracker 发行列表。pipensx 与 RuTracker 和 @Langegen 均无关联。\n\n目录即将更新，可能需要一些时间。",
+    "catalog": "目录是 pipensx-catalog 项目收集的 RuTracker 发行列表。pipensx 与 Nintendo、RuTracker 和目录提供方均无关联。\n\n目录即将更新，可能需要一些时间。",
     "catalog_direct": "通过移动网络、VPN 或类似网络时，直接从节点群下载可能无法工作。",
     "ok_wait": "确定 ({})"
   },

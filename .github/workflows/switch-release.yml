@@ -59,7 +59,7 @@ jobs:
 
       - name: Refresh bundled catalog snapshots
         # Every public build ships an offline first-launch snapshot of the
-        # Langegen torrent catalog and the pipensx-metadata index (see
+        # pipensx-catalog torrent catalog and the pipensx-metadata index (see
         # resources/catalog/*.json, CMakeLists.txt PIPENSX_CATALOG_SNAPSHOT /
         # PIPENSX_METADATA_INDEX). Pull the latest of each into the checkout
         # right before building so releases don't ship stale data committed
@@ -98,8 +98,27 @@ jobs:
             echo "Refreshed ${dest} ($(wc -c < "${dest}") bytes)"
           }
 
-          fetch "https://raw.githubusercontent.com/Langegen/switch-games/refs/heads/main/switch_games.json" \
+          fetch "https://github.com/i3sey/pipensx-catalog/releases/latest/download/catalog.json" \
             resources/catalog/switch_games.json
+          # The release channel is manifest-pinned: refuse a catalog whose
+          # SHA-256 disagrees with the manifest. Restore the previous
+          # snapshot on mismatch; never fail the build over it.
+          if command -v sha256sum >/dev/null 2>&1; then
+            manifest_tmp="$(mktemp)"
+            if curl -fsSL --max-time 60 -o "${manifest_tmp}" \
+                "https://github.com/i3sey/pipensx-catalog/releases/latest/download/manifest.json"; then
+              want="$(sed -n 's/.*"sha256"[[:space:]]*:[[:space:]]*"\([0-9a-fA-F][0-9a-fA-F]*\)".*/\1/p' \
+                "${manifest_tmp}" | head -n 1)"
+              got="$(sha256sum resources/catalog/switch_games.json | cut -d' ' -f1)"
+              if [ -n "${want}" ] && [ "${want}" = "${got}" ]; then
+                echo "catalog SHA-256 verified (${got})"
+              else
+                echo "catalog SHA-256 mismatch (want ${want}, got ${got}), restoring snapshot" >&2
+                git checkout -- resources/catalog/switch_games.json || true
+              fi
+            fi
+            rm -f "${manifest_tmp}"
+          fi
           fetch "https://github.com/i3sey/pipensx-metadata/releases/latest/download/game_metadata_index.json" \
             resources/catalog/game_metadata_index.json
 

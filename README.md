@@ -31,7 +31,8 @@ DOWNLOAD LATEST - [pipensx.nro](https://github.com/i3sey/pipensx/releases/latest
 - restart-safe piece verification and download recovery
 - tracker, DHT, and PEX peer discovery
 - live, cached catalog loaded from the allowlisted
-  [`Langegen/switch-games`](https://github.com/Langegen/switch-games) source
+  [`pipensx-catalog`](https://github.com/i3sey/pipensx-catalog) release
+  channel (manifest-verified)
 - offline magnet resolution when the catalog provides a verified info dictionary
 - download-only mode and sequential NSP/NSZ installation while pieces arrive
 - unified homebrew-port installs: NRO application folders and ZIP/7z payloads
@@ -104,10 +105,13 @@ safely stopping the active task before exit.
 
 ## Catalog and network behavior
 
-The application fetches `switch_games.json` over HTTPS from the built-in
-Langegen source by default. Settings let you point at any other HTTPS URL
+The application fetches `catalog.json` over HTTPS from the built-in
+pipensx-catalog release channel by default: a tiny manifest is checked first
+and the catalog itself downloads only when its SHA-256 changed. Settings let
+you point at any other HTTPS URL
 that serves the same JSON shape. Redirects are limited to the source file's
-directory; look-alike hosts are rejected before catalog bytes are parsed. A
+directory, except the release-asset hosts of the built-in channel;
+look-alike hosts are rejected before catalog bytes are parsed. A
 failed refresh leaves the last valid SD-card cache active.
 
 Catalog magnets are resolved from a pre-verified info dictionary when one is

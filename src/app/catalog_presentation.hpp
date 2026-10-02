@@ -27,6 +27,16 @@ struct CatalogPresentation {
     std::string genre;
     std::string performance;
     std::string multiplayer;
+    /* Structured pipensx-catalog v2 facts, resolved from the entry by
+       resolveCatalogPresentation. Empty/zero when the snapshot predates
+       them; the detail card falls back to the free-text rows above. */
+    std::string packageType;
+    std::string version;
+    std::vector<std::string> languagesInterface;
+    std::vector<std::string> languagesVoice;
+    uint32_t playersMin = 0;
+    uint32_t playersMax = 0;
+    bool playersOnline = false;
     std::vector<std::string> screenshots;
 };
 
@@ -41,7 +51,7 @@ enum class PlayerFilter {
 };
 
 // Which source wins for prose the catalogue and the metadata index both carry.
-// The metadata index is English; the Langegen catalogue is Russian, so a
+// The metadata index is English; the catalogue is Russian, so a
 // Russian UI reads better from the catalogue. Only `description` differs:
 // `releaseDate` is absent from every metadata snapshot we ship or fetch, so
 // entry.year already wins unconditionally.
@@ -232,7 +242,7 @@ bool catalogFoldedContains(const std::string& haystack,
 
 // Grid search predicate: title, metadata name, metadata categories and the
 // catalogue's own genre string. The genre clause matters because only about
-// half the Langegen entries join the metadata index; without it a genre
+// half the catalogue entries join the metadata index; without it a genre
 // "See all" shelf hand-off silently drops every unmatched release.
 bool catalogEntryMatchesSearch(const CatalogEntry& entry,
                                const GameMetadata* metadata,

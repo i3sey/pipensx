@@ -1,5 +1,6 @@
 #include "app_settings.hpp"
 
+#include "catalog_urls.hpp"
 #include "download_manager.hpp"  // clampMaxActiveDownloads
 
 #include <borealis/extern/nlohmann/json.hpp>
@@ -327,8 +328,7 @@ bool isValidCatalogSourceUrl(const std::string& value) {
 std::string effectiveCatalogSourceUrl(const std::string& custom) {
     if (!custom.empty())
         return custom;
-    return "https://raw.githubusercontent.com/Langegen/switch-games/"
-           "refs/heads/main/switch_games.json";
+    return kDefaultCatalogUrl;
 }
 
 bool isValidProxyUrl(const std::string& value) {

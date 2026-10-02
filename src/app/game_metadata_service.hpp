@@ -59,7 +59,7 @@ struct GameMetadata {
 struct MetadataManifest {
     uint32_t schemaVersion = 0;
     std::string generatedAt;
-    std::string langegenCommit;
+    std::string catalogCommit;
     std::string titledbCommit;
     std::string indexUrl;
     std::string indexSha256;

@@ -164,6 +164,9 @@
     "fact_genre": "Género",
     "fact_players": "Jugadores",
     "fact_multiplayer": "Multijugador",
+    "fact_package": "Paquete",
+    "fact_version": "Versión",
+    "fact_languages": "Idiomas",
     "fact_interface_lang": "Idioma de la interfaz",
     "fact_voice_lang": "Voz",
     "fact_performance": "Rendimiento",
@@ -617,7 +620,7 @@
     "show_home_note": "Destacados en su propia pestaña. Desactivada por defecto.",
     "auto_refresh": "Actualización automática diaria",
     "catalog_source": "Fuente del catálogo",
-    "catalog_source_default": "Predeterminada (Langegen)",
+    "catalog_source_default": "Predeterminada (pipensx-catalog)",
     "catalog_source_detail": "URL HTTPS a un JSON de catálogo — déjalo vacío para la fuente integrada",
     "catalog_source_invalid": "Introduce una URL https:// a un archivo JSON de catálogo.",
     "update_now": "Actualizar ahora",
@@ -736,7 +739,7 @@
     "disclaimer": "pipensx es un proyecto independiente de código abierto y no está afiliado a Nintendo."
   },
   "disclaimer": {
-    "catalog": "El catálogo es una lista de lanzamientos de RuTracker recopilada por @Langegen. pipensx no está afiliado a RuTracker ni a @Langegen.\n\nEl catálogo se actualizará ahora. Puede tardar un rato.",
+    "catalog": "El catálogo es una lista de lanzamientos de RuTracker recopilada por el proyecto pipensx-catalog. pipensx no está afiliado a Nintendo, RuTracker ni al proveedor del catálogo.\n\nEl catálogo se actualizará ahora. Puede tardar un rato.",
     "catalog_direct": "La descarga directa del enjambre puede no funcionar por datos móviles, una VPN u otras redes similares.",
     "ok_wait": "OK ({})"
   },

@@ -756,7 +756,12 @@ bool GameMetadataService::prepareSnapshot(const std::string& manifestJson,
     MetadataManifest manifest;
     manifest.schemaVersion = 1;
     manifest.generatedAt = stringValue(root, "generatedAt");
-    manifest.langegenCommit = stringValue(root, "langegenCommit");
+    // The metadata generator renamed its catalog input to the own catalog;
+    // accept the new key with fallback to the legacy one so manifests
+    // published before the rename keep verifying.
+    manifest.catalogCommit = stringValue(root, "catalogCommit");
+    if (manifest.catalogCommit.empty())
+        manifest.catalogCommit = stringValue(root, "langegenCommit");
     manifest.titledbCommit = stringValue(root, "titledbCommit");
     manifest.indexUrl = index.contains("url") && index["url"].is_string()
         ? index["url"].get<std::string>()
@@ -768,7 +773,7 @@ bool GameMetadataService::prepareSnapshot(const std::string& manifestJson,
                    manifest.indexSha256.begin(), [](unsigned char c) {
                        return static_cast<char>(std::tolower(c));
                    });
-    if (manifest.generatedAt.empty() || manifest.langegenCommit.empty() ||
+    if (manifest.generatedAt.empty() || manifest.catalogCommit.empty() ||
         manifest.titledbCommit.empty() ||
         !isTrustedSource(manifest.indexUrl) ||
         manifest.indexBytes == 0 || manifest.indexBytes > kMaxIndexBytes ||

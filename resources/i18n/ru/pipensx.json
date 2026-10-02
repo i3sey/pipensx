@@ -164,6 +164,9 @@
     "fact_genre": "Жанр",
     "fact_players": "Игроки",
     "fact_multiplayer": "Мультиплеер",
+    "fact_package": "Пакет",
+    "fact_version": "Версия",
+    "fact_languages": "Языки",
     "fact_interface_lang": "Язык интерфейса",
     "fact_voice_lang": "Озвучка",
     "fact_performance": "Работоспособность",
@@ -617,7 +620,7 @@
     "show_home_note": "Подборка на отдельной вкладке. По умолчанию скрыта.",
     "auto_refresh": "Обновлять раз в сутки",
     "catalog_source": "Источник каталога",
-    "catalog_source_default": "По умолчанию (Langegen)",
+    "catalog_source_default": "По умолчанию (pipensx-catalog)",
     "catalog_source_detail": "HTTPS-ссылка на JSON каталога — оставьте пустым для встроенного источника",
     "catalog_source_invalid": "Укажите https:// URL к JSON-файлу каталога.",
     "update_now": "Обновить сейчас",
@@ -736,7 +739,7 @@
     "disclaimer": "pipensx — независимый проект с открытым исходным кодом, не связанный с Nintendo."
   },
   "disclaimer": {
-    "catalog": "Каталог — список релизов с RuTracker, собранный @Langegen. pipensx не связан ни с RuTracker, ни с @Langegen.\n\nСейчас каталог обновится. Это может занять время.",
+    "catalog": "Каталог — список релизов с RuTracker, собранный проектом pipensx-catalog. pipensx не связан ни с Nintendo, ни с RuTracker, ни с поставщиком каталога.\n\nСейчас каталог обновится. Это может занять время.",
     "catalog_direct": "Прямая загрузка с торрента может не работать через мобильный интернет, VPN и похожие сети.",
     "ok_wait": "OK ({})"
   },

@@ -31,9 +31,9 @@ struct AppSettingsData {
     // change only takes effect on the next launch.
     std::string language = "auto";
     CatalogFilter catalogFilter = CatalogFilter::Games;
-    // HTTPS URL to a switch_games.json-compatible catalog. Empty = built-in
-    // Langegen source. Validated at parse time; a hand-edited settings.json
-    // cannot smuggle a non-HTTPS or credential-bearing URL.
+    // HTTPS URL to a catalog JSON. Empty = built-in pipensx-catalog release
+    // channel (manifest-verified). Validated at parse time; a hand-edited
+    // settings.json cannot smuggle a non-HTTPS or credential-bearing URL.
     std::string catalogSourceUrl;
     bool refreshCatalogOnLaunch = false;
     uint64_t lastCatalogRefreshMs = 0;
@@ -59,7 +59,7 @@ struct AppSettingsData {
     // Home tab is experimental; off until the user turns it on. Additive
     // key — older files keep this default.
     bool showHomeTab = false;
-    // First-run disclaimer: catalog comes from a third party. Shown once.
+    // First-run disclaimer: catalog lists third-party releases. Shown once.
     bool catalogDisclaimerAcknowledged = false;
     // Web companion LAN server (plain HTTP, port 8080). The PIN gates
     // mutating endpoints (fail-closed when empty). A missing or invalid PIN
@@ -127,11 +127,12 @@ std::string generateWebPin();
 // every request failing with a curl error nobody can read.
 bool isValidProxyUrl(const std::string& value);
 
-// Empty (built-in Langegen) or https:// with a non-empty host and path, no
-// userinfo, max 512 chars — same rules enforced at parse and in the UI.
+// Empty (built-in pipensx-catalog channel) or https:// with a non-empty
+// host and path, no userinfo, max 512 chars — same rules enforced at parse
+// and in the UI.
 bool isValidCatalogSourceUrl(const std::string& value);
 
-// User override or the built-in Langegen switch_games.json URL.
+// User override or the built-in pipensx-catalog release URL.
 std::string effectiveCatalogSourceUrl(const std::string& custom);
 
 // Points libcurl at the proxy for every handle the app creates, including
