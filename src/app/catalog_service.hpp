@@ -59,6 +59,9 @@ struct CatalogEntry {
     uint32_t playersMax = 0;
     bool playersOnline = false;
     std::string performanceNote;
+    /* Source topic URL of the release (v2 "url"). Shown on the detail card;
+       empty for snapshots that predate it. */
+    std::string topicUrl;
     /* Pre-resolved bencoded info dictionary (RF_ACCESS_PLAN П2.1), decoded
        from the catalog's base64 "info_dict" and SHA-1-verified against the
        magnet hash at parse time. Empty when the catalog carries none. */

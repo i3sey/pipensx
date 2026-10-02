@@ -453,6 +453,8 @@ private:
         addFactRow(table, tr("pipensx/detail/fact_version"),
                    presentation_.version);
         addFactRow(table, tr("pipensx/detail/fact_title_id"), titleId_);
+        addFactRow(table, tr("pipensx/detail/fact_topic"),
+                   presentation_.topicUrl);
         addFactRow(table, tr("pipensx/detail/fact_dlc"), dlcFact());
         right->addView(table);
     }

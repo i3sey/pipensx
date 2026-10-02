@@ -207,6 +207,7 @@ CatalogPresentation resolveCatalogPresentation(
     result.playersMin = entry.playersMin;
     result.playersMax = entry.playersMax;
     result.playersOnline = entry.playersOnline;
+    result.topicUrl = entry.topicUrl;
     result.screenshots = mergeScreenshotUrls(metadata, entry, 6);
     return result;
 }
@@ -228,26 +229,38 @@ bool catalogEntryHasMatchedTitle(const GameMetadata* metadata) {
 }
 
 bool catalogEntryMatchesPlayerFilter(const GameMetadata* metadata,
+                                     const CatalogEntry& entry,
                                      PlayerFilter filter) {
     if (filter == PlayerFilter::Any)
         return true;
-    if (!metadata)
-        return false;
-    switch (filter) {
-    case PlayerFilter::Splitscreen:
-        return (metadata->modes & kPlayerModeSplit) != 0;
-    case PlayerFilter::LocalCoop:
-        if (metadata->hasModes)
-            return (metadata->modes & kPlayerModeCoop) != 0;
-        return metadata->players >= 2;
-    case PlayerFilter::Lan:
-        return (metadata->modes & kPlayerModeLan) != 0;
-    case PlayerFilter::Online:
-        return (metadata->modes & kPlayerModeOnline) != 0;
-    case PlayerFilter::Any:
-        break;
+    if (metadata) {
+        switch (filter) {
+        case PlayerFilter::Splitscreen:
+            return (metadata->modes & kPlayerModeSplit) != 0;
+        case PlayerFilter::LocalCoop:
+            if (metadata->hasModes)
+                return (metadata->modes & kPlayerModeCoop) != 0;
+            return metadata->players >= 2;
+        case PlayerFilter::Lan:
+            return (metadata->modes & kPlayerModeLan) != 0;
+        case PlayerFilter::Online:
+            return (metadata->modes & kPlayerModeOnline) != 0;
+        case PlayerFilter::Any:
+            break;
+        }
+        return true;
     }
-    return true;
+    // No metadata match: fall back to the catalogue's own structured
+    // players. Only co-op-by-count and online exist there; split-screen
+    // and LAN have no catalogue signal.
+    switch (filter) {
+    case PlayerFilter::LocalCoop:
+        return entry.playersMax >= 2;
+    case PlayerFilter::Online:
+        return entry.playersOnline;
+    default:
+        return false;
+    }
 }
 
 std::string catalogFoldForSearch(const std::string& text) {
@@ -372,7 +385,7 @@ bool buildCatalogBrowse(const CatalogBrowseRequest& request,
             continue;
         if (!catalogEntryInSection(entry, meta, request.section))
             continue;
-        if (!catalogEntryMatchesPlayerFilter(meta, request.playerFilter))
+        if (!catalogEntryMatchesPlayerFilter(meta, entry, request.playerFilter))
             continue;
         if (!request.genreFilters.empty()) {
             bool matchedGenre = false;

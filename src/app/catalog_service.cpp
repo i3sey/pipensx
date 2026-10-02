@@ -588,6 +588,9 @@ bool CatalogService::parseJson(const std::string& json,
                 entry.playersOnline = players["online"].get<bool>();
         }
         entry.performanceNote = readString(item, "performance_note", 256);
+        entry.topicUrl = readString(item, "url", 2048);
+        if (entry.topicUrl.rfind("https://", 0) != 0)
+            entry.topicUrl.clear();
         entry.forumId = static_cast<uint32_t>(readUnsigned(item, "forum_id"));
         entry.trackerId =
             static_cast<uint32_t>(readUnsigned(item, "tracker_id"));

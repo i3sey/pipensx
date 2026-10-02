@@ -37,6 +37,7 @@ struct CatalogPresentation {
     uint32_t playersMin = 0;
     uint32_t playersMax = 0;
     bool playersOnline = false;
+    std::string topicUrl;
     std::vector<std::string> screenshots;
 };
 
@@ -225,6 +226,7 @@ bool catalogEntryHasMatchedTitle(const GameMetadata* metadata);
 // "more than one person can play on this console", which is what the entry is
 // for. A game that does have a mode record is judged by it alone.
 bool catalogEntryMatchesPlayerFilter(const GameMetadata* metadata,
+                                     const CatalogEntry& entry,
                                      PlayerFilter filter);
 
 // UTF-8 aware folding for search: ASCII A-Z → a-z plus Cyrillic capitals

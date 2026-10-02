@@ -649,34 +649,81 @@ void testPreferVersionMatchPicksUpdateBundle() {
     rmdir(root.c_str());
 }
 
-void testPlayerFilterPredicate() {    GameMetadata igdb;
+void testPlayerFilterPredicate() {
+    GameMetadata igdb;
     igdb.players = 4;
     igdb.hasModes = true;
     igdb.modes = pipensx::kPlayerModeSplit | pipensx::kPlayerModeLan;
+    const CatalogEntry noEntry;
 
-    assert(catalogEntryMatchesPlayerFilter(&igdb, PlayerFilter::Splitscreen));
-    assert(catalogEntryMatchesPlayerFilter(&igdb, PlayerFilter::Lan));
+    assert(catalogEntryMatchesPlayerFilter(&igdb, noEntry,
+                                           PlayerFilter::Splitscreen));
+    assert(catalogEntryMatchesPlayerFilter(&igdb, noEntry, PlayerFilter::Lan));
     // A mode record is authoritative: four local players do not make it co-op.
-    assert(!catalogEntryMatchesPlayerFilter(&igdb, PlayerFilter::LocalCoop));
-    assert(!catalogEntryMatchesPlayerFilter(&igdb, PlayerFilter::Online));
+    assert(!catalogEntryMatchesPlayerFilter(&igdb, noEntry,
+                                             PlayerFilter::LocalCoop));
+    assert(!catalogEntryMatchesPlayerFilter(&igdb, noEntry,
+                                            PlayerFilter::Online));
 
     // No mode record: the titledb player count answers Local co-op alone.
     GameMetadata counted;
     counted.players = 4;
-    assert(catalogEntryMatchesPlayerFilter(&counted, PlayerFilter::LocalCoop));
-    assert(!catalogEntryMatchesPlayerFilter(&counted, PlayerFilter::Splitscreen));
+    assert(catalogEntryMatchesPlayerFilter(&counted, noEntry,
+                                           PlayerFilter::LocalCoop));
+    assert(!catalogEntryMatchesPlayerFilter(&counted, noEntry,
+                                            PlayerFilter::Splitscreen));
 
     GameMetadata solo;
     solo.players = 1;
-    assert(!catalogEntryMatchesPlayerFilter(&solo, PlayerFilter::LocalCoop));
+    assert(!catalogEntryMatchesPlayerFilter(&solo, noEntry,
+                                            PlayerFilter::LocalCoop));
 
     GameMetadata unknown;
-    assert(!catalogEntryMatchesPlayerFilter(&unknown, PlayerFilter::LocalCoop));
+    assert(!catalogEntryMatchesPlayerFilter(&unknown, noEntry,
+                                            PlayerFilter::LocalCoop));
 
     // An unmatched catalogue release is in no mode, but still in "Any".
-    assert(!catalogEntryMatchesPlayerFilter(nullptr, PlayerFilter::LocalCoop));
-    assert(catalogEntryMatchesPlayerFilter(nullptr, PlayerFilter::Any));
-    assert(catalogEntryMatchesPlayerFilter(&solo, PlayerFilter::Any));
+    assert(!catalogEntryMatchesPlayerFilter(nullptr, noEntry,
+                                            PlayerFilter::LocalCoop));
+    assert(catalogEntryMatchesPlayerFilter(nullptr, noEntry, PlayerFilter::Any));
+    assert(catalogEntryMatchesPlayerFilter(&solo, noEntry, PlayerFilter::Any));
+}
+
+// Without a metadata match the catalogue's own structured players answer
+// the co-op/online filters; split-screen and LAN have no catalogue signal.
+void testPlayerFilterCatalogFallback() {
+    CatalogEntry coop;
+    coop.playersMin = 1;
+    coop.playersMax = 4;
+    assert(catalogEntryMatchesPlayerFilter(nullptr, coop,
+                                           PlayerFilter::LocalCoop));
+    assert(catalogEntryMatchesPlayerFilter(nullptr, coop, PlayerFilter::Any));
+    assert(!catalogEntryMatchesPlayerFilter(nullptr, coop,
+                                            PlayerFilter::Splitscreen));
+    assert(!catalogEntryMatchesPlayerFilter(nullptr, coop, PlayerFilter::Lan));
+    assert(!catalogEntryMatchesPlayerFilter(nullptr, coop,
+                                            PlayerFilter::Online));
+
+    CatalogEntry online;
+    online.playersMin = 1;
+    online.playersMax = 2;
+    online.playersOnline = true;
+    assert(catalogEntryMatchesPlayerFilter(nullptr, online,
+                                           PlayerFilter::LocalCoop));
+    assert(catalogEntryMatchesPlayerFilter(nullptr, online,
+                                           PlayerFilter::Online));
+
+    CatalogEntry solo;
+    solo.playersMin = 1;
+    solo.playersMax = 1;
+    assert(!catalogEntryMatchesPlayerFilter(nullptr, solo,
+                                            PlayerFilter::LocalCoop));
+
+    CatalogEntry bare;
+    assert(!catalogEntryMatchesPlayerFilter(nullptr, bare,
+                                            PlayerFilter::LocalCoop));
+    assert(!catalogEntryMatchesPlayerFilter(nullptr, bare,
+                                            PlayerFilter::Online));
 }
 
 void testMetadataSnapshotAcceptsVerifiedIndex() {
@@ -2355,7 +2402,8 @@ void testCatalogV2FieldsParsing() {
         "\"note\":\"\"},"
         "\"players\":{\"min\":1,\"max\":4,\"online\":true},"
         "\"performance_note\":\"60 fps\","
-        "\"published_date\":1759300000"
+        "\"published_date\":1759300000,"
+        "\"url\":\"https://rutracker.org/forum/viewtopic.php?t=6892780\""
         "}]";
     std::vector<CatalogEntry> entries;
     std::string error;
@@ -2372,6 +2420,8 @@ void testCatalogV2FieldsParsing() {
     assert(e.playersOnline);
     assert(e.performanceNote == "60 fps");
     assert(e.publishedAt == 1759300000);
+    assert(e.topicUrl ==
+           "https://rutracker.org/forum/viewtopic.php?t=6892780");
 }
 
 // Older dumps may encode unix times as decimal strings; they still parse.
@@ -2405,6 +2455,7 @@ void testCatalogV2PresentationResolution() {
     entry.playersMin = 1;
     entry.playersMax = 4;
     entry.playersOnline = true;
+    entry.topicUrl = "https://rutracker.org/forum/viewtopic.php?t=1";
     entry.performance = "legacy note";
     entry.performanceNote = "60 fps";
     CatalogPresentation resolved =
@@ -2417,6 +2468,8 @@ void testCatalogV2PresentationResolution() {
     assert(resolved.playersMin == 1);
     assert(resolved.playersMax == 4);
     assert(resolved.playersOnline);
+    assert(resolved.topicUrl ==
+           "https://rutracker.org/forum/viewtopic.php?t=1");
     assert(resolved.performance == "60 fps");
 
     CatalogEntry legacy;
@@ -2887,6 +2940,7 @@ int main() {
     testFindByTitleIdComboDump();
     testPreferVersionMatchPicksUpdateBundle();
     testPlayerFilterPredicate();
+    testPlayerFilterCatalogFallback();
     testMetadataSnapshotAcceptsVerifiedIndex();
     testMetadataSnapshotRejectsTamperedIndex();
     testMetadataLoadPrefersVerifiedRuntimeCache();
