@@ -76,6 +76,10 @@ std::vector<uint8_t> selectUpdateFiles(const TorrentPreview& preview,
 // and extra patches stay Skip. When the title is already installed at or above
 // that patch, only missing DLC is selected. If nothing can be identified, the
 // caller should fall back to the manual chooser.
+// A missing catalog title ID is inferred only for a single application family.
+// A single unversioned patch is eligible on a fresh installation; an existing
+// title requires evidence of a newer version. Unknown skipped packages require
+// smartInstallNeedsChooser before automatically queuing this mask.
 std::vector<uint8_t> selectSmartInstallFiles(
     const TorrentPreview& preview,
     bool titleInstalled,
@@ -83,6 +87,11 @@ std::vector<uint8_t> selectSmartInstallFiles(
     const std::string& latestVersion,
     const std::string& titleId = {},
     const std::vector<std::string>& installedDlcIds = {});
+
+// Unknown skipped package IDs need a chooser instead of a partial one-tap
+// bundle installation. Identified duplicates/other titles remain skipped.
+bool smartInstallNeedsChooser(const TorrentPreview& preview,
+                              const std::vector<uint8_t>& actions);
 
 // 1 for files marked Install that would overwrite another Install package:
 // two patches of the same title, two copies of the same DLC id, or two base

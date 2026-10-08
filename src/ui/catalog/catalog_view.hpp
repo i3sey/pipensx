@@ -493,7 +493,8 @@ private:
         const GameMetadata* meta =
             metadata_ ? metadata_->findByInfoHash(entry->infoHash) : nullptr;
         CatalogPresentation presentation =
-            resolveCatalogPresentation(*entry, meta, catalogTextPreference());
+            resolveCatalogPresentation(*entry, meta, catalogTextPreference(),
+                                       brls::Application::getLocale());
 
         // The service reports the cap through `error` too, but the cap is the
         // one case worth phrasing for the user rather than surfacing raw.

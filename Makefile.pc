@@ -21,7 +21,7 @@ CXXFLAGS = -O2 -Wall -Wextra -std=c++17 -D_GLIBCXX_ASSERTIONS \
             -Ivendor/libutp \
             $(shell pkg-config --cflags libcurl)
 LDFLAGS = $(shell pkg-config --libs libcurl) -lm -lcrypto
-INSTALL_LDFLAGS = -lzstd -lcrypto
+INSTALL_LDFLAGS = -lzstd -lcrypto -lz
 
 # Opt-in: make -f Makefile.pc test SANITIZE=1
 ifeq ($(SANITIZE),1)
@@ -30,7 +30,7 @@ CXXFLAGS += -fsanitize=address,undefined -fno-omit-frame-pointer
 LDFLAGS  += -fsanitize=address,undefined
 endif
 
-# Vendored libutp (μTP/BEP-29): C++ with an extern "C" API. Built with its own
+# Vendored libutp (Î¼TP/BEP-29): C++ with an extern "C" API. Built with its own
 # flags (upstream requires -fpermissive -fno-exceptions -fno-rtti; POSIX picks
 # the BSD-sockets paths). Linked into every target that pulls peer.o/torrent.o;
 # those link with gcc, so they add -lstdc++ explicitly.
@@ -79,7 +79,7 @@ MANAGER_TEST_OBJS = \
 		$(BUILD_DIR)/src/app/stream_ram_budget.o $(BUILD_DIR)/src/app/stream_budget_arbiter.o \
 		$(BUILD_DIR)/src/app/request_gate.o \
 		$(BUILD_DIR)/src/app/install_pacer.o \
-		$(BUILD_DIR)/src/app/debrid_transfer.o $(BUILD_DIR)/src/app/torbox_client.o \
+		$(BUILD_DIR)/src/app/debrid_transfer.o $(BUILD_DIR)/src/app/remote_archive.o $(BUILD_DIR)/src/app/torbox_client.o \
 		$(BUILD_DIR)/src/app/torbox_provider.o $(BUILD_DIR)/src/app/torrserver_provider.o \
 		$(BUILD_DIR)/src/app/realdebrid_client.o $(BUILD_DIR)/src/app/realdebrid_provider.o \
 		$(BUILD_DIR)/src/app/alldebrid_client.o $(BUILD_DIR)/src/app/alldebrid_provider.o \
@@ -147,7 +147,11 @@ $(BUILD_DIR)/src/app/alldebrid_provider.o: src/app/alldebrid_provider.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
-$(BUILD_DIR)/src/app/debrid_transfer.o: src/app/debrid_transfer.cpp
+$(BUILD_DIR)/src/app/debrid_transfer.o: src/app/debrid_transfer.cpp src/app/remote_archive.hpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+$(BUILD_DIR)/src/app/remote_archive.o: src/app/remote_archive.cpp src/app/remote_archive.hpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
@@ -259,7 +263,15 @@ $(BUILD_DIR)/src/app/game_metadata_service.o: src/app/game_metadata_service.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
 
-$(BUILD_DIR)/src/app/catalog_presentation.o: src/app/catalog_presentation.cpp
+$(BUILD_DIR)/src/app/catalog_descriptions.o: src/app/catalog_descriptions.cpp src/app/catalog_descriptions.hpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
+
+$(BUILD_DIR)/src/app/install_benchmark.o: src/app/install_benchmark.cpp src/app/install_benchmark.hpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
+
+$(BUILD_DIR)/src/app/catalog_presentation.o: src/app/catalog_presentation.cpp src/app/catalog_presentation.hpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
 
@@ -289,6 +301,8 @@ $(BUILD_DIR)/tests/test_http_server: tests/test_http_server.cpp $(BUILD_DIR)/src
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ -pthread
 
 $(BUILD_DIR)/tests/test_web_server: tests/test_web_server.cpp \
+		$(BUILD_DIR)/src/app/install_benchmark.o \
+		$(BUILD_DIR)/src/app/catalog_descriptions.o $(BUILD_DIR)/src/app/snapshot_zstd.o \
 		$(BUILD_DIR)/src/app/web_server.o $(BUILD_DIR)/src/app/companion_settings.o \
 		$(BUILD_DIR)/src/app/add_release.o $(BUILD_DIR)/src/app/web_add_queue.o \
 		$(BUILD_DIR)/src/app/http_server.o \
@@ -300,7 +314,7 @@ $(BUILD_DIR)/tests/test_web_server: tests/test_web_server.cpp \
 		$(BUILD_DIR)/src/app/stream_ram_budget.o $(BUILD_DIR)/src/app/stream_budget_arbiter.o \
 		$(BUILD_DIR)/src/app/request_gate.o \
 		$(BUILD_DIR)/src/app/install_pacer.o \
-		$(BUILD_DIR)/src/app/debrid_transfer.o $(BUILD_DIR)/src/app/torbox_client.o \
+		$(BUILD_DIR)/src/app/debrid_transfer.o $(BUILD_DIR)/src/app/remote_archive.o $(BUILD_DIR)/src/app/torbox_client.o \
 		$(BUILD_DIR)/src/app/torbox_provider.o $(BUILD_DIR)/src/app/torrserver_provider.o \
 		$(BUILD_DIR)/src/app/realdebrid_client.o $(BUILD_DIR)/src/app/realdebrid_provider.o \
 		$(BUILD_DIR)/src/app/alldebrid_client.o $(BUILD_DIR)/src/app/alldebrid_provider.o \
@@ -323,6 +337,7 @@ $(BUILD_DIR)/tests/test_add_release: tests/test_add_release.cpp \
 		$(INSTALL_LDFLAGS) -lz -pthread
 
 $(BUILD_DIR)/tests/test_catalog: tests/test_catalog.cpp \
+		$(BUILD_DIR)/src/app/catalog_descriptions.o \
 		$(BUILD_DIR)/src/app/catalog_service.o $(BUILD_DIR)/src/app/catalog_refresh.o \
 		src/app/app_settings.cpp \
 		$(BUILD_DIR)/src/app/catalog_presentation.o \
@@ -337,6 +352,12 @@ $(BUILD_DIR)/tests/test_catalog: tests/test_catalog.cpp \
 		$(BUILD_DIR)/src/core/util.o
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -lzstd
+
+$(BUILD_DIR)/tests/test_catalog_descriptions: tests/test_catalog_descriptions.cpp \
+		$(BUILD_DIR)/src/app/catalog_descriptions.o $(BUILD_DIR)/src/app/snapshot_zstd.o \
+		$(BUILD_DIR)/src/core/sha1.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ -lzstd -pthread
 
 # The sysmodule probe's telemetry (sample ring, event log, ini parser) is plain
 # C with no libnx, so the PC build covers it. The rest of src/probe is Switch
@@ -375,6 +396,10 @@ $(BUILD_DIR)/tests/test_app_settings: tests/test_app_settings.cpp src/app/app_se
 		$(BUILD_DIR)/src/app/companion_settings.o $(BUILD_DIR)/src/core/util.o
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^
+
+$(BUILD_DIR)/tests/test_ui_thread_call: tests/test_ui_thread_call.cpp src/app/ui_thread_call.hpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $<
 
 $(BUILD_DIR)/tests/test_update_service: tests/test_update_service.cpp src/app/update_service.cpp \
 		$(BUILD_DIR)/src/app/update_transaction.o src/core/sha256.c
@@ -445,7 +470,7 @@ $(BUILD_DIR)/tests/test_batch_install: tests/test_batch_install.cpp \
 		$(BUILD_DIR)/src/app/download_manager.o $(BUILD_DIR)/src/app/task_files.o \
 		$(BUILD_DIR)/src/app/web_seed_source.o \
 		$(BUILD_DIR)/src/app/stream_ram_budget.o $(BUILD_DIR)/src/app/stream_budget_arbiter.o \
-		$(BUILD_DIR)/src/app/request_gate.o $(BUILD_DIR)/src/app/debrid_transfer.o \
+		$(BUILD_DIR)/src/app/request_gate.o $(BUILD_DIR)/src/app/debrid_transfer.o $(BUILD_DIR)/src/app/remote_archive.o \
 		$(BUILD_DIR)/src/app/install_pacer.o \
 		$(BUILD_DIR)/src/app/torrent_metainfo_fetch.o \
 		$(BUILD_DIR)/src/app/magnet_resolver.o \
@@ -602,12 +627,12 @@ $(BUILD_DIR)/tests/test_torbox_pairing: tests/test_torbox_pairing.cpp \
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -pthread
 
-$(BUILD_DIR)/tests/test_ssl_cacert: tests/test_ssl_cacert.cpp
+$(BUILD_DIR)/tests/test_ssl_cacert: tests/test_ssl_cacert.cpp src/app/curl_https.hpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $< $(LDFLAGS)
 
 $(BUILD_DIR)/tests/test_debrid_transfer: tests/test_debrid_transfer.cpp \
-		$(BUILD_DIR)/src/app/debrid_transfer.o $(BUILD_DIR)/src/app/torbox_client.o \
+		$(BUILD_DIR)/src/app/debrid_transfer.o $(BUILD_DIR)/src/app/remote_archive.o $(BUILD_DIR)/src/app/torbox_client.o \
 		$(BUILD_DIR)/src/app/install_pacer.o \
 		$(BUILD_DIR)/src/app/stream_ram_budget.o \
 		$(BUILD_DIR)/src/app/torbox_provider.o \
@@ -635,7 +660,7 @@ $(BUILD_DIR)/tests/test_switch_deploy: tests/test_switch_deploy.cpp \
 		$(BUILD_DIR)/src/app/web_seed_source.o \
 		$(BUILD_DIR)/src/app/stream_ram_budget.o $(BUILD_DIR)/src/app/stream_budget_arbiter.o \
 		$(BUILD_DIR)/src/app/request_gate.o $(BUILD_DIR)/src/app/install_pacer.o \
-		$(BUILD_DIR)/src/app/debrid_transfer.o $(BUILD_DIR)/src/app/torbox_client.o \
+		$(BUILD_DIR)/src/app/debrid_transfer.o $(BUILD_DIR)/src/app/remote_archive.o $(BUILD_DIR)/src/app/torbox_client.o \
 		$(BUILD_DIR)/src/app/torbox_provider.o $(BUILD_DIR)/src/app/torrserver_provider.o \
 		$(BUILD_DIR)/src/app/realdebrid_client.o $(BUILD_DIR)/src/app/realdebrid_provider.o \
 		$(BUILD_DIR)/src/app/alldebrid_client.o $(BUILD_DIR)/src/app/alldebrid_provider.o \
@@ -702,7 +727,7 @@ $(BUILD_DIR)/tools/webserver: tools/web_server_main.cpp \
 		$(BUILD_DIR)/src/app/stream_ram_budget.o $(BUILD_DIR)/src/app/stream_budget_arbiter.o \
 		$(BUILD_DIR)/src/app/request_gate.o \
 		$(BUILD_DIR)/src/app/install_pacer.o \
-		$(BUILD_DIR)/src/app/debrid_transfer.o $(BUILD_DIR)/src/app/torbox_client.o \
+		$(BUILD_DIR)/src/app/debrid_transfer.o $(BUILD_DIR)/src/app/remote_archive.o $(BUILD_DIR)/src/app/torbox_client.o \
 		$(BUILD_DIR)/src/app/torbox_provider.o $(BUILD_DIR)/src/app/torrserver_provider.o \
 		$(BUILD_DIR)/src/app/realdebrid_client.o $(BUILD_DIR)/src/app/realdebrid_provider.o \
 		$(BUILD_DIR)/src/app/alldebrid_client.o $(BUILD_DIR)/src/app/alldebrid_provider.o \
@@ -743,3 +768,7 @@ clean:
 	find src tests vendor/libutp vendor/dht -name '*.o' -delete 2>/dev/null || true
 
 .PHONY: all test clean fuzz-bencode fuzz-metainfo fuzz-smoke
+
+$(BUILD_DIR)/tests/test_remote_archive: tests/test_remote_archive.cpp tests/zip_fixture.hpp $(BUILD_DIR)/src/app/remote_archive.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $(filter-out tests/zip_fixture.hpp,$^) -lz

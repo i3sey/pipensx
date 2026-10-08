@@ -65,6 +65,67 @@ void write(const std::string& path, const std::string& value) {
     output << value;
 }
 
+std::string validNroFixture() {
+    std::string bytes(0x90, '\0');
+    std::memcpy(bytes.data() + 0x10, "NRO0", 4);
+    // NroHeader::size at file offset 0x18, little-endian. Assets may follow.
+    bytes[0x18] = static_cast<char>(0x80);
+    return bytes;
+}
+
+void testUploadedNroStagesWithoutGithub() {
+    unlink(Target);
+    unlink("/tmp/pipensx-update-test.nro.update");
+    unlink("/tmp/pipensx-update-test.nro.update.sha256");
+    unlink("/tmp/pipensx-updater.nro");
+    write(Target, "old");
+    write(HelperSource, "minimal updater helper");
+
+    int metadataCalls = 0;
+    int assetCalls = 0;
+    pipensx::UpdateService service(
+        Target,
+        [&metadataCalls](const std::string&, size_t, std::string&,
+                         std::string&) {
+            ++metadataCalls;
+            return false;
+        },
+        [&assetCalls](const std::string&, const std::string&, size_t,
+                      std::string&) {
+            ++assetCalls;
+            return false;
+        },
+        HelperSource);
+
+    std::string error;
+    const std::string nro = validNroFixture();
+    assert(service.stageUploadedNro(nro, error));
+    assert(metadataCalls == 0);
+    assert(assetCalls == 0);
+    assert(service.stagedReady());
+
+    std::ifstream staged("/tmp/pipensx-update-test.nro.update",
+                         std::ios::binary);
+    std::string bytes((std::istreambuf_iterator<char>(staged)), {});
+    assert(bytes == nro);
+    staged.close();
+
+    service.discardStaged();
+    std::string invalid(0x90, '\0');
+    assert(!service.stageUploadedNro(invalid, error));
+    assert(error.find("NRO0") != std::string::npos);
+    assert(!service.stagedReady());
+
+    std::string badSize = validNroFixture();
+    badSize[0x18] = static_cast<char>(0xff);
+    badSize[0x19] = static_cast<char>(0xff);
+    assert(!service.stageUploadedNro(badSize, error));
+    assert(error.find("declared size") != std::string::npos);
+
+    unlink(Target);
+    unlink(HelperSource);
+}
+
 void testVersionsAndReleaseValidation() {
     assert(pipensx::UpdateService::isNewerVersion("v1.2.3", "1.2.2"));
     assert(!pipensx::UpdateService::isNewerVersion("1.2.3", "1.2.3"));
@@ -372,6 +433,7 @@ void testHelperPublishFailurePreservesPreviousHelper() {
 
 int main() {
     testVersionsAndReleaseValidation();
+    testUploadedNroStagesWithoutGithub();
     testStagedReadyRecoversInterruptedRestart();
     testInstallVerifiesBeforeStaging();
     testTransientNetworkFailuresAreRetried();

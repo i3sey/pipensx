@@ -29,6 +29,8 @@ compile_commands.json
 *.log
 
 # Local scratch / working directories
+.codex/
+.codex-remote-attachments/
 .tmp/
 /rutracker-*.xml.xz
 /resources/catalog/

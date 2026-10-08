@@ -88,7 +88,7 @@ target_include_directories(pipensx_lzma PUBLIC
 )
 target_compile_definitions(pipensx_lzma PRIVATE Z7_EXTRACT_ONLY Z7_PPMD_SUPPORT)
 
-# Vendored libutp (BitTorrent reference μTP/BEP-29). C++ with an extern "C"
+# Vendored libutp (BitTorrent reference Î¼TP/BEP-29). C++ with an extern "C"
 # API (utp.h), linked into the C core for the TCP→μTP dial fallback. Same
 # vendoring posture as pipensx_zstd and vendor/dht. POSIX selects the BSD
 # sockets + inet_ntop paths (correct for both Linux and libnx/aarch64);
@@ -141,6 +141,8 @@ set(APP_SERVICE_SOURCES
     src/app/catalog_refresh.cpp
     src/app/catalog_service.cpp
     src/app/catalog_presentation.cpp
+    src/app/catalog_descriptions.cpp
+    src/app/install_benchmark.cpp
     src/app/snapshot_zstd.cpp
     src/app/download_manager.cpp
     src/app/task_files.cpp
@@ -175,6 +177,7 @@ set(APP_SERVICE_SOURCES
     src/app/alldebrid_client.cpp
     src/app/alldebrid_provider.cpp
     src/app/debrid_transfer.cpp
+    src/app/remote_archive.cpp
     src/install/install_journal.cpp
     src/install/system_cleanup.cpp
     src/install/package_stream.cpp
@@ -268,7 +271,7 @@ set(APP_SOURCES
     vendor/qrcodegen/qrcodegen.cpp
     vendor/libnx-ext/libnx-ipcext/source/es.c
     vendor/libnx-ext/libnx-ipcext/source/ns-ext.c
-    ${BOREALIS_LIBRARY}/lib/platforms/switch/switch_wrapper.c
+    src/platform/switch_runtime.c
 )
 
 program_target(pipensx "${APP_SOURCES}")
@@ -484,6 +487,18 @@ add_custom_target(sync_catalog_snapshot ALL
     DEPENDS "${ROMFS_DIR}/catalog/switch_games.json.zst"
 )
 list(APPEND PIPENSX_NRO_DEPENDS sync_catalog_snapshot)
+file(GLOB PIPENSX_DESCRIPTION_PACKS CONFIGURE_DEPENDS
+    "${CMAKE_SOURCE_DIR}/resources/catalog/descriptions/*.pdx")
+if (PIPENSX_DESCRIPTION_PACKS)
+    add_custom_target(sync_catalog_descriptions ALL
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${ROMFS_DIR}/catalog/descriptions"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_SOURCE_DIR}/resources/catalog/descriptions"
+            "${ROMFS_DIR}/catalog/descriptions"
+        DEPENDS ${PIPENSX_DESCRIPTION_PACKS}
+        VERBATIM)
+    list(APPEND PIPENSX_NRO_DEPENDS sync_catalog_descriptions)
+endif ()
 if (PIPENSX_METADATA_INDEX)
     get_filename_component(PIPENSX_METADATA_INDEX_ABS
         "${PIPENSX_METADATA_INDEX}" ABSOLUTE)

@@ -495,10 +495,13 @@ private:
             text += "   " + tr("pipensx/downloads/summary_paused", s.paused);
         if (s.errors)
             text += "   " + tr("pipensx/downloads/summary_errors", s.errors);
-        const uint64_t speed = s.downloadSpeedBps + s.installSpeedBps;
+        const uint64_t speed = s.downloadSpeedBps;
         if (speed)
             text += "\n" +
                     tr("pipensx/downloads/summary_speed", formatSpeed(speed));
+        if (s.installSpeedBps)
+            text += "   " + tr("pipensx/downloads/speed_install",
+                                formatSpeed(s.installSpeedBps));
         if (s.etaSeconds)
             text += "   " + tr("pipensx/downloads/summary_eta",
                                formatEtaSeconds(s.etaSeconds));

@@ -7,9 +7,12 @@ const $ = (id) => document.getElementById(id);
 /* ================= i18n ================= */
 const I18N = {
   en: {
-    "tabs.downloads": "Downloads", "tabs.catalog": "Catalog", "tabs.add": "Add", "tabs.settings": "Settings",
+    "control.pin": "Authorize panel", "control.pinHelp": "Enter the PIN set on the Switch in Settings → Web companion.",
+    "control.continue": "Continue", "control.cancel": "Cancel", "control.invalidPin": "Incorrect PIN. Try again.",
+    "control.updateHelp": "pipensx will close briefly to apply the uploaded update. Reopen it on the Switch if needed.",
+    "tabs.downloads": "Downloads", "tabs.catalog": "Catalog", "tabs.add": "Add", "tabs.logs": "Logs", "tabs.settings": "Settings",
     "dash.speed": "Speed", "dash.queue": "Queue", "dash.remaining": "Remaining", "dash.storage": "SD storage",
-    "dash.traffic": "Traffic",
+    "dash.traffic": "Download traffic", "speed.download": "Download", "speed.install": "Installation",
     "downloads.search": "Search downloads…", "downloads.all": "All", "downloads.active": "Active",
     "downloads.pauseAll": "Pause all", "downloads.resumeAll": "Resume all", "downloads.clearDone": "Clear entries",
     "downloads.clearFiles": "Delete files",
@@ -37,6 +40,14 @@ const I18N = {
     "settings.location": "Install location", "settings.network": "Network",
     "settings.catalog": "Catalog", "settings.catalogUrl": "Catalog source URL",
     "settings.refresh": "Refresh catalog on launch", "settings.save": "Save settings",
+    "update.title": "pipensx update", "update.sub": "Upload a new pipensx.nro directly to the Switch. GitHub is not used for this update.",
+    "update.drop": "Choose the new pipensx.nro", "update.upload": "Upload update", "update.apply": "Apply on Switch",
+    "update.current": "Current version: {0}", "update.ready": "Update staged: {0}. Ready to apply.",
+    "update.none": "No uploaded update is staged.", "update.uploading": "Uploading and verifying…", "update.applying": "Applying update — the Switch will close pipensx.",
+    "logs.title": "Diagnostic log", "logs.sub": "Live tail of pipensx.log from the Switch.",
+    "logs.search": "Search log…", "logs.all": "All", "logs.install": "Install", "logs.errors": "Errors",
+    "logs.refresh": "Refresh", "logs.auto": "Auto refresh", "logs.copy": "Copy", "logs.download": "Download",
+    "logs.performance": "Performance", "logs.telemetry": "Detailed speed diagnostics",
     "game.install": "Install", "game.download": "Download", "game.close": "Close",
     "game.developer": "Developer", "game.publisher": "Publisher", "game.genre": "Genre",
     "game.year": "Year", "game.size": "Size", "game.titleId": "Title ID",
@@ -69,8 +80,12 @@ const I18N = {
     "recovery.byte": "Continues from the saved point in this file.",
   },
   ru: {
-    "tabs.downloads": "Загрузки", "tabs.catalog": "Каталог", "tabs.add": "Добавить", "tabs.settings": "Настройки",
+    "control.pin": "Доступ к панели", "control.pinHelp": "Введите PIN из настроек Switch: Настройки → Web companion.",
+    "control.continue": "Продолжить", "control.cancel": "Отмена", "control.invalidPin": "Неверный PIN. Попробуйте ещё раз.",
+    "control.updateHelp": "pipensx закроется для установки загруженного обновления. При необходимости откройте его снова на Switch.",
+    "tabs.downloads": "Загрузки", "tabs.catalog": "Каталог", "tabs.add": "Добавить", "tabs.logs": "Логи", "tabs.settings": "Настройки",
     "dash.speed": "Скорость", "dash.queue": "Очередь", "dash.remaining": "Осталось", "dash.storage": "Память SD",
+    "speed.download": "Загрузка", "speed.install": "Установка",
     "dash.traffic": "Трафик",
     "downloads.search": "Поиск загрузок…", "downloads.all": "Все", "downloads.active": "Активные",
     "downloads.pauseAll": "Пауза всем", "downloads.resumeAll": "Продолжить все", "downloads.clearDone": "Очистить записи",
@@ -99,6 +114,14 @@ const I18N = {
     "settings.location": "Куда устанавливать", "settings.network": "Сеть",
     "settings.catalog": "Каталог", "settings.catalogUrl": "URL источника каталога",
     "settings.refresh": "Обновлять каталог при запуске", "settings.save": "Сохранить",
+    "update.title": "Обновление pipensx", "update.sub": "Загрузите новый pipensx.nro прямо на Switch. GitHub для обновления не используется.",
+    "update.drop": "Выбрать новый pipensx.nro", "update.upload": "Загрузить обновление", "update.apply": "Применить на Switch",
+    "update.current": "Текущая версия: {0}", "update.ready": "Обновление подготовлено: {0}. Можно применять.",
+    "update.none": "Загруженного обновления нет.", "update.uploading": "Загрузка и проверка…", "update.applying": "Обновление применяется — pipensx закроется на Switch.",
+    "logs.title": "Диагностический лог", "logs.sub": "Конец pipensx.log прямо со Switch.",
+    "logs.search": "Поиск в логе…", "logs.all": "Все", "logs.install": "Установка", "logs.errors": "Ошибки",
+    "logs.refresh": "Обновить", "logs.auto": "Автообновление", "logs.copy": "Копировать", "logs.download": "Скачать",
+    "logs.performance": "Производительность", "logs.telemetry": "Подробная диагностика скорости",
     "game.install": "Установить", "game.download": "Скачать", "game.close": "Закрыть",
     "game.developer": "Разработчик", "game.publisher": "Издатель", "game.genre": "Жанр",
     "game.year": "Год", "game.size": "Размер", "game.titleId": "Title ID",
@@ -131,7 +154,13 @@ const I18N = {
     "recovery.byte": "Продолжение с сохранённого места в этом файле.",
   },
 };
-let lang = localStorage.getItem("pipensxLang") || ((navigator.language || "en").toLowerCase().startsWith("ru") ? "ru" : "en");
+Object.assign(I18N, window.PIPENSX_I18N || {});
+const browserLanguage = (navigator.language || "en").toLowerCase();
+let lang = localStorage.getItem("pipensxLang") ||
+  (browserLanguage.startsWith("pt") ? "pt-BR" : browserLanguage.startsWith("zh") ? "zh-CN" : browserLanguage.split("-")[0]);
+const catalogLanguages = ["en", "ru", "pt-BR", "fr", "es", "zh-CN", "it", "ko"];
+if (!catalogLanguages.includes(lang)) lang = "en";
+let descriptionGeneration = 0;
 let clearUiReady = false;
 const t = (k) => (I18N[lang] && I18N[lang][k]) || I18N.en[k] || k;
 function applyI18n() {
@@ -140,7 +169,8 @@ function applyI18n() {
   document.querySelectorAll("[data-i18n-ph]").forEach((el) => { el.placeholder = t(el.dataset.i18nPh); });
   if (clearUiReady) updateClearButtons();
   $("lang-btn").textContent = lang.toUpperCase();
-  $("alerts-state").textContent = alertsOn() ? "on" : "off";
+  $("alerts-state").textContent = t(alertsOn() ? "common.on" : "common.off");
+  if (library) renderLibrary();
 }
 
 /* ================= theme ================= */
@@ -159,7 +189,7 @@ $("theme-btn").addEventListener("click", () => {
   applyTheme();
 });
 $("lang-btn").addEventListener("click", () => {
-  lang = lang === "en" ? "ru" : "en";
+  lang = catalogLanguages[(catalogLanguages.indexOf(lang) + 1) % catalogLanguages.length];
   localStorage.setItem("pipensxLang", lang);
   applyI18n();
   renderDownloads();
@@ -180,17 +210,82 @@ matchMedia("(prefers-color-scheme: light)").addEventListener?.("change", applyTh
 }
 const getPin = () => localStorage.getItem("pipensxPin") || "";
 
-async function api(path, options = {}) {
+// HTML dialogs work in browsers that disable window.prompt/window.confirm.
+function controlDialog(title, message, pinMode = false, actionText = "") {
+  const dialog = $("control-dialog");
+  const form = $("control-form");
+  const input = $("control-pin");
+  const previousFocus = document.activeElement;
+  $("control-title").textContent = title;
+  $("control-message").textContent = message;
+  $("control-pin-field").hidden = !pinMode;
+  input.value = "";
+  input.required = pinMode;
+  $("control-cancel").textContent = t("control.cancel");
+  $("control-submit").textContent = pinMode ? t("control.continue") : (actionText || t("update.apply"));
+  return new Promise((resolve) => {
+    const finish = (value) => {
+      form.removeEventListener("submit", submit);
+      $("control-submit").removeEventListener("click", submit);
+      dialog.removeEventListener("keydown", keydown);
+      $("control-cancel").removeEventListener("click", cancel);
+      dialog.hidden = true;
+      input.value = "";
+      if (previousFocus?.isConnected) previousFocus.focus();
+      resolve(value);
+    };
+    const submit = (event) => {
+      event.preventDefault();
+      if (pinMode && !input.value.trim()) return;
+      finish(pinMode ? input.value.trim() : true);
+    };
+    const cancel = (event) => { event.preventDefault(); finish(false); };
+    const keydown = (event) => {
+      if (event.key === "Escape") return cancel(event);
+      if (event.key === "Enter" && event.target === input) return submit(event);
+      if (event.key === "Tab") {
+        const first = pinMode ? input : $("control-cancel");
+        const last = $("control-submit");
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault(); last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault(); first.focus();
+        }
+      }
+    };
+    form.addEventListener("submit", submit);
+    $("control-submit").addEventListener("click", submit);
+    dialog.addEventListener("keydown", keydown);
+    $("control-cancel").addEventListener("click", cancel);
+    dialog.hidden = false;
+    (pinMode ? input : $("control-submit")).focus();
+  });
+}
+
+let pendingPin = null;
+function requestPin() {
+  // Settings and update status can both return 401 at the same time.
+  if (!pendingPin) {
+    pendingPin = controlDialog(t("control.pin"), t("control.pinHelp"), true)
+      .then((pin) => {
+        if (pin) localStorage.setItem("pipensxPin", pin);
+        return pin;
+      }).finally(() => { pendingPin = null; });
+  }
+  return pendingPin;
+}
+
+async function api(path, options = {}, retryPin = true) {
   options.headers = Object.assign({}, options.headers);
-  if (getPin()) options.headers["X-Pipensx-Pin"] = getPin();
+  const sentPin = getPin();
+  if (sentPin) options.headers["X-Pipensx-Pin"] = sentPin;
   const resp = await fetch(path, options);
-  if (resp.status === 401) {
-    const pin = prompt(lang === "ru"
-      ? "PIN (задаётся на консоли в Настройки → Web companion):"
-      : "PIN (set on the console in Settings → Web companion):");
+  if (resp.status === 401 && retryPin) {
+    const pin = getPin() && getPin() !== sentPin ? getPin() : await requestPin();
     if (pin) {
-      localStorage.setItem("pipensxPin", pin);
-      return api(path, options);
+      const retry = await api(path, options, false);
+      if (retry.status === 401) toast(t("control.invalidPin"), true);
+      return retry;
     }
   }
   return resp;
@@ -212,6 +307,11 @@ function fmtBytes(n) {
   return (v >= 100 || i === 0 ? Math.round(v) : v.toFixed(1)) + " " + units[i];
 }
 function fmtSpeed(bps) { return bps > 0 ? fmtBytes(bps) + "/s" : "—"; }
+function tf(k, ...args) {
+  let value = t(k);
+  args.forEach((arg, index) => { value = value.replace(`{${index}}`, arg); });
+  return value;
+}
 function fmtEta(seconds) {
   if (!seconds) return "";
   const s = Number(seconds);
@@ -230,7 +330,7 @@ function esc(s) {
 }
 function fmtDate(ts) {
   if (!ts) return "";
-  try { return new Date(Number(ts) * 1000).toLocaleDateString(lang === "ru" ? "ru-RU" : "en-US"); }
+  try { return new Date(Number(ts) * 1000).toLocaleDateString(lang === "en" ? "en-US" : lang); }
   catch { return ""; }
 }
 
@@ -247,12 +347,13 @@ function closeModal() { const m = $("modal"); if (m.open) m.close(); }
 function openModal(html) {
   const modal = $("modal");
   modal.innerHTML = html;
+  modal.classList.toggle("port-dialog", html.includes('class="modal-body port-editor"'));
   if (!modal.open) modal.showModal();
   modal.onclick = (e) => { if (e.target === modal) closeModal(); };
 }
 
 /* ---------- tabs ---------- */
-const tabs = ["downloads", "catalog", "add", "settings"];
+const tabs = ["downloads", "catalog", "library", "add", "logs", "settings"];
 function currentTab() {
   const h = location.hash.replace("#", "");
   return tabs.includes(h) ? h : "downloads";
@@ -264,6 +365,9 @@ function showTab() {
     document.querySelector(`.tab[data-tab="${tt}"]`).classList.toggle("active", tt === active);
   }
   if (active === "catalog") loadCatalog();
+  if (active === "library") loadLibrary();
+  if (active === "logs") startLogView();
+  else stopLogView();
   if (active === "settings") loadSettings();
 }
 window.addEventListener("hashchange", showTab);
@@ -299,6 +403,160 @@ function connectEvents() {
 }
 connectEvents();
 
+/* ---------- diagnostic log ---------- */
+let logText = "";
+let logTimer = null;
+let logLoading = false;
+
+function filteredLogText() {
+  const mode = $("log-filter")?.value || "all";
+  const query = ($("log-search")?.value || "").trim().toLowerCase();
+  const lines = logText.split("\n");
+  return lines.filter((line) => {
+    const lower = line.toLowerCase();
+    let matchesMode = true;
+    if (mode === "realdebrid")
+      matchesMode = lower.includes("[realdebrid]") || lower.includes("[debrid]") || lower.includes("real-debrid");
+    else if (mode === "install")
+      matchesMode = lower.includes("[install]") || lower.includes("package") || lower.includes("nsp") || lower.includes("nsz");
+    else if (mode === "errors")
+      matchesMode = lower.includes("error") || lower.includes("failed") || lower.includes("rejected") || lower.includes("[diagnostic]");
+    else if (mode === "performance")
+      matchesMode = lower.includes("[telemetry]") || lower.includes("[debrid-intent]");
+    return matchesMode && (!query || lower.includes(query));
+  }).join("\n");
+}
+
+function renderLog() {
+  const output = $("log-output");
+  if (!output) return;
+  const nearBottom = output.scrollHeight - output.scrollTop - output.clientHeight < 80;
+  output.textContent = filteredLogText();
+  if (nearBottom) output.scrollTop = output.scrollHeight;
+}
+
+async function loadLogs() {
+  if (logLoading) return;
+  logLoading = true;
+  const status = $("log-status");
+  try {
+    const resp = await api("/api/logs", { cache: "no-store" });
+    if (!resp.ok) {
+      if (resp.status !== 401) {
+        const body = await resp.json().catch(() => ({}));
+        if (status) status.textContent = body.error || `HTTP ${resp.status}`;
+      }
+      return;
+    }
+    logText = await resp.text();
+    if (status) status.textContent = `${fmtBytes(new Blob([logText]).size)} · ${new Date().toLocaleTimeString()}`;
+    renderLog();
+  } catch (e) {
+    if (status) status.textContent = "offline";
+  } finally {
+    logLoading = false;
+    loadInstallBenchmark();
+  }
+}
+
+async function loadInstallBenchmark() {
+  const card = $("log-benchmark");
+  if (!card) return;
+  try {
+    const response = await api("/api/benchmark", { cache: "no-store" });
+    if (!response.ok) return;
+    const result = await response.json();
+    card.hidden = result.phase === "idle";
+    if (card.hidden) return;
+    const labels = lang === "pt-BR"
+      ? ["Benchmark de instalação", "Bloco", "Repetições", "Tempo mediano", "Configuração escolhida", "Gravação média", "Teste com arquivos locais. Não inclui download nem registro final do jogo."]
+      : ["Installation benchmark", "Batch", "Repetitions", "Median time", "Selected configuration", "Average write rate", "Test uses local files. Internet download and final game registration are excluded."];
+    const rows = [262144, 1048576, 4194304].map(bytes => {
+      const samples = (result.samples || []).filter(sample => sample.batchBytes === bytes);
+      const times = samples
+        .map(sample => sample.durationUs / 1e6).sort((a, b) => a - b);
+      const median = times.length === 3 ? `${times[1].toFixed(2)} s` : "—";
+      const rate = times.length === 3 ? fmtSpeed(samples[0].installedBytes / times[1]) : "—";
+      return `<tr><td>${fmtBytes(bytes)}</td><td>${times.length}/3</td><td>${median}</td><td>${rate}</td></tr>`;
+    }).join("");
+    const phase = lang === "pt-BR" ? ({ warming: "Aquecimento", measuring: "Medindo", completed: "Concluído", cancelled: "Cancelado", error: "Erro" }[result.phase] || result.phase) : result.phase;
+    card.innerHTML = `<h2>${esc(labels[0])}</h2>
+      <p>${esc(phase)} · ${Math.min(9, result.pass || 0)}/9</p>
+      <p>${esc(labels[6])}</p>
+      <table class="facts"><tr><th>${esc(labels[1])}</th><th>${esc(labels[2])}</th><th>${esc(labels[3])}</th><th>${esc(labels[5])}</th></tr>${rows}</table>
+      ${result.phase === "completed" ? `<p>${esc(labels[4])}: ${fmtBytes(result.chosenBatchBytes)}</p>` : ""}
+      ${result.error ? `<p>${esc(result.error)}</p>` : ""}`;
+  } catch (_) { }
+}
+
+function startLogView() {
+  loadLogs();
+  loadLogTelemetry();
+  stopLogView();
+  if ($("log-auto")?.checked)
+    logTimer = setInterval(() => { if (currentTab() === "logs") loadLogs(); }, 3000);
+}
+
+function stopLogView() {
+  if (logTimer) clearInterval(logTimer);
+  logTimer = null;
+}
+
+async function loadLogTelemetry() {
+  const control = $("log-telemetry");
+  if (!control || control.disabled) return;
+  try {
+    const resp = await api("/api/settings", { cache: "no-store" });
+    if (resp.ok && !control.disabled) control.checked = !!(await resp.json()).extendedTelemetry;
+  } catch (_) { /* Offline state is already shown by the log view. */ }
+}
+
+$("log-telemetry")?.addEventListener("change", async (event) => {
+  const control = event.target;
+  const enabled = control.checked;
+  control.disabled = true;
+  try {
+    const resp = await api("/api/settings", {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ extendedTelemetry: enabled }),
+    });
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok) { control.checked = !enabled; return toast(body.error || "save failed", true); }
+    control.checked = !!body.extendedTelemetry;
+    loadLogs();
+  } catch (error) {
+    control.checked = !enabled;
+    toast(error.message || "offline", true);
+  } finally { control.disabled = false; }
+});
+
+$("log-search")?.addEventListener("input", renderLog);
+$("log-filter")?.addEventListener("change", renderLog);
+$("log-refresh")?.addEventListener("click", loadLogs);
+$("log-auto")?.addEventListener("change", () => {
+  if (currentTab() === "logs") startLogView();
+});
+$("log-copy")?.addEventListener("click", async () => {
+  const text = filteredLogText();
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(t("log.copied"));
+  } catch {
+    toast(t("log.copyFailed"), true);
+  }
+});
+$("log-download")?.addEventListener("click", () => {
+  const blob = new Blob([filteredLogText()], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `pipensx-log-${new Date().toISOString().replace(/[:.]/g, "-")}.txt`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+});
+
 let hiddenSince = null;
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
@@ -321,7 +579,7 @@ function notifySupported() {
 }
 function alertsOn() { return localStorage.getItem("pipensxAlerts") !== "off"; }
 function refreshNotifyRow() {
-  $("alerts-state").textContent = alertsOn() ? "on" : "off";
+  $("alerts-state").textContent = t(alertsOn() ? "common.on" : "common.off");
   $("notify-btn").hidden = !notifySupported() || Notification.permission !== "default";
 }
 $("alerts-btn").addEventListener("click", () => {
@@ -425,9 +683,9 @@ function notifyTransitions() {
 const activeSet = new Set(["Downloading", "Installing", "Committing", "Checking", "Verifying", "Fetching"]);
 function healthOf(tt) {
   if (tt.status !== "Downloading") return null;
-  if ((tt.peers || 0) === 0 && !(tt.speedBps > 0)) return { cls: "poor", label: lang === "ru" ? "нет пиров" : "no peers" };
-  if (!(tt.speedBps > 0)) return { cls: "slow", label: lang === "ru" ? "стоит" : "stalled" };
-  if ((tt.speedBps || 0) < 512 * 1024) return { cls: "slow", label: lang === "ru" ? "медленно" : "slow" };
+  if ((tt.peers || 0) === 0 && !(tt.speedBps > 0)) return { cls: "poor", label: t("peer.none") };
+  if (!(tt.speedBps > 0)) return { cls: "slow", label: t("peer.stalled") };
+  if ((tt.speedBps || 0) < 512 * 1024) return { cls: "slow", label: t("peer.slow") };
   return { cls: "excellent", label: "● " + fmtSpeed(tt.speedBps) };
 }
 
@@ -437,13 +695,13 @@ function recoveryText(tt) {
   const quiet = ["Downloading", "Installing", "Committing", "Fetching"].includes(tt.status);
   const fill = (key, ...args) => args.reduce((s, a, i) => s.replace("{" + i + "}", a), t(key));
   let notice = "";
-  if (r.work === "verify" && r.reworkBytes > 0)
+  if ((!quiet || r.verifyingSaved) && r.work === "verify" && r.reworkBytes > 0)
     notice = fill("recovery.verify", fmtBytes(r.reworkBytes), fmtBytes(r.savedBytes));
-  else if (r.work === "reread" && r.reworkBytes > 0)
+  else if (!quiet && r.work === "reread" && r.reworkBytes > 0)
     notice = fill("recovery.reread", fmtBytes(r.reworkBytes), String(r.packagesInstalled));
-  else if (r.work === "refetch" && r.reworkBytes > 0)
+  else if (!quiet && r.work === "refetch" && r.reworkBytes > 0)
     notice = fill("recovery.refetch", fmtBytes(r.reworkBytes), fmtBytes(r.savedBytes));
-  else if (r.work === "recopy" && r.reworkBytes > 0)
+  else if (!quiet && r.work === "recopy" && r.reworkBytes > 0)
     notice = fill("recovery.recopy", fmtBytes(r.reworkBytes));
   else if (!quiet && r.work === "pieces")
     notice = t("recovery.pieces");
@@ -473,8 +731,10 @@ function taskCard(tt, queueIdx) {
     : (tt.status === "Installed" || tt.status === "Completed") ? "ok" : "";
 
   const meta = [];
-  if (tt.status === "Downloading") meta.push(fmtSpeed(tt.speedBps));
-  if (tt.status === "Installing") meta.push(fmtSpeed(tt.installSpeedBps));
+  if (tt.status === "Downloading" || tt.status === "Installing")
+    meta.push(`${t("speed.download")}: ${fmtSpeed(tt.speedBps)}`);
+  if (tt.status === "Installing" || tt.status === "Committing")
+    meta.push(`${t("speed.install")}: ${fmtSpeed(tt.installSpeedBps)}`);
   if (tt.status === "Fetching" && fetchPct !== null) meta.push(`fetch ${fetchPct.toFixed(0)}%`);
   if (tt.status === "Installing" || tt.status === "Committing") {
     if (tt.installTotalBytes) meta.push(`${fmtBytes(tt.installedBytes)} / ${fmtBytes(tt.installTotalBytes)}`);
@@ -495,6 +755,7 @@ function taskCard(tt, queueIdx) {
   const caps = tt.capabilities || {};
   const allowed = (name) => !!(caps[name] && caps[name].allowed);
   const actions = [];
+  if (tt.mode === "port") actions.push(btn(t("port.files"), "port-files"));
   if (allowed("pause")) actions.push(btn(t("task.pause"), "pause"));
   if (tt.status === "Paused" && allowed("resume")) actions.push(btn(t("task.resume"), "resume", "btn-primary"));
   if (tt.status === "Error" && allowed("resume")) actions.push(btn(t("task.retry"), "retry", "btn-primary"));
@@ -509,9 +770,9 @@ function taskCard(tt, queueIdx) {
   return `<div class="card task" data-id="${esc(tt.id)}">
     <div class="task-head">
       <div class="task-name" title="${esc(tt.name || tt.id)}">${esc(tt.name || tt.id)}</div>
-      <span class="badge ${esc(tt.status.toLowerCase())}">${esc(tt.status)}</span>
+      <span class="badge ${esc(tt.status.toLowerCase())}">${esc(t("status." + tt.status))}</span>
     </div>
-    ${tt.status === "Queued" && queueIdx > 0 ? `<div class="task-sub"><span class="queue-pos">#${queueIdx} ${lang === "ru" ? "в очереди" : "in queue"}</span></div>` : ""}
+    ${tt.status === "Queued" && queueIdx > 0 ? `<div class="task-sub"><span class="queue-pos">#${queueIdx} ${t("queue.position")}</span></div>` : ""}
     <div class="bar"><div class="bar-fill ${barClass}" style="width:${pct}%"></div></div>
     <div class="task-meta">${meta.map(esc).join('<span class="dot">·</span>')}${h ? `<span class="health ${h.cls}">${esc(h.label)}</span>` : ""}</div>
     ${recoveryLine ? `<div class="task-sub">${esc(recoveryLine)}</div>` : ""}
@@ -578,15 +839,17 @@ function renderDownloads() {
   const dlSpeed = s ? s.downloadSpeedBps : state.tasks.reduce((a, x) => a + (x.speedBps || 0), 0);
   const instSpeed = s ? s.installSpeedBps : state.tasks.reduce((a, x) => a + (x.installSpeedBps || 0), 0);
   const peers = state.tasks.reduce((a, x) => a + (x.peers || 0), 0);
-  const totalSpeed = dlSpeed + instSpeed;
-  $("stat-speed").textContent = totalSpeed > 0 ? fmtSpeed(totalSpeed) : "—";
+  // Streaming installs consume the same bytes they download. Summing these
+  // rates double-counts that traffic and overstates network throughput.
+  $("stat-speed").textContent = fmtSpeed(dlSpeed);
+  $("stat-install-speed").textContent = `${t("speed.install")}: ${fmtSpeed(instSpeed)}`;
   $("stat-peers").textContent = peers > 0 ? `${peers} peers · DHT` : (activeCount > 0 ? `${activeCount} active` : "idle");
   const queued = s ? s.queued : state.tasks.filter((x) => x.status === "Queued").length;
   const paused = s ? s.paused : state.tasks.filter((x) => x.status === "Paused").length;
   const errors = s ? s.errors : state.tasks.filter((x) => x.status === "Error").length;
   $("stat-queue").textContent = `${activeCount} / ${state.tasks.length}`;
   $("stat-queue-sub").textContent =
-    (lang === "ru" ? `очередь ${queued} · пауза ${paused} · ошибки ${errors}` : `queued ${queued} · paused ${paused} · errors ${errors}`);
+    tf("queue.summary", queued, paused, errors);
   const remaining = s ? s.remainingBytes : 0;
   $("stat-remaining").textContent = remaining > 0 ? fmtBytes(remaining) : (state.tasks.length ? "—" : "0 B");
   const eta = s ? s.etaSeconds : 0;
@@ -597,14 +860,14 @@ function renderDownloads() {
     $("storage-fill").style.width = (100 * used / state.storage.totalBytes).toFixed(1) + "%";
     $("stat-storage").textContent = fmtBytes(state.storage.freeBytes);
     $("storage-text").textContent =
-      (lang === "ru" ? "свободно из " : "free of ") + fmtBytes(state.storage.totalBytes);
+      tf("storage.free", fmtBytes(state.storage.totalBytes));
   } else {
     $("stat-storage").textContent = "—";
     $("storage-text").textContent = "—";
   }
 
   // Speed history chart.
-  speedHist.push(totalSpeed);
+  speedHist.push(dlSpeed || 0);
   if (speedHist.length > SPEED_HIST_N) speedHist.shift();
   const showChart = speedHist.some((v) => v > 0);
   $("chart-card").hidden = !showChart;
@@ -738,6 +1001,7 @@ document.addEventListener("click", async (e) => {
   if (cmdBtn) {
     const id = cmdBtn.dataset.task;
     const cmd = cmdBtn.dataset.cmd;
+    if (cmd === "port-files") return openPortEditor(id);
     if (cmd === "remove") return confirmRemove(id);
     const resp = await api(`/api/tasks/${id}/${cmd}`, { method: "POST" });
     if (!resp.ok && resp.status !== 401) {
@@ -751,12 +1015,116 @@ document.addEventListener("click", async (e) => {
   if (jobBtn) await api(`/api/jobs/${jobBtn.dataset.job}/cancel`, { method: "POST" });
 });
 
+let portEditor = null;
+async function portRequest(path, method = "GET", body) {
+  const response = await api(path, { method, cache: "no-store",
+    ...(body ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {}) });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || t("port.failed"));
+  return data;
+}
+function capturePortRules() {
+  if (!portEditor) return;
+  document.querySelectorAll("[data-port-row]").forEach(row => {
+    const file = portEditor.data.files[Number(row.dataset.portRow)];
+    file.enabled = row.querySelector("input[type=checkbox]").checked;
+    const directory = row.querySelector("input[type=text]");
+    if (directory) file.directory = directory.value.trim();
+  });
+}
+function portRulesBody() {
+  capturePortRules();
+  return { files: portEditor.data.files.map(({source, enabled, directory}) => ({source, enabled, directory})) };
+}
+async function openPortEditor(id) {
+  try {
+    const data = await portRequest(`/api/ports/${encodeURIComponent(id)}`);
+    portEditor = { id, data, saved: data.manual };
+    renderPortEditor();
+  } catch (error) { toast(error.message, true); }
+}
+function renderPortEditor() {
+  const editor = portEditor, data = editor.data;
+  const disabled = data.editable ? "" : "disabled";
+  openModal(`<div class="modal-body port-editor">
+    <h3>${esc(t("port.files"))}</h3><p>${esc(t("port.help"))}</p>
+    <p class="port-plan-status" role="status">${esc(data.detail || t(data.reviewRequired ? "port.help" : "port.ready"))}</p>
+    ${data.active ? `<p>${esc(fmtBytes(data.bytesCopied))} / ${esc(fmtBytes(data.totalBytes))}<br>${esc(data.currentPath || "")}</p>` : ""}
+    <div class="port-file-list">${data.files.map((file, index) => `
+      <section class="port-file" data-port-row="${index}">
+        <label><input type="checkbox" ${file.enabled ? "checked" : ""} ${disabled || (file.selectable === false ? "disabled" : "")}>
+          <strong>${esc(file.source)}</strong> · ${esc(fmtBytes(file.size))}</label>
+        ${file.package ? `<p>${esc(t("port.package"))}</p>` : `
+          <label>${esc(t("port.destination"))}<input type="text" value="${esc(file.directory || "")}" placeholder="${esc(t("port.automatic"))}" ${disabled}></label>
+          <button class="btn btn-sm" data-port-browse="${index}" ${disabled}>${esc(t("port.browse"))}</button>`}
+        ${!file.available ? `<p>${esc(t("port.pending"))}</p>` : ""}
+        ${file.error ? `<p class="task-error">${esc(file.error)}</p>` : ""}
+        ${file.members.length ? `<details><summary>${esc(tf("port.members", file.members.length))}</summary>
+          <div class="port-members">${file.members.map(member => `<div><span>${esc(member.source)}</span><span>→ ${esc(member.destination || "—")}</span></div>`).join("")}</div>
+        </details>` : ""}
+      </section>`).join("")}</div>
+    </div><div class="modal-actions">
+      <button class="btn" id="port-close">${esc(t("game.close"))}</button>
+      <button class="btn" id="port-preview" ${disabled}>${esc(t("port.preview"))}</button>
+      <button class="btn" id="port-save" ${disabled}>${esc(t("port.save"))}</button>
+      <button class="btn btn-primary" id="port-start" ${!editor.saved || !data.canStart || data.active ? "disabled" : ""}>${esc(t("port.start"))}</button>
+    </div>`);
+  $("port-close").onclick = closeModal;
+  $("port-preview").onclick = () => updatePortEditor(false);
+  $("port-save").onclick = () => updatePortEditor(true);
+  document.querySelectorAll("[data-port-row] input").forEach(input => input.addEventListener("input", () => {
+    editor.saved = false; $("port-start").disabled = true;
+    input.closest("[data-port-row]").querySelector("details")?.remove();
+    document.querySelector(".port-plan-status").textContent = t("port.preview");
+  }));
+  document.querySelectorAll("[data-port-browse]").forEach(button => button.onclick = () => {
+    capturePortRules(); showPortFolders(Number(button.dataset.portBrowse), "/");
+  });
+  $("port-start").onclick = async () => {
+    $("port-start").disabled = true;
+    try {
+      await portRequest(`/api/ports/${encodeURIComponent(editor.id)}/start`, "POST", {});
+      closeModal(); toast(t("port.started")); await reloadTasks();
+    } catch (error) { toast(error.message, true); renderPortEditor(); }
+  };
+}
+async function updatePortEditor(save) {
+  const editor = portEditor;
+  try {
+    const data = await portRequest(`/api/ports/${encodeURIComponent(editor.id)}${save ? "" : "/preview"}`,
+      save ? "PATCH" : "POST", portRulesBody());
+    editor.data = data;
+    if (save) { editor.saved = true; toast(t("port.saved")); }
+    renderPortEditor();
+  } catch (error) { toast(error.message, true); }
+}
+async function showPortFolders(index, path) {
+  try {
+    const data = await portRequest(`/api/ports/folders?path=${encodeURIComponent(path)}`);
+    openModal(`<div class="modal-body port-editor"><h3>${esc(t("port.browse"))}</h3>
+      <p>${esc(path)}</p><div class="port-folders">
+      ${path !== "/" ? `<button class="btn" data-port-folder="${esc(path.slice(0, path.lastIndexOf("/")) || "/")}">..</button>` : ""}
+      ${data.folders.map(folder => `<button class="btn" data-port-folder="${esc(folder)}">${esc(folder.split("/").pop())}</button>`).join("")}
+      </div>${data.truncated ? `<p>${esc(t("port.folderLimit"))}</p>` : ""}</div>
+      <div class="modal-actions"><button class="btn" id="port-back">${esc(t("port.back"))}</button>
+      <button class="btn btn-primary" id="port-folder-select">${esc(t("port.useFolder"))}</button></div>`);
+    $("port-back").onclick = renderPortEditor;
+    $("port-folder-select").onclick = () => {
+      portEditor.data.files[index].directory = path;
+      portEditor.data.files[index].members = [];
+      portEditor.data.detail = t("port.preview");
+      portEditor.saved = false; renderPortEditor();
+    };
+    document.querySelectorAll("[data-port-folder]").forEach(button => button.onclick = () => showPortFolders(index, button.dataset.portFolder));
+  } catch (error) { toast(error.message, true); }
+}
+
 function confirmRemove(id) {
   const found = state.tasks.find((x) => x.id === id);
   openModal(`<div class="modal-body">
       <h3>${t("task.remove")}?</h3>
       <div class="modal-sub">${esc(found ? (found.name || id) : id)}</div>
-      <label class="modal-check"><input type="checkbox" id="rm-data"> ${lang === "ru" ? "Удалить и скачанные данные" : "Also delete downloaded data"}</label>
+      <label class="modal-check"><input type="checkbox" id="rm-data"> ${t("remove.data")}</label>
     </div>
     <div class="modal-actions">
       <button class="btn" id="rm-cancel">${t("game.close")}</button>
@@ -776,6 +1144,7 @@ function confirmRemove(id) {
 
 /* ================= CATALOG ================= */
 let catalog = null, catalogFiltered = [], catalogShown = 0;
+let catalogSection = "games";
 const CATALOG_CHUNK = 48;
 
 async function loadCatalog() {
@@ -794,7 +1163,7 @@ async function loadCatalog() {
     catalog = null;
     status.innerHTML = "";
     status.hidden = false;
-    status.textContent = "Failed to load the catalog: " + err.message;
+    status.textContent = t("catalog.failed") + ": " + err.message;
   }
 }
 
@@ -802,8 +1171,9 @@ function uniqSorted(vals) {
   return [...new Set(vals.filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b)));
 }
 function buildCatalogFilters() {
-  const genres = uniqSorted(catalog.map((e) => (e.genre || "").split(/[,/;]/)[0].trim()));
-  const years = uniqSorted(catalog.map((e) => e.year)).reverse();
+  const section = catalog.filter(e => e.section === catalogSection);
+  const genres = uniqSorted(section.map((e) => (e.genre || "").split(/[,/;]/)[0].trim()));
+  const years = uniqSorted(section.map((e) => e.year)).reverse();
   const gsel = $("flt-genre"), ysel = $("flt-year");
   const gcur = gsel.value, ycur = ysel.value;
   gsel.innerHTML = `<option value="">${esc(t("catalog.allGenres"))}</option>` +
@@ -815,10 +1185,10 @@ function buildCatalogFilters() {
   renderCatalogCount();
 }
 function renderCatalogCount() {
-  const total = catalog ? catalog.length : 0;
-  const shown = catalogFiltered.length || total;
+  const total = catalog ? catalog.filter(e => e.section === catalogSection).length : 0;
+  const shown = catalogFiltered.length;
   $("catalog-count").textContent = total
-    ? (lang === "ru" ? `Показано ${shown} из ${total}` : `Showing ${shown} of ${total}`)
+    ? tf("catalog.count", shown, total)
     : "";
 }
 
@@ -829,6 +1199,7 @@ function applyCatalogFilter() {
   const size = $("flt-size").value;
   const sort = $("flt-sort").value;
   catalogFiltered = catalog.filter((e) => {
+    if (e.section !== catalogSection) return false;
     if (q && !((e.title || "").toLowerCase().includes(q) ||
                (e.developer || "").toLowerCase().includes(q) ||
                (e.publisher || "").toLowerCase().includes(q))) return false;
@@ -850,6 +1221,16 @@ function applyCatalogFilter() {
   renderCatalogCount();
   appendCatalogChunk();
 }
+
+for (const id of ["catalog-games", "catalog-ports"]) $(id).addEventListener("click", () => {
+  catalogSection = $(id).dataset.section;
+  for (const buttonId of ["catalog-games", "catalog-ports"]) {
+    const active = $(buttonId).dataset.section === catalogSection;
+    $(buttonId).classList.toggle("btn-primary", active);
+    $(buttonId).setAttribute("aria-pressed", String(active));
+  }
+  if (catalog) { buildCatalogFilters(); applyCatalogFilter(); }
+});
 
 function healthChip(e) {
   if (!e.health || e.health === "unknown") return "";
@@ -909,6 +1290,8 @@ $("catalog-grid").addEventListener("click", (e) => {
 });
 
 function openGameModal(entry) {
+  const generation = ++descriptionGeneration;
+  const requestedLanguage = lang;
   const chips = [
     entry.year ? `<span class="chip">${esc(entry.year)}</span>` : "",
     entry.genre ? `<span class="chip accent">${esc(entry.genre)}</span>` : "",
@@ -937,7 +1320,7 @@ function openGameModal(entry) {
         ${entry.posterUrl ? `<img class="modal-cover" src="${esc(entry.posterUrl)}" alt="" onerror="this.remove()">` : ""}
         <div><h3>${esc(entry.title)}</h3><div class="modal-badges">${chips}</div></div>
       </div>
-      ${entry.description ? `<div class="modal-desc">${esc(entry.description)}</div>` : ""}
+      <div class="modal-desc" id="game-description">${esc(entry.description || "")}</div>
       ${rows ? `<table class="facts">${rows}</table>` : ""}
       ${entry.infoHash ? `<div class="hash">${t("game.hash")}: ${esc(entry.infoHash)}</div>` : ""}
       ${shots ? `<div class="shots">${shots}</div>` : ""}
@@ -961,6 +1344,14 @@ function openGameModal(entry) {
   };
   $("game-install").onclick = start("install");
   $("game-download").onclick = start("download");
+  fetch(`/api/catalog/description?hash=${encodeURIComponent(entry.infoHash)}&lang=${encodeURIComponent(requestedLanguage)}`, { cache: "no-store" })
+    .then(resp => resp.ok ? resp.json() : null)
+    .then(body => {
+      const description = $("game-description");
+      if (body && description && $("modal").open &&
+          generation === descriptionGeneration && lang === requestedLanguage)
+        description.textContent = body.description || "";
+    }).catch(() => {}); // Original prose remains usable when an old NRO serves the page.
 }
 
 /* ---------- add tab ---------- */
@@ -1029,6 +1420,77 @@ $("view-add").addEventListener("drop", (e) => {
 
 /* ---------- settings ---------- */
 let settingsLoaded = false;
+let updateMaxBytes = 64 * 1024 * 1024;
+
+async function loadUpdateStatus() {
+  const status = $("update-status");
+  try {
+    const resp = await api("/api/update", { cache: "no-store" });
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      if (resp.status !== 401) status.textContent = body.error || "update status unavailable";
+      return;
+    }
+    updateMaxBytes = Number(body.maxUploadBytes) || updateMaxBytes;
+    const current = tf("update.current", body.currentVersion || "?");
+    status.textContent = body.stagedReady
+      ? `${current} · ${tf("update.ready", fmtBytes(body.stagedBytes || 0))}`
+      : `${current} · ${t("update.none")}`;
+    $("update-apply").hidden = !body.stagedReady;
+  } catch (e) {
+    status.textContent = e.message || "update status unavailable";
+  }
+}
+
+$("update-file")?.addEventListener("change", () => {
+  $("update-file-name").textContent = $("update-file").files[0]?.name || "";
+});
+
+$("update-upload")?.addEventListener("click", async () => {
+  const file = $("update-file").files[0];
+  if (!file) return toast("pipensx.nro", true);
+  if (!/\.nro$/i.test(file.name)) return toast("Choose a .nro file", true);
+  if (file.size > updateMaxBytes) return toast("NRO is too large", true);
+  $("update-upload").disabled = true;
+  $("update-apply").hidden = true;
+  $("update-status").textContent = t("update.uploading");
+  try {
+    const resp = await api("/api/update/upload", {
+      method: "POST",
+      headers: { "Content-Type": "application/octet-stream" },
+      body: file,
+    });
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok) return toast(body.error || "update upload failed", true);
+    toast(t("update.ready").replace("{0}", fmtBytes(body.stagedBytes || file.size)));
+    await loadUpdateStatus();
+  } finally {
+    $("update-upload").disabled = false;
+  }
+});
+
+$("update-apply")?.addEventListener("click", async () => {
+  if (!$("control-dialog").hidden) return;
+  if (!await controlDialog(t("update.apply"), t("control.updateHelp"))) return;
+  $("update-upload").disabled = true;
+  $("update-apply").disabled = true;
+  try {
+    const resp = await api("/api/update/apply", { method: "POST", body: "" });
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      toast(body.error || "update apply failed", true);
+      $("update-upload").disabled = false;
+      $("update-apply").disabled = false;
+      return;
+    }
+    $("update-status").textContent = t("update.applying");
+  } catch (e) {
+    toast(e.message || "update apply failed", true);
+    $("update-upload").disabled = false;
+    $("update-apply").disabled = false;
+  }
+});
+
 function syncAppearanceControls() {
   $("set-theme").value = localStorage.getItem("pipensxTheme") || "dark";
   $("set-lang").value = lang;
@@ -1047,6 +1509,7 @@ $("set-lang").addEventListener("change", () => {
 
 async function loadSettings() {
   syncAppearanceControls();
+  loadUpdateStatus();
   const resp = await api("/api/settings");
   if (!resp.ok) {
     if (resp.status !== 401) {
@@ -1056,6 +1519,12 @@ async function loadSettings() {
     return;
   }
   const s = await resp.json();
+  if (s.language && s.language !== "auto") {
+    lang = s.language === "en-US" ? "en" : s.language;
+    localStorage.setItem("pipensxLang", lang);
+    syncAppearanceControls();
+    applyI18n();
+  }
   $("set-max-active").value = String(s.maxActiveDownloads || 1);
   $("set-stream").value = s.streamSelection || "allFiles";
   $("set-install").value = s.installLocation || "sdCard";
@@ -1075,6 +1544,7 @@ async function loadSettings() {
 $("settings-save").addEventListener("click", async () => {
   if (!settingsLoaded) return toast("…", true);
   const patch = {
+    language: lang === "en" ? "en-US" : lang,
     maxActiveDownloads: Number($("set-max-active").value),
     streamSelection: $("set-stream").value,
     installLocation: $("set-install").value,
@@ -1105,6 +1575,100 @@ $("settings-save").addEventListener("click", async () => {
     $("settings-save").disabled = false;
   }
 });
+
+/* ---------- installed library ---------- */
+let library = null, libraryLoading = false;
+const librarySeenJobs = new Set();
+function libraryVersion(value) {
+  if (!/^\d+$/.test(value || "")) return t("library.unknown");
+  return `v${value}`;
+}
+function renderLibrary() {
+  if (!library) return;
+  const query = $("library-search").value.trim().toLowerCase();
+  const updates = $("library-filter").value === "updates";
+  const rows = (library.titles || []).filter(row =>
+    (!query || `${row.name} ${row.titleId}`.toLowerCase().includes(query)) &&
+    (!updates || row.updateState === "update_available"));
+  const busy = new Set((library.jobs || []).filter(job => ["queued", "working"].includes(job.state)).map(job => job.titleId));
+  $("library-status").textContent = tf("library.count", rows.length, (library.titles || []).length);
+  $("library-list").innerHTML = rows.length ? rows.map(row => `
+    <article class="card library-game">
+      <div class="library-game-info"><h2>${esc(row.name || row.titleId)}</h2>
+        <p class="library-meta">${esc(row.titleId)} · ${esc(row.publisher || "")}</p>
+        <p>${esc(t("library.current"))}: ${esc(row.displayVersion || libraryVersion(row.version))}</p>
+        <p>${esc(t("library." + row.updateState))}${row.latestVersion ? ` · ${esc(libraryVersion(row.latestVersion))}` : ""}</p>
+        <p class="library-meta">${esc(tf("library.dlc", row.dlcCount || 0))}${row.hasLayeredFsMods ? ` · ${esc(t("library.mods"))}` : ""}</p>
+      </div><div class="library-actions">
+        ${row.updateState === "update_available" && row.updateHash ? `<button class="btn btn-primary" data-library="${esc(row.titleId)}" data-library-action="update" ${busy.has(row.titleId) ? "disabled" : ""}>${esc(t("library.update"))}</button>` : ""}
+        <button class="btn btn-danger" data-library="${esc(row.titleId)}" data-library-action="uninstall" ${busy.has(row.titleId) ? "disabled" : ""}>${esc(t("library.uninstall"))}</button>
+      </div></article>`).join("") : `<div class="empty">${esc(t("library.empty"))}</div>`;
+  $("library-jobs").innerHTML = (library.jobs || []).slice(-5).map(job =>
+    `<p class="library-job ${job.state === "error" ? "library-error" : ""}">${esc(t("library." + job.action))} · ${esc(t("library.job." + job.state))}${job.error ? `: ${esc(job.error)}` : ""}</p>`).join("");
+  $("library-update-all").disabled = !(library.titles || []).some(row => row.updateState === "update_available" && row.updateHash && !row.hasLayeredFsMods);
+}
+async function loadLibrary() {
+  if (libraryLoading) return;
+  libraryLoading = true;
+  if (!library) $("library-status").textContent = t("library.loading");
+  try {
+    const response = await api("/api/library", { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "HTTP " + response.status);
+    library = data;
+    renderLibrary();
+    for (const job of data.jobs || []) if (["done", "error"].includes(job.state) && !librarySeenJobs.has(job.jobId)) {
+      librarySeenJobs.add(job.jobId);
+      toast(t("library.job." + job.state) + (job.error ? ": " + job.error : ""), job.state === "error");
+    }
+  } catch (error) { $("library-status").textContent = `${t("library.failed")}: ${error.message}`; }
+  finally { libraryLoading = false; }
+}
+async function libraryCommand(titleId, action, options = {}) {
+  const path = action === "refresh" ? "/api/library/refresh" : `/api/library/${encodeURIComponent(titleId)}/${action}`;
+  const response = await api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(options) });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.error || "HTTP " + response.status);
+  return body;
+}
+$("library-search").addEventListener("input", renderLibrary);
+$("library-filter").addEventListener("change", renderLibrary);
+$("library-refresh").addEventListener("click", async () => {
+  $("library-refresh").disabled = true;
+  try { await libraryCommand("", "refresh"); await loadLibrary(); }
+  catch (error) { toast(error.message, true); }
+  finally { $("library-refresh").disabled = false; }
+});
+$("library-list").addEventListener("click", async event => {
+  const button = event.target.closest("[data-library-action]");
+  if (!button) return;
+  const row = library?.titles?.find(item => item.titleId === button.dataset.library);
+  if (!row) return;
+  const action = button.dataset.libraryAction;
+  const message = action === "uninstall" ? tf("library.uninstallAsk", row.name, row.titleId) :
+    tf("library.updateAsk", row.name, libraryVersion(row.version), libraryVersion(row.latestVersion)) +
+    (row.hasLayeredFsMods ? "\n\n" + t("library.modsWarning") : "");
+  if (!await controlDialog(t("library." + action), message, false, t("library." + action))) return;
+  button.disabled = true;
+  try {
+    await libraryCommand(row.titleId, action, { confirm: true, acknowledgeMods: row.hasLayeredFsMods });
+    toast(t(action === "update" ? "library.updateQueued" : "library.job.queued"));
+    await loadLibrary();
+  } catch (error) { toast(error.message, true); button.disabled = false; }
+});
+$("library-update-all").addEventListener("click", async () => {
+  const candidates = (library?.titles || []).filter(row => row.updateState === "update_available" && row.updateHash && !row.hasLayeredFsMods);
+  if (!candidates.length || !await controlDialog(t("library.updateAll"), tf("library.updateAllAsk", candidates.length), false, t("library.updateAll"))) return;
+  $("library-update-all").disabled = true;
+  let queued = 0;
+  for (const row of candidates) {
+    try { await libraryCommand(row.titleId, "update"); ++queued; }
+    catch (error) { toast(`${row.name}: ${error.message}`, true); break; }
+  }
+  toast(tf("library.queuedCount", queued));
+  await loadLibrary();
+});
+setInterval(() => { if (currentTab() === "library" && !document.hidden) loadLibrary(); }, 3000);
 
 /* ---------- boot ---------- */
 applyTheme();

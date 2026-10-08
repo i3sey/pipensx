@@ -113,9 +113,9 @@ public:
         std::atomic<bool>& cancelled,
         const ProgressCallback& progress) const;
 
-    // Debrid twin of prepareUpdates: one transfer per target, planned with
-    // the same update-aware mask. Transfers whose metadata does not arrive
-    // inside the window are removed and reported.
+    // Debrid twin of prepareUpdates, with the same update-aware mask.
+    // Real-Debrid preparation reads metadata only; the queue worker creates
+    // account transfers after confirmation. Other providers resolve remotely.
     BatchPreparation prepareUpdatesViaDebrid(
         const std::vector<UpdateQueueTarget>& targets,
         DebridProvider& provider,

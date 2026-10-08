@@ -68,7 +68,8 @@ CatalogRowPresentation resolveCatalogRow(const CatalogEntry& entry,
 
 CatalogPresentation resolveCatalogPresentation(
     const CatalogEntry& entry, const GameMetadata* metadata,
-    TextPreference preference = TextPreference::Metadata);
+    TextPreference preference = TextPreference::Metadata,
+    const std::string& locale = {});
 
 // Games vs Ports sidebar tabs. An [NRO] title is a port even when it carries
 // a Nintendo title id (ports often reuse the original game's id). Package

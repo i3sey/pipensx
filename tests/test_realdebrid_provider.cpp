@@ -48,11 +48,41 @@ int main() {
     assert(p.validate(err));
     assert(p.createFromMagnet("magnet:?xt=urn:btih:h", id, err));
     assert(id == "abc123");
+
+    // A catalog magnet whose hash already exists in the account must reuse
+    // that torrent ID and never create a duplicate Real-Debrid task.
+    int reuseListCalls = 0;
+    int reuseAddCalls = 0;
+    const std::string reuseHash(40, 'c');
+    RdTransport reuseT = [&](const RdHttpRequest& r, RdHttpResponse& res,
+                             std::string&) {
+        res.status = 200;
+        if (r.url.find("/torrents?limit=5000") != std::string::npos) {
+            ++reuseListCalls;
+            res.body = "[{\"id\":\"already-there\",\"hash\":\"" +
+                       reuseHash +
+                       "\",\"status\":\"downloaded\",\"links\":[\"x\"]}]";
+        } else if (r.url.find("/torrents/addMagnet") != std::string::npos) {
+            ++reuseAddCalls;
+            res.body = "{\"id\":\"duplicate\"}";
+        } else {
+            res.body = "{}";
+        }
+        return true;
+    };
+    RealdebridProvider reuseP("key", reuseT);
+    std::string reusedId;
+    assert(reuseP.createFromMagnet("magnet:?xt=urn:btih:" + reuseHash,
+                                   reusedId, err));
+    assert(reusedId == "already-there");
+    assert(reuseListCalls == 1);
+    assert(reuseAddCalls == 0);
     DebridInfo info;
     assert(p.fetchInfo(id, info, err));
     assert(info.phase == DebridInfo::Phase::Ready);
     assert(info.name == "Game.nsp");
     assert(info.files.size() == 1 && info.files[0].id == "1");
+    assert(info.files[0].serverSelected == 1);
     assert(info.links.size() == 1);
 
     assert(p.selectFiles(id, {"1"}, err));
@@ -203,6 +233,46 @@ int main() {
     assert(linkedInfo.phase == DebridInfo::Phase::Ready);
     assert(linkedInfo.links.size() == 1);
 
+    // A partial link while the cloud is still downloading is not a complete
+    // selection. Failed torrents must also remain failed even with old links.
+    for (const std::string status : {"downloading", "error"}) {
+        RdTransport partial = [status](const RdHttpRequest&, RdHttpResponse& response, std::string&) {
+            response.status = 200;
+            response.body = "{\"id\":\"partial\",\"filename\":\"game\",\"progress\":50,"
+                "\"status\":\"" + status + "\",\"files\":[{\"id\":1,\"path\":\"/game.nsp\","
+                "\"bytes\":100,\"selected\":1}],\"links\":[\"https://rd.to/partial\"]}";
+            return true;
+        };
+        RealdebridProvider partialProvider("key", partial);
+        DebridInfo partialInfo;
+        assert(partialProvider.fetchInfo("partial", partialInfo, err));
+        assert(partialInfo.phase == (status == "error" ? DebridInfo::Phase::Failed : DebridInfo::Phase::Downloading));
+    }
+
+    // Never expose the persisted original ID as a temporary torrent: the
+    // transfer owns cleanup and must not delete the user's original task.
+    for (bool reuseOriginal : {false, true}) {
+        RdTransport cloneT = [reuseOriginal](const RdHttpRequest& request,
+                                             RdHttpResponse& response,
+                                             std::string&) {
+            response.status = 200;
+            if (request.url.find("/torrents/info/") != std::string::npos)
+                response.body = "{\"id\":\"original\",\"hash\":\"" +
+                                std::string(40, 'a') + "\"}";
+            else {
+                assert(request.url.find("/torrents/addMagnet") != std::string::npos);
+                response.body = reuseOriginal ? "{\"id\":\"original\"}"
+                                              : "{\"id\":\"child\"}";
+            }
+            return true;
+        };
+        RealdebridProvider cloneP("key", cloneT);
+        std::string childId;
+        err.clear();
+        assert(cloneP.createSelectionReplacement("original", childId, err) ==
+               !reuseOriginal);
+        assert(childId == (reuseOriginal ? "" : "child"));
+    }
     std::printf("test_realdebrid_provider: all assertions passed\n");
     return 0;
 }

@@ -54,7 +54,8 @@ bool fileVersionTag(const std::string& path, uint64_t& value) {
 }
 
 bool isUpdateFile(const std::string& path) {
-    std::string lower = path;
+    const size_t slash = path.find_last_of("/\\");
+    std::string lower = slash == std::string::npos ? path : path.substr(slash + 1);
     std::transform(lower.begin(), lower.end(), lower.begin(),
                    [](unsigned char c) {
                        return static_cast<char>(std::tolower(c));
@@ -154,38 +155,52 @@ bool isLikelyModPackage(const std::string& path) {
            lower.find("romfs") != std::string::npos;
 }
 
-std::vector<size_t> smartUpdateMatches(const TorrentPreview& preview,
-                                       const std::string& latestVersion,
-                                       const std::string& titleId) {
-    std::vector<size_t> matches = updateVersionMatches(preview, latestVersion,
-                                                       titleId);
-    matches.erase(std::remove_if(matches.begin(), matches.end(),
-        [&preview](size_t i) {
-            return i >= preview.files.size() ||
-                   isLikelyModPackage(preview.files[i].path);
-        }), matches.end());
-    return matches;
-}
-
-std::string bundledUpdateVersion(const TorrentPreview& preview,
-                                 const std::string& titleId) {
-    uint64_t best = 0;
-    bool have = false;
+// Missing catalog IDs must not suppress a bundle's DLC. Infer only a single
+// application family; a multi-game collection still needs the file chooser.
+std::string uniqueBundleTitleId(const TorrentPreview& preview) {
+    std::string base;
     for (const auto& file : preview.files) {
-        if (!file.package || !pathHasBaseOrPatchTitleId(file.path, titleId) ||
-            isLikelyModPackage(file.path))
+        if (!file.package || isLikelyModPackage(file.path))
             continue;
-        uint64_t tag = 0;
-        if (!fileVersionTag(file.path, tag) || tag == 0)
-            continue;
-        if (!have || tag > best) {
-            best = tag;
-            have = true;
+        for (const auto& id : titleIdsInPath(file.path)) {
+            const std::string candidate = normalizeNxBaseTitleId(id);
+            if (!base.empty() && base != candidate)
+                return {};
+            base = candidate;
         }
     }
-    if (!have)
-        return {};
-    return std::to_string(best);
+    return base;
+}
+
+bool isDlcPackagePath(const std::string& path) {
+    bool baseOrPatch = false;
+    for (const auto& id : titleIdsInPath(path)) {
+        uint64_t parsed = 0;
+        if (InstalledTitleService::parseTitleId(id, parsed)) {
+            const uint64_t low = parsed & 0x1FFFULL;
+            if (low >= 0x1000ULL)
+                return true;
+            if (low == 0 || low == 0x800ULL)
+                baseOrPatch = true;
+        }
+    }
+    if (baseOrPatch)
+        return false;
+    const size_t slash = path.find_last_of("/\\");
+    std::string lower = slash == std::string::npos ? path : path.substr(slash + 1);
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    return lower.find("dlc") != std::string::npos;
+}
+
+bool hasPatchTitleId(const std::string& path) {
+    for (const auto& id : titleIdsInPath(path)) {
+        uint64_t parsed = 0;
+        if (InstalledTitleService::parseTitleId(id, parsed) &&
+            (parsed & 0x1FFFULL) == 0x800ULL)
+            return true;
+    }
+    return false;
 }
 
 // Prefer a non-mod path, then the larger file, then the earlier index.
@@ -333,9 +348,40 @@ std::vector<uint8_t> selectSmartInstallFiles(
     std::vector<uint8_t> actions(
         preview.files.size(), static_cast<uint8_t>(FileAction::Skip));
 
+    const std::string bundleTitleId = uniqueBundleTitleId(preview);
+    const std::string wantedTitleId = titleId.empty() ? bundleTitleId
+                                                     : normalizeNxBaseTitleId(titleId);
+    if (!titleId.empty() && wantedTitleId.empty())
+        return actions;
+    if (titleId.empty() && bundleTitleId.empty()) {
+        // An ID-free single package is still useful, but multiple identified
+        // applications must never be combined into one inferred selection.
+        for (const auto& file : preview.files)
+            if (file.package && !isLikelyModPackage(file.path) &&
+                !titleIdsInPath(file.path).empty())
+                return actions;
+    }
+    std::vector<size_t> updates;
+    uint64_t highestTag = 0;
+    for (size_t i = 0; i < preview.files.size(); ++i) {
+        const auto& file = preview.files[i];
+        if (!file.package || isLikelyModPackage(file.path) ||
+            isDlcPackagePath(file.path))
+            continue;
+        const bool matches = pathHasBaseOrPatchTitleId(file.path, wantedTitleId);
+        const bool untaggedId = titleIdsInPath(file.path).empty() &&
+            !wantedTitleId.empty() && bundleTitleId == wantedTitleId;
+        if ((!matches && !untaggedId) ||
+            (!isUpdateFile(file.path) && !hasPatchTitleId(file.path)))
+            continue;
+        updates.push_back(i);
+        uint64_t tag = 0;
+        if (fileVersionTag(file.path, tag))
+            highestTag = std::max(highestTag, tag);
+    }
     // Prefer the highest [vN] actually in this torrent so a stale catalog
     // latestVersion cannot pin an older bundled patch (or miss a newer one).
-    std::string latest = bundledUpdateVersion(preview, titleId);
+    std::string latest = highestTag > 0 ? std::to_string(highestTag) : std::string{};
     uint64_t latestValue = 0;
     if (!parseDecimal(latest, latestValue) || latestValue == 0) {
         latest = latestVersion;
@@ -346,7 +392,9 @@ std::vector<uint8_t> selectSmartInstallFiles(
     if (!titleInstalled) {
         std::vector<size_t> bases;
         for (size_t i = 0; i < preview.files.size(); ++i)
-            if (isBasePackageFile(preview.files[i], titleId))
+            if (isBasePackageFile(preview.files[i], wantedTitleId) &&
+                !isDlcPackagePath(preview.files[i].path) &&
+                !hasPatchTitleId(preview.files[i].path))
                 bases.push_back(i);
         const size_t base = pickBestPackage(preview, bases);
         if (base < actions.size())
@@ -356,20 +404,26 @@ std::vector<uint8_t> selectSmartInstallFiles(
     uint64_t installed = 0;
     const bool haveInstalled = parseDecimal(installedVersion, installed);
     const bool wantUpdate =
-        latestValue > 0 &&
-        (!titleInstalled || (haveInstalled && latestValue > installed));
+        (!titleInstalled && !updates.empty()) ||
+        (latestValue > 0 && titleInstalled && haveInstalled && latestValue > installed);
     if (wantUpdate) {
-        std::vector<size_t> updates =
-            smartUpdateMatches(preview, latest, titleId);
-        if (updates.empty())
-            updates = updateVersionMatches(preview, latest, titleId);
+        updates.erase(std::remove_if(updates.begin(), updates.end(),
+            [&](size_t i) {
+                uint64_t tag = 0;
+                const bool tagged = fileVersionTag(preview.files[i].path, tag);
+                return highestTag > 0 ? (!tagged || tag != highestTag)
+                                      : (tagged && tag == 0);
+            }), updates.end());
+        // Without numeric versions multiple patches cannot be ordered safely.
+        if (highestTag == 0 && updates.size() > 1)
+            updates.clear();
         const size_t picked = pickBestPackage(preview, updates);
         if (picked < actions.size())
             actions[picked] = static_cast<uint8_t>(FileAction::Install);
     }
 
     // Unique AddOnContent per title id, largest file wins on duplicates.
-    const std::string wantedBase = normalizeNxBaseTitleId(titleId);
+    const std::string wantedBase = wantedTitleId;
     if (!wantedBase.empty()) {
         const std::unordered_set<std::string> installedDlc =
             normalizedSet(installedDlcIds);
@@ -397,6 +451,19 @@ std::vector<uint8_t> selectSmartInstallFiles(
     }
 
     return actions;
+}
+
+bool smartInstallNeedsChooser(const TorrentPreview& preview,
+                              const std::vector<uint8_t>& actions) {
+    // ID-free packages could be a patch or DLC. Do not silently queue only
+    // the base while leaving an unidentifiable package behind.
+    for (size_t i = 0; i < preview.files.size(); ++i) {
+        const auto& file = preview.files[i];
+        if (file.package && !fileInstalling(actions, i) &&
+            !isLikelyModPackage(file.path) && titleIdsInPath(file.path).empty())
+            return true;
+    }
+    return false;
 }
 
 std::vector<uint8_t> overlappingSelectionConflicts(

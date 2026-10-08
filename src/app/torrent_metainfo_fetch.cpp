@@ -141,9 +141,10 @@ bool defaultHttpGet(const std::string& url, std::vector<uint8_t>& body,
 }
 
 bool debridFilesReady(const DebridInfo& info) {
-    return !info.files.empty() &&
-           info.phase != DebridInfo::Phase::Creating &&
-           info.phase != DebridInfo::Phase::Failed;
+    // Metadata is ready when the file list is present. RD may still report
+    // queued/magnet_conversion while already exposing all file IDs. Waiting
+    // for a download phase here can time out and recreate a valid torrent.
+    return !info.files.empty() && info.phase != DebridInfo::Phase::Failed;
 }
 
 bool pollUntilFiles(DebridProvider& provider, const std::string& id,
@@ -308,6 +309,12 @@ bool createDebridWithMetainfoFallback(
     error.clear();
 
     auto cleanupTmp = [&]() { unlink(tmpTorrentPath.c_str()); };
+
+    if (cancelled.load()) {
+        error = "Cancelled.";
+        cleanupTmp();
+        return false;
+    }
 
     if (onStage)
         onStage(DebridCreateStage::SendingMagnet);

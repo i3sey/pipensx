@@ -406,6 +406,11 @@ public:
           targetName_(targetName(target)) {}
 
     ~SwitchInstallBackend() override { rollbackPackage(); }
+    bool setBenchmarkMode(bool enabled) override {
+        if (active_) return false;
+        benchmarkMode_ = enabled;
+        return true;
+    }
 
     bool beginPackage(const std::string& taskId,
                       const std::string& packageName) override {
@@ -494,6 +499,7 @@ public:
             errorResult("Unable to query installed content", rc);
             return false;
         }
+        exists = exists && !benchmarkMode_;
         current_->existing = exists;
         if (!exists) {
             s64 freeSpace = 0;
@@ -692,7 +698,7 @@ public:
                 current_->name.c_str(),
                 static_cast<unsigned long long>(current_->written));
         emitFileTelemetry(now_ms(), true, true);
-        if (current_->meta)
+        if (current_->meta && !benchmarkMode_)
             prepareEarlyMeta(*current_);
         current_ = nullptr;
         currentName_.clear();
@@ -735,6 +741,27 @@ public:
         if (!active_ || current_ || !metaContent) {
             error_ = "Package does not contain a complete CNMT NCA.";
             return false;
+        }
+        if (benchmarkMode_) {
+            Result rc = flushContentPlaceholders(&storage_);
+            if (R_FAILED(rc)) {
+                errorResult("Unable to flush benchmark placeholders", rc);
+                return false;
+            }
+            for (auto& content : contents_) {
+                if (content.existing || !content.size) continue;
+                rc = ncmContentStorageDeletePlaceHolder(&storage_, &content.placeholder);
+                if (R_FAILED(rc)) {
+                    errorResult("Unable to remove benchmark placeholder", rc);
+                    return false;
+                }
+                content.size = 0; // rollback must not delete an already removed placeholder.
+            }
+            telemetry_log("benchmark", taskId_.c_str(),
+                          "event=placeholders_discarded installed_bytes=%llu registered=0",
+                          (unsigned long long)installed_);
+            finishSuccess();
+            return true;
         }
 
         // FS resolves NCAs by their content-storage path, not by the libnx
@@ -913,21 +940,71 @@ public:
             meta.header.id,
             static_cast<NcmContentMetaType>(meta.header.type));
         std::vector<NsExtContentStorageMetaKey> records;
-        s32 count = 0;
-        if (R_SUCCEEDED(nsCountApplicationContentMeta(appId, &count)) &&
-            count > 0) {
-            records.resize(static_cast<size_t>(count));
-            uint32_t written = 0;
-            if (R_FAILED(nsextListApplicationRecordContentMeta(
-                    0, appId, records.data(), records.size(), &written)))
-                records.clear();
-            else
-                records.resize(written);
+        // Distinguish a fresh application from a failed metadata query before
+        // touching its NS record. CountApplicationContentMeta is not a safe
+        // way to infer that no application record exists.
+        std::vector<NsApplicationRecord> applications;
+        if (!loadApplicationRecordPages(applications,
+                [&](size_t offset, std::vector<NsApplicationRecord>& page,
+                    size_t& written) {
+                    s32 outCount = 0;
+                    const Result listRc = nsListApplicationRecord(
+                        page.data(), static_cast<s32>(page.size()),
+                        static_cast<s32>(offset), &outCount);
+                    if (R_FAILED(listRc)) {
+                        errorResult("Unable to list existing applications", listRc);
+                        return false;
+                    }
+                    if (outCount < 0)
+                        return false;
+                    written = static_cast<size_t>(outCount);
+                    return true;
+                })) {
+            if (error_.empty())
+                error_ = "Application listing is incomplete.";
+            return false;
+        }
+        const bool existingApplication = std::any_of(
+            applications.begin(), applications.end(),
+            [appId](const NsApplicationRecord& record) {
+                return record.application_id == appId;
+            });
+        if (existingApplication) {
+            const bool loaded = loadApplicationRecordPages(records,
+                [&](size_t offset, std::vector<NsExtContentStorageMetaKey>& page,
+                    size_t& written) {
+                    uint32_t outCount = 0;
+                    const Result listRc = nsextListApplicationRecordContentMeta(
+                        offset, appId, page.data(), page.size(), &outCount);
+                    if (R_FAILED(listRc)) {
+                        errorResult("Unable to read existing application record", listRc);
+                        return false;
+                    }
+                    written = outCount;
+                    return true;
+                });
+            if (!loaded || records.empty()) {
+                if (error_.empty())
+                    error_ = "Existing application record is incomplete.";
+                return false;
+            }
         }
         previousRecords_ = records;
         applicationId_ = appId;
-        records.push_back({ key, storageId_ });
-        nsextDeleteApplicationRecord(appId);
+        replaceApplicationRecordMeta(records,
+            NsExtContentStorageMetaKey{key, storageId_});
+        log_msg("[install] application record app=%016llx type=%u version=%u "
+                "previous=%zu merged=%zu\n", (unsigned long long)appId,
+                key.type, key.version, previousRecords_.size(), records.size());
+        if (!previousRecords_.empty()) {
+            rc = nsextDeleteApplicationRecord(appId);
+            if (R_FAILED(rc)) {
+                errorResult("Unable to replace application record", rc);
+                return false;
+            }
+            // A failed push must restore the previous base/update/DLC record.
+            applicationRecordTouched_ = true;
+        }
         rc = nsextPushApplicationRecord(
             appId, NsExtApplicationEvent_Present,
             records.data(), records.size());
@@ -1287,6 +1364,7 @@ public:
     }
 
 private:
+    bool benchmarkMode_ = false;
     // PERF_PLAN 3.4: parse the CNMT as soon as its NCA completes, so delta
     // fragments that follow it in the PFS0 can be skipped by shouldSkipFile
     // instead of being streamed through zstd/AES/SHA/ncm and dropped at

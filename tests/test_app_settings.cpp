@@ -1,4 +1,5 @@
 #include "app/app_settings.hpp"
+#include "app/display_policy.hpp"
 #include "app/companion_settings.hpp"
 #include "app/download_manager.hpp"  // clampMaxActiveDownloads
 
@@ -38,13 +39,27 @@ void cleanup() {
 
 void testCompanionSettingsPatchWhitelist() {
     AppSettingsData values;
+    std::string telemetryError;
+    assert(applyCompanionSettingsPatch(values, "{\"extendedTelemetry\":true}", telemetryError));
+    assert(values.extendedTelemetry);
+    assert(companionSettingsJson(values).find("\"extendedTelemetry\":true") != std::string::npos);
+    assert(!applyCompanionSettingsPatch(values, "{\"extendedTelemetry\":1}", telemetryError));
+    assert(values.extendedTelemetry);
+    assert(applyCompanionSettingsPatch(values, "{\"extendedTelemetry\":false}", telemetryError));
+    assert(!values.extendedTelemetry);
     values.torboxApiKey = "keep-me";
     values.maxActiveDownloads = 1;
     std::string error;
     assert(!applyCompanionSettingsPatch(values, "not-json", error));
     error.clear();
-    assert(!applyCompanionSettingsPatch(values, "{\"language\":\"ru\"}", error));
+    assert(!applyCompanionSettingsPatch(values, "{\"unknownField\":\"ru\"}", error));
     assert(error.find("unknown") != std::string::npos);
+    assert(applyCompanionSettingsPatch(values, "{\"language\":\"pt-BR\"}", error));
+    assert(values.language == "pt-BR");
+    assert(!applyCompanionSettingsPatch(values, "{\"language\":\"de\"}", error));
+    assert(values.language == "pt-BR");
+    assert(!applyCompanionSettingsPatch(values, "{\"language\":false}", error));
+    assert(companionSettingsJson(values).find("\"language\":\"pt-BR\"") != std::string::npos);
     error.clear();
     assert(applyCompanionSettingsPatch(
         values,
@@ -121,6 +136,10 @@ void testUpdatePersistsEveryPublicSetting() {
     assert(settings.load(error));
     AppSettingsData changed = settings.get();
     changed.language = "ru";
+    changed.theme = pipensx::AppTheme::Light;
+    changed.keepScreenOnDuringTransfers = false;
+    changed.screenOnMinutes = 20;
+    changed.screenSaverEnabled = false;
     changed.catalogFilter = CatalogFilter::All;
     changed.refreshCatalogOnLaunch = true;
     changed.lastCatalogRefreshMs = 123456;
@@ -490,7 +509,106 @@ void testProxySettingReachesEnvironment() {
 
 } // namespace
 
+void testDisplaySettingsMigrationAndRestart() {
+    cleanup();
+    {
+        std::ofstream old(SettingsPath);
+        old << R"({"version":3,"language":"pt-BR","screen_saver_enabled":true,)"
+            << R"("torrenting_enabled":false,"max_active_downloads":3,)"
+            << R"("debrid_provider":"realdebrid","realdebrid_api_key":"saved-test-key"})";
+    }
+    AppSettings settings(SettingsPath, LegacyPath);
+    std::string error;
+    assert(settings.load(error));
+    assert(settings.get().theme == pipensx::AppTheme::Dark);
+    assert(settings.get().keepScreenOnDuringTransfers);
+    assert(settings.get().screenOnMinutes == 0);
+    assert(settings.get().realdebridApiKey == "saved-test-key");
+    assert(settings.get().debridProvider == DebridProviderKind::RealDebrid);
+    assert(!settings.get().torrentingEnabled);
+    assert(settings.get().maxActiveDownloads == 3);
+    AppSettingsData chosen = settings.get();
+    chosen.theme = pipensx::AppTheme::System;
+    chosen.keepScreenOnDuringTransfers = false;
+    chosen.screenOnMinutes = 15;
+    assert(settings.update(chosen, error));
+    AppSettings restarted(SettingsPath, LegacyPath);
+    assert(restarted.load(error));
+    assert(restarted.get() == chosen);
+    // Re-enable a timed mode and verify it survives another launch.
+    chosen.keepScreenOnDuringTransfers = true;
+    chosen.screenOnMinutes = 20;
+    chosen.theme = pipensx::AppTheme::Dark;
+    assert(restarted.update(chosen, error));
+    AppSettings restartedAgain(SettingsPath, LegacyPath);
+    assert(restartedAgain.load(error));
+    assert(restartedAgain.get() == chosen);
+}
+
+void testInvalidDisplaySettingsDoNotReplaceCurrentValues() {
+    for (const std::string& fields : {
+             "\"screen_on_minutes\":16", "\"screen_on_minutes\":-1",
+             "\"screen_on_minutes\":4294967316", "\"screen_on_minutes\":\"20\"",
+             "\"theme\":\"purple\"", "\"theme\":true",
+             "\"keep_screen_on_during_transfers\":\"false\""}) {
+        cleanup();
+        { std::ofstream bad(SettingsPath); bad << "{\"version\":4," << fields << "}"; }
+        AppSettings settings(SettingsPath, LegacyPath);
+        std::string error;
+        assert(!settings.load(error));
+        assert(!error.empty());
+    }
+    cleanup();
+    AppSettings settings(SettingsPath, LegacyPath);
+    std::string error;
+    assert(settings.load(error));
+    const AppSettingsData before = settings.get();
+    AppSettingsData invalid = before;
+    invalid.screenOnMinutes = 16;
+    assert(!settings.update(invalid, error));
+    assert(settings.get() == before);
+    invalid = before;
+    invalid.theme = static_cast<pipensx::AppTheme>(99);
+    assert(!settings.update(invalid, error));
+    assert(settings.get() == before);
+    AppSettings reloaded(SettingsPath, LegacyPath);
+    assert(reloaded.load(error));
+    assert(reloaded.get() == before);
+}
+
+void testTransferScreenPolicy() {
+    AppSettingsData values;
+    const uint64_t day = 24ULL * 60 * 60000;
+    assert(pipensx::shouldKeepTransferScreenOn(values, true, day));
+    assert(!pipensx::shouldOpenScreenSaver(values, true, day));
+    // Finishing/pausing releases the protection even if an unlimited mode was
+    // selected; the normal idle saver becomes eligible again.
+    assert(!pipensx::shouldKeepTransferScreenOn(values, false, day));
+    assert(pipensx::shouldOpenScreenSaver(values, false, day));
+    assert(!pipensx::shouldOpenScreenSaver(values, false, 5 * 60000 - 1));
+    assert(pipensx::shouldOpenScreenSaver(values, false, 5 * 60000));
+    for (uint32_t minutes : {15u, 20u, 30u, 60u}) {
+        values.screenOnMinutes = minutes;
+        const uint64_t expires = static_cast<uint64_t>(minutes) * 60000;
+        assert(pipensx::shouldKeepTransferScreenOn(values, true, expires - 1));
+        assert(!pipensx::shouldOpenScreenSaver(values, true, expires - 1));
+        assert(!pipensx::shouldKeepTransferScreenOn(values, true, expires));
+        assert(pipensx::shouldOpenScreenSaver(values, true, expires));
+        // Real interaction resets the main loop's idle counter.
+        assert(pipensx::shouldKeepTransferScreenOn(values, true, 0));
+    }
+    values.keepScreenOnDuringTransfers = false;
+    assert(!pipensx::shouldKeepTransferScreenOn(values, true, 0));
+    assert(pipensx::shouldOpenScreenSaver(values, true, 5 * 60000));
+    values.screenSaverEnabled = false;
+    assert(!pipensx::shouldOpenScreenSaver(values, true, day));
+    assert(!pipensx::shouldOpenScreenSaver(values, false, day));
+}
+
 int main() {
+    testDisplaySettingsMigrationAndRestart();
+    testInvalidDisplaySettingsDoNotReplaceCurrentValues();
+    testTransferScreenPolicy();
     testCompanionSettingsPatchWhitelist();
     testMissingFileUsesSafeDefaults();
     testUpdatePersistsEveryPublicSetting();

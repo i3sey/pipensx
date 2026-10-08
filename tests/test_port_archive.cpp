@@ -82,6 +82,18 @@ int main() {
     assert(!fs::exists(root / "out/../other/skip.bin"));
     assert(!fs::exists(root / "out/other/skip.bin"));
 
+    // The loose launcher wins without dropping unique archived assets.
+    fs::create_directories(root / "merge");
+    writeFile(root / "merge/game/game.nro", "new-loose-launcher");
+    progressed = 0;
+    assert(extractPortArchive(
+        archive.string(), (root / "merge").string(), (root / "merge").string(),
+        cancelled, [&](uint64_t n) { progressed += n; }, nullptr, error,
+        {"switch:game/game.nro"}));
+    assert(readFile(root / "merge/game/game.nro") == "new-loose-launcher");
+    assert(readFile(root / "merge/game/data.bin") == payload);
+    assert(progressed == payload.size() + small.size());
+
     // A second extraction must report a conflict instead of replacing files
     // that may now contain user configuration or saves.
     progressed = 0;
@@ -167,6 +179,20 @@ int main() {
     assert(!junk.ok);
     assert(junk.kind == PortArchiveKind::None);
 
+    const fs::path manualSeven = root / "manual-data.7z";
+    assert(run("cd '" + (root / "src/other").string() + "' && 7z a -t7z '" + manualSeven.string() + "' skip.bin >/dev/null"));
+    PortArchiveProbe manual;
+    assert(probePortArchive(manualSeven.string(), manual, "/ports/manual"));
+    assert(manual.sourceFiles == std::vector<std::string>{"skip.bin"});
+    assert(manual.files == std::vector<std::string>{"ports/manual/skip.bin"});
+    assert(manual.destinationSdRoot == std::vector<uint8_t>{1});
+    const fs::path manualRoot = root / "manual-sd";
+    fs::create_directories(manualRoot / "switch");
+    error.clear();
+    assert(extractPortArchive(manualSeven.string(), (manualRoot / "switch").string(), manualRoot.string(),
+                             cancelled, nullptr, nullptr, error, {}, "/ports/manual"));
+    assert(readFile(manualRoot / "ports/manual/skip.bin") == readFile(root / "src/other/skip.bin"));
+    assert(!probePortArchive(manualSeven.string(), manual, "/switch/pipensx"));
     fs::remove_all(root);
     std::cout << "port archive tests passed\n";
     return 0;

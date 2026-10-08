@@ -24,6 +24,7 @@ struct Counts {
     std::atomic<int> removes{0};
     std::string fileName = "game.nsp";
     bool failCreate = false;
+    DebridInfo::Phase phase = DebridInfo::Phase::Ready;
 };
 
 class CountingProvider : public DebridProvider {
@@ -55,7 +56,8 @@ public:
     bool fetchInfo(const std::string&, DebridInfo& info,
                    std::string&) override {
         info = DebridInfo{};
-        info.phase = DebridInfo::Phase::Ready;
+        info.phase = counts_->phase;
+        info.rawState = info.phase == DebridInfo::Phase::Creating ? "queued" : "downloaded";
         info.name = "Stub Game";
         info.bytes = 100;
         info.files.push_back({"1", counts_->fileName, 100});
@@ -192,6 +194,76 @@ void testDirectAndProviders(const std::string& root) {
            static_cast<uint8_t>(FileAction::Install));
 
     {
+        TorrentPreview bundle;
+        bundle.files = {
+            {"Game [0100AAAA00000000][v0].nsp", 100, true, false, false},
+            {"Game [0100AAAA00000800][v131072].nsp", 50, true, false, false},
+            {"DLC [0100AAAA00001001][v0].nsp", 10, true, false, false},
+        };
+        bundle.packageCount = 3;
+        const auto plan = planCatalogOneTap(bundle, context);
+        assert(plan.outcome == OneTapOutcome::QueueStream);
+        assert(plan.packageCount == 3);
+        assert(plan.fileSelection == std::vector<uint8_t>({2, 2, 2}));
+        bundle.files[2].path = "Game DLC 1.nsp";
+        const auto unknown = planCatalogOneTap(bundle, context);
+        assert(unknown.outcome == OneTapOutcome::NeedsChooser);
+        assert(unknown.block == OneTapBlock::UnidentifiedPackages);
+        assert(unknown.chooserMode == TransferMode::StreamInstall);
+        assert(unknown.fileSelection == std::vector<uint8_t>({2, 2, 0}));
+    }
+
+    {
+        TorrentPreview port;
+        port.files = {
+            {"switch.7z", 55750, false, false, false},
+            {"Super Mario World (port) [0108dc35a9030000].nsp",
+             386, true, false, false},
+            {"Homebrew (1.0.1)/switch/smwr_nx/smwr.nro",
+             5940, false, false, false},
+        };
+        port.packageCount = 1;
+        const OneTapPlan plan = planCatalogOneTap(port, context);
+        assert(plan.outcome == OneTapOutcome::QueuePort);
+        assert(plan.mode == TransferMode::PortInstall);
+        assert(plan.packageCount == 1);
+        assert(plan.fileSelection == std::vector<uint8_t>({1, 1, 1}));
+        port.files.push_back({"switch_russmod.7z", 1658000000, false, false, false});
+        port.files.push_back({"switch_extra.7z", 1000, false, false, false});
+        const auto original = planCatalogOneTap(port, context);
+        assert(original.mode == TransferMode::PortInstall);
+        assert(original.fileSelection == std::vector<uint8_t>({1, 1, 1, 0, 1}));
+        port.files.erase(port.files.begin()); // Standalone Russian version is valid.
+        const auto standalone = planCatalogOneTap(port, context);
+        assert(standalone.fileSelection == std::vector<uint8_t>({1, 1, 1, 1}));
+        port.files.erase(port.files.begin() + 2, port.files.end());
+        port.files.insert(port.files.begin(), {"switch.7z", 55750, false, false, false});
+        port.files[1].path = "Native Game.nsp";
+        assert(planCatalogOneTap(port, context).outcome == OneTapOutcome::QueuePort);
+        port.files[1].length = 32 * 1024 * 1024;
+        assert(planCatalogOneTap(port, context).outcome !=
+               OneTapOutcome::QueuePort);
+    }
+
+    {
+        TorrentPreview nfs;
+        nfs.files.push_back({"NFS Underground 2 Xbox recomp [03DB1E5631154000][v0].nsp",
+                             400000, true, false, false});
+        nfs.files.push_back({"Homebrew/switch/nfsu2/nfsu2.nro", 6000000, false, false, false});
+        for (int i = 0; i < 9; ++i)
+            nfs.files.push_back({"Homebrew/switch/nfsu2/data/asset" + std::to_string(i),
+                                 1000, false, false, false});
+        const auto plan = planCatalogOneTap(nfs, context);
+        assert(plan.outcome == OneTapOutcome::QueuePort);
+        assert(plan.fileSelection == std::vector<uint8_t>(11, 1));
+        // Recompiled NSP with external data can have no separate NRO.
+        nfs.files[0].length = 40 * 1024 * 1024;
+        nfs.files[1].path = "Homebrew/switch/nfsu2/game.dat";
+        assert(planCatalogOneTap(nfs, context).outcome == OneTapOutcome::QueuePort);
+        assert(planCatalogOneTap(nfs, context).fileSelection == std::vector<uint8_t>(11, 1));
+    }
+
+    {
         DownloadManager manager(root + "/direct", false);
         manager.setTorrentingEnabled(true);
         manager.setActiveDebridProvider(DebridProviderKind::RealDebrid);
@@ -251,6 +323,33 @@ void testDirectAndProviders(const std::string& root) {
         assert(task.debridId == "remote-1");
         assert(task.mode == expected.mode);
         assert(task.fileSelection == expected.fileSelection);
+    }
+
+    {
+        // RD can expose the metadata while the cloud download is still queued.
+        // Keep that torrent and let the transfer worker wait for its links.
+        auto counts = std::make_shared<Counts>();
+        counts->phase = DebridInfo::Phase::Creating;
+        DownloadManager manager(root + "/queued-metadata", false);
+        manager.setTorrentingEnabled(false);
+        manager.setActiveDebridProvider(DebridProviderKind::RealDebrid);
+        manager.setRealdebridApiKey("key");
+        ReleaseAdder adder(manager, factoryFor(counts, DebridProviderKind::RealDebrid));
+        AddRequest request;
+        request.input = AddInputKind::Magnet;
+        request.magnetUri = "magnet:?xt=urn:btih:" + hash;
+        request.infoHashHex = hash;
+        request.requestedMode = TransferMode::DownloadOnly;
+        std::atomic<bool> cancelled{false};
+        const AddOutcome outcome = adder.addViaDebrid(request, cancelled, {});
+        assert(outcome.ok);
+        assert(counts->magnets.load() == 1);
+        assert(counts->files.load() == 0);
+        assert(counts->removes.load() == 0);
+        const DownloadTask task = manager.snapshot().at(0);
+        assert(task.source == TaskSource::Debrid);
+        assert(task.debridId == "remote-1");
+        assert(!manager.torrentingEnabled());
     }
 
     {

@@ -24,12 +24,23 @@ enum class InstallLocation {
     SystemMemory,
 };
 
+enum class AppTheme { System, Dark, Light };
+
+inline constexpr uint32_t kScreenOnMinutes[] = {0, 15, 20, 30, 60};
+
+inline bool isSupportedScreenOnMinutes(uint64_t minutes) {
+    for (uint32_t supported : kScreenOnMinutes)
+        if (supported == minutes) return true;
+    return false;
+}
+
 struct AppSettingsData {
     // UI language: "auto" follows the console's system language, otherwise a
     // borealis locale directory name. Read before Application::init() to set
     // Platform::APP_LOCALE_DEFAULT; borealis loads translations once, so a
     // change only takes effect on the next launch.
     std::string language = "auto";
+    AppTheme theme = AppTheme::Dark;
     CatalogFilter catalogFilter = CatalogFilter::Games;
     // HTTPS URL to a switch_games.json-compatible catalog. Empty = built-in
     // Langegen source. Validated at parse time; a hand-edited settings.json
@@ -52,6 +63,10 @@ struct AppSettingsData {
     // Off = never cover, never touch the backlight. Additive key, so files
     // written before it exist keep the default on load.
     bool screenSaverEnabled = true;
+    // Keep the panel on while a transfer/install is active. Zero means until
+    // all transfers finish; timed values count inactivity, reset by real input.
+    bool keepScreenOnDuringTransfers = true;
+    uint32_t screenOnMinutes = 0;
     bool extendedTelemetry = false;
     bool checkForUpdatesOnLaunch = true;
     bool confirmExit = true;

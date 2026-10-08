@@ -24,9 +24,10 @@ struct UpdateCheckResult {
     std::string error;
 };
 
-// Retrieves published releases from the canonical GitHub repository. A
-// verified release is staged beside the active NRO, then a minimal helper
-// finalizes the replacement after the original process has exited.
+// Stages a verified replacement beside the active NRO, then a minimal helper
+// finalizes the replacement after the original process has exited. Legacy
+// GitHub release methods remain for compatibility; the Switch UI uses local
+// uploads from the web companion.
 class UpdateService {
 public:
     using MetadataFetcher = std::function<bool(
@@ -48,6 +49,7 @@ public:
 
     UpdateCheckResult check() const;
     bool install(const ReleaseInfo& release, std::string& error) const;
+    bool stageUploadedNro(const std::string& bytes, std::string& error) const;
     bool stagedReady() const;
     bool hasPendingConfirmation() const;
     bool confirmInstalled(std::string& error) const;
@@ -74,6 +76,8 @@ public:
                              std::string& error);
 
 private:
+    bool prepareStagedFiles(const std::string& expectedChecksum,
+                            std::string& error) const;
     std::string targetPath_;
     std::string helperPath_;
     std::string helperSourcePath_;

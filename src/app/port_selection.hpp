@@ -2,7 +2,9 @@
 
 #include "download_manager.hpp"
 #include "nx_file_types.hpp"
+#include "port_archive_choice.hpp"
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -38,11 +40,19 @@ inline void addPortRoot(std::vector<std::string>& roots,
 inline std::vector<std::string> candidatePortPayloadRoots(
     const TorrentPreview& preview) {
     std::vector<std::string> roots;
+    bool packaged = false;
+    for (const auto& file : preview.files) packaged = packaged || file.package;
     for (const TorrentPreview::File& file : preview.files) {
-        if (file.package || file.cartridge ||
-            !hasNroExtension(file.path))
+        if (file.package || file.cartridge || isPortArchiveName(file.path) ||
+            isLayeredFsRomfsPath(file.path) || isLayeredFsExefsPath(file.path))
             continue;
-        addPortRoot(roots, portParentPath(torrentLogicalPath(preview, file)));
+        const std::string logical = torrentLogicalPath(preview, file);
+        std::string relative, root;
+        const bool switchTree = switchPayloadRelativePath(logical, relative, &root);
+        if (!hasNroExtension(file.path) && !(packaged && switchTree)) continue;
+        if (!switchTree)
+            root = portParentPath(logical);
+        addPortRoot(roots, root);
     }
     return roots;
 }
@@ -130,13 +140,41 @@ inline bool torrentPortLayoutDetected(const TorrentPreview& preview) {
            torrentHasLayeredFsPayload(preview);
 }
 
-// Detail-card one-tap, after the file list is known. The catalog tab is not
-// consulted. NSP/NSZ keeps smart StreamInstall even when an NRO is in the
-// torrent or "[NRO]" is in the title. No packages, and an NRO or a
-// zip/LayeredFS tree, is a port.
+// Explicit forwarder/recomp labels plus a homebrew payload identify a
+// native game with an unrelated homebrew extra. Inspect package basenames,
+// not release directories; every package must belong to the port bundle.
+inline bool torrentHasLabeledPortForwarders(const TorrentPreview& preview) {
+    bool found = false;
+    for (const auto& file : preview.files) {
+        if (!file.package)
+            continue;
+        const size_t slash = file.path.find_last_of("/\\");
+        const std::string name = portSelectionLower(file.path.substr(
+            slash == std::string::npos ? 0 : slash + 1));
+        if (name.find("(port)") == std::string::npos &&
+            name.find("[port]") == std::string::npos &&
+            name.find("(forwarder)") == std::string::npos &&
+            name.find("[forwarder]") == std::string::npos &&
+            name.find("recomp") == std::string::npos)
+            return false;
+        found = true;
+    }
+    return found && !candidatePortPayloadRoots(preview).empty();
+}
+
+// Detail-card one-tap uses the resolved files, not the catalog tab.
 inline bool cardOneTapUsesPortInstall(const TorrentPreview& preview) {
-    if (torrentHasPackageFiles(preview))
-        return false;
+    if (torrentHasPackageFiles(preview)) {
+        if (torrentHasLabeledPortForwarders(preview)) return true;
+        // An NRO plus small NSP launchers is a homebrew bundle even without
+        // a (port) label. Large native packages retain smart stream selection.
+        if (candidatePortPayloadRoots(preview).empty()) return false;
+        for (const auto& file : preview.files)
+            if (file.cartridge || (file.package &&
+                (file.compressed || file.length == 0 || file.length > 16 * 1024 * 1024)))
+                return false;
+        return true;
+    }
     return torrentPortLayoutDetected(preview);
 }
 
@@ -212,6 +250,17 @@ inline std::vector<uint8_t> selectPortPayloadActions(
 inline std::vector<uint8_t> selectPortInstallActions(
     const TorrentPreview& preview) {
     std::vector<uint8_t> mask = selectPortPayloadActions(preview);
+    std::vector<std::string> primaryArchives;
+    for (size_t i = 0; i < preview.files.size(); ++i) {
+        const std::string key = portArchiveChoiceKey(preview.files[i].path, false);
+        if (!key.empty() && mask[i] != static_cast<uint8_t>(FileAction::Skip))
+            primaryArchives.push_back(key);
+    }
+    for (size_t i = 0; i < preview.files.size(); ++i) {
+        const std::string key = portArchiveChoiceKey(preview.files[i].path, true);
+        if (!key.empty() && std::find(primaryArchives.begin(), primaryArchives.end(), key) != primaryArchives.end())
+            mask[i] = static_cast<uint8_t>(FileAction::Skip);
+    }
     size_t selected = 0;
     for (size_t i = 0; i < preview.files.size(); ++i) {
         const TorrentPreview::File& file = preview.files[i];
@@ -239,6 +288,7 @@ inline bool selectionIsPortTransaction(const TorrentPreview& preview,
     size_t packages = 0;
     bool payload = false;
     const bool retailPackages = torrentHasPackageFiles(preview);
+    const bool portBundle = cardOneTapUsesPortInstall(preview);
     for (size_t i = 0; i < actions.size() && i < preview.files.size(); ++i) {
         if (actions[i] == static_cast<uint8_t>(FileAction::Skip))
             continue;
@@ -249,7 +299,11 @@ inline bool selectionIsPortTransaction(const TorrentPreview& preview,
         }
         if (file.cartridge)
             continue;
-        if (hasNroExtension(file.path) ||
+        std::string switchRelative;
+        const bool switchPayload = portBundle &&
+            !isLayeredFsRomfsPath(file.path) && !isLayeredFsExefsPath(file.path) &&
+            switchPayloadRelativePath(file.path, switchRelative);
+        if (hasNroExtension(file.path) || switchPayload ||
             (!retailPackages && isDeployableExtraPath(file.path)))
             payload = true;
     }

@@ -1,6 +1,7 @@
 #include "app/catalog_batch_installer.hpp"
 #include "app/torbox_client.hpp"
 #include "app/torbox_provider.hpp"
+#include "app/realdebrid_provider.hpp"
 
 extern "C" {
 #include "core/sha1.h"
@@ -109,6 +110,49 @@ int main() {
     entry.title = "Game";
     entry.infoHash = sourcePreview.infoHash;
     entry.magnetUri = "magnet:test";
+
+    {
+        // Reviewing a Real-Debrid batch must never touch the account or
+        // resolve the swarm, even if the user later deselects/cancels it.
+        std::atomic<int> accountCalls{0};
+        RdTransport transport = [&accountCalls](const RdHttpRequest&,
+            RdHttpResponse&, std::string&) { ++accountCalls; return false; };
+        RealdebridProvider provider("key", transport);
+        std::ifstream in(source, std::ios::binary);
+        std::string bytes((std::istreambuf_iterator<char>(in)), {});
+        const size_t infoStart = bytes.find("4:info") + 6;
+        CatalogEntry rdEntry = entry;
+        rdEntry.magnetUri = "magnet:?xt=urn:btih:" + entry.infoHash;
+        rdEntry.infoDict.assign(bytes.begin() + infoStart, bytes.end() - 1);
+        CatalogBatchInstaller installer(root,
+            [](const CatalogEntry&, const std::string&, std::atomic<bool>&,
+               const MagnetResolver::ProgressCallback&,
+               std::vector<uint8_t>&, std::string&) { assert(false); return false; });
+        std::atomic<bool> cancelled{false};
+        auto prepared = installer.prepareViaDebrid({rdEntry, rdEntry},
+            StreamSelection::PackagesOnly, provider, cancelled, {});
+        assert(prepared.failures().empty());
+        assert(prepared.items().size() == 2);
+        assert(accountCalls == 0);
+        assert(prepared.items()[0].debridId.empty());
+        assert(!prepared.items()[0].torrentPath.empty());
+        prepared.items()[1].selected = false;
+        DownloadManager manager(std::string(root) + "/rd-lazy", false);
+        auto queued = installer.enqueueViaDebrid(prepared, manager,
+            DebridProviderKind::RealDebrid, provider);
+        assert(queued.taskIds.size() == 1 && queued.skipped == 1);
+        assert(queued.failures.empty());
+        assert(accountCalls == 0); // Creation is deferred to the queue worker.
+        const auto tasks = manager.snapshot();
+        assert(tasks.size() == 1 && tasks[0].debridId.empty());
+        assert(tasks[0].source == TaskSource::Debrid);
+        assert(!tasks[0].metainfoPath.empty());
+        cancelled = true;
+        auto stopped = installer.prepareViaDebrid({rdEntry},
+            StreamSelection::PackagesOnly, provider, cancelled, {});
+        assert(stopped.cancelled() && stopped.items().empty());
+        assert(accountCalls == 0);
+    }
 
     {
         CatalogBatchInstaller installer(
@@ -427,6 +471,23 @@ int main() {
             static_cast<uint8_t>(FileAction::Skip),
             static_cast<uint8_t>(FileAction::Skip)};
         assert(prepared.items()[0].selection == expected);
+        // Even an update preview must not create/select/delete RD torrents.
+        std::atomic<int> rdCalls{0};
+        RealdebridProvider rdProvider("key",
+            [&rdCalls](const RdHttpRequest&, RdHttpResponse&, std::string&) {
+                ++rdCalls; return false;
+            });
+        std::ifstream updateIn(updateA, std::ios::binary);
+        std::string updateBytes((std::istreambuf_iterator<char>(updateIn)), {});
+        auto rdTarget = makeTarget(entryA);
+        const size_t start = updateBytes.find("4:info") + 6;
+        rdTarget.entry.infoDict.assign(updateBytes.begin() + start, updateBytes.end() - 1);
+        auto rdPreview = installer.prepareUpdatesViaDebrid(
+            {rdTarget}, rdProvider, cancelled, {});
+        assert(rdCalls == 0);
+        assert(rdPreview.failures().empty() && rdPreview.items().size() == 1);
+        assert(rdPreview.items()[0].selection == expected);
+        assert(rdPreview.items()[0].debridId.empty());
         assert(resolvedMagnet.rfind("magnet:?xt=urn:btih:", 0) == 0);
 
         // Nothing above the installed version is identifiable: reported

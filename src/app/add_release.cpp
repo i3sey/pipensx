@@ -197,9 +197,11 @@ OneTapPlan planCatalogOneTap(const TorrentPreview& preview,
         preview, context.titleInstalled, context.installedVersion,
         context.latestVersion, context.titleId, context.installedDlcIds);
     plan.packageCount = countSelectedPackages(preview, plan.fileSelection, true);
-    if (plan.packageCount == 0) {
+    const bool needsChoice = smartInstallNeedsChooser(preview, plan.fileSelection);
+    if (plan.packageCount == 0 || needsChoice) {
         plan.outcome = OneTapOutcome::NeedsChooser;
-        plan.block = OneTapBlock::NothingSelected;
+        plan.block = needsChoice ? OneTapBlock::UnidentifiedPackages
+                                 : OneTapBlock::NothingSelected;
         plan.chooserMode = TransferMode::StreamInstall;
         plan.mode = TransferMode::StreamInstall;
         return plan;
@@ -213,6 +215,9 @@ OneTapPlan planCatalogOneTap(const TorrentPreview& preview,
 
 std::string oneTapBlockedMessage(const OneTapPlan& plan) {
     switch (plan.block) {
+        case OneTapBlock::UnidentifiedPackages:
+            return "Some packages could not be identified. Add this release "
+                   "on the console and choose the base, update and DLC files.";
         case OneTapBlock::CartridgeOnly:
             return "This release is a cartridge dump. Choose Download only, "
                    "or add it on the console and pick files.";

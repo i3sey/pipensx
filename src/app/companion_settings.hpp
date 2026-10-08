@@ -5,6 +5,10 @@
 
 #include <string>
 
+extern "C" {
+#include "../core/util.h"
+}
+
 namespace pipensx {
 
 // Whitelist JSON for the web companion Settings tab. Secrets are flags, not
@@ -33,6 +37,7 @@ inline void applyCompanionSettingsRuntime(const AppSettingsData& values,
     manager.setAlldebridApiKey(values.alldebridApiKey);
     manager.setActiveDebridProvider(values.debridProvider);
     applyProxySetting(values.proxyUrl);
+    telemetry_set_enabled(values.extendedTelemetry ? 1 : 0);
 }
 
 }  // namespace pipensx

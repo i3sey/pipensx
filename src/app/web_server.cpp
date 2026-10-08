@@ -1,4 +1,8 @@
 #include "web_server.hpp"
+#include "catalog_descriptions.hpp"
+#include "catalog_section.hpp"
+#include "installed_title_service.hpp"
+#include "game_metadata_service.hpp"
 #include "add_release.hpp"
 #include "task_actions.hpp"
 
@@ -25,6 +29,15 @@ namespace {
 std::atomic<uint64_t> gUploadSerial{1};
 
 constexpr uint64_t kStorageCacheTtlMs = 10 * 1000;
+constexpr size_t kWebLogTailBytes = 512 * 1024;
+constexpr size_t kMaxTorrentUploadBytes = 2 * 1024 * 1024;
+constexpr size_t kMaxUpdateNroBytes = 64 * 1024 * 1024;
+
+HttpServer::Options webHttpOptions() {
+    HttpServer::Options options;
+    options.bodyCap = kMaxUpdateNroBytes;
+    return options;
+}
 
 uint64_t nowMs() {
     using namespace std::chrono;
@@ -122,8 +135,10 @@ const std::map<std::string, StaticEntry>& staticTable() {
          {"index.html", "text/html; charset=utf-8", "no-cache"}},
         {"/app.js",
          {"app.js", "application/javascript; charset=utf-8",
-          "max-age=3600"}},
-        {"/app.css", {"app.css", "text/css; charset=utf-8", "max-age=3600"}},
+          "no-store"}},
+        {"/app.css", {"app.css", "text/css; charset=utf-8", "no-store"}},
+        {"/i18n.json", {"i18n.json", "application/json; charset=utf-8", "no-store"}},
+        {"/i18n.js", {"i18n.js", "application/javascript; charset=utf-8", "no-store"}},
         {"/manifest.webmanifest",
          {"manifest.webmanifest", "application/manifest+json", "no-cache"}},
         {"/icon-192.png", {"icon-192.png", "image/png", "max-age=3600"}},
@@ -173,7 +188,9 @@ std::string gzipCompress(const std::string& input) {
 WebServer::WebServer(DownloadManager& manager, std::string staticRoot,
                      std::string version, WebAddQueue::Resolver resolver)
     : manager_(manager),
+      benchmark_(manager),
       addQueue_(manager, std::move(resolver)),
+      http_(webHttpOptions()),
       staticRoot_(std::move(staticRoot)),
       version_(std::move(version)) {
     http_.setTickCallback([this] { onTick(); });
@@ -202,12 +219,168 @@ void WebServer::stop() { http_.stop(); }
 
 void WebServer::shutdown() {
     http_.stop();
+    {
+        std::lock_guard<std::mutex> lock(configMutex_);
+        libraryStopping_ = true;
+    }
+    libraryCondition_.notify_all();
+    if (libraryWorker_.joinable()) libraryWorker_.join();
+    benchmark_.stop();
     addQueue_.shutdown();
 }
 
 void WebServer::setPin(std::string pin) {
     std::lock_guard<std::mutex> lock(configMutex_);
     pin_ = std::move(pin);
+}
+
+void WebServer::setLibraryHandlers(LibraryGetter getter, LibraryAction action) {
+    std::lock_guard<std::mutex> lock(configMutex_);
+    libraryGetter_ = std::move(getter);
+    libraryAction_ = std::move(action);
+}
+
+void WebServer::setPortHandler(PortHandler handler) {
+    std::lock_guard<std::mutex> lock(configMutex_);
+    portHandler_ = std::move(handler);
+}
+
+HttpResponse WebServer::handlePortRequest(const HttpRequest& req, const std::string& action,
+                                         const std::string& taskId, const std::string& body) {
+    if (!sameOrigin(req)) return jsonError(403, "cross-origin");
+    if (!authorized(req)) return jsonError(401, "pin");
+    PortHandler handler;
+    { std::lock_guard<std::mutex> lock(configMutex_); handler = portHandler_; }
+    if (!handler) return jsonError(503, "Port editor unavailable");
+    std::string json, error;
+    if (!handler(action, taskId, body, json, error)) return jsonError(409, error);
+    return HttpResponse::text(action == "start" ? 202 : 200, std::move(json));
+}
+
+void WebServer::updateMetadata(std::shared_ptr<const GameMetadataIndexSnapshot> metadata) {
+    std::lock_guard<std::mutex> lock(catalogMutex_);
+    metadata_ = std::move(metadata);
+    ++catalogGeneration_;
+    catalogGzip_.reset();
+}
+
+void WebServer::libraryWorkerMain() {
+    for (;;) {
+        LibraryJob job;
+        LibraryAction action;
+        {
+            std::unique_lock<std::mutex> lock(configMutex_);
+            libraryCondition_.wait(lock, [this] {
+                return libraryStopping_ || std::any_of(libraryJobs_.begin(), libraryJobs_.end(),
+                    [](const LibraryJob& j) { return j.state == "queued"; });
+            });
+            if (libraryStopping_) return;
+            auto found = std::find_if(libraryJobs_.begin(), libraryJobs_.end(),
+                [](const LibraryJob& j) { return j.state == "queued"; });
+            found->state = "working";
+            job = *found;
+            action = libraryAction_;
+        }
+        std::string error;
+        log_msg("[web_library] action=%s title=%s started\n", job.action.c_str(), job.titleId.c_str());
+        const bool ok = action && action(job.action, job.titleId, error);
+        {
+            std::lock_guard<std::mutex> lock(configMutex_);
+            for (auto& item : libraryJobs_) if (item.id == job.id) {
+                item.state = ok ? "done" : "error";
+                item.error = error;
+                break;
+            }
+        }
+        log_msg("[web_library] action=%s title=%s result=%s error=%s\n",
+                job.action.c_str(), job.titleId.c_str(), ok ? "done" : "error", error.c_str());
+    }
+}
+
+HttpResponse WebServer::handleLibrary(const HttpRequest& req) {
+    if (!sameOrigin(req)) return jsonError(403, "cross-origin");
+    if (!authorized(req)) return jsonError(401, "pin");
+    LibraryGetter getter;
+    { std::lock_guard<std::mutex> lock(configMutex_); getter = libraryGetter_; }
+    if (!getter) return jsonError(501, "installed library unavailable");
+    std::string data, error;
+    if (!getter(data, error)) return jsonError(503, error);
+    Json response = Json::parse(data, nullptr, false);
+    if (response.is_discarded() || !response.is_object())
+        return jsonError(500, "invalid library snapshot");
+    response["jobs"] = Json::array();
+    {
+        std::lock_guard<std::mutex> lock(configMutex_);
+        for (const auto& job : libraryJobs_)
+            response["jobs"].push_back({{"jobId", job.id}, {"action", job.action},
+                {"titleId", job.titleId}, {"state", job.state}, {"error", job.error}});
+    }
+    return HttpResponse::text(200, dumpJson(response));
+}
+
+HttpResponse WebServer::handleLibraryCommand(const HttpRequest& req,
+    const std::string& requestedId, const std::string& action) {
+    const Json body = req.body.empty() ? Json::object() : Json::parse(req.body, nullptr, false);
+    if (body.is_discarded() || !body.is_object()) return jsonError(400, "invalid JSON body");
+    uint64_t parsedId = 0;
+    if (action != "refresh" && (!InstalledTitleService::parseTitleId(requestedId, parsedId) || !parsedId))
+        return jsonError(400, "invalid title id");
+    const std::string titleId = action == "refresh" ? "" : InstalledTitleService::formatTitleId(parsedId);
+    if (action == "uninstall" && (!body.contains("confirm") || !body["confirm"].is_boolean() ||
+                                  !body["confirm"].get<bool>()))
+        return jsonError(400, "uninstall confirmation required");
+    if (action == "update") {
+        LibraryGetter getter;
+        { std::lock_guard<std::mutex> lock(configMutex_); getter = libraryGetter_; }
+        std::string data, error;
+        if (!getter || !getter(data, error)) return jsonError(503, "installed library unavailable");
+        const Json library = Json::parse(data, nullptr, false);
+        if (library.is_discarded() || !library.is_object() || !library.contains("titles") ||
+            !library["titles"].is_array()) return jsonError(500, "invalid library snapshot");
+        std::string hash;
+        for (const auto& row : library["titles"]) if (row.value("titleId", "") == titleId) {
+            if (row.value("updateState", "") != "update_available")
+                return jsonError(409, "no verified update available");
+            if (row.value("hasLayeredFsMods", false) &&
+                (!body.contains("acknowledgeMods") || !body["acknowledgeMods"].is_boolean() ||
+                 !body["acknowledgeMods"].get<bool>()))
+                return jsonError(409, "review installed mods before updating");
+            hash = lowerAscii(row.value("updateHash", ""));
+            break;
+        }
+        if (hash.empty()) return jsonError(409, "no matching update bundle");
+        CatalogEntry entry;
+        {
+            std::lock_guard<std::mutex> lock(catalogMutex_);
+            auto found = catalogIndex_.find(hash);
+            if (found == catalogIndex_.end()) return jsonError(404, "update bundle missing");
+            entry = (*catalog_)[found->second];
+        }
+        const std::string jobId = addQueue_.enqueue(entry.title, entry.magnetUri, hash,
+            entry.infoDict, TransferMode::StreamInstall, StreamSelection::AllFiles, error,
+            AddInputKind::Catalog, titleId, true);
+        if (jobId.empty()) return jsonError(409, error);
+        return HttpResponse::text(202, dumpJson({{"jobId", jobId}}));
+    }
+    if (action != "refresh" && action != "uninstall") return jsonError(404, "unknown library action");
+    std::lock_guard<std::mutex> lock(configMutex_);
+    if (!libraryAction_ || libraryStopping_) return jsonError(503, "installed library unavailable");
+    for (const auto& job : libraryJobs_)
+        if ((job.state == "queued" || job.state == "working") &&
+            job.action == action && job.titleId == titleId)
+            return HttpResponse::text(202, dumpJson({{"jobId", job.id}}));
+    if (libraryJobs_.size() >= 16) {
+        libraryJobs_.erase(std::remove_if(libraryJobs_.begin(), libraryJobs_.end(),
+            [](const LibraryJob& j) { return j.state == "done" || j.state == "error"; }), libraryJobs_.end());
+        if (libraryJobs_.size() >= 16) return jsonError(409, "library queue full");
+    }
+    LibraryJob job;
+    job.id = "library-" + std::to_string(++librarySerial_);
+    job.action = action; job.titleId = titleId;
+    libraryJobs_.push_back(job);
+    if (!libraryWorker_.joinable()) libraryWorker_ = std::thread([this] { libraryWorkerMain(); });
+    libraryCondition_.notify_one();
+    return HttpResponse::text(202, dumpJson({{"jobId", job.id}}));
 }
 
 void WebServer::setDebridProviderFactory(DebridProviderFactory factory) {
@@ -232,6 +405,15 @@ void WebServer::setSettingsHandlers(SettingsGetter getter,
     std::lock_guard<std::mutex> lock(configMutex_);
     settingsGetter_ = std::move(getter);
     settingsPatcher_ = std::move(patcher);
+}
+
+void WebServer::setUpdateHandlers(UpdateStatusGetter statusGetter,
+                                  UpdateUploader uploader,
+                                  UpdateApplier applier) {
+    std::lock_guard<std::mutex> lock(configMutex_);
+    updateStatusGetter_ = std::move(statusGetter);
+    updateUploader_ = std::move(uploader);
+    updateApplier_ = std::move(applier);
 }
 
 void WebServer::updateCatalog(
@@ -456,6 +638,11 @@ HttpResponse WebServer::routeApi(const HttpRequest& req) {
     if (parts.empty()) return jsonError(404, "not found");
 
     if (req.method == "GET" || req.method == "HEAD") {
+        if (parts[0] == "ports" && parts.size() == 2) {
+            if (parts[1] == "folders")
+                return handlePortRequest(req, "folders", "", Json{{"path", req.queryParam("path")}}.dump());
+            return handlePortRequest(req, "get", parts[1], "");
+        }
         if (parts[0] == "info" && parts.size() == 1) {
             Json j;
             j["name"] = "pipensx";
@@ -464,11 +651,13 @@ HttpResponse WebServer::routeApi(const HttpRequest& req) {
                 std::lock_guard<std::mutex> lock(configMutex_);
                 j["authRequired"] = true;  // mutations always require a PIN
             }
-            j["maxTorrentBytes"] = 2 * 1024 * 1024;
+            j["maxTorrentBytes"] = kMaxTorrentUploadBytes;
+            j["maxUpdateNroBytes"] = kMaxUpdateNroBytes;
             return HttpResponse::text(200, dumpJson(j));
         }
         if (parts[0] == "tasks" && parts.size() == 1)
             return HttpResponse::text(200, buildStateJson());
+        if (parts[0] == "library" && parts.size() == 1) return handleLibrary(req);
         if (parts[0] == "events" && parts.size() == 1) {
             Json hello;
             hello["version"] = version_;
@@ -482,6 +671,22 @@ HttpResponse WebServer::routeApi(const HttpRequest& req) {
         }
         if (parts[0] == "catalog" && parts.size() == 1)
             return handleCatalog(req);
+        if (parts[0] == "catalog" && parts.size() == 2 && parts[1] == "description")
+            return handleCatalogDescription(req);
+        if (parts[0] == "catalog" && parts.size() == 2 && parts[1] == "coverage") {
+            const std::string locale = descriptionLocale(req.queryParam("lang"));
+            if (locale.empty()) return jsonError(400, "unsupported language");
+            std::shared_ptr<const std::vector<CatalogEntry>> snapshot;
+            { std::lock_guard<std::mutex> lock(catalogMutex_); snapshot = catalog_; }
+            size_t available = 0;
+            Json missing = Json::array();
+            for (const auto& entry : *snapshot) {
+                if (hasOfflineCatalogDescription(entry.description, locale)) ++available;
+                else if (missing.size() < 10) missing.push_back(entry.infoHash);
+            }
+            return HttpResponse::text(200, dumpJson({{"locale", locale},
+                {"total", snapshot->size()}, {"available", available}, {"missing", missing}}));
+        }
         if (parts[0] == "storage" && parts.size() == 1) {
             StorageSpaceSnapshot snap =
                 queryStorageSpace(manager_.downloadRoot());
@@ -493,6 +698,14 @@ HttpResponse WebServer::routeApi(const HttpRequest& req) {
         }
         if (parts[0] == "settings" && parts.size() == 1)
             return handleGetSettings(req);
+        if (parts[0] == "logs" && parts.size() == 1)
+            return handleLogs(req);
+        if (parts[0] == "benchmark" && parts.size() == 1) {
+            if (!authorized(req)) return jsonError(401, "pin");
+            return HttpResponse::text(200, benchmark_.statusJson());
+        }
+        if (parts[0] == "update" && parts.size() == 1)
+            return handleUpdateStatus(req);
         return jsonError(404, "not found");
     }
 
@@ -501,6 +714,8 @@ HttpResponse WebServer::routeApi(const HttpRequest& req) {
         if (!authorized(req)) return jsonError(401, "pin");
         if (parts[0] == "settings" && parts.size() == 1)
             return handlePatchSettings(req);
+        if (parts[0] == "ports" && parts.size() == 2)
+            return handlePortRequest(req, "save", parts[1], req.body);
         return jsonError(404, "not found");
     }
 
@@ -510,6 +725,30 @@ HttpResponse WebServer::routeApi(const HttpRequest& req) {
     // PIN check (auth/check exists so the UI can validate a remembered PIN
     // explicitly).
     if (!authorized(req)) return jsonError(401, "pin");
+    if (req.method == "POST" && parts[0] == "ports" && parts.size() == 3 &&
+        (parts[2] == "preview" || parts[2] == "start"))
+        return handlePortRequest(req, parts[2], parts[1], req.body);
+    if (req.method == "POST" && parts[0] == "library") {
+        if (parts.size() == 2 && parts[1] == "refresh")
+            return handleLibraryCommand(req, "", "refresh");
+        if (parts.size() == 3)
+            return handleLibraryCommand(req, parts[1], parts[2]);
+        return jsonError(404, "unknown library action");
+    }
+    if (req.method == "POST" && parts.size() == 2 && parts[0] == "benchmark" && parts[1] == "cancel") {
+        benchmark_.stop();
+        return HttpResponse::text(200, benchmark_.statusJson());
+    }
+    if (req.method == "POST" && parts[0] == "benchmark" && parts.size() == 1) {
+        const Json request = Json::parse(req.body, nullptr, false);
+        if (request.is_discarded() || !request.is_object() ||
+            !request.contains("taskId") || !request["taskId"].is_string())
+            return jsonError(400, "taskId required");
+        std::string error;
+        if (!benchmark_.start(request["taskId"].get<std::string>(), error))
+            return jsonError(409, error);
+        return HttpResponse::text(202, benchmark_.statusJson());
+    }
     if (parts[0] == "auth" && parts.size() == 2 && parts[1] == "check")
         return HttpResponse::empty(204);
     if (parts[0] == "tasks" && parts.size() == 3)
@@ -549,7 +788,67 @@ HttpResponse WebServer::routeApi(const HttpRequest& req) {
         if (parts[1] == "catalog") return handleAddCatalog(req);
         if (parts[1] == "torrent") return handleAddTorrent(req);
     }
+    if (parts[0] == "update" && parts.size() == 2) {
+        if (parts[1] == "upload") return handleUpdateUpload(req);
+        if (parts[1] == "apply") return handleUpdateApply(req);
+    }
     return jsonError(404, "not found");
+}
+
+HttpResponse WebServer::handleUpdateStatus(const HttpRequest& req) {
+    if (!sameOrigin(req)) return jsonError(403, "cross-origin");
+    if (!authorized(req)) return jsonError(401, "pin");
+    UpdateStatusGetter getter;
+    {
+        std::lock_guard<std::mutex> lock(configMutex_);
+        getter = updateStatusGetter_;
+    }
+    if (!getter) return jsonError(501, "update service unavailable");
+    bool stagedReady = false;
+    uint64_t stagedBytes = 0;
+    std::string error;
+    if (!getter(stagedReady, stagedBytes, error))
+        return jsonError(500, error.empty() ? "update status unavailable" : error);
+    Json j;
+    j["currentVersion"] = version_;
+    j["stagedReady"] = stagedReady;
+    j["stagedBytes"] = stagedBytes;
+    j["maxUploadBytes"] = kMaxUpdateNroBytes;
+    j["source"] = "remoteUpload";
+    return HttpResponse::text(200, dumpJson(j));
+}
+
+HttpResponse WebServer::handleUpdateUpload(const HttpRequest& req) {
+    if (req.body.empty()) return jsonError(400, "empty NRO upload");
+    if (req.body.size() > kMaxUpdateNroBytes)
+        return jsonError(413, "NRO upload too large");
+    UpdateUploader uploader;
+    {
+        std::lock_guard<std::mutex> lock(configMutex_);
+        uploader = updateUploader_;
+    }
+    if (!uploader) return jsonError(501, "update service unavailable");
+    std::string error;
+    if (!uploader(req.body, error)) {
+        const int status = error.find("Unable to") == 0 ? 500 : 400;
+        return jsonError(status, error.empty() ? "invalid NRO upload" : error);
+    }
+    return handleUpdateStatus(req);
+}
+
+HttpResponse WebServer::handleUpdateApply(const HttpRequest&) {
+    UpdateApplier applier;
+    {
+        std::lock_guard<std::mutex> lock(configMutex_);
+        applier = updateApplier_;
+    }
+    if (!applier) return jsonError(501, "update service unavailable");
+    std::string error;
+    if (!applier(error))
+        return jsonError(409, error.empty() ? "update cannot be applied" : error);
+    Json j;
+    j["applying"] = true;
+    return HttpResponse::text(202, dumpJson(j));
 }
 
 HttpResponse WebServer::handleGetSettings(const HttpRequest& req) {
@@ -567,6 +866,29 @@ HttpResponse WebServer::handleGetSettings(const HttpRequest& req) {
         return jsonError(error == "timed out" ? 503 : 500,
                          error.empty() ? "settings unavailable" : error);
     return HttpResponse::text(200, json);
+}
+
+HttpResponse WebServer::handleLogs(const HttpRequest& req) {
+    // Logs can contain filenames, torrent/debrid ids and diagnostic details,
+    // so unlike the public task snapshot they require the companion PIN.
+    if (!sameOrigin(req)) return jsonError(403, "cross-origin");
+    if (!authorized(req)) return jsonError(401, "pin");
+
+    std::string tail(kWebLogTailBytes, '\0');
+    tail.resize(log_read_tail(tail.data(), tail.size()));
+
+    // A bounded tail can begin in the middle of a UTF-8 character or log
+    // record. Dropping the first partial record keeps browser rendering sane.
+    if (tail.size() == kWebLogTailBytes) {
+        const size_t newline = tail.find('\n');
+        if (newline != std::string::npos)
+            tail.erase(0, newline + 1);
+    }
+
+    HttpResponse response =
+        HttpResponse::text(200, tail, "text/plain; charset=utf-8");
+    response.extraHeaders.push_back({"Cache-Control", "no-store"});
+    return response;
 }
 
 HttpResponse WebServer::handlePatchSettings(const HttpRequest& req) {
@@ -589,7 +911,29 @@ HttpResponse WebServer::handlePatchSettings(const HttpRequest& req) {
     return HttpResponse::text(200, json);
 }
 
+HttpResponse WebServer::handleCatalogDescription(const HttpRequest& req) {
+    const std::string locale = descriptionLocale(req.queryParam("lang"));
+    if (locale.empty()) return jsonError(400, "unsupported language");
+    std::string source;
+    {
+        std::lock_guard<std::mutex> lock(catalogMutex_);
+        const auto found = catalogIndex_.find(lowerAscii(req.queryParam("hash")));
+        if (found == catalogIndex_.end()) return jsonError(404, "game not found");
+        source = (*catalog_)[found->second].description;
+    }
+    std::string text;
+    const bool localized = offlineCatalogDescription(source, locale, text);
+    Json j;
+    j["description"] = localized ? text : source;
+    j["locale"] = locale;
+    j["localized"] = localized;
+    HttpResponse response = HttpResponse::text(200, dumpJson(j));
+    response.extraHeaders.push_back({"Cache-Control", "no-store"});
+    return response;
+}
+
 HttpResponse WebServer::handleCatalog(const HttpRequest& req) {
+    std::shared_ptr<const GameMetadataIndexSnapshot> metadata;
     // Grab the state under the lock, but do the expensive JSON build + gzip
     // outside it: holding catalogMutex_ for the multi-MB encode blocked the
     // UI thread's updateCatalog for the whole duration.
@@ -599,6 +943,7 @@ HttpResponse WebServer::handleCatalog(const HttpRequest& req) {
     {
         std::lock_guard<std::mutex> lock(catalogMutex_);
         generation = catalogGeneration_;
+        metadata = metadata_;
         std::string etag = "\"cat-" + std::to_string(generation) + "\"";
         if (req.header("if-none-match") == etag) {
             HttpResponse r = HttpResponse::empty(304);
@@ -626,6 +971,13 @@ HttpResponse WebServer::handleCatalog(const HttpRequest& req) {
             // Rich detail-card fields for the game-store UI. All optional
             // on the client — old cached app.js simply ignores the extras.
             j["titleId"] = e.titleId;
+            std::string metadataId;
+            if (metadata) {
+                const auto found = metadata->byInfoHash.find(lowerAscii(e.infoHash));
+                if (found != metadata->byInfoHash.end() && found->second < metadata->items.size())
+                    metadataId = metadata->items[found->second].titleId;
+            }
+            j["section"] = catalogTitleIsGame(e.title, e.titleId, metadataId) ? "games" : "ports";
             j["performance"] = e.performance;
             j["multiplayer"] = e.multiplayer;
             j["interfaceLang"] = e.interfaceLang;
@@ -714,6 +1066,13 @@ HttpResponse WebServer::handleAddMagnet(const HttpRequest& req) {
     if (!MagnetResolver::parse(magnet, spec, error))
         return jsonError(400, error.empty() ? "invalid magnet URI" : error);
 
+    const auto existing = manager_.snapshot(spec.infoHashHex);
+    if (mode == TransferMode::StreamInstall && existing &&
+        existing->mode == TransferMode::DownloadOnly && existing->status == DownloadStatus::Completed) {
+        std::string error;
+        if (!manager_.installDownloaded(spec.infoHashHex, error)) return jsonError(409, error);
+        return HttpResponse::text(200, dumpJson({{"taskId", spec.infoHashHex}, {"reusedTask", true}}));
+    }
     StreamSelection selection;
     {
         std::lock_guard<std::mutex> lock(configMutex_);
@@ -752,6 +1111,13 @@ HttpResponse WebServer::handleAddCatalog(const HttpRequest& req) {
         infoDict = entry.infoDict;
         titleId = entry.titleId;
     }
+    const auto existing = manager_.snapshot(hash);
+    if (mode == TransferMode::StreamInstall && existing &&
+        existing->mode == TransferMode::DownloadOnly && existing->status == DownloadStatus::Completed) {
+        std::string error;
+        if (!manager_.installDownloaded(hash, error)) return jsonError(409, error);
+        return HttpResponse::text(200, dumpJson({{"taskId", hash}, {"reusedTask", true}}));
+    }
     StreamSelection selection;
     {
         std::lock_guard<std::mutex> lock(configMutex_);
@@ -770,6 +1136,8 @@ HttpResponse WebServer::handleAddCatalog(const HttpRequest& req) {
 
 HttpResponse WebServer::handleAddTorrent(const HttpRequest& req) {
     if (req.body.empty()) return jsonError(400, "empty body");
+    if (req.body.size() > kMaxTorrentUploadBytes)
+        return jsonError(413, "torrent upload too large");
     TransferMode mode;
     if (!parseMode(req.queryParam("mode"), mode))
         return jsonError(400, "mode must be \"install\" or \"download\"");

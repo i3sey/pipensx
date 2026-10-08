@@ -6,6 +6,31 @@
 
 namespace pipensx {
 
+// Preserve an explicitly supplied switch/ tree, including sibling data
+// directories; release wrappers above it are not destination directories.
+inline bool switchPayloadRelativePath(const std::string& path,
+                                      std::string& relative,
+                                      std::string* root = nullptr) {
+    std::string normalized = path;
+    for (char& ch : normalized)
+        if (ch == '\\') ch = '/';
+    size_t start = 0;
+    while (start < normalized.size()) {
+        const size_t slash = normalized.find('/', start);
+        if (slash == std::string::npos) break;
+        std::string component = normalized.substr(start, slash - start);
+        for (char& ch : component)
+            if (ch >= 'A' && ch <= 'Z') ch += 'a' - 'A';
+        if (component == "switch" && slash + 1 < normalized.size()) {
+            relative = normalized.substr(slash + 1);
+            if (root) *root = normalized.substr(0, slash);
+            return true;
+        }
+        start = slash + 1;
+    }
+    return false;
+}
+
 // Case-insensitive test that `name` ends with the 4-character extension
 // `ext4` (e.g. ".nsp"). Shared by every Switch file-name classifier so the
 // recognized extensions live in exactly one place.

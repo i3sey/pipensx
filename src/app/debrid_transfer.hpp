@@ -49,7 +49,20 @@ struct DebridTaskSpec {
     TransferMode mode;
     std::vector<uint8_t> fileSelection;
     std::vector<std::pair<std::string, uint64_t>> selectionPaths;
+    // Saved catalog manifest: full sanitized paths, not ambiguous basenames
+    // or positions in a provider list that may have been reordered.
+    std::vector<std::pair<std::string, uint64_t>> selectionRelativePaths;
     uint32_t packagesInstalled = 0;
+    // Fresh NSZ streams directly. Existing disk caches still resume through
+    // the cached path; callers can explicitly request caching new packages.
+    // Runtime policy only: no change to persisted task/settings versions.
+    bool cacheCompressedPackages = false;
+    size_t installBatchBytes = 4u << 20; // Measured default; runtime tuning is not persisted.
+    // Runtime retry policy for cached NSZ downloads; not persisted settings.
+    uint32_t reconnectDelayMs = 5000;
+    uint32_t reconnectTimeoutMs = 15 * 60 * 1000;
+    // Test seam: exercise FAT32 split caching with small PC fixtures.
+    bool forceSplitDownloads = false;
     struct ResolvedFile {
         std::string path;
         std::string localPath;

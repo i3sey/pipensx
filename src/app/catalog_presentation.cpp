@@ -1,4 +1,6 @@
 #include "catalog_presentation.hpp"
+#include "catalog_section.hpp"
+#include "catalog_descriptions.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -95,14 +97,6 @@ std::vector<std::string> mergeScreenshotUrls(
 
 namespace {
 
-std::string lowerAscii(std::string value) {
-    std::transform(value.begin(), value.end(), value.begin(),
-                   [](unsigned char c) {
-                       return static_cast<char>(std::tolower(c));
-                   });
-    return value;
-}
-
 std::string join(const std::vector<std::string>& values) {
     std::ostringstream result;
     for (size_t i = 0; i < values.size(); ++i) {
@@ -111,25 +105,6 @@ std::string join(const std::vector<std::string>& values) {
         result << values[i];
     }
     return result.str();
-}
-
-bool containsAny(const std::string& text,
-                 std::initializer_list<const char*> needles) {
-    for (const char* needle : needles) {
-        if (text.find(needle) != std::string::npos)
-            return true;
-    }
-    return false;
-}
-
-bool hasNroMarker(const std::string& title) {
-    return containsAny(title, {"[nro", ".nro"});
-}
-
-bool hasPackageMarker(const std::string& title) {
-    return containsAny(title, {"[nsp", "[nsz", "[xci", "[xcz",
-                               ".nsp", ".nsz", ".xci", ".xcz",
-                               "/nsp", "/nsz", "/xci", "/xcz"});
 }
 
 bool isHex(char c) {
@@ -164,7 +139,7 @@ CatalogRowPresentation resolveCatalogRow(const CatalogEntry& entry,
 
 CatalogPresentation resolveCatalogPresentation(
     const CatalogEntry& entry, const GameMetadata* metadata,
-    TextPreference preference) {
+    TextPreference preference, const std::string& locale) {
     CatalogRowPresentation row = resolveCatalogRow(entry, metadata);
     CatalogPresentation result;
     result.title = std::move(row.title);
@@ -186,6 +161,9 @@ CatalogPresentation resolveCatalogPresentation(
         result.description = metadata->intro;
     else
         result.description = entry.description;
+    std::string localized;
+    if (offlineCatalogDescription(entry.description, locale, localized))
+        result.description = std::move(localized);
     result.developer = entry.developer;
     result.publisher = metadata && !metadata->publisher.empty()
         ? metadata->publisher : entry.publisher;
@@ -203,14 +181,8 @@ CatalogPresentation resolveCatalogPresentation(
 
 bool catalogEntryIsGame(const CatalogEntry& entry,
                         const GameMetadata* metadata) {
-    const std::string title = lowerAscii(entry.title);
-    if (hasNroMarker(title))
-        return false;
-    if (metadata && looksLikeTitleId(metadata->titleId))
-        return true;
-    if (looksLikeTitleId(entry.titleId))
-        return true;
-    return hasPackageMarker(title);
+    return catalogTitleIsGame(entry.title, entry.titleId,
+                              metadata ? metadata->titleId : std::string());
 }
 
 bool catalogEntryHasMatchedTitle(const GameMetadata* metadata) {

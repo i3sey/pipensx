@@ -8,6 +8,8 @@
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
+#include <algorithm>
+#include <vector>
 
 namespace pipensx::install {
 
@@ -19,6 +21,43 @@ enum : uint8_t {
     kMetaTypePatch = 0x81,
     kMetaTypeAddOnContent = 0x82,
 };
+
+// NS application records retain every base/patch/DLC key. Replace all versions
+// of the incoming id+type, preserving unrelated keys and their storage IDs.
+// Record has the NsExtContentStorageMetaKey layout; a PC fixture uses the same
+// fields without requiring libnx headers.
+template <typename Record>
+inline void replaceApplicationRecordMeta(std::vector<Record>& records,
+                                         Record incoming) {
+    records.erase(std::remove_if(records.begin(), records.end(),
+        [&](const Record& existing) {
+            return existing.meta_key.id == incoming.meta_key.id &&
+                   existing.meta_key.type == incoming.meta_key.type;
+        }), records.end());
+    records.push_back(incoming);
+}
+
+// Enumerate the complete record rather than trusting a separate count as a
+// buffer capacity. Leave the caller's snapshot untouched on any read failure.
+template <typename Record, typename Reader>
+inline bool loadApplicationRecordPages(std::vector<Record>& records,
+                                       Reader readPage) {
+    constexpr size_t pageSize = 64;
+    constexpr size_t maxRecords = 4096;
+    std::vector<Record> snapshot;
+    std::vector<Record> page(pageSize);
+    for (;;) {
+        size_t written = 0;
+        if (!readPage(snapshot.size(), page, written) || written > page.size() ||
+            written > maxRecords - snapshot.size())
+            return false;
+        snapshot.insert(snapshot.end(), page.begin(), page.begin() + written);
+        if (written < page.size()) {
+            records.swap(snapshot);
+            return true;
+        }
+    }
+}
 
 // Zeroes required_system_version (u32 at offset 8 of the extended header,
 // right after the u64 id) in an Application/Patch meta and returns the

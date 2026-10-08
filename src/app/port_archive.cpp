@@ -2,6 +2,7 @@
 
 #include "nx_file_types.hpp"
 #include "task_files.hpp"
+#include "port_layout.hpp"
 
 extern "C" {
 #include "../../vendor/lzma/7z.h"
@@ -119,6 +120,14 @@ bool pathInside(const std::string& path, const std::string& root) {
 // LayeredFS extra (typical rusifikator zip with no NRO).
 bool buildArchiveMapping(const std::vector<RawArchiveFile>& raw,
                          PortArchiveProbe& out) {
+    if (raw.size() > kMaxProbeFiles) {
+        out.error = "The archive contains too many files to preview.";
+        return false;
+    }
+    for (const auto& member : raw) {
+        auto path = normalizeArchivePath(member.path);
+        out.allSourceFiles.push_back(path.empty() ? member.path : path);
+    }
     std::vector<std::string> roots;
     for (const RawArchiveFile& file : raw) {
         const std::string normalized = normalizeArchivePath(file.path);
@@ -152,6 +161,12 @@ bool buildArchiveMapping(const std::vector<RawArchiveFile>& raw,
     std::vector<std::string> foldedDestinations;
     for (const RawArchiveFile& file : raw) {
         const std::string source = normalizeArchivePath(file.path);
+        if (!out.manualDirectory.empty() &&
+            (source.empty() || file.path.empty() || file.path.front() == '/' ||
+             file.path.front() == '\\')) {
+            out.error = "Unsafe archive member: " + file.path;
+            return false;
+        }
         if (source.empty())
             continue;
         std::string destination;
@@ -161,8 +176,20 @@ bool buildArchiveMapping(const std::vector<RawArchiveFile>& raw,
         // swallow atmosphere/… into /switch). contents/ and titles/ roots
         // are rewritten to atmosphere/contents/<tid>/romfs/. Exefs stays out
         // of the automatic mapping.
-        if (isLayeredFsRomfsPath(source, nullptr, nullptr, &destination)) {
+        if (!out.manualDirectory.empty()) {
+            if (!manualPortMemberDestination(out.manualDirectory, source, destination)) {
+                out.error = "Unsafe manual archive destination: " + source;
+                return false;
+            }
             sdRoot = true;
+            if (lowerAscii(destination).rfind("switch/", 0) == 0) {
+                destination.erase(0, 7);
+                sdRoot = false;
+            }
+        } else if (isLayeredFsRomfsPath(source, nullptr, nullptr, &destination)) {
+            sdRoot = true;
+        } else if (switchPayloadRelativePath(source, destination)) {
+            // Explicit SD layout wins over NRO-parent inference.
         } else if (!roots.empty()) {
             const std::string* selected = nullptr;
             for (const std::string& root : roots) {
@@ -194,7 +221,8 @@ bool buildArchiveMapping(const std::vector<RawArchiveFile>& raw,
                                    lowerAscii(destination);
         if (std::find(foldedDestinations.begin(), foldedDestinations.end(),
                       folded) != foldedDestinations.end()) {
-            out.error = "Archive destination paths collide on FAT.";
+            out.error = "Archive destination paths collide on FAT: member '" +
+                        source + "' maps to '" + destination + "'.";
             return false;
         }
         if (out.files.size() >= kMaxProbeFiles) {
@@ -205,7 +233,7 @@ bool buildArchiveMapping(const std::vector<RawArchiveFile>& raw,
         out.sourceFiles.push_back(source);
         out.files.push_back(destination);
         out.destinationSdRoot.push_back(sdRoot ? 1 : 0);
-        if (sdRoot)
+        if (sdRoot && out.manualDirectory.empty())
             ++out.layeredFiles;
         else
             ++out.switchFiles;
@@ -1336,8 +1364,15 @@ bool probe7z(const std::string& archivePath, PortArchiveProbe& out) {
 
 } // namespace
 
-bool probePortArchive(const std::string& archivePath, PortArchiveProbe& out) {
+bool probePortArchive(const std::string& archivePath, PortArchiveProbe& out,
+                      const std::string& manualDirectory) {
     out = {};
+    out.manualDirectory = manualDirectory;
+    std::string normalized;
+    if (!manualDirectory.empty() && !normalizePortDirectory(manualDirectory, normalized)) {
+        out.error = "Unsafe manual destination directory.";
+        return false;
+    }
     struct stat st {};
     if (lstat(archivePath.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) {
         out.error = "Archive is missing.";
@@ -1373,12 +1408,24 @@ bool extractPortArchive(const std::string& archivePath,
                         const std::atomic<bool>& cancelled,
                         const std::function<void(uint64_t)>& progress,
                         const std::function<void(const std::string&)>& currentFile,
-                        std::string& error) {
+                        std::string& error,
+                        const std::vector<std::string>& excludedDestinations,
+                        const std::string& manualDirectory) {
     PortArchiveProbe probe;
-    if (!probePortArchive(archivePath, probe)) {
+    if (!probePortArchive(archivePath, probe, manualDirectory)) {
         error = probe.error;
         return false;
     }
+    for (size_t i = probe.files.size(); i-- > 0;) {
+        const std::string key = (probe.destinationSdRoot[i] ? "sd:" : "switch:") +
+                                probe.files[i];
+        if (std::find(excludedDestinations.begin(), excludedDestinations.end(), key)
+            == excludedDestinations.end()) continue;
+        probe.files.erase(probe.files.begin() + i);
+        probe.sourceFiles.erase(probe.sourceFiles.begin() + i);
+        probe.destinationSdRoot.erase(probe.destinationSdRoot.begin() + i);
+    }
+    if (probe.files.empty()) return true;
     const std::string base = lowerAscii(basenameOf(archivePath));
     if (base == "switch.zip" || endsWithCi(archivePath, ".zip"))
         return extractZip(archivePath, targetRoot, sdRoot, probe, cancelled,

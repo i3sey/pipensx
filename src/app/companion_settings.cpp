@@ -16,6 +16,8 @@ const std::unordered_set<std::string> kAllowedKeys = {
     "alldebridApiKey",    "torrserverUrl",     "proxyUrl",
     "catalogSourceUrl",
     "catalogFilter",      "refreshCatalogOnLaunch",
+    "extendedTelemetry",
+    "language",
 };
 
 const char* streamSelectionJson(StreamSelection value) {
@@ -48,6 +50,7 @@ const char* debridProviderJson(DebridProviderKind value) {
 
 std::string companionSettingsJson(const AppSettingsData& values) {
     Json j;
+    j["language"] = values.language;
     j["maxActiveDownloads"] = values.maxActiveDownloads;
     j["streamSelection"] = streamSelectionJson(values.streamSelection);
     j["installLocation"] = installLocationJson(values.installLocation);
@@ -60,6 +63,7 @@ std::string companionSettingsJson(const AppSettingsData& values) {
     j["catalogSourceUrl"] = values.catalogSourceUrl;
     j["catalogFilter"] = catalogFilterJson(values.catalogFilter);
     j["refreshCatalogOnLaunch"] = values.refreshCatalogOnLaunch;
+    j["extendedTelemetry"] = values.extendedTelemetry;
     return j.dump();
 }
 
@@ -85,6 +89,14 @@ bool applyCompanionSettingsPatch(AppSettingsData& values,
         }
         values.maxActiveDownloads = clampMaxActiveDownloads(
             root["maxActiveDownloads"].get<uint64_t>());
+    }
+    if (root.contains("language")) {
+        if (!root["language"].is_string() ||
+            !isSupportedLanguage(root["language"].get<std::string>())) {
+            error = "language has an unsupported value";
+            return false;
+        }
+        values.language = root["language"].get<std::string>();
     }
     if (root.contains("streamSelection")) {
         if (!root["streamSelection"].is_string()) {
@@ -207,6 +219,13 @@ bool applyCompanionSettingsPatch(AppSettingsData& values,
         }
         values.refreshCatalogOnLaunch =
             root["refreshCatalogOnLaunch"].get<bool>();
+    }
+    if (root.contains("extendedTelemetry")) {
+        if (!root["extendedTelemetry"].is_boolean()) {
+            error = "extendedTelemetry must be true or false";
+            return false;
+        }
+        values.extendedTelemetry = root["extendedTelemetry"].get<bool>();
     }
     return true;
 }

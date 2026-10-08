@@ -11,6 +11,7 @@ struct RdFile {
     std::string id;
     std::string path;
     uint64_t bytes = 0;
+    int selected = -1;
 };
 
 struct RdTorrentInfo {
@@ -55,11 +56,14 @@ public:
                           std::string& error);
     bool createFromFile(const std::string& torrentPath, std::string& torrentId,
                         std::string& error);
+    bool findTorrentByHash(const std::string& hash, std::string& torrentId,
+                           std::string& error);
     bool fetchInfo(const std::string& torrentId, RdTorrentInfo& info,
                    std::string& error);
     bool selectFiles(const std::string& torrentId,
                      const std::vector<std::string>& fileIds,
-                     std::string& error);
+                     std::string& error,
+                     bool* alreadyDone = nullptr);
     bool unrestrictLink(const std::string& link, RdUnrestrict& out,
                         std::string& error);
     bool remove(const std::string& torrentId, std::string& error);
@@ -74,6 +78,9 @@ public:
                                         std::string& error);
     static bool parseInfo(const std::string& json, RdTorrentInfo& info,
                           std::string& error);
+    static bool parseTorrentList(const std::string& json,
+                                 std::vector<RdTorrentInfo>& torrents,
+                                 std::string& error);
     static bool parseUnrestrict(const std::string& json, RdUnrestrict& out,
                                 std::string& error);
 

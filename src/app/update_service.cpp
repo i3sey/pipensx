@@ -362,6 +362,28 @@ bool copyFileContents(const std::string& source, const std::string& destination,
     return true;
 }
 
+bool validateUploadedNro(const std::string& bytes, std::string& error) {
+    // NroStart is 0x10 bytes; NroHeader follows it and is 0x70 bytes.
+    if (bytes.size() < 0x80 || bytes.size() > kNroLimit) {
+        error = "Uploaded NRO is empty, truncated, or too large.";
+        return false;
+    }
+    if (std::memcmp(bytes.data() + 0x10, "NRO0", 4) != 0) {
+        error = "Uploaded file is not a valid NRO (NRO0 header missing).";
+        return false;
+    }
+    const auto* p = reinterpret_cast<const unsigned char*>(bytes.data() + 0x18);
+    const uint32_t declaredSize = static_cast<uint32_t>(p[0]) |
+        (static_cast<uint32_t>(p[1]) << 8) |
+        (static_cast<uint32_t>(p[2]) << 16) |
+        (static_cast<uint32_t>(p[3]) << 24);
+    if (declaredSize < 0x80 || declaredSize > bytes.size()) {
+        error = "Uploaded NRO has an invalid declared size.";
+        return false;
+    }
+    return true;
+}
+
 } // namespace
 
 UpdateService::UpdateService(std::string targetPath,
@@ -508,6 +530,53 @@ bool UpdateService::install(const ReleaseInfo& release, std::string& error) cons
         error = "Update checksum does not match GitHub release.";
         return false;
     }
+    return prepareStagedFiles(expectedChecksum, error);
+}
+
+bool UpdateService::stageUploadedNro(const std::string& bytes,
+                                     std::string& error) const {
+    error.clear();
+    if (!validateUploadedNro(bytes, error))
+        return false;
+
+    const std::string temporary = stagedPath();
+    const std::string marker = temporary + ".sha256";
+    const std::string helperTemporary = helperPath() + ".tmp";
+    unlink(temporary.c_str());
+    unlink(marker.c_str());
+    unlink(helperTemporary.c_str());
+
+    std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+    if (!output) {
+        error = "Unable to create staged update.";
+        return false;
+    }
+    output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    output.flush();
+    if (!output) {
+        output.close();
+        unlink(temporary.c_str());
+        error = "Unable to write staged update.";
+        return false;
+    }
+    output.close();
+
+    std::string checksum;
+    if (!checksumFile(temporary, checksum, error)) {
+        unlink(temporary.c_str());
+        return false;
+    }
+    if (!prepareStagedFiles(checksum, error))
+        return false;
+    return true;
+}
+
+bool UpdateService::prepareStagedFiles(const std::string& expectedChecksum,
+                                       std::string& error) const {
+    const std::string temporary = stagedPath();
+    const std::string marker = temporary + ".sha256";
+    const std::string helper = helperPath();
+    const std::string helperTemporary = helper + ".tmp";
     std::ofstream markerFile(marker, std::ios::binary | std::ios::trunc);
     markerFile << expectedChecksum << '\n';
     markerFile.flush();

@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <fstream>
 #include <string>
+#include <unistd.h>
 
 using pipensx::isSslCertificateErrorMessage;
 using pipensx::urlHostForDisplay;
@@ -16,6 +17,24 @@ static std::string readFile(const char* path) {
 }
 
 int main() {
+    // Exercise real socket options. A rejected tuning request must still
+    // let curl keep the socket; accepted sizes may be clamped by the OS.
+    const int fd = socket(AF_INET, SOCK_STREAM, 0);
+    assert(fd >= 0);
+    pipensx::CurlSocketTuning tuning;
+    assert(pipensx::curlEnlargeReceiveBuffer(&tuning, fd, CURLSOCKTYPE_IPCXN)
+           == CURL_SOCKOPT_OK);
+    assert(tuning.requestedBytes > 0 && tuning.actualBytes > 0);
+    int actual = 0;
+    socklen_t length = sizeof(actual);
+    assert(getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &actual, &length) == 0);
+    assert(actual == tuning.actualBytes);
+    close(fd);
+    tuning = {};
+    assert(pipensx::curlEnlargeReceiveBuffer(&tuning, CURL_SOCKET_BAD,
+                                            CURLSOCKTYPE_IPCXN) == CURL_SOCKOPT_OK);
+    assert(tuning.requestedBytes == 0 && tuning.actualBytes == 0);
+    assert(tuning.lastError != 0);
     const std::string pem = readFile("resources/ssl/cacert.pem");
     assert(pem.find("BEGIN CERTIFICATE") != std::string::npos);
     int certs = 0;

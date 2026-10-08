@@ -9,10 +9,12 @@
 #include "app/stream_ram_budget.hpp"
 #include "app/switch_deploy.hpp"
 #include "app/update_service.hpp"
+#include "app/ui_thread_call.hpp"
 #include "app/web_server.hpp"
 #include "platform/switch_backlight.hpp"
 #include "platform/switch_crashlog.h"
 #include "platform/switch_performance.hpp"
+#include "platform/switch_runtime.h"
 
 extern "C" {
 #include "core/dht.h"
@@ -20,6 +22,7 @@ extern "C" {
 }
 
 #include <borealis.hpp>
+#include <borealis/extern/nlohmann/json.hpp>
 #include <curl/curl.h>
 #include <switch.h>
 #include <switch-ipcext.h>
@@ -60,10 +63,14 @@ extern "C" {
 #include "ui/settings/help_view.hpp"
 #include "ui/settings/settings_view.hpp"
 #include "ui/theme.hpp"
+#include "app/display_policy.hpp"
 
 using pipensx::AppSettings;
 using pipensx::CatalogService;
 using pipensx::CatalogSnapshot;
+using pipensx::CatalogEntry;
+using pipensx::GameMetadata;
+using pipensx::GameMetadataIndexSnapshot;
 using pipensx::DownloadManager;
 using pipensx::SwitchDeployService;
 using pipensx::PortUninstallService;
@@ -73,7 +80,6 @@ using pipensx::GameUpdateService;
 using pipensx::InstalledTitleService;
 using pipensx::FavoritesService;
 using pipensx::SwitchPerformanceController;
-using pipensx::UpdateCheckResult;
 using pipensx::UpdateService;
 using pipensx::WebServer;
 
@@ -84,17 +90,9 @@ namespace {
 constexpr auto kCompanionSettingsTimeout = std::chrono::seconds(5);
 
 bool runOnUiThread(const std::function<void()>& fn) {
-    std::mutex mutex;
-    std::condition_variable cv;
-    bool done = false;
-    brls::sync([&] {
-        fn();
-        std::lock_guard<std::mutex> lock(mutex);
-        done = true;
-        cv.notify_one();
-    });
-    std::unique_lock<std::mutex> lock(mutex);
-    return cv.wait_for(lock, kCompanionSettingsTimeout, [&] { return done; });
+    return pipensx::dispatchUiCall(
+        [](std::function<void()> callback) { brls::sync(std::move(callback)); },
+        fn, kCompanionSettingsTimeout);
 }
 
 constexpr const char* BundledCatalogPath =
@@ -457,6 +455,7 @@ int main(int argc, char** argv) {
     mkdir("sdmc:/switch", 0755);
     mkdir("sdmc:/switch/pipensx", 0755);
     log_init(LogPath);
+    pipensx_log_socket_config();
 
     char launchSource[FS_MAX_PATH] = {0};
     if (argc > 0 &&
@@ -639,6 +638,14 @@ int main(int argc, char** argv) {
 
         startupStage("Borealis createWindow");
         brls::Application::createWindow("pipensx");
+        // The Switch theme setter records GPU commands through videoContext,
+        // which createWindow constructs. Apply the saved theme only after
+        // that context exists, but before constructing themed views.
+        startupStage("Borealis apply theme");
+        if (settings.get().theme == pipensx::AppTheme::Dark)
+            brls::Application::getPlatform()->setThemeVariant(brls::ThemeVariant::DARK);
+        else if (settings.get().theme == pipensx::AppTheme::Light)
+            brls::Application::getPlatform()->setThemeVariant(brls::ThemeVariant::LIGHT);
         brls::Application::setGlobalQuit(false);
 
         startupStage("CatalogService construction");
@@ -737,10 +744,15 @@ int main(int argc, char** argv) {
                 : GameMetadataService::ImageNetwork::Full);
 
         UpdateService updater;
+        std::atomic<uint64_t> remoteUpdateQuitAtMs{0};
 
         startupStage("WebServer construction");
         WebServer webServer(manager, "romfs:/web", PIPENSX_VERSION);
         webServer.setPin(settings.get().webServerPin);
+        webServer.setPortHandler([&deploy](const std::string& action, const std::string& taskId,
+                                           const std::string& body, std::string& json, std::string& error) {
+            return deploy.remotePortRequest(action, taskId, body, json, error);
+        });
         webServer.setStreamSelection(settings.get().streamSelection);
         webServer.setSettingsHandlers(
             [&settings](std::string& json, std::string& error) {
@@ -776,6 +788,67 @@ int main(int argc, char** argv) {
                     return false;
                 }
                 return ok;
+            });
+        webServer.setUpdateHandlers(
+            [&updater](bool& stagedReady, uint64_t& stagedBytes,
+                       std::string& error) {
+                error.clear();
+                stagedReady = updater.stagedReady();
+                stagedBytes = 0;
+                if (stagedReady) {
+                    struct stat st {};
+                    if (stat(updater.stagedPath().c_str(), &st) == 0 &&
+                        st.st_size > 0)
+                        stagedBytes = static_cast<uint64_t>(st.st_size);
+                }
+                return true;
+            },
+            [&updater](const std::string& nroBytes, std::string& error) {
+                const bool ok = updater.stageUploadedNro(nroBytes, error);
+                if (ok)
+                    log_msg("[update] remote NRO staged bytes=%zu\n",
+                            nroBytes.size());
+                else
+                    diagnostic_error("update", "remote_upload", "error=%s",
+                                     error.c_str());
+                return ok;
+            },
+            [&updater, &remoteUpdateQuitAtMs](std::string& error) {
+                bool ready = false;
+                if (!runOnUiThread([&] {
+                        if (!updater.stagedReady()) {
+                            error = "No verified uploaded update is ready.";
+                            return;
+                        }
+#ifdef __SWITCH__
+                        if (!envHasNextLoad()) {
+                            error = "This launch method cannot restart into the updater.";
+                            return;
+                        }
+                        const std::string helper = updater.helperPath();
+                        const std::string arguments =
+                            "\"" + helper + "\" --finish-update";
+                        const Result result = envSetNextLoad(helper.c_str(),
+                                                             arguments.c_str());
+                        if (R_FAILED(result)) {
+                            char buffer[96];
+                            std::snprintf(buffer, sizeof(buffer),
+                                          "Unable to schedule updater (0x%08x).",
+                                          result);
+                            error = buffer;
+                            return;
+                        }
+#endif
+                        // Give the tiny HTTP response time to leave the socket
+                        // before the normal shutdown closes the companion.
+                        remoteUpdateQuitAtMs.store(now_ms() + 1500,
+                            std::memory_order_relaxed);
+                        ready = true;
+                    })) {
+                    error = "timed out";
+                    return false;
+                }
+                return ready;
             });
         webServer.setOneTapContextLookup(
             [&installed, &metadata](const std::string& infoHash,
@@ -830,6 +903,60 @@ int main(int argc, char** argv) {
         if (!gameUpdates.load(gameUpdatesError))
             diagnostic_error("game_updates", "load", "error=%s",
                              gameUpdatesError.c_str());
+        webServer.setLibraryHandlers(
+            [&installed, &metadata, &catalog, &gameUpdates](std::string& json,
+                                                          std::string& error) {
+                if (!runOnUiThread([&] {
+                    nlohmann::json rows = nlohmann::json::array();
+                    for (const auto& title : installed.titles()) {
+                        const auto result = gameUpdates.inspect(title.titleId, title.version);
+                        std::vector<const GameMetadata*> matches;
+                        metadata.findByTitleId(title.titleId, matches);
+                        const CatalogEntry* bundle = nullptr;
+                        if (const auto* exact = GameMetadataService::preferVersionMatch(
+                                matches, result.foundVersion))
+                            bundle = catalog.findByInfoHash(exact->infoHash);
+                        if (!bundle) for (const auto* match : matches) {
+                            if (!match) continue;
+                            const auto* candidate = catalog.findByInfoHash(match->infoHash);
+                            if (candidate && (!bundle || candidate->publishedAt > bundle->publishedAt))
+                                bundle = candidate;
+                        }
+                        // Same direct-id fallback as the native Installed view.
+                        if (!bundle) for (const auto& candidate : catalog.entries()) {
+                            uint64_t candidateId = 0;
+                            if (InstalledTitleService::parseTitleId(candidate.titleId, candidateId) &&
+                                candidateId == title.applicationId &&
+                                (!bundle || candidate.publishedAt > bundle->publishedAt))
+                                bundle = &candidate;
+                        }
+                        rows.push_back({{"titleId", title.titleId}, {"name", title.name},
+                            {"publisher", title.publisher}, {"version", title.version},
+                            {"displayVersion", title.displayVersion},
+                            {"latestVersion", result.foundVersion},
+                            {"updateState", GameUpdateService::stateName(result.state)},
+                            {"updateHash", bundle ? bundle->infoHash : std::string()},
+                            {"hasLayeredFsMods", title.hasLayeredFsMods},
+                            {"dlcCount", installed.dlcCountForBase(title.titleId)}});
+                    }
+                    json = nlohmann::json({{"titles", rows},
+                        {"generation", installed.generation()}}).dump();
+                })) { error = "installed library timed out"; return false; }
+                return true;
+            },
+            [&installed, &manager](const std::string& action,
+                                   const std::string& titleId, std::string& error) {
+                if (action == "refresh") return installed.refresh(error);
+                if (action != "uninstall" || !installed.contains(titleId)) {
+                    error = "Installed game not found."; return false;
+                }
+                if (!manager.beginSystemCleanup(error)) return false;
+                std::string refreshError;
+                const bool ok = installed.uninstall(titleId, error, refreshError);
+                manager.endSystemCleanup();
+                if (ok && !refreshError.empty()) error = refreshError;
+                return ok && refreshError.empty();
+            });
 
         startupStage("initial catalog/metadata adopt");
         if (initialDataLoader.thread.joinable())
@@ -887,17 +1014,6 @@ int main(int argc, char** argv) {
             dialog->addButton(tr("pipensx/common/later"), [] {});
             dialog->open();
         }
-        if (!updatePendingFinish && settings.get().checkForUpdatesOnLaunch) {
-            updater.checkAsync([](UpdateCheckResult result) {
-                if (!result.ok || !result.updateAvailable)
-                    return;
-                brls::sync([version = std::move(result.release.version)] {
-                    brls::Application::notify(
-                        tr("pipensx/settings/update_available_launch", version));
-                });
-            });
-        }
-
         // First-run: the method choice gates the app, so it comes first on a
         // fresh install — nothing (not even the catalog disclaimer) is shown
         // before it, and B is locked on it until a method is picked. Once the
@@ -1047,16 +1163,28 @@ int main(int argc, char** argv) {
         uint64_t lastPerfMs = 0;
         pipensx::SwitchDeploySnapshot deployState{};
         bool activeTransfer = false;
+        bool previousTransferActive = false;
         bool imageInstallActive = false;
         bool updateBadgeApplied = false;
+        std::shared_ptr<const GameMetadataIndexSnapshot> remoteMetadata;
         while (true) {
+            const auto publishedMetadata = metadata.sharedIndex();
+            if (publishedMetadata != remoteMetadata) {
+                remoteMetadata = publishedMetadata;
+                webServer.updateMetadata(remoteMetadata);
+            }
             const uint64_t nowPerf = now_ms();
             if (lastPerfMs == 0 || nowPerf - lastPerfMs >= 250) {
                 lastPerfMs = nowPerf;
                 deployState = deploy.snapshot();
                 activeTransfer = manager.hasActiveTransfer() ||
+                                  webServer.benchmarkActive() ||
                                   deployState.active();
+                if (activeTransfer && !previousTransferActive)
+                    lastInputMs = nowPerf;
+                previousTransferActive = activeTransfer;
                 const bool installActive = manager.hasActiveInstallation() ||
+                    webServer.benchmarkActive() ||
                     deployState.phase ==
                         pipensx::SwitchDeployPhase::InstallingPackages ||
                     deployState.phase ==
@@ -1084,6 +1212,13 @@ int main(int argc, char** argv) {
             beginImageUploadFrame();
             if (!brls::Application::mainLoop())
                 break;
+            const uint64_t remoteQuitAt =
+                remoteUpdateQuitAtMs.load(std::memory_order_relaxed);
+            if (remoteQuitAt != 0 && now_ms() >= remoteQuitAt) {
+                remoteUpdateQuitAtMs.store(0, std::memory_order_relaxed);
+                log_msg("[update] applying remotely uploaded NRO\n");
+                brls::Application::quit();
+            }
             if (!updateBadgeApplied && installedScanDone.load()) {
                 updateBadgeApplied = true;
                 activity->refreshUpdateBadge();
@@ -1286,9 +1421,10 @@ int main(int argc, char** argv) {
                 }
             }
 
-            // OLED burn-in + screen-off guard (B5): after five idle minutes
-            // cover the UI with a warning overlay; 15s later switch the panel
-            // off through lbl — the torrent engine keeps running because the
+            // Display policy: keep an active transfer's panel illuminated for
+            // the configured idle time, or until all transfers finish. When
+            // protection expires, cover with a warning then turn off via lbl.
+            // Automatic sleep remains protected during transfers because the
             // console never auto-sleeps mid-transfer
             // (SwitchPerformanceController) and the app never suspends
             // (borealis NoSuspend). Any controller button or touch dismisses
@@ -1314,6 +1450,11 @@ int main(int argc, char** argv) {
             }
             const bool saverOpen = pipensx::ui::burnInSaverIsTop();
             const bool saverEnabled = settings.get().screenSaverEnabled;
+            const uint64_t displayNowMs = now_ms();
+            if (displayNowMs < lastInputMs) lastInputMs = displayNowMs;
+            const bool keepScreenOn = pipensx::shouldKeepTransferScreenOn(
+                settings.get(), activeTransfer, displayNowMs - lastInputMs);
+            if (keepScreenOn) performance.keepDisplayOn(displayNowMs);
             if (pipensx::ui::controllerHasButtonDown(pad) || touched) {
                 lastInputMs = now_ms();
                 if (saverOpen) {
@@ -1327,11 +1468,11 @@ int main(int argc, char** argv) {
                     log_msg("[saver] backlight on\n");
                 }
                 screenOffAttempted = false;
-            } else if (!saverEnabled) {
+            } else if (!saverEnabled || keepScreenOn) {
                 if (saverOpen) {
                     brls::Application::popActivity(
                         brls::TransitionAnimation::NONE);
-                    log_msg("[saver] disabled while open, dismissed\n");
+                    log_msg("[saver] dismissed: display protection or saver disabled\n");
                 }
                 if (backlightOff) {
                     backlightGuard.turnOn();
@@ -1339,8 +1480,8 @@ int main(int argc, char** argv) {
                     log_msg("[saver] backlight on\n");
                 }
                 screenOffAttempted = false;
-            } else if (!saverOpen &&
-                       now_ms() - lastInputMs >= pipensx::ui::kBurnInIdleMs) {
+            } else if (!saverOpen && pipensx::shouldOpenScreenSaver(
+                           settings.get(), activeTransfer, displayNowMs - lastInputMs)) {
                 brls::Application::pushActivity(
                     new pipensx::ui::BurnInSaverActivity(),
                     brls::TransitionAnimation::NONE);
@@ -1348,19 +1489,21 @@ int main(int argc, char** argv) {
                 screenOffAttempted = false;
                 log_msg("[saver] idle %llums, warning (transfers keep "
                         "running)\n",
-                        (unsigned long long)pipensx::ui::kBurnInIdleMs);
-                lastInputMs = now_ms();
+                        (unsigned long long)(displayNowMs - lastInputMs));
             } else if (saverOpen && !backlightOff && !screenOffAttempted &&
                        now_ms() - saverShownMs >=
                            pipensx::ui::kScreenOffWarnMs) {
                 screenOffAttempted = true;
-                if (backlightGuard.turnOff()) {
+                // Check protection again immediately before blanking the
+                // panel, rather than relying only on transfer-start setup.
+                if (performance.ensureAwake() && backlightGuard.turnOff()) {
                     if (auto* saver = pipensx::ui::burnInSaverTop())
                         saver->setPanelOff(true);
                     backlightOff = true;
                     log_msg("[saver] screen off (transfers keep running)\n");
                 } else {
-                    log_msg("[saver] backlight off failed, keeping warning\n");
+                    log_msg("[saver] sleep protection or backlight off failed, "
+                            "keeping warning\n");
                 }
             }
             uiHeartbeat.store(now_ms(), std::memory_order_relaxed);

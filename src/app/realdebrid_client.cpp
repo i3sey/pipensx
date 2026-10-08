@@ -5,6 +5,7 @@
 
 #include <curl/curl.h>
 
+#include <cctype>
 #include <cstring>
 #include <cstdint>
 
@@ -246,6 +247,12 @@ bool RdClient::parseInfo(const std::string& json, RdTorrentInfo& info,
                     entry.id = file["id"].get<std::string>();
             }
             readNumberField(file, "bytes", entry.bytes);
+            if (file.contains("selected") && file["selected"].is_number_integer()) {
+                if (file["selected"] == 0)
+                    entry.selected = 0;
+                else if (file["selected"] == 1)
+                    entry.selected = 1;
+            }
             info.files.push_back(std::move(entry));
         }
     }
@@ -253,6 +260,43 @@ bool RdClient::parseInfo(const std::string& json, RdTorrentInfo& info,
         for (const Json& link : root["links"])
             if (link.is_string())
                 info.links.push_back(link.get<std::string>());
+    }
+    return true;
+}
+
+bool RdClient::parseTorrentList(const std::string& json,
+                                std::vector<RdTorrentInfo>& torrents,
+                                std::string& error) {
+    Json root;
+    if (!parseJson(json, root, error))
+        return false;
+    if (!root.is_array()) {
+        error = "Real-Debrid returned an invalid torrent list.";
+        return false;
+    }
+    torrents.clear();
+    torrents.reserve(root.size());
+    for (const Json& row : root) {
+        if (!row.is_object())
+            continue;
+        RdTorrentInfo info;
+        if (!readStringField(row, "id", info.id) ||
+            !readStringField(row, "hash", info.hash))
+            continue;
+        readStringField(row, "filename", info.filename);
+        readStringField(row, "status", info.status);
+        readNumberField(row, "bytes", info.bytes);
+        if (row.contains("progress") && row["progress"].is_number()) {
+            info.progress = row["progress"].get<double>() / 100.0;
+            if (info.progress < 0.0) info.progress = 0.0;
+            if (info.progress > 1.0) info.progress = 1.0;
+        }
+        if (row.contains("links") && row["links"].is_array()) {
+            for (const Json& link : row["links"])
+                if (link.is_string())
+                    info.links.push_back(link.get<std::string>());
+        }
+        torrents.push_back(std::move(info));
     }
     return true;
 }
@@ -333,6 +377,55 @@ bool RdClient::createFromFile(const std::string& torrentPath,
     return parseAddTorrentResponse(response.body, torrentId, error);
 }
 
+bool RdClient::findTorrentByHash(const std::string& hash,
+                                 std::string& torrentId,
+                                 std::string& error) {
+    torrentId.clear();
+    RdHttpRequest request;
+    request.method = "GET";
+    request.url = std::string(kBaseUrl) + "/torrents?limit=5000";
+    request.apiKey = apiKey_;
+    RdHttpResponse response;
+    if (!transport_(request, response, error))
+        return false;
+    if (!checkAuthError(response.body, response.status, error))
+        return false;
+    std::vector<RdTorrentInfo> torrents;
+    if (!parseTorrentList(response.body, torrents, error))
+        return false;
+
+    auto sameHash = [](const std::string& a, const std::string& b) {
+        if (a.size() != b.size()) return false;
+        for (size_t i = 0; i < a.size(); ++i) {
+            const unsigned char ca = static_cast<unsigned char>(a[i]);
+            const unsigned char cb = static_cast<unsigned char>(b[i]);
+            if (std::tolower(ca) != std::tolower(cb)) return false;
+        }
+        return true;
+    };
+    auto reusable = [](const std::string& status) {
+        return status != "error" && status != "magnet_error" &&
+               status != "virus" && status != "dead";
+    };
+
+    // The API returns newest torrents first. Prefer a finished copy if the
+    // account contains duplicates, otherwise reuse the first live entry.
+    for (const RdTorrentInfo& info : torrents) {
+        if (sameHash(info.hash, hash) && reusable(info.status) &&
+            info.status == "downloaded") {
+            torrentId = info.id;
+            return true;
+        }
+    }
+    for (const RdTorrentInfo& info : torrents) {
+        if (sameHash(info.hash, hash) && reusable(info.status)) {
+            torrentId = info.id;
+            return true;
+        }
+    }
+    return true;
+}
+
 bool RdClient::fetchInfo(const std::string& torrentId, RdTorrentInfo& info,
                          std::string& error) {
     RdHttpRequest request;
@@ -349,7 +442,10 @@ bool RdClient::fetchInfo(const std::string& torrentId, RdTorrentInfo& info,
 
 bool RdClient::selectFiles(const std::string& torrentId,
                            const std::vector<std::string>& fileIds,
-                           std::string& error) {
+                           std::string& error,
+                           bool* alreadyDone) {
+    if (alreadyDone)
+        *alreadyDone = false;
     std::string files;
     for (size_t i = 0; i < fileIds.size(); ++i) {
         if (i > 0)
@@ -366,6 +462,8 @@ bool RdClient::selectFiles(const std::string& torrentId,
         return false;
     if (!checkAuthError(response.body, response.status, error))
         return false;
+    if (alreadyDone)
+        *alreadyDone = response.status == 202;
     return true;
 }
 

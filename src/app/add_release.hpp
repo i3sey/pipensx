@@ -79,6 +79,7 @@ enum class OneTapBlock {
     NoPackages,
     CartridgeOnly,
     NothingSelected,
+    UnidentifiedPackages,
 };
 
 // The file list the console detail card queues for one release. Web catalog

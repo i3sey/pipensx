@@ -366,8 +366,15 @@ void HttpServer::handleReadable(Conn& c) {
         }
         if (c.state == Conn::ReadBody) {
             if (c.inbuf.size() < c.bodyExpected) return;
-            c.req.body = c.inbuf.substr(0, c.bodyExpected);
-            c.inbuf.erase(0, c.bodyExpected);
+            // Large remote NRO uploads are commonly the only body buffered on
+            // this connection. Swap instead of copying so a 15+ MiB upload
+            // does not momentarily require twice its size on the Switch.
+            if (c.inbuf.size() == c.bodyExpected) {
+                c.req.body.swap(c.inbuf);
+            } else {
+                c.req.body.assign(c.inbuf.data(), c.bodyExpected);
+                c.inbuf.erase(0, c.bodyExpected);
+            }
             dispatch(c);
             if (c.state != Conn::ReadHeaders) return;
             // keep-alive with pipelined bytes already buffered: parse again

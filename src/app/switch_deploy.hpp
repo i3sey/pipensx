@@ -3,6 +3,7 @@
 #include "download_manager.hpp"
 #include "port_archive.hpp"
 #include "task_files.hpp"
+#include "port_layout.hpp"
 
 #include <array>
 #include <atomic>
@@ -78,8 +79,11 @@ struct SwitchDeployArchive {
     PortArchiveKind kind = PortArchiveKind::None;
     std::vector<std::string> destinationRelativePaths;
     std::vector<uint8_t> destinationSdRoot;
+    // Exact mapped keys supplied by loose files: switch:<relative> / sd:<relative>.
+    std::vector<std::string> excludedDestinations;
     bool extractable = true;
     std::string detail;
+    std::string manualDirectory;
 };
 
 struct SwitchDeployPackage {
@@ -188,7 +192,8 @@ enum class SwitchDeployReceiptState { None, Valid, Modified };
 
 SwitchDeployInspection inspectSwitchDeploy(
     TaskFileInventory inventory, const std::string& targetRoot,
-    bool installExtrasOnly = false);
+    bool installExtrasOnly = false, bool preferMainPortArchives = false,
+    const PortLayoutRules& manualRules = {});
 
 class SwitchDeployService {
 public:
@@ -203,14 +208,18 @@ public:
     bool inventory(const std::string& taskId, TaskFileInventory& inventory,
                    std::string& error) const;
     bool start(const std::string& taskId, std::string& error,
-               bool includeArchives = true);
+               bool includeArchives = true, bool manualApproved = false);
     void cancel();
     void shutdown();
     SwitchDeploySnapshot snapshot() const;
     SwitchDeployReceiptState receiptState(const std::string& taskId) const;
-    // Background scan for ports ready to deploy. Legacy stream-install tasks
-    // without an auto-copy marker become a UI prompt. Unified port
-    // transactions auto-start after their download completes.
+    // Auth is handled by WebServer. This API is only available for PortInstall.
+    bool remotePortRequest(const std::string& action, const std::string& taskId,
+                           const std::string& body, std::string& json,
+                           std::string& error);
+    // Background scan for legacy deployments. Stream-install tasks without
+    // an auto-copy marker become a UI prompt. PortInstall tasks always wait
+    // for saved destinations and an explicit start in the remote panel.
     struct PendingOffer {
         std::string taskId;
         SwitchDeployInspection inspection;
@@ -240,6 +249,9 @@ private:
     std::string appRoot_;
     std::string targetRoot_;
     mutable std::mutex mutex_;
+    mutable std::recursive_mutex layoutMutex_;
+    bool loadLayout(const std::string& taskId, PortLayoutRules& rules,
+                    bool& manual, std::string& error) const;
     SwitchDeploySnapshot snapshot_;
     std::thread worker_;
     std::thread pollWorker_;

@@ -1,4 +1,6 @@
 #include "switch_deploy.hpp"
+#include "port_archive_choice.hpp"
+#include <borealis/extern/nlohmann/json.hpp>
 
 #include "install_space.hpp"
 #include "nx_file_types.hpp"
@@ -1096,12 +1098,78 @@ bool removeTreeBestEffort(const std::string& path) {
 
 SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
                                            const std::string& targetRoot,
-                                           bool installExtrasOnly) {
+                                           bool installExtrasOnly,
+                                           bool preferMainPortArchives,
+                                           const PortLayoutRules& manualRules) {
     SwitchDeployInspection result;
     result.inventory = std::move(inventory);
     result.plan.taskId = result.inventory.taskId;
     result.plan.targetRoot = targetRoot;
-    auto extraCopies = [installExtrasOnly](const TaskFileInfo& file) {
+    auto manualPathsSafe = [&]() {
+        if (manualRules.empty()) return true;
+        std::map<std::string, std::pair<std::string, bool>> paths;
+        auto accept = [&](const std::string& relative, bool sd) {
+            const std::string full = (sd ? "" : "switch/") + relative;
+            const auto parts = splitPath(full);
+            std::string prefix;
+            for (size_t i = 0; i < parts.size(); ++i) {
+                if (!prefix.empty()) prefix += '/';
+                prefix += parts[i];
+                const bool file = i + 1 == parts.size();
+                const auto previous = paths.find(lowerAscii(prefix));
+                if (previous != paths.end() && (previous->second.first != prefix ||
+                    previous->second.second != file || file)) {
+                    setProblem(result, SwitchDeployProblem::UnsafePath,
+                               "Manual layout contains a file/directory or FAT name collision: " + prefix,
+                               SwitchDeployUnsafeReason::NameCollision);
+                    return false;
+                }
+                paths.emplace(lowerAscii(prefix), std::make_pair(prefix, file));
+            }
+            return true;
+        };
+        for (const auto& file : result.plan.files)
+            if (!accept(file.destinationRelativePath, file.target == SwitchDeployTarget::SdRoot)) return false;
+        for (const auto& archive : result.plan.archives)
+            for (size_t i = 0; i < archive.destinationRelativePaths.size(); ++i)
+                if (!accept(archive.destinationRelativePaths[i], i < archive.destinationSdRoot.size() && archive.destinationSdRoot[i])) return false;
+        return true;
+    };
+    for (const auto& rule : manualRules) {
+        std::string normalized;
+        if ((!rule.second.directory.empty() && !normalizePortDirectory(rule.second.directory, normalized)) ||
+            std::none_of(result.inventory.files.begin(), result.inventory.files.end(),
+                [&rule](const TaskFileInfo& file) { return file.logicalPath == rule.first; })) {
+            setProblem(result, SwitchDeployProblem::UnsafePath, "Invalid saved port destination: " + rule.first);
+            return result;
+        }
+    }
+    for (auto& file : result.inventory.files) {
+        const auto rule = manualRules.find(file.logicalPath);
+        if (rule != manualRules.end() && !rule->second.enabled)
+            file.action = TaskFileAction::Skip;
+    }
+    std::set<std::string> ignoredVariants;
+    if (preferMainPortArchives && !installExtrasOnly) {
+        std::set<std::string> primaryArchives;
+        for (const auto& file : result.inventory.files)
+            if (file.state == TaskFileState::Present && !file.package && !file.cartridge &&
+                (file.action == TaskFileAction::Download || file.action == TaskFileAction::Install)) {
+                const auto key = portArchiveChoiceKey(file.logicalPath, false);
+                if (!key.empty()) primaryArchives.insert(key);
+            }
+        for (const auto& file : result.inventory.files) {
+            if (manualRules.count(file.logicalPath)) continue;
+            const auto key = portArchiveChoiceKey(file.logicalPath, true);
+            if (!key.empty() && primaryArchives.count(key)) {
+                ignoredVariants.insert(file.logicalPath);
+                ++result.plan.ignoredFiles;
+                log_msg("[deploy] port archive alternative skipped=%s preference=main\n", file.logicalPath.c_str());
+            }
+        }
+    }
+    auto extraCopies = [installExtrasOnly, &ignoredVariants](const TaskFileInfo& file) {
+        if (ignoredVariants.count(file.logicalPath)) return false;
         if (file.package || file.cartridge)
             return false;
         if (installExtrasOnly)
@@ -1148,7 +1216,9 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
         const std::vector<std::string> parts = splitPath(file.logicalPath);
         if (parts.empty())
             continue;
-        const std::string root = joinPath(parts, 0, parts.size() - 1);
+        std::string root = joinPath(parts, 0, parts.size() - 1);
+        std::string relative;
+        switchPayloadRelativePath(file.logicalPath, relative, &root);
         roots.emplace(lowerAscii(root), root);
     }
     for (const TaskFileInfo& file : result.inventory.files) {
@@ -1164,8 +1234,70 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
                              isCompressedName(file.logicalPath);
         result.plan.packages.push_back(std::move(package));
     }
+    // Some ports embed their executable in the NSP and supply only data in
+    // switch/. Downloaded local packages + an explicit tree are sufficient;
+    // native packages already streamed/installed do not enter this branch.
+    if (!result.plan.packages.empty()) {
+        for (const auto& file : result.inventory.files) {
+            if (!extraCopies(file) || file.state != TaskFileState::Present ||
+                isPortArchiveName(file.logicalPath) ||
+                isLayeredFsRomfsPath(file.logicalPath) ||
+                isLayeredFsExefsPath(file.logicalPath)) continue;
+            std::string relative, root;
+            if (switchPayloadRelativePath(file.logicalPath, relative, &root))
+                roots.emplace(lowerAscii(root), root);
+        }
+    }
 
     std::map<std::string, std::string> plannedFiles;
+    for (const auto& file : result.inventory.files) {
+        const auto rule = manualRules.find(file.logicalPath);
+        if (rule == manualRules.end() || rule->second.directory.empty() ||
+            !extraCopies(file) || isPortArchiveName(file.logicalPath)) continue;
+        const auto slash = file.logicalPath.find_last_of('/');
+        const std::string name = file.logicalPath.substr(slash == std::string::npos ? 0 : slash + 1);
+        std::string destination;
+        if (!manualPortMemberDestination(rule->second.directory, name, destination) ||
+            file.state != TaskFileState::Present || !sourceFileSafe(result.inventory, file)) {
+            setProblem(result, SwitchDeployProblem::UnsafePath, "Invalid manual source or destination: " + file.logicalPath);
+            return result;
+        }
+        const bool sd = lowerAscii(destination).rfind("switch/", 0) != 0;
+        if (!sd) destination.erase(0, 7);
+        const auto& root = sd ? sdRoot : targetRoot;
+        if (!destinationParentsSafe(root, destination) ||
+            !plannedFiles.emplace(std::string(sd ? "sd:" : "switch:") + lowerAscii(destination), destination).second) {
+            setProblem(result, SwitchDeployProblem::UnsafePath, "Manual destination collision: " + destination);
+            return result;
+        }
+        SwitchDeployEntry entry;
+        entry.sourcePath = file.absolutePath;
+        entry.sourceRelativePath = file.logicalPath;
+        entry.destinationRelativePath = destination;
+        entry.destinationPath = root + "/" + destination;
+        entry.target = sd ? SwitchDeployTarget::SdRoot : SwitchDeployTarget::SwitchDirectory;
+        entry.size = file.size;
+        entry.nro = hasNroExtension(file.logicalPath);
+        struct stat existing {};
+        if (lstat(entry.destinationPath.c_str(), &existing) == 0) {
+            std::array<uint8_t, 32> digest {};
+            if (S_ISREG(existing.st_mode) && !S_ISLNK(existing.st_mode) &&
+                static_cast<uint64_t>(existing.st_size) == file.size &&
+                hashFile(entry.sourcePath, entry.sha256) && hashFile(entry.destinationPath, digest) &&
+                entry.sha256 == digest) {
+                entry.state = SwitchDeployEntryState::ExistingIdentical;
+                ++result.plan.identicalFiles;
+            } else {
+                entry.state = SwitchDeployEntryState::ExistingConflict;
+                ++result.plan.conflictFiles;
+            }
+        } else if (errno != ENOENT) {
+            setProblem(result, SwitchDeployProblem::Io, entry.destinationPath);
+            return result;
+        } else result.plan.bytesToCopy += file.size;
+        result.plan.totalBytes += file.size;
+        result.plan.files.push_back(std::move(entry));
+    }
     std::set<std::string> layeredExpected;
     std::map<std::string, std::string> layeredRomfsRoots;
     std::set<std::string> layeredIds;
@@ -1184,6 +1316,8 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
              !isLayeredFsExefsPath(file.logicalPath, &destinationRelative,
                                    &titleId)))
             continue;
+        const auto manual = manualRules.find(file.logicalPath);
+        if (manual != manualRules.end() && !manual->second.directory.empty()) continue;
         if (!extraCopies(file)) {
             ++result.plan.ignoredFiles;
             continue;
@@ -1293,24 +1427,68 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
                                result.plan.performanceToolDetected,
                                result.plan.performanceProfileDetected);
     }
+    // Reserve loose payload destinations before probing archives. A loose
+    // file is authoritative only at the exact same destination spelling;
+    // case collisions and collisions between archives remain errors.
+    std::set<std::string> assetArchives;
+    for (const auto& file : result.inventory.files) {
+        const auto manual = manualRules.find(file.logicalPath);
+        if (manual != manualRules.end() && !manual->second.directory.empty()) continue;
+        if (!extraCopies(file) || file.state != TaskFileState::Present ||
+            !isPortArchiveName(file.logicalPath)) continue;
+        const auto parts = splitPath(file.logicalPath);
+        const std::string name = parts.empty() ? std::string() : lowerAscii(parts.back());
+        if (name == "switch.zip" || name == "switch.7z") continue;
+        const std::string folded = lowerAscii(file.logicalPath);
+        for (const auto& root : roots)
+            if (root.first.empty() || folded.rfind(root.first + "/", 0) == 0)
+                assetArchives.insert(file.logicalPath);
+    }
+    std::map<std::string, std::string> looseDestinations;
+    for (const auto& entry : result.plan.files)
+        looseDestinations.emplace(std::string(entry.target == SwitchDeployTarget::SdRoot ? "sd:" : "switch:") +
+                                  lowerAscii(entry.destinationRelativePath), entry.destinationRelativePath);
+    for (const TaskFileInfo& file : result.inventory.files) {
+        const auto manual = manualRules.find(file.logicalPath);
+        if (manual != manualRules.end() && !manual->second.directory.empty()) continue;
+        if (!extraCopies(file) || file.state != TaskFileState::Present ||
+            (isPortArchiveName(file.logicalPath) && !assetArchives.count(file.logicalPath)) ||
+            isLayeredFsRomfsPath(file.logicalPath) ||
+            isLayeredFsExefsPath(file.logicalPath)) continue;
+        const std::pair<const std::string, std::string>* selected = nullptr;
+        const std::string folded = lowerAscii(file.logicalPath);
+        for (const auto& root : roots)
+            if ((root.first.empty() || folded.rfind(root.first + "/", 0) == 0) &&
+                (!selected || root.first.size() > selected->first.size())) selected = &root;
+        if (!selected) continue;
+        std::string relative;
+        if (!switchPayloadRelativePath(file.logicalPath, relative)) {
+            const auto parts = splitPath(file.logicalPath);
+            const auto rootParts = splitPath(selected->second);
+            relative = selected->second.empty() ? file.logicalPath :
+                rootParts.back() + "/" + joinPath(parts, rootParts.size(), parts.size());
+        }
+        looseDestinations.emplace("switch:" + lowerAscii(relative), relative);
+    }
     for (const TaskFileInfo& file : result.inventory.files) {
         if (!extraCopies(file) || file.state != TaskFileState::Present ||
             !isPortArchiveName(file.logicalPath) ||
+            assetArchives.count(file.logicalPath) ||
             !sourceFileSafe(result.inventory, file))
             continue;
         SwitchDeployArchive archive;
         archive.sourcePath = file.absolutePath;
         archive.sourceRelativePath = file.logicalPath;
         archive.size = file.size;
+        const auto manual = manualRules.find(file.logicalPath);
+        if (manual != manualRules.end()) archive.manualDirectory = manual->second.directory;
         PortArchiveProbe probe;
-        if (probePortArchive(file.absolutePath, probe)) {
+        if (probePortArchive(file.absolutePath, probe, archive.manualDirectory)) {
             archive.unpackBytes = probe.unpackBytes;
             archive.maxSolidBlockBytes = probe.maxSolidBlockBytes;
             archive.switchFiles = probe.switchFiles;
             archive.layeredFiles = probe.layeredFiles;
             archive.kind = probe.kind;
-            archive.destinationRelativePaths = probe.files;
-            archive.destinationSdRoot = probe.destinationSdRoot;
             archive.extractable = true;
             for (size_t i = 0; i < probe.files.size(); ++i) {
                 const std::string& relative = probe.files[i];
@@ -1321,14 +1499,31 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
                 const std::string folded =
                     std::string(sdRootDest ? "sd:" : "switch:") +
                     lowerAscii(relative);
+                auto loose = looseDestinations.find(folded);
+                if (loose != looseDestinations.end() && loose->second == relative) {
+                    archive.excludedDestinations.push_back(std::string(sdRootDest ? "sd:" : "switch:") + relative);
+                    continue;
+                }
+                if (loose != looseDestinations.end()) {
+                    setProblem(result, SwitchDeployProblem::UnsafePath,
+                               "Payload destination paths collide on FAT: archive '" +
+                                   file.logicalPath + "' maps to '" + relative +
+                                   "', loose file maps to '" + loose->second + "'.",
+                               SwitchDeployUnsafeReason::NameCollision);
+                    return result;
+                }
                 auto duplicate = plannedFiles.find(folded);
                 if (duplicate != plannedFiles.end()) {
                     setProblem(result, SwitchDeployProblem::UnsafePath,
-                               "Payload destination paths collide on FAT.",
+                               "Payload destination paths collide on FAT: archive '" +
+                                   file.logicalPath + "' maps to '" + relative +
+                                   "', already planned as '" + duplicate->second + "'.",
                                SwitchDeployUnsafeReason::NameCollision);
                     return result;
                 }
                 plannedFiles.emplace(folded, relative);
+                archive.destinationRelativePaths.push_back(relative);
+                archive.destinationSdRoot.push_back(sdRootDest ? 1 : 0);
                 if (!destinationParentsSafe(destRoot, relative)) {
                     setProblem(result, SwitchDeployProblem::UnsafePath,
                                relative);
@@ -1337,7 +1532,7 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
                 struct stat destination {};
                 if (lstat((destRoot + "/" + relative).c_str(),
                           &destination) == 0) {
-                    if (sdRootDest && S_ISREG(destination.st_mode) &&
+                    if (sdRootDest && archive.manualDirectory.empty() && S_ISREG(destination.st_mode) &&
                         !S_ISLNK(destination.st_mode)) {
                         ++result.plan.layeredOverwriteFiles;
                     } else {
@@ -1364,6 +1559,10 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
             archive.extractable = false;
             archive.detail = probe.error;
         }
+        if (archive.extractable && archive.destinationRelativePaths.empty()) {
+            ++result.plan.ignoredFiles;
+            continue;
+        }
         result.plan.archives.push_back(std::move(archive));
         result.plan.totalBytes += file.size;
         if (result.plan.archives.back().extractable) {
@@ -1384,7 +1583,8 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
     const bool hasExtractableArchive = std::any_of(
         result.plan.archives.begin(), result.plan.archives.end(),
         [](const SwitchDeployArchive& archive) { return archive.extractable; });
-    if (roots.empty() && !hasExtractableArchive &&
+    if (!manualPathsSafe()) return result;
+    if (roots.empty() && result.plan.files.empty() && !hasExtractableArchive &&
         !result.plan.layeredFs) {
         bool hasPackagePayload = false;
         bool hasLooseFiles = false;
@@ -1438,6 +1638,8 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
     };
     std::map<std::string, LayoutPath> layoutPaths;
     for (const TaskFileInfo& file : result.inventory.files) {
+        const auto manual = manualRules.find(file.logicalPath);
+        if (manual != manualRules.end() && !manual->second.directory.empty()) continue;
         const std::vector<std::string> parts = splitPath(file.logicalPath);
         const std::string foldedLogical = lowerAscii(file.logicalPath);
         const std::pair<const std::string, std::string>* selectedRoot = nullptr;
@@ -1457,7 +1659,7 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
                 ++result.plan.ignoredFiles;
             continue;
         }
-        if (isPortArchiveName(file.logicalPath) ||
+        if ((isPortArchiveName(file.logicalPath) && !assetArchives.count(file.logicalPath)) ||
             isLayeredFsRomfsPath(file.logicalPath) ||
             isLayeredFsExefsPath(file.logicalPath))
             continue;
@@ -1492,6 +1694,7 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
             if (!suffix.empty())
                 destinationRelative += "/" + suffix;
         }
+        switchPayloadRelativePath(file.logicalPath, destinationRelative);
         if (!taskFilePathIsFatCompatible(destinationRelative)) {
             setProblem(result, SwitchDeployProblem::UnsafePath,
                        file.logicalPath, SwitchDeployUnsafeReason::NameCollision);
@@ -1538,7 +1741,9 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
         auto planned = plannedFiles.find(plannedKey);
         if (planned != plannedFiles.end()) {
             setProblem(result, SwitchDeployProblem::UnsafePath,
-                       "Payload destination paths collide on FAT.",
+                       "Payload destination paths collide on FAT: loose file '" +
+                           file.logicalPath + "' maps to '" + destinationRelative +
+                           "', already planned as '" + planned->second + "'.",
                        SwitchDeployUnsafeReason::NameCollision);
             return result;
         }
@@ -1589,6 +1794,7 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
         }
         result.plan.files.push_back(std::move(entry));
     }
+    if (!manualPathsSafe()) return result;
     if (result.plan.files.empty() && result.plan.archives.empty()) {
         setProblem(result, SwitchDeployProblem::LayoutNotFound,
                    "The NRO application directories have no downloadable "
@@ -1626,6 +1832,194 @@ SwitchDeployService::SwitchDeployService(DownloadManager& manager,
 
 SwitchDeployService::~SwitchDeployService() { shutdown(); }
 
+bool SwitchDeployService::loadLayout(const std::string& id, PortLayoutRules& rules,
+                                    bool& manual, std::string& error) const {
+    std::lock_guard<std::recursive_mutex> lock(layoutMutex_);
+    rules.clear(); manual = false;
+    if (id.empty() || id.size() > 80 || !taskFilePathIsFatCompatible(id) || id.find('/') != std::string::npos) {
+        error = "Invalid task identifier."; return false;
+    }
+    const auto path = appRoot_ + "/port-layout-" + id + ".json";
+    struct stat st {};
+    if (lstat(path.c_str(), &st) != 0) {
+        if (errno == ENOENT) return true;
+        error = "Unable to read port destinations."; return false;
+    }
+    if (!S_ISREG(st.st_mode) || st.st_size > 1024 * 1024) {
+        error = "Invalid port destination file."; return false;
+    }
+    std::ifstream input(path);
+    const std::string bytes(std::istreambuf_iterator<char>(input), {});
+    const auto doc = nlohmann::json::parse(bytes, nullptr, false);
+    if (doc.is_discarded() || !doc.is_object() || !doc.contains("version") || doc["version"] != 1 ||
+        !doc.contains("files") || !doc["files"].is_array()) {
+        error = "Invalid port destination configuration."; return false;
+    }
+    for (const auto& item : doc["files"]) {
+        if (!item.is_object() || !item.contains("source") || !item["source"].is_string() ||
+            !item.contains("enabled") || !item["enabled"].is_boolean() ||
+            !item.contains("directory") || !item["directory"].is_string()) {
+            error = "Invalid port rule."; return false;
+        }
+        const auto source = item["source"].get<std::string>();
+        const auto directory = item["directory"].get<std::string>();
+        std::string normalized;
+        if (!taskFilePathIsFatCompatible(source) || (!directory.empty() && !normalizePortDirectory(directory, normalized)) ||
+            !rules.emplace(source, PortLayoutRule{item["enabled"].get<bool>(), directory}).second) {
+            error = "Unsafe or duplicate port rule."; return false;
+        }
+    }
+    manual = true; return true;
+}
+
+bool SwitchDeployService::remotePortRequest(const std::string& action, const std::string& id,
+    const std::string& body, std::string& json, std::string& error) {
+    using Json = nlohmann::json;
+    std::lock_guard<std::recursive_mutex> lock(layoutMutex_);
+    const auto sdRoot = sdRootForSwitchRoot(targetRoot_);
+    if (action == "folders") {
+        const auto request = Json::parse(body, nullptr, false);
+        if (request.is_discarded() || !request.is_object() || !request.contains("path") || !request["path"].is_string()) {
+            error = "Folder path required."; return false;
+        }
+        const auto path = request["path"].get<std::string>();
+        std::string relative;
+        if (!normalizePortDirectory(path, relative) ||
+            !destinationParentsSafe(sdRoot, relative.empty() ? ".folder-check" : relative + "/.folder-check")) {
+            error = "Unsafe SD folder."; return false;
+        }
+        // Keep the slash for the root too: "sdmc:" is device-relative,
+        // whereas "sdmc:/" names the SD root that child paths are checked against.
+        DIR* dir = opendir((sdRoot + "/" + relative).c_str());
+        if (!dir) { error = "SD folder unavailable."; return false; }
+        std::vector<std::string> folders;
+        bool truncated = false;
+        while (const auto* entry = readdir(dir)) {
+            const std::string name = entry->d_name;
+            if (name == "." || name == ".." || !taskFilePathIsFatCompatible(name)) continue;
+            const auto child = (relative.empty() ? "" : relative + "/") + name;
+            std::string checked;
+            struct stat st {};
+            if (!normalizePortDirectory("/" + child, checked) || lstat((sdRoot + "/" + child).c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+            if (folders.size() == 512) { truncated = true; break; }
+            folders.push_back("/" + child);
+        }
+        closedir(dir); std::sort(folders.begin(), folders.end());
+        json = Json{{"path", path}, {"folders", folders}, {"truncated", truncated}}.dump(); return true;
+    }
+    const auto task = manager_.snapshot(id);
+    if (!task || task->mode != TransferMode::PortInstall) { error = "Port task required."; return false; }
+    TaskFileInventory inventory;
+    if (!buildTaskFileInventory(appRoot_, *task, inventory, error)) return false;
+    PortLayoutRules rules;
+    bool manual = false;
+    if (!loadLayout(id, rules, manual, error)) return false;
+    const bool editable = !workerBusy_.load() && !snapshot().active() && task->packagesInstalled == 0 &&
+                          receiptState(id) == SwitchDeployReceiptState::None;
+    if (action == "preview" || action == "save") {
+        const auto request = Json::parse(body, nullptr, false);
+        if (request.is_discarded() || !request.is_object() || !request.contains("files") ||
+            !request["files"].is_array() || request["files"].size() > inventory.files.size()) {
+            error = "Port file rules required."; return false;
+        }
+        rules.clear();
+        for (const auto& item : request["files"]) {
+            if (!item.is_object() || !item.contains("source") || !item["source"].is_string() ||
+                !item.contains("enabled") || !item["enabled"].is_boolean() ||
+                !item.contains("directory") || !item["directory"].is_string()) {
+                error = "Invalid port file rule."; return false;
+            }
+            const auto source = item["source"].get<std::string>();
+            const auto directory = item["directory"].get<std::string>();
+            const auto file = std::find_if(inventory.files.begin(), inventory.files.end(),
+                [&source](const TaskFileInfo& f) { return f.logicalPath == source; });
+            std::string checked;
+            if (file == inventory.files.end() || (file->package && !directory.empty()) ||
+                (file->action == TaskFileAction::Skip && item["enabled"].get<bool>()) ||
+                (!directory.empty() && (!normalizePortDirectory(directory, checked) ||
+                  !destinationParentsSafe(sdRoot, checked.empty() ? ".folder-check" : checked + "/.folder-check"))) ||
+                !rules.emplace(source, PortLayoutRule{item["enabled"].get<bool>(), directory}).second) {
+                error = "Invalid source or unsafe destination."; return false;
+            }
+        }
+        if (action == "save" && rules.size() != inventory.files.size()) {
+            error = "Review every port file and destination before saving."; return false;
+        }
+        manual = true;
+        if (action == "save") {
+            if (!editable) { error = "Port is installing or already deployed."; return false; }
+            Json files = Json::array();
+            for (const auto& rule : rules) files.push_back({{"source", rule.first}, {"enabled", rule.second.enabled}, {"directory", rule.second.directory}});
+            const auto bytes = Json{{"version", 1}, {"files", files}}.dump();
+            if (bytes.size() > 1024 * 1024) { error = "Port destination configuration is too large."; return false; }
+            const auto path = appRoot_ + "/port-layout-" + id + ".json";
+            const auto temp = path + ".tmp";
+            struct stat st {};
+            if (lstat(temp.c_str(), &st) == 0 && !S_ISREG(st.st_mode)) { error = "Unsafe layout temporary file."; return false; }
+            const int fd = open(temp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+            if (fd < 0) { error = "Unable to save port destinations."; return false; }
+            size_t written = 0;
+            while (written < bytes.size()) { const auto n = write(fd, bytes.data() + written, bytes.size() - written); if (n <= 0) break; written += static_cast<size_t>(n); }
+            const bool flushed = fsync(fd) == 0;
+            const bool closed = close(fd) == 0;
+            if (written != bytes.size() || !flushed || !closed || rename(temp.c_str(), path.c_str()) != 0) {
+                std::remove(temp.c_str()); error = "Unable to persist port destinations."; return false;
+            }
+            log_msg("[deploy] manual port destinations saved task=%s files=%zu\n", id.c_str(), rules.size());
+        }
+    } else if (action == "start") {
+        if (!manual) { error = "Save and review port destinations first."; return false; }
+        const auto plan = inspect(id);
+        if (!plan.canStart()) { error = plan.detail; return false; }
+        if (!start(id, error, true, true)) return false;
+    } else if (action != "get") { error = "Unknown port action."; return false; }
+    const auto plan = inspectSwitchDeploy(inventory, targetRoot_, false, true, rules);
+    Json files = Json::array();
+    for (const auto& file : inventory.files) {
+        const auto rule = rules.find(file.logicalPath);
+        bool enabled = file.action != TaskFileAction::Skip;
+        if (rule != rules.end()) enabled = rule->second.enabled;
+        else if (!portArchiveChoiceKey(file.logicalPath, true).empty()) {
+            const auto key = portArchiveChoiceKey(file.logicalPath, true);
+            for (const auto& sibling : inventory.files)
+                if (sibling.action != TaskFileAction::Skip && portArchiveChoiceKey(sibling.logicalPath, false) == key) enabled = false;
+        }
+        const auto directory = rule == rules.end() ? std::string() : rule->second.directory;
+        Json members = Json::array(); std::string previewError;
+        const bool archive = isPortArchiveName(file.logicalPath);
+        if (archive && file.state == TaskFileState::Present) {
+            PortArchiveProbe probe;
+            if (!probePortArchive(file.absolutePath, probe, directory)) previewError = probe.error;
+            for (const auto& source : probe.allSourceFiles) {
+                const auto mapped = std::find(probe.sourceFiles.begin(), probe.sourceFiles.end(), source);
+                std::string destination;
+                if (mapped != probe.sourceFiles.end()) {
+                    const size_t i = static_cast<size_t>(mapped - probe.sourceFiles.begin());
+                    destination = (probe.destinationSdRoot[i] ? "/" : "/switch/") + probe.files[i];
+                }
+                members.push_back({{"source", source}, {"destination", destination}});
+            }
+        } else if (!file.package && !directory.empty()) {
+            std::string destination; const auto slash = file.logicalPath.find_last_of('/');
+            if (manualPortMemberDestination(directory, file.logicalPath.substr(slash == std::string::npos ? 0 : slash + 1), destination))
+                members.push_back({{"source", file.logicalPath}, {"destination", "/" + destination}});
+        } else if (!file.package && !file.destinationExample.empty())
+            members.push_back({{"source", file.logicalPath}, {"destination", file.destinationExample}});
+        files.push_back({{"source", file.logicalPath}, {"size", file.size}, {"enabled", enabled}, {"package", file.package},
+            {"archive", archive}, {"directory", directory}, {"available", file.state == TaskFileState::Present},
+            {"selectable", file.action != TaskFileAction::Skip}, {"members", members}, {"error", previewError}});
+    }
+    const auto state = snapshot();
+    const bool reviewed = manual && std::all_of(inventory.files.begin(), inventory.files.end(),
+        [&rules](const TaskFileInfo& file) { return rules.count(file.logicalPath) != 0; });
+    json = Json{{"taskId", id}, {"manual", manual}, {"editable", editable}, {"canStart", reviewed && plan.canStart()},
+        {"reviewRequired", !reviewed},
+        {"detail", plan.detail}, {"files", files}, {"active", state.active() && state.taskId == id},
+        {"bytesCopied", state.bytesCopied}, {"totalBytes", state.totalBytes}, {"currentPath", state.currentPath}}
+        .dump(-1, ' ', false, Json::error_handler_t::replace);
+    return true;
+}
+
 SwitchDeployInspection SwitchDeployService::inspect(
     const std::string& taskId) const {
     const std::optional<DownloadTask> task = manager_.snapshot(taskId);
@@ -1658,9 +2052,18 @@ SwitchDeployInspection SwitchDeployService::inspect(
         result.detail = std::move(error);
         return result;
     }
+    PortLayoutRules rules;
+    bool manual = false;
+    if (task->mode == TransferMode::PortInstall && !loadLayout(taskId, rules, manual, error)) {
+        SwitchDeployInspection failed;
+        failed.problem = SwitchDeployProblem::Io;
+        failed.detail = error;
+        return failed;
+    }
     SwitchDeployInspection inspection =
         inspectSwitchDeploy(std::move(inventory), targetRoot_,
-                            task->mode == TransferMode::StreamInstall);
+                            task->mode == TransferMode::StreamInstall,
+                            task->mode == TransferMode::PortInstall, rules);
     if (task->mode == TransferMode::PortInstall &&
         receiptState(taskId) == SwitchDeployReceiptState::Valid) {
         inspection.problem = SwitchDeployProblem::None;
@@ -1738,7 +2141,28 @@ bool SwitchDeployService::inventory(const std::string& taskId,
 
 bool SwitchDeployService::start(const std::string& taskId,
                                 std::string& error,
-                                bool includeArchives) {
+                                bool includeArchives, bool manualApproved) {
+    std::lock_guard<std::recursive_mutex> layoutLock(layoutMutex_);
+    PortLayoutRules rules;
+    bool manual = false;
+    if (!loadLayout(taskId, rules, manual, error)) return false;
+    const auto task = manager_.snapshot(taskId);
+    if ((task && task->mode == TransferMode::PortInstall && (!manual || !manualApproved)) ||
+        (manual && !manualApproved)) {
+        error = "This port waits for installation from the web panel.";
+        clearInspecting(taskId);
+        return false;
+    }
+    if (task && task->mode == TransferMode::PortInstall) {
+        TaskFileInventory inventory;
+        if (!buildTaskFileInventory(appRoot_, *task, inventory, error)) return false;
+        if (!std::all_of(inventory.files.begin(), inventory.files.end(),
+            [&rules](const TaskFileInfo& file) { return rules.count(file.logicalPath) != 0; })) {
+            error = "Review every port file and destination before installing.";
+            clearInspecting(taskId);
+            return false;
+        }
+    }
     if (workerBusy_.load()) {
         error = "Another /switch copy is already active.";
         return false;
@@ -1818,9 +2242,15 @@ void SwitchDeployService::run(DownloadManager::ExternalDeployLease lease,
     const bool payloadReceiptValid =
         portTransaction &&
         receiptState(lease.task().id) == SwitchDeployReceiptState::Valid;
+    PortLayoutRules rules;
+    bool manual = false;
+    if (portTransaction && !loadLayout(lease.task().id, rules, manual, error)) {
+        finish(SwitchDeployPhase::Failed, SwitchDeployProblem::Io, error);
+        return;
+    }
     SwitchDeployInspection inspection = inspectSwitchDeploy(
         std::move(inventory), targetRoot_,
-        lease.task().mode == TransferMode::StreamInstall);
+        lease.task().mode == TransferMode::StreamInstall, portTransaction, rules);
     if (payloadReceiptValid) {
         // A failed package stage retries from the durable payload receipt.
         // Do not re-extract archives (which would now correctly conflict with
@@ -2066,7 +2496,7 @@ void SwitchDeployService::run(DownloadManager::ExternalDeployLease lease,
             const bool sdRootDest =
                 i < archive.destinationSdRoot.size() &&
                 archive.destinationSdRoot[i] != 0;
-            if (!sdRootDest)
+            if (!sdRootDest || !archive.manualDirectory.empty())
                 continue;
             if (!removeRegularFileIfPresent(
                     sdRoot + "/" + archive.destinationRelativePaths[i],
@@ -2089,8 +2519,12 @@ void SwitchDeployService::run(DownloadManager::ExternalDeployLease lease,
             snapshot_.bytesCopied += bytes;
             ++snapshot_.generation;
         };
-        auto current = [this, &unpacked, &unpackedSeen](const std::string& path) {
-            if (unpackedSeen.insert(path).second)
+        auto current = [this, &archive, &unpacked, &unpackedSeen](const std::string& path) {
+            const auto found = std::find(archive.destinationRelativePaths.begin(), archive.destinationRelativePaths.end(), path);
+            const size_t index = static_cast<size_t>(found - archive.destinationRelativePaths.begin());
+            const bool manualSd = !archive.manualDirectory.empty() &&
+                index < archive.destinationSdRoot.size() && archive.destinationSdRoot[index] != 0;
+            if (!manualSd && unpackedSeen.insert(path).second)
                 unpacked.push_back(path);
             std::lock_guard<std::mutex> lock(mutex_);
             snapshot_.currentPath = path;
@@ -2098,7 +2532,8 @@ void SwitchDeployService::run(DownloadManager::ExternalDeployLease lease,
         };
         if (!extractPortArchive(archive.sourcePath, targetRoot_,
                                 sdRootForSwitchRoot(targetRoot_), cancelled_,
-                                progress, current, error)) {
+                                progress, current, error,
+                                archive.excludedDestinations, archive.manualDirectory)) {
             const bool restored = rollbackMoves();
             if (!restored)
                 error += " Some moved files could not be restored; recovery will retry at next launch.";
@@ -2119,6 +2554,28 @@ void SwitchDeployService::run(DownloadManager::ExternalDeployLease lease,
         std::lock_guard<std::mutex> lock(mutex_);
         ++snapshot_.filesCopied;
         ++snapshot_.generation;
+    }
+    // Existing receipts already support explicit SD roots for copied files.
+    // Record manually redirected SD archive members there, keeping old receipt
+    // formats and the automatic archive path inference unchanged.
+    for (const auto& archive : plan.archives) {
+        if (archive.manualDirectory.empty()) continue;
+        for (size_t i = 0; i < archive.destinationRelativePaths.size(); ++i) {
+            if (i >= archive.destinationSdRoot.size() || !archive.destinationSdRoot[i]) continue;
+            SwitchDeployEntry entry;
+            entry.target = SwitchDeployTarget::SdRoot;
+            entry.destinationRelativePath = archive.destinationRelativePaths[i];
+            entry.destinationPath = sdRootForSwitchRoot(targetRoot_) + "/" + entry.destinationRelativePath;
+            struct stat st {};
+            if (lstat(entry.destinationPath.c_str(), &st) != 0 || !S_ISREG(st.st_mode) ||
+                !hashFile(entry.destinationPath, entry.sha256)) {
+                finish(SwitchDeployPhase::Failed, SwitchDeployProblem::Io, "Unable to record manual archive destinations.");
+                return;
+            }
+            entry.size = static_cast<uint64_t>(st.st_size);
+            entry.state = SwitchDeployEntryState::ExistingIdentical;
+            plan.files.push_back(std::move(entry));
+        }
     }
     if (!payloadReceiptValid &&
         (!plan.files.empty() || !plan.archives.empty() || portTransaction) &&
@@ -2339,7 +2796,16 @@ void SwitchDeployService::clearInspecting(const std::string& taskId) {
         const std::optional<DownloadTask> task = manager_.snapshot(taskId);
         if (!task || !taskReadyForSwitchDeploy(*task))
             return false;
+        // Every port waits for saved choices and an explicit start in the
+        // remote panel, even when an older task has an auto-copy marker.
+        if (task->mode == TransferMode::PortInstall)
+            return false;
         const bool markerArmed = autoCopyArmed(taskId);
+        PortLayoutRules rules;
+        bool manualLayout = false;
+        std::string layoutError;
+        if (!loadLayout(taskId, rules, manualLayout, layoutError) || manualLayout)
+            return false;
         bool autoArmed = markerArmed ||
                          task->mode == TransferMode::PortInstall;
         if (task->mode != TransferMode::StreamInstall && !autoArmed)

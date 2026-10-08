@@ -3,8 +3,10 @@
 #include "../src/app/port_archive.hpp"
 #include "../src/app/port_selection.hpp"
 #include "../src/app/switch_deploy.hpp"
+#include <borealis/extern/nlohmann/json.hpp>
 
 #include <atomic>
+#include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <cstring>
@@ -313,6 +315,30 @@ int main() {
             {"Game.nro", 32, false, false, false},
         };
         assert(torrentPortLayoutDetected(hybrid));
+        assert(cardOneTapUsesPortInstall(hybrid));
+        TorrentPreview marioPort;
+        marioPort.multi = true;
+        marioPort.name = "Super Mario World Remastered Plus";
+        marioPort.files = {
+            {"switch.7z", 55750, false, false, false},
+            {"Super Mario World Remastered Plus (port) [0108dc35a9030000].nsp",
+             386, true, false, false},
+            {"Homebrew (1.0.1)/switch/smwr_nx/smwr.nro",
+             5940, false, false, false},
+            {"Homebrew (1.0.1)/switch/smwr_nx/data/assets.bin",
+             12, false, false, false},
+            {"readme.txt", 4, false, false, false},
+            {"assets.zip", 10, false, false, false},
+        };
+        assert(cardOneTapUsesPortInstall(marioPort));
+        const auto marioMask = selectPortInstallActions(marioPort);
+        assert(marioMask == std::vector<uint8_t>({1, 1, 1, 1, 0, 1}));
+        assert(selectionIsPortTransaction(marioPort, marioMask));
+        // A native game in the same release must retain the regular flow.
+        marioPort.files.push_back({"Other Game.nsp", 32 * 1024 * 1024, true, false, false});
+        assert(!cardOneTapUsesPortInstall(marioPort));
+        hybrid.name = "Collection (port)";
+        hybrid.files[0].length = 32 * 1024 * 1024;
         assert(!cardOneTapUsesPortInstall(hybrid));
         TorrentPreview titledNro;
         titledNro.files = {
@@ -701,9 +727,17 @@ int main() {
     assert(oneTapOffer->inspection.canStart());
     assert(oneTapDeploy.snapshot().phase == SwitchDeployPhase::Preparing);
     assert(oneTapDeploy.snapshot().taskId == oneTapId);
-    assert(oneTapDeploy.start(oneTapId, error, false));
+    bool oneTapStarted = false;
+    for (int i = 0; i < 500 && !oneTapStarted; ++i) {
+        oneTapStarted = oneTapDeploy.start(oneTapId, error, false);
+        if (!oneTapStarted)
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    assert(oneTapStarted);
     oneTapDeploy.dismissDeployOffer(oneTapId);
-    assert(oneTapDeploy.snapshot().active());
+    const auto afterDismiss = oneTapDeploy.snapshot();
+    assert(afterDismiss.active() ||
+           afterDismiss.phase == SwitchDeployPhase::Completed);
     for (int i = 0; i < 500 && oneTapDeploy.snapshot().active(); ++i)
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     assert(oneTapDeploy.snapshot().phase == SwitchDeployPhase::Completed);
@@ -1015,6 +1049,8 @@ int main() {
     for (int i = 0; i < 500 && titledDeploy.snapshot().active(); ++i)
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     assert(titledDeploy.snapshot().phase == SwitchDeployPhase::Completed);
+    // Completed is published before the worker releases its task lease.
+    titledDeploy.shutdown();
     assert(titledDeploy.receiptState(titledId) ==
            SwitchDeployReceiptState::Valid);
     // The receipt carries the title: the plan matches with no metadata
@@ -1346,6 +1382,203 @@ int main() {
         assert(mixedInspection.problem == SwitchDeployProblem::LayoutNotFound);
     }
 
+    // A main archive plus an optional Russian alternative is not a split
+    // archive. Original-port mode uses the main payload; retail/default mode
+    // retains its strict collision checks. Standalone alternatives still work.
+    {
+        const std::string choiceData = root + "/archive-choice/data";
+        const std::string choiceTarget = root + "/archive-choice/sd/switch";
+        fs::create_directories(choiceData);
+        fs::create_directories(choiceTarget);
+        const auto mainZip = writeStoredZip({{"switch/nfsu2x/nfsu2x.nro", nroBytes()},
+                                            {"switch/nfsu2x/game/streamed.dat", "original-data"}});
+        const auto rusZip = writeStoredZip({{"switch/nfsu2x/nfsu2x.nro", nroBytes()},
+                                           {"switch/nfsu2x/game/streamed.dat", "russian-data"}});
+        writeFile(choiceData + "/main.zip", mainZip);
+        writeFile(choiceData + "/rus.zip", rusZip);
+        TaskFileInventory choice;
+        choice.taskId = "archive-choice"; choice.rootPath = choiceData;
+        choice.settled = choice.completeManifest = true;
+        addPresent(choice, "Release/switch.zip", choiceData + "/main.zip", mainZip.size());
+        addPresent(choice, "Release/Switch_RussMod.zip", choiceData + "/rus.zip", rusZip.size());
+        const auto strict = inspectSwitchDeploy(choice, choiceTarget);
+        assert(strict.problem == SwitchDeployProblem::UnsafePath);
+        const auto original = inspectSwitchDeploy(choice, choiceTarget, false, true);
+        assert(original.canStart() && original.plan.archives.size() == 1);
+        assert(original.plan.archives[0].sourceRelativePath == "Release/switch.zip");
+        std::atomic<bool> cancel{false}; std::string choiceError;
+        assert(extractPortArchive(original.plan.archives[0].sourcePath, choiceTarget, cancel, nullptr, nullptr, choiceError));
+        std::ifstream originalData(choiceTarget + "/nfsu2x/game/streamed.dat", std::ios::binary);
+        assert(std::string(std::istreambuf_iterator<char>(originalData), {}) == "original-data");
+        const auto otherTarget = root + "/archive-choice/standalone/switch";
+        fs::create_directories(otherTarget);
+        choice.files[0].action = TaskFileAction::Skip;
+        const auto standalone = inspectSwitchDeploy(choice, otherTarget, false, true);
+        assert(standalone.canStart() && standalone.plan.archives.size() == 1);
+        assert(standalone.plan.archives[0].sourceRelativePath == "Release/Switch_RussMod.zip");
+        assert(portArchiveChoiceKey("Other/switch_russmod.7z", true) !=
+               portArchiveChoiceKey("Release/switch.7z", false));
+        assert(portArchiveChoiceKey("Release/switch_extra.7z", true).empty());
+    }
+
+    // Unified port transaction: packages are downloaded to disk, payload is
+    {
+        const auto manualData = root + "/manual-layout/data";
+        const auto manualSd = root + "/manual-layout/sd";
+        const auto manualSwitch = manualSd + "/switch";
+        fs::create_directories(manualData); fs::create_directories(manualSwitch);
+        const auto zip = writeStoredZip({{"data/nested/asset.bin", "ASSET"}});
+        writeFile(manualData + "/assets.zip", zip);
+        writeFile(manualData + "/settings.ini", "CFG");
+        TaskFileInventory inv;
+        inv.taskId = "manual-layout"; inv.rootPath = manualData;
+        inv.settled = inv.completeManifest = true;
+        addPresent(inv, "Extras/assets.zip", manualData + "/assets.zip", zip.size());
+        addPresent(inv, "Other/settings.ini", manualData + "/settings.ini", 3);
+        PortLayoutRules rules{{"Extras/assets.zip", {true, "/switch/custom"}},
+                              {"Other/settings.ini", {true, "/ports/config"}}};
+        const auto automatic = inspectSwitchDeploy(inv, manualSwitch, false, true);
+        assert(!automatic.canStart());
+        const auto plan = inspectSwitchDeploy(inv, manualSwitch, false, true, rules);
+        assert(plan.canStart() && plan.plan.archives.size() == 1 && plan.plan.files.size() == 1);
+        assert(plan.plan.archives[0].destinationRelativePaths[0] == "custom/data/nested/asset.bin");
+        assert(plan.plan.files[0].destinationPath == manualSd + "/ports/config/settings.ini");
+        assert(plan.plan.files[0].target == SwitchDeployTarget::SdRoot);
+        PortArchiveProbe preview;
+        assert(probePortArchive(manualData + "/assets.zip", preview, "/switch/custom"));
+        assert(preview.sourceFiles[0] == "data/nested/asset.bin");
+        assert(preview.files[0] == "custom/data/nested/asset.bin");
+        std::atomic<bool> cancelled{false}; std::string error;
+        assert(extractPortArchive(manualData + "/assets.zip", manualSwitch, manualSd,
+            cancelled, nullptr, nullptr, error, {}, "/switch/custom"));
+        std::ifstream bytes(manualSwitch + "/custom/data/nested/asset.bin");
+        assert(std::string(std::istreambuf_iterator<char>(bytes), {}) == "ASSET");
+        rules["Extras/assets.zip"].enabled = false;
+        const auto onlyLoose = inspectSwitchDeploy(inv, manualSwitch, false, true, rules);
+        assert(onlyLoose.canStart() && onlyLoose.plan.archives.empty() && onlyLoose.plan.files.size() == 1);
+        PortLayoutRules conflictRules{{"Extras/assets.zip", {true, "/ports/existing"}},
+                                      {"Other/settings.ini", {false, ""}}};
+        writeFile(manualSd + "/ports/existing/data/nested/asset.bin", "KEEP-ME");
+        const auto existing = inspectSwitchDeploy(inv, manualSwitch, false, true, conflictRules);
+        assert(existing.problem == SwitchDeployProblem::Conflict);
+        std::ifstream kept(manualSd + "/ports/existing/data/nested/asset.bin");
+        assert(std::string(std::istreambuf_iterator<char>(kept), {}) == "KEEP-ME");
+        for (const auto& collision : {
+            writeStoredZip({{"data", "FILE"}, {"data/child.bin", "CHILD"}}),
+            writeStoredZip({{"Data/a.bin", "A"}, {"data/b.bin", "B"}})}) {
+            writeFile(manualData + "/collision.zip", collision);
+            auto collisionInventory = inv;
+            collisionInventory.files[0].absolutePath = manualData + "/collision.zip";
+            collisionInventory.files[0].size = collision.size();
+            conflictRules["Extras/assets.zip"].directory = "/switch/collision";
+            assert(inspectSwitchDeploy(collisionInventory, manualSwitch, false, true, conflictRules).problem == SwitchDeployProblem::UnsafePath);
+        }
+        for (const auto& bad : {"/../outside", "/switch/PIPENSX/cache", "sdmc:/switch/foo", "/a\\b"}) {
+            rules["Other/settings.ini"].directory = bad;
+            assert(!inspectSwitchDeploy(inv, manualSwitch, false, true, rules).canStart());
+        }
+        const auto unsafeZip = writeStoredZip({{"../escape.bin", "NO"}});
+        writeFile(manualData + "/unsafe.zip", unsafeZip);
+        assert(!probePortArchive(manualData + "/unsafe.zip", preview, "/switch/custom"));
+        assert(!fs::exists(manualSd + "/escape.bin"));
+        // The panel's saved layout survives reconstruction and prevents auto-copy.
+        const auto app = root + "/manual-service";
+        const std::string id = "abcdefabcdefabcdefabcdefabcdefabcdefabcd";
+        fs::create_directories(app);
+        const auto serviceData = app + "/downloads/" + id;
+        fs::create_directories(serviceData);
+        writeFile(serviceData + "/assets.zip", zip);
+        writeFile(serviceData + "/settings.ini", "CFG");
+        writeCompletedQueue(app, id, serviceData, zip.size() + 3, "port", "completed", 0, 0);
+        TaskFileManifest manifest; manifest.taskId = id;
+        TaskFileRecord archiveRecord;
+        archiveRecord.logicalPath = "Extras/assets.zip"; archiveRecord.localPath = "assets.zip";
+        archiveRecord.size = zip.size(); manifest.files.push_back(archiveRecord);
+        TaskFileRecord looseRecord;
+        looseRecord.logicalPath = "Other/settings.ini"; looseRecord.localPath = "settings.ini";
+        looseRecord.size = 3; manifest.files.push_back(looseRecord);
+        assert(saveTaskFileManifest(app, manifest, error));
+        DownloadManager manager(app, false);
+        const std::string payload = R"({"files":[{"source":"Extras/assets.zip","enabled":true,"directory":"/ports/newplace"},{"source":"Other/settings.ini","enabled":false,"directory":""}]})";
+        std::string reply;
+        // A completed port, including an old auto-copy marker, must not copy
+        // anything or install packages until every choice is saved in the panel.
+        for (int restart = 0; restart < 2; ++restart) {
+            SwitchDeployService waiting(manager, app, manualSwitch);
+            assert(waiting.armAutoCopy(id));
+            assert(!waiting.start(id, error));
+            assert(!waiting.start(id, error, true, true)); // No bypass without saved rules.
+            waiting.scheduleDeployOfferPoll();
+            waiting.shutdown(); // Joins the poll before checking its outcome.
+            assert(!waiting.takePendingDeployOffer());
+            assert(!fs::exists(manualSd + "/ports/newplace/data/nested/asset.bin"));
+            assert(manager.snapshot(id)->status == DownloadStatus::Completed);
+        }
+        {
+            SwitchDeployService service(manager, app, manualSwitch);
+            assert(service.remotePortRequest("get", id, "", reply, error));
+            auto state = nlohmann::json::parse(reply);
+            assert(state["reviewRequired"] == true && state["canStart"] == false);
+            assert(!service.remotePortRequest("start", id, "{}", reply, error));
+            const auto partial = R"({"files":[{"source":"Extras/assets.zip","enabled":true,"directory":"/ports/newplace"}]})";
+            assert(!service.remotePortRequest("save", id, partial, reply, error));
+            assert(!fs::exists(app + "/port-layout-" + id + ".json"));
+            // A partial layout from an older release also needs a new review.
+            writeFile(app + "/port-layout-" + id + ".json",
+                R"({"version":1,"files":[{"source":"Extras/assets.zip","enabled":true,"directory":"/ports/newplace"}]})");
+            assert(service.remotePortRequest("get", id, "", reply, error));
+            state = nlohmann::json::parse(reply);
+            assert(state["reviewRequired"] == true && state["canStart"] == false);
+            assert(!service.remotePortRequest("start", id, "{}", reply, error));
+            fs::remove(app + "/port-layout-" + id + ".json");
+            assert(service.remotePortRequest("preview", id, payload, reply, error));
+            assert(reply.find("/ports/newplace/data/nested/asset.bin") != std::string::npos);
+            assert(!fs::exists(app + "/port-layout-" + id + ".json"));
+            assert(service.remotePortRequest("save", id, payload, reply, error));
+            state = nlohmann::json::parse(reply);
+            assert(state["reviewRequired"] == false && state["canStart"] == true);
+            assert(fs::exists(app + "/port-layout-" + id + ".json"));
+            assert(!service.start(id, error)); // Requires deliberate panel start.
+            assert(service.remotePortRequest("folders", "", R"({"path":"/"})", reply, error));
+            assert(reply.find("\"path\":\"/\"") != std::string::npos);
+            assert(reply.find("\"/switch\"") != std::string::npos);
+            assert(reply.find("\"/ports\"") != std::string::npos);
+            assert(service.remotePortRequest("folders", "", R"({"path":"/switch"})", reply, error));
+            assert(reply.find("/switch/custom") != std::string::npos);
+            assert(service.remotePortRequest("folders", "", R"({"path":"/switch/custom"})", reply, error));
+            assert(reply.find("\"path\":\"/switch/custom\"") != std::string::npos);
+            fs::create_directory_symlink(root, manualSd + "/switch/outside-link");
+            assert(!service.remotePortRequest("folders", "", R"({"path":"/switch/outside-link"})", reply, error));
+            assert(!service.remotePortRequest("folders", "", R"({"path":"/../outside"})", reply, error));
+        }
+        {
+            SwitchDeployService restored(manager, app, manualSwitch);
+            assert(restored.inspect(id).canStart());
+            assert(restored.remotePortRequest("start", id, "{}", reply, error));
+            for (int i = 0; i < 500 && restored.snapshot().active(); ++i)
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            assert(restored.snapshot().phase == SwitchDeployPhase::Completed);
+            assert(fs::exists(manualSd + "/ports/newplace/data/nested/asset.bin"));
+            assert(restored.receiptState(id) == SwitchDeployReceiptState::Valid);
+            assert(!fs::exists(manualSd + "/ports/config/settings.ini"));
+            assert(!restored.remotePortRequest("save", id, payload, reply, error));
+            writeFile(manualSd + "/ports/newplace/data/nested/asset.bin", "CHANGED");
+            assert(restored.receiptState(id) == SwitchDeployReceiptState::Modified);
+        }
+        manager.shutdown();
+        const auto nativeApp = root + "/manual-native-guard";
+        fs::create_directories(nativeApp);
+        const auto nativeData = nativeApp + "/downloads/" + id;
+        fs::create_directories(nativeData);
+        writeCompletedQueue(nativeApp, id, nativeData, zip.size() + 3, "install", "completed", 0, 0);
+        DownloadManager nativeManager(nativeApp, false);
+        SwitchDeployService nativeService(nativeManager, nativeApp, manualSwitch);
+        assert(!nativeService.remotePortRequest("get", id, "", reply, error));
+        assert(!nativeService.remotePortRequest("save", id, payload, reply, error));
+        assert(!fs::exists(nativeApp + "/port-layout-" + id + ".json"));
+        nativeManager.shutdown();
+    }
+
     // Unified port transaction: packages are downloaded to disk, payload is
     // committed first, and only then is the local NSP fed to the installer.
     {
@@ -1358,15 +1591,29 @@ int main() {
         const std::string txNro = nroBytes();
         const std::string txPackage = makeTestNsp(std::string(4096, 'N'));
         const std::string badPackage(txPackage.size(), 'X');
-        writeFile(txData + "/Release/Game/Game.nro", txNro);
+        const std::string txNroPath =
+            "Release/Homebrew (1.0.1)/switch/smwr_nx/smwr.nro";
+        writeFile(txData + "/" + txNroPath, txNro);
         writeFile(txData + "/Release/Forwarder.nsp", badPackage);
+        const std::string txArchive = writeStoredZip({
+            {"switch/smwr_nx/smwr.nro", "old bundled NRO"},
+            {"switch/smwr_nx/data/required.bin", "required-assets"},
+        });
+        writeFile(txData + "/Release/switch.zip", txArchive);
+        const std::string txSibling = "shared-data";
+        const std::string txSiblingPath = "Release/Homebrew (1.0.1)/switch/shared/data.bin";
+        writeFile(txData + "/" + txSiblingPath, txSibling);
+        const std::string txAssetZip = writeStoredZip({{"textures/image.bin", "packed-textures"}});
+        const std::string txAssetPath = "Release/Homebrew (1.0.1)/switch/smwr_nx/data/textures.zip";
+        writeFile(txData + "/" + txAssetPath, txAssetZip);
         writeCompletedQueue(txRoot, txId, txData,
-                            txNro.size() + txPackage.size(),
+                            txNro.size() + txPackage.size() + txArchive.size() +
+                                txSibling.size() + txAssetZip.size(),
                             "port", "completed", 1, 0);
         TaskFileManifest txManifest;
         txManifest.taskId = txId;
         TaskFileRecord txNroFile;
-        txNroFile.logicalPath = "Release/Game/Game.nro";
+        txNroFile.logicalPath = txNroPath;
         txNroFile.localPath = txNroFile.logicalPath;
         txNroFile.size = txNro.size();
         txManifest.files.push_back(txNroFile);
@@ -1377,6 +1624,14 @@ int main() {
         txPackageFile.package = true;
         txPackageFile.action = TaskFileAction::Download;
         txManifest.files.push_back(txPackageFile);
+        for (const auto& extra : std::vector<std::pair<std::string, uint64_t>>{
+                 {"Release/switch.zip", txArchive.size()}, {txSiblingPath, txSibling.size()},
+                 {txAssetPath, txAssetZip.size()}}) {
+            TaskFileRecord file;
+            file.logicalPath = file.localPath = extra.first;
+            file.size = extra.second;
+            txManifest.files.push_back(file);
+        }
         assert(saveTaskFileManifest(txRoot, txManifest, error));
         DownloadManager txManager(txRoot, false);
         assert(txManager.snapshot(txId)->mode == TransferMode::PortInstall);
@@ -1384,10 +1639,25 @@ int main() {
         SwitchDeployInspection txInspection = txDeploy.inspect(txId);
         assert(txInspection.canStart());
         assert(txInspection.plan.packages.size() == 1);
+        assert(txInspection.plan.files.size() == 3);
+        assert(txInspection.plan.archives.size() == 1);
+        assert(txInspection.plan.archives[0].excludedDestinations ==
+               std::vector<std::string>({"switch:smwr_nx/smwr.nro"}));
+        assert(std::any_of(txInspection.plan.files.begin(), txInspection.plan.files.end(),
+                          [](const SwitchDeployEntry& file) {
+                              return file.destinationRelativePath == "smwr_nx/smwr.nro";
+                          }));
 
         // Package failure keeps the deployed payload and its receipt. A retry
         // must skip payload deployment and resume at the package stage.
-        assert(txDeploy.start(txId, error));
+        assert(!txDeploy.start(txId, error));
+        nlohmann::json txRules = nlohmann::json::array();
+        for (const auto& file : txManifest.files)
+            txRules.push_back({{"source", file.logicalPath}, {"enabled", true}, {"directory", ""}});
+        std::string txReply;
+        assert(txDeploy.remotePortRequest("save", txId,
+            nlohmann::json{{"files", txRules}}.dump(), txReply, error));
+        assert(txDeploy.remotePortRequest("start", txId, "{}", txReply, error));
         for (int i = 0; i < 500 && txDeploy.snapshot().active(); ++i)
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         assert(txDeploy.snapshot().phase == SwitchDeployPhase::Failed);
@@ -1395,7 +1665,15 @@ int main() {
         assert(txTask && txTask->status == DownloadStatus::Completed);
         assert(txTask->packagesInstalled == 0);
         assert(!txTask->error.empty());
-        assert(fs::exists(txTarget + "/Game/Game.nro"));
+        assert(fs::exists(txTarget + "/smwr_nx/smwr.nro"));
+        auto readTxFile = [](const std::string& path) {
+            std::ifstream in(path, std::ios::binary);
+            return std::string(std::istreambuf_iterator<char>(in), {});
+        };
+        assert(readTxFile(txTarget + "/smwr_nx/smwr.nro") == txNro);
+        assert(readTxFile(txTarget + "/smwr_nx/data/required.bin") == "required-assets");
+        assert(readTxFile(txTarget + "/shared/data.bin") == txSibling);
+        assert(readTxFile(txTarget + "/smwr_nx/data/textures.zip") == txAssetZip);
         assert(txDeploy.receiptState(txId) == SwitchDeployReceiptState::Valid);
 
         writeFile(txData + "/Release/Forwarder.nsp", txPackage);
@@ -1404,7 +1682,7 @@ int main() {
         assert(txInspection.plan.files.empty());
         assert(txInspection.plan.archives.empty());
         assert(txInspection.plan.packages.size() == 1);
-        assert(txDeploy.start(txId, error));
+        assert(txDeploy.remotePortRequest("start", txId, "{}", txReply, error));
         for (int i = 0; i < 500 && txDeploy.snapshot().active(); ++i)
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         assert(txDeploy.snapshot().phase == SwitchDeployPhase::Completed);
@@ -1413,6 +1691,46 @@ int main() {
         assert(txTask->packagesInstalled == 1);
         txDeploy.shutdown();
         txManager.shutdown();
+    }
+
+    // An NRO directly under switch/ must not produce switch/switch/.
+    // Sibling data paths are preserved, and archive case collisions stop.
+    {
+        const std::string directData = root + "/direct-switch/data";
+        const std::string directTarget = root + "/direct-switch/sd/switch";
+        const std::string directNro = nroBytes();
+        writeFile(directData + "/Launcher.nro", directNro);
+        writeFile(directData + "/data.bin", "assets");
+        fs::create_directories(directTarget);
+        TaskFileInventory direct;
+        direct.taskId = "direct-switch";
+        direct.rootPath = directData;
+        direct.settled = direct.completeManifest = true;
+        addPresent(direct, "Homebrew/switch/Launcher.nro", directData + "/Launcher.nro", directNro.size());
+        addPresent(direct, "Homebrew/switch/assets/data.bin", directData + "/data.bin", 6);
+        auto directInspection = inspectSwitchDeploy(direct, directTarget);
+        assert(directInspection.canStart());
+        assert(directInspection.plan.files.size() == 2);
+        for (const auto& file : directInspection.plan.files)
+            assert(file.destinationRelativePath == "Launcher.nro" ||
+                   file.destinationRelativePath == "assets/data.bin");
+        TaskFileInventory embedded = direct;
+        embedded.files.erase(embedded.files.begin()); // NSP embeds the executable.
+        const std::string embeddedNsp = makeTestNsp("embedded-program");
+        writeFile(directData + "/Recomp.nsp", embeddedNsp);
+        addPresent(embedded, "Recomp.nsp", directData + "/Recomp.nsp", embeddedNsp.size());
+        embedded.files.back().package = true;
+        auto embeddedInspection = inspectSwitchDeploy(embedded, directTarget);
+        assert(embeddedInspection.canStart());
+        assert(embeddedInspection.plan.packages.size() == 1);
+        assert(embeddedInspection.plan.files.size() == 1);
+        assert(embeddedInspection.plan.files[0].destinationRelativePath == "assets/data.bin");
+        const std::string collidingZip = writeStoredZip({{"switch/launcher.nro", directNro}});
+        writeFile(directData + "/switch.zip", collidingZip);
+        addPresent(direct, "switch.zip", directData + "/switch.zip", collidingZip.size());
+        directInspection = inspectSwitchDeploy(direct, directTarget);
+        assert(directInspection.problem == SwitchDeployProblem::UnsafePath);
+        assert(directInspection.unsafeReason == SwitchDeployUnsafeReason::NameCollision);
     }
 
     // FAT32 stores logical files above 4 GiB as DBI split folders. The
@@ -1603,7 +1921,14 @@ int main() {
         }
         assert(sawOverwrite);
 
-        assert(layeredDeploy.start(layeredId, error));
+        assert(!layeredDeploy.start(layeredId, error));
+        nlohmann::json layeredRules = nlohmann::json::array();
+        for (const auto& file : layeredManifest.files)
+            layeredRules.push_back({{"source", file.logicalPath}, {"enabled", true}, {"directory", ""}});
+        std::string layeredReply;
+        assert(layeredDeploy.remotePortRequest("save", layeredId,
+            nlohmann::json{{"files", layeredRules}}.dump(), layeredReply, error));
+        assert(layeredDeploy.remotePortRequest("start", layeredId, "{}", layeredReply, error));
         for (int i = 0; i < 500 && layeredDeploy.snapshot().active(); ++i)
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         assert(layeredDeploy.snapshot().phase == SwitchDeployPhase::Completed);
@@ -1632,6 +1957,10 @@ int main() {
         assert(layeredTask && layeredTask->status == DownloadStatus::Installed);
         assert(layeredTask->packagesInstalled == 1);
 
+        // Completed publishes the result before the worker's lease destructor
+        // runs. Join before uninstalling the task that owns those files.
+        layeredDeploy.shutdown();
+
         PortUninstallPlan layeredPlan;
         assert(layeredUninstall.plan(titleId, {}, layeredPlan));
         assert(layeredPlan.switchFiles.empty());
@@ -1645,7 +1974,6 @@ int main() {
         assert(!fs::exists(deployedSwitch));
         assert(fs::exists(layeredSd + "/atmosphere/contents/" + titleId +
                           "/romfs/user-mod.rpf"));
-        layeredDeploy.shutdown();
         layeredManager.shutdown();
     }
 

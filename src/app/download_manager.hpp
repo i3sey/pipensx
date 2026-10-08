@@ -403,6 +403,8 @@ public:
         return pause(taskId, error);
     }
     bool resume(const std::string& taskId, std::string& error);
+    // Upgrade a completed download in place, retaining its debrid identity and data.
+    bool installDownloaded(const std::string& taskId, std::string& error);
     bool resume(const std::string& taskId) {
         std::string error;
         return resume(taskId, error);
@@ -500,6 +502,12 @@ public:
     void shutdown();
 
     const std::string& rootPath() const { return rootPath_; }
+    bool setInstallBatchBytes(size_t bytes) {
+        if (bytes != (256u << 10) && bytes != (1u << 20) && bytes != (4u << 20)) return false;
+        installBatchBytes_.store(bytes);
+        return true;
+    }
+    size_t installBatchBytes() const { return installBatchBytes_.load(); }
     const std::string& downloadRoot() const { return downloadRoot_; }
     const std::string& torrentRoot() const { return torrentRoot_; }
 
@@ -564,6 +572,9 @@ private:
     bool persistState(std::unique_lock<std::mutex>& lock,
                       std::string& error) const;
     void persistState(std::unique_lock<std::mutex>& lock) const;
+    void persistPackageCheckpoint(std::unique_lock<std::mutex>& lock,
+                                  const std::string& taskId,
+                                  uint32_t completed);
     void persistenceMain();
     void shutdownPersistence();
     DownloadTask* findLocked(const std::string& id);
@@ -589,6 +600,7 @@ private:
         DebridProviderKind provider, const std::string& key);
 
     std::string rootPath_;
+    std::atomic<size_t> installBatchBytes_{4u << 20};
     std::string torrentRoot_;
     std::string downloadRoot_;
     std::string statePath_;

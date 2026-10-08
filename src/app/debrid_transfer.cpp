@@ -2,6 +2,7 @@
 #include "curl_https.hpp"
 #include "download_manager.hpp"
 #include "debrid_provider.hpp"
+#include "remote_archive.hpp"
 #include "install_pacer.hpp"
 #include "nx_file_types.hpp"
 #include "stream_ram_budget.hpp"
@@ -18,6 +19,7 @@ extern "C" {
 
 #include <cerrno>
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <exception>
@@ -94,12 +96,14 @@ std::string describeStreamError(const DebridFile& file,
 class DebridStreamQueue {
 public:
     DebridStreamQueue(size_t maximumBytes, InstallPacer& pacer,
-                      const std::function<bool()>& cancelled)
-        : maximumBytes_(maximumBytes), pacer_(pacer), cancelled_(cancelled) {}
+                      const std::function<bool()>& cancelled, std::string taskId)
+        : maximumBytes_(maximumBytes), taskId_(std::move(taskId)),
+          pacer_(pacer), cancelled_(cancelled) {}
 
     bool push(const uint8_t* data, size_t size) {
         pacer_.observeSource(size, now_ms());
         std::unique_lock<std::mutex> lock(mutex_);
+        const uint64_t waitStarted = telemetry_enabled() ? now_us() : 0;
         bool measurementPaused = false;
         while (!stopped_ && !cancelled_() && !queue_.empty() &&
                bufferedBytes_ + size > maximumBytes_) {
@@ -111,10 +115,15 @@ public:
         }
         if (measurementPaused)
             pacer_.setSourceMeasurementEnabled(true, now_ms());
+        if (waitStarted && measurementPaused)
+            producerWaitUs_ += now_us() - waitStarted;
         if (stopped_ || cancelled_())
             return false;
         queue_.emplace_back(data, data + size);
         bufferedBytes_ += size;
+        peakBytes_ = std::max(peakBytes_, bufferedBytes_);
+        sourceBytes_ += size;
+        reportTelemetry();
         pacer_.setBufferedBytes(bufferedBytes_);
         ready_.notify_all();
         return true;
@@ -122,13 +131,19 @@ public:
 
     bool pop(std::vector<uint8_t>& chunk) {
         std::unique_lock<std::mutex> lock(mutex_);
-        while (queue_.empty() && !finished_ && !stopped_ && !cancelled_())
+        while (queue_.empty() && !finished_ && !stopped_ && !cancelled_()) {
+            const uint64_t started = telemetry_enabled() ? now_us() : 0;
             ready_.wait_for(lock, std::chrono::milliseconds(50));
+            if (started) consumerWaitUs_ += now_us() - started;
+            reportTelemetry();
+        }
         if (queue_.empty())
             return false;
         chunk = std::move(queue_.front());
         queue_.pop_front();
         bufferedBytes_ -= chunk.size();
+        consumedBytes_ += chunk.size();
+        reportTelemetry();
         pacer_.setBufferedBytes(bufferedBytes_);
         ready_.notify_all();
         return true;
@@ -146,12 +161,44 @@ public:
 
     void stop() {
         std::lock_guard<std::mutex> lock(mutex_);
+        reportTelemetry(true);
         stopped_ = true;
         ready_.notify_all();
     }
 
 private:
+    // Called under mutex_ on both threads. Five-second aggregates explain
+    // whether HTTP is waiting for installation or installation for HTTP.
+    void reportTelemetry(bool summary = false) {
+        const uint64_t now = now_ms();
+        if (generation_ != telemetry_generation()) {
+            generation_ = telemetry_generation();
+            lastReportMs_ = now;
+            sourceBytes_ = consumedBytes_ = producerWaitUs_ = consumerWaitUs_ = 0;
+            peakBytes_ = bufferedBytes_;
+        }
+        if (!telemetry_enabled() || (!summary && now - lastReportMs_ < 5000))
+            return;
+        const uint64_t elapsed = now - lastReportMs_;
+        telemetry_log("debrid_queue", taskId_.c_str(),
+            "event=%s interval_ms=%llu source_bytes=%llu consumed_bytes=%llu buffered_bytes=%zu capacity_bytes=%zu peak_bytes=%zu producer_wait_us=%llu consumer_wait_us=%llu download_bps=%llu consume_bps=%llu",
+            summary ? "end" : "window", (unsigned long long)elapsed,
+            (unsigned long long)sourceBytes_, (unsigned long long)consumedBytes_,
+            bufferedBytes_, maximumBytes_, peakBytes_,
+            (unsigned long long)producerWaitUs_, (unsigned long long)consumerWaitUs_,
+            (unsigned long long)(elapsed ? sourceBytes_ * 1000 / elapsed : 0),
+            (unsigned long long)(elapsed ? consumedBytes_ * 1000 / elapsed : 0));
+        lastReportMs_ = now;
+        sourceBytes_ = consumedBytes_ = producerWaitUs_ = consumerWaitUs_ = 0;
+        peakBytes_ = bufferedBytes_;
+    }
+    uint32_t generation_ = 0;
+    uint64_t lastReportMs_ = 0;
+    uint64_t sourceBytes_ = 0, consumedBytes_ = 0;
+    uint64_t producerWaitUs_ = 0, consumerWaitUs_ = 0;
+    size_t peakBytes_ = 0;
     size_t maximumBytes_;
+    std::string taskId_;
     InstallPacer& pacer_;
     const std::function<bool()>& cancelled_;
     mutable std::mutex mutex_;
@@ -198,7 +245,8 @@ bool statSize(const std::string& path, uint64_t& size) {
 constexpr uint64_t kFat32MaximumFileBytes = 0xFFFFFFFFull;
 constexpr uint64_t kSplitResumeCheckpointBytes = 4ull * 1024 * 1024;
 
-bool needsSplitDownload(uint64_t fileBytes) {
+bool needsSplitDownload(uint64_t fileBytes, bool forceSplit = false) {
+    if (forceSplit) return true;
 #ifdef __SWITCH__
     // Use the same DBI/HOS concatenation-folder format as torrent storage.
     // Always splitting on Switch also works on exFAT and avoids a destructive
@@ -372,9 +420,18 @@ std::string baseName(const std::string& path) {
 }
 
 bool selected(const DebridTaskSpec& spec, size_t index,
-              const DebridFile& file) {
+              const DebridFile& file, const std::string& torrentName) {
     bool wanted = false;
-    if (!spec.selectionPaths.empty()) {
+    if (!spec.selectionRelativePaths.empty()) {
+        bool safe = false;
+        const std::string relative = sanitizeRelative(file.path, torrentName, safe);
+        if (!safe) return false;
+        for (const auto& entry : spec.selectionRelativePaths)
+            if (entry.first == relative && entry.second == file.bytes) {
+                wanted = true;
+                break;
+            }
+    } else if (!spec.selectionPaths.empty()) {
         std::string base = baseName(file.path);
         for (const auto& entry : spec.selectionPaths)
             if (entry.first == base && entry.second == file.bytes) {
@@ -397,7 +454,7 @@ bool selected(const DebridTaskSpec& spec, size_t index,
     // fileSelection with the debrid list position — a zip listed first
     // would otherwise see the NSP's Install slot and be dropped.
     if (spec.mode == TransferMode::StreamInstall && !isPackageName(file.path)) {
-        if (!spec.selectionPaths.empty())
+        if (!spec.selectionPaths.empty() || !spec.selectionRelativePaths.empty())
             return true;
         if (index >= spec.fileSelection.size())
             return false;
@@ -409,19 +466,21 @@ bool selected(const DebridTaskSpec& spec, size_t index,
 }
 
 size_t kthSelectedIndex(const DebridTaskSpec& spec,
-                        const std::vector<DebridFile>& files, size_t index) {
+                        const std::vector<DebridFile>& files, size_t index,
+                        const std::string& torrentName) {
     size_t k = 0;
     for (size_t i = 0; i < index; ++i)
-        if (selected(spec, i, files[i]))
+        if (selected(spec, i, files[i], torrentName))
             ++k;
     return k;
 }
 
 std::vector<size_t> selectedFileOrder(const DebridTaskSpec& spec,
-                                      const std::vector<DebridFile>& files) {
+                                      const std::vector<DebridFile>& files,
+                                      const std::string& torrentName) {
     std::vector<size_t> order;
     for (size_t i = 0; i < files.size(); ++i)
-        if (selected(spec, i, files[i]))
+        if (selected(spec, i, files[i], torrentName))
             order.push_back(i);
     std::stable_sort(order.begin(), order.end(),
                      [&](size_t a, size_t b) {
@@ -438,7 +497,7 @@ bool installs(const DebridTaskSpec& spec, size_t index,
               const DebridFile& file) {
     if (spec.mode != TransferMode::StreamInstall || !isPackageName(file.path))
         return false;
-    if (spec.fileSelection.empty() || !spec.selectionPaths.empty())
+    if (spec.fileSelection.empty() || !spec.selectionPaths.empty() || !spec.selectionRelativePaths.empty())
         return true;
     for (uint8_t action : spec.fileSelection)
         if (action == static_cast<uint8_t>(FileAction::Install))
@@ -508,6 +567,46 @@ constexpr size_t kInstallBatchBytes = 1u << 20;
 constexpr unsigned kRangeWorkers = 4;
 constexpr uint64_t kRangeSegmentBytes = 4ull << 20;
 
+class ThroughputMeter {
+public:
+    ThroughputMeter(const char* stage, std::string tag)
+        : stage_(stage), tag_(std::move(tag)) { reset(); }
+    ~ThroughputMeter() { report(true); }
+    void record(size_t bytes, uint64_t workUs) {
+        if (generation_ != telemetry_generation()) reset();
+        if (!telemetry_enabled()) return;
+        bytes_ += bytes;
+        workUs_ += workUs;
+        maxUs_ = std::max(maxUs_, workUs);
+        ++calls_;
+        report(false);
+    }
+private:
+    void reset() {
+        generation_ = telemetry_generation();
+        lastMs_ = now_ms();
+        bytes_ = workUs_ = maxUs_ = calls_ = 0;
+    }
+    void report(bool final) {
+        if (generation_ != telemetry_generation()) reset();
+        const uint64_t interval = now_ms() - lastMs_;
+        if (!telemetry_enabled() || !calls_ || (!final && interval < 5000)) return;
+        telemetry_log(stage_, tag_.c_str(),
+            "event=%s interval_ms=%llu bytes=%llu wall_bps=%llu work_us=%llu work_bps=%llu max_call_us=%llu calls=%llu",
+            final ? "end" : "window", (unsigned long long)interval,
+            (unsigned long long)bytes_,
+            (unsigned long long)(interval ? bytes_ * 1000 / interval : 0),
+            (unsigned long long)workUs_,
+            (unsigned long long)(workUs_ ? bytes_ * 1000000 / workUs_ : 0),
+            (unsigned long long)maxUs_, (unsigned long long)calls_);
+        reset();
+    }
+    const char* stage_;
+    std::string tag_;
+    uint32_t generation_ = 0;
+    uint64_t lastMs_ = 0, bytes_ = 0, workUs_ = 0, maxUs_ = 0, calls_ = 0;
+};
+
 struct CurlSink {
     const std::function<bool(const uint8_t*, size_t)>* sink;
     const std::function<bool()>* cancelled;
@@ -520,6 +619,8 @@ struct CurlSink {
     bool sinkRefused = false;
     bool rangeIgnored = false;
     uint64_t received = 0;
+    uint64_t sinkUs = 0;
+    ThroughputMeter* meter = nullptr;
 };
 
 size_t curlWrite(char* ptr, size_t size, size_t nmemb, void* userdata) {
@@ -539,7 +640,12 @@ size_t curlWrite(char* ptr, size_t size, size_t nmemb, void* userdata) {
             c->aborted = true;
             return 0;
         }
-        if (!(*c->sink)(reinterpret_cast<const uint8_t*>(ptr), total)) {
+        const uint64_t started = telemetry_enabled() ? now_us() : 0;
+        const bool accepted = (*c->sink)(reinterpret_cast<const uint8_t*>(ptr), total);
+        const uint64_t elapsed = started ? now_us() - started : 0;
+        c->sinkUs += elapsed;
+        if (c->meter) c->meter->record(accepted ? total : 0, elapsed);
+        if (!accepted) {
             c->aborted = true;
             c->sinkRefused = true;
             return 0;
@@ -556,8 +662,52 @@ size_t curlWrite(char* ptr, size_t size, size_t nmemb, void* userdata) {
     }
 }
 
+// Keep connection/DNS/TLS caches across files and retries. Each worker owns
+// its easy handle exclusively; only idle handles may move between threads.
+class CurlHandlePool {
+public:
+    ~CurlHandlePool() {
+        for (CURL* curl : idle_)
+            if (curl) curl_easy_cleanup(curl);
+    }
+
+    CURL* acquire() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            for (CURL*& curl : idle_) {
+                if (!curl) continue;
+                CURL* result = curl;
+                curl = nullptr;
+                return result;
+            }
+        }
+        return curl_easy_init();
+    }
+
+    void release(CURL* curl) {
+        // Clear request-specific ranges and pointers to stack callbacks, but
+        // retain libcurl's reusable connections. The next request sets every
+        // option again, including its URL and trusted transport policy.
+        curl_easy_reset(curl);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            for (CURL*& slot : idle_) {
+                if (slot) continue;
+                slot = curl;
+                return;
+            }
+        }
+        curl_easy_cleanup(curl);
+    }
+
+private:
+    std::mutex mutex_;
+    std::array<CURL*, kRangeWorkers> idle_{};
+};
+
 RangeFetcher curlRangeFetcher() {
-    return [](const std::string& url, uint64_t offset, uint64_t endExclusive,
+    auto pool = std::make_shared<CurlHandlePool>();
+    return [pool](const std::string& url, uint64_t offset, uint64_t endExclusive,
               const std::function<bool(const uint8_t*, size_t)>& sink,
               const std::function<bool()>& cancelled,
               std::string& error) -> bool {
@@ -571,7 +721,9 @@ RangeFetcher curlRangeFetcher() {
         const std::string host = urlHostForDisplay(url);
         log_msg("[debrid] downloading from %s over %s\n", host.c_str(),
                 plain ? "HTTP" : "HTTPS");
-        CURL* curl = curl_easy_init();
+        auto release = [pool](CURL* curl) { pool->release(curl); };
+        std::unique_ptr<CURL, decltype(release)> lease(pool->acquire(), release);
+        CURL* curl = lease.get();
         if (!curl) {
             error = "Unable to initialize network transfer.";
             return false;
@@ -581,6 +733,9 @@ RangeFetcher curlRangeFetcher() {
         state.cancelled = &cancelled;
         state.curl = curl;
         state.ranged = endExclusive != 0;
+        // One cached connection per worker bounds scarce Switch sockets,
+        // even when consecutive file URLs point to different CDN hosts.
+        curl_easy_setopt(curl, CURLOPT_MAXCONNECTS, 1L);
         curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
         if (state.ranged) {
             char range[80];
@@ -599,14 +754,35 @@ RangeFetcher curlRangeFetcher() {
         curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
         curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 60L);
         curlApplyTrustedSsl(curl);
-        curlTuneDownloadSocket(curl);
+        CurlSocketTuning socketTuning;
+        curlTuneDownloadSocket(curl, &socketTuning);
         curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curlWrite);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &state);
+        ThroughputMeter httpMeter("debrid_http", host);
+        state.meter = &httpMeter;
         CURLcode rc = curl_easy_perform(curl);
         long httpStatus = 0;
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpStatus);
-        curl_easy_cleanup(curl);
+        double dns = 0, connect = 0, tls = 0, firstByte = 0, total = 0;
+        long newConnections = 0;
+        curl_easy_getinfo(curl, CURLINFO_NAMELOOKUP_TIME, &dns);
+        curl_easy_getinfo(curl, CURLINFO_CONNECT_TIME, &connect);
+        curl_easy_getinfo(curl, CURLINFO_APPCONNECT_TIME, &tls);
+        curl_easy_getinfo(curl, CURLINFO_STARTTRANSFER_TIME, &firstByte);
+        curl_easy_getinfo(curl, CURLINFO_TOTAL_TIME, &total);
+        curl_easy_getinfo(curl, CURLINFO_NUM_CONNECTS, &newConnections);
+        if (newConnections > 0)
+            log_msg("[net] download socket host=%s requested_rx=%d actual_rx=%d "
+                    "fallback_errno=%d\n", host.c_str(), socketTuning.requestedBytes,
+                    socketTuning.actualBytes, socketTuning.lastError);
+        telemetry_log("debrid_http", host.c_str(),
+            "event=request_end offset=%llu end=%llu http=%ld curl=%d bytes=%llu dns_ms=%.1f connect_ms=%.1f tls_ms=%.1f ttfb_ms=%.1f total_ms=%.1f sink_us=%llu new_connections=%ld average_bps=%.0f sink_refused=%d",
+            (unsigned long long)offset, (unsigned long long)endExclusive,
+            httpStatus, (int)rc, (unsigned long long)state.received,
+            dns * 1000, connect * 1000, tls * 1000, firstByte * 1000,
+            total * 1000, (unsigned long long)state.sinkUs, newConnections,
+            total > 0 ? state.received / total : 0, state.sinkRefused ? 1 : 0);
         if (state.rangeIgnored || (httpStatus == 200 && state.ranged)) {
             error = kDebridRangeNotSupported;
             return false;
@@ -624,7 +800,7 @@ RangeFetcher curlRangeFetcher() {
                 : "The download stream was interrupted.";
             return false;
         }
-        if (state.ranged && httpStatus != 206) {
+        if (state.ranged && httpStatus != 206 && rc == CURLE_OK) {
             error = kDebridRangeNotSupported;
             return false;
         }
@@ -681,6 +857,11 @@ struct RunContext {
     std::vector<DebridFile> files;
     std::vector<std::string> selectedLinks;
     bool filesSelected = false;
+    bool selectionReplacementCreated = false;
+    bool groupedDownload = false;
+    std::string resolvedSourceUrl;
+    bool retryableFetchFailure = false;
+    bool localSource = false;
     std::unique_ptr<install::InstallBackend> backend;
     std::string error;
     bool recoveryNoted = false;
@@ -692,6 +873,8 @@ struct RunContext {
     // streaming. Added to completedSoFar so the download bar advances mid-
     // package instead of only jumping when a package finishes.
     std::atomic<uint64_t> packageDownloadedBytes {0};
+    std::atomic<uint64_t> packageDownloadSpeed {0};
+    std::atomic<uint64_t> packageDownloadSpeedAtMs {0};
 
     void emit(const DebridProgress& p) const {
         if (*progress)
@@ -718,6 +901,10 @@ void applyFileRecovery(DebridProgress& progress, const RunContext& ctx) {
 }
 
 Step ensureCreated(RunContext& ctx) {
+    if (ctx.stop()) return Step::Stopped;
+    log_msg("[debrid-intent] source=queue phase=claimed task=%s provider=%s selected_actions=%zu resumed=%d\n",
+            ctx.spec.taskId.c_str(), ctx.provider.name(),
+            ctx.spec.fileSelection.size(), ctx.spec.debridId.empty() ? 0 : 1);
     if (!ctx.spec.debridId.empty()) {
         ctx.debridId = ctx.spec.debridId;
         log_msg("[debrid] task %s using pre-created id=%s\n",
@@ -757,9 +944,32 @@ Step fallbackToFile(RunContext& ctx) {
 
 Step pollUntilReady(RunContext& ctx) {
     int failures = 0;
+    int staleSelectionPolls = 0;
     bool canFallback =
         ctx.magnetCreated && !ctx.fallbackUsed && !ctx.spec.torrentPath.empty();
     Clock::time_point windowStart = Clock::now();
+    auto replaceFinalizedRealDebridSelection = [&]() -> Step {
+        if (ctx.selectionReplacementCreated) {
+            ctx.error = "Real-Debrid could not create a complete file "
+                        "selection for this torrent.";
+            return Step::Failed;
+        }
+        const std::string previousId = ctx.debridId;
+        std::string replacementId;
+        if (!ctx.provider.createSelectionReplacement(previousId, replacementId,
+                                                     ctx.error))
+            return Step::Failed;
+        ctx.debridId = std::move(replacementId);
+        ctx.selectionReplacementCreated = true;
+        ctx.filesSelected = false;
+        ctx.selectedLinks.clear();
+        ctx.files.clear();
+        staleSelectionPolls = 0;
+        log_msg("[debrid] Real-Debrid selection finalized on id=%s; "
+                "created one replacement id=%s for the complete selection\n",
+                previousId.c_str(), ctx.debridId.c_str());
+        return Step::Ok;
+    };
     while (true) {
         if (ctx.stop())
             return Step::Stopped;
@@ -800,32 +1010,118 @@ Step pollUntilReady(RunContext& ctx) {
 
         if (!ctx.filesSelected && !info.links.empty())
             ctx.selectedLinks = info.links;
-        // Select files only while the service is actually waiting for a
-        // selection. Resuming a torrent that is already downloading or
-        // downloaded must not re-select: Real-Debrid restarts the server-side
-        // torrent on POST /torrents/selectFiles, wasting a full re-download.
-        if (!ctx.filesSelected &&
-            info.phase == DebridInfo::Phase::AwaitingSelection &&
-            !info.files.empty()) {
-            std::vector<std::string> selectedIds;
-            for (size_t i = 0; i < info.files.size(); ++i) {
-                if (selected(ctx.spec, i, info.files[i]))
+
+        // Real-Debrid keeps the selected-file set on the torrent itself. A
+        // resumed task may therefore point at an already-downloaded torrent
+        // whose old selection contains only the base game. Re-select the
+        // complete wanted set on that SAME torrent instead of cloning the
+        // magnet once per update/DLC. This also makes nested paths a single
+        // server-side selection/seed operation.
+        const bool realdebrid =
+            std::strcmp(ctx.provider.name(), "realdebrid") == 0;
+        std::vector<std::string> selectedIds;
+        size_t wantedCount = 0;
+        size_t wantedSelectedOnServer = 0;
+        size_t serverSelectedCount = 0;
+        for (size_t i = 0; i < info.files.size(); ++i) {
+            const bool wanted = selected(ctx.spec, i, info.files[i], info.name);
+            if (wanted) {
+                ++wantedCount;
+                if (!info.files[i].id.empty())
                     selectedIds.push_back(info.files[i].id);
+                if (info.files[i].serverSelected == 1)
+                    ++wantedSelectedOnServer;
             }
-            if (selectedIds.empty()) {
+            if (info.files[i].serverSelected == 1)
+                ++serverSelectedCount;
+        }
+        if (info.phase == DebridInfo::Phase::Ready &&
+            !ctx.spec.selectionRelativePaths.empty() &&
+            wantedCount != ctx.spec.selectionRelativePaths.size()) {
+            // Do this before filesResolved overwrites the saved manifest or
+            // any package commits: a partial match is not a complete install.
+            ctx.error = "Debrid file list does not match all saved selected files.";
+            return Step::Failed;
+        }
+        const bool rdSelectionMismatch =
+            realdebrid && wantedCount > 0 &&
+            wantedSelectedOnServer != wantedCount;
+        const bool rdLinkMismatch =
+            realdebrid && wantedCount > 0 &&
+            info.phase == DebridInfo::Phase::Ready &&
+            info.links.size() != serverSelectedCount;
+
+        if (!ctx.filesSelected && !info.files.empty() &&
+            (info.phase == DebridInfo::Phase::AwaitingSelection ||
+             rdSelectionMismatch)) {
+            if (wantedCount == 0) {
                 ctx.error = "No debrid files matched the selected files.";
                 return Step::Failed;
+            }
+            if (selectedIds.size() != wantedCount) {
+                ctx.error = "Real-Debrid did not return file ids for all "
+                            "selected files.";
+                return Step::Failed;
+            }
+            if (realdebrid &&
+                (rdSelectionMismatch || rdLinkMismatch)) {
+                log_msg("[debrid] refreshing Real-Debrid selection in-place "
+                        "id=%s wanted=%zu server=%zu links=%zu\n",
+                        ctx.debridId.c_str(), wantedCount,
+                        serverSelectedCount, info.links.size());
             }
             if (!ctx.provider.selectFiles(ctx.debridId, selectedIds,
                                           ctx.error))
                 return Step::Failed;
+            if (realdebrid && ctx.provider.selectionAlreadyFinalized() &&
+                (rdSelectionMismatch || rdLinkMismatch)) {
+                const Step replacement =
+                    replaceFinalizedRealDebridSelection();
+                if (replacement != Step::Ok)
+                    return replacement;
+                continue;
+            }
             ctx.filesSelected = true;
-            ctx.selectedLinks = info.links;
+            ctx.selectedLinks.clear();
+            // A downloaded RD torrent can briefly keep reporting the old
+            // selected set/links after POST. Refetch before resolving URLs.
+            if (realdebrid && info.phase == DebridInfo::Phase::Ready)
+                continue;
         }
 
         if (info.phase == DebridInfo::Phase::Ready && !info.files.empty()) {
-            if (ctx.filesSelected)
-                ctx.selectedLinks = info.links;
+            if (ctx.filesSelected && realdebrid &&
+                rdSelectionMismatch) {
+                // Selection changes on a cached torrent are asynchronous.
+                // Wait for the wanted file set before replacing an immutable
+                // old selection. A grouped link alone is not a stale selection.
+                if (++staleSelectionPolls < 5) {
+                    if (!sleepSlices(*ctx.shouldStop,
+                                     pollWaitMs(ctx.provider)))
+                        return Step::Stopped;
+                    continue;
+                }
+                if (!ctx.selectionReplacementCreated) {
+                    const Step replacement =
+                        replaceFinalizedRealDebridSelection();
+                    if (replacement != Step::Ok)
+                        return replacement;
+                    continue;
+                }
+            }
+            if (realdebrid && rdLinkMismatch) {
+                // RD can publish one archive for an already complete set.
+                // Cloning that same complete selection cannot make its links
+                // separate: preserve the cached parent and resolve only the
+                // individual files needed for this task.
+                ctx.groupedDownload = true;
+                log_msg("[debrid] Real-Debrid kept grouped links after complete "
+                        "selection id=%s wanted=%zu server=%zu links=%zu; "
+                        "reading cached archive members without new selections\n",
+                        ctx.debridId.c_str(), wantedCount, serverSelectedCount,
+                        info.links.size());
+            }
+            ctx.selectedLinks = info.links;
             if (ctx.spec.filesResolved) {
                 std::vector<DebridTaskSpec::ResolvedFile> resolved;
                 resolved.reserve(info.files.size());
@@ -840,7 +1136,7 @@ Step pollUntilReady(RunContext& ctx) {
                         file.path.erase(file.path.begin());
                     file.localPath = file.path;
                     file.bytes = info.files[i].bytes;
-                    file.action = !selected(ctx.spec, i, info.files[i])
+                    file.action = !selected(ctx.spec, i, info.files[i], info.name)
                         ? static_cast<uint8_t>(FileAction::Skip)
                         : installs(ctx.spec, i, info.files[i])
                             ? static_cast<uint8_t>(FileAction::Install)
@@ -878,6 +1174,22 @@ bool shouldEmitProgress(Clock::time_point& lastEmit) {
         lastEmit = now;
         return true;
     }
+    return false;
+}
+
+bool transientFetchError(const std::string& error) {
+    std::string folded = error;
+    for (char& ch : folded)
+        if (ch >= 'A' && ch <= 'Z') ch += 'a' - 'A';
+    for (const char* phrase : {"timed out", "timeout", "could not reach",
+                              "couldn't connect", "could not connect",
+                              "couldn't resolve", "could not resolve",
+                              "connection lost", "connection reset",
+                              "recv failure", "send failure", "partial file",
+                              "transferred a partial", "server returned nothing",
+                              "stream was interrupted", "http 429", "http 500",
+                              "http 502", "http 503", "http 504"})
+        if (folded.find(phrase) != std::string::npos) return true;
     return false;
 }
 
@@ -1055,6 +1367,75 @@ bool fetchOrdered(const RangeFetcher& fetcher, const std::string& url,
     return nextToEmit == totalBytes;
 }
 
+// Let HTTP receive while the SD is busy. Drain delivered bytes on source
+// failure, and join before file handles or callbacks leave the caller's scope.
+bool fetchToDiskBuffered(RunContext& ctx, const std::string& url,
+                         uint64_t offset, uint64_t totalBytes,
+                         const std::function<bool(const uint8_t*, size_t)>& sink,
+                         std::string& error) {
+    const size_t budget = debridQueueBytes();
+    const size_t capacity = std::min<size_t>(budget, 8u << 20);
+    InstallPacer pacer(capacity);
+    pacer.beginPackage(false);
+    std::atomic<bool> consumerStopped{false};
+    const std::function<bool()> cancelled = [&] {
+        return consumerStopped.load() || ctx.stop();
+    };
+    DebridStreamQueue queue(capacity, pacer, cancelled, ctx.spec.taskId);
+    auto fetch = [&](const std::function<bool(const uint8_t*, size_t)>& target) {
+        return sequentialHttp(ctx.provider)
+            ? fetchSequential(ctx.fetcher, url, offset, target, cancelled, error)
+            : fetchOrdered(ctx.fetcher, url, offset, totalBytes,
+                           budget / 2, target, cancelled, error);
+    };
+    bool sourceOk = false;
+    std::thread producer;
+    try {
+        producer = std::thread([&] {
+            try {
+                sourceOk = fetch([&](const uint8_t* data, size_t size) {
+                    while (size) {
+                        const size_t part = std::min<size_t>(size, capacity);
+                        if (!queue.push(data, part)) return false;
+                        data += part;
+                        size -= part;
+                    }
+                    return true;
+                });
+            } catch (const std::exception& exception) {
+                error = exception.what();
+            } catch (...) {
+                error = "Download worker failed.";
+            }
+            queue.finish();
+        });
+    } catch (const std::system_error&) {
+        return fetch(sink); // Constrained applet: retain synchronous fallback.
+    }
+    bool sinkOk = true;
+    try {
+        std::vector<uint8_t> chunk;
+        // A pause stops new input, but the accepted queue prefix must land
+        // on disk so the next HTTP request resumes from that exact offset.
+        while (queue.pop(chunk)) {
+            if (!sink(chunk.data(), chunk.size())) {
+                sinkOk = false;
+                break;
+            }
+        }
+    } catch (...) {
+        consumerStopped = true;
+        queue.stop();
+        producer.join();
+        throw;
+    }
+    const bool stopped = ctx.stop();
+    consumerStopped = true;
+    queue.stop();
+    producer.join();
+    return sourceOk && sinkOk && !stopped;
+}
+
 Step fetchSplitDownload(RunContext& ctx, const std::string& url,
                         const std::string& localPath, uint64_t offset,
                         uint64_t fileBytes, uint64_t baseCompleted) {
@@ -1111,9 +1492,13 @@ Step fetchSplitDownload(RunContext& ctx, const std::string& url,
     uint64_t speed = 0;
     uint64_t checkpoint = offset;
     std::string sinkError;
-    auto sink = [&](const uint8_t* data, size_t n) -> bool {
-        if (!storage_write(output, static_cast<int64_t>(offset + written),
-                           data, n)) {
+    ThroughputMeter diskMeter("debrid_sd", ctx.spec.taskId);
+    auto writeBatch = [&](const uint8_t* data, size_t n) -> bool {
+        const uint64_t started = telemetry_enabled() ? now_us() : 0;
+        const bool writtenOk = storage_write(output,
+            static_cast<int64_t>(offset + written), data, n);
+        diskMeter.record(writtenOk ? n : 0, started ? now_us() - started : 0);
+        if (!writtenOk) {
             const char* detail = storage_error(output);
             sinkError = detail && *detail
                 ? std::string("Unable to write the large download: ") + detail
@@ -1155,14 +1540,40 @@ Step fetchSplitDownload(RunContext& ctx, const std::string& url,
         return true;
     };
 
+    // storage_write closes/flushed disk handles on every call. Coalesce the
+    // small HTTP callbacks so large FAT32 downloads pay that cost per MiB.
+    std::vector<uint8_t> pending;
+    pending.reserve(kInstallBatchBytes);
+    uint64_t inputCallbacks = 0;
+    uint64_t diskBatches = 0;
+    auto flushPending = [&] {
+        if (pending.empty()) return true;
+        if (!writeBatch(pending.data(), pending.size())) return false;
+        ++diskBatches;
+        pending.clear();
+        return true;
+    };
+    auto sink = [&](const uint8_t* data, size_t n) {
+        ++inputCallbacks;
+        while (n) {
+            const size_t count = std::min(n, kInstallBatchBytes - pending.size());
+            pending.insert(pending.end(), data, data + count);
+            data += count;
+            n -= count;
+            if (pending.size() == kInstallBatchBytes && !flushPending()) return false;
+        }
+        return true;
+    };
+
     std::string fetchError;
-    const size_t maximumBuffered = debridQueueBytes();
-    bool ok = sequentialHttp(ctx.provider)
-        ? fetchSequential(ctx.fetcher, url, offset, sink, *ctx.shouldStop,
-                          fetchError)
-        : fetchOrdered(ctx.fetcher, url, offset, fileBytes,
-                       maximumBuffered / 2, sink, *ctx.shouldStop, fetchError);
-    if (ok && !storage_flush(output)) {
+    bool ok = fetchToDiskBuffered(ctx, url, offset, fileBytes, sink, fetchError);
+    // Even a cancelled/failed fetch may have a valid tail worth preserving.
+    if (sinkError.empty() && !flushPending()) ok = false;
+    log_msg("[debrid] cached disk batches=%llu HTTP callbacks=%llu saved=%llu\n",
+            static_cast<unsigned long long>(diskBatches),
+            static_cast<unsigned long long>(inputCallbacks),
+            static_cast<unsigned long long>(offset + written));
+    if (!storage_flush(output)) {
         const int savedErrno = errno;
         sinkError = std::string("Unable to flush the large download: ") +
                     std::strerror(savedErrno ? savedErrno : EIO);
@@ -1172,7 +1583,9 @@ Step fetchSplitDownload(RunContext& ctx, const std::string& url,
     }
     const uint64_t committed = offset + written;
     if (ok && committed != fileBytes) {
-        fetchError = "Downloaded file size mismatch.";
+        fetchError = committed < fileBytes
+            ? "Download transferred a partial file."
+            : "Downloaded file size mismatch.";
         ok = false;
     }
     if (ok)
@@ -1181,14 +1594,18 @@ Step fetchSplitDownload(RunContext& ctx, const std::string& url,
 
     if (!ok) {
         std::string resumeError;
-        if (!saveSplitResume(localPath, committed, resumeError))
+        if (!saveSplitResume(localPath, committed, resumeError)) {
             diagnostic_error("storage", "debrid_resume", "file=%s error=%s",
                              leaf.c_str(), resumeError.c_str());
+            if (sinkError.empty()) sinkError = resumeError;
+        }
         if (ctx.stop())
             return Step::Stopped;
         ctx.error = !sinkError.empty() ? sinkError
                   : !fetchError.empty() ? fetchError
                                         : "Download failed.";
+        ctx.retryableFetchFailure = sinkError.empty() &&
+                                    transientFetchError(ctx.error);
         return Step::Failed;
     }
 
@@ -1200,10 +1617,11 @@ Step fetchAppend(RunContext& ctx, const std::string& url,
                  const std::string& localPath, uint64_t offset,
                  uint64_t fileBytes, uint64_t baseCompleted,
                  bool refetchWhole = false) {
+    ctx.retryableFetchFailure = false;
     const bool bytePoint = !refetchWhole && offset > 0 && offset < fileBytes;
     noteFileRecovery(ctx, bytePoint, refetchWhole ? fileBytes : offset,
                      fileBytes);
-    if (needsSplitDownload(fileBytes))
+    if (needsSplitDownload(fileBytes, ctx.spec.forceSplitDownloads))
         return fetchSplitDownload(ctx, url, localPath, offset, fileBytes,
                                   baseCompleted);
 
@@ -1220,8 +1638,12 @@ Step fetchAppend(RunContext& ctx, const std::string& url,
     uint64_t written = 0;
     uint64_t speed = 0;
     std::string sinkError;
+    ThroughputMeter diskMeter("debrid_sd", ctx.spec.taskId);
     auto sink = [&](const uint8_t* data, size_t n) -> bool {
-        if (std::fwrite(data, 1, n, out) != n) {
+        const uint64_t started = telemetry_enabled() ? now_us() : 0;
+        const size_t stored = std::fwrite(data, 1, n, out);
+        diskMeter.record(stored, started ? now_us() - started : 0);
+        if (stored != n) {
             const int savedErrno = errno;
             sinkError = std::string("Unable to write the download file: ") +
                         std::strerror(savedErrno ? savedErrno : EIO);
@@ -1252,13 +1674,7 @@ Step fetchAppend(RunContext& ctx, const std::string& url,
         return true;
     };
     std::string err;
-    const size_t maximumBuffered = debridQueueBytes();
-    // RD CDN corrupts parallel 206s; TorrServer's cache is a sequential
-    // reader with readahead — Range workers thrash it.
-    bool ok = sequentialHttp(ctx.provider)
-        ? fetchSequential(ctx.fetcher, url, offset, sink, *ctx.shouldStop, err)
-        : fetchOrdered(ctx.fetcher, url, offset, fileBytes,
-                       maximumBuffered / 2, sink, *ctx.shouldStop, err);
+    bool ok = fetchToDiskBuffered(ctx, url, offset, fileBytes, sink, err);
     if (ok && std::fflush(out) != 0) {
         const int savedErrno = errno;
         sinkError = std::string("Unable to flush the download file: ") +
@@ -1267,7 +1683,7 @@ Step fetchAppend(RunContext& ctx, const std::string& url,
                          baseName(localPath).c_str(), sinkError.c_str());
         ok = false;
     }
-    if (std::fclose(out) != 0 && ok) {
+    if (std::fclose(out) != 0) {
         const int savedErrno = errno;
         sinkError = std::string("Unable to close the download file: ") +
                     std::strerror(savedErrno ? savedErrno : EIO);
@@ -1280,13 +1696,15 @@ Step fetchAppend(RunContext& ctx, const std::string& url,
             return Step::Stopped;
         ctx.error = !sinkError.empty() ? sinkError
                                       : err.empty() ? "Download failed." : err;
+        ctx.retryableFetchFailure = sinkError.empty() &&
+                                    transientFetchError(ctx.error);
         return Step::Failed;
     }
     return Step::Ok;
 }
 
 Step downloadPlainFile(RunContext& ctx, size_t kthSelected,
-                       const DebridFile& file) {
+                       const DebridFile& file, bool reconnect = false) {
     bool ok = true;
     std::string rel = sanitizeRelative(file.path, ctx.torrentName, ok);
     if (!ok) {
@@ -1302,7 +1720,7 @@ Step downloadPlainFile(RunContext& ctx, size_t kthSelected,
 
     uint64_t existing = 0;
     bool restarted = false;
-    if (needsSplitDownload(file.bytes)) {
+    if (needsSplitDownload(file.bytes, ctx.spec.forceSplitDownloads)) {
         if (!splitDownloadOffset(localPath, file.bytes, existing, ctx.error,
                                  &restarted))
             return Step::Failed;
@@ -1323,7 +1741,8 @@ Step downloadPlainFile(RunContext& ctx, size_t kthSelected,
     DebridInfo info;
     info.links = ctx.selectedLinks;
     std::string url;
-    if (!ctx.provider.resolveDownloadUrl(ctx.debridId, info, kthSelected,
+    url = ctx.resolvedSourceUrl;
+    if (url.empty() && !ctx.provider.resolveDownloadUrl(ctx.debridId, info, kthSelected,
                                          file, url, ctx.error))
         return Step::Failed;
     if (!linkAllowed(ctx.provider, url)) {
@@ -1331,9 +1750,10 @@ Step downloadPlainFile(RunContext& ctx, size_t kthSelected,
         return Step::Failed;
     }
 
-    for (int attempt = 0; attempt < 2; ++attempt) {
+    auto outageStarted = Clock::time_point::min();
+    for (int attempt = 0;; ++attempt) {
         uint64_t offset = 0;
-        if (needsSplitDownload(file.bytes)) {
+        if (needsSplitDownload(file.bytes, ctx.spec.forceSplitDownloads)) {
             if (!splitDownloadOffset(localPath, file.bytes, offset, ctx.error,
                                      &restarted))
                 return Step::Failed;
@@ -1342,13 +1762,63 @@ Step downloadPlainFile(RunContext& ctx, size_t kthSelected,
         }
         Step s = fetchAppend(ctx, url, localPath, offset, file.bytes,
                              ctx.completedSoFar, restarted);
-        if (s == Step::Ok)
-            break;
+        if (s == Step::Ok) {
+            uint64_t received = 0;
+            if (needsSplitDownload(file.bytes, ctx.spec.forceSplitDownloads)) {
+                if (!splitDownloadOffset(localPath, file.bytes, received, ctx.error))
+                    return Step::Failed;
+            } else statSize(localPath, received);
+            if (received == file.bytes) break;
+            ctx.error = "Download transferred a partial file.";
+            ctx.retryableFetchFailure = received < file.bytes;
+            s = Step::Failed;
+        }
         if (s == Step::Stopped)
             return Step::Stopped;
-        if (attempt == 0) {
+        if (!ctx.resolvedSourceUrl.empty() &&
+            ctx.error.find("archive member failed") != std::string::npos) {
+            // Never mistake a complete-sized corrupt cache for a successful
+            // member on retry. Split storage overwrites from this marker.
+            if (needsSplitDownload(file.bytes, ctx.spec.forceSplitDownloads)) {
+                std::string ignored;
+                saveSplitResume(localPath, 0, ignored);
+            } else {
+                std::ofstream discard(localPath, std::ios::binary | std::ios::trunc);
+            }
+            return Step::Failed;
+        }
+        if (attempt == 0 || (reconnect && ctx.retryableFetchFailure)) {
+            if (attempt > 0) {
+                const auto now = Clock::now();
+                if (outageStarted == Clock::time_point::min()) outageStarted = now;
+                if (now - outageStarted >= std::chrono::milliseconds(ctx.spec.reconnectTimeoutMs))
+                    return Step::Failed;
+                uint64_t savedBytes = 0;
+                if (needsSplitDownload(file.bytes, ctx.spec.forceSplitDownloads)) {
+                    if (!splitDownloadOffset(localPath, file.bytes, savedBytes, ctx.error))
+                        return Step::Failed;
+                } else statSize(localPath, savedBytes);
+                log_msg("[debrid] reconnecting cached download at %llu bytes: %s\n",
+                        static_cast<unsigned long long>(savedBytes), ctx.error.c_str());
+                noteFileRecovery(ctx, savedBytes > 0, savedBytes, file.bytes);
+                DebridProgress waiting;
+                waiting.status = DownloadStatus::Downloading;
+                waiting.completedBytes = ctx.completedSoFar + savedBytes;
+                waiting.totalBytes = ctx.totalBytes;
+                waiting.packagesInstalled = ctx.packagesInstalled;
+                waiting.currentPackage = file.path;
+                applyFileRecovery(waiting, ctx);
+                ctx.emit(waiting);
+                const auto until = now + std::chrono::milliseconds(ctx.spec.reconnectDelayMs);
+                while (Clock::now() < until) {
+                    if (ctx.stop()) return Step::Stopped;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                }
+                if (ctx.stop()) return Step::Stopped;
+            }
             std::string fresh;
-            if (ctx.provider.resolveDownloadUrl(ctx.debridId, info,
+            fresh = ctx.resolvedSourceUrl;
+            if (!fresh.empty() || ctx.provider.resolveDownloadUrl(ctx.debridId, info,
                                                 kthSelected, file, fresh,
                                                 ctx.error)) {
                 if (!linkAllowed(ctx.provider, fresh)) {
@@ -1358,13 +1828,14 @@ Step downloadPlainFile(RunContext& ctx, size_t kthSelected,
                 }
                 url = fresh;
             }
+            ctx.error.clear();
             continue;
         }
         return Step::Failed;
     }
 
     uint64_t finalSize = 0;
-    if (needsSplitDownload(file.bytes)) {
+    if (needsSplitDownload(file.bytes, ctx.spec.forceSplitDownloads)) {
         if (!splitDownloadOffset(localPath, file.bytes, finalSize, ctx.error))
             return Step::Failed;
     } else {
@@ -1412,6 +1883,10 @@ install::PackageCallbacks makeCallbacks(RunContext& ctx,
                 p.totalBytes = ctx.totalBytes;
                 p.completedBytes = ctx.completedSoFar +
                                    ctx.packageDownloadedBytes.load();
+                const uint64_t rateAtMs = ctx.packageDownloadSpeedAtMs.load();
+                const uint64_t nowMs = now_ms();
+                if (rateAtMs && nowMs >= rateAtMs && nowMs - rateAtMs <= 2000)
+                    p.speedBytesPerSecond = ctx.packageDownloadSpeed.load();
                 p.packagesInstalled = ctx.packagesInstalled;
                 p.currentPackage = displayName;
                 p.installedBytes = backend->installedBytes();
@@ -1440,6 +1915,8 @@ Step attemptStreamInstall(RunContext& ctx, const DebridFile& file,
                           const std::string& url,
                           const std::string& displayName) {
     ctx.packageDownloadedBytes = 0;
+    ctx.packageDownloadSpeed = 0;
+    ctx.packageDownloadSpeedAtMs = 0;
     if (!ctx.backend)
         ctx.backend = install::createInstallBackend(ctx.spec.workingRoot,
                                                     ctx.spec.installTarget);
@@ -1463,8 +1940,18 @@ Step attemptStreamInstall(RunContext& ctx, const DebridFile& file,
     };
 
     const size_t maximumBuffered = debridQueueBytes();
+    // The benchmark measures a complete local cache. A live HTTP producer
+    // must begin installing its first MiB instead of waiting for a larger
+    // batch (or EOF) while the source is slow or temporarily stalled.
+    const size_t installBatch = std::clamp<size_t>(ctx.spec.installBatchBytes,
+        256u << 10, ctx.localSource ? 4u << 20 : 1u << 20);
     InstallPacer pacer(maximumBuffered);
     pacer.beginPackage(compressed);
+    // The bounded queue controls direct HTTP streaming, including NSZ, without
+    // waiting for a WAN prebuffer or limiting writes to a measured source rate.
+    // Complete local caches also need no network pacing.
+    if (ctx.localSource || !compressed || !ctx.spec.cacheCompressedPackages)
+        pacer.setSourceComplete(true);
 
     auto makeStream = [&] {
         return std::make_unique<install::PackageStream>(
@@ -1534,13 +2021,30 @@ Step attemptStreamInstall(RunContext& ctx, const DebridFile& file,
 
     // Start the HTTP reader before beginPackage so TorrServer's sequential
     // cache and a WAN CDN handshake run during ncm/FS setup instead of after.
-    DebridStreamQueue queue(maximumBuffered, pacer, *ctx.shouldStop);
+    DebridStreamQueue queue(maximumBuffered, pacer, *ctx.shouldStop, ctx.spec.taskId);
+    telemetry_log("debrid_package", ctx.spec.taskId.c_str(),
+        "event=start compressed=%d local_source=%d cache_compressed=%d package_bytes=%llu resume_offset=%llu queue_bytes=%zu batch_bytes=%zu workers=%u",
+        compressed ? 1 : 0, ctx.localSource ? 1 : 0,
+        ctx.spec.cacheCompressedPackages ? 1 : 0,
+        (unsigned long long)file.bytes, (unsigned long long)fetchOffset,
+        maximumBuffered, installBatch,
+        sequentialHttp(ctx.provider) ? 1u : kRangeWorkers);
     std::string fetchError;
     bool fetchOk = false;
     const uint64_t producerOffset = fetchOffset;
     std::thread producer([&] {
-        auto sink = [&queue, &ctx](const uint8_t* data, size_t n) -> bool {
+        uint64_t rateStartedMs = now_ms();
+        uint64_t rateBytes = 0;
+        auto sink = [&](const uint8_t* data, size_t n) -> bool {
             ctx.packageDownloadedBytes.fetch_add(n);
+            rateBytes += n;
+            const uint64_t nowMs = now_ms();
+            if (nowMs >= rateStartedMs && nowMs - rateStartedMs >= 500) {
+                ctx.packageDownloadSpeed = rateBytes * 1000 / (nowMs - rateStartedMs);
+                ctx.packageDownloadSpeedAtMs = nowMs;
+                rateBytes = 0;
+                rateStartedMs = nowMs;
+            }
             return queue.push(data, n);
         };
         fetchOk = sequentialHttp(ctx.provider)
@@ -1549,6 +2053,9 @@ Step attemptStreamInstall(RunContext& ctx, const DebridFile& file,
             : fetchOrdered(ctx.fetcher, url, producerOffset, file.bytes,
                            maximumBuffered / 2, sink, *ctx.shouldStop,
                            fetchError);
+        // The installer can keep draining the buffer after HTTP has finished.
+        ctx.packageDownloadSpeed = 0;
+        ctx.packageDownloadSpeedAtMs = 0;
         queue.finish();
     });
 
@@ -1602,11 +2109,18 @@ Step attemptStreamInstall(RunContext& ctx, const DebridFile& file,
     bool streamOk = true;
     std::vector<uint8_t> chunk;
     std::vector<uint8_t> batch;
-    batch.reserve(kInstallBatchBytes);
+    batch.reserve(installBatch);
+    ThroughputMeter streamMeter("debrid_stream", ctx.spec.taskId);
+    auto writeStream = [&](const uint8_t* data, size_t size) {
+        const uint64_t started = telemetry_enabled() ? now_us() : 0;
+        const bool ok = stream->write(data, size);
+        streamMeter.record(ok ? size : 0, started ? now_us() - started : 0);
+        return ok;
+    };
     auto flushBatch = [&]() -> bool {
         if (batch.empty())
             return true;
-        if (!stream->write(batch.data(), batch.size())) {
+        if (!writeStream(batch.data(), batch.size())) {
             streamOk = false;
             queue.stop();
             batch.clear();
@@ -1619,8 +2133,8 @@ Step attemptStreamInstall(RunContext& ctx, const DebridFile& file,
         return true;
     };
     while (queue.pop(chunk)) {
-        if (batch.empty() && chunk.size() >= kInstallBatchBytes) {
-            if (!stream->write(chunk.data(), chunk.size())) {
+        if (batch.empty() && chunk.size() >= installBatch) {
+            if (!writeStream(chunk.data(), chunk.size())) {
                 streamOk = false;
                 queue.stop();
                 break;
@@ -1630,7 +2144,7 @@ Step attemptStreamInstall(RunContext& ctx, const DebridFile& file,
             maybeCheckpoint(false);
         } else {
             batch.insert(batch.end(), chunk.begin(), chunk.end());
-            if (batch.size() >= kInstallBatchBytes && !flushBatch())
+            if (batch.size() >= installBatch && !flushBatch())
                 break;
         }
     }
@@ -1638,6 +2152,10 @@ Step attemptStreamInstall(RunContext& ctx, const DebridFile& file,
         flushBatch();
     queue.stop();
     producer.join();
+    if (fetchOk && streamOk && ctx.packageDownloadedBytes.load() < file.bytes) {
+        fetchOk = false;
+        fetchError = "Package download ended before its expected size.";
+    }
     if (!fetchOk || !streamOk) {
         if (ctx.stop()) {
             maybeCheckpoint(true);
@@ -1645,8 +2163,25 @@ Step attemptStreamInstall(RunContext& ctx, const DebridFile& file,
             install::removeInstallMarker(markerPath);
             return Step::Stopped;
         }
-        backend->rollbackPackage();
-        clearJournal();
+        // A disconnected HTTP stream is not a corrupt package. Preserve its
+        // last durable parser/backend checkpoint for URL retry or wake/resume.
+        // Parser and storage errors must still discard untrusted partial data.
+        if (!fetchOk && streamOk) {
+            maybeCheckpoint(true);
+            if (journalConsumed > 0) {
+                backend->suspendPackage();
+                install::removeInstallMarker(markerPath);
+                log_msg("[debrid] keeping package checkpoint at %llu bytes "
+                        "after interrupted download\n",
+                        static_cast<unsigned long long>(journalConsumed));
+            } else {
+                backend->rollbackPackage();
+                clearJournal();
+            }
+        } else {
+            backend->rollbackPackage();
+            clearJournal();
+        }
         if (ctx.error.empty())
             ctx.error = !stream->error().empty()
                 ? describeStreamError(file, displayName, stream->error())
@@ -1698,11 +2233,93 @@ Step attemptStreamInstall(RunContext& ctx, const DebridFile& file,
 
 Step streamInstallPackage(RunContext& ctx, size_t kthSelected,
                           const DebridFile& file) {
+    bool useCache = ctx.spec.cacheCompressedPackages;
+    if (isPackageName(file.path) && !useCache) {
+        // Do not discard partial/complete NSZ downloads made by the earlier
+        // cached build. Only fresh packages return to direct HTTP installation.
+        bool safe = false;
+        const std::string relative = sanitizeRelative(file.path, ctx.torrentName, safe);
+        const std::string path = ctx.spec.dataPath + "/" + relative;
+        struct stat st{};
+        useCache = safe && stat(path.c_str(), &st) == 0 &&
+                   (S_ISREG(st.st_mode) || S_ISDIR(st.st_mode));
+    }
+    if (isPackageName(file.path) && useCache) {
+        // Solid NCZ has no mid-frame decompressor checkpoint. Cache the HTTP
+        // input first, so restarting decompression never restarts its download.
+        const Step downloaded = downloadPlainFile(ctx, kthSelected, file, true);
+        if (downloaded != Step::Ok) return downloaded;
+        bool safe = false;
+        const std::string relative = sanitizeRelative(file.path, ctx.torrentName, safe);
+        if (!safe) { ctx.error = "Unsafe cached package path."; return Step::Failed; }
+        const std::string path = ctx.spec.dataPath + "/" + relative;
+        const std::string leaf = baseName(path);
+        if (leaf.size() >= MAX_NAME_LEN) {
+            ctx.error = "Cached package file name is too long.";
+            return Step::Failed;
+        }
+        RangeFetcher local = [path, leaf, bytes = file.bytes](
+            const std::string&, uint64_t offset, uint64_t end,
+            const std::function<bool(const uint8_t*, size_t)>& sink,
+            const std::function<bool()>& stopped, std::string& error) {
+            if (offset > bytes || (end && (end < offset || end > bytes))) {
+                error = "Invalid cached package range."; return false;
+            }
+            mi_file_t inputFile {};
+            std::snprintf(inputFile.path, sizeof(inputFile.path), "%s", leaf.c_str());
+            inputFile.length = static_cast<int64_t>(bytes);
+            metainfo_t meta {};
+            std::snprintf(meta.name, sizeof(meta.name), "%s", leaf.c_str());
+            meta.total_length = inputFile.length;
+            meta.piece_length = 1024 * 1024;
+            meta.num_files = 1;
+            meta.files = &inputFile;
+            const std::string directory = parentDir(path);
+            storage_t* input = storage_open(&meta, directory.c_str());
+            if (!input) { error = "Unable to open cached package."; return false; }
+            const uint64_t limit = end ? end : bytes;
+            std::vector<uint8_t> buffer(1024 * 1024);
+            bool ok = true;
+            while (offset < limit && !stopped()) {
+                const size_t count = static_cast<size_t>(std::min<uint64_t>(buffer.size(), limit - offset));
+                const int got = storage_read(input, static_cast<int64_t>(offset), buffer.data(), count);
+                if (got != static_cast<int>(count) || !sink(buffer.data(), count)) {
+                    error = "Unable to read cached package."; ok = false; break;
+                }
+                offset += count;
+            }
+            storage_close(input);
+            return ok && !stopped() && offset == limit;
+        };
+        std::function<void(const DebridProgress&)> progress = [&ctx, &file](const DebridProgress& sample) {
+            DebridProgress p = sample;
+            p.completedBytes = ctx.completedSoFar + file.bytes;
+            p.speedBytesPerSecond = 0; // Local reads are not network traffic.
+            p.hasRecovery = true;
+            p.recoveryBytePoint = true;
+            p.recoveryUnitBytes = p.recoveryUnitTotal = file.bytes;
+            ctx.emit(p);
+        };
+        RunContext cached{ctx.provider, local, ctx.spec, ctx.shouldStop, &progress};
+        cached.totalBytes = ctx.totalBytes;
+        cached.completedSoFar = ctx.completedSoFar;
+        cached.packagesInstalled = ctx.packagesInstalled;
+        cached.localSource = true;
+        cached.backend = std::move(ctx.backend);
+        log_msg("[debrid] installing cached package '%s' (%llu bytes); no network fetch\n",
+                file.path.c_str(), static_cast<unsigned long long>(file.bytes));
+        const Step installed = attemptStreamInstall(cached, file, "cached-package", file.path);
+        ctx.backend = std::move(cached.backend);
+        ctx.packagesInstalled = cached.packagesInstalled;
+        ctx.error = cached.error;
+        return installed;
+    }
     for (int attempt = 0; attempt < 2; ++attempt) {
         DebridInfo info;
         info.links = ctx.selectedLinks;
         std::string url;
-        if (!ctx.provider.resolveDownloadUrl(ctx.debridId, info,
+        url = ctx.resolvedSourceUrl;
+        if (url.empty() && !ctx.provider.resolveDownloadUrl(ctx.debridId, info,
                                              kthSelected, file, url,
                                              ctx.error))
             return Step::Failed;
@@ -1722,6 +2339,123 @@ Step streamInstallPackage(RunContext& ctx, size_t kthSelected,
         return Step::Failed;
     }
     return Step::Failed;
+}
+
+
+bool completeCachedFile(const RunContext& ctx, const DebridFile& file) {
+    bool safe = false;
+    const std::string relative = sanitizeRelative(file.path, ctx.torrentName, safe);
+    if (!safe) return false;
+    const std::string path = ctx.spec.dataPath + "/" + relative;
+    uint64_t bytes = 0;
+    if (statSize(path, bytes)) return bytes == file.bytes;
+    if (needsSplitDownload(file.bytes, ctx.spec.forceSplitDownloads)) {
+        std::string ignored;
+        return splitDownloadOffset(path, file.bytes, bytes, ignored) &&
+               bytes == file.bytes && !splitResumeExists(path);
+    }
+    return false;
+}
+
+struct GroupedSource {
+    std::shared_ptr<RemoteArchive> archive;
+    size_t entry = 0;
+};
+
+Step prepareGroupedSources(RunContext& ctx, const std::vector<size_t>& order,
+                           std::map<size_t, GroupedSource>& sources) {
+    auto archivePath = [&](std::string path, bool& safe) {
+        // RD paths start with '/', ZIP member paths normally do not. Compare
+        // both with the same root normalization without changing cache paths
+        // recorded by older manifests.
+        while (!path.empty() && path.front() == '/') path.erase(path.begin());
+        return sanitizeRelative(path, ctx.torrentName, safe);
+    };
+    std::vector<size_t> needed;
+    uint32_t ordinal = 0;
+    for (size_t index : order) {
+        const bool package = installs(ctx.spec, index, ctx.files[index]);
+        const bool installed = package && ordinal++ < ctx.spec.packagesInstalled;
+        if (!installed && !completeCachedFile(ctx, ctx.files[index])) needed.push_back(index);
+    }
+    if (needed.empty()) return Step::Ok;
+    DebridInfo info;
+    info.links = ctx.selectedLinks;
+    if (info.links.empty()) {
+        ctx.error = "Real-Debrid completed the torrent without publishing a download link.";
+        return Step::Failed;
+    }
+    // More than one standalone ZIP link is allowed. A split-volume archive
+    // fails explicitly instead of starting another cloud download.
+    for (size_t k = 0; k < info.links.size(); ++k) {
+        if (ctx.stop()) return Step::Stopped;
+        std::string url;
+        uint64_t bytes = 0;
+        if (!ctx.provider.resolveGroupedDownloadUrl(info, k, url, bytes, ctx.error))
+            return Step::Failed;
+        auto archive = std::make_shared<RemoteArchive>(url, bytes, ctx.fetcher);
+        if (!archive->open(*ctx.shouldStop, ctx.error))
+            return ctx.stop() ? Step::Stopped : Step::Failed;
+        log_msg("[debrid] cached grouped archive id=%s link=%zu bytes=%llu members=%zu format=%s; no new torrent\n",
+                ctx.debridId.c_str(), k, (unsigned long long)bytes, archive->entries().size(), archive->format());
+        for (size_t index : needed) {
+            bool safe = false;
+            const auto& file = ctx.files[index];
+            const std::string wanted = archivePath(file.path, safe);
+            if (!safe) { ctx.error = "Unsafe selected grouped file path."; return Step::Failed; }
+            for (size_t e = 0; e < archive->entries().size(); ++e) {
+                const auto& member = archive->entries()[e];
+                if (member.bytes != file.bytes) continue;
+                bool memberSafe = false;
+                const std::string relative = archivePath(member.path, memberSafe);
+                // Some cloud ZIPs add one enclosing folder. Keep the entire
+                // wanted path; never identify nested files by basename alone.
+                const std::string suffix = "/" + wanted;
+                if (!memberSafe || (relative != wanted &&
+                    (relative.size() <= suffix.size() ||
+                     relative.compare(relative.size() - suffix.size(), suffix.size(), suffix) != 0))) continue;
+                if (sources.count(index)) {
+                    ctx.error = "Grouped archive contains ambiguous paths for '" + wanted + "'.";
+                    return Step::Failed;
+                }
+                if (!archive->prepare(e, *ctx.shouldStop, ctx.error))
+                    return ctx.stop() ? Step::Stopped : Step::Failed;
+                log_msg("[debrid] grouped member selected path='%s' bytes=%llu method=%u link=%zu\n",
+                        wanted.c_str(), (unsigned long long)member.bytes, member.method, k);
+                sources.emplace(index, GroupedSource{archive, e});
+            }
+        }
+    }
+    if (sources.size() != needed.size()) {
+        ctx.error = "Real-Debrid grouped download does not contain every selected file with its expected path and size.";
+        return Step::Failed;
+    }
+    return Step::Ok;
+}
+
+Step transferGroupedFile(RunContext& ctx, const GroupedSource& source,
+                         const DebridFile& file, bool package) {
+    RangeFetcher member = [source](const std::string&, uint64_t offset, uint64_t end,
+        const std::function<bool(const uint8_t*, size_t)>& sink,
+        const std::function<bool()>& stopped, std::string& error) {
+        return source.archive->read(source.entry, offset, end, sink, stopped, error);
+    };
+    RunContext nested{ctx.provider, member, ctx.spec, ctx.shouldStop, ctx.progress};
+    nested.debridId = ctx.debridId;
+    nested.torrentName = ctx.torrentName;
+    nested.totalBytes = ctx.totalBytes;
+    nested.completedSoFar = ctx.completedSoFar;
+    nested.packagesInstalled = ctx.packagesInstalled;
+    // Used only to bypass per-file unrestriction. The member fetcher owns the
+    // actual credential-bearing URL, which is never written to logs/state.
+    nested.resolvedSourceUrl = "https://grouped-member.invalid/";
+    nested.backend = std::move(ctx.backend);
+    const Step result = package ? streamInstallPackage(nested, 0, file)
+                                : downloadPlainFile(nested, 0, file);
+    ctx.backend = std::move(nested.backend);
+    ctx.packagesInstalled = nested.packagesInstalled;
+    ctx.error = nested.error;
+    return result;
 }
 
 } // namespace
@@ -1746,6 +2480,7 @@ DebridRunResult DebridTransfer::run(
         DebridProgress starting;
         starting.status = DownloadStatus::Fetching;
         starting.fetchProgress = 0.0;
+        starting.packagesInstalled = ctx.packagesInstalled;
         ctx.emit(starting);
     }
 
@@ -1765,7 +2500,7 @@ DebridRunResult DebridTransfer::run(
         return DebridRunResult::Failed;
     }
 
-    bool hadNonEmptySelection = !spec.selectionPaths.empty();
+    bool hadNonEmptySelection = !spec.selectionPaths.empty() || !spec.selectionRelativePaths.empty();
     if (!hadNonEmptySelection && !spec.fileSelection.empty()) {
         for (uint8_t v : spec.fileSelection)
             if (v) { hadNonEmptySelection = true; break; }
@@ -1773,7 +2508,7 @@ DebridRunResult DebridTransfer::run(
 
     uint64_t selectedCount = 0;
     for (size_t i = 0; i < ctx.files.size(); ++i) {
-        if (selected(spec, i, ctx.files[i])) {
+        if (selected(spec, i, ctx.files[i], ctx.torrentName)) {
             ctx.totalBytes += ctx.files[i].bytes;
             ++selectedCount;
         }
@@ -1784,40 +2519,57 @@ DebridRunResult DebridTransfer::run(
         return DebridRunResult::Failed;
     }
 
-    if (std::strcmp(ctx.provider.name(), "realdebrid") == 0 &&
-        selectedCount > 0 && ctx.selectedLinks.size() != selectedCount) {
-        error = "Real-Debrid returned " +
-                std::to_string(ctx.selectedLinks.size()) + " download" +
-                (ctx.selectedLinks.size() == 1 ? "" : "s") + " for " +
-                std::to_string(selectedCount) +
-                " selected files (likely a zip). Delete the torrent on "
-                "Real-Debrid and retry.";
-        return DebridRunResult::Failed;
-    }
-
     uint32_t packageOrdinal = 0;
-    for (size_t i : selectedFileOrder(spec, ctx.files)) {
+    const std::vector<size_t> order = selectedFileOrder(spec, ctx.files, ctx.torrentName);
+    std::map<size_t, GroupedSource> groupedSources;
+    if (ctx.groupedDownload) {
+        const Step prepared = prepareGroupedSources(ctx, order, groupedSources);
+        if (prepared == Step::Stopped) return DebridRunResult::Stopped;
+        if (prepared == Step::Failed) { error = ctx.error; return DebridRunResult::Failed; }
+    }
+    for (size_t position = 0; position < order.size(); ++position) {
+        const size_t i = order[position];
         if (ctx.stop())
             return DebridRunResult::Stopped;
         const DebridFile& file = ctx.files[i];
-        const size_t kthSelected = kthSelectedIndex(spec, ctx.files, i);
+        size_t kthSelected = kthSelectedIndex(spec, ctx.files, i, ctx.torrentName);
+        if (std::strcmp(ctx.provider.name(), "realdebrid") == 0) {
+            // Ready account torrents can include files this task does not
+            // want. Individual links follow SERVER selection order.
+            kthSelected = 0;
+            for (size_t j = 0; j < i; ++j)
+                if (ctx.files[j].serverSelected == 1) ++kthSelected;
+        }
         Step fs = Step::Ok;
         if (installs(ctx.spec, i, file)) {
-            if (packageOrdinal >= spec.packagesInstalled)
-                fs = streamInstallPackage(ctx, kthSelected, file);
+            if (packageOrdinal >= spec.packagesInstalled) {
+                if (groupedSources.count(i)) {
+                    fs = transferGroupedFile(ctx, groupedSources.at(i), file, true);
+                } else {
+                    fs = streamInstallPackage(ctx, kthSelected, file);
+                }
+            } else {
+                log_msg("[debrid] resume skip committed package task=%s ordinal=%u path='%s' bytes=%llu\n",
+                        spec.taskId.c_str(), packageOrdinal, file.path.c_str(),
+                        static_cast<unsigned long long>(file.bytes));
+            }
             ++packageOrdinal;
         } else {
-            fs = downloadPlainFile(ctx, kthSelected, file);
+            if (groupedSources.count(i)) {
+                fs = transferGroupedFile(ctx, groupedSources.at(i), file, false);
+            } else {
+                fs = downloadPlainFile(ctx, kthSelected, file);
+            }
         }
         if (fs == Step::Stopped)
             return DebridRunResult::Stopped;
         if (fs == Step::Failed) {
-            if (spec.mode == TransferMode::StreamInstall &&
-                ctx.packagesInstalled > 0) {
+            if (std::strcmp(ctx.provider.name(), "realdebrid") != 0 &&
+                spec.mode == TransferMode::StreamInstall &&
+                ctx.packagesInstalled > 0 && !installs(spec, i, file)) {
                 bool morePackages = false;
-                for (size_t j : selectedFileOrder(spec, ctx.files)) {
-                    if (j <= i)
-                        continue;
+                for (size_t next = position + 1; next < order.size(); ++next) {
+                    const size_t j = order[next];
                     if (installs(spec, j, ctx.files[j])) {
                         morePackages = true;
                         break;

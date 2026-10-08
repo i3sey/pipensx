@@ -95,7 +95,7 @@ std::string WebAddQueue::enqueue(std::string title, std::string magnetUri,
                                  std::vector<uint8_t> infoDict,
                                  TransferMode mode, StreamSelection selection,
                                  std::string& error, AddInputKind input,
-                                 std::string titleId) {
+                                 std::string titleId, bool updateOnly) {
     std::string hash = lowerAscii(std::move(infoHashHex));
     if (!hash.empty() && manager_.hasTask(hash)) {
         error = "This torrent is already in the download manager.";
@@ -132,9 +132,12 @@ std::string WebAddQueue::enqueue(std::string title, std::string magnetUri,
     job.data.titleId = std::move(titleId);
     job.data.input = input;
     job.data.requestedMode = mode;
+    job.data.updateOnly = updateOnly;
     job.data.selection = selection;
     job.cancelled = std::make_shared<std::atomic<bool>>(false);
     std::string jobId = job.data.jobId;
+    log_msg("[debrid-intent] source=web phase=confirmed job=%s hash=%s mode=%d\n",
+            jobId.c_str(), job.data.infoHashHex.c_str(), static_cast<int>(mode));
     jobs_.push_back(std::move(job));
     if (!workerStarted_) {
         workerStarted_ = true;
@@ -262,9 +265,15 @@ void WebAddQueue::runJob(const std::string& jobId) {
     request.titleId = data.titleId;
     request.requestedMode = data.requestedMode;
     request.selection = data.selection;
-    if (!source.direct && lookup && data.input == AddInputKind::Catalog &&
+    if ((!source.direct || data.updateOnly) && lookup && data.input == AddInputKind::Catalog &&
         data.requestedMode == TransferMode::StreamInstall)
         request.oneTap = lookup(data.infoHashHex, data.titleId);
+    if (data.updateOnly && (!lookup || !request.oneTap.titleInstalled ||
+                           request.oneTap.installedVersion.empty())) {
+        fail("The installed base could not be verified. Refresh the installed library first.",
+             WebAddJobState::Error);
+        return;
+    }
 
     auto finish = [&](const AddOutcome& outcome) {
         if (cancelled->load()) {

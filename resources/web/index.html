@@ -8,7 +8,7 @@
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/icon-192.png">
 <link rel="apple-touch-icon" href="/icon-192.png">
-<link rel="stylesheet" href="/app.css">
+<link rel="stylesheet" href="/app.css?v=remote-library-1">
 </head>
 <body>
 <div class="bg-glow" aria-hidden="true"></div>
@@ -31,7 +31,9 @@
 <nav class="tabs" role="tablist">
   <a href="#downloads" data-tab="downloads" class="tab" role="tab"><span class="tab-ico">⤓</span><span data-i18n="tabs.downloads">Downloads</span><span id="dl-count" class="tab-badge" hidden></span></a>
   <a href="#catalog" data-tab="catalog" class="tab" role="tab"><span class="tab-ico">🎮</span><span data-i18n="tabs.catalog">Catalog</span></a>
+  <a href="#library" data-tab="library" class="tab" role="tab"><span class="tab-ico">▣</span><span data-i18n="tabs.library">Installed</span></a>
   <a href="#add" data-tab="add" class="tab" role="tab"><span class="tab-ico">＋</span><span data-i18n="tabs.add">Add</span></a>
+  <a href="#logs" data-tab="logs" class="tab" role="tab"><span class="tab-ico">▤</span><span data-i18n="tabs.logs">Logs</span></a>
   <a href="#settings" data-tab="settings" class="tab" role="tab"><span class="tab-ico">⚙</span><span data-i18n="tabs.settings">Settings</span></a>
 </nav>
 
@@ -40,8 +42,9 @@
   <section id="view-downloads" class="view">
     <div id="dash" class="dash">
       <div class="stat-card stat-speed">
-        <div class="stat-label" data-i18n="dash.speed">Speed</div>
+        <div class="stat-label" data-i18n="speed.download">Download</div>
         <div class="stat-value" id="stat-speed">—</div>
+        <div class="stat-sub" id="stat-install-speed">—</div>
         <div class="stat-sub" id="stat-peers">—</div>
       </div>
       <div class="stat-card">
@@ -115,6 +118,10 @@
 
   <!-- CATALOG -->
   <section id="view-catalog" class="view" hidden>
+    <div class="segmented catalog-sections" role="group" aria-label="Catalog section">
+      <button class="btn btn-primary" id="catalog-games" data-section="games" data-i18n="catalog.games" aria-pressed="true">Games</button>
+      <button class="btn" id="catalog-ports" data-section="ports" data-i18n="catalog.ports" aria-pressed="false">Ports</button>
+    </div>
     <div class="catalog-hero">
       <div>
         <h1 data-i18n="catalog.title">Game catalog</h1>
@@ -148,6 +155,24 @@
   </section>
 
   <!-- ADD -->
+  <section id="view-library" class="view" hidden>
+    <div class="catalog-hero"><div>
+      <h1 data-i18n="library.title">Installed games</h1>
+      <p data-i18n="library.sub">Check updates and manage games installed on your Switch.</p>
+    </div></div>
+    <div class="library-toolbar">
+      <input id="library-search" type="search" data-i18n-ph="library.search" placeholder="Search installed games…">
+      <select id="library-filter">
+        <option value="all" data-i18n="library.all">All installed</option>
+        <option value="updates" data-i18n="library.updates">Updates available</option>
+      </select>
+      <button id="library-refresh" class="btn" data-i18n="library.refresh">Check updates</button>
+      <button id="library-update-all" class="btn btn-primary" data-i18n="library.updateAll">Update all</button>
+    </div>
+    <p id="library-status" role="status"></p>
+    <div id="library-jobs" aria-live="polite"></div>
+    <div id="library-list" class="library-list"></div>
+  </section>
   <section id="view-add" class="view" hidden>
     <div class="card form-card add-hero">
       <h2 data-i18n="add.magnet">Magnet link</h2>
@@ -176,8 +201,58 @@
     </div>
   </section>
 
+  <!-- LOGS -->
+  <section id="view-logs" class="view" hidden>
+    <div class="card form-card" id="log-benchmark" hidden></div>
+    <div class="card log-card">
+      <div class="log-head">
+        <div>
+          <h2 data-i18n="logs.title">Diagnostic log</h2>
+          <p class="card-sub" data-i18n="logs.sub">Live tail of pipensx.log from the Switch.</p>
+        </div>
+        <span id="log-status" class="log-status">—</span>
+      </div>
+      <div class="toolbar log-toolbar">
+        <div class="toolbar-row">
+          <input id="log-search" type="search" data-i18n-ph="logs.search" placeholder="Search log…" autocomplete="off">
+          <select id="log-filter">
+            <option value="all" data-i18n="logs.all">All</option>
+            <option value="realdebrid">Real-Debrid</option>
+            <option value="install" data-i18n="logs.install">Install</option>
+            <option value="performance" data-i18n="logs.performance">Performance</option>
+            <option value="errors" data-i18n="logs.errors">Errors</option>
+          </select>
+          <button id="log-refresh" class="btn btn-primary" data-i18n="logs.refresh">Refresh</button>
+        </div>
+        <div class="toolbar-row toolbar-bulk">
+          <label class="log-auto"><input id="log-auto" type="checkbox" checked> <span data-i18n="logs.auto">Auto refresh</span></label>
+          <label class="log-auto"><input id="log-telemetry" type="checkbox"> <span data-i18n="logs.telemetry">Detailed speed diagnostics</span></label>
+          <span class="spacer"></span>
+          <button id="log-copy" class="btn btn-ghost" data-i18n="logs.copy">Copy</button>
+          <button id="log-download" class="btn btn-ghost" data-i18n="logs.download">Download</button>
+        </div>
+      </div>
+      <pre id="log-output" class="log-output" aria-live="polite"></pre>
+    </div>
+  </section>
+
   <!-- SETTINGS -->
   <section id="view-settings" class="view" hidden>
+    <div class="card form-card">
+      <h2 data-i18n="update.title">pipensx update</h2>
+      <p class="card-sub" data-i18n="update.sub">Upload a new pipensx.nro directly to the Switch. GitHub is not used for this update.</p>
+      <div id="update-status" class="update-status">—</div>
+      <label id="update-dropzone" class="dropzone">
+        <input id="update-file" type="file" accept=".nro,application/octet-stream" hidden>
+        <span class="drop-ico">⬆</span>
+        <span class="drop-text" data-i18n="update.drop">Choose the new pipensx.nro</span>
+        <span id="update-file-name" class="drop-name"></span>
+      </label>
+      <div class="update-actions">
+        <button id="update-upload" class="btn btn-primary" data-i18n="update.upload">Upload update</button>
+        <button id="update-apply" class="btn btn-ghost" data-i18n="update.apply" hidden>Apply on Switch</button>
+      </div>
+    </div>
     <div class="card form-card">
       <h2 data-i18n="settings.appearance">Appearance</h2>
       <label class="field"><span data-i18n="settings.theme">Theme</span>
@@ -191,6 +266,12 @@
         <select id="set-lang">
           <option value="en">English</option>
           <option value="ru">Русский</option>
+          <option value="pt-BR">Português (Brasil)</option>
+          <option value="fr">Français</option>
+          <option value="es">Español</option>
+          <option value="zh-CN">简体中文</option>
+          <option value="it">Italiano</option>
+          <option value="ko">한국어</option>
         </select>
       </label>
     </div>
@@ -262,8 +343,24 @@
 <footer class="foot"><span id="foot-ver"></span></footer>
 
 <dialog id="modal"></dialog>
+<div id="control-dialog" class="control-overlay" role="dialog" aria-modal="true" aria-labelledby="control-title" hidden>
+ <div class="control-box">
+  <form id="control-form" class="modal-body">
+    <h3 id="control-title"></h3>
+    <p id="control-message" class="modal-desc"></p>
+    <label id="control-pin-field" class="field" hidden>PIN
+      <input id="control-pin" type="password" inputmode="numeric" autocomplete="off" maxlength="32">
+    </label>
+    <div class="control-actions">
+      <button id="control-cancel" type="button" class="btn"></button>
+      <button id="control-submit" type="submit" class="btn btn-primary"></button>
+    </div>
+  </form>
+ </div>
+</div>
 <div id="toast" class="toast" hidden></div>
 
-<script src="/app.js"></script>
+<script src="/i18n.js?v=remote-library-1"></script>
+<script src="/app.js?v=remote-library-1"></script>
 </body>
 </html>

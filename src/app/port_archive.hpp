@@ -30,9 +30,13 @@ struct PortArchiveProbe {
     // headers, not by decompressing). NRO members are /switch-relative;
     // LayeredFS members are SD-root relative (atmosphere/contents/…).
     std::vector<std::string> sourceFiles;
+    // All header members, including files outside the automatic port mapping.
+    std::vector<std::string> allSourceFiles;
     std::vector<std::string> files;
     std::vector<uint8_t> destinationSdRoot;
     std::string error;
+    // Explicit SD destination chosen in the port web editor. Empty = automatic.
+    std::string manualDirectory;
 };
 
 // Solid 7z folders larger than ~32 MiB stream to disk (LZMA2 dictionary
@@ -51,7 +55,8 @@ inline bool portArchiveSolidFitsRam(uint64_t maxSolidBlockBytes,
 }
 
 // Cheap header-only probe (no full decompress). ok=false fills error.
-bool probePortArchive(const std::string& archivePath, PortArchiveProbe& out);
+bool probePortArchive(const std::string& archivePath, PortArchiveProbe& out,
+                      const std::string& manualDirectory = {});
 
 // Extract mapped members. NRO / switch/ destinations land under targetRoot
 // (/switch). LayeredFS destinations land under sdRoot (SD card root). When
@@ -69,6 +74,8 @@ bool extractPortArchive(const std::string& archivePath,
                         const std::atomic<bool>& cancelled,
                         const std::function<void(uint64_t)>& progress,
                         const std::function<void(const std::string&)>& currentFile,
-                        std::string& error);
+                        std::string& error,
+                        const std::vector<std::string>& excludedDestinations = {},
+                        const std::string& manualDirectory = {});
 
 } // namespace pipensx

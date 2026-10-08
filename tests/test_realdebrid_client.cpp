@@ -105,6 +105,7 @@ void testParseInfo() {
     assert(info.files[0].id == "1");
     assert(info.files[0].path == "game.nsp");
     assert(info.files[0].bytes == 900000000);
+    assert(info.files[0].selected == 0);
     assert(info.files[1].id == "2");
     assert(info.files[1].path == "readme.txt");
     assert(info.files[1].bytes == 100000000);
@@ -115,6 +116,7 @@ void testParseInfo() {
     assert(info.status == "downloaded");
     assert(info.files.size() == 2);
     assert(info.links.size() == 2);
+    assert(info.files[0].selected == 1 && info.files[1].selected == 1);
     assert(info.links[0] == "https://rd.to/dl/xyz/file1");
     assert(info.links[1] == "https://rd.to/dl/xyz/file2");
     assert(info.progress >= 0.99);
@@ -139,6 +141,48 @@ void testParseInfo() {
     assert(!RdClient::parseInfo("{\"id\":123,\"filename\":\"x\"}",
                                 info, error));
     assert(!error.empty());
+}
+
+void testParseTorrentList() {
+    const char* json = R"([
+      {"id":"old","filename":"Old","hash":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+       "bytes":10,"progress":100,"status":"downloaded","links":["https://rd.to/a"]},
+      {"id":"live","filename":"Live","hash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+       "bytes":20,"progress":25,"status":"downloading","links":[]}
+    ])";
+    std::vector<RdTorrentInfo> torrents;
+    std::string error;
+    assert(RdClient::parseTorrentList(json, torrents, error));
+    assert(torrents.size() == 2);
+    assert(torrents[0].id == "old");
+    assert(torrents[0].hash == "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+    assert(torrents[0].links.size() == 1);
+    assert(torrents[1].status == "downloading");
+    assert(!RdClient::parseTorrentList("{}", torrents, error));
+}
+
+void testFindTorrentByHash() {
+    int listCalls = 0;
+    RdClient client(
+        "key", [&](const RdHttpRequest& request, RdHttpResponse& response,
+                   std::string&) {
+            assert(request.method == "GET");
+            assert(request.url.find("/torrents?limit=5000") != std::string::npos);
+            ++listCalls;
+            response.status = 200;
+            response.body =
+                "[{\"id\":\"dead1\",\"hash\":\"" +
+                std::string(40, 'c') +
+                "\",\"status\":\"dead\"},"
+                "{\"id\":\"cached\",\"hash\":\"" +
+                std::string(40, 'C') +
+                "\",\"status\":\"downloaded\",\"links\":[\"x\"]}]";
+            return true;
+        });
+    std::string id, error;
+    assert(client.findTorrentByHash(std::string(40, 'c'), id, error));
+    assert(id == "cached");
+    assert(listCalls == 1);
 }
 
 void testParseUnrestrict() {
@@ -197,6 +241,8 @@ int main() {
     testParseAddMagnetResponse();
     testParseAddTorrentResponse();
     testParseInfo();
+    testParseTorrentList();
+    testFindTorrentByHash();
     testParseUnrestrict();
     testCheckAuthErrorPaths();
     std::printf("test_realdebrid_client: all assertions passed\n");

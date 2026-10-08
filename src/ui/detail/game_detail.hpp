@@ -115,7 +115,7 @@ public:
         const GameMetadata* found =
             metadata_->findByInfoHash(entry_.infoHash, entry_.titleId);
         presentation_ = resolveCatalogPresentation(entry_, found,
-                                                   catalogTextPreference());
+            catalogTextPreference(), brls::Application::getLocale());
         titleId_ = presentation_.titleId;
         playersFact_ = playersFact(found);
 
@@ -1034,6 +1034,8 @@ private:
         auto cancelled = cancelled_;
         const AppSettingsData values = settings_->get();
         const DebridProviderKind providerKind = values.debridProvider;
+        log_msg("[debrid-intent] source=switch phase=install-click hash=%s provider=%d\n",
+                entry_.infoHash.c_str(), static_cast<int>(providerKind));
         const std::string key = activeDebridKey(values);
         const CatalogEntry entry = entry_;
         const std::string root = manager_->rootPath();
@@ -1285,6 +1287,8 @@ private:
     }
 
     std::string oneTapBlockText(OneTapBlock block) const {
+        if (block == OneTapBlock::UnidentifiedPackages)
+            return tr("pipensx/detail/bundle_choose_files");
         if (block == OneTapBlock::CartridgeOnly)
             return tr("pipensx/detail/cartridge_only");
         if (block == OneTapBlock::NothingSelected &&

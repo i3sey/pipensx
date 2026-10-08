@@ -17,6 +17,9 @@ enum class InstallStorageTarget {
 
 class InstallBackend {
 public:
+    // Diagnostic passes write fresh owned placeholders but never register
+    // content, title metadata or tickets. Unsupported backends fail closed.
+    virtual bool setBenchmarkMode(bool enabled) { return !enabled; }
     virtual ~InstallBackend() = default;
 
     virtual bool beginPackage(const std::string& taskId,

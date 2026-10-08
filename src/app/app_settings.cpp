@@ -84,7 +84,16 @@ bool readUnsigned(const Json& root, const char* key, uint64_t& value,
 // Schema version written by this build. Bumped when a stored value has to be
 // reinterpreted rather than merely added: parseSettings migrates anything
 // older forward, so a bump is always paired with a rule below.
-constexpr int kSettingsVersion = 3;
+constexpr int kSettingsVersion = 4;
+
+const char* themeName(AppTheme theme) {
+    switch (theme) {
+        case AppTheme::System: return "system";
+        case AppTheme::Dark: return "dark";
+        case AppTheme::Light: return "light";
+    }
+    return "invalid";
+}
 
 bool parseSettings(const std::string& text, AppSettingsData& values,
                    std::string& error) {
@@ -107,6 +116,12 @@ bool parseSettings(const std::string& text, AppSettingsData& values,
     std::string catalog = catalogFilterName(values.catalogFilter);
     std::string selection = streamSelectionName(values.streamSelection);
     std::string install = installLocationName(values.installLocation);
+    // v3 -> v4: older builds always blanked an idle panel during transfers.
+    // Start with the new protection enabled indefinitely and the dark theme,
+    // while retaining every existing provider/account and transfer setting.
+    std::string theme = fileVersion < 4 ? "dark" : themeName(values.theme);
+    uint64_t screenOnMinutes = fileVersion < 4 ? 0 : values.screenOnMinutes;
+    if (fileVersion < 4) values.keepScreenOnDuringTransfers = true;
     if (!readString(root, "language", values.language, error) ||
         !readString(root, "catalog_filter", catalog, error) ||
         !readBool(root, "refresh_catalog_on_launch",
@@ -123,6 +138,10 @@ bool parseSettings(const std::string& text, AppSettingsData& values,
                   values.showCompletedDownloads, error) ||
         !readBool(root, "screen_saver_enabled",
                   values.screenSaverEnabled, error) ||
+        !readBool(root, "keep_screen_on_during_transfers",
+                  values.keepScreenOnDuringTransfers, error) ||
+        !readUnsigned(root, "screen_on_minutes", screenOnMinutes, error) ||
+        !readString(root, "theme", theme, error) ||
         !readBool(root, "extended_telemetry", values.extendedTelemetry,
                   error) ||
         !readBool(root, "check_for_updates_on_launch",
@@ -145,6 +164,15 @@ bool parseSettings(const std::string& text, AppSettingsData& values,
                      error)) {
         return false;
     }
+    if (!isSupportedScreenOnMinutes(screenOnMinutes)) {
+        error = "Setting 'screen_on_minutes' must be 0, 15, 20, 30 or 60.";
+        return false;
+    }
+    values.screenOnMinutes = static_cast<uint32_t>(screenOnMinutes);
+    if (theme == "system") values.theme = AppTheme::System;
+    else if (theme == "dark") values.theme = AppTheme::Dark;
+    else if (theme == "light") values.theme = AppTheme::Light;
+    else { error = "Setting 'theme' must be system, dark or light."; return false; }
     uint64_t maxActive = values.maxActiveDownloads;
     if (!readUnsigned(root, "max_active_downloads", maxActive, error))
         return false;
@@ -248,6 +276,9 @@ std::string serializeSettings(const AppSettingsData& values) {
     root["install_location"] = installLocationName(values.installLocation);
     root["show_completed_downloads"] = values.showCompletedDownloads;
     root["screen_saver_enabled"] = values.screenSaverEnabled;
+    root["keep_screen_on_during_transfers"] = values.keepScreenOnDuringTransfers;
+    root["screen_on_minutes"] = values.screenOnMinutes;
+    root["theme"] = themeName(values.theme);
     root["extended_telemetry"] = values.extendedTelemetry;
     root["check_for_updates_on_launch"] = values.checkForUpdatesOnLaunch;
     root["confirm_exit"] = values.confirmExit;
@@ -389,6 +420,7 @@ void applyProxySetting(const std::string& proxyUrl) {
 
 bool AppSettingsData::operator==(const AppSettingsData& other) const {
     return language == other.language &&
+           theme == other.theme &&
            catalogFilter == other.catalogFilter &&
            catalogSourceUrl == other.catalogSourceUrl &&
            refreshCatalogOnLaunch == other.refreshCatalogOnLaunch &&
@@ -399,6 +431,8 @@ bool AppSettingsData::operator==(const AppSettingsData& other) const {
            installLocation == other.installLocation &&
            showCompletedDownloads == other.showCompletedDownloads &&
            screenSaverEnabled == other.screenSaverEnabled &&
+           keepScreenOnDuringTransfers == other.keepScreenOnDuringTransfers &&
+           screenOnMinutes == other.screenOnMinutes &&
            extendedTelemetry == other.extendedTelemetry &&
            checkForUpdatesOnLaunch == other.checkForUpdatesOnLaunch &&
            confirmExit == other.confirmExit &&
@@ -540,6 +574,15 @@ bool AppSettings::write(const AppSettingsData& values,
 
 bool AppSettings::update(const AppSettingsData& values, std::string& error) {
     AppSettingsData next = values;
+    if (!isSupportedScreenOnMinutes(next.screenOnMinutes)) {
+        error = "Screen-on duration must be 0, 15, 20, 30 or 60 minutes.";
+        return false;
+    }
+    if (next.theme != AppTheme::System && next.theme != AppTheme::Dark &&
+        next.theme != AppTheme::Light) {
+        error = "Unsupported application theme.";
+        return false;
+    }
     if (!isValidWebPin(next.webServerPin)) {
         error = "Web companion PIN must be 4-8 digits.";
         return false;

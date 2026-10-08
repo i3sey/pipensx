@@ -85,6 +85,11 @@ public:
     // latestVersion) was refreshed since the last checkAll. False when
     // nothing was ever checked.
     bool stale(uint64_t installedGeneration, uint64_t metadataRefreshMs) const;
+    // Read-only verdict for the companion, using exactly the native checker.
+    GameUpdateResult inspect(const std::string& titleId,
+                             const std::string& currentVersion) const {
+        return compute(titleId, currentVersion);
+    }
     uint64_t lastCheckedAt() const { return lastCheckedAt_; }
     // Bumps whenever the in-memory result set is replaced or extended
     // (checkOne/checkAll). Runtime-only, never persisted; lets views detect

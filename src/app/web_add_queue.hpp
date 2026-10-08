@@ -41,6 +41,7 @@ struct WebAddJob {
     std::string magnetUri;
     std::vector<uint8_t> infoDict;  // catalog fast path; empty = network resolve
     std::string titleId;
+    bool updateOnly = false;
     AddInputKind input = AddInputKind::Magnet;
     TransferMode requestedMode = TransferMode::StreamInstall;
     StreamSelection selection = StreamSelection::AllFiles;
@@ -81,7 +82,7 @@ public:
                         TransferMode mode, StreamSelection selection,
                         std::string& error,
                         AddInputKind input = AddInputKind::Magnet,
-                        std::string titleId = {});
+                        std::string titleId = {}, bool updateOnly = false);
     bool cancel(const std::string& jobId);
     // Thread-safe copy; prunes terminal jobs older than ~2 minutes.
     std::vector<WebAddJob> snapshot();

@@ -147,7 +147,8 @@ int main() {
             preview, {}, TransferMode::StreamInstall);
         assert(estimate.selectedBytes == 900);
         assert(estimate.packageBytes == 2700);
-        assert(estimate.requiredBytes == 2700);
+        assert(estimate.downloadBytes == 900);
+        assert(estimate.requiredBytes == 3600);
         assert(estimate.certainty ==
                SpaceEstimateCertainty::CompressedUnknown);
 
@@ -156,9 +157,9 @@ int main() {
         storage.freeBytes = 800;
         InstallSpaceCheck check = assessInstallSpace(estimate, storage);
         assert(check.status == InstallSpaceCheckStatus::Insufficient);
-        assert(check.shortfallBytes == 1900);
+        assert(check.shortfallBytes == 2800);
 
-        storage.freeBytes = 3000;
+        storage.freeBytes = 4000;
         check = assessInstallSpace(estimate, storage);
         assert(check.status == InstallSpaceCheckStatus::Enough);
     }
@@ -178,9 +179,9 @@ int main() {
         InstallSpaceEstimate estimate = estimateInstallSpace(
             preview, {}, TransferMode::StreamInstall);
         assert(estimate.selectedBytes == 8 * gib);
-        assert(estimate.downloadBytes == 0);
+        assert(estimate.downloadBytes == 8 * gib);
         assert(estimate.packageBytes == expanded);
-        assert(estimate.requiredBytes == expanded);
+        assert(estimate.requiredBytes == expanded + 8 * gib);
         assert(estimate.certainty == SpaceEstimateCertainty::Conservative);
 
         estimate = estimateInstallSpace(
@@ -203,7 +204,8 @@ int main() {
         InstallSpaceEstimate estimate = estimateInstallSpace(
             preview, {}, TransferMode::StreamInstall);
         assert(estimate.packageBytes == 1000 + 2048 + 300);
-        assert(estimate.requiredBytes == estimate.packageBytes);
+        assert(estimate.downloadBytes == 1000);
+        assert(estimate.requiredBytes == estimate.packageBytes + 1000);
         assert(estimate.certainty ==
                SpaceEstimateCertainty::CompressedUnknown);
     }

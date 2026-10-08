@@ -217,9 +217,9 @@ InstallSpaceEstimate estimateInstallSpace(
                                            !sizeKnown;
             }
             addBytes(result.packageBytes, installBytes, result.overflow);
-            // Deferred port packages must also remain as local files until
-            // payload deployment succeeds; stream installs do not.
-            if (mode == TransferMode::PortInstall)
+            // Compressed installs cache their input to resume downloads even
+            // when the NSZ uses a solid stream with no decoder checkpoint.
+            if (mode == TransferMode::PortInstall || file.compressed)
                 addBytes(result.downloadBytes, file.length, result.overflow);
         } else {
             addBytes(result.downloadBytes, file.length, result.overflow);

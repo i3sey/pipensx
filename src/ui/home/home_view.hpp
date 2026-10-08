@@ -118,7 +118,8 @@ public:
         infoHash_ = entry.infoHash;
         onActivate_ = std::move(onActivate);
         CatalogPresentation presentation =
-            resolveCatalogPresentation(entry, meta, catalogTextPreference());
+            resolveCatalogPresentation(entry, meta, catalogTextPreference(),
+                                       brls::Application::getLocale());
         setTextIfChanged(kicker_, kicker);
         setTextIfChanged(title_, presentation.title);
         std::string metaLine = presentation.genre;
@@ -495,7 +496,7 @@ private:
             metadata_ ? metadata_->findByInfoHash(slot->entry.infoHash)
                       : nullptr;
         CatalogPresentation presentation = resolveCatalogPresentation(
-            slot->entry, meta, catalogTextPreference());
+            slot->entry, meta, catalogTextPreference(), brls::Application::getLocale());
         std::string error;
         favorites_->toggle(slot->entry.infoHash, presentation.title, error);
         if (!error.empty())

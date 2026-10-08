@@ -5,6 +5,10 @@
 #include "nx_file_types.hpp"
 #include "torrent_metainfo_fetch.hpp"
 
+extern "C" {
+#include "../core/util.h"
+}
+
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -54,6 +58,7 @@ DebridImport debridImportFor(const PreparedCatalogInstall& item,
                                             : item.preview.name;
     import.totalBytes = item.preview.totalBytes;
     import.debridId = item.debridId;
+    import.torrentPath = item.torrentPath;
     import.provider = providerKind;
     import.mode = item.mode;
     import.fileSelection = item.selection;
@@ -77,6 +82,24 @@ std::string updateNothingSelectedError() {
     OneTapPlan plan;
     plan.block = OneTapBlock::NothingSelected;
     return oneTapBlockedMessage(plan);
+}
+
+// Preparing/reviewing a batch must not create account torrents. This resolver
+// reads the catalog info_dict or a metadata cache, never the swarm or debrid.
+CatalogBatchInstaller metadataOnlyInstaller(const std::string& root) {
+    return CatalogBatchInstaller(root,
+        [](const CatalogEntry& entry, const std::string& path,
+           std::atomic<bool>& cancelled,
+           const MagnetResolver::ProgressCallback&,
+           std::vector<uint8_t>&, std::string& error) {
+            // The local metainfo builder requires a supported announce even
+            // for an info_dict. Hash-only/third-party magnets are valid on RD;
+            // use the canonical metadata envelope, without contacting peers.
+            const std::string magnet =
+                updateMagnetFor(lowerAscii(entry.infoHash), nullptr);
+            return ensureTorrentFileForDebrid(magnet, entry.infoHash,
+                entry.infoDict, path, cancelled, error);
+        });
 }
 
 } // namespace
@@ -345,6 +368,15 @@ BatchPreparation CatalogBatchInstaller::prepareUpdatesViaDebrid(
     std::atomic<bool>& cancelled,
     const ProgressCallback& progress,
     DebridBatchTiming timing) const {
+    if (std::string(provider.name()) == "realdebrid") {
+        auto result = metadataOnlyInstaller(rootPath_).prepareUpdates(
+            targets, cancelled, progress);
+        for (auto& item : result.items_)
+            item.source = InstallSource::Debrid;
+        log_msg("[debrid-intent] source=batch-updates phase=preview entries=%zu account_mutations=0\n",
+                targets.size());
+        return result;
+    }
     BatchPreparation result;
     for (size_t index = 0; index < targets.size(); ++index) {
         const UpdateQueueTarget& target = targets[index];
@@ -439,7 +471,8 @@ BatchEnqueueResult CatalogBatchInstaller::enqueueUpdates(
                 debridImportFor(item, providerKind), taskId, error);
             if (!ok) {
                 std::string ignored;
-                provider->remove(item.debridId, ignored);
+                if (!item.debridId.empty())
+                    provider->remove(item.debridId, ignored);
             }
         } else {
             ok = manager.importTorrentActions(item.torrentPath, item.selection,
@@ -474,6 +507,15 @@ BatchPreparation CatalogBatchInstaller::prepareViaDebrid(
     std::atomic<bool>& cancelled,
     const ProgressCallback& progress,
     DebridBatchTiming timing) const {
+    if (std::string(provider.name()) == "realdebrid") {
+        auto result = metadataOnlyInstaller(rootPath_).prepare(
+            entries, selection, cancelled, progress);
+        for (auto& item : result.items_)
+            item.source = InstallSource::Debrid;
+        log_msg("[debrid-intent] source=batch phase=preview entries=%zu account_mutations=0\n",
+                entries.size());
+        return result;
+    }
     BatchPreparation result;
 
     struct Pending {
@@ -603,7 +645,8 @@ BatchEnqueueResult CatalogBatchInstaller::enqueueViaDebrid(
     for (PreparedCatalogInstall& item : prepared.items_) {
         if (!item.selected) {
             std::string ignored;
-            provider.remove(item.debridId, ignored);
+            if (!item.debridId.empty())
+                provider.remove(item.debridId, ignored);
             ++result.skipped;
             continue;
         }
@@ -613,6 +656,7 @@ BatchEnqueueResult CatalogBatchInstaller::enqueueViaDebrid(
                                                  : item.preview.name;
         import.totalBytes = item.preview.totalBytes;
         import.debridId = item.debridId;
+        import.torrentPath = item.torrentPath;
         import.provider = providerKind;
         import.mode = item.mode;
         import.fileSelection = item.selection;
@@ -622,11 +666,14 @@ BatchEnqueueResult CatalogBatchInstaller::enqueueViaDebrid(
                 ? item.space.packageFiles : 0;
         std::string taskId, error;
         if (manager.importDebrid(import, taskId, error)) {
+            log_msg("[debrid-intent] source=batch phase=confirmed task=%s provider=%s\n",
+                    taskId.c_str(), provider.name());
             result.taskIds.push_back(std::move(taskId));
             result.queuedInfoHashes.push_back(item.entry.infoHash);
         } else {
             std::string ignored;
-            provider.remove(item.debridId, ignored);
+            if (!item.debridId.empty())
+                provider.remove(item.debridId, ignored);
             result.failures.push_back({item.entry, std::move(error)});
         }
     }

@@ -8,6 +8,7 @@
 #include <fstream>
 #include <string>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
 #include <vector>
@@ -113,6 +114,24 @@ void testSummarizeQueueNoThroughputNoEta() {
     const pipensx::QueueSummary s = pipensx::summarizeQueue(tasks, 0);
     assert(s.queued == 1);
     assert(s.etaSeconds == 0);
+}
+
+void testStreamingEtaDoesNotDoubleCountTraffic() {
+    DownloadTask stream = task(DownloadStatus::Installing);
+    stream.totalBytes = stream.installTotalBytes = 1000;
+    stream.completedBytes = stream.installedBytes = 400;
+    stream.speedBytesPerSecond = stream.installSpeedBytesPerSecond = 100;
+    stream.installSpeedUpdatedAtMs = 100;
+    DownloadTask download = task(DownloadStatus::Downloading);
+    download.totalBytes = 400;
+    download.speedBytesPerSecond = 100;
+    const auto summary = pipensx::summarizeQueue({stream, download}, 100);
+    assert(summary.downloadSpeedBps == 200);
+    assert(summary.installSpeedBps == 100);
+    assert(summary.totalRemainingBytes == 1000);
+    assert(summary.etaSeconds == 5); // two independent 100 B/s tasks, not three
+    const auto streamOnly = pipensx::summarizeQueue({stream}, 100);
+    assert(streamOnly.etaSeconds == 6); // not 3 seconds
 }
 
 void testMoveTask() {
@@ -377,6 +396,52 @@ void testConcurrentSavesFinish() {
     removeAll(root);
 }
 
+void testCommittedPackagesSurviveAbruptExit() {
+    const std::string root = tempRoot() + "-package-power-loss";
+    removeAll(root);
+    mkdir(root.c_str(), 0755);
+    mkdir((root + "/downloads").c_str(), 0755);
+    std::string state = "d5:tasksld";
+    state += "4:data" + bstr(root + "/downloads/item");
+    state += "2:id4:item8:metainfo0:4:mode4:port4:name4:item";
+    state += "13:package-counti4e13:packages-donei0e";
+    state += "6:source6:debrid6:status9:completed5:totali4eee7:versioni8ee";
+    {
+        std::ofstream output(root + "/queue.bencode", std::ios::binary);
+        output << state;
+    }
+    const pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        pipensx::DownloadManager manager(root, false);
+        std::string error;
+        auto lease = manager.beginExternalDeploy("item", error);
+        assert(lease.has_value());
+        manager.updateExternalPortInstall("item", 3, "part4.nsp", 0, 4,
+                                          DownloadStatus::Installing);
+        // A stale status callback cannot undo the committed-package count.
+        manager.updateExternalPortInstall("item", 0, "part4.nsp", 0, 4,
+                                          DownloadStatus::Installing);
+        assert(manager.snapshot()[0].packagesInstalled == 3);
+        // No save(), destructor or writer-thread join: simulate hard power-off
+        // immediately after the completed-package callback returns.
+        _exit(0);
+    }
+    int status = 0;
+    assert(waitpid(child, &status, 0) == child);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    {
+        pipensx::DownloadManager reloaded(root, false);
+        const auto tasks = reloaded.snapshot();
+        assert(tasks.size() == 1 && tasks[0].packagesInstalled == 3);
+        assert(tasks[0].packageCount == 4);
+        assert(reloaded.pause("item"));
+        assert(reloaded.resume("item"));
+        assert(reloaded.snapshot()[0].packagesInstalled == 3);
+    }
+    removeAll(root);
+}
+
 void replaceFirstStatus(const std::string& queueRoot, const std::string& to) {
     const std::string path = queueRoot + "/queue.bencode";
     std::ifstream in(path, std::ios::binary);
@@ -609,11 +674,13 @@ int main() {
     testSummarizeQueueCounts();
     testSummarizeQueueSpeedAndEta();
     testSummarizeQueueNoThroughputNoEta();
+    testStreamingEtaDoesNotDoubleCountTraffic();
     testMoveTask();
     testRefusedCommandsUseCapabilityReasons();
     testPauseResumeAll();
     testAsyncSaveFailureIsReportedAndLatestStateRecovers();
     testConcurrentSavesFinish();
+    testCommittedPackagesSurviveAbruptExit();
     testClearCompleted();
     testPlanClearCompleted();
     testClearCompletedKeepsActiveAndLeased();

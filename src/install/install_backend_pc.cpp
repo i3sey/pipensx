@@ -6,6 +6,7 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <vector>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <unistd.h>
@@ -111,6 +112,11 @@ public:
     explicit PcInstallBackend(std::string root) : root_(std::move(root)) {}
 
     ~PcInstallBackend() override { rollbackPackage(); }
+    bool setBenchmarkMode(bool enabled) override {
+        if (active_) return false;
+        benchmarkMode_ = enabled;
+        return true;
+    }
 
     bool beginPackage(const std::string& taskId,
                       const std::string& packageName) override {
@@ -139,6 +145,7 @@ public:
             error_ = "Unable to create PC installation file.";
             return false;
         }
+        if (benchmarkMode_) benchmarkFiles_.push_back(filePath_);
         expected_ += size;
         return true;
     }
@@ -182,6 +189,7 @@ public:
             error_ = "PC package is incomplete.";
             return false;
         }
+        if (benchmarkMode_) cleanBenchmarkFiles();
         active_ = false;
         directory_.clear();
         return true;
@@ -192,6 +200,7 @@ public:
     }
 
     void rollbackPackage() override {
+        if (benchmarkMode_) cleanBenchmarkFiles();
         if (file_) {
             std::fclose(file_);
             file_ = nullptr;
@@ -315,6 +324,14 @@ public:
     }
 
 private:
+    bool benchmarkMode_ = false;
+    std::vector<std::string> benchmarkFiles_;
+    void cleanBenchmarkFiles() {
+        if (file_) { std::fclose(file_); file_ = nullptr; }
+        for (const auto& path : benchmarkFiles_) unlink(path.c_str());
+        benchmarkFiles_.clear();
+        if (!directory_.empty()) rmdir(directory_.c_str());
+    }
     std::string root_;
     std::string directory_;
     std::string filePath_;

@@ -4,6 +4,7 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/socket.h>
+#include <cerrno>
 
 #include <string>
 
@@ -23,15 +24,33 @@ inline void curlPinHttpsOnly(CURL* curl) {
 #endif
 }
 
-// Borealis boots the Switch socket service with tiny default buffers;
-// a larger receive window is what keeps long HTTPS transfers off the
-// kilobytes-per-second floor. bsd:u silently clamps SO_RCVBUF at 256 KiB.
-inline int curlEnlargeReceiveBuffer(void*, curl_socket_t socket,
+struct CurlSocketTuning {
+    int requestedBytes = 0;
+    int actualBytes = 0;
+    int lastError = 0;
+};
+
+// The full Switch profile backs a 1 MiB window with socket transfer memory.
+// Applet mode and older services can reject or clamp it; keep those sockets
+// usable and report what they actually accepted rather than assuming a gain.
+inline int curlEnlargeReceiveBuffer(void* userdata, curl_socket_t socket,
                                     curlsocktype purpose) {
     if (purpose == CURLSOCKTYPE_IPCXN) {
-        int size = 256 * 1024;
-        setsockopt(socket, SOL_SOCKET, SO_RCVBUF,
-                   reinterpret_cast<const char*>(&size), sizeof(size));
+        CurlSocketTuning tuning;
+        for (const int size : {1024 * 1024, 512 * 1024, 256 * 1024, 128 * 1024}) {
+            if (setsockopt(socket, SOL_SOCKET, SO_RCVBUF,
+                           reinterpret_cast<const char*>(&size), sizeof(size)) == 0) {
+                tuning.requestedBytes = size;
+                break;
+            }
+            tuning.lastError = errno;
+        }
+        socklen_t length = sizeof(tuning.actualBytes);
+        if (getsockopt(socket, SOL_SOCKET, SO_RCVBUF,
+                       reinterpret_cast<char*>(&tuning.actualBytes), &length) != 0)
+            tuning.actualBytes = 0;
+        if (userdata)
+            *static_cast<CurlSocketTuning*>(userdata) = tuning;
         int nodelay = 1;
         setsockopt(socket, IPPROTO_TCP, TCP_NODELAY,
                    reinterpret_cast<const char*>(&nodelay), sizeof(nodelay));
@@ -39,10 +58,11 @@ inline int curlEnlargeReceiveBuffer(void*, curl_socket_t socket,
     return CURL_SOCKOPT_OK;
 }
 
-inline void curlTuneDownloadSocket(CURL* curl) {
+inline void curlTuneDownloadSocket(CURL* curl, CurlSocketTuning* tuning = nullptr) {
     curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
     curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, 256L * 1024L);
     curl_easy_setopt(curl, CURLOPT_SOCKOPTFUNCTION, curlEnlargeReceiveBuffer);
+    curl_easy_setopt(curl, CURLOPT_SOCKOPTDATA, tuning);
     // LAN TorrServer and WAN CDNs are both IPv4 in practice; skipping AAAA
     // waits on a hostname that has no v6 route.
     curl_easy_setopt(curl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);

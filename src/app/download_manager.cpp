@@ -696,7 +696,8 @@ bool DownloadManager::mergeImportSelection(DownloadTask& task,
     // along as Download. A task that gained an Install package while in
     // DownloadOnly mode upgrades to StreamInstall; packagesInstalled is
     // necessarily 0 there, so no installed prefix has to stay aligned.
-    if (task.mode == TransferMode::PortInstall) {
+    const bool promotePort = task.mode == TransferMode::DownloadOnly && incomingMode == TransferMode::PortInstall;
+    if (task.mode == TransferMode::PortInstall || promotePort) {
         for (size_t i = 0; i < merged.size(); ++i)
             if (preview->files[i].package)
                 merged[i] = actionValue(FileAction::Download);
@@ -740,7 +741,7 @@ bool DownloadManager::mergeImportSelection(DownloadTask& task,
                 break;
         }
     }
-    if (merged == effective)
+    if (merged == effective && !promotePort)
         return decline("selection adds no new files");
 
     const bool installPackageAdded = [&] {
@@ -750,6 +751,7 @@ bool DownloadManager::mergeImportSelection(DownloadTask& task,
                 return true;
         return false;
     }();
+    if (promotePort) task.mode = TransferMode::PortInstall;
     if (installPackageAdded && task.mode == TransferMode::DownloadOnly)
         task.mode = TransferMode::StreamInstall;
     task.fileSelection = std::move(merged);
@@ -787,6 +789,93 @@ bool DownloadManager::mergeImportSelection(DownloadTask& task,
             task.mode == TransferMode::StreamInstall ? "install"
                 : task.mode == TransferMode::PortInstall ? "port"
                                                          : "download");
+    return true;
+}
+
+bool DownloadManager::installDownloaded(const std::string& taskId, std::string& error) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    DownloadTask* task = findLocked(taskId);
+    if (!task || task->mode != TransferMode::DownloadOnly ||
+        task->status != DownloadStatus::Completed) {
+        error = "A completed download is required.";
+        return false;
+    }
+    TorrentPreview preview;
+    if (task->metainfoPath.empty() && task->source == TaskSource::Debrid) {
+        if (externallyLeasedLocked(taskId) || runnerActiveLocked(taskId)) {
+            error = "Task files are currently in use.";
+            return false;
+        }
+        TaskFileManifest manifest;
+        if (!loadTaskFileManifest(rootPath_, taskId, manifest, error))
+            return false;
+        preview.name = task->name;
+        preview.infoHash = taskId;
+        // Manifest paths already include their release directories. Do not
+        // invent torrent indices or prefix the task name a second time.
+        for (const auto& file : manifest.files) {
+            if (file.action == TaskFileAction::Skip) continue;
+            TorrentPreview::File entry;
+            entry.path = file.logicalPath;
+            entry.length = file.size;
+            entry.package = isPackageName(entry.path);
+            entry.compressed = isCompressedName(entry.path);
+            entry.cartridge = isCartridgeName(entry.path);
+            preview.files.push_back(std::move(entry));
+        }
+        const bool port = torrentPortLayoutDetected(preview);
+        uint32_t packages = 0;
+        for (auto& file : manifest.files) {
+            if (file.action == TaskFileAction::Skip) continue;
+            file.package = isPackageName(file.logicalPath);
+            if (file.package) ++packages;
+            if (file.package && !port) file.action = TaskFileAction::Install;
+        }
+        if (!port && packages == 0) {
+            error = "No installable packages or port payload found.";
+            return false;
+        }
+        if (!saveTaskFileManifest(rootPath_, manifest, error)) return false;
+        task->mode = port ? TransferMode::PortInstall : TransferMode::StreamInstall;
+        task->packageCount = packages;
+        task->fileSelection.clear(); // Selection travels by full relative path.
+        task->resumeBitfield.clear();
+        task->recoveryTrusted = false;
+        task->recoveryTrustedClaim = false;
+        task->error.clear();
+        task->status = DownloadStatus::Queued;
+        std::string persistError;
+        persistState(lock, persistError);
+        condition_.notify_all();
+        log_msg("[manager] install downloaded task=%s reused_task=1 manifest=1 packages=%u\n",
+                taskId.c_str(), packages);
+        return true;
+    }
+    if (task->metainfoPath.empty() || !previewTorrent(task->metainfoPath, preview, error) ||
+        preview.infoHash != taskId) {
+        error = "Stored torrent metadata is unavailable or mismatched.";
+        return false;
+    }
+    const bool port = torrentPortLayoutDetected(preview);
+    std::vector<uint8_t> actions;
+    if (port) actions = selectPortInstallActions(preview);
+    else for (const auto& file : preview.files)
+        actions.push_back(actionValue(defaultFileAction(file.package, TransferMode::StreamInstall)));
+    bool installable = port;
+    for (const auto& file : preview.files) installable |= file.package;
+    if (!installable) { error = "No installable packages or port payload found."; return false; }
+    if (!mergeImportSelection(*task, &preview, actions,
+                              port ? TransferMode::PortInstall : TransferMode::StreamInstall, error))
+        return false;
+    task->packageCount = 0;
+    for (size_t i = 0; i < preview.files.size(); ++i)
+        if (preview.files[i].package && task->fileSelection[i] != actionValue(FileAction::Skip))
+            ++task->packageCount;
+    // Same persistence semantics as re-import: keep the in-memory upgrade if
+    // the state write fails; the manager's persistence diagnostics report it.
+    std::string persistError;
+    persistState(lock, persistError);
+    log_msg("[manager] install downloaded task=%s reused_task=1\n", taskId.c_str());
     return true;
 }
 
@@ -1604,7 +1693,12 @@ std::vector<DownloadTask> DownloadManager::snapshotUi() const {
         for (const DownloadTask& task : tasks_)
             out.push_back(copyTaskUi(task));
     }
-    if (startedUs)
+    static std::atomic<uint64_t> lastSnapshotLogMs{0};
+    const uint64_t now = now_ms();
+    uint64_t previous = lastSnapshotLogMs.load(std::memory_order_relaxed);
+    if (startedUs && (previous == 0 || now - previous >= 5000) &&
+        lastSnapshotLogMs.compare_exchange_strong(previous, now,
+                                                  std::memory_order_relaxed))
         telemetry_log(
             "ui", "downloads", "event=snapshot duration_us=%llu tasks=%llu",
             (unsigned long long)(now_us() - startedUs),
@@ -1666,10 +1760,11 @@ void DownloadManager::updateExternalPortInstall(
     if (externalDeployTaskId_ != taskId)
         return;
     DownloadTask* task = findLocked(taskId);
-    if (!task || task->mode != TransferMode::PortInstall)
+    if (!task || task->mode != TransferMode::PortInstall ||
+        task->status == DownloadStatus::Error)
         return;
-    const bool packageCommitted = task->packagesInstalled != packagesInstalled;
-    task->packagesInstalled = packagesInstalled;
+    const bool packageCommitted = packagesInstalled > task->packagesInstalled;
+    task->packagesInstalled = std::max(task->packagesInstalled, packagesInstalled);
     task->currentPackage = currentPackage;
     updateTaskInstallProgress(*task, installedBytes, installTotalBytes, status,
                               now_ms());
@@ -1681,7 +1776,7 @@ void DownloadManager::updateExternalPortInstall(
     task->recoveryUnitBytes = installedBytes;
     task->recoveryUnitTotal = installTotalBytes;
     if (packageCommitted)
-        persistState(lock);
+        persistPackageCheckpoint(lock, taskId, packagesInstalled);
 }
 
 void DownloadManager::finishExternalPortInstall(
@@ -1690,7 +1785,8 @@ void DownloadManager::finishExternalPortInstall(
     if (externalDeployTaskId_ != taskId)
         return;
     DownloadTask* task = findLocked(taskId);
-    if (!task || task->mode != TransferMode::PortInstall)
+    if (!task || task->mode != TransferMode::PortInstall ||
+        task->status == DownloadStatus::Error)
         return;
     task->status = success ? DownloadStatus::Installed
                            : DownloadStatus::Completed;
@@ -1955,6 +2051,28 @@ bool DownloadManager::persistState(std::unique_lock<std::mutex>& lock,
 void DownloadManager::persistState(std::unique_lock<std::mutex>& lock) const {
     (void)lock;
     requestStateSaveLocked();
+}
+
+void DownloadManager::persistPackageCheckpoint(
+    std::unique_lock<std::mutex>& lock, const std::string& taskId,
+    uint32_t completed) {
+    // Wait only at a completed-package boundary, never per HTTP chunk.
+    // A pause, shutdown or a second resume must not overtake this snapshot.
+    std::string error;
+    if (!persistState(lock, error)) {
+        if (DownloadTask* task = findLocked(taskId)) {
+            if (task->status != DownloadStatus::Removing) {
+                task->status = DownloadStatus::Error;
+                task->error = "Unable to save installation progress: " + error;
+            }
+        }
+        diagnostic_error("manager", "package_checkpoint",
+                         "task=%s completed=%u error=%s", taskId.c_str(),
+                         completed, error.c_str());
+        return;
+    }
+    log_msg("[manager] package checkpoint saved task=%s completed=%u\n",
+            taskId.c_str(), completed);
 }
 
 void DownloadManager::persistenceMain() {
@@ -2312,6 +2430,7 @@ bool taskClaimableUnderInstallToken(const DownloadTask& task,
 QueueSummary summarizeQueue(const std::vector<DownloadTask>& tasks,
                             uint64_t nowMs) {
     QueueSummary summary;
+    uint64_t throughput = 0;
     for (const DownloadTask& task : tasks) {
         switch (task.status) {
         case DownloadStatus::Checking:
@@ -2362,10 +2481,13 @@ QueueSummary summarizeQueue(const std::vector<DownloadTask>& tasks,
             summary.totalRemainingBytes += remaining;
         }
         summary.downloadSpeedBps += task.speedBytesPerSecond;
-        summary.installSpeedBps += currentInstallSpeed(task, nowMs);
+        const uint64_t installSpeed = currentInstallSpeed(task, nowMs);
+        summary.installSpeedBps += installSpeed;
+        // The same bytes can be downloaded and installed concurrently.
+        // Remaining bytes use the larger progress domain above; use its rate
+        // once per task instead of counting streaming traffic twice.
+        throughput += std::max(task.speedBytesPerSecond, installSpeed);
     }
-    const uint64_t throughput =
-        summary.downloadSpeedBps + summary.installSpeedBps;
     if (throughput > 0 && summary.totalRemainingBytes > 0)
         summary.etaSeconds =
             summary.totalRemainingBytes / throughput +
@@ -2566,6 +2688,7 @@ void DownloadManager::runDebridTask(const ClaimedTask& claim) {
     spec.dataPath = claim.dataPath;
     spec.workingRoot = rootPath_;
     spec.installTarget = installTarget_.load(std::memory_order_relaxed);
+    spec.installBatchBytes = installBatchBytes_.load();
     spec.mode = claim.mode;
     spec.fileSelection = claim.fileSelection;
     spec.packagesInstalled = claim.packagesInstalled;
@@ -2604,6 +2727,15 @@ void DownloadManager::runDebridTask(const ClaimedTask& claim) {
     if (claim.metainfoPath.empty() ||
         !metainfo_load(claim.metainfoPath.c_str(), &metainfo)) {
         spec.magnet = "magnet:?xt=urn:btih:" + activeId;
+        if (claim.mode != TransferMode::DownloadOnly) {
+            TaskFileManifest manifest;
+            std::string manifestError;
+            if (loadTaskFileManifest(rootPath_, activeId, manifest, manifestError)) {
+                for (const auto& file : manifest.files)
+                    if (file.action != TaskFileAction::Skip)
+                        spec.selectionRelativePaths.emplace_back(file.logicalPath, file.size);
+            }
+        }
     } else {
         char hex[41];
         for (int i = 0; i < 20; ++i)
@@ -2629,7 +2761,8 @@ void DownloadManager::runDebridTask(const ClaimedTask& claim) {
             return true;
         std::unique_lock<std::mutex> lock(mutex_);
         const DownloadTask* task = findLocked(activeId);
-        return !task || task->status == DownloadStatus::Paused ||
+        return !task || task->status == DownloadStatus::Error ||
+               task->status == DownloadStatus::Paused ||
                task->status == DownloadStatus::Removing;
     };
     // Crash checkpoint (B1): per-chunk progress used to stay in-memory until
@@ -2642,10 +2775,11 @@ void DownloadManager::runDebridTask(const ClaimedTask& claim) {
                        &lastDebridPersistedBytes](const DebridProgress& p) {
         std::unique_lock<std::mutex> lock(mutex_);
         DownloadTask* task = findLocked(activeId);
-        if (!task || task->status == DownloadStatus::Removing)
+        if (!task || task->status == DownloadStatus::Removing ||
+            task->status == DownloadStatus::Error)
             return;
-        bool packageCommitted = p.packagesInstalled != task->packagesInstalled;
-        task->packagesInstalled = p.packagesInstalled;
+        const bool packageCommitted = p.packagesInstalled > task->packagesInstalled;
+        task->packagesInstalled = std::max(task->packagesInstalled, p.packagesInstalled);
         task->currentPackage = p.currentPackage;
         if (p.hasRecovery) {
             task->recoveryBytePoint = p.recoveryBytePoint;
@@ -2656,10 +2790,13 @@ void DownloadManager::runDebridTask(const ClaimedTask& claim) {
         }
         if (task->status == DownloadStatus::Paused) {
             if (packageCommitted)
-                persistState(lock);
+                persistPackageCheckpoint(lock, activeId, p.packagesInstalled);
             return;
         }
-        updateTaskDownloadProgress(*task, p.completedBytes, now_ms());
+        // Provider lookup has no new byte sample. Retain the saved bar until
+        // the transfer reports bytes for the remaining package.
+        if (p.status != DownloadStatus::Fetching || p.completedBytes != 0)
+            updateTaskDownloadProgress(*task, p.completedBytes, now_ms());
         if (p.totalBytes)
             task->totalBytes = p.totalBytes;
         task->speedBytesPerSecond = p.speedBytesPerSecond;
@@ -2674,7 +2811,10 @@ void DownloadManager::runDebridTask(const ClaimedTask& claim) {
              progressNowMs - lastDebridPersistMs >= kDebridCheckpointMs)) {
             lastDebridPersistMs = progressNowMs;
             lastDebridPersistedBytes = task->completedBytes;
-            persistState(lock);
+            if (packageCommitted)
+                persistPackageCheckpoint(lock, activeId, p.packagesInstalled);
+            else
+                persistState(lock);
         }
     };
 
@@ -2686,6 +2826,9 @@ void DownloadManager::runDebridTask(const ClaimedTask& claim) {
             claim.name.c_str(),
             spec.mode == TransferMode::StreamInstall ? " (install)" : "",
             !spec.debridId.empty() ? " (catalog)" : "");
+    if (spec.packagesInstalled > 0)
+        log_msg("[manager] resuming debrid task=%s committed_packages=%u; only remaining packages\n",
+                activeId.c_str(), spec.packagesInstalled);
     DebridRunResult result =
         transfer.run(spec, shouldStop, onProgress, createdId, runError);
     log_msg("[debrid] transfer %s %s%s%s\n", activeId.c_str(),
@@ -2703,10 +2846,16 @@ void DownloadManager::runDebridTask(const ClaimedTask& claim) {
         DownloadTask* task = findLocked(activeId);
         if (!task)
             return;
-        // The transfer may have created the remote id we never had; record
-        // it before anything else so the removal can still clean the account.
-        if (!createdId.empty() && task->debridId.empty())
+        // The transfer may have created a remote id, or replaced an account
+        // torrent whose file selection was already finalized. Persist the
+        // active id before anything else so retry/resume continues from that
+        // same Real-Debrid selection instead of creating it again.
+        if (!createdId.empty() && task->debridId != createdId) {
+            log_msg("[debrid] task %s remote id updated %s -> %s\n",
+                    activeId.c_str(), task->debridId.c_str(),
+                    createdId.c_str());
             task->debridId = createdId;
+        }
         if (task->status == DownloadStatus::Removing) {
             bool deleteData = task->error == "delete-data";
             removeId = task->debridId;
@@ -2806,21 +2955,21 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
                              DownloadStatus status) {
                 std::unique_lock<std::mutex> lock(mutex_);
                 DownloadTask* task = findLocked(activeId);
-                if (!task || task->status == DownloadStatus::Removing)
+                if (!task || task->status == DownloadStatus::Removing ||
+                    task->status == DownloadStatus::Error)
                     return;
-                bool packageCommitted =
-                    completed != task->packagesInstalled;
-                task->packagesInstalled = completed;
+                const bool packageCommitted = completed > task->packagesInstalled;
+                task->packagesInstalled = std::max(task->packagesInstalled, completed);
                 task->currentPackage = package;
                 if (task->status == DownloadStatus::Paused) {
                     if (packageCommitted)
-                        persistState(lock);
+                        persistPackageCheckpoint(lock, activeId, completed);
                     return;
                 }
                 updateTaskInstallProgress(*task, installed, expected, status,
                                           now_ms());
                 if (packageCommitted) {
-                    persistState(lock);
+                    persistPackageCheckpoint(lock, activeId, completed);
                 }
             });
         if (!coordinator->error().empty()) {
@@ -2929,7 +3078,8 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
         {
             std::unique_lock<std::mutex> lock(mutex_);
             DownloadTask* task = findLocked(activeId);
-            if (!task || task->status == DownloadStatus::Paused ||
+            if (!task || task->status == DownloadStatus::Error ||
+                task->status == DownloadStatus::Paused ||
                 task->status == DownloadStatus::Removing)
                 break;
             // The user can flip torrenting off mid-transfer; stop talking to

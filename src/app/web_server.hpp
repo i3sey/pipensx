@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <condition_variable>
 #include <functional>
 #include <map>
 #include <memory>
@@ -8,15 +9,18 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <thread>
 
 #include "app_settings.hpp"
 #include "catalog_service.hpp"
 #include "download_manager.hpp"
 #include "http_server.hpp"
 #include "install_space.hpp"
+#include "install_benchmark.hpp"
 #include "web_add_queue.hpp"
 
 namespace pipensx {
+struct GameMetadataIndexSnapshot;
 
 // The web companion: REST + SSE API and the static SPA, served over the LAN
 // so a phone/PC can watch progress, control the queue, browse the catalog and
@@ -68,11 +72,30 @@ public:
         const std::string& body, std::string& error, std::string& json)>;
     void setSettingsHandlers(SettingsGetter getter, SettingsPatcher patcher);
 
+    using UpdateStatusGetter = std::function<bool(
+        bool& stagedReady, uint64_t& stagedBytes, std::string& error)>;
+    using UpdateUploader = std::function<bool(
+        const std::string& nroBytes, std::string& error)>;
+    using UpdateApplier = std::function<bool(std::string& error)>;
+    void setUpdateHandlers(UpdateStatusGetter statusGetter,
+                           UpdateUploader uploader,
+                           UpdateApplier applier);
+    using LibraryGetter = std::function<bool(std::string&, std::string&)>;
+    using LibraryAction = std::function<bool(const std::string& action,
+                                             const std::string& titleId,
+                                             std::string& error)>;
+    void setLibraryHandlers(LibraryGetter getter, LibraryAction action);
+    using PortHandler = std::function<bool(const std::string& action,
+        const std::string& taskId, const std::string& body, std::string& json, std::string& error)>;
+    void setPortHandler(PortHandler handler);
+
     // UI-thread callers (startup + after every CatalogService::adopt()):
     // copies the entries so the server thread never touches CatalogService.
     // Takes a shared immutable snapshot (see CatalogService::sharedEntries)
     // instead of deep-copying the ~10 MB catalogue into the server.
     void updateCatalog(std::shared_ptr<const std::vector<CatalogEntry>> entries);
+    void updateMetadata(std::shared_ptr<const GameMetadataIndexSnapshot> metadata);
+    bool benchmarkActive() const { return benchmark_.running(); }
 
 private:
     HttpResponse route(const HttpRequest& req);
@@ -85,9 +108,21 @@ private:
     HttpResponse handleAddCatalog(const HttpRequest& req);
     HttpResponse handleAddTorrent(const HttpRequest& req);
     HttpResponse handleCatalog(const HttpRequest& req);
+    HttpResponse handleCatalogDescription(const HttpRequest& req);
+    HttpResponse handleLogs(const HttpRequest& req);
     void rebuildCatalogIndexLocked();
     HttpResponse handleGetSettings(const HttpRequest& req);
     HttpResponse handlePatchSettings(const HttpRequest& req);
+    HttpResponse handleUpdateStatus(const HttpRequest& req);
+    HttpResponse handleUpdateUpload(const HttpRequest& req);
+    HttpResponse handleUpdateApply(const HttpRequest& req);
+    HttpResponse handleLibrary(const HttpRequest& req);
+    HttpResponse handleLibraryCommand(const HttpRequest& req,
+                                      const std::string& titleId,
+                                      const std::string& action);
+    void libraryWorkerMain();
+    HttpResponse handlePortRequest(const HttpRequest& req, const std::string& action,
+                                   const std::string& taskId, const std::string& body);
     bool authorized(const HttpRequest& req) const;
     // False when the request names an origin other than the host it reached.
     static bool sameOrigin(const HttpRequest& req);
@@ -95,6 +130,7 @@ private:
     void onTick();
 
     DownloadManager& manager_;
+    InstallBenchmarkService benchmark_;
     WebAddQueue addQueue_;
     HttpServer http_;
     std::string staticRoot_;
@@ -106,6 +142,20 @@ private:
     DebridProviderFactory debridFactory_;
     SettingsGetter settingsGetter_;
     SettingsPatcher settingsPatcher_;
+    UpdateStatusGetter updateStatusGetter_;
+    UpdateUploader updateUploader_;
+    UpdateApplier updateApplier_;
+    LibraryGetter libraryGetter_;
+    LibraryAction libraryAction_;
+    PortHandler portHandler_;
+    struct LibraryJob {
+        std::string id, action, titleId, state = "queued", error;
+    };
+    std::vector<LibraryJob> libraryJobs_;
+    std::condition_variable libraryCondition_;
+    std::thread libraryWorker_;
+    bool libraryStopping_ = false;
+    uint64_t librarySerial_ = 0;
 
     std::mutex catalogMutex_;
     // Shared immutable snapshot published by CatalogService — never null.
@@ -113,6 +163,7 @@ private:
         std::make_shared<const std::vector<CatalogEntry>>();
     std::unordered_map<std::string, size_t> catalogIndex_;  // lower hash → idx
     uint64_t catalogGeneration_ = 0;
+    std::shared_ptr<const GameMetadataIndexSnapshot> metadata_;
     // Built lazily on the server thread; invalidated by updateCatalog().
     std::shared_ptr<const std::string> catalogGzip_;
     uint64_t catalogGzipGeneration_ = 0;

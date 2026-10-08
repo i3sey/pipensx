@@ -412,6 +412,44 @@ void testSmartInstallPicksLargestDuplicateDlc() {
     });
 }
 
+void testSmartInstallInfersBundleWithoutCatalogId() {
+    TorrentPreview preview;
+    preview.files = {
+        package("Game [0100AAAA00000000][v0].nsp", 100),
+        package("Game [0100AAAA00000800][v131072].nsp", 50),
+        package("DLC [0100AAAA00001001][v196608].nsp", 200)};
+    const uint8_t install = static_cast<uint8_t>(FileAction::Install);
+    expectSmartActions(preview, false, "", "", "", {install, install, install});
+    for (auto& file : preview.files)
+        file.path = "Game Base + Update + DLC/" + file.path;
+    expectSmartActions(preview, false, "", "", "", {install, install, install});
+    preview.files.push_back(package("Other [0100BBBB00000000][v0].nsp"));
+    const uint8_t skip = static_cast<uint8_t>(FileAction::Skip);
+    expectSmartActions(preview, false, "", "", "", {skip, skip, skip, skip});
+}
+
+void testSmartInstallRecognizesUntaggedPatch() {
+    TorrentPreview preview;
+    preview.files = {
+        package("Game [0100AAAA00000000][v0].nsp"),
+        package("Game [0100AAAA00000800].nsp"),
+        package("DLC [0100AAAA00001001].nsp")};
+    const uint8_t install = static_cast<uint8_t>(FileAction::Install);
+    const uint8_t skip = static_cast<uint8_t>(FileAction::Skip);
+    expectSmartActions(preview, false, "", "", "0100AAAA00000000",
+                       {install, install, install});
+    // No version means no evidence that this patch upgrades an existing game.
+    expectSmartActions(preview, true, "131072", "", "0100AAAA00000000",
+                       {skip, skip, install});
+    preview.files[1].path = "Game Update [v131072].nsp";
+    expectSmartActions(preview, false, "", "", "0100AAAA00000000",
+                       {install, install, install});
+    // An ID-free patch in a multi-game collection remains ambiguous.
+    preview.files.push_back(package("Other [0100BBBB00000000][v0].nsp"));
+    expectSmartActions(preview, false, "", "", "0100AAAA00000000",
+                       {install, skip, install, skip});
+}
+
 void testSmartInstallPrefersTorrentPatchOverStaleCatalog() {
     TorrentPreview preview;
     preview.files = {
@@ -796,6 +834,8 @@ int main() {
     testSmartInstallMatchesPatchTitleId();
     testSmartInstallUsesBundledPatchVersionWhenLatestEmpty();
     testSmartInstallPicksLargestDuplicateDlc();
+    testSmartInstallInfersBundleWithoutCatalogId();
+    testSmartInstallRecognizesUntaggedPatch();
     testSmartInstallPrefersTorrentPatchOverStaleCatalog();
     testOverlappingPatchesAreConflicts();
     testOverlappingDownloadsAreNotConflicts();

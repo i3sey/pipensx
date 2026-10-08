@@ -6,9 +6,13 @@
 #include "app/web_server.hpp"
 #include "app/app_settings.hpp"
 #include "app/companion_settings.hpp"
+#include "app/task_files.hpp"
+#include "app/game_metadata_service.hpp"
+#include "install/install_backend.hpp"
 
 extern "C" {
 #include "core/sha1.h"
+#include "core/util.h"
 }
 
 #include <arpa/inet.h>
@@ -22,6 +26,7 @@ extern "C" {
 #include <cassert>
 #include <chrono>
 #include <csignal>
+#include <cstring>
 #include <cstdio>
 #include <fstream>
 #include <memory>
@@ -164,11 +169,19 @@ int main() {
     char* root = mkdtemp(rootTemplate);
     assert(root);
     std::string rootStr = root;
+    const std::string logPath = rootStr + "/pipensx.log";
+    log_init(logPath.c_str());
+    log_msg("[realdebrid] web diagnostics marker\n");
+    log_flush();
     std::string webRoot = rootStr + "/webui";
     mkdir(webRoot.c_str(), 0755);
     {
         std::ofstream out(webRoot + "/index.html");
         out << "<html>pipensx web</html>";
+    }
+    {
+        std::ofstream out(webRoot + "/app.js");
+        out << "window.pipensxWebTest = true;";
     }
 
     gTorrentBytes = makeTorrentBytes("package.nsp", "test payload");
@@ -200,6 +213,36 @@ int main() {
         return out.good();
     };
     WebServer server(manager, webRoot, "test-1.0", fakeResolver);
+    bool updateStaged = false;
+    uint64_t updateStagedBytes = 0;
+    int updateApplyCalls = 0;
+    server.setUpdateHandlers(
+        [&updateStaged, &updateStagedBytes](bool& stagedReady,
+                                           uint64_t& stagedBytes,
+                                           std::string&) {
+            stagedReady = updateStaged;
+            stagedBytes = updateStagedBytes;
+            return true;
+        },
+        [&updateStaged, &updateStagedBytes](const std::string& bytes,
+                                            std::string& error) {
+            if (bytes.size() < 0x14 ||
+                std::memcmp(bytes.data() + 0x10, "NRO0", 4) != 0) {
+                error = "bad NRO";
+                return false;
+            }
+            updateStaged = true;
+            updateStagedBytes = bytes.size();
+            return true;
+        },
+        [&updateStaged, &updateApplyCalls](std::string& error) {
+            if (!updateStaged) {
+                error = "no staged update";
+                return false;
+            }
+            ++updateApplyCalls;
+            return true;
+        });
     AppSettings companionSettings(rootStr + "/settings.json");
     std::string settingsError;
     assert(companionSettings.load(settingsError));
@@ -236,6 +279,10 @@ int main() {
 
         resp = request(port, "GET", "/");
         assert(resp.find("pipensx web") != std::string::npos);
+        resp = request(port, "GET", "/app.js?v=logs-2");
+        assert(resp.find("200 OK") != std::string::npos);
+        assert(resp.find("Cache-Control: no-store") != std::string::npos);
+        assert(resp.find("pipensxWebTest") != std::string::npos);
         resp = request(port, "GET", "/secret.txt");
         assert(resp.find("404") != std::string::npos);
 
@@ -253,6 +300,13 @@ int main() {
         assert(resp.find("401") != std::string::npos);
         resp = request(port, "GET", "/api/tasks");
         assert(resp.find("200 OK") != std::string::npos);
+
+        // Logs are a sensitive read: unlike the task snapshot, they require
+        // the companion PIN and expose only a bounded live tail.
+        resp = request(port, "GET", "/api/logs");
+        assert(resp.find("401") != std::string::npos);
+        resp = request(port, "GET", "/api/benchmark");
+        assert(resp.find("401") != std::string::npos);
     }
 
     // PIN auth
@@ -269,8 +323,64 @@ int main() {
         resp = request(port, "POST", "/api/auth/check?pin=1234");
         assert(resp.find("401") != std::string::npos);
         // reads stay open
+        {
+            int portCalls = 0;
+            server.setPortHandler([&portCalls](const std::string& action, const std::string& id,
+                                               const std::string& body, std::string& json, std::string& error) {
+                ++portCalls;
+                if (action != "folders" && id != "port-test") { error = "Port task required."; return false; }
+                if (action == "folders") assert(body.find("/switch") != std::string::npos);
+                json = "{\"files\":[],\"manual\":true}"; return true;
+            });
+            assert(request(port, "GET", "/api/ports/port-test").find("401") != std::string::npos);
+            assert(request(port, "GET", "/api/ports/port-test", "", pinHeader +
+                "Host: localhost\r\nOrigin: http://evil.example\r\n").find("403") != std::string::npos);
+            assert(portCalls == 0);
+            assert(request(port, "GET", "/api/ports/port-test", "", pinHeader).find("200 OK") != std::string::npos);
+            assert(request(port, "GET", "/api/ports/folders?path=%2Fswitch", "", pinHeader).find("200 OK") != std::string::npos);
+            assert(request(port, "PATCH", "/api/ports/port-test", "{}", pinHeader).find("200 OK") != std::string::npos);
+            assert(request(port, "POST", "/api/ports/port-test/preview", "{}", pinHeader).find("200 OK") != std::string::npos);
+            assert(request(port, "POST", "/api/ports/port-test/start", "{}", pinHeader).find("202") != std::string::npos);
+            assert(request(port, "POST", "/api/ports/retail-task/start", "{}", pinHeader).find("409") != std::string::npos);
+            server.setPortHandler({});
+        }
         resp = request(port, "GET", "/api/tasks");
         assert(resp.find("200 OK") != std::string::npos);
+        resp = request(port, "GET", "/api/logs", "", pinHeader);
+        assert(resp.find("200 OK") != std::string::npos);
+        assert(responseBody(resp).find("[realdebrid] web diagnostics marker") !=
+               std::string::npos);
+        resp = request(port, "PATCH", "/api/settings", "{\"extendedTelemetry\":true}", pinHeader);
+        assert(resp.find("200 OK") != std::string::npos);
+        assert(telemetry_enabled());
+        assert(responseBody(resp).find("\"extendedTelemetry\":true") != std::string::npos);
+        resp = request(port, "PATCH", "/api/settings", "{\"extendedTelemetry\":false}", pinHeader);
+        assert(resp.find("200 OK") != std::string::npos);
+        assert(!telemetry_enabled());
+
+        // Remote updater is a protected read/write surface. A valid NRO is
+        // uploaded once, appears as staged, then can be applied from the panel.
+        resp = request(port, "GET", "/api/update");
+        assert(resp.find("401") != std::string::npos);
+        resp = request(port, "GET", "/api/update", "", pinHeader);
+        assert(resp.find("200 OK") != std::string::npos);
+        assert(responseBody(resp).find("\"stagedReady\":false") !=
+               std::string::npos);
+        assert(responseBody(resp).find("\"currentVersion\":\"test-1.0\"") !=
+               std::string::npos);
+
+        std::string nro(0x90, '\0');
+        std::memcpy(nro.data() + 0x10, "NRO0", 4);
+        nro[0x18] = static_cast<char>(0x80);
+        resp = request(port, "POST", "/api/update/upload", nro, pinHeader);
+        assert(resp.find("200 OK") != std::string::npos);
+        assert(responseBody(resp).find("\"stagedReady\":true") !=
+               std::string::npos);
+        assert(updateStagedBytes == nro.size());
+
+        resp = request(port, "POST", "/api/update/apply", "", pinHeader);
+        assert(resp.find("202 Accepted") != std::string::npos);
+        assert(updateApplyCalls == 1);
 
         resp = request(port, "POST", "/api/queue/clear-completed",
                        "{\"deleteData\":false}", pinHeader);
@@ -313,6 +423,9 @@ int main() {
         resp = request(port, "GET", "/api/tasks", "",
                        host + "Origin: http://evil.example\r\n");
         assert(resp.find("200 OK") != std::string::npos);
+        resp = request(port, "GET", "/api/logs", "",
+                       host + "Origin: http://evil.example\r\n" + pinHeader);
+        assert(resp.find("403") != std::string::npos);
     }
 
     // upload torrent (download mode) → task appears; duplicate → 409
@@ -451,6 +564,67 @@ int main() {
         assert(resp.find("400") != std::string::npos);
     }
 
+    // Installed library actions are authenticated, asynchronous and confirmed.
+    // Mock callbacks only: these tests never touch the console's applications.
+    {
+        auto calls = std::make_shared<std::atomic<int>>(0);
+        auto release = std::make_shared<std::atomic<bool>>(false);
+        auto removed = std::make_shared<std::atomic<bool>>(false);
+        server.setLibraryHandlers(
+            [removed](std::string& json, std::string&) {
+                json = removed->load() ? "{\"titles\":[]}" :
+                    "{\"titles\":[{\"titleId\":\"0100000000001000\",\"name\":\"Fixture\",\"updateState\":\"up_to_date\"}]}";
+                return true;
+            },
+            [calls, release, removed](const std::string& action, const std::string& id, std::string&) {
+                ++*calls;
+                while (!release->load()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                if (action == "uninstall") { assert(id == "0100000000001000"); removed->store(true); }
+                return true;
+            });
+        assert(request(port, "GET", "/api/library").find("401") != std::string::npos);
+        assert(request(port, "GET", "/api/library", "", pinHeader +
+            "Host: localhost\r\nOrigin: http://evil.example\r\n").find("403") != std::string::npos);
+        assert(request(port, "POST", "/api/library/refresh", "{}").find("401") != std::string::npos);
+        assert(request(port, "POST", "/api/library/not-an-id/uninstall", "{\"confirm\":true}", pinHeader).find("400") != std::string::npos);
+        for (const auto* body : {"{}", "{\"confirm\":false}", "{\"confirm\":\"true\"}"})
+            assert(request(port, "POST", "/api/library/0100000000001000/uninstall", body, pinHeader).find("400") != std::string::npos);
+        assert(calls->load() == 0);
+        assert(request(port, "POST", "/api/library/0100000000001000/update", "{}", pinHeader).find("409") != std::string::npos);
+        assert(request(port, "POST", "/api/library/0100000000002000/update", "{}", pinHeader).find("409") != std::string::npos);
+        const auto first = request(port, "POST", "/api/library/refresh", "{}", pinHeader);
+        assert(first.find("202") != std::string::npos);
+        assert(waitFor([&] { return calls->load() == 1; }));
+        const auto duplicate = request(port, "POST", "/api/library/refresh", "{}", pinHeader);
+        assert(responseBody(first) == responseBody(duplicate));
+        assert(request(port, "GET", "/api/tasks").find("200 OK") != std::string::npos);
+        assert(request(port, "GET", "/api/library", "", pinHeader).find("working") != std::string::npos);
+        const auto deletion = request(port, "POST", "/api/library/0100000000001000/uninstall", "{\"confirm\":true}", pinHeader);
+        assert(deletion.find("202") != std::string::npos);
+        assert(calls->load() == 1); // serialized behind refresh
+        release->store(true);
+        assert(waitFor([&] { return removed->load(); }));
+        assert(waitFor([&] { return request(port, "GET", "/api/library", "", pinHeader).find("\"state\":\"done\"") != std::string::npos; }));
+        assert(calls->load() == 2);
+        assert(request(port, "GET", "/api/library", "", pinHeader).find("\"titles\":[]") != std::string::npos);
+        CatalogEntry update;
+        update.infoHash = std::string(40, 'a');
+        update.title = "Fixture update [NSP]";
+        update.magnetUri = "magnet:?xt=urn:btih:" + update.infoHash;
+        server.updateCatalog(std::make_shared<const std::vector<CatalogEntry>>(std::vector<CatalogEntry>{update}));
+        server.setLibraryHandlers([](std::string& json, std::string&) {
+            json = "{\"titles\":[{\"titleId\":\"0100000000001000\",\"updateState\":\"update_available\",\"hasLayeredFsMods\":true,\"updateHash\":\"" + std::string(40, 'a') + "\"}]}";
+            return true;
+        }, {});
+        const auto resolverBefore = resolveCalls->load();
+        assert(request(port, "POST", "/api/library/0100000000001000/update", "{}", pinHeader).find("409") != std::string::npos);
+        assert(request(port, "POST", "/api/library/0100000000001000/update", "{\"acknowledgeMods\":true}", pinHeader).find("202") != std::string::npos);
+        // Base disappeared before the worker ran: refuse before contacting a
+        // torrent resolver/provider, even though the UI snapshot offered it.
+        assert(waitFor([&] { return request(port, "GET", "/api/tasks").find("installed base could not be verified") != std::string::npos; }));
+        assert(resolveCalls->load() == resolverBefore);
+    }
+
     // catalog gzip + ETag + add-by-hash 404 for unknown entries
     {
         CatalogEntry entry;
@@ -460,11 +634,18 @@ int main() {
                           "&tr=http://bt.t-ru.org/ann?magnet";
         entry.posterUrl = "https://example.com/cover.jpg";
         entry.size = 12;
+        entry.description = "Original fixture prose";
         server.updateCatalog(
             std::make_shared<const std::vector<CatalogEntry>>(
                 std::vector<CatalogEntry>{entry}));
 
         std::string resp = request(port, "GET", "/api/catalog");
+        auto description = request(port, "GET", "/api/catalog/description?hash=" + torrentHash + "&lang=pt-BR");
+        assert(description.find("200 OK") != std::string::npos);
+        assert(responseBody(description).find("Original fixture prose") != std::string::npos);
+        assert(responseBody(description).find("\"localized\":false") != std::string::npos);
+        description = request(port, "GET", "/api/catalog/description?hash=" + torrentHash + "&lang=../../pt-BR");
+        assert(description.find("400") != std::string::npos);
         assert(resp.find("Content-Encoding: gzip") != std::string::npos);
         size_t etagPos = resp.find("ETag: ");
         assert(etagPos != std::string::npos);
@@ -473,6 +654,18 @@ int main() {
         std::string json = gunzip(responseBody(resp));
         assert(json.find("Test Game") != std::string::npos);
         assert(json.find("cover.jpg") != std::string::npos);
+        assert(json.find("\"section\":\"ports\"") != std::string::npos);
+        auto joined = std::make_shared<GameMetadataIndexSnapshot>();
+        GameMetadata metadata;
+        metadata.titleId = "0100000000001000";
+        joined->items.push_back(metadata);
+        joined->byInfoHash[torrentHash] = 0;
+        server.updateMetadata(joined);
+        resp = request(port, "GET", "/api/catalog", "", "If-None-Match: " + etag + "\r\n");
+        assert(resp.find("200 OK") != std::string::npos);
+        assert(gunzip(responseBody(resp)).find("\"section\":\"games\"") != std::string::npos);
+        etagPos = resp.find("ETag: ");
+        etag = resp.substr(etagPos + 6, resp.find("\r\n", etagPos) - etagPos - 6);
 
         resp = request(port, "GET", "/api/catalog", "",
                        "If-None-Match: " + etag + "\r\n");
@@ -521,8 +714,12 @@ int main() {
         assert(resp.find("403") != std::string::npos);
 
         resp = request(port, "PATCH", "/api/settings",
-                       "{\"language\":\"ru\"}", pinHeader);
+                       "{\"language\":\"de\"}", pinHeader);
         assert(resp.find("400") != std::string::npos);
+        resp = request(port, "PATCH", "/api/settings",
+                       "{\"language\":\"pt-BR\"}", pinHeader);
+        assert(resp.find("200 OK") != std::string::npos);
+        assert(companionSettings.get().language == "pt-BR");
 
         resp = request(port, "PATCH", "/api/settings",
                        "{\"maxActiveDownloads\":3,\"torboxApiKey\":\"tb-secret\","
@@ -553,8 +750,10 @@ int main() {
         manager.setTorrentingEnabled(false);
         manager.setActiveDebridProvider(DebridProviderKind::TorBox);
         manager.setTorboxApiKey("tb-test");
+        auto providerCalls = std::make_shared<std::atomic<int>>(0);
         server.setDebridProviderFactory(
-            [](DebridProviderKind, const std::string&) {
+            [providerCalls](DebridProviderKind, const std::string&) {
+                ++*providerCalls;
                 return std::unique_ptr<DebridProvider>(new ReadyProvider());
             });
         CatalogEntry entry;
@@ -565,6 +764,11 @@ int main() {
             std::make_shared<const std::vector<CatalogEntry>>(
                 std::vector<CatalogEntry>{entry}));
         const int resolvesBefore = resolveCalls->load();
+        for (const char* endpoint : {"/api/catalog", "/api/tasks", "/api/events", "/api/logs"}) {
+            const auto read = request(port, "GET", endpoint, "", pinHeader);
+            assert(read.find("200 OK") != std::string::npos);
+        }
+        assert(providerCalls->load() == 0);
         std::string resp = request(port, "POST", "/api/add/catalog",
                                    "{\"infoHash\":\"" + hash +
                                        "\",\"mode\":\"install\"}",
@@ -585,13 +789,174 @@ int main() {
         assert(imported);
         assert(manager.torrentingEnabled() == false);
         assert(resolveCalls->load() == resolvesBefore);
+        assert(providerCalls->load() == 1);
         manager.setTorboxApiKey("");
         std::string removeError;
         assert(manager.remove(hash, true, removeError));
     }
 
     server.shutdown();
+    // Three repetitions: a single unusually quick pass must not win.
+    std::vector<InstallBenchmarkSample> samples;
+    for (uint64_t time : {1u, 120u, 121u}) samples.push_back({256u << 10, time, 1, 1});
+    for (uint64_t time : {100u, 101u, 102u}) samples.push_back({1u << 20, time, 1, 1});
+    for (uint64_t time : {80u, 81u, 82u}) samples.push_back({4u << 20, time, 1, 1});
+    assert(chooseInstallBatch(samples) == (4u << 20));
+    for (auto& sample : samples) if (sample.batchBytes == (4u << 20)) sample.durationUs = 99;
+    assert(chooseInstallBatch(samples) == (1u << 20)); // noise band keeps baseline.
+    assert(chooseInstallBatch({}) == (1u << 20));
+    assert(!manager.setInstallBatchBytes(7));
+    assert(manager.setInstallBatchBytes(4u << 20));
+    assert(manager.installBatchBytes() == (4u << 20));
+    {
+        const std::string keep = rootStr + "/keep-original.bin";
+        std::ofstream(keep) << "original";
+        auto scratch = install::createInstallBackend(rootStr);
+        assert(scratch->setBenchmarkMode(true));
+        assert(scratch->beginPackage("benchmark-owned-test", "fixture"));
+        assert(!scratch->setBenchmarkMode(false));
+        const uint8_t bytes[] = {1, 2, 3};
+        assert(scratch->beginFile("content.nca", sizeof(bytes)));
+        assert(scratch->writeFile(bytes, sizeof(bytes)));
+        assert(scratch->endFile());
+        const std::string owned = rootStr + "/install-sim/benchmark-owned-test-fixture/content.nca";
+        assert(access(owned.c_str(), F_OK) == 0);
+        bool existing = true;
+        assert(scratch->commitPackage(existing));
+        assert(!existing && access(owned.c_str(), F_OK) != 0);
+        assert(access(keep.c_str(), F_OK) == 0);
+        assert(scratch->beginPackage("benchmark-owned-test", "fixture"));
+        assert(scratch->beginFile("content.nca", sizeof(bytes)));
+        scratch->rollbackPackage();
+        assert(access(owned.c_str(), F_OK) != 0 && access(keep.c_str(), F_OK) == 0);
+    }
+    // A completed debrid download can be installed without submitting a new
+    // cloud torrent or invoking the swarm resolver. Its lease still wins.
+    {
+        const std::string cachedRoot = rootStr + "/cached-upgrade";
+        mkdir(cachedRoot.c_str(), 0755);
+        mkdir((cachedRoot + "/torrents").c_str(), 0755);
+        mkdir((cachedRoot + "/downloads").c_str(), 0755);
+        const std::string cachedMeta = cachedRoot + "/torrents/original.torrent";
+        { std::ofstream out(cachedMeta, std::ios::binary); out << gTorrentBytes; }
+        const auto bs = [](const std::string& value) { return std::to_string(value.size()) + ":" + value; };
+        const std::string originalData = cachedRoot + "/downloads/retained-data";
+        std::string state = "d5:tasksl";
+        state += "d4:data" + bs(originalData) + "9:debrid-id" + bs("original-account-torrent");
+        state += "5:error0:2:id" + bs(torrentHash) + "8:metainfo" + bs(cachedMeta);
+        state += "4:mode8:download4:name11:package.nsp13:package-counti0e13:packages-donei0e";
+        state += "8:provider10:realdebrid9:selection0:6:source6:debrid6:status9:completed5:totali12ee";
+        state += "e7:versioni6ee";
+        { std::ofstream out(cachedRoot + "/queue.bencode", std::ios::binary); out << state; }
+        DownloadManager cached(cachedRoot, false);
+        const auto before = cached.snapshot(torrentHash);
+        assert(before && before->status == DownloadStatus::Completed && before->source == TaskSource::Debrid);
+        auto providerCalls = std::make_shared<std::atomic<int>>(0);
+        WebServer cachedServer(cached, webRoot, "cached-test", fakeResolver);
+        cachedServer.setDebridProviderFactory([providerCalls](DebridProviderKind, const std::string&) {
+            providerCalls->fetch_add(1);
+            return std::unique_ptr<DebridProvider>();
+        });
+        cachedServer.setPin("1234");
+        CatalogEntry entry;
+        entry.infoHash = torrentHash; entry.title = "Cached game";
+        cachedServer.updateCatalog(std::make_shared<const std::vector<CatalogEntry>>(std::vector<CatalogEntry>{entry}));
+        assert(cachedServer.start(0));
+        const auto cachedPort = cachedServer.boundPort();
+        const auto body = "{\"infoHash\":\"" + torrentHash + "\",\"mode\":\"install\"}";
+        std::string error;
+        auto lease = cached.beginExternalDeploy(torrentHash, error);
+        assert(lease);
+        assert(request(cachedPort, "POST", "/api/add/catalog", body, pinHeader).find("409") != std::string::npos);
+        assert(cached.snapshot(torrentHash)->mode == TransferMode::DownloadOnly);
+        lease.reset();
+        const int resolvedBefore = resolveCalls->load();
+        auto response = request(cachedPort, "POST", "/api/add/catalog", body, pinHeader);
+        assert(response.find("200 OK") != std::string::npos && response.find("\"reusedTask\":true") != std::string::npos);
+        const auto after = cached.snapshot(torrentHash);
+        assert(after && after->status == DownloadStatus::Queued && after->mode == TransferMode::StreamInstall);
+        assert(after->packageCount == 1 && after->fileSelection == std::vector<uint8_t>{2});
+        assert(after->source == before->source && after->debridId == before->debridId && after->dataPath == before->dataPath);
+        assert(resolveCalls->load() == resolvedBefore && providerCalls->load() == 0);
+        assert(request(cachedPort, "POST", "/api/add/catalog", body, pinHeader).find("409") != std::string::npos);
+        cachedServer.shutdown();
+        cached.shutdown();
+        // Catalog imports have no .torrent. The saved manifest must preserve
+        // nested updates/DLC, skipped files and the original disk paths.
+        const std::string manifestRoot = cachedRoot + "/manifest";
+        mkdir(manifestRoot.c_str(), 0755);
+        mkdir((manifestRoot + "/downloads").c_str(), 0755);
+        std::string manifestState = state;
+        const auto oldMeta = "8:metainfo" + bs(cachedMeta);
+        manifestState.replace(manifestState.find(oldMeta), oldMeta.size(), "8:metainfo0:");
+        manifestState.replace(manifestState.find(bs(originalData)), bs(originalData).size(), bs(manifestRoot + "/downloads/retained"));
+        { std::ofstream out(manifestRoot + "/queue.bencode", std::ios::binary); out << manifestState; }
+        TaskFileManifest manifest;
+        manifest.taskId = torrentHash;
+        for (const auto& path : {"base.nsz", "Updates/update.nsp", "DLC/nested/dlc.nsp", "unselected/other.nsp"}) {
+            TaskFileRecord file;
+            file.logicalPath = path;
+            file.localPath = path;
+            file.size = 12;
+            file.package = true;
+            file.action = manifest.files.size() == 3 ? TaskFileAction::Skip : TaskFileAction::Download;
+            manifest.files.push_back(file);
+        }
+        assert(saveTaskFileManifest(manifestRoot, manifest, error));
+        DownloadManager manifestManager(manifestRoot, false);
+        auto manifestLease = manifestManager.beginExternalDeploy(torrentHash, error);
+        assert(manifestLease && !manifestManager.installDownloaded(torrentHash, error));
+        assert(manifestManager.snapshot(torrentHash)->mode == TransferMode::DownloadOnly);
+        manifestLease.reset();
+        WebServer manifestServer(manifestManager, webRoot, "manifest-test", fakeResolver);
+        manifestServer.setPin("1234");
+        manifestServer.updateCatalog(std::make_shared<const std::vector<CatalogEntry>>(std::vector<CatalogEntry>{entry}));
+        manifestServer.setDebridProviderFactory([providerCalls](DebridProviderKind, const std::string&) {
+            providerCalls->fetch_add(1);
+            return std::unique_ptr<DebridProvider>();
+        });
+        assert(manifestServer.start(0));
+        const auto manifestResponse = request(manifestServer.boundPort(), "POST", "/api/add/catalog", body, pinHeader);
+        assert(manifestResponse.find("\"reusedTask\":true") != std::string::npos);
+        const auto promoted = manifestManager.snapshot(torrentHash);
+        assert(promoted && promoted->mode == TransferMode::StreamInstall && promoted->packageCount == 3);
+        assert(promoted->fileSelection.empty() && promoted->debridId == before->debridId);
+        TaskFileManifest updated;
+        assert(loadTaskFileManifest(manifestRoot, torrentHash, updated, error));
+        assert(updated.files.size() == 4 && updated.files[3].action == TaskFileAction::Skip);
+        for (size_t i = 0; i < 3; ++i) {
+            assert(updated.files[i].action == TaskFileAction::Install);
+            assert(updated.files[i].localPath == manifest.files[i].localPath);
+        }
+        assert(resolveCalls->load() == resolvedBefore && providerCalls->load() == 0);
+        manifestServer.shutdown();
+        manifestManager.shutdown();
+        // For a downloaded NRO, deployment changes the mode even though the
+        // retained download actions are unchanged. A lease must prevent it.
+        const std::string portRoot = cachedRoot + "/port";
+        mkdir(portRoot.c_str(), 0755);
+        mkdir((portRoot + "/torrents").c_str(), 0755);
+        mkdir((portRoot + "/downloads").c_str(), 0755);
+        const std::string portMeta = portRoot + "/torrents/port.torrent";
+        { std::ofstream out(portMeta, std::ios::binary); out << makeTorrentBytes("port.nro", "test payload"); }
+        TorrentPreview preview;
+        assert(DownloadManager::previewTorrent(portMeta, preview, error));
+        std::string portState = "d5:tasksl";
+        portState += "d4:data" + bs(portRoot + "/downloads/retained") + "2:id" + bs(preview.infoHash) + "8:metainfo" + bs(portMeta);
+        portState += "4:mode8:download4:name8:port.nro6:status9:completed5:totali12eee7:versioni6ee";
+        { std::ofstream out(portRoot + "/queue.bencode", std::ios::binary); out << portState; }
+        DownloadManager downloadedPort(portRoot, false);
+        auto portLease = downloadedPort.beginExternalDeploy(preview.infoHash, error);
+        assert(portLease && !downloadedPort.installDownloaded(preview.infoHash, error));
+        assert(downloadedPort.snapshot(preview.infoHash)->mode == TransferMode::DownloadOnly);
+        portLease.reset();
+        assert(downloadedPort.installDownloaded(preview.infoHash, error));
+        assert(downloadedPort.snapshot(preview.infoHash)->mode == TransferMode::PortInstall);
+        assert(downloadedPort.snapshot(preview.infoHash)->status == DownloadStatus::Queued);
+        downloadedPort.shutdown();
+    }
     manager.shutdown();
+    log_close();
     printf("test_web_server: all ok\n");
     return 0;
 }

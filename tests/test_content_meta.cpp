@@ -36,6 +36,85 @@ uint32_t u32At(const std::vector<uint8_t>& data, size_t offset) {
 } // namespace
 
 int main() {
+    // Application-record updates preserve the base and every independent DLC,
+    // replacing old versions/storage locations only for the incoming id+type.
+    struct MetaKey {
+        uint64_t id;
+        uint32_t version;
+        uint8_t type;
+    };
+    struct Record {
+        MetaKey meta_key;
+        uint64_t storage_id;
+    };
+    using pipensx::install::loadApplicationRecordPages;
+    using pipensx::install::replaceApplicationRecordMeta;
+    {
+        const uint64_t base = 0x0100AAAA00000000ULL;
+        std::vector<Record> records{
+            {{base, 0, kMetaTypeApplication}, 5},
+            {{base + 0x800, 65536, kMetaTypePatch}, 5},
+            {{base + 0x1001, 0, kMetaTypeAddOnContent}, 4},
+            {{base + 0x1002, 0, kMetaTypeAddOnContent}, 5},
+            {{base + 0x800, 131072, kMetaTypePatch}, 4},
+        };
+        replaceApplicationRecordMeta(records,
+            Record{{base + 0x800, 196608, kMetaTypePatch}, 5});
+        assert(records.size() == 4);
+        assert(records[0].meta_key.id == base);
+        assert(records[1].meta_key.id == base + 0x1001);
+        assert(records[1].storage_id == 4);
+        assert(records[2].meta_key.id == base + 0x1002);
+        assert(records[3].meta_key.version == 196608);
+        assert(records[3].storage_id == 5);
+        replaceApplicationRecordMeta(records,
+            Record{{base + 0x1001, 65536, kMetaTypeAddOnContent}, 5});
+        assert(records.size() == 4);
+        assert(records.back().meta_key.id == base + 0x1001);
+        assert(records.back().meta_key.version == 65536);
+        // Repeating the same package is idempotent.
+        replaceApplicationRecordMeta(records, records.back());
+        assert(records.size() == 4);
+        assert(records.back().meta_key.id == base + 0x1001);
+    }
+    {
+        std::vector<Record> source;
+        for (uint64_t id = 1; id <= 130; ++id)
+            source.push_back({{id, 0, kMetaTypeAddOnContent}, 5});
+        std::vector<Record> snapshot{{{999, 0, kMetaTypeApplication}, 4}};
+        std::vector<size_t> offsets;
+        const auto reader = [&](size_t offset, std::vector<Record>& page,
+                                size_t& written) {
+            offsets.push_back(offset);
+            written = std::min(page.size(), source.size() - offset);
+            std::copy_n(source.begin() + offset, written, page.begin());
+            return true;
+        };
+        assert(loadApplicationRecordPages(snapshot, reader));
+        assert(offsets == std::vector<size_t>({0, 64, 128}));
+        assert(snapshot.size() == 130);
+        assert(snapshot.back().meta_key.id == 130);
+        // Later page failure must not replace the previous full snapshot.
+        assert(!loadApplicationRecordPages(snapshot,
+            [&](size_t offset, std::vector<Record>& page, size_t& written) {
+                return offset == 0 && reader(offset, page, written);
+            }));
+        assert(snapshot.size() == 130 && snapshot.back().meta_key.id == 130);
+        assert(!loadApplicationRecordPages(snapshot,
+            [](size_t, std::vector<Record>& page, size_t& written) {
+                written = page.size() + 1;
+                return true;
+            }));
+        assert(snapshot.size() == 130);
+        // A fresh application legitimately has no record yet.
+        assert(loadApplicationRecordPages(snapshot,
+            [](size_t, std::vector<Record>&, size_t& written) {
+                written = 0;
+                return true;
+            }));
+        assert(snapshot.empty());
+    }
+
     // Sanity: 21.1.0 encodes to 0x54100000.
     assert(kRsv21_1_0 == 0x54100000u);
 

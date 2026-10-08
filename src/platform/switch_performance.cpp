@@ -41,23 +41,47 @@ void SwitchPerformanceController::activate() {
     }
 
     if (!autoSleepChanged_ && hosversionAtLeast(5, 0, 0)) {
-        bool previous = false;
+        ensureAwake();
+    }
+}
+
+bool SwitchPerformanceController::ensureAwake() {
+    if (!active_)
+        return true;
+    if (!hosversionAtLeast(5, 0, 0))
+        return false;
+    bool previous = previousAutoSleepDisabled_;
+    if (!autoSleepChanged_) {
         Result result = appletIsAutoSleepDisabled(&previous);
         if (R_FAILED(result)) {
             logFailure("read auto-sleep state", result);
-            return;
+            return false;
         }
-        result = appletSetAutoSleepDisabled(true);
-        if (R_SUCCEEDED(result)) {
-            previousAutoSleepDisabled_ = previous;
-            autoSleepChanged_ = true;
-        } else {
-            logFailure("disable auto-sleep", result);
-        }
+    }
+    Result result = appletSetAutoSleepDisabled(true);
+    if (R_SUCCEEDED(result)) {
+        previousAutoSleepDisabled_ = previous;
+        autoSleepChanged_ = true;
+        return true;
+    }
+    logFailure("disable auto-sleep", result);
+    return false;
+}
+
+void SwitchPerformanceController::keepDisplayOn(uint64_t nowMs) {
+    if (!active_) return;
+    if (lastDisplayActivityMs_ && nowMs >= lastDisplayActivityMs_ &&
+        nowMs - lastDisplayActivityMs_ < 15000) return;
+    lastDisplayActivityMs_ = nowMs;
+    ensureAwake();
+    if (hosversionAtLeast(2, 0, 0)) {
+        const Result result = appletReportUserIsActive();
+        if (R_FAILED(result)) logFailure("keep display active", result);
     }
 }
 
 void SwitchPerformanceController::deactivate() {
+    lastDisplayActivityMs_ = 0;
     if (cpuBoostApplied_) {
         Result result = appletSetCpuBoostMode(ApmCpuBoostMode_Normal);
         if (R_SUCCEEDED(result))
