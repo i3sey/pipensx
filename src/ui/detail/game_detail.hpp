@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <fstream>
 #include <functional>
 #include <memory>
 #include <string>
@@ -79,6 +80,17 @@ class InstallButton : public brls::Button {
 // ---------------------------------------------------------------------------
 // Full-screen game page (eShop-style detail + one-tap install)
 // ---------------------------------------------------------------------------
+
+inline bool copyMetainfoFile(const std::string& src, const std::string& dst) {
+    std::ifstream in(src, std::ios::binary);
+    if (!in.is_open())
+        return false;
+    std::ofstream out(dst, std::ios::binary);
+    if (!out.is_open())
+        return false;
+    out << in.rdbuf();
+    return out.good();
+}
 
 class GameDetailActivity : public brls::Activity {
 public:
@@ -272,7 +284,7 @@ private:
         secondary_->setFontSize(theme::kFontSmall);
         secondary_->setGrow(1);
         secondary_->setHeight(56);
-        secondary_->setText(tr("pipensx/common/choose_files"));
+        secondary_->setText(tr("pipensx/torrent/frame_title"));
         secondary_->registerClickAction([this](brls::View*) {
             onSecondary();
             return true;
@@ -786,8 +798,10 @@ private:
                 primary_->setProgress(progressForButton(*task));
             }
             primary_->setState(brls::ButtonState::ENABLED);
-            setTextIfChanged(secondary_, tr("pipensx/detail/view_download"));
-            secondary_->setState(brls::ButtonState::ENABLED);
+            setTextIfChanged(secondary_, tr("pipensx/torrent/frame_title"));
+            secondary_->setState((deploying || task->status == DownloadStatus::Committing)
+                                     ? brls::ButtonState::DISABLED
+                                     : brls::ButtonState::ENABLED);
             if (installContract_)
                 installContract_->setVisibility(brls::Visibility::GONE);
             // B6: an install/update failure used to leave only the raw
@@ -805,7 +819,7 @@ private:
             setTextIfChanged(primary_, tr("pipensx/common/install"));
             primary_->setProgress(-1.0f);
             primary_->setState(brls::ButtonState::ENABLED);
-            setTextIfChanged(secondary_, tr("pipensx/detail/install_options"));
+            setTextIfChanged(secondary_, tr("pipensx/torrent/frame_title"));
             secondary_->setState(brls::ButtonState::ENABLED);
             if (installContract_)
                 installContract_->setVisibility(brls::Visibility::VISIBLE);
@@ -870,12 +884,13 @@ private:
         if (busy_)
             return;
         const DownloadTask* task = currentTask();
-        if (task) {
-            brls::Application::pushActivity(
-                new DetailsActivity(task->id, manager_, deploy_));
+        const SwitchDeploySnapshot deployState =
+            deploy_ ? deploy_->snapshot() : SwitchDeploySnapshot{};
+        const bool deploying = task && deployState.active() &&
+                               deployState.taskId == task->id;
+        if (task && (deploying || task->status == DownloadStatus::Committing))
             return;
-        }
-        // Install options: always open the per-file picker after resolve.
+        // Select files: always open the per-file picker after resolve.
         startInstall(true);
     }
 
@@ -888,6 +903,18 @@ private:
         if (debridModeActive(settings_)) {
             startDebridInstall(TransferMode::StreamInstall, forcePicker);
             return;
+        }
+        const DownloadTask* existing = currentTask();
+        if (existing && !existing->metainfoPath.empty() &&
+            ::access(existing->metainfoPath.c_str(), R_OK) == 0) {
+            uint32_t serial = gCatalogTempSerial.fetch_add(1);
+            std::string tmp = manager_->rootPath() + "/_catalog_tmp_" +
+                              catalogLower(entry_.infoHash) + "_" +
+                              std::to_string(serial) + ".torrent";
+            if (copyMetainfoFile(existing->metainfoPath, tmp)) {
+                finishImport(tmp, forcePicker, {});
+                return;
+            }
         }
         setBusy(true);
         operationMessage_.clear();

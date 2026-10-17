@@ -930,6 +930,77 @@ int main() {
         removeAll(debridMergeRoot);
     }
 
+    // Issue #102: an already-installed / completed game allows selecting
+    // optional extras (rusifikator, mod, etc.) without deleting the task.
+    // The completed task transitions back to Queued with the merged selection.
+    {
+        const std::string completedRoot =
+            std::string(root) + "/merge-completed-app";
+        {
+            DownloadManager createDirs(completedRoot, false);
+        }
+        std::string source =
+            makeMergeTorrent(root, "game.nsp", "russian_mod.bin");
+        pipensx::TorrentPreview preview;
+        assert(DownloadManager::previewTorrent(source, preview, error));
+        std::string metainfoPath =
+            completedRoot + "/torrents/" + preview.infoHash + ".torrent";
+        std::string dataPath = completedRoot + "/downloads/game-mod-" +
+                               preview.infoHash.substr(0, 8);
+        copyFile(source, metainfoPath);
+
+        std::string selection("\x02\x00", 2);
+        std::string queue = "d5:tasksl";
+        queue += "d";
+        queue += "4:data" + bstr(dataPath);
+        queue += "5:error" + bstr("");
+        queue += "2:id" + bstr(preview.infoHash);
+        queue += "8:metainfo" + bstr(metainfoPath);
+        queue += "4:mode" + bstr("install");
+        queue += "4:name" + bstr(preview.name);
+        queue += "13:package-counti1e";
+        queue += "13:packages-donei1e";
+        queue += "9:selection" + bstr(selection);
+        queue += "6:status" + bstr("completed");
+        queue += "5:totali16e";
+        queue += "e";
+        queue += "e7:versioni8ee";
+        std::ofstream output(completedRoot + "/queue.bencode",
+                             std::ios::binary | std::ios::trunc);
+        output << queue;
+        output.close();
+
+        DownloadManager manager(completedRoot, false);
+        auto snap = manager.snapshot(preview.infoHash);
+        assert(snap.has_value());
+        assert(snap->status == DownloadStatus::Completed);
+        assert(snap->fileSelection.size() == 2);
+        assert(snap->fileSelection[0] == static_cast<uint8_t>(FileAction::Install));
+        assert(snap->fileSelection[1] == static_cast<uint8_t>(FileAction::Skip));
+        assert(!snap->metainfoPath.empty());
+        assert(access(snap->metainfoPath.c_str(), R_OK) == 0);
+
+        // User opens "Select files" on completed game: previous selection is seeded.
+        // User changes russian_mod from Skip to Download:
+        std::vector<uint8_t> addedMod{
+            static_cast<uint8_t>(FileAction::Install),
+            static_cast<uint8_t>(FileAction::Download),
+        };
+        std::string mergedId;
+        assert(manager.importTorrentActions(source, addedMod, mergedId, error));
+        assert(mergedId == preview.infoHash);
+
+        auto updated = manager.snapshot(preview.infoHash);
+        assert(updated.has_value());
+        assert(updated->status == DownloadStatus::Queued);
+        assert(updated->fileSelection.size() == 2);
+        assert(updated->fileSelection[0] == static_cast<uint8_t>(FileAction::Install));
+        assert(updated->fileSelection[1] == static_cast<uint8_t>(FileAction::Download));
+
+        assert(manager.remove(preview.infoHash, true, error));
+        removeAll(completedRoot);
+    }
+
     {
         DownloadManager manager(activeRoot, true);
         manager.setTorrentingEnabled(true);  // torrenting is off by default

@@ -16,6 +16,7 @@
 #include "app/install_space.hpp"
 #include "app/nx_file_types.hpp"
 #include "app/port_selection.hpp"
+#include "ui/catalog/catalog_helpers.hpp"
 #include "ui/common/action_icon.hpp"
 #include "ui/common/storage_meter.hpp"
 #include "ui/common/ui_helpers.hpp"
@@ -782,6 +783,17 @@ public:
             torrentPortLayoutDetected(preview_))
             portDefaults = selectPortInstallActions(preview_);
 
+        std::vector<uint8_t> existingSelection;
+        if (manager_) {
+            const std::string hash = catalogLower(preview_.infoHash.empty()
+                ? debridImport_.infoHash : preview_.infoHash);
+            if (!hash.empty()) {
+                auto snap = manager_->snapshot(hash);
+                if (snap && snap->fileSelection.size() == preview_.files.size())
+                    existingSelection = snap->fileSelection;
+            }
+        }
+
         std::vector<TorrentSelectionEntry> entries;
         entries.reserve(preview_.files.size());
         for (size_t i = 0; i < preview_.files.size(); ++i) {
@@ -792,7 +804,9 @@ public:
             entry.package = file.package;
             entry.compressed = file.compressed;
             entry.cartridge = file.cartridge;
-            if (!portDefaults.empty()) {
+            if (!existingSelection.empty()) {
+                entry.action = static_cast<FileAction>(existingSelection[i]);
+            } else if (!portDefaults.empty()) {
                 entry.action = static_cast<FileAction>(portDefaults[i]);
             } else if (preferred_ == TransferMode::StreamInstall &&
                        file.package) {
@@ -1183,7 +1197,13 @@ public:
             imported = manager_->importDebrid(import, id, error);
         }
         if (!imported) {
-            brls::Application::notify(error);
+            if (catalogLower(error).find("already in the download manager") !=
+                std::string::npos) {
+                brls::Application::notify(
+                    tr("pipensx/detail/already_in_downloads"));
+            } else {
+                brls::Application::notify(error);
+            }
             return;
         }
         if (!path_.empty())
