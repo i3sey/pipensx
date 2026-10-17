@@ -565,6 +565,25 @@ bool CatalogService::parseJson(const std::string& json,
         // the free-text fields above; missing v2 keys stay empty/zero and
         // the detail card falls back.
         entry.packageType = readString(item, "package_type", 16);
+        if (entry.packageType.empty() || entry.packageType == "nro") {
+            std::string titleLower = entry.title;
+            std::transform(titleLower.begin(), titleLower.end(),
+                           titleLower.begin(), [](unsigned char c) {
+                               return static_cast<char>(std::tolower(c));
+                           });
+            if (titleLower.find("[nro") == std::string::npos &&
+                titleLower.find(".nro") == std::string::npos) {
+                if (titleLower.find("[nsz") != std::string::npos ||
+                    titleLower.find(".nsz") != std::string::npos)
+                    entry.packageType = "nsz";
+                else if (titleLower.find("[nsp") != std::string::npos ||
+                         titleLower.find(".nsp") != std::string::npos)
+                    entry.packageType = "nsp";
+                else if (titleLower.find("[xci") != std::string::npos ||
+                         titleLower.find(".xci") != std::string::npos)
+                    entry.packageType = "xci";
+            }
+        }
         entry.version = readString(item, "version", 32);
         if (entry.version.empty())
             entry.version = readString(item, "version_name", 32);

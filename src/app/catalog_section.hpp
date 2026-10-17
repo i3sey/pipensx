@@ -5,8 +5,23 @@
 
 namespace pipensx {
 inline bool isPortTitle(const std::string& titleLower) {
+    if (titleLower.find("mig switch") != std::string::npos ||
+        titleLower.find("migswitch") != std::string::npos) return true;
+    if (titleLower.find("[mp4") != std::string::npos ||
+        titleLower.find(".mp4") != std::string::npos) return true;
+    if (titleLower.find("эмулятор") != std::string::npos ||
+        titleLower.find("emulator") != std::string::npos) return true;
+    if (titleLower.find("инструкция") != std::string::npos) return true;
+
     if (titleLower.find("[nro") != std::string::npos ||
         titleLower.find(".nro") != std::string::npos) return true;
+
+    // Full game repacks in installable format (NSP/NSZ/XCI) belong under Games
+    // (e.g. GTA V repack in NSZ, even if labeled as an unofficial port).
+    if (titleLower.find("[repack") != std::string::npos ||
+        titleLower.find("репак") != std::string::npos ||
+        titleLower.find("repack") != std::string::npos) return false;
+
     if (titleLower.find("хоумбрю") != std::string::npos ||
         titleLower.find("homebrew") != std::string::npos) return true;
     if (titleLower.find("(порт") != std::string::npos ||

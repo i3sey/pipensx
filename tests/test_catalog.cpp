@@ -1432,6 +1432,37 @@ void testCatalogGameFilterKeepsUnmatchedSwitchReleases() {
     nspCustomPort.title = "Grand Theft Auto III (GTA 3, неофициальный нативный порт re3-nx) [NSP][RUS/Multi9]";
     nspCustomPort.titleId = "0100C3C012718000";
     assert(catalogEntryIsPort(nspCustomPort, nullptr));
+
+    CatalogEntry gtaVRepack;
+    gtaVRepack.title = "[Nintendo Switch] Grand Theft Auto V ( порт GTA 5, репак ) [RePack][NSZ][RUS/Multi12]";
+    gtaVRepack.titleId = "0100B00B51230000";
+    gtaVRepack.packageType = "nsz";
+    assert(catalogEntryIsGame(gtaVRepack, nullptr));
+    assert(!catalogEntryIsPort(gtaVRepack, nullptr));
+
+    CatalogEntry gtaVRepackNoId;
+    gtaVRepackNoId.title = "[Nintendo Switch] Grand Theft Auto V ( порт GTA 5, репак ) [RePack][NSZ][RUS/Multi12]";
+    gtaVRepackNoId.packageType = "nsz";
+    assert(catalogEntryIsGame(gtaVRepackNoId, nullptr));
+    assert(!catalogEntryIsPort(gtaVRepackNoId, nullptr));
+
+    CatalogEntry videoRelease;
+    videoRelease.title = "[Nintendo Switch] Нативный просмотр любых видео на Switch 1 и + сборник мультфильмов [MP4][RUS]";
+    videoRelease.titleId = "01000320000CC000";
+    assert(catalogEntryIsPort(videoRelease, nullptr));
+    assert(!catalogEntryIsGame(videoRelease, nullptr));
+
+    CatalogEntry migSwitch1;
+    migSwitch1.title = "[Nintendo Switch] MIG Switch Game Collection Vol 1: сборник №1 из 1125 игр для флеш - картрид жа MIG Switch [XCI+BIN][RUS/Multi]";
+    migSwitch1.packageType = "xci";
+    assert(catalogEntryIsPort(migSwitch1, nullptr));
+    assert(!catalogEntryIsGame(migSwitch1, nullptr));
+
+    CatalogEntry migSwitch2;
+    migSwitch2.title = "[Nintendo Switch] MIG Switch Game Collection Vol 2: сборник №2 из 250 игр для флеш - картрид жа MIG Switch [XCI+BIN][RUS/Multi]";
+    migSwitch2.packageType = "xci";
+    assert(catalogEntryIsPort(migSwitch2, nullptr));
+    assert(!catalogEntryIsGame(migSwitch2, nullptr));
 }
 
 void testCatalogBrowseMatchFilterRequiresTitleIdMetadata() {
@@ -2511,6 +2542,23 @@ void testCatalogV2FieldsParsing() {
            "https://rutracker.org/forum/viewtopic.php?t=6892780");
 }
 
+void testCatalogPackageTypeTitleCorrection() {
+    const char* json =
+        "[{"
+        "\"title\":\"[Nintendo Switch] Grand Theft Auto V ( порт GTA 5, репак ) [RePack][NSZ][RUS/Multi12]\","
+        "\"magnet\":\"magnet:?xt=urn:btih:"
+        "8B8016FD97F08E2CC46E3B104B72EC758173C3C9&tr="
+        "http%3A%2F%2Fbt.t-ru.org%2Fann%3Fmagnet\","
+        "\"cover\":\"https://example.invalid/cover.png\","
+        "\"size_bytes\":123,\"package_type\":\"nro\""
+        "}]";
+    std::vector<CatalogEntry> entries;
+    std::string error;
+    assert(CatalogService::parseJson(json, entries, error));
+    assert(entries.size() == 1);
+    assert(entries[0].packageType == "nsz");
+}
+
 // Older dumps may encode unix times as decimal strings; they still parse.
 void testCatalogDateStringTolerance() {
     const char* json =
@@ -3029,6 +3077,7 @@ int main() {
     testCatalogBodyVerification();
     testCatalogSizeBytesPriority();
     testCatalogV2FieldsParsing();
+    testCatalogPackageTypeTitleCorrection();
     testCatalogDateStringTolerance();
     testCatalogV2PresentationResolution();
     testCatalogParsing();
