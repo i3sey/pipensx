@@ -642,22 +642,54 @@ bool UpdateService::prepareStagedFiles(const std::string& expectedChecksum,
 }
 
 bool UpdateService::stagedReady() const {
-    const std::string temporary = stagedPath();
-    std::ifstream markerFile(temporary + ".sha256", std::ios::binary);
-    std::ostringstream markerText;
-    markerText << markerFile.rdbuf();
-    std::string expectedChecksum;
-    if (!markerFile || !parseChecksum(markerText.str(), expectedChecksum))
-        return false;
-    std::string actualChecksum;
-    std::string error;
-    return checksumFile(temporary, actualChecksum, error) &&
-           actualChecksum == expectedChecksum;
+    auto checkStaged = [](const std::string& temporary) -> bool {
+        std::ifstream markerFile(temporary + ".sha256", std::ios::binary);
+        std::ostringstream markerText;
+        markerText << markerFile.rdbuf();
+        std::string expectedChecksum;
+        if (!markerFile || !parseChecksum(markerText.str(), expectedChecksum))
+            return false;
+        std::string actualChecksum;
+        std::string error;
+        return checksumFile(temporary, actualChecksum, error) &&
+               actualChecksum == expectedChecksum;
+    };
+
+    if (checkStaged(stagedPath()))
+        return true;
+
+    // Check alternate path in case update was staged under root / switch folder
+    const std::string altTarget =
+        (targetPath_ == "sdmc:/switch/pipensx/pipensx.nro")
+            ? "sdmc:/switch/pipensx.nro"
+            : (targetPath_ == "sdmc:/switch/pipensx.nro"
+                   ? "sdmc:/switch/pipensx/pipensx.nro"
+                   : "");
+    if (!altTarget.empty() && checkStaged(altTarget + ".update"))
+        return true;
+
+    return false;
 }
 
 bool UpdateService::hasPendingConfirmation() const {
-    return access(backupPath().c_str(), F_OK) == 0 &&
-           access(stagedPath().c_str(), F_OK) != 0;
+    if (access(backupPath().c_str(), F_OK) == 0 &&
+        access(stagedPath().c_str(), F_OK) != 0)
+        return true;
+
+    const std::string altTarget =
+        (targetPath_ == "sdmc:/switch/pipensx/pipensx.nro")
+            ? "sdmc:/switch/pipensx.nro"
+            : (targetPath_ == "sdmc:/switch/pipensx.nro"
+                   ? "sdmc:/switch/pipensx/pipensx.nro"
+                   : "");
+    if (!altTarget.empty()) {
+        const std::string altBackup = altTarget + ".previous";
+        const std::string altStaged = altTarget + ".update";
+        if (access(altBackup.c_str(), F_OK) == 0 &&
+            access(altStaged.c_str(), F_OK) != 0)
+            return true;
+    }
+    return false;
 }
 
 bool UpdateService::confirmInstalled(std::string& error) const {
@@ -673,6 +705,28 @@ bool UpdateService::confirmInstalled(std::string& error) const {
         return false;
     }
     unlink(helperPath_.c_str());
+
+    // Clean up alternate path artifacts if present
+    const std::string altTarget =
+        (targetPath_ == "sdmc:/switch/pipensx/pipensx.nro")
+            ? "sdmc:/switch/pipensx.nro"
+            : (targetPath_ == "sdmc:/switch/pipensx.nro"
+                   ? "sdmc:/switch/pipensx/pipensx.nro"
+                   : "");
+    if (!altTarget.empty()) {
+        const std::string altStaged = altTarget + ".update";
+        const std::string altMarker = altStaged + ".sha256";
+        const std::string altBackup = altTarget + ".previous";
+        update_paths_t altPaths{altTarget.c_str(), altStaged.c_str(),
+                                altMarker.c_str(), altBackup.c_str()};
+        update_transaction_confirm(&altPaths, nullptr, 0);
+        const size_t slash = altTarget.find_last_of('/');
+        const std::string altHelper =
+            altTarget.substr(0, slash == std::string::npos ? 0 : slash + 1) +
+            "pipensx-updater.nro";
+        unlink(altHelper.c_str());
+    }
+
 #ifdef __SWITCH__
     const Result commit = fsdevCommitDevice("sdmc");
     if (R_FAILED(commit)) {
@@ -689,6 +743,23 @@ void UpdateService::discardStaged() const {
     unlink((temporary + ".sha256").c_str());
     unlink((helperPath() + ".tmp").c_str());
     unlink(helperPath().c_str());
+
+    const std::string altTarget =
+        (targetPath_ == "sdmc:/switch/pipensx/pipensx.nro")
+            ? "sdmc:/switch/pipensx.nro"
+            : (targetPath_ == "sdmc:/switch/pipensx.nro"
+                   ? "sdmc:/switch/pipensx/pipensx.nro"
+                   : "");
+    if (!altTarget.empty()) {
+        unlink((altTarget + ".update").c_str());
+        unlink((altTarget + ".update.sha256").c_str());
+        const size_t slash = altTarget.find_last_of('/');
+        const std::string altHelper =
+            altTarget.substr(0, slash == std::string::npos ? 0 : slash + 1) +
+            "pipensx-updater.nro";
+        unlink((altHelper + ".tmp").c_str());
+        unlink(altHelper.c_str());
+    }
 }
 
 void UpdateService::checkAsync(CheckCallback callback) {

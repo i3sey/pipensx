@@ -429,9 +429,26 @@ void testHelperPublishFailurePreservesPreviousHelper() {
     unlink(HelperSource);
 }
 
+void testCustomTargetPath() {
+    const std::string rootTarget = "sdmc:/switch/pipensx.nro";
+    pipensx::UpdateService rootService(rootTarget);
+    assert(rootService.targetPath() == "sdmc:/switch/pipensx.nro");
+    assert(rootService.stagedPath() == "sdmc:/switch/pipensx.nro.update");
+    assert(rootService.backupPath() == "sdmc:/switch/pipensx.nro.previous");
+    assert(rootService.helperPath() == "sdmc:/switch/pipensx-updater.nro");
+
+    const std::string subTarget = "sdmc:/switch/pipensx/pipensx.nro";
+    pipensx::UpdateService subService(subTarget);
+    assert(subService.targetPath() == "sdmc:/switch/pipensx/pipensx.nro");
+    assert(subService.stagedPath() == "sdmc:/switch/pipensx/pipensx.nro.update");
+    assert(subService.backupPath() == "sdmc:/switch/pipensx/pipensx.nro.previous");
+    assert(subService.helperPath() == "sdmc:/switch/pipensx/pipensx-updater.nro");
+}
+
 } // namespace
 
 int main() {
+    testCustomTargetPath();
     testVersionsAndReleaseValidation();
     testUploadedNroStagesWithoutGithub();
     testStagedReadyRecoversInterruptedRestart();

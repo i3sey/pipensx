@@ -14,6 +14,12 @@ typedef struct nro_relocation_paths {
     const char *backup;
 } nro_relocation_paths_t;
 
+/* Returns the canonical sdmc: path for the launched NRO.
+ * Falls back to "sdmc:/switch/pipensx/pipensx.nro" if launch_path is NULL,
+ * empty, or does not end in a .nro extension. */
+bool nro_canonical_path(const char *launch_path, char *canonical,
+                        size_t canonical_size);
+
 /* Returns the sdmc: path when argv[0] names an NRO directly under /switch. */
 bool nro_relocation_source(const char *launch_path, char *source,
                            size_t source_size);

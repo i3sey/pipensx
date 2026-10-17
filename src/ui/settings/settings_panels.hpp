@@ -499,6 +499,19 @@ public:
         content_->addView(showHomeTab_);
         addNote(content_, tr("pipensx/settings/show_home_note"));
 
+        addSection(content_, tr("pipensx/settings/section_launch"));
+        checkForUpdates_ = new brls::BooleanCell();
+        checkForUpdates_->init(tr("pipensx/settings/check_updates"),
+            settings_->get().checkForUpdatesOnLaunch,
+            [this](bool enabled) {
+                AppSettingsData values = settings_->get();
+                bool previous = values.checkForUpdatesOnLaunch;
+                values.checkForUpdatesOnLaunch = enabled;
+                if (!persistSettings(settings_, values, "update_check"))
+                    checkForUpdates_->setOn(previous, false);
+            });
+        content_->addView(checkForUpdates_);
+
         addSection(content_, tr("pipensx/settings/section_exit"));
         confirmExit_ = new brls::BooleanCell();
         confirmExit_->init(tr("pipensx/settings/confirm_exit"),
@@ -540,6 +553,7 @@ public:
         language_->setSelection(languageIndex(values.language), true);
         theme_->setSelection(static_cast<int>(values.theme), true);
         showHomeTab_->setOn(values.showHomeTab, false);
+        checkForUpdates_->setOn(values.checkForUpdatesOnLaunch, false);
         confirmExit_->setOn(values.confirmExit, false);
         warnActiveDownload_->setOn(values.warnOnActiveDownload, false);
         warnActiveDownload_->setEnabled(values.confirmExit);
@@ -561,6 +575,7 @@ private:
     brls::SelectorCell* language_ = nullptr;
     brls::SelectorCell* theme_ = nullptr;
     brls::BooleanCell* showHomeTab_ = nullptr;
+    brls::BooleanCell* checkForUpdates_ = nullptr;
     brls::BooleanCell* confirmExit_ = nullptr;
     brls::BooleanCell* warnActiveDownload_ = nullptr;
 };
@@ -1899,6 +1914,8 @@ public:
         updateAction_ = actionCell(tr("pipensx/settings/check_update_now"),
             tr("pipensx/settings/check_update_detail", PIPENSX_VERSION),
             [this] { checkForUpdateNow(); });
+        if (updater_ && updater_->checkCompleted())
+            markUpdateChecked();
         content_->addView(updateAction_);
 
         addSection(content_, tr("pipensx/settings/section_diagnostics"));
@@ -1950,13 +1967,46 @@ public:
 
 private:
     void checkForUpdateNow() {
-        if (!updater_)
+        if (!updater_ || updateInFlight_)
             return;
-        if (!updater_->stagedReady()) {
-            brls::Application::notify(
-                tr("pipensx/settings/check_update_detail", PIPENSX_VERSION));
+        if (updater_->stagedReady()) {
+            promptPendingInstall();
             return;
         }
+        updateInFlight_ = true;
+        updateAction_->setDetailText(tr("pipensx/settings/checking"));
+        auto alive = alive_;
+        UpdateService* updater = updater_;
+        updater->checkAsync([this, alive](UpdateCheckResult result) {
+            brls::sync([this, alive, result = std::move(result)]() mutable {
+                if (!alive->load())
+                    return;
+                updateInFlight_ = false;
+                markUpdateChecked();
+                if (!result.ok) {
+                    updateAction_->setDetailText(
+                        tr("pipensx/settings/check_failed"));
+                    diagnostic_error("update", "check", "error=%s",
+                                     result.error.c_str());
+                    brls::Application::notify(result.error);
+                    return;
+                }
+                if (!result.updateAvailable) {
+                    updateAction_->setDetailText(
+                        tr("pipensx/settings/up_to_date"));
+                    brls::Application::notify(
+                        tr("pipensx/settings/up_to_date_notify"));
+                    return;
+                }
+                updateAction_->setDetailText(
+                    tr("pipensx/settings/version_detail",
+                       result.release.version));
+                confirmInstallUpdate(std::move(result.release));
+            });
+        });
+    }
+
+    void promptPendingInstall() {
         auto* dialog = new brls::Dialog(
             tr("pipensx/settings/update_pending_install"));
         dialog->addButton(tr("pipensx/settings/install_and_restart"), [this] {
@@ -1968,7 +2018,7 @@ private:
             }
             const std::string helper = updater_->helperPath();
             const std::string arguments =
-                "\"" + helper + "\" --finish-update";
+                "\"" + helper + "\" --finish-update \"" + updater_->targetPath() + "\"";
             const Result result = envSetNextLoad(helper.c_str(),
                                                  arguments.c_str());
             if (R_FAILED(result)) {
@@ -1983,6 +2033,88 @@ private:
         });
         dialog->addButton(tr("pipensx/common/later"), [] {});
         dialog->open();
+    }
+
+    void confirmInstallUpdate(ReleaseInfo release) {
+        auto* dialog = new brls::Dialog(
+            tr("pipensx/settings/update_available", release.version));
+        dialog->addButton(tr("pipensx/settings/install_and_restart"),
+                          [this, release = std::move(release)] {
+            installUpdate(release);
+        });
+        dialog->addButton(tr("pipensx/common/later"), [] {});
+        dialog->open();
+    }
+
+    void markUpdateChecked() {
+        updateAction_->setTextColor(theme::accent());
+        updateAction_->setDetailTextColor(theme::accent());
+    }
+
+    void installUpdate(const ReleaseInfo& release) {
+        if (updateInFlight_ || !updater_)
+            return;
+        updateInFlight_ = true;
+        updateAction_->setDetailText(tr("pipensx/settings/downloading"));
+        auto alive = alive_;
+        UpdateService* updater = updater_;
+        auto lastPercent = std::make_shared<std::atomic<int>>(-1);
+        updater->onInstallProgress(
+            [this, alive, lastPercent](uint64_t received, uint64_t total) {
+                const int percent =
+                    static_cast<int>((received * 100) / total);
+                if (lastPercent->exchange(percent) == percent)
+                    return;
+                brls::sync([this, alive, percent] {
+                    if (!alive->load())
+                        return;
+                    updateAction_->setDetailText(
+                        tr("pipensx/settings/downloading_percent", percent));
+                });
+            });
+        updater->installAsync(release, [this, alive](bool installed,
+                                                       std::string error) {
+            brls::sync([this, alive, installed, error = std::move(error)] {
+                if (!alive->load())
+                    return;
+                updateInFlight_ = false;
+                if (!installed) {
+                    updateAction_->setDetailText(
+                        tr("pipensx/settings/install_failed"));
+                    diagnostic_error("update", "install", "error=%s",
+                                     error.c_str());
+                    brls::Application::notify(error);
+                    return;
+                }
+                updateAction_->setDetailText(
+                    tr("pipensx/settings/restart_required"));
+#ifdef __SWITCH__
+                if (!envHasNextLoad()) {
+                    brls::Application::notify(
+                        tr("pipensx/settings/update_no_restart"));
+                    return;
+                }
+                const std::string helper = updater_->helperPath();
+                const std::string arguments =
+                    "\"" + helper + "\" --finish-update \"" + updater_->targetPath() + "\"";
+                const Result result = envSetNextLoad(helper.c_str(),
+                                                     arguments.c_str());
+                if (R_FAILED(result)) {
+                    diagnostic_error("update", "restart", "result=0x%08x",
+                                     result);
+                    brls::Application::notify(
+                        tr("pipensx/settings/update_restart_failed"));
+                    return;
+                }
+#endif
+                auto* dialog = new brls::Dialog(
+                    tr("pipensx/settings/update_close_body"));
+                dialog->setCancelable(false);
+                dialog->addButton(tr("pipensx/settings/update_close_button"),
+                                  [] { brls::Application::quit(); });
+                dialog->open();
+            });
+        });
     }
 
     void captureSnapshot() {
@@ -2037,6 +2169,7 @@ private:
     std::function<void()> onReset_;
     brls::BooleanCell* extendedTelemetry_ = nullptr;
     brls::DetailCell* updateAction_ = nullptr;
+    bool updateInFlight_ = false;
 };
 
 }  // namespace pipensx::ui

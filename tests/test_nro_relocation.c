@@ -48,6 +48,43 @@ static void test_source_detection(void) {
                                   sizeof(source)));
 }
 
+static void test_canonical_path(void) {
+    char path[128];
+    assert(nro_canonical_path("/switch/pipensx.nro", path, sizeof(path)));
+    assert(strcmp(path, "sdmc:/switch/pipensx.nro") == 0);
+
+    assert(nro_canonical_path("sdmc:/switch/pipensx.nro", path, sizeof(path)));
+    assert(strcmp(path, "sdmc:/switch/pipensx.nro") == 0);
+
+    assert(nro_canonical_path("/switch/pipensx/pipensx.nro", path, sizeof(path)));
+    assert(strcmp(path, "sdmc:/switch/pipensx/pipensx.nro") == 0);
+
+    assert(nro_canonical_path("sdmc:/switch/pipensx/pipensx.nro", path, sizeof(path)));
+    assert(strcmp(path, "sdmc:/switch/pipensx/pipensx.nro") == 0);
+
+    assert(nro_canonical_path("sdmc:switch/pipensx.nro", path, sizeof(path)));
+    assert(strcmp(path, "sdmc:/switch/pipensx.nro") == 0);
+
+    assert(nro_canonical_path("switch/pipensx.nro", path, sizeof(path)));
+    assert(strcmp(path, "sdmc:/switch/pipensx.nro") == 0);
+
+    assert(nro_canonical_path("pipensx.nro", path, sizeof(path)));
+    assert(strcmp(path, "sdmc:/switch/pipensx/pipensx.nro") == 0);
+
+    assert(nro_canonical_path("/switch/custom/App.NRO", path, sizeof(path)));
+    assert(strcmp(path, "sdmc:/switch/custom/App.NRO") == 0);
+
+    /* Invalid / fallback cases */
+    assert(!nro_canonical_path(NULL, path, sizeof(path)));
+    assert(strcmp(path, "sdmc:/switch/pipensx/pipensx.nro") == 0);
+
+    assert(!nro_canonical_path("", path, sizeof(path)));
+    assert(strcmp(path, "sdmc:/switch/pipensx/pipensx.nro") == 0);
+
+    assert(!nro_canonical_path("/switch/pipensx.txt", path, sizeof(path)));
+    assert(strcmp(path, "sdmc:/switch/pipensx/pipensx.nro") == 0);
+}
+
 static void test_replace_and_confirm(void) {
     char source[128], target[128], backup[128];
     snprintf(source, sizeof(source), "%s/source.nro", Root);
@@ -91,6 +128,7 @@ static void test_rollback(void) {
 
 int main(void) {
     test_source_detection();
+    test_canonical_path();
     test_replace_and_confirm();
     test_rollback();
     puts("nro relocation tests passed");

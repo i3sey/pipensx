@@ -7,6 +7,10 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#ifndef FS_MAX_PATH
+#define FS_MAX_PATH 769
+#endif
+
 static void set_error(char *error, size_t size, const char *message) {
     if (error && size)
         snprintf(error, size, "%s", message ? message : "NRO relocation failed");
@@ -23,6 +27,43 @@ static bool has_nro_extension(const char *name) {
            tolower((unsigned char)name[length - 3]) == 'n' &&
            tolower((unsigned char)name[length - 2]) == 'r' &&
            tolower((unsigned char)name[length - 1]) == 'o';
+}
+
+bool nro_canonical_path(const char *launch_path, char *canonical,
+                        size_t canonical_size) {
+    static const char DefaultPath[] = "sdmc:/switch/pipensx/pipensx.nro";
+    if (!canonical || canonical_size == 0)
+        return false;
+
+    if (!launch_path || launch_path[0] == '\0') {
+        snprintf(canonical, canonical_size, "%s", DefaultPath);
+        return false;
+    }
+
+    char temp[FS_MAX_PATH];
+    if (strncmp(launch_path, "sdmc:/", 6) == 0) {
+        snprintf(temp, sizeof(temp), "%s", launch_path);
+    } else if (strncmp(launch_path, "sdmc:", 5) == 0) {
+        snprintf(temp, sizeof(temp), "sdmc:/%s", launch_path + 5);
+    } else if (launch_path[0] == '/') {
+        snprintf(temp, sizeof(temp), "sdmc:%s", launch_path);
+    } else if (strncmp(launch_path, "switch/", 7) == 0) {
+        snprintf(temp, sizeof(temp), "sdmc:/%s", launch_path);
+    } else {
+        snprintf(temp, sizeof(temp), "sdmc:/switch/pipensx/%s", launch_path);
+    }
+
+    if (!has_nro_extension(temp)) {
+        snprintf(canonical, canonical_size, "%s", DefaultPath);
+        return false;
+    }
+
+    if (snprintf(canonical, canonical_size, "%s", temp) >= (int)canonical_size) {
+        snprintf(canonical, canonical_size, "%s", DefaultPath);
+        return false;
+    }
+
+    return true;
 }
 
 bool nro_relocation_source(const char *launch_path, char *source,

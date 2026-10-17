@@ -458,6 +458,10 @@ int main(int argc, char** argv) {
     log_init(LogPath);
     pipensx_log_socket_config();
 
+    char activeNroPath[FS_MAX_PATH] = {0};
+    nro_canonical_path(argc > 0 ? argv[0] : nullptr, activeNroPath,
+                       sizeof(activeNroPath));
+
     char launchSource[FS_MAX_PATH] = {0};
     if (argc > 0 &&
         nro_relocation_source(argv[0], launchSource, sizeof(launchSource))) {
@@ -543,7 +547,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    UpdateService launchUpdater;
+    UpdateService launchUpdater(activeNroPath);
     const bool updatePendingConfirmation =
         launchUpdater.hasPendingConfirmation();
     // A verified download staged by a previous session that quit before the
@@ -744,7 +748,7 @@ int main(int argc, char** argv) {
                 ? GameMetadataService::ImageNetwork::Throttled
                 : GameMetadataService::ImageNetwork::Full);
 
-        UpdateService updater;
+        UpdateService updater(activeNroPath);
         std::atomic<uint64_t> remoteUpdateQuitAtMs{0};
 
         startupStage("WebServer construction");
@@ -828,7 +832,8 @@ int main(int argc, char** argv) {
                         }
                         const std::string helper = updater.helperPath();
                         const std::string arguments =
-                            "\"" + helper + "\" --finish-update";
+                            "\"" + helper + "\" --finish-update \"" +
+                            updater.targetPath() + "\"";
                         const Result result = envSetNextLoad(helper.c_str(),
                                                              arguments.c_str());
                         if (R_FAILED(result)) {
@@ -979,10 +984,11 @@ int main(int argc, char** argv) {
             // a helper that fails to load can never become an automatic loop.
             startupStage("pending update prompt");
             const std::string helper = launchUpdater.helperPath();
+            const std::string targetPath = launchUpdater.targetPath();
             auto* dialog = new brls::Dialog(
                 tr("pipensx/settings/update_pending_install"));
             dialog->addButton(tr("pipensx/settings/install_and_restart"),
-                              [helper] {
+                              [helper, targetPath] {
 #ifdef __SWITCH__
                 if (!envHasNextLoad()) {
                     brls::Application::notify(
@@ -990,7 +996,7 @@ int main(int argc, char** argv) {
                     return;
                 }
                 const std::string arguments =
-                    "\"" + helper + "\" --finish-update";
+                    "\"" + helper + "\" --finish-update \"" + targetPath + "\"";
                 const Result result = envSetNextLoad(helper.c_str(),
                                                      arguments.c_str());
                 if (R_FAILED(result)) {
@@ -1027,6 +1033,17 @@ int main(int argc, char** argv) {
         } else {
             startupStage("catalog disclaimer");
             pipensx::ui::showCatalogDisclaimer(&settings, [] {});
+        }
+
+        if (!updatePendingFinish && settings.get().checkForUpdatesOnLaunch) {
+            updater.checkAsync([](pipensx::UpdateCheckResult result) {
+                if (!result.ok || !result.updateAvailable)
+                    return;
+                brls::sync([version = std::move(result.release.version)] {
+                    brls::Application::notify(
+                        tr("pipensx/settings/update_available_launch", version));
+                });
+            });
         }
 
         startupStage("first main loop");
