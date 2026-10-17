@@ -344,6 +344,8 @@ private:
                     return l.peerCount > r.peerCount;
                 if (l.publishedAt != r.publishedAt)
                     return l.publishedAt > r.publishedAt;
+                if (l.topicId != r.topicId)
+                    return l.topicId > r.topicId;
                 if (popular && !hasPeers && l.size != r.size)
                     return l.size > r.size;
                 return left < right;

@@ -1413,6 +1413,25 @@ void testCatalogGameFilterKeepsUnmatchedSwitchReleases() {
     CatalogEntry linuxImage;
     linuxImage.title = "Lakka Linux L4T with Dolphin [ENG,RUS]";
     assert(catalogEntryIsPort(linuxImage, nullptr));
+
+    CatalogEntry nroPort;
+    nroPort.title = "[Nintendo Switch] Flatout 2 (хоумбрю) [NRO][ENG]";
+    assert(catalogEntryIsPort(nroPort, nullptr));
+
+    CatalogEntry codPort;
+    codPort.title = "[Nintendo Switch] Call of Duty 4 Modern Warfare (порт CoD4:MW) [NRO][RUS/ENG]";
+    assert(catalogEntryIsPort(codPort, nullptr));
+
+    CatalogEntry forwarderPort;
+    forwarderPort.title = "Halo Combat Evolved (порт OpenCE) [NRO][ENG,RUS (Voice.)]";
+    forwarderPort.titleId = "03DB18006BE28000";
+    forwarderPort.packageType = "nro";
+    assert(catalogEntryIsPort(forwarderPort, nullptr));
+
+    CatalogEntry nspCustomPort;
+    nspCustomPort.title = "Grand Theft Auto III (GTA 3, неофициальный нативный порт re3-nx) [NSP][RUS/Multi9]";
+    nspCustomPort.titleId = "0100C3C012718000";
+    assert(catalogEntryIsPort(nspCustomPort, nullptr));
 }
 
 void testCatalogBrowseMatchFilterRequiresTitleIdMetadata() {
@@ -2900,6 +2919,32 @@ void testCatalogBrowseSortsAndStructure() {
     CatalogBrowseResult sorted = browse(request);
     assert(sorted.rowByInfoHash.at("aaaaaaaa") == 0);
     assert(sorted.rowByInfoHash.at("dddddddd") == 1);
+
+    // Latest sort tie-break by topicId when publishedAt is equal
+    auto tieCatalog = std::make_shared<std::vector<CatalogEntry>>();
+    CatalogEntry olderTopic;
+    olderTopic.infoHash = "11111111";
+    olderTopic.title = "[NSP] Older Topic";
+    olderTopic.titleId = "0100000000000001";
+    olderTopic.publishedAt = 500;
+    olderTopic.topicId = 1000;
+    CatalogEntry newerTopic;
+    newerTopic.infoHash = "22222222";
+    newerTopic.title = "[NSP] Newer Topic";
+    newerTopic.titleId = "0100000000000002";
+    newerTopic.publishedAt = 500;
+    newerTopic.topicId = 2000;
+    // Insert older first in catalogue array
+    tieCatalog->push_back(olderTopic);
+    tieCatalog->push_back(newerTopic);
+    request.catalog = tieCatalog;
+    request.previous = nullptr;
+    request.sort = CatalogSortMode::Latest;
+    request.sortReversed = false;
+    CatalogBrowseResult tieResult = browse(request);
+    assert(tieResult.structureHashes.size() == 2);
+    assert(tieResult.structureHashes[0] == "22222222"); // Newer topicId first
+    assert(tieResult.structureHashes[1] == "11111111");
 }
 
 void testCatalogBrowseCancellationAndQueue() {

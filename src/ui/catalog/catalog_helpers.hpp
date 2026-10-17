@@ -239,7 +239,11 @@ inline std::vector<int> catalogPopularityOrder(
                 const auto& r = entry(right);
                 if (l.peerCount != r.peerCount)
                     return l.peerCount > r.peerCount;
-                return l.publishedAt > r.publishedAt;
+                if (l.publishedAt != r.publishedAt)
+                    return l.publishedAt > r.publishedAt;
+                if (l.topicId != r.topicId)
+                    return l.topicId > r.topicId;
+                return false;
             });
         return order;
     }
@@ -247,7 +251,13 @@ inline std::vector<int> catalogPopularityOrder(
     std::vector<int> ranked = order;
     std::stable_sort(ranked.begin(), ranked.end(),
         [&](int left, int right) {
-            return entry(left).publishedAt > entry(right).publishedAt;
+            const auto& l = entry(left);
+            const auto& r = entry(right);
+            if (l.publishedAt != r.publishedAt)
+                return l.publishedAt > r.publishedAt;
+            if (l.topicId != r.topicId)
+                return l.topicId > r.topicId;
+            return false;
         });
     for (size_t pos = 0; pos < ranked.size(); ++pos)
         score[static_cast<size_t>(ranked[pos])] += pos;
@@ -263,7 +273,13 @@ inline std::vector<int> catalogPopularityOrder(
                 score[static_cast<size_t>(right)])
                 return score[static_cast<size_t>(left)] <
                        score[static_cast<size_t>(right)];
-            return entry(left).publishedAt > entry(right).publishedAt;
+            const auto& l = entry(left);
+            const auto& r = entry(right);
+            if (l.publishedAt != r.publishedAt)
+                return l.publishedAt > r.publishedAt;
+            if (l.topicId != r.topicId)
+                return l.topicId > r.topicId;
+            return false;
         });
     return order;
 }

@@ -657,7 +657,11 @@ bool CatalogService::parseJson(const std::string& json,
     }
     std::stable_sort(entries.begin(), entries.end(),
                      [](const CatalogEntry& left, const CatalogEntry& right) {
-                         return left.publishedAt > right.publishedAt;
+                         if (left.publishedAt != right.publishedAt)
+                             return left.publishedAt > right.publishedAt;
+                         if (left.topicId != right.topicId)
+                             return left.topicId > right.topicId;
+                         return false;
                      });
     if (failIfCancelled(cancelled, error)) {
         entries.clear();

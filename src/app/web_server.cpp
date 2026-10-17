@@ -988,7 +988,7 @@ HttpResponse WebServer::handleCatalog(const HttpRequest& req) {
                 if (found != metadata->byInfoHash.end() && found->second < metadata->items.size())
                     metadataId = metadata->items[found->second].titleId;
             }
-            j["section"] = catalogTitleIsGame(e.title, e.titleId, metadataId) ? "games" : "ports";
+            j["section"] = catalogTitleIsGame(e.title, e.titleId, metadataId, e.packageType) ? "games" : "ports";
             j["performance"] = e.performance;
             j["multiplayer"] = e.multiplayer;
             j["interfaceLang"] = e.interfaceLang;

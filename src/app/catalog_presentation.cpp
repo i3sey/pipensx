@@ -193,7 +193,8 @@ CatalogPresentation resolveCatalogPresentation(
 bool catalogEntryIsGame(const CatalogEntry& entry,
                         const GameMetadata* metadata) {
     return catalogTitleIsGame(entry.title, entry.titleId,
-                              metadata ? metadata->titleId : std::string());
+                              metadata ? metadata->titleId : std::string(),
+                              entry.packageType);
 }
 
 bool catalogEntryHasMatchedTitle(const GameMetadata* metadata) {
@@ -404,7 +405,13 @@ bool buildCatalogBrowse(const CatalogBrowseRequest& request,
     } else if (request.sort == CatalogSortMode::Latest) {
         if (!stableSortCancelled(result.indices,
                 [&](int a, int b) {
-                    return entryAt(a).publishedAt > entryAt(b).publishedAt;
+                    const CatalogEntry& left = entryAt(a);
+                    const CatalogEntry& right = entryAt(b);
+                    if (left.publishedAt != right.publishedAt)
+                        return left.publishedAt > right.publishedAt;
+                    if (left.topicId != right.topicId)
+                        return left.topicId > right.topicId;
+                    return false;
                 }, cancelled))
             return false;
     } else {
@@ -421,7 +428,11 @@ bool buildCatalogBrowse(const CatalogBrowseRequest& request,
                         const CatalogEntry& right = entryAt(b);
                         if (left.peerCount != right.peerCount)
                             return left.peerCount > right.peerCount;
-                        return left.publishedAt > right.publishedAt;
+                        if (left.publishedAt != right.publishedAt)
+                            return left.publishedAt > right.publishedAt;
+                        if (left.topicId != right.topicId)
+                            return left.topicId > right.topicId;
+                        return false;
                     }, cancelled))
                 return false;
         } else {
@@ -429,7 +440,13 @@ bool buildCatalogBrowse(const CatalogBrowseRequest& request,
             std::unordered_map<int, size_t> score;
             score.reserve(ranked.size());
             if (!stableSortCancelled(ranked, [&](int a, int b) {
-                    return entryAt(a).publishedAt > entryAt(b).publishedAt;
+                    const CatalogEntry& left = entryAt(a);
+                    const CatalogEntry& right = entryAt(b);
+                    if (left.publishedAt != right.publishedAt)
+                        return left.publishedAt > right.publishedAt;
+                    if (left.topicId != right.topicId)
+                        return left.topicId > right.topicId;
+                    return false;
                 }, cancelled))
                 return false;
             for (size_t pos = 0; pos < ranked.size(); ++pos)
@@ -443,7 +460,13 @@ bool buildCatalogBrowse(const CatalogBrowseRequest& request,
             if (!stableSortCancelled(result.indices, [&](int a, int b) {
                     if (score[a] != score[b])
                         return score[a] < score[b];
-                    return entryAt(a).publishedAt > entryAt(b).publishedAt;
+                    const CatalogEntry& left = entryAt(a);
+                    const CatalogEntry& right = entryAt(b);
+                    if (left.publishedAt != right.publishedAt)
+                        return left.publishedAt > right.publishedAt;
+                    if (left.topicId != right.topicId)
+                        return left.topicId > right.topicId;
+                    return false;
                 }, cancelled))
                 return false;
         }
