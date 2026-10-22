@@ -273,7 +273,8 @@ bool taskReadyForSwitchDeploy(const DownloadTask& task) {
         return false;
     return task.mode == TransferMode::DownloadOnly ||
            task.mode == TransferMode::StreamInstall ||
-           task.mode == TransferMode::PortInstall;
+           task.mode == TransferMode::PortInstall ||
+           task.mode == TransferMode::AutoRunInstall;
 }
 
 bool taskHasPortOrArchiveFiles(const std::string& appRoot,

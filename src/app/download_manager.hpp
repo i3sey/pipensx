@@ -68,6 +68,10 @@ enum class TransferMode {
     // Unified port transaction: download every selected file to disk first;
     // SwitchDeployService then deploys NRO payloads and installs packages.
     PortInstall,
+    // Direct deployment to Wine-NX: download files straight into
+    // sdmc:/switch/wine/drive_c/Games/<target_folder>/; SwitchDeployService
+    // creates dxvk.conf, merges user.reg tweaks, and sets up .lnk shortcuts.
+    AutoRunInstall,
 };
 
 enum class FileAction : uint8_t {
@@ -126,6 +130,7 @@ struct DownloadTask {
     uint64_t installRateBaseBytes = 0;
     uint64_t installRateBaseAtMs = 0;
     std::string currentPackage;
+    std::string autorunFolder;
     std::vector<uint8_t> fileSelection;
     /* Compact IPv4 endpoints verified during magnet resolution. Ephemeral:
        queued before tracker/DHT results and intentionally not persisted. */
@@ -285,6 +290,7 @@ struct DebridImport {
     TransferMode mode = TransferMode::DownloadOnly;
     std::vector<uint8_t> fileSelection;
     uint32_t packageCount = 0;         // selected packages (0 if mode DownloadOnly)
+    std::string autorunFolder;
 };
 
 // Completed and Installed are the only statuses a bulk clear may remove.
@@ -374,15 +380,20 @@ public:
     bool importTorrent(const std::string& path, TransferMode mode,
                        const std::vector<uint8_t>& selectedFiles,
                        std::string& taskId, std::string& error,
-                       const std::vector<uint8_t>& initialPeers = {});
+                       const std::vector<uint8_t>& initialPeers = {},
+                       const std::string& autorunFolder = {});
     bool importTorrentActions(const std::string& path,
                               const std::vector<uint8_t>& fileActions,
                               std::string& taskId, std::string& error,
-                              const std::vector<uint8_t>& initialPeers = {});
+                              const std::vector<uint8_t>& initialPeers = {},
+                              TransferMode requestedMode = TransferMode::StreamInstall,
+                              const std::string& autorunFolder = {});
     bool importTorrent(const std::string& path, TransferMode mode,
-                       std::string& taskId, std::string& error) {
+                       std::string& taskId, std::string& error,
+                       const std::string& autorunFolder = {}) {
         std::vector<uint8_t> selectedFiles;
-        return importTorrent(path, mode, selectedFiles, taskId, error);
+        return importTorrent(path, mode, selectedFiles, taskId, error, {},
+                             autorunFolder);
     }
     bool importTorrent(const std::string& path, std::string& taskId,
                        std::string& error) {
@@ -397,6 +408,10 @@ public:
     std::string torboxApiKey() const;
     void setTorrentingEnabled(bool enabled);
     bool torrentingEnabled() const;
+    void setAutorunWineRoot(std::string root);
+    const std::string& autorunWineRoot() const;
+    void setAutorunGamesRoot(std::string root);
+    const std::string& autorunGamesRoot() const;
     // Which debrid account the saved source uses when torrenting is off.
     // The keys themselves stay on the setters above.
     void setActiveDebridProvider(DebridProviderKind kind);
@@ -609,6 +624,8 @@ private:
     std::atomic<size_t> installBatchBytes_{4u << 20};
     std::string torrentRoot_;
     std::string downloadRoot_;
+    std::string autorunWineRoot_;
+    std::string autorunGamesRoot_;
     std::string statePath_;
     std::string torboxApiKey_;
     std::string torrserverUrl_;
@@ -664,6 +681,8 @@ private:
 };
 
 const char* statusName(DownloadStatus status);
+TransferMode persistedMode(const std::string& value);
+const char* persistedMode(TransferMode mode);
 
 void updateTaskInstallProgress(DownloadTask& task, uint64_t installedBytes,
                                uint64_t installTotalBytes,

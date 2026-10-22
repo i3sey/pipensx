@@ -96,31 +96,35 @@ AutoRun располагается в `/switch/wine/`:
 
 ---
 
-### Фаза 4: Движок скачивания, AutoRun Runtime Bootstrap и деплой игр в `pipensx` (Switch Core)
+### Фаза 4: Движок скачивания, AutoRun Runtime Bootstrap и деплой игр в `pipensx` (Switch Core) (Завершено ✅)
 
 **Цель:** Обеспечить наличие среды AutoRun на консоли и реализовать прямую потоковую установку игр в файловую систему Wine на microSD без промежуточного дублирования файлов.
 
-1. **AutoRun Runtime Bootstrap (Автоустановка среды при её отсутствии):**
-   - **Pre-flight проверка:** при входе во вкладку PC Games или попытке установить игру проверяется наличие `sdmc:/switch/wine/wine-nx-runtime.nro`.
+1. **AutoRun Runtime Bootstrap (Автоустановка среды при её отсутствии) (`src/app/autorun_service.cpp`):**
+   - **Pre-flight проверка:** реализована проверка наличия рантайма (`sdmc:/switch/wine/wine-nx-runtime.nro`) и чтение установленной версии (`version.json` / `version.txt`).
    - **One-Click инсталлятор среды:**
-     * Если среда не обнаружена, выводится диалоговое окно: *«Среда AutoRun (Wine-NX) не найдена. Установить базовый комплект для запуска PC-игр? [Установить] [Отмена]»*.
-     * pipensx скачивает проверенный архив рантайма (актуальный `wine-nx-runtime.nro`, компоненты Box64/FEX, Mesa NVK, библиотеки DXVK/VKD3D и базовый префикс `drive_c`) из GitHub Releases / зеркала.
-     * Распаковывает архив в `sdmc:/switch/wine/` и подготавливает структуру папок: `drive_c/Games/`, `drive_c/users/wine/Desktop/`, `registry/user.reg`.
-   - **Проверка обновлений рантайма:** возможность обновить рантайм AutoRun в настройках при выходе новых версий Wine-NX/Mesa.
+     * Сервис загрузки и распаковки рантайма `AutorunService::installRuntimeArchive` / `downloadAndInstallRuntime` с потоковой распаковкой архивов ZIP (`extractRuntimeZip`) и колбэками прогресса.
+     * Автоматическая инициализация структуры каталогов `prepareAutorunEnvironment`: `drive_c/Games/`, `drive_c/users/wine/Desktop/`, `drive_c/users/wine/Documents/`, создание дефолтных `user.reg` и `system.reg`.
+   - **Проверка обновлений рантайма:** реализован метод `AutorunService::checkForUpdates` и парсер релизов GitHub API `parseRelease` со сравнением SemVer версий.
 
-2. **Режим установки `TransferMode::AutoRunInstall` (`src/app/download_manager.hpp`):**
-   - Загрузка данных сразу в `sdmc:/switch/wine/drive_c/Games/<target_folder>/`.
-   - Использование общего транспорта: P2P BitTorrent (`libutp`/`dht`) или Debrid (`TorBox`, `Real-Debrid`, `TorrServer`).
+2. **Режим установки `TransferMode::AutoRunInstall` (`src/app/download_manager.hpp`, `src/app/download_manager.cpp`):**
+   - Добавлен режим `TransferMode::AutoRunInstall`.
+   - Загрузка данных сразу в целевую папку `autorunGamesRoot` (`sdmc:/switch/wine/drive_c/Games/<target_folder>/`).
+   - Поддержка сохранения, персистентности в очереди (`queue.bencode` с режимом `"autorun"`), безопасного удаления и очистки хранилища (`isManagedChild`).
+   - Использование общего транспорта: P2P BitTorrent (`libutp`/`dht`) и Debrid (`TorBox`, `Real-Debrid`, `TorrServer`).
+   - Интеграция с `CatalogService` (парсинг блока `autorun` из `catalog.json` в `AutorunProfile`) и 1-tap установкой в `ReleaseAdder` / `OneTapPlan`.
 
-3. **Предварительная валидация раздачи:**
-   - Перед началом скачивания торрента (особенно для сторонних ссылок) проверяется список файлов:
-   - Если обнаружены `setup.exe`, `install.exe` или `.iso` — предупреждать пользователя о необходимости portable-версии.
+3. **Предварительная валидация раздачи (`AutorunValidation`):**
+   - Метод `validateAutorunFilePaths` / `validateAutorunRelease` анализирует список файлов торрента.
+   - Детектирует установщики (`setup.exe`, `install.exe`, `installer.exe`, `unins000.exe`) и дисковые образы (`.iso`, `.img`, `.mdf`, `.nrg`, `.cue`), предупреждая о необходимости portable-версии.
+   - Находит и валидирует главный исполняемый файл `.exe`.
 
-4. **Post-Deploy Hook (`src/app/switch_deploy.cpp`):**
-   - По завершении скачивания:
-     1. Создание оптимизированного `dxvk.conf` в папке игры.
-     2. Идемпотентный мердж секции реестра в `sdmc:/switch/wine/registry/user.reg` (проверка дубликатов по названию ветки `[...]`).
-     3. Создание ярлыка Windows `.lnk` на рабочем столе Wine (`sdmc:/switch/wine/drive_c/users/wine/Desktop/<Game>.lnk`).
+4. **Post-Deploy Hook (`src/app/switch_deploy.cpp`, `src/app/autorun_service.cpp`):**
+   - Автоматический и ручной вызов post-deploy хука при завершении загрузки задачи `TransferMode::AutoRunInstall`:
+     1. Создание оптимизированного `dxvk.conf` в папке игры (с поддержкой индивидуального конфига из профиля либо дефолтного с async-компиляцией).
+     2. Идемпотентный мердж секции реестра в `sdmc:/switch/wine/registry/user.reg` (`mergeUserRegistry`) без дублирования существующих веток.
+     3. Генерация бинарного Windows Shell Link (.lnk) ярлыка (`generateShellLink`) и сохранение на рабочий стол Wine (`sdmc:/switch/wine/drive_c/users/wine/Desktop/<Game>.lnk`).
+     4. Запись квитанции развертывания (`receiptPath`) для идемпотентного отслеживания статуса.
 
 ---
 

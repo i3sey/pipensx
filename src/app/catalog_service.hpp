@@ -1,5 +1,7 @@
 #pragma once
 
+#include "autorun_service.hpp"
+
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -77,6 +79,12 @@ struct CatalogEntry {
     uint32_t peerCount = 0;
     CatalogHealth health = CatalogHealth::Unknown;
     bool metadataOk = false;
+    std::string type;
+    std::optional<AutorunProfile> autorun;
+
+    bool isAutorun() const {
+        return type == "autorun" || autorun.has_value();
+    }
 
     bool isHiddenByDefault() const {
         return health == CatalogHealth::Dead ||

@@ -74,6 +74,7 @@ TEST_BINS_EARLY := $(filter-out $(BUILD_DIR)/tests/test_manager,$(TEST_BINS))
 # links the full DownloadManager graph).
 MANAGER_TEST_OBJS = \
 		$(BUILD_DIR)/src/app/download_manager.o \
+		$(BUILD_DIR)/src/app/autorun_service.o \
 		$(BUILD_DIR)/src/app/magnet_resolver.o \
 		$(BUILD_DIR)/src/app/torrent_metainfo_fetch.o \
 		$(BUILD_DIR)/src/app/task_files.o \
@@ -170,6 +171,10 @@ $(BUILD_DIR)/src/app/task_files.o: src/app/task_files.cpp
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
 $(BUILD_DIR)/src/app/switch_deploy.o: src/app/switch_deploy.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
+
+$(BUILD_DIR)/src/app/autorun_service.o: src/app/autorun_service.cpp src/app/autorun_service.hpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
 
@@ -307,7 +312,7 @@ $(BUILD_DIR)/tests/test_web_server: tests/test_web_server.cpp \
 		$(BUILD_DIR)/src/app/catalog_descriptions.o $(BUILD_DIR)/src/app/snapshot_zstd.o \
 		$(BUILD_DIR)/src/app/web_server.o $(BUILD_DIR)/src/app/companion_settings.o \
 		$(BUILD_DIR)/src/app/add_release.o $(BUILD_DIR)/src/app/web_add_queue.o \
-		$(BUILD_DIR)/src/app/http_server.o \
+		$(BUILD_DIR)/src/app/http_server.o $(BUILD_DIR)/src/app/autorun_service.o \
 		src/app/app_settings.cpp src/app/game_update_install.cpp \
 		$(BUILD_DIR)/src/app/torrent_metainfo_fetch.o \
 		$(BUILD_DIR)/src/app/magnet_resolver.o src/app/install_space.cpp \
@@ -468,7 +473,7 @@ $(BUILD_DIR)/tests/test_favorites: tests/test_favorites.cpp \
 $(BUILD_DIR)/tests/test_batch_install: tests/test_batch_install.cpp \
 		src/app/catalog_batch_installer.cpp src/app/install_space.cpp \
 		src/app/game_update_install.cpp \
-		$(BUILD_DIR)/src/app/add_release.o \
+		$(BUILD_DIR)/src/app/add_release.o $(BUILD_DIR)/src/app/autorun_service.o \
 		$(BUILD_DIR)/src/app/download_manager.o $(BUILD_DIR)/src/app/task_files.o \
 		$(BUILD_DIR)/src/app/web_seed_source.o \
 		$(BUILD_DIR)/src/app/stream_ram_budget.o $(BUILD_DIR)/src/app/stream_budget_arbiter.o \
@@ -652,7 +657,7 @@ $(BUILD_DIR)/tests/test_task_files: tests/test_task_files.cpp \
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
 
 $(BUILD_DIR)/tests/test_switch_deploy: tests/test_switch_deploy.cpp \
-		$(BUILD_DIR)/src/app/switch_deploy.o $(BUILD_DIR)/src/app/task_files.o \
+		$(BUILD_DIR)/src/app/switch_deploy.o $(BUILD_DIR)/src/app/autorun_service.o $(BUILD_DIR)/src/app/task_files.o \
 		$(BUILD_DIR)/src/app/port_archive.o $(LZMA_OBJS) \
 		$(BUILD_DIR)/src/app/download_manager.o \
 		$(BUILD_DIR)/src/app/magnet_resolver.o \
@@ -669,6 +674,15 @@ $(BUILD_DIR)/tests/test_switch_deploy: tests/test_switch_deploy.cpp \
 		$(BUILD_DIR)/src/install/system_cleanup.o \
 		$(BUILD_DIR)/src/install/install_backend_pc.o \
 		$(filter-out $(BUILD_DIR)/src/main_pc.o,$(OBJS)) $(UTP_OBJS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) $(INSTALL_LDFLAGS) -lz -pthread
+
+$(BUILD_DIR)/tests/test_autorun: tests/test_autorun.cpp \
+		$(BUILD_DIR)/src/app/autorun_service.o \
+		src/app/update_service.cpp \
+		$(BUILD_DIR)/src/app/update_transaction.o \
+		src/app/install_space.cpp \
+		$(MANAGER_TEST_OBJS)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) $(INSTALL_LDFLAGS) -lz -pthread
 

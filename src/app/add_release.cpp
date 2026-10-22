@@ -174,6 +174,14 @@ AddSourceChoice decideAddSource(bool torrentingEnabled,
 OneTapPlan planCatalogOneTap(const TorrentPreview& preview,
                              const OneTapContext& context) {
     OneTapPlan plan;
+    if (context.isAutorun) {
+        plan.outcome = OneTapOutcome::QueuePort;
+        plan.block = OneTapBlock::None;
+        plan.mode = TransferMode::AutoRunInstall;
+        plan.fileSelection.assign(preview.files.size(), static_cast<uint8_t>(FileAction::Download));
+        plan.packageCount = 0;
+        return plan;
+    }
     if (cardOneTapUsesPortInstall(preview)) {
         plan.outcome = OneTapOutcome::QueuePort;
         plan.block = OneTapBlock::None;
@@ -347,6 +355,9 @@ AddOutcome ReleaseAdder::importDebridPlan(const AddRequest& request,
     import.mode = mode;
     import.fileSelection = std::move(selection);
     import.packageCount = packageCount;
+    if (mode == TransferMode::AutoRunInstall && request.oneTap.autorunProfile) {
+        import.autorunFolder = request.oneTap.autorunProfile->targetFolder;
+    }
     std::string taskId;
     std::string error;
     if (!manager_.importDebrid(import, taskId, error)) {
@@ -354,6 +365,10 @@ AddOutcome ReleaseAdder::importDebridPlan(const AddRequest& request,
         provider.remove(debridId, ignored);
         outcome.error = error.empty() ? "Import failed." : error;
         return outcome;
+    }
+    if (mode == TransferMode::AutoRunInstall && request.oneTap.autorunProfile) {
+        std::string profileError;
+        saveAutorunProfile(manager_.rootPath(), taskId, *request.oneTap.autorunProfile, profileError);
     }
     outcome.ok = true;
     outcome.taskId = std::move(taskId);
@@ -396,9 +411,18 @@ AddOutcome ReleaseAdder::importResolvedTorrent(
             outcome.error = oneTapBlockedMessage(plan);
             return outcome;
         }
+        std::string autorunFolder;
+        if (plan.mode == TransferMode::AutoRunInstall && request.oneTap.autorunProfile) {
+            autorunFolder = request.oneTap.autorunProfile->targetFolder;
+        }
         ok = manager_.importTorrentActions(torrentPath, plan.fileSelection,
-                                           taskId, error, initialPeers);
+                                           taskId, error, initialPeers,
+                                           plan.mode, autorunFolder);
         outcome.mode = plan.mode;
+        if (ok && plan.mode == TransferMode::AutoRunInstall && request.oneTap.autorunProfile) {
+            std::string profileError;
+            saveAutorunProfile(manager_.rootPath(), taskId, *request.oneTap.autorunProfile, profileError);
+        }
     } else {
         SettingsInstallPlan plan = planSettingsInstall(
             preview, request.requestedMode, request.selection);

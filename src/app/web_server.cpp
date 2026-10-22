@@ -85,12 +85,22 @@ const char* catalogHealthName(CatalogHealth health) {
 const char* modeName(TransferMode mode) {
     if (mode == TransferMode::PortInstall)
         return "port";
+    if (mode == TransferMode::AutoRunInstall)
+        return "autorun";
     return mode == TransferMode::StreamInstall ? "install" : "download";
 }
 
 bool parseMode(const std::string& value, TransferMode& out) {
     if (value == "install") {
         out = TransferMode::StreamInstall;
+        return true;
+    }
+    if (value == "port") {
+        out = TransferMode::PortInstall;
+        return true;
+    }
+    if (value == "autorun") {
+        out = TransferMode::AutoRunInstall;
         return true;
     }
     if (value == "download") {

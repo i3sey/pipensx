@@ -2,6 +2,7 @@
 
 #include "debrid_provider.hpp"
 #include "download_manager.hpp"
+#include "autorun_service.hpp"
 #include "game_update_install.hpp"
 #include "install_space.hpp"
 #include "torrent_metainfo_fetch.hpp"
@@ -69,6 +70,8 @@ struct OneTapContext {
     std::string latestVersion;
     std::string titleId;
     std::vector<std::string> installedDlcIds;
+    bool isAutorun = false;
+    std::optional<AutorunProfile> autorunProfile;
 };
 
 enum class OneTapOutcome { QueueStream, QueuePort, NeedsChooser };
@@ -137,6 +140,7 @@ struct AddRequest {
     TransferMode requestedMode = TransferMode::StreamInstall;
     StreamSelection selection = StreamSelection::AllFiles;
     OneTapContext oneTap;
+    std::optional<AutorunProfile> autorunProfile;
 };
 
 struct AddOutcome {

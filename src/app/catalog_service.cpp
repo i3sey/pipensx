@@ -619,6 +619,25 @@ bool CatalogService::parseJson(const std::string& json,
                 entry.playersOnline = players["online"].get<bool>();
         }
         entry.performanceNote = readString(item, "performance_note", 256);
+        entry.type = readString(item, "type", 32);
+        if (item.contains("autorun") && item["autorun"].is_object()) {
+            const auto& ar = item["autorun"];
+            AutorunProfile profile;
+            profile.title = entry.title;
+            profile.executable = readString(ar, "executable", 256);
+            profile.targetFolder = readString(ar, "target_folder", 256);
+            profile.status = readString(ar, "status", 64);
+            profile.fps = readString(ar, "fps", 64);
+            profile.overclock = readString(ar, "overclock", 64);
+            profile.translator = readString(ar, "translator", 64);
+            profile.renderer = readString(ar, "renderer", 64);
+            profile.notes = readString(ar, "notes", 2048);
+            profile.dxvkConf = readString(ar, "dxvk_conf", 4096);
+            profile.registry = readString(ar, "registry", 8192);
+            if (!profile.executable.empty() && !profile.targetFolder.empty()) {
+                entry.autorun = std::move(profile);
+            }
+        }
         entry.topicUrl = readString(item, "url", 2048);
         if (entry.topicUrl.rfind("https://", 0) != 0)
             entry.topicUrl.clear();

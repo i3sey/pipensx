@@ -135,6 +135,7 @@ set(APP_SERVICE_SOURCES
     src/app/update_transaction.c
     src/app/nro_relocation.c
     src/app/app_settings.cpp
+    src/app/autorun_service.cpp
     src/app/favorites_service.cpp
     src/app/update_service.cpp
     src/app/catalog_batch_installer.cpp

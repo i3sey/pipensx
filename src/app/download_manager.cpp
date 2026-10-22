@@ -331,19 +331,6 @@ std::string persistedStatus(DownloadStatus status) {
     }
 }
 
-TransferMode persistedMode(const std::string& value) {
-    if (value == "port")
-        return TransferMode::PortInstall;
-    return value == "install" ? TransferMode::StreamInstall
-                              : TransferMode::DownloadOnly;
-}
-
-const char* persistedMode(TransferMode mode) {
-    if (mode == TransferMode::PortInstall)
-        return "port";
-    return mode == TransferMode::StreamInstall ? "install" : "download";
-}
-
 const char* persistedSource(TaskSource source) {
     return source == TaskSource::Debrid ? "debrid" : "torrent";
 }
@@ -354,6 +341,23 @@ TaskSource persistedSource(const std::string& value) {
 }
 
 } // namespace
+
+TransferMode persistedMode(const std::string& value) {
+    if (value == "port")
+        return TransferMode::PortInstall;
+    if (value == "autorun")
+        return TransferMode::AutoRunInstall;
+    return value == "install" ? TransferMode::StreamInstall
+                              : TransferMode::DownloadOnly;
+}
+
+const char* persistedMode(TransferMode mode) {
+    if (mode == TransferMode::PortInstall)
+        return "port";
+    if (mode == TransferMode::AutoRunInstall)
+        return "autorun";
+    return mode == TransferMode::StreamInstall ? "install" : "download";
+}
 
 void injectMissingFallbackTrackers(metainfo_t& mi) {
     if (mi.num_trackers != 0)
@@ -497,10 +501,23 @@ const char* statusName(DownloadStatus status) {
     return "Unknown";
 }
 
+static std::string defaultAutorunWineRoot(const std::string& rootPath) {
+    size_t slash = rootPath.find_last_of('/');
+    if (slash != std::string::npos)
+        return rootPath.substr(0, slash) + "/wine";
+    return rootPath + "/wine";
+}
+
+static std::string defaultAutorunGamesRoot(const std::string& rootPath) {
+    return defaultAutorunWineRoot(rootPath) + "/drive_c/Games";
+}
+
 DownloadManager::DownloadManager(std::string rootPath, bool startWorker)
     : rootPath_(std::move(rootPath)),
       torrentRoot_(rootPath_ + "/torrents"),
       downloadRoot_(rootPath_ + "/downloads"),
+      autorunWineRoot_(defaultAutorunWineRoot(rootPath_)),
+      autorunGamesRoot_(defaultAutorunGamesRoot(rootPath_)),
       statePath_(rootPath_ + "/queue.bencode") {
     makeDirectories(rootPath_);
     makeDirectories(torrentRoot_);
@@ -521,6 +538,26 @@ DownloadManager::DownloadManager(std::string rootPath, bool startWorker)
 DownloadManager::~DownloadManager() {
     shutdown();
     shutdownPersistence();
+}
+
+void DownloadManager::setAutorunWineRoot(std::string root) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    autorunWineRoot_ = std::move(root);
+}
+
+const std::string& DownloadManager::autorunWineRoot() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return autorunWineRoot_;
+}
+
+void DownloadManager::setAutorunGamesRoot(std::string root) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    autorunGamesRoot_ = std::move(root);
+}
+
+const std::string& DownloadManager::autorunGamesRoot() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return autorunGamesRoot_;
 }
 
 // F5: the install liveness marker is written before a package stream's first
@@ -814,6 +851,7 @@ bool DownloadManager::mergeImportSelection(DownloadTask& task,
             task.id.c_str(), task.fileSelection.size(),
             task.mode == TransferMode::StreamInstall ? "install"
                 : task.mode == TransferMode::PortInstall ? "port"
+                : task.mode == TransferMode::AutoRunInstall ? "autorun"
                                                          : "download");
     return true;
 }
@@ -910,13 +948,26 @@ bool DownloadManager::importTorrent(const std::string& path,
                                     const std::vector<uint8_t>& selectedFiles,
                                     std::string& taskId,
                                     std::string& error,
-                                    const std::vector<uint8_t>& initialPeers) {
+                                    const std::vector<uint8_t>& initialPeers,
+                                    const std::string& autorunFolder) {
     TorrentPreview preview;
     if (!previewTorrent(path, preview, error))
         return false;
     if (!selectedFiles.empty() && selectedFiles.size() != preview.files.size()) {
         error = "Selected file list does not match torrent contents.";
         return false;
+    }
+    if (mode == TransferMode::AutoRunInstall) {
+        std::vector<uint8_t> actions;
+        if (!selectedFiles.empty()) {
+            actions.reserve(preview.files.size());
+            for (size_t i = 0; i < preview.files.size(); ++i)
+                actions.push_back(selectedFiles[i] ? actionValue(FileAction::Download) : actionValue(FileAction::Skip));
+        } else {
+            actions.assign(preview.files.size(), actionValue(FileAction::Download));
+        }
+        return importTorrentActions(path, actions, taskId, error, initialPeers,
+                                    TransferMode::AutoRunInstall, autorunFolder);
     }
     if (selectedFiles.empty() && torrentPortLayoutDetected(preview))
         return importTorrentActions(path, selectPortInstallActions(preview),
@@ -932,7 +983,9 @@ bool DownloadManager::importTorrentActions(
                                     const std::vector<uint8_t>& fileActions,
                                     std::string& taskId,
                                     std::string& error,
-                                    const std::vector<uint8_t>& initialPeers) {
+                                    const std::vector<uint8_t>& initialPeers,
+                                    TransferMode requestedMode,
+                                    const std::string& autorunFolder) {
     TorrentPreview preview;
     if (!previewTorrent(path, preview, error))
         return false;
@@ -993,19 +1046,29 @@ bool DownloadManager::importTorrentActions(
         error = "Select at least one file.";
         return false;
     }
-    const bool portInstall =
-        selectedNro || (selectedZipOrLayered && selectedPackageCount == 0);
-    if (portInstall && useSelection) {
-        // Packages are retained on disk for the post-deploy install stage.
-        for (size_t i = 0; i < selection.size(); ++i)
-            if (preview.files[i].package &&
-                selection[i] != actionValue(FileAction::Skip))
+    TransferMode mode;
+    bool portInstall = false;
+    if (requestedMode == TransferMode::AutoRunInstall) {
+        mode = TransferMode::AutoRunInstall;
+        for (size_t i = 0; i < selection.size(); ++i) {
+            if (selection[i] != actionValue(FileAction::Skip))
                 selection[i] = actionValue(FileAction::Download);
+        }
+    } else {
+        portInstall =
+            selectedNro || (selectedZipOrLayered && selectedPackageCount == 0);
+        if (portInstall && useSelection) {
+            // Packages are retained on disk for the post-deploy install stage.
+            for (size_t i = 0; i < selection.size(); ++i)
+                if (preview.files[i].package &&
+                    selection[i] != actionValue(FileAction::Skip))
+                    selection[i] = actionValue(FileAction::Download);
+        }
+        mode = portInstall
+            ? TransferMode::PortInstall
+            : installPackageCount > 0 ? TransferMode::StreamInstall
+                                      : TransferMode::DownloadOnly;
     }
-    TransferMode mode = portInstall
-        ? TransferMode::PortInstall
-        : installPackageCount > 0 ? TransferMode::StreamInstall
-                                  : TransferMode::DownloadOnly;
 
     std::unique_lock<std::mutex> lock(mutex_);
     if (DownloadTask* existing = findLocked(preview.infoHash)) {
@@ -1024,8 +1087,16 @@ bool DownloadManager::importTorrentActions(
     }
 
     std::string metainfoPath = torrentRoot_ + "/" + preview.infoHash + ".torrent";
-    std::string dataPath = downloadRoot_ + "/" + safeComponent(preview.name) +
-                           "-" + preview.infoHash.substr(0, 8);
+    std::string dataPath;
+    if (mode == TransferMode::AutoRunInstall) {
+        std::string folder = !autorunFolder.empty()
+            ? safeComponent(autorunFolder)
+            : safeComponent(preview.name);
+        dataPath = autorunGamesRoot_ + "/" + folder;
+    } else {
+        dataPath = downloadRoot_ + "/" + safeComponent(preview.name) +
+                   "-" + preview.infoHash.substr(0, 8);
+    }
     if (!copyFile(path, metainfoPath)) {
         error = "Unable to copy the torrent file into application storage.";
         return false;
@@ -1041,10 +1112,12 @@ bool DownloadManager::importTorrentActions(
     task.name = preview.name;
     task.metainfoPath = metainfoPath;
     task.dataPath = dataPath;
+    task.autorunFolder = autorunFolder;
     task.totalBytes = preview.totalBytes;
     task.status = DownloadStatus::Queued;
     task.mode = mode;
-    task.packageCount = portInstall ? selectedPackageCount
+    task.packageCount = (mode == TransferMode::AutoRunInstall) ? 0
+                      : portInstall ? selectedPackageCount
                                     : installPackageCount;
     task.fileSelection = std::move(selection);
     task.initialPeers = initialPeers;
@@ -1127,7 +1200,10 @@ bool DownloadManager::importDebrid(const DebridImport& import,
                     ++selectedPackages;
             }
             importPackageCount = selectedPackages;
-            if (selectedNro ||
+            if (import.mode == TransferMode::AutoRunInstall) {
+                importMode = TransferMode::AutoRunInstall;
+                importPackageCount = 0;
+            } else if (selectedNro ||
                 (selectedZipOrLayered && selectedPackages == 0)) {
                 importMode = TransferMode::PortInstall;
                 for (size_t i = 0; i < importSelection.size(); ++i)
@@ -1195,8 +1271,16 @@ bool DownloadManager::importDebrid(const DebridImport& import,
             return false;
         }
     }
-    std::string dataPath = downloadRoot_ + "/" + safeComponent(import.name) +
-                           "-" + import.infoHash.substr(0, 8);
+    std::string dataPath;
+    if (importMode == TransferMode::AutoRunInstall) {
+        std::string folder = !import.autorunFolder.empty()
+            ? safeComponent(import.autorunFolder)
+            : safeComponent(import.name);
+        dataPath = autorunGamesRoot_ + "/" + folder;
+    } else {
+        dataPath = downloadRoot_ + "/" + safeComponent(import.name) +
+                   "-" + import.infoHash.substr(0, 8);
+    }
     if (!makeDirectories(dataPath)) {
         if (!metainfoPath.empty())
             unlink(metainfoPath.c_str());
@@ -1209,6 +1293,7 @@ bool DownloadManager::importDebrid(const DebridImport& import,
     task.name = import.name;
     task.metainfoPath = metainfoPath;
     task.dataPath = dataPath;
+    task.autorunFolder = import.autorunFolder;
     task.totalBytes = import.totalBytes;
     task.status = DownloadStatus::Queued;
     task.mode = importMode;
@@ -2320,7 +2405,11 @@ void DownloadManager::load() {
             task.completedBytes = task.totalBytes;
         bool metainfoRequired = task.source == TaskSource::Torrent ||
                                 !task.metainfoPath.empty();
-        if (!isManagedChild(downloadRoot_, task.dataPath) ||
+        const bool dataPathManaged =
+            isManagedChild(downloadRoot_, task.dataPath) ||
+            (task.mode == TransferMode::AutoRunInstall &&
+             isManagedChild(autorunGamesRoot_, task.dataPath));
+        if (!dataPathManaged ||
             (metainfoRequired &&
              !isManagedChild(torrentRoot_, task.metainfoPath))) {
             task.status = DownloadStatus::Error;
@@ -2372,9 +2461,13 @@ bool DownloadManager::removeLocked(std::unique_lock<std::mutex>& lock,
     for (auto it = tasks_.begin(); it != tasks_.end(); ++it) {
         if (it->id != id)
             continue;
+        const bool dataPathManaged =
+            isManagedChild(downloadRoot_, it->dataPath) ||
+            (it->mode == TransferMode::AutoRunInstall &&
+             isManagedChild(autorunGamesRoot_, it->dataPath));
         if ((!it->metainfoPath.empty() &&
              !isManagedChild(torrentRoot_, it->metainfoPath)) ||
-            !isManagedChild(downloadRoot_, it->dataPath)) {
+            !dataPathManaged) {
             error = "Refusing to remove a path outside application storage.";
             it->status = DownloadStatus::Error;
             it->error = error;
@@ -2439,6 +2532,7 @@ bool DownloadManager::removeLocked(std::unique_lock<std::mutex>& lock,
         install::removeInstallJournal(
             install::installJournalPath(rootPath_, it->id));
         removeTaskFileManifest(rootPath_, it->id);
+        unlink((rootPath_ + "/autorun-" + it->id + ".json").c_str());
         tasks_.erase(it);
         return persist ? persistState(lock, error) : true;
     }

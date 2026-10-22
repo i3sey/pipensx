@@ -215,6 +215,7 @@ public:
     void shutdown();
     SwitchDeploySnapshot snapshot() const;
     SwitchDeployReceiptState receiptState(const std::string& taskId) const;
+    bool deployAutorun(const std::string& taskId, std::string& error);
     // Auth is handled by WebServer. This API is only available for PortInstall.
     bool remotePortRequest(const std::string& action, const std::string& taskId,
                            const std::string& body, std::string& json,

@@ -1,4 +1,5 @@
 #include "switch_deploy.hpp"
+#include "autorun_service.hpp"
 #include "port_archive_choice.hpp"
 #include <borealis/extern/nlohmann/json.hpp>
 
@@ -2771,6 +2772,37 @@ SwitchDeployReceiptState SwitchDeployService::receiptState(
     return SwitchDeployReceiptState::Valid;
 }
 
+bool SwitchDeployService::deployAutorun(const std::string& taskId, std::string& error) {
+    const std::optional<DownloadTask> task = manager_.snapshot(taskId);
+    if (!task) {
+        error = "Task not found.";
+        return false;
+    }
+    if (task->mode != TransferMode::AutoRunInstall) {
+        error = "Task is not an AutoRun task.";
+        return false;
+    }
+    AutorunProfile profile;
+    std::string profileError;
+    loadAutorunProfile(appRoot_, taskId, profile, profileError);
+
+    const std::string sdRoot = sdRootForSwitchRoot(targetRoot_);
+    std::string gameFolder = profile.targetFolder;
+    if (gameFolder.empty()) {
+        const size_t slash = task->dataPath.find_last_of('/');
+        gameFolder = (slash != std::string::npos) ? task->dataPath.substr(slash + 1) : task->name;
+    }
+    const std::string gameTitle = !profile.title.empty() ? profile.title : task->name;
+    if (!deployAutorunGame(sdRoot, gameFolder, gameTitle, profile, error)) {
+        return false;
+    }
+    mkdirs(appRoot_ + "/deployments");
+    std::string blob = "d5:fileslee5:titlelee4:type7:autorun4:task" + bstr(taskId) +
+                       "7:versioni2ee";
+    atomicWrite(receiptPath(appRoot_, taskId), blob);
+    return true;
+}
+
 bool SwitchDeployService::armAutoCopy(const std::string& taskId) {
     return atomicWrite(autoCopyPath(appRoot_, taskId), "1");
 }
@@ -2823,6 +2855,27 @@ void SwitchDeployService::clearInspecting(const std::string& taskId) {
         const std::optional<DownloadTask> task = manager_.snapshot(taskId);
         if (!task || !taskReadyForSwitchDeploy(*task))
             return false;
+        if (task->mode == TransferMode::AutoRunInstall) {
+            const bool markerArmed = autoCopyArmed(taskId);
+            if (receiptState(taskId) != SwitchDeployReceiptState::None) {
+                if (markerArmed)
+                    clearAutoCopy(taskId);
+                std::lock_guard<std::mutex> lock(offerMutex_);
+                offerHandled_.insert(taskId);
+                return false;
+            }
+            std::string deployError;
+            if (deployAutorun(taskId, deployError)) {
+                log_msg("[deploy] autorun deploy completed for %s\n", taskId.c_str());
+            } else {
+                log_msg("[deploy] autorun deploy failed for %s: %s\n", taskId.c_str(), deployError.c_str());
+            }
+            if (markerArmed)
+                clearAutoCopy(taskId);
+            std::lock_guard<std::mutex> lock(offerMutex_);
+            offerHandled_.insert(taskId);
+            return false;
+        }
         // Every port waits for saved choices and an explicit start in the
         // remote panel, even when an older task has an auto-copy marker.
         if (task->mode == TransferMode::PortInstall)
