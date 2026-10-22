@@ -128,21 +128,30 @@ AutoRun располагается в `/switch/wine/`:
 
 ---
 
-### Фаза 5: Интеграция с Home Menu (Stub-NSP) и `sys-clk`
+### Фаза 5: Интеграция с Home Menu (Stub-NSP) и `sys-clk` (Завершено ✅)
 
 **Цель:** Предоставить пользователю возможность запускать игру с главного экрана Switch с автоматическим разгоном.
 
-1. **Генерация Stub-NSP форвардера на лету:**
-   - Легковесный шаблон NSP-форвардера, собираемый прямо в памяти консоли:
-     * **Title ID**: детерминированный хэш от названия игры с базовым префиксом хоумбрю (например, `0100BEEFxxxxxxxx`), исключающий конфликты с официальными играми.
-     * **NACP (`control.nacp`)**: заголовок с названием игры и автором («AutoRun / pipensx»).
-     * **Иконка**: обложка игры из каталога, отмасштабированная в JPEG 256x256.
-     * **Payload**: код вызова `envSetNextLoad` с аргументом запуска среды Wine и целевого `.exe`.
-   - Установка через встроенный `InstallBackend` (`ncm`/`es`).
-2. **Интеграция с `sys-clk`:**
-   - Проверка наличия `/config/sys-clk/config.ini`.
-   - Если файл есть: запрос у пользователя *«Применить рекомендуемый профиль разгона в sys-clk?»*.
-   - При согласии — добавление секции с Title ID игры и частотами (`cpu=1785`, `gpu=768`, `mem=1900`). При выходе из игры частоты сбрасываются автоматически на системные.
+1. **Генерация Stub-NSP форвардера на лету (`src/app/autorun_service.cpp`, `src/autorun/autorun_forwarder.c`):**
+   - **Title ID**: детерминированный генератор `generateAutorunTitleId` на основе названия игры с префиксом `0x0100BEEF` и стандартным окончанием `0000` (например, `0100BEEFxxxx0000`), исключающим конфликты с играми Nintendo.
+   - **NACP (`generateNacp`)**: создание структуры NACP 0x4000 байт с названием игры, автором («AutoRun / pipensx»), версией «1.0.0» и всеми поддерживаемыми языками.
+   - **Иконка**: обложка игры в формате JPEG 256x256 (с поддержкой пользовательской обложки или встроенного дефолтного JPEG).
+   - **Payload форвардера (`src/autorun/autorun_forwarder.c`)**:
+     * Компактный исполняемый файл для Nintendo Switch, компилируемый в `romfs:/autorun-forwarder.nro`.
+     * При запуске из Home Menu считывает собственный Title ID через `svcGetInfo(..., InfoType_ProgramId, ...)`, загружает параметры из `sdmc:/switch/wine/forwarders/<TitleID>.ini` и вызывает `envSetNextLoad` с запуском Wine-NX и целевого `.exe`.
+   - **Сборщик NSP и PFS0 (`buildPfs0`, `parsePfs0`, `generateAutorunStubNsp`)**:
+     * Генерация контейнера PFS0 в оперативной памяти с Program NCA, Control NCA (NACP + icon), CNMT NCA (структура `NcmExtPackagedContentMetaHeader` + `NcmPackagedContentInfo`) и сырыми метаданными.
+   - **Установка форвардера (`installAutorunForwarder`)**:
+     * Потоковая передача сгенерированного пакета в абстракцию `InstallBackend` (`ncm`/`es` на Switch, файловая симуляция на PC) с автоматическим сохранением конфигурации форвардера на SD.
+
+2. **Интеграция с `sys-clk` (`autorunSysClkConfigPath`, `parseOverclockProfile`, `applySysClkProfile`):**
+   - **Детектирование:** метод `isSysClkInstalled` проверяет наличие `/config/sys-clk/config.ini` или каталога сисмодуля sys-clk в Atmosphere.
+   - **Парсер профилей разгона:** `parseOverclockProfile` распознает различные форматы указания частот (`1785/768/1900`, `1963 / 1152 / 2133`, `CPU 1785, GPU 614, RAM 1900`, `Safe Max`, `cpu=..., gpu=..., mem=...`) и приводит их к структуре `SysClkProfile`.
+   - **Идемпотентная конфигурация:** `applySysClkProfile` и `removeSysClkProfile` безопасно добавляют, обновляют или удаляют секцию `[<TitleID>]` в `/config/sys-clk/config.ini` с настройками частот для портативного и док-режимов (`handheld_cpu`, `handheld_gpu`, `handheld_mem`, `docked_cpu`, `docked_gpu`, `docked_mem`) без повреждения существующих профилей других игр и комментариев.
+
+3. **Верификация и тесты:**
+   - Добавлены тесты генерации Title ID, NACP, PFS0, Stub-NSP и манипуляций профилями `sys-clk` в `tests/test_autorun.cpp`.
+   - Создан отдельный тестовый модуль `tests/test_autorun_deploy.cpp` (парсинг `AutorunProfile`, мердж реестра, `dxvk.conf`, заголовки PFS0/NACP). Все тесты успешно пройдены на PC и Switch.
 
 ---
 

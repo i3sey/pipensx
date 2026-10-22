@@ -679,6 +679,17 @@ $(BUILD_DIR)/tests/test_switch_deploy: tests/test_switch_deploy.cpp \
 
 $(BUILD_DIR)/tests/test_autorun: tests/test_autorun.cpp \
 		$(BUILD_DIR)/src/app/autorun_service.o \
+		src/app/nacp_language.cpp \
+		src/app/update_service.cpp \
+		$(BUILD_DIR)/src/app/update_transaction.o \
+		src/app/install_space.cpp \
+		$(MANAGER_TEST_OBJS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) $(INSTALL_LDFLAGS) -lz -pthread
+
+$(BUILD_DIR)/tests/test_autorun_deploy: tests/test_autorun_deploy.cpp \
+		$(BUILD_DIR)/src/app/autorun_service.o \
+		src/app/nacp_language.cpp \
 		src/app/update_service.cpp \
 		$(BUILD_DIR)/src/app/update_transaction.o \
 		src/app/install_space.cpp \

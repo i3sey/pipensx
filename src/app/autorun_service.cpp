@@ -1,6 +1,8 @@
 #include "autorun_service.hpp"
+#include "core/sha256.h"
 #include "curl_https.hpp"
 #include "download_manager.hpp"
+#include "install/install_backend.hpp"
 #include "port_selection.hpp"
 #include "task_files.hpp"
 #include "update_service.hpp"
@@ -289,6 +291,18 @@ std::string autorunSystemRegistryPath(const std::string& sdRoot) {
 
 std::string autorunVersionPath(const std::string& sdRoot) {
     return autorunWineRoot(sdRoot) + "/version.json";
+}
+
+std::string autorunForwardersPath(const std::string& sdRoot) {
+    return autorunWineRoot(sdRoot) + "/forwarders";
+}
+
+std::string autorunForwarderConfigPath(const std::string& sdRoot, uint64_t titleId) {
+    return autorunForwardersPath(sdRoot) + "/" + autorunTitleIdToString(titleId) + ".ini";
+}
+
+std::string autorunSysClkConfigPath(const std::string& sdRoot) {
+    return cleanRoot(sdRoot) + "/config/sys-clk/config.ini";
 }
 
 bool isAutorunInstalled(const std::string& sdRoot) {
@@ -1090,6 +1104,653 @@ bool AutorunService::deployTask(
         ? profile.title
         : task.name;
     return deployAutorunGame(sdRoot_, gameFolder, title, profile, error);
+}
+
+uint64_t generateAutorunTitleId(const std::string& gameTitle) {
+    uint32_t h = 0x811c9dc5u;
+    for (char c : gameTitle) {
+        h ^= static_cast<uint8_t>(std::tolower(static_cast<unsigned char>(c)));
+        h *= 0x01000193u;
+    }
+    // High 32 bits: 0x0100BEEF
+    // Middle 16 bits: hash
+    // Low 16 bits: 0x0000 (Base application standard)
+    return 0x0100BEEF00000000ULL | (static_cast<uint64_t>(h & 0xFFFFu) << 16);
+}
+
+std::string autorunTitleIdToString(uint64_t titleId) {
+    char buf[17] = {0};
+    std::snprintf(buf, sizeof(buf), "%016llX", static_cast<unsigned long long>(titleId));
+    return std::string(buf);
+}
+
+bool createAutorunForwarderConfig(const std::string& sdRoot,
+                                  uint64_t titleId,
+                                  const std::string& gameTitle,
+                                  const std::string& gameFolder,
+                                  const std::string& executable,
+                                  std::string& error) {
+    const std::string dir = autorunForwardersPath(sdRoot);
+    if (!makeDirectories(dir)) {
+        error = "Unable to create forwarders directory: " + dir;
+        return false;
+    }
+    const std::string confPath = autorunForwarderConfigPath(sdRoot, titleId);
+    std::ofstream out(confPath, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        error = "Unable to write forwarder config: " + confPath;
+        return false;
+    }
+    const std::string titleIdHex = autorunTitleIdToString(titleId);
+    const std::string nroPath = "sdmc:/switch/wine/wine-nx-runtime.nro";
+    const std::string wineTarget = "C:\\Games\\" + gameFolder + "\\" + executable;
+    const std::string nroArgv = "\"" + nroPath + "\" \"" + wineTarget + "\"";
+
+    out << "[forwarder]\n";
+    out << "title=" << gameTitle << "\n";
+    out << "title_id=" << titleIdHex << "\n";
+    out << "target_folder=" << gameFolder << "\n";
+    out << "executable=" << executable << "\n";
+    out << "nro=" << nroPath << "\n";
+    out << "argv=" << nroArgv << "\n";
+    return true;
+}
+
+bool readAutorunForwarderConfig(const std::string& sdRoot,
+                                uint64_t titleId,
+                                std::string& gameTitle,
+                                std::string& gameFolder,
+                                std::string& executable,
+                                std::string& nroPath,
+                                std::string& nroArgv,
+                                std::string& error) {
+    const std::string confPath = autorunForwarderConfigPath(sdRoot, titleId);
+    std::ifstream in(confPath);
+    if (!in) {
+        error = "Forwarder config not found: " + confPath;
+        return false;
+    }
+    std::string line;
+    while (std::getline(in, line)) {
+        size_t eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        std::string key = line.substr(0, eq);
+        std::string val = line.substr(eq + 1);
+        while (!key.empty() && std::isspace(static_cast<unsigned char>(key.front()))) key.erase(key.begin());
+        while (!key.empty() && std::isspace(static_cast<unsigned char>(key.back()))) key.pop_back();
+        while (!val.empty() && std::isspace(static_cast<unsigned char>(val.front()))) val.erase(val.begin());
+        while (!val.empty() && (val.back() == '\r' || val.back() == '\n' || std::isspace(static_cast<unsigned char>(val.back())))) val.pop_back();
+
+        if (key == "title") gameTitle = val;
+        else if (key == "target_folder") gameFolder = val;
+        else if (key == "executable") executable = val;
+        else if (key == "nro") nroPath = val;
+        else if (key == "argv") nroArgv = val;
+    }
+    return true;
+}
+
+bool removeAutorunForwarderConfig(const std::string& sdRoot,
+                                  uint64_t titleId,
+                                  std::string& error) {
+    const std::string confPath = autorunForwarderConfigPath(sdRoot, titleId);
+    if (unlink(confPath.c_str()) != 0 && errno != ENOENT) {
+        error = "Unable to remove forwarder config: " + confPath;
+        return false;
+    }
+    return true;
+}
+
+bool isSysClkInstalled(const std::string& sdRoot) {
+    const std::string cfg = autorunSysClkConfigPath(sdRoot);
+    if (access(cfg.c_str(), F_OK) == 0) return true;
+    const std::string amsDir = cleanRoot(sdRoot) + "/atmosphere/contents/00FF0000636C6BFF";
+    return access(amsDir.c_str(), F_OK) == 0;
+}
+
+bool parseOverclockProfile(const std::string& ocStr, SysClkProfile& out) {
+    out = SysClkProfile{1785, 768, 1900};
+    if (ocStr.empty()) return true;
+
+    // Check for "num / num / num" pattern
+    std::string s = ocStr;
+    size_t s1 = s.find('/');
+    if (s1 != std::string::npos) {
+        size_t s2 = s.find('/', s1 + 1);
+        if (s2 != std::string::npos) {
+            auto extractDigits = [](const std::string& part) -> uint32_t {
+                std::string d;
+                for (char c : part) {
+                    if (std::isdigit(static_cast<unsigned char>(c))) d.push_back(c);
+                    else if (!d.empty()) break;
+                }
+                return d.empty() ? 0 : static_cast<uint32_t>(std::stoul(d));
+            };
+            uint32_t c = extractDigits(s.substr(0, s1));
+            uint32_t g = extractDigits(s.substr(s1 + 1, s2 - s1 - 1));
+            uint32_t m = extractDigits(s.substr(s2 + 1));
+            if (c > 0 && g > 0 && m > 0) {
+                out.cpu = c;
+                out.gpu = g;
+                out.mem = m;
+                return true;
+            }
+        }
+    }
+
+    // Keyword search: cpu, gpu, ram/mem
+    std::string lower = lowerAscii(ocStr);
+    auto findKeywordVal = [&lower](const std::string& kw) -> uint32_t {
+        size_t pos = lower.find(kw);
+        if (pos == std::string::npos) return 0;
+        pos += kw.size();
+        while (pos < lower.size() && (lower[pos] == ' ' || lower[pos] == '=' || lower[pos] == ':' || lower[pos] == '~'))
+            pos++;
+        std::string digits;
+        while (pos < lower.size() && std::isdigit(static_cast<unsigned char>(lower[pos]))) {
+            digits.push_back(lower[pos]);
+            pos++;
+        }
+        return digits.empty() ? 0 : static_cast<uint32_t>(std::stoul(digits));
+    };
+
+    uint32_t c = findKeywordVal("cpu");
+    uint32_t g = findKeywordVal("gpu");
+    uint32_t m = findKeywordVal("ram");
+    if (m == 0) m = findKeywordVal("mem");
+
+    if (c > 0) out.cpu = c;
+    if (g > 0) out.gpu = g;
+    if (m > 0) out.mem = m;
+
+    return true;
+}
+
+bool hasSysClkProfile(const std::string& sdRoot, uint64_t titleId) {
+    const std::string cfgPath = autorunSysClkConfigPath(sdRoot);
+    std::ifstream in(cfgPath);
+    if (!in) return false;
+    std::string targetSection = "[" + lowerAscii(autorunTitleIdToString(titleId)) + "]";
+    std::string line;
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.front() == '[') {
+            size_t end = line.find(']');
+            if (end != std::string::npos) {
+                std::string sec = lowerAscii(line.substr(0, end + 1));
+                if (sec == targetSection) return true;
+            }
+        }
+    }
+    return false;
+}
+
+bool applySysClkProfile(const std::string& sdRoot,
+                        uint64_t titleId,
+                        const SysClkProfile& profile,
+                        std::string& error) {
+    const std::string cfgPath = autorunSysClkConfigPath(sdRoot);
+    if (!makeDirectories(cleanRoot(sdRoot) + "/config/sys-clk")) {
+        error = "Unable to create sys-clk configuration directory.";
+        return false;
+    }
+
+    std::string titleIdHex = autorunTitleIdToString(titleId);
+    std::string targetSection = "[" + lowerAscii(titleIdHex) + "]";
+
+    std::vector<std::string> lines;
+    {
+        std::ifstream in(cfgPath);
+        if (in) {
+            std::string line;
+            while (std::getline(in, line)) {
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                lines.push_back(std::move(line));
+            }
+        }
+    }
+
+    std::vector<std::string> newSection;
+    newSection.push_back("[" + titleIdHex + "]");
+    newSection.push_back("handheld_cpu=" + std::to_string(profile.cpu));
+    newSection.push_back("handheld_gpu=" + std::to_string(profile.gpu));
+    newSection.push_back("handheld_mem=" + std::to_string(profile.mem));
+    newSection.push_back("docked_cpu=" + std::to_string(profile.cpu));
+    newSection.push_back("docked_gpu=" + std::to_string(profile.gpu));
+    newSection.push_back("docked_mem=" + std::to_string(profile.mem));
+
+    int secStart = -1;
+    int secEnd = -1;
+    for (size_t i = 0; i < lines.size(); ++i) {
+        if (!lines[i].empty() && lines[i].front() == '[') {
+            size_t endBracket = lines[i].find(']');
+            if (endBracket != std::string::npos) {
+                std::string s = lowerAscii(lines[i].substr(0, endBracket + 1));
+                if (s == targetSection) {
+                    secStart = static_cast<int>(i);
+                    size_t j = i + 1;
+                    while (j < lines.size() && (lines[j].empty() || lines[j].front() != '[')) {
+                        j++;
+                    }
+                    secEnd = static_cast<int>(j);
+                    break;
+                }
+            }
+        }
+    }
+
+    if (secStart >= 0) {
+        lines.erase(lines.begin() + secStart, lines.begin() + secEnd);
+        lines.insert(lines.begin() + secStart, newSection.begin(), newSection.end());
+    } else {
+        if (!lines.empty() && !lines.back().empty()) {
+            lines.push_back("");
+        }
+        lines.insert(lines.end(), newSection.begin(), newSection.end());
+    }
+
+    std::ofstream out(cfgPath, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        error = "Unable to write sys-clk config: " + cfgPath;
+        return false;
+    }
+    for (const auto& l : lines) {
+        out << l << "\n";
+    }
+    return true;
+}
+
+bool removeSysClkProfile(const std::string& sdRoot,
+                         uint64_t titleId,
+                         std::string& error) {
+    const std::string cfgPath = autorunSysClkConfigPath(sdRoot);
+    std::ifstream in(cfgPath);
+    if (!in) return true;
+
+    std::string targetSection = "[" + lowerAscii(autorunTitleIdToString(titleId)) + "]";
+    std::vector<std::string> lines;
+    std::string line;
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        lines.push_back(std::move(line));
+    }
+    in.close();
+
+    int secStart = -1;
+    int secEnd = -1;
+    for (size_t i = 0; i < lines.size(); ++i) {
+        if (!lines[i].empty() && lines[i].front() == '[') {
+            size_t endBracket = lines[i].find(']');
+            if (endBracket != std::string::npos) {
+                std::string s = lowerAscii(lines[i].substr(0, endBracket + 1));
+                if (s == targetSection) {
+                    secStart = static_cast<int>(i);
+                    size_t j = i + 1;
+                    while (j < lines.size() && (lines[j].empty() || lines[j].front() != '[')) {
+                        j++;
+                    }
+                    secEnd = static_cast<int>(j);
+                    break;
+                }
+            }
+        }
+    }
+
+    if (secStart >= 0) {
+        lines.erase(lines.begin() + secStart, lines.begin() + secEnd);
+        std::ofstream out(cfgPath, std::ios::binary | std::ios::trunc);
+        if (!out) {
+            error = "Unable to update sys-clk config: " + cfgPath;
+            return false;
+        }
+        for (const auto& l : lines) {
+            out << l << "\n";
+        }
+    }
+    return true;
+}
+
+std::vector<uint8_t> generateNacp(const std::string& title,
+                                  const std::string& author,
+                                  const std::string& version) {
+    constexpr size_t kNacpSize = 0x4000;
+    constexpr size_t kNameSize = 0x200;
+    constexpr size_t kAuthorSize = 0x100;
+    constexpr size_t kEntrySize = kNameSize + kAuthorSize; // 0x300
+    constexpr size_t kPlainLangCount = 16;
+    constexpr size_t kDisplayVersionOffset = 0x3060;
+    constexpr size_t kTitlesDataFormatOffset = 0x3215;
+
+    std::vector<uint8_t> nacp(kNacpSize, 0);
+
+    for (size_t i = 0; i < kPlainLangCount; ++i) {
+        size_t base = i * kEntrySize;
+        std::strncpy(reinterpret_cast<char*>(nacp.data() + base),
+                     title.c_str(), kNameSize - 1);
+        std::strncpy(reinterpret_cast<char*>(nacp.data() + base + kNameSize),
+                     author.c_str(), kAuthorSize - 1);
+    }
+
+    std::strncpy(reinterpret_cast<char*>(nacp.data() + kDisplayVersionOffset),
+                 version.c_str(), 15);
+    nacp[kTitlesDataFormatOffset] = 0; // plain uncompressed format
+
+    uint32_t langFlags = 0x0000FFFF;
+    std::memcpy(nacp.data() + 0x3030, &langFlags, sizeof(langFlags));
+
+    return nacp;
+}
+
+std::vector<uint8_t> buildPfs0(
+    const std::vector<std::pair<std::string, std::vector<uint8_t>>>& files) {
+    std::vector<uint8_t> strings;
+    std::vector<uint32_t> nameOffsets;
+    for (const auto& f : files) {
+        nameOffsets.push_back(static_cast<uint32_t>(strings.size()));
+        strings.insert(strings.end(), f.first.begin(), f.first.end());
+        strings.push_back(0);
+    }
+
+    std::vector<uint8_t> out;
+    out.reserve(16 + files.size() * 24 + strings.size() + 1024);
+
+    out.push_back('P'); out.push_back('F'); out.push_back('S'); out.push_back('0');
+
+    auto append32 = [&out](uint32_t val) {
+        for (int i = 0; i < 4; ++i)
+            out.push_back(static_cast<uint8_t>((val >> (i * 8)) & 0xFF));
+    };
+    auto append64 = [&out](uint64_t val) {
+        for (int i = 0; i < 8; ++i)
+            out.push_back(static_cast<uint8_t>((val >> (i * 8)) & 0xFF));
+    };
+
+    append32(static_cast<uint32_t>(files.size()));
+    append32(static_cast<uint32_t>(strings.size()));
+    append32(0); // reserved
+
+    uint64_t offset = 0;
+    for (size_t i = 0; i < files.size(); ++i) {
+        append64(offset);
+        append64(static_cast<uint64_t>(files[i].second.size()));
+        append32(nameOffsets[i]);
+        append32(0); // reserved
+        offset += files[i].second.size();
+    }
+
+    out.insert(out.end(), strings.begin(), strings.end());
+    for (const auto& f : files) {
+        out.insert(out.end(), f.second.begin(), f.second.end());
+    }
+
+    return out;
+}
+
+bool parsePfs0(const uint8_t* data, size_t size,
+               std::vector<std::pair<std::string, std::vector<uint8_t>>>& outFiles) {
+    outFiles.clear();
+    if (!data || size < 16) return false;
+    if (data[0] != 'P' || data[1] != 'F' || data[2] != 'S' || data[3] != '0') return false;
+
+    auto read32 = [data](size_t pos) -> uint32_t {
+        uint32_t v = 0;
+        for (int i = 0; i < 4; ++i)
+            v |= (static_cast<uint32_t>(data[pos + i]) << (i * 8));
+        return v;
+    };
+    auto read64 = [data](size_t pos) -> uint64_t {
+        uint64_t v = 0;
+        for (int i = 0; i < 8; ++i)
+            v |= (static_cast<uint64_t>(data[pos + i]) << (i * 8));
+        return v;
+    };
+
+    uint32_t numFiles = read32(4);
+    uint32_t stringTableSize = read32(8);
+
+    uint64_t headerSize = 16ull + static_cast<uint64_t>(numFiles) * 24ull + stringTableSize;
+    if (headerSize > size) return false;
+
+    const uint8_t* strings = data + 16 + numFiles * 24;
+    const uint8_t* dataSection = data + headerSize;
+    uint64_t remainingData = size - headerSize;
+
+    for (uint32_t i = 0; i < numFiles; ++i) {
+        size_t entryPos = 16 + i * 24;
+        uint64_t offset = read64(entryPos);
+        uint64_t fsize = read64(entryPos + 8);
+        uint32_t nameOffset = read32(entryPos + 16);
+
+        if (nameOffset >= stringTableSize) return false;
+        if (offset + fsize > remainingData) return false;
+
+        std::string name = reinterpret_cast<const char*>(strings + nameOffset);
+        std::vector<uint8_t> content(dataSection + offset, dataSection + offset + fsize);
+        outFiles.emplace_back(std::move(name), std::move(content));
+    }
+    return true;
+}
+
+namespace {
+
+const std::vector<uint8_t>& defaultIconJpeg() {
+    static const std::vector<uint8_t> kFallback = []() {
+        std::ifstream in("resources/icon.jpg", std::ios::binary);
+        if (in) {
+            return std::vector<uint8_t>((std::istreambuf_iterator<char>(in)),
+                                        std::istreambuf_iterator<char>());
+        }
+        return std::vector<uint8_t>{
+            0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 'J', 'F', 'I', 'F', 0x00, 0x01, 0x01, 0x00, 0x00, 0x01,
+            0x00, 0x01, 0x00, 0x00, 0xFF, 0xDB, 0x00, 0x43, 0x00, 0x08, 0x06, 0x06, 0x07, 0x06, 0x05, 0x08,
+            0x07, 0x07, 0x07, 0x09, 0x09, 0x08, 0x0A, 0x0C, 0x14, 0x0D, 0x0C, 0x0B, 0x0B, 0x0C, 0x19, 0x12,
+            0x13, 0x0F, 0x14, 0x1D, 0x1A, 0x1F, 0x1E, 0x1D, 0x1A, 0x1C, 0x1C, 0x20, 0x24, 0x2E, 0x27, 0x20,
+            0x22, 0x2C, 0x23, 0x1C, 0x1C, 0x28, 0x37, 0x29, 0x2C, 0x30, 0x31, 0x34, 0x34, 0x34, 0x1F, 0x27,
+            0x39, 0x3D, 0x38, 0x32, 0x3C, 0x2E, 0x33, 0x34, 0x32, 0xFF, 0xC0, 0x00, 0x0B, 0x08, 0x01, 0x00,
+            0x01, 0x00, 0x01, 0x01, 0x11, 0x00, 0xFF, 0xC4, 0x00, 0x1F, 0x00, 0x00, 0x01, 0x05, 0x01, 0x01,
+            0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04,
+            0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0xFF, 0xDA, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3F,
+            0x00, 0x7F, 0x00, 0xFF, 0xD9
+        };
+    }();
+    return kFallback;
+}
+
+std::vector<uint8_t> makeNca(uint64_t titleId, uint8_t contentType, const std::vector<uint8_t>& body) {
+    std::vector<uint8_t> nca(0x4000, 0);
+    nca[0x200] = 'N'; nca[0x201] = 'C'; nca[0x202] = 'A'; nca[0x203] = '3';
+    nca[0x204] = 0; // Distribution type (download)
+    nca[0x205] = contentType; // 1 = Program, 3 = Control, 0 = Meta
+    nca[0x206] = 2; // Key generation
+    uint64_t totalSize = 0x4000 + body.size();
+    std::memcpy(nca.data() + 0x208, &totalSize, 8);
+    std::memcpy(nca.data() + 0x210, &titleId, 8);
+    nca.insert(nca.end(), body.begin(), body.end());
+    return nca;
+}
+
+std::string bytesToHex(const uint8_t* bytes, size_t len) {
+    static const char hexDigits[] = "0123456789abcdef";
+    std::string res;
+    res.reserve(len * 2);
+    for (size_t i = 0; i < len; ++i) {
+        res.push_back(hexDigits[(bytes[i] >> 4) & 0x0F]);
+        res.push_back(hexDigits[bytes[i] & 0x0F]);
+    }
+    return res;
+}
+
+} // namespace
+
+std::vector<uint8_t> generateAutorunStubNsp(
+    const std::string& title,
+    uint64_t titleId,
+    const std::vector<uint8_t>& iconJpeg) {
+    std::string titleIdHex = autorunTitleIdToString(titleId);
+    std::vector<uint8_t> nacp = generateNacp(title, "AutoRun / pipensx", "1.0.0");
+    const std::vector<uint8_t>& icon = !iconJpeg.empty() ? iconJpeg : defaultIconJpeg();
+
+    // 1. Program payload (forwarder executable)
+    std::vector<uint8_t> progPayload;
+    {
+        std::ifstream nroIn("romfs:/autorun-forwarder.nro", std::ios::binary);
+        if (!nroIn) {
+            nroIn.open("build-switch/romfs/autorun-forwarder.nro", std::ios::binary);
+        }
+        if (nroIn) {
+            progPayload.assign(std::istreambuf_iterator<char>(nroIn),
+                               std::istreambuf_iterator<char>());
+        }
+    }
+    if (progPayload.empty()) {
+        progPayload.resize(0x1000, 0);
+        progPayload[0x10] = 'N';
+        progPayload[0x11] = 'R';
+        progPayload[0x12] = 'O';
+        progPayload[0x13] = '0';
+        uint32_t sz = 0x1000;
+        std::memcpy(progPayload.data() + 0x18, &sz, 4);
+    }
+
+    // 2. Control NCA
+    std::vector<uint8_t> controlPfs0 = buildPfs0({
+        { "control.nacp", nacp },
+        { "icon_AmericanEnglish.dat", icon }
+    });
+    std::vector<uint8_t> controlNca = makeNca(titleId, 3 /* Control */, controlPfs0);
+
+    // 3. Program NCA
+    std::vector<uint8_t> progNca = makeNca(titleId, 1 /* Program */, progPayload);
+
+    // 4. CNMT NCA
+    uint8_t progSha[32] = {0};
+    sha256(progNca.data(), progNca.size(), progSha);
+
+    uint8_t controlSha[32] = {0};
+    sha256(controlNca.data(), controlNca.size(), controlSha);
+
+    std::vector<uint8_t> cnmtData(0x20 + 0x10 + 56 * 2, 0);
+    std::memcpy(cnmtData.data(), &titleId, 8);
+    cnmtData[12] = 0x80; // NcmContentMetaType_Application
+    cnmtData[13] = 0;    // NcmContentMetaPlatform_Nx
+    uint16_t extSize = 0x10;
+    std::memcpy(cnmtData.data() + 14, &extSize, 2);
+    uint16_t contentCount = 2;
+    std::memcpy(cnmtData.data() + 16, &contentCount, 2);
+
+    uint64_t patchId = titleId ^ 0x800;
+    std::memcpy(cnmtData.data() + 0x20, &patchId, 8);
+
+    // Record 0 (Program)
+    uint8_t* pRec = cnmtData.data() + 0x30;
+    std::memcpy(pRec, progSha, 32);
+    std::memcpy(pRec + 32, progSha, 16); // content_id
+    uint32_t progSzLow = static_cast<uint32_t>(progNca.size() & 0xFFFFFFFF);
+    uint8_t progSzHigh = static_cast<uint8_t>((progNca.size() >> 32) & 0xFF);
+    std::memcpy(pRec + 48, &progSzLow, 4);
+    pRec[52] = progSzHigh;
+    pRec[53] = 0;
+    pRec[54] = 1; // Program
+    pRec[55] = 0;
+
+    // Record 1 (Control)
+    uint8_t* cRec = cnmtData.data() + 0x30 + 56;
+    std::memcpy(cRec, controlSha, 32);
+    std::memcpy(cRec + 32, controlSha, 16); // content_id
+    uint32_t ctlSzLow = static_cast<uint32_t>(controlNca.size() & 0xFFFFFFFF);
+    uint8_t ctlSzHigh = static_cast<uint8_t>((controlNca.size() >> 32) & 0xFF);
+    std::memcpy(cRec + 48, &ctlSzLow, 4);
+    cRec[52] = ctlSzHigh;
+    cRec[53] = 0;
+    cRec[54] = 3; // Control
+    cRec[55] = 0;
+
+    std::vector<uint8_t> cnmtPfs0 = buildPfs0({
+        { titleIdHex + "_00000000.cnmt", cnmtData }
+    });
+    std::vector<uint8_t> metaNca = makeNca(titleId, 0 /* Meta */, cnmtPfs0);
+
+    uint8_t metaSha[32] = {0};
+    sha256(metaNca.data(), metaNca.size(), metaSha);
+
+    std::string progName = bytesToHex(progSha, 16) + ".nca";
+    std::string controlName = bytesToHex(controlSha, 16) + ".nca";
+    std::string metaName = bytesToHex(metaSha, 16) + ".cnmt.nca";
+
+    return buildPfs0({
+        { controlName, controlNca },
+        { metaName, metaNca },
+        { progName, progNca },
+        { "control.nacp", nacp },
+        { "icon_AmericanEnglish.dat", icon },
+        { titleIdHex + ".cnmt", cnmtData }
+    });
+}
+
+bool installAutorunForwarder(const std::string& sdRoot,
+                             install::InstallBackend& backend,
+                             const std::string& gameTitle,
+                             const std::string& gameFolder,
+                             const std::string& executable,
+                             const std::vector<uint8_t>& iconJpeg,
+                             std::string& error) {
+    if (gameTitle.empty() || gameFolder.empty() || executable.empty()) {
+        error = "Invalid arguments for forwarder installation.";
+        return false;
+    }
+
+    uint64_t titleId = generateAutorunTitleId(gameTitle);
+    std::string titleIdHex = autorunTitleIdToString(titleId);
+
+    if (!createAutorunForwarderConfig(sdRoot, titleId, gameTitle, gameFolder, executable, error)) {
+        return false;
+    }
+
+    std::vector<uint8_t> nsp = generateAutorunStubNsp(gameTitle, titleId, iconJpeg);
+    if (nsp.empty()) {
+        error = "Failed to generate stub NSP.";
+        return false;
+    }
+
+    std::vector<std::pair<std::string, std::vector<uint8_t>>> files;
+    if (!parsePfs0(nsp.data(), nsp.size(), files)) {
+        error = "Failed to parse generated stub NSP PFS0.";
+        return false;
+    }
+
+    std::string taskId = "autorun-fwd-" + titleIdHex;
+    std::string packageName = gameTitle + " [" + titleIdHex + "].nsp";
+
+    if (!backend.beginPackage(taskId, packageName)) {
+        error = backend.error();
+        return false;
+    }
+
+    for (const auto& f : files) {
+        if (!backend.beginFile(f.first, f.second.size())) {
+            error = backend.error();
+            backend.rollbackPackage();
+            return false;
+        }
+        if (!backend.writeFile(f.second.data(), f.second.size())) {
+            error = backend.error();
+            backend.rollbackPackage();
+            return false;
+        }
+        if (!backend.endFile()) {
+            error = backend.error();
+            backend.rollbackPackage();
+            return false;
+        }
+    }
+
+    bool alreadyInstalled = false;
+    if (!backend.commitPackage(alreadyInstalled)) {
+        error = backend.error();
+        backend.rollbackPackage();
+        return false;
+    }
+
+    return true;
 }
 
 } // namespace pipensx

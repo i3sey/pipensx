@@ -208,6 +208,20 @@ target_compile_options(pipensx_updater PRIVATE
     -fdata-sections
 )
 
+program_target(autorun_forwarder
+    "src/autorun/autorun_forwarder.c")
+set_target_properties(autorun_forwarder PROPERTIES
+    C_STANDARD 11
+)
+target_include_directories(autorun_forwarder PRIVATE src)
+target_compile_definitions(autorun_forwarder PRIVATE __SWITCH__)
+target_compile_options(autorun_forwarder PRIVATE
+    -Wall
+    -Wextra
+    -ffunction-sections
+    -fdata-sections
+)
+
 # Sysmodule probe (docs/plans/SYSMODULE_PLAN.md, ESHOP_APPLET_PLAN.md §5.4):
 # a daemon that answers the background-download and half-awake hypotheses on
 # hardware. It links neither borealis nor the torrent engine, so it needs its
@@ -413,6 +427,19 @@ add_custom_target(sync_update_helper ALL
     BYPRODUCTS "${ROMFS_DIR}/pipensx-updater.nro" pipensx_updater.nacp
     VERBATIM
 )
+add_custom_target(sync_autorun_forwarder ALL
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${ROMFS_DIR}"
+    COMMAND ${NX_NACPTOOL_EXE}
+        --create "AutoRun Forwarder" "AutoRun / pipensx" "1.0.0"
+        autorun_forwarder.nacp
+    COMMAND ${NX_ELF2NRO_EXE}
+        autorun_forwarder.elf "${ROMFS_DIR}/autorun-forwarder.nro"
+        --icon=${APP_ICON}
+        --nacp=autorun_forwarder.nacp
+    DEPENDS autorun_forwarder
+    BYPRODUCTS "${ROMFS_DIR}/autorun-forwarder.nro" autorun_forwarder.nacp
+    VERBATIM
+)
 file(COPY
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/borealis/resources/img/sys
     DESTINATION ${ROMFS_DIR}/img
@@ -462,6 +489,7 @@ if (NOT EXISTS "${PIPENSX_CATALOG_SNAPSHOT_ABS}")
 endif ()
 set(PIPENSX_NRO_DEPENDS pipensx)
 list(APPEND PIPENSX_NRO_DEPENDS sync_update_helper)
+list(APPEND PIPENSX_NRO_DEPENDS sync_autorun_forwarder)
 list(APPEND PIPENSX_NRO_DEPENDS sync_i18n)
 list(APPEND PIPENSX_NRO_DEPENDS sync_web)
 # The two JSON snapshots are ~19 MB — over 80% of the NRO uncompressed — and

@@ -1,8 +1,10 @@
 #include "app/autorun_service.hpp"
 #include "app/catalog_service.hpp"
 #include "app/download_manager.hpp"
+#include "app/nacp_language.hpp"
 #include "app/task_files.hpp"
 #include "core/metainfo.h"
+#include "install/install_backend.hpp"
 
 #include <borealis/extern/nlohmann/json.hpp>
 
@@ -413,6 +415,191 @@ void test_catalog_autorun_parsing() {
     assert(entry.autorun->translator == "Box64");
 }
 
+void test_title_id_and_forwarder_config() {
+    // 1. Title ID generation
+    uint64_t id1 = generateAutorunTitleId("FlatOut 2");
+    uint64_t id2 = generateAutorunTitleId("flatout 2");
+    assert(id1 == id2);
+    assert((id1 >> 32) == 0x0100BEEF);
+    assert((id1 & 0xFFFFULL) == 0x0000ULL);
+
+    std::string hex1 = autorunTitleIdToString(id1);
+    assert(hex1.size() == 16);
+    assert(hex1.substr(0, 8) == "0100BEEF");
+    assert(hex1.substr(12, 4) == "0000");
+
+    uint64_t idDeus = generateAutorunTitleId("Deus Ex: Human Revolution");
+    assert(idDeus != id1);
+    assert((idDeus >> 32) == 0x0100BEEF);
+
+    // 2. Forwarder INI Config
+    const std::string sd = createTempDir("forwarder_cfg_test");
+    std::string error;
+    assert(createAutorunForwarderConfig(sd, id1, "FlatOut 2", "FlatOut2", "FlatOut2.exe", error));
+    assert(error.empty());
+
+    std::string cfgPath = autorunForwarderConfigPath(sd, id1);
+    assert(fs::is_regular_file(cfgPath));
+
+    std::string title, folder, exe, nro, argv;
+    assert(readAutorunForwarderConfig(sd, id1, title, folder, exe, nro, argv, error));
+    assert(title == "FlatOut 2");
+    assert(folder == "FlatOut2");
+    assert(exe == "FlatOut2.exe");
+    assert(nro == "sdmc:/switch/wine/wine-nx-runtime.nro");
+    assert(argv.find("C:\\Games\\FlatOut2\\FlatOut2.exe") != std::string::npos);
+
+    assert(removeAutorunForwarderConfig(sd, id1, error));
+    assert(!fs::exists(cfgPath));
+
+    removeTempDir(sd);
+}
+
+void test_sys_clk_profile_parsing_and_config() {
+    // 1. Parsing
+    SysClkProfile p1;
+    assert(parseOverclockProfile("1785/768/1900", p1));
+    assert(p1.cpu == 1785);
+    assert(p1.gpu == 768);
+    assert(p1.mem == 1900);
+
+    SysClkProfile p2;
+    assert(parseOverclockProfile("1963 / 1152 / 2133", p2));
+    assert(p2.cpu == 1963);
+    assert(p2.gpu == 1152);
+    assert(p2.mem == 2133);
+
+    SysClkProfile p3;
+    assert(parseOverclockProfile("CPU 1785, GPU 614, RAM 1900", p3));
+    assert(p3.cpu == 1785);
+    assert(p3.gpu == 614);
+    assert(p3.mem == 1900);
+
+    SysClkProfile p4;
+    assert(parseOverclockProfile("Safe Max (CPU 1785, GPU 614, RAM 1900)", p4));
+    assert(p4.cpu == 1785);
+    assert(p4.gpu == 614);
+    assert(p4.mem == 1900);
+
+    SysClkProfile p5;
+    assert(parseOverclockProfile("cpu=1900, gpu=844, mem=2000", p5));
+    assert(p5.cpu == 1900);
+    assert(p5.gpu == 844);
+    assert(p5.mem == 2000);
+
+    SysClkProfile pDef;
+    assert(parseOverclockProfile("Safe Max", pDef));
+    assert(pDef.cpu == 1785);
+    assert(pDef.gpu == 768);
+    assert(pDef.mem == 1900);
+
+    // 2. sys-clk config.ini manipulation
+    const std::string sd = createTempDir("sys_clk_cfg_test");
+    uint64_t tid = generateAutorunTitleId("FlatOut 2");
+
+    assert(!isSysClkInstalled(sd));
+    assert(!hasSysClkProfile(sd, tid));
+
+    std::string error;
+    // Apply profile
+    assert(applySysClkProfile(sd, tid, p1, error));
+    assert(isSysClkInstalled(sd));
+    assert(hasSysClkProfile(sd, tid));
+
+    const std::string iniContent = readFile(autorunSysClkConfigPath(sd));
+    assert(iniContent.find("[" + autorunTitleIdToString(tid) + "]") != std::string::npos);
+    assert(iniContent.find("handheld_cpu=1785") != std::string::npos);
+    assert(iniContent.find("docked_gpu=768") != std::string::npos);
+
+    // Update profile idempotently
+    SysClkProfile pUpdate{1963, 1152, 2133};
+    assert(applySysClkProfile(sd, tid, pUpdate, error));
+    const std::string iniUpdated = readFile(autorunSysClkConfigPath(sd));
+    assert(iniUpdated.find("handheld_cpu=1963") != std::string::npos);
+    assert(iniUpdated.find("handheld_cpu=1785") == std::string::npos);
+
+    // Remove profile
+    assert(removeSysClkProfile(sd, tid, error));
+    assert(!hasSysClkProfile(sd, tid));
+    const std::string iniRemoved = readFile(autorunSysClkConfigPath(sd));
+    assert(iniRemoved.find("[" + autorunTitleIdToString(tid) + "]") == std::string::npos);
+
+    removeTempDir(sd);
+}
+
+void test_nacp_and_pfs0() {
+    // 1. NACP generation
+    const std::string gameTitle = "Barnyard";
+    const std::string author = "AutoRun / pipensx";
+    std::vector<uint8_t> nacp = generateNacp(gameTitle, author, "1.0.0");
+    assert(nacp.size() == 0x4000);
+
+    std::string parsedName, parsedAuthor;
+    assert(nacpReadLanguage(nacp.data(), nacp.size(), 0, parsedName, parsedAuthor));
+    assert(parsedName == gameTitle);
+    assert(parsedAuthor == author);
+
+    // 2. PFS0 build and parse
+    std::vector<uint8_t> data1 = {'H', 'e', 'l', 'l', 'o'};
+    std::vector<uint8_t> data2 = {'W', 'o', 'r', 'l', 'd', '!'};
+    std::vector<std::pair<std::string, std::vector<uint8_t>>> files = {
+        { "first.txt", data1 },
+        { "sub/second.bin", data2 }
+    };
+    std::vector<uint8_t> pfs0 = buildPfs0(files);
+    assert(pfs0.size() > 16);
+    assert(pfs0[0] == 'P' && pfs0[1] == 'F' && pfs0[2] == 'S' && pfs0[3] == '0');
+
+    std::vector<std::pair<std::string, std::vector<uint8_t>>> parsed;
+    assert(parsePfs0(pfs0.data(), pfs0.size(), parsed));
+    assert(parsed.size() == 2);
+    assert(parsed[0].first == "first.txt");
+    assert(parsed[0].second == data1);
+    assert(parsed[1].first == "sub/second.bin");
+    assert(parsed[1].second == data2);
+}
+
+void test_stub_nsp_generation_and_install() {
+    const std::string sd = createTempDir("stub_nsp_test");
+    const std::string gameTitle = "FlatOut 2";
+    uint64_t tid = generateAutorunTitleId(gameTitle);
+
+    // 1. Generate Stub-NSP
+    std::vector<uint8_t> nsp = generateAutorunStubNsp(gameTitle, tid);
+    assert(nsp.size() > 16);
+    assert(nsp[0] == 'P' && nsp[1] == 'F' && nsp[2] == 'S' && nsp[3] == '0');
+
+    std::vector<std::pair<std::string, std::vector<uint8_t>>> files;
+    assert(parsePfs0(nsp.data(), nsp.size(), files));
+    assert(files.size() >= 6);
+
+    // Verify control.nacp exists and parses correctly
+    bool nacpFound = false;
+    for (const auto& f : files) {
+        if (f.first == "control.nacp") {
+            nacpFound = true;
+            std::string name, author;
+            assert(nacpReadLanguage(f.second.data(), f.second.size(), 0, name, author));
+            assert(name == gameTitle);
+            assert(author == "AutoRun / pipensx");
+        }
+    }
+    assert(nacpFound);
+
+    // 2. Install forwarder via InstallBackend
+    auto backend = install::createInstallBackend(sd, install::InstallStorageTarget::SdCard);
+    assert(backend != nullptr);
+
+    std::string error;
+    assert(installAutorunForwarder(sd, *backend, gameTitle, "FlatOut2", "FlatOut2.exe", {}, error));
+    assert(error.empty());
+
+    // Verify forwarder config was created
+    assert(fs::is_regular_file(autorunForwarderConfigPath(sd, tid)));
+
+    removeTempDir(sd);
+}
+
 } // namespace
 
 int main() {
@@ -425,6 +612,10 @@ int main() {
     test_full_game_deploy();
     test_autorun_task_queue_and_paths();
     test_catalog_autorun_parsing();
+    test_title_id_and_forwarder_config();
+    test_sys_clk_profile_parsing_and_config();
+    test_nacp_and_pfs0();
+    test_stub_nsp_generation_and_install();
     std::printf("autorun tests passed\n");
     return 0;
 }
