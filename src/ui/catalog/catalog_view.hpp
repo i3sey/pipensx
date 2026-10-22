@@ -180,10 +180,11 @@ public:
                  SwitchDeployService* deploy = nullptr,
                 CatalogSection section = CatalogSection::Games,
                 std::function<void()> openGames = {},
-                std::function<void()> onSourcesRefreshed = {})
+                std::function<void()> onSourcesRefreshed = {},
+                AutorunService* autorun = nullptr)
         : brls::Box(brls::Axis::COLUMN), manager_(manager), catalog_(catalog),
           metadata_(metadata), installed_(installed), settings_(settings),
-          favorites_(favorites), deploy_(deploy),
+          favorites_(favorites), deploy_(deploy), autorun_(autorun),
           openDownloads_(std::move(openDownloads)),
           openGames_(std::move(openGames)),
           onSourcesRefreshed_(std::move(onSourcesRefreshed)), section_(section),
@@ -286,6 +287,39 @@ public:
         header_->addView(searchField_);
 
         addView(header_);
+
+        autorunBanner_ = new brls::Box(brls::Axis::ROW);
+        autorunBanner_->setAlignItems(brls::AlignItems::CENTER);
+        autorunBanner_->setPadding(10, 16, 10, 16);
+        autorunBanner_->setMarginTop(0);
+        autorunBanner_->setMarginBottom(8);
+        autorunBanner_->setMarginLeft(28);
+        autorunBanner_->setMarginRight(28);
+        autorunBanner_->setCornerRadius(12);
+        autorunBanner_->setBackgroundColor(theme::panel());
+
+        autorunBannerLabel_ = new brls::Label();
+        autorunBannerLabel_->setFontSize(theme::kFontSmall);
+        autorunBannerLabel_->setTextColor(theme::warning());
+        autorunBannerLabel_->setSingleLine(false);
+        autorunBannerLabel_->setGrow(1.0f);
+        autorunBannerLabel_->setText(tr("pipensx/autorun/banner_not_installed"));
+        autorunBanner_->addView(autorunBannerLabel_);
+
+        autorunInstallButton_ = new brls::Button();
+        autorunInstallButton_->setStyle(&brls::BUTTONSTYLE_PRIMARY);
+        autorunInstallButton_->setHeight(40);
+        autorunInstallButton_->setMarginLeft(16);
+        autorunInstallButton_->setShrink(0.0f);
+        autorunInstallButton_->setText(tr("pipensx/autorun/install_runtime"));
+        autorunInstallButton_->registerClickAction([this](brls::View*) {
+            startRuntimeInstallation();
+            return true;
+        });
+        autorunBanner_->addView(autorunInstallButton_);
+        addView(autorunBanner_);
+        updateAutorunBanner();
+
         recyclerHost_ = recyclerHost(recycler_);
         addView(recyclerHost_);
         if (catalogRefreshInFlight()) {
@@ -326,6 +360,7 @@ public:
 
     void willAppear(bool resetState) override {
         brls::Box::willAppear(resetState);
+        updateAutorunBanner();
         timer_.start(1000);
         if (deferredBrowse_ && !activityStackHasOverlay()) {
             auto ready = std::move(deferredBrowse_);
@@ -437,7 +472,8 @@ public:
             installed_, settings_,
             std::move(onFailure), std::move(onChange), std::move(onClose),
             favorites_, deploy_, false,
-            section_ == CatalogSection::Ports));
+            section_ == CatalogSection::Ports,
+            autorun_));
     }
 
 private:
@@ -1059,7 +1095,7 @@ private:
     }
 
     bool playerFilterUsable() const {
-        return section_ != CatalogSection::Ports && metadata_ &&
+        return section_ == CatalogSection::Games && metadata_ &&
                metadata_->hasPlayerData();
     }
 
@@ -1100,7 +1136,7 @@ private:
     void updatePlayerChipVisibility() {
         if (!filterPlayers_)
             return;
-        const bool usable = section_ != CatalogSection::Ports && metadata_ &&
+        const bool usable = section_ == CatalogSection::Games && metadata_ &&
                             metadata_->hasPlayerData();
         filterPlayers_->setVisibility(usable ? brls::Visibility::VISIBLE
                                              : brls::Visibility::GONE);
@@ -1299,6 +1335,7 @@ private:
 
     void refreshLiveState() {
         scheduleStorageRefresh();
+        updateAutorunBanner();
         if (deferredBrowse_ && !activityStackHasOverlay()) {
             auto ready = std::move(deferredBrowse_);
             const bool preserve = deferredPreserveViewport_;
@@ -1675,6 +1712,68 @@ private:
         });
     }
 
+    bool isAutorunRuntimeInstalled() const {
+        if (autorun_)
+            return autorun_->isInstalled();
+        return isAutorunInstalled("sdmc:");
+    }
+
+    void updateAutorunBanner() {
+        if (!autorunBanner_)
+            return;
+        if (section_ == CatalogSection::AutoRun && !isAutorunRuntimeInstalled()) {
+            autorunBanner_->setVisibility(brls::Visibility::VISIBLE);
+        } else {
+            autorunBanner_->setVisibility(brls::Visibility::GONE);
+        }
+    }
+
+    void startRuntimeInstallation() {
+        if (runtimeInstallInFlight_->exchange(true))
+            return;
+        if (autorunInstallButton_) {
+            autorunInstallButton_->setState(brls::ButtonState::DISABLED);
+            autorunInstallButton_->setAlpha(0.32f);
+            autorunInstallButton_->setText(tr("pipensx/autorun/installing_runtime"));
+        }
+        auto alive = alive_;
+        auto inFlight = runtimeInstallInFlight_;
+        AutorunService* autorun = autorun_;
+        std::thread([this, alive, inFlight, autorun]() {
+            std::string error;
+            bool ok = false;
+            if (autorun) {
+                AutorunUpdateCheck check = autorun->checkForUpdates();
+                if (check.ok && !check.release.archiveUrl.empty()) {
+                    ok = autorun->downloadAndInstallRuntime(check.release, error);
+                } else if (!check.error.empty()) {
+                    error = check.error;
+                } else {
+                    ok = autorun->bootstrapEnvironment(error);
+                }
+            } else {
+                ok = prepareAutorunEnvironment("sdmc:", error);
+            }
+            brls::sync([this, alive, inFlight, ok, error]() {
+                inFlight->store(false);
+                if (!alive->load())
+                    return;
+                if (autorunInstallButton_) {
+                    autorunInstallButton_->setState(brls::ButtonState::ENABLED);
+                    autorunInstallButton_->setAlpha(1.0f);
+                    autorunInstallButton_->setText(tr("pipensx/autorun/install_runtime"));
+                }
+                updateAutorunBanner();
+                if (ok) {
+                    brls::Application::notify(tr("pipensx/autorun/runtime_installed"));
+                } else {
+                    brls::Application::notify(
+                        tr("pipensx/autorun/runtime_install_failed", error));
+                }
+            });
+        }).detach();
+    }
+
     DownloadManager* manager_;
     CatalogService* catalog_;
     GameMetadataService* metadata_;
@@ -1682,6 +1781,7 @@ private:
     AppSettings* settings_;
     FavoritesService* favorites_;
     SwitchDeployService* deploy_;
+    AutorunService* autorun_ = nullptr;
     std::function<void()> openDownloads_;
     std::function<void()> openGames_;
     std::function<void()> onSourcesRefreshed_;
@@ -1692,6 +1792,11 @@ private:
     brls::Box* header_ = nullptr;
     CatalogFreshnessBadge* freshnessBadge_ = nullptr;
     SearchIconButton* searchField_ = nullptr;
+    brls::Box* autorunBanner_ = nullptr;
+    brls::Label* autorunBannerLabel_ = nullptr;
+    brls::Button* autorunInstallButton_ = nullptr;
+    std::shared_ptr<std::atomic<bool>> runtimeInstallInFlight_ =
+        std::make_shared<std::atomic<bool>>(false);
     brls::Button* clearSearch_ = nullptr;
     brls::Button* sortButton_ = nullptr;
     brls::Button* filterFavorites_ = nullptr;

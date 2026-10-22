@@ -251,7 +251,7 @@ private:
 
     struct Slot {
         CatalogEntry entry;
-        enum class Kicker { Popular, New, Ports } kicker;
+        enum class Kicker { Popular, New, Ports, AutoRun } kicker;
     };
 
     std::string kickerText(Slot::Kicker kicker) const {
@@ -262,6 +262,8 @@ private:
             return tr("pipensx/catalog/shelf_new");
         case Slot::Kicker::Ports:
             return tr("pipensx/nav/ports");
+        case Slot::Kicker::AutoRun:
+            return tr("pipensx/nav/autorun");
         }
         return {};
     }
@@ -290,15 +292,19 @@ private:
         const std::vector<CatalogEntry>& all = *snapshot;
         std::vector<int> games;
         std::vector<int> ports;
+        std::vector<int> autoruns;
         games.reserve(all.size());
         ports.reserve(all.size());
+        autoruns.reserve(all.size());
         for (size_t i = 0; i < all.size(); ++i) {
             const CatalogEntry& entry = all[i];
             if (entry.isHiddenByDefault())
                 continue;
             const GameMetadata* meta =
                 metadata_ ? metadata_->findByInfoHash(entry.infoHash) : nullptr;
-            if (catalogEntryIsGame(entry, meta))
+            if (entry.isAutorun())
+                autoruns.push_back(static_cast<int>(i));
+            else if (catalogEntryIsGame(entry, meta))
                 games.push_back(static_cast<int>(i));
             else
                 ports.push_back(static_cast<int>(i));
@@ -366,9 +372,11 @@ private:
         fill(games, true, Slot::Kicker::Popular, 2, true);
         fill(games, false, Slot::Kicker::New, 2, true);
         fill(ports, true, Slot::Kicker::Ports, 1, true);
+        fill(autoruns, false, Slot::Kicker::AutoRun, 1, true);
         fill(ports, false, Slot::Kicker::Ports, 1, true);
         fill(games, true, Slot::Kicker::Popular, kMaxSlots, false);
         fill(games, false, Slot::Kicker::New, kMaxSlots, false);
+        fill(autoruns, false, Slot::Kicker::AutoRun, kMaxSlots, false);
         fill(ports, true, Slot::Kicker::Ports, kMaxSlots, false);
         fill(ports, false, Slot::Kicker::Ports, kMaxSlots, false);
         presentSelection();

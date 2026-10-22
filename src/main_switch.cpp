@@ -65,8 +65,11 @@ extern "C" {
 #include "ui/settings/settings_view.hpp"
 #include "ui/theme.hpp"
 #include "app/display_policy.hpp"
+#include "app/autorun_service.hpp"
+#include "ui/detail/autorun_post_install_dialog.hpp"
 
 using pipensx::AppSettings;
+using pipensx::AutorunService;
 using pipensx::CatalogService;
 using pipensx::CatalogSnapshot;
 using pipensx::CatalogEntry;
@@ -162,12 +165,13 @@ public:
                  UpdateService* updater, FavoritesService* favorites,
                  WebServer* webServer, SwitchDeployService* deploy,
                  GameUpdateService* gameUpdates,
-                 PortUninstallService* portUninstall)
+                 PortUninstallService* portUninstall,
+                 AutorunService* autorun = nullptr)
         : manager_(manager), catalog_(catalog), metadata_(metadata),
           installed_(installed), settings_(settings), updater_(updater),
           favorites_(favorites), webServer_(webServer),
           deploy_(deploy), gameUpdates_(gameUpdates),
-          portUninstall_(portUninstall) {
+          portUninstall_(portUninstall), autorun_(autorun) {
         auto* tabs = new pipensx::ui::MainFrame();
         using pipensx::ui::NavIconType;
         using pipensx::CatalogSection;
@@ -207,6 +211,21 @@ public:
                                        tabs->focusTab(NavIconType::Catalog);
                                    },
                                    [this] { refreshUpdateBadge(); });
+        });
+        tabs->addNavTab(tr("pipensx/nav/autorun"), NavIconType::AutoRun,
+                        [this, manager, catalog, metadata, installed,
+                         settings, favorites, deploy, autorun = autorun_, tabs] {
+            return new CatalogView(manager, catalog, metadata, installed,
+                                   settings,
+                                   [tabs] {
+                                       tabs->focusTab(NavIconType::Downloads);
+                                   },
+                                   favorites, deploy, CatalogSection::AutoRun,
+                                   [tabs] {
+                                       tabs->focusTab(NavIconType::Catalog);
+                                   },
+                                   [this] { refreshUpdateBadge(); },
+                                   autorun);
         });
         tabs->addSeparator();
         tabs->addNavTab(tr("pipensx/nav/downloads"), NavIconType::Downloads,
@@ -288,6 +307,9 @@ public:
         if (auto* ports = dynamic_cast<pipensx::ui::CatalogView*>(
                 tabs_->tabView(pipensx::ui::NavIconType::Ports)))
             ports->onSourcesPublished();
+        if (auto* autorun = dynamic_cast<pipensx::ui::CatalogView*>(
+                tabs_->tabView(pipensx::ui::NavIconType::AutoRun)))
+            autorun->onSourcesPublished();
         refreshUpdateBadge();
     }
 
@@ -432,8 +454,9 @@ private:
     FavoritesService* favorites_;
     WebServer* webServer_;
     SwitchDeployService* deploy_;
-    PortUninstallService* portUninstall_ = nullptr;
     GameUpdateService* gameUpdates_;
+    PortUninstallService* portUninstall_ = nullptr;
+    AutorunService* autorun_ = nullptr;
     pipensx::ui::MainFrame* tabs_ = nullptr;
     brls::AppletFrame* frame_;
     bool installedRefreshInFlight_ = false;
@@ -734,6 +757,7 @@ int main(int argc, char** argv) {
                                    "sdmc:/switch");
         PortUninstallService portUninstall(manager, "sdmc:/switch/pipensx",
                                            "sdmc:/switch");
+        AutorunService autorun("sdmc:");
         manager.setInstallTarget(
             installTargetFor(settings.get().installLocation));
         manager.setMaxActiveDownloads(settings.get().maxActiveDownloads);
@@ -975,7 +999,7 @@ int main(int argc, char** argv) {
                                            &installed, &settings, &updater,
                                            &favorites, &webServer,
                                            &deploy, &gameUpdates,
-                                           &portUninstall);
+                                           &portUninstall, &autorun);
 
         startupStage("push MainActivity");
         brls::Application::pushActivity(activity);
@@ -1380,7 +1404,16 @@ int main(int argc, char** argv) {
                 auto offer = deploy.takePendingDeployOffer();
                 if (offer) {
                     const std::string offerId = offer->taskId;
-                    auto inspection = std::move(offer->inspection);
+                    if (offer->autorunPostDeploy) {
+                        deployOfferDialogOpen = true;
+                        pipensx::ui::openAutorunPostInstallDialog(
+                            offerId, manager, &autorun,
+                            [&deploy, offerId, &deployOfferDialogOpen] {
+                                deployOfferDialogOpen = false;
+                                deploy.dismissDeployOffer(offerId);
+                            });
+                    } else {
+                        auto inspection = std::move(offer->inspection);
                     if (offer->autoStart && inspection.canStart()) {
                         std::string startError;
                         if (deploy.start(offerId, startError))
@@ -1455,6 +1488,7 @@ int main(int argc, char** argv) {
                             deploy.dismissDeployOffer(offerId);
                         });
                     dialog->open();
+                    }
                     }
                 }
             }

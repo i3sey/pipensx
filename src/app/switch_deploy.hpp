@@ -227,6 +227,7 @@ public:
         std::string taskId;
         SwitchDeployInspection inspection;
         bool autoStart = false;
+        bool autorunPostDeploy = false;
     };
     bool armAutoCopy(const std::string& taskId);
     void clearAutoCopy(const std::string& taskId);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "catalog_service.hpp"
+#include "catalog_section.hpp"
 #include "game_metadata_service.hpp"
 
 #include <cstddef>
@@ -89,6 +90,7 @@ CatalogPresentation resolveCatalogPresentation(
 enum class CatalogSection {
     Games,
     Ports,
+    AutoRun,
 };
 
 enum class CatalogSortMode {
@@ -202,8 +204,12 @@ private:
     bool pending_ = false;
 };
 
-bool catalogEntryIsGame(const CatalogEntry& entry,
-                        const GameMetadata* metadata);
+inline bool catalogEntryIsGame(const CatalogEntry& entry,
+                               const GameMetadata* metadata) {
+    return catalogTitleIsGame(entry.title, entry.titleId,
+                              metadata ? metadata->titleId : std::string(),
+                              entry.packageType);
+}
 
 inline bool catalogEntryIsPort(const CatalogEntry& entry,
                                const GameMetadata* metadata) {
@@ -213,6 +219,12 @@ inline bool catalogEntryIsPort(const CatalogEntry& entry,
 inline bool catalogEntryInSection(const CatalogEntry& entry,
                                   const GameMetadata* metadata,
                                   CatalogSection section) {
+    if (section == CatalogSection::AutoRun) {
+        return entry.isAutorun();
+    }
+    if (entry.isAutorun()) {
+        return false;
+    }
     return catalogEntryIsGame(entry, metadata) ==
            (section == CatalogSection::Games);
 }

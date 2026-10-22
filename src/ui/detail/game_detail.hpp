@@ -111,11 +111,12 @@ public:
                         FavoritesService* favorites = nullptr,
                         SwitchDeployService* deploy = nullptr,
                         bool autoInstall = false,
-                        bool portInstall = false)
+                        bool portInstall = false,
+                        AutorunService* autorun = nullptr)
         : entry_(std::move(entry)), lastFailure_(std::move(lastFailure)),
           manager_(manager), metadata_(metadata), installed_(installed),
           settings_(settings), favorites_(favorites),
-          deploy_(deploy),
+          deploy_(deploy), autorun_(autorun),
           onFailure_(std::move(onFailure)), onChange_(std::move(onChange)),
           onClose_(std::move(onClose)),
           alive_(std::make_shared<std::atomic<bool>>(true)),
@@ -270,7 +271,9 @@ private:
         installContract_->setTextColor(theme::textTertiary());
         installContract_->setMarginTop(6);
         installContract_->setSingleLine(false);
-        installContract_->setText(tr("pipensx/detail/smart_install_contract"));
+        installContract_->setText(entry_.isAutorun()
+            ? tr("pipensx/autorun/install_contract")
+            : tr("pipensx/detail/smart_install_contract"));
         left->addView(installContract_);
 
         // File selection and the wishlist toggle share one row: a fourth full-width
@@ -468,6 +471,27 @@ private:
         addFactRow(table, tr("pipensx/detail/fact_topic"),
                    presentation_.topicUrl);
         addFactRow(table, tr("pipensx/detail/fact_dlc"), dlcFact());
+        if (entry_.isAutorun() && entry_.autorun) {
+            const auto& ar = *entry_.autorun;
+            addFactRow(table, tr("pipensx/autorun/fact_platform"),
+                       tr("pipensx/autorun/fact_platform_val"));
+            std::string statusText = autorunCompatibilityBadge(ar);
+            if (!ar.status.empty())
+                statusText += " (" + ar.status + ")";
+            addFactRow(table, tr("pipensx/autorun/fact_status"), statusText);
+            if (!ar.translator.empty())
+                addFactRow(table, tr("pipensx/autorun/fact_translator"), ar.translator);
+            if (!ar.renderer.empty())
+                addFactRow(table, tr("pipensx/autorun/fact_renderer"), ar.renderer);
+            if (!ar.overclock.empty())
+                addFactRow(table, tr("pipensx/autorun/fact_overclock"), ar.overclock);
+            if (!ar.executable.empty())
+                addFactRow(table, tr("pipensx/autorun/fact_executable"), ar.executable);
+            if (!ar.targetFolder.empty())
+                addFactRow(table, tr("pipensx/autorun/fact_target_folder"), ar.targetFolder);
+            if (!ar.notes.empty())
+                addFactRow(table, tr("pipensx/autorun/fact_notes"), ar.notes);
+        }
         right->addView(table);
     }
 
@@ -527,6 +551,9 @@ private:
     // S5: reversible "Show more" instead of a hard cut.
     void buildDescription(brls::Box* right) {
         std::string text = presentation_.description;
+        if (text.empty() && entry_.autorun && !entry_.autorun->notes.empty()) {
+            text = entry_.autorun->notes;
+        }
         if (text.empty()) {
             auto* missing = new brls::Label();
             missing->setFontSize(theme::kFontSmall);
@@ -875,6 +902,31 @@ private:
                 brls::Application::pushActivity(
                     new DetailsActivity(task->id, manager_, deploy_));
             return;
+        }
+        if (entry_.isAutorun()) {
+            const std::string sdRoot = autorun_ ? autorun_->sdRoot() : "sdmc:";
+            if (!isAutorunInstalled(sdRoot)) {
+                auto* dialog = new brls::Dialog(
+                    tr("pipensx/autorun/runtime_required_desc"));
+                dialog->addButton(tr("pipensx/autorun/install_runtime"), [this] {
+                    if (autorun_) {
+                        std::string error;
+                        AutorunUpdateCheck check = autorun_->checkForUpdates();
+                        if (check.ok && !check.release.archiveUrl.empty()) {
+                            autorun_->downloadAndInstallRuntime(check.release, error);
+                        } else {
+                            autorun_->bootstrapEnvironment(error);
+                        }
+                    } else {
+                        std::string error;
+                        prepareAutorunEnvironment("sdmc:", error);
+                    }
+                    brls::Application::notify(tr("pipensx/autorun/runtime_installed"));
+                });
+                dialog->addButton(tr("pipensx/common/cancel"), [] {});
+                dialog->open();
+                return;
+            }
         }
         // One-tap install: resolve, then queue silently (picker only on Select files).
         startInstall(false);
@@ -1496,6 +1548,7 @@ private:
     AppSettings* settings_;
     FavoritesService* favorites_ = nullptr;
     SwitchDeployService* deploy_ = nullptr;
+    AutorunService* autorun_ = nullptr;
     std::string titleId_;
     std::string playersFact_;
     std::string operationMessage_;

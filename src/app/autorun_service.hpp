@@ -31,6 +31,25 @@ struct AutorunProfile {
     }
 };
 
+inline std::string autorunCompatibilityBadge(const AutorunProfile& profile) {
+    std::string icon = "🟢";
+    if (profile.status == "playable_with_tweaks") {
+        icon = "🟡";
+    } else if (profile.status == "issues" || profile.status == "unplayable") {
+        icon = "🔴";
+    }
+    if (!profile.fps.empty()) {
+        return icon + " " + profile.fps + " FPS";
+    }
+    if (profile.status == "playable_with_tweaks") {
+        return icon + " Tweaks";
+    }
+    if (profile.status == "issues" || profile.status == "unplayable") {
+        return icon + " Issues";
+    }
+    return icon + " Playable";
+}
+
 enum class AutorunValidationResult {
     ValidPortable,
     InstallerDetected,

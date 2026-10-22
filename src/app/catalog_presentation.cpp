@@ -190,13 +190,6 @@ CatalogPresentation resolveCatalogPresentation(
     return result;
 }
 
-bool catalogEntryIsGame(const CatalogEntry& entry,
-                        const GameMetadata* metadata) {
-    return catalogTitleIsGame(entry.title, entry.titleId,
-                              metadata ? metadata->titleId : std::string(),
-                              entry.packageType);
-}
-
 bool catalogEntryHasMatchedTitle(const GameMetadata* metadata) {
     return metadata && looksLikeTitleId(metadata->titleId);
 }
@@ -512,6 +505,9 @@ bool buildCatalogBrowse(const CatalogBrowseRequest& request,
             request.installedTitleIds.count(
                 upperAscii(presentation.titleId)) != 0)
             baseBadge = request.installedBadge;
+        else if (entry.isAutorun() && entry.autorun) {
+            baseBadge = autorunCompatibilityBadge(*entry.autorun);
+        }
         std::string badge = selectable ? baseBadge : task->second;
         result.titles.push_back(std::move(presentation.title));
         result.iconUrls.push_back(std::move(presentation.iconUrl));

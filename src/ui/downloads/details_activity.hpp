@@ -13,6 +13,7 @@
 #include "ui/common/speed_graph.hpp"
 #include "ui/common/ui_helpers.hpp"
 #include "ui/downloads/task_files_activity.hpp"
+#include "ui/detail/autorun_post_install_dialog.hpp"
 #include "ui/i18n.hpp"
 #include "ui/theme.hpp"
 
@@ -124,6 +125,9 @@ public:
         copyButton_ = addActionButton(sidebar, tr("pipensx/deploy/install_port"),
                                       &brls::BUTTONSTYLE_PRIMARY);
         copyButton_->setVisibility(brls::Visibility::GONE);
+        autorunButton_ = addActionButton(sidebar, tr("pipensx/autorun/action_create_forwarder"),
+                                         &brls::BUTTONSTYLE_PRIMARY);
+        autorunButton_->setVisibility(brls::Visibility::GONE);
 
         pauseButton_->registerClickAction([this](brls::View*) {
             onPauseResume();
@@ -155,6 +159,12 @@ public:
         });
         copyButton_->registerClickAction([this](brls::View*) {
             onCopyToSwitch();
+            return true;
+        });
+        autorunButton_->registerClickAction([this](brls::View*) {
+            openAutorunPostInstallDialog(taskId_, *manager_, nullptr, [this] {
+                refresh();
+            });
             return true;
         });
 
@@ -714,6 +724,13 @@ private:
         instructionButton_->setVisibility(
             showInstruction ? brls::Visibility::VISIBLE : brls::Visibility::GONE);
         setButtonAvailable(instructionButton_, showInstruction);
+
+        const bool showAutorun =
+            task.mode == TransferMode::AutoRunInstall &&
+            task.status == DownloadStatus::Completed;
+        autorunButton_->setVisibility(
+            showAutorun ? brls::Visibility::VISIBLE : brls::Visibility::GONE);
+        setButtonAvailable(autorunButton_, showAutorun);
         const bool copyEnabled = showSwitchFiles && !installed_ &&
             ((deploy.active() && deploy.taskId == taskId_) ||
              (copyAvailable_ && !busyElsewhere && !packageBusy));
@@ -819,6 +836,7 @@ private:
     ProgressBar* deployProgress_;
     brls::Button* filesButton_;
     brls::Button* copyButton_;
+    brls::Button* autorunButton_;
     brls::Button* instructionButton_;
     brls::Label* error_;
     brls::RepeatingTimer timer_;

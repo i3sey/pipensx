@@ -1,4 +1,5 @@
 #include "app/autorun_service.hpp"
+#include "app/catalog_presentation.hpp"
 #include "app/catalog_service.hpp"
 #include "app/download_manager.hpp"
 #include "app/nacp_language.hpp"
@@ -242,6 +243,64 @@ void test_stub_nsp_headers_and_nacp() {
     removeTempDir(sd);
 }
 
+// 5. Тестирование бейджей совместимости и фильтрации разделов каталога (Фаза 6)
+void test_compatibility_badges_and_sections() {
+    AutorunProfile p1;
+    p1.status = "playable";
+    p1.fps = "60";
+    assert(autorunCompatibilityBadge(p1) == "🟢 60 FPS");
+
+    AutorunProfile p2;
+    p2.status = "playable_with_tweaks";
+    p2.fps = "30";
+    assert(autorunCompatibilityBadge(p2) == "🟡 30 FPS");
+
+    AutorunProfile p3;
+    p3.status = "issues";
+    p3.fps = "15-20";
+    assert(autorunCompatibilityBadge(p3) == "🔴 15-20 FPS");
+
+    AutorunProfile p4;
+    p4.status = "playable";
+    p4.fps = "";
+    assert(autorunCompatibilityBadge(p4) == "🟢 Playable");
+
+    AutorunProfile p5;
+    p5.status = "playable_with_tweaks";
+    p5.fps = "";
+    assert(autorunCompatibilityBadge(p5) == "🟡 Tweaks");
+
+    AutorunProfile p6;
+    p6.status = "issues";
+    p6.fps = "";
+    assert(autorunCompatibilityBadge(p6) == "🔴 Issues");
+
+    // CatalogSection::AutoRun section routing
+    CatalogEntry arEntry;
+    arEntry.title = "FlatOut 2";
+    arEntry.type = "autorun";
+    arEntry.autorun = p1;
+    assert(arEntry.isAutorun());
+    assert(catalogEntryInSection(arEntry, nullptr, CatalogSection::AutoRun));
+    assert(!catalogEntryInSection(arEntry, nullptr, CatalogSection::Games));
+    assert(!catalogEntryInSection(arEntry, nullptr, CatalogSection::Ports));
+
+    CatalogEntry nativeEntry;
+    nativeEntry.title = "Super Mario Odyssey [0100000000010000] [v0]";
+    nativeEntry.titleId = "0100000000010000";
+    assert(!nativeEntry.isAutorun());
+    assert(!catalogEntryInSection(nativeEntry, nullptr, CatalogSection::AutoRun));
+    assert(catalogEntryInSection(nativeEntry, nullptr, CatalogSection::Games));
+    assert(!catalogEntryInSection(nativeEntry, nullptr, CatalogSection::Ports));
+
+    CatalogEntry portEntry;
+    portEntry.title = "Doom Retro [Homebrew]";
+    assert(!portEntry.isAutorun());
+    assert(!catalogEntryInSection(portEntry, nullptr, CatalogSection::AutoRun));
+    assert(catalogEntryInSection(portEntry, nullptr, CatalogSection::Ports));
+    assert(!catalogEntryInSection(portEntry, nullptr, CatalogSection::Games));
+}
+
 } // namespace
 
 int main() {
@@ -249,6 +308,7 @@ int main() {
     test_registry_merge_safety();
     test_dxvk_conf_generation();
     test_stub_nsp_headers_and_nacp();
+    test_compatibility_badges_and_sections();
     std::printf("test_autorun_deploy: all assertions passed\n");
     return 0;
 }

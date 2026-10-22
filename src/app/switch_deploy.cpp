@@ -2867,14 +2867,22 @@ void SwitchDeployService::clearInspecting(const std::string& taskId) {
             std::string deployError;
             if (deployAutorun(taskId, deployError)) {
                 log_msg("[deploy] autorun deploy completed for %s\n", taskId.c_str());
+                if (markerArmed)
+                    clearAutoCopy(taskId);
+                PendingOffer offer;
+                offer.taskId = taskId;
+                offer.autorunPostDeploy = true;
+                std::lock_guard<std::mutex> lock(offerMutex_);
+                pendingOffer_ = std::move(offer);
+                return true;
             } else {
                 log_msg("[deploy] autorun deploy failed for %s: %s\n", taskId.c_str(), deployError.c_str());
+                if (markerArmed)
+                    clearAutoCopy(taskId);
+                std::lock_guard<std::mutex> lock(offerMutex_);
+                offerHandled_.insert(taskId);
+                return false;
             }
-            if (markerArmed)
-                clearAutoCopy(taskId);
-            std::lock_guard<std::mutex> lock(offerMutex_);
-            offerHandled_.insert(taskId);
-            return false;
         }
         // Every port waits for saved choices and an explicit start in the
         // remote panel, even when an older task has an auto-copy marker.

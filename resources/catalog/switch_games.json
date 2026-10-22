@@ -1,5 +1,605 @@
 [
   {
+    "title": "Ultimate Spider-Man",
+    "magnet": "magnet:?xt=urn:btih:C63BA9145F7DD24F851B406476529D5CD883B28A&dn=Ultimate%20Spider-Man&tr=http%3A%2F%2Fbt3.t-ru.org%2Fann%3Fmagnet",
+    "cover": "https://images.igdb.com/igdb/image/upload/t_cover_big/co2fsk.jpg",
+    "size": 1837424640,
+    "size_bytes": 1837424640,
+    "catalog_generated_at": 1792665000,
+    "published_date": 1792665000,
+    "topic_id": 6950007,
+    "url": "https://rutracker.org/forum/viewtopic.php?t=6950007",
+    "type": "autorun",
+    "category": "PC Ports",
+    "autorun": {
+      "dxvk_conf": "dxvk.enableAsync = true\ndxvk.numCompilerThreads = 4\nd3d9.maxFrameLatency = 1\n",
+      "executable": "USM.exe",
+      "fps": "30",
+      "notes": "30 кадров в секунду на Autorun Test Build 4. Управление геймпадом настроено.",
+      "overclock": "1785/768/1900",
+      "registry": "",
+      "renderer": "DXVK",
+      "status": "playable",
+      "target_folder": "UltimateSpiderMan",
+      "translator": "Box64"
+    },
+    "screenshots": [],
+    "languages": {
+      "interface": [],
+      "voice": []
+    }
+  },
+  {
+    "title": "Deus Ex: Game of the Year Edition",
+    "magnet": "magnet:?xt=urn:btih:C612294072E6314BFD2D5BF1C8236FC4EBC5337F&dn=Deus%20Ex:%20Game%20of%20the%20Year%20Edition&tr=http%3A%2F%2Fbt3.t-ru.org%2Fann%3Fmagnet",
+    "cover": "https://images.igdb.com/igdb/image/upload/t_cover_big/co1x79.jpg",
+    "size": 1717986918,
+    "size_bytes": 1717986918,
+    "catalog_generated_at": 1792665000,
+    "published_date": 1792665000,
+    "topic_id": 6950006,
+    "url": "https://rutracker.org/forum/viewtopic.php?t=6950006",
+    "type": "autorun",
+    "category": "PC Ports",
+    "autorun": {
+      "dxvk_conf": "dxvk.enableAsync = true\ndxvk.numCompilerThreads = 4\n",
+      "executable": "System/DeusEx.exe",
+      "fps": "30",
+      "notes": "Стабильные 30 FPS. Отличная энергоэффективность, работает на умеренном разгоне.",
+      "overclock": "1785/614/1900",
+      "registry": "",
+      "renderer": "Wine / DXVK",
+      "status": "playable",
+      "target_folder": "DeusEx",
+      "translator": "Box64"
+    },
+    "screenshots": [],
+    "languages": {
+      "interface": [],
+      "voice": []
+    }
+  },
+  {
+    "title": "Condemned: Criminal Origins",
+    "magnet": "magnet:?xt=urn:btih:7A8927848C60F3842D700192739AA9BCCF9CC5AF&dn=Condemned:%20Criminal%20Origins&tr=http%3A%2F%2Fbt3.t-ru.org%2Fann%3Fmagnet",
+    "cover": "https://images.igdb.com/igdb/image/upload/t_cover_big/co1r3k.jpg",
+    "size": 6710886400,
+    "size_bytes": 6710886400,
+    "catalog_generated_at": 1792665000,
+    "published_date": 1792665000,
+    "topic_id": 6950005,
+    "url": "https://rutracker.org/forum/viewtopic.php?t=6950005",
+    "type": "autorun",
+    "category": "PC Ports",
+    "autorun": {
+      "dxvk_conf": "dxvk.enableAsync = true\ndxvk.numCompilerThreads = 4\nd3d9.maxFrameLatency = 1\n",
+      "executable": "Condemned.exe",
+      "fps": "30",
+      "notes": "Около 30 кадров в секунду. Встроенная авто-настройка заголовка Condemned.exe от ошибки c000007b.",
+      "overclock": "1785/768/1900",
+      "registry": "",
+      "renderer": "DXVK",
+      "status": "playable",
+      "target_folder": "Condemned",
+      "translator": "Box64"
+    },
+    "screenshots": [],
+    "languages": {
+      "interface": [],
+      "voice": []
+    }
+  },
+  {
+    "title": "Dead Space",
+    "magnet": "magnet:?xt=urn:btih:32565628E7E8BBBC9C9E36FC780A3F65CA2346DC&dn=Dead%20Space&tr=http%3A%2F%2Fbt3.t-ru.org%2Fann%3Fmagnet",
+    "cover": "https://images.igdb.com/igdb/image/upload/t_cover_big/co1x78.jpg",
+    "size": 7654321098,
+    "size_bytes": 7654321098,
+    "catalog_generated_at": 1792665000,
+    "published_date": 1792665000,
+    "topic_id": 6950004,
+    "url": "https://rutracker.org/forum/viewtopic.php?t=6950004",
+    "type": "autorun",
+    "category": "PC Ports",
+    "autorun": {
+      "dxvk_conf": "dxvk.enableAsync = true\ndxvk.numCompilerThreads = 4\nd3d9.maxFrameLatency = 1\ndxgi.maxFrameLatency = 1\n",
+      "executable": "Dead Space.exe",
+      "fps": "30-40",
+      "notes": "Стабильные 30-40 кадров в секунду на сборке Autorun Build 4+. Полная поддержка геймпада.",
+      "overclock": "1785/768/1900",
+      "registry": "",
+      "renderer": "DXVK",
+      "status": "playable",
+      "target_folder": "DeadSpace",
+      "translator": "Box64"
+    },
+    "screenshots": [],
+    "languages": {
+      "interface": [],
+      "voice": []
+    }
+  },
+  {
+    "title": "Deadpool",
+    "magnet": "magnet:?xt=urn:btih:5A9B02FD24E516C7A8FD702D348C2E3DC5B23DA6&dn=Deadpool&tr=http%3A%2F%2Fbt3.t-ru.org%2Fann%3Fmagnet",
+    "cover": "https://images.igdb.com/igdb/image/upload/t_cover_big/co1r3m.jpg",
+    "size": 7516192768,
+    "size_bytes": 7516192768,
+    "catalog_generated_at": 1792665000,
+    "published_date": 1792665000,
+    "topic_id": 6922520,
+    "url": "https://rutracker.org/forum/viewtopic.php?t=6922520",
+    "type": "autorun",
+    "category": "PC Ports",
+    "autorun": {
+      "dxvk_conf": "dxvk.enableAsync = true\ndxvk.numCompilerThreads = 4\nd3d9.maxFrameLatency = 1\n",
+      "executable": "Deadpool.exe",
+      "fps": "25-30",
+      "notes": "FEX 4-core, DXVK. Долгая начальная компиляция шейдеров.",
+      "overclock": "1963/1152/2133",
+      "registry": "",
+      "renderer": "DXVK",
+      "status": "playable",
+      "target_folder": "Deadpool",
+      "translator": "FEX"
+    },
+    "screenshots": [],
+    "languages": {
+      "interface": [],
+      "voice": []
+    }
+  },
+  {
+    "title": "Grand Theft Auto IV",
+    "magnet": "magnet:?xt=urn:btih:4F8A91EC13D405B6F7EC691C237B1D2CB4A12CF5&dn=Grand%20Theft%20Auto%20IV&tr=http%3A%2F%2Fbt3.t-ru.org%2Fann%3Fmagnet",
+    "cover": "https://images.igdb.com/igdb/image/upload/t_cover_big/co1x7b.jpg",
+    "size": 14495514624,
+    "size_bytes": 14495514624,
+    "catalog_generated_at": 1792665000,
+    "published_date": 1792665000,
+    "topic_id": 6922519,
+    "url": "https://rutracker.org/forum/viewtopic.php?t=6922519",
+    "type": "autorun",
+    "category": "PC Ports",
+    "autorun": {
+      "dxvk_conf": "dxvk.enableAsync = true\ndxvk.numCompilerThreads = 4\nd3d9.maxFrameLatency = 1\n",
+      "executable": "GTAIV.exe",
+      "fps": "25-30",
+      "notes": "720p минимальные. Зависает катсцена первой миссии — её необходимо пропустить (skip), дальше игра идет 25-30 FPS.",
+      "overclock": "1963/1152/2133",
+      "registry": "",
+      "renderer": "DXVK",
+      "status": "playable_with_tweaks",
+      "target_folder": "GTAIV",
+      "translator": "Box64"
+    },
+    "screenshots": [],
+    "languages": {
+      "interface": [],
+      "voice": []
+    }
+  },
+  {
+    "title": "The Path",
+    "magnet": "magnet:?xt=urn:btih:3E7F80DB02C394A5E6DB580B126A0C1BA3F01BE4&dn=The%20Path&tr=http%3A%2F%2Fbt3.t-ru.org%2Fann%3Fmagnet",
+    "cover": "https://images.igdb.com/igdb/image/upload/t_cover_big/co204a.jpg",
+    "size": 1073741824,
+    "size_bytes": 1073741824,
+    "catalog_generated_at": 1792665000,
+    "published_date": 1792665000,
+    "topic_id": 6922518,
+    "url": "https://rutracker.org/forum/viewtopic.php?t=6922518",
+    "type": "autorun",
+    "category": "PC Ports",
+    "autorun": {
+      "dxvk_conf": "dxvk.enableAsync = true\ndxvk.numCompilerThreads = 4\n",
+      "executable": "ThePath.exe",
+      "fps": "25-30",
+      "notes": "20-30 FPS, FEX + Framebuffer. Медленные загрузки локаций.",
+      "overclock": "1963/1152/2133",
+      "registry": "",
+      "renderer": "DXVK",
+      "status": "playable_with_tweaks",
+      "target_folder": "ThePath",
+      "translator": "FEX"
+    },
+    "screenshots": [],
+    "languages": {
+      "interface": [],
+      "voice": []
+    }
+  },
+  {
+    "title": "Spider-Man: Web of Shadows",
+    "magnet": "magnet:?xt=urn:btih:2D6E79CAF1B283F4D5CA479A015F9B0A9D2E0AD3&dn=Spider-Man:%20Web%20of%20Shadows&tr=http%3A%2F%2Fbt3.t-ru.org%2Fann%3Fmagnet",
+    "cover": "https://images.igdb.com/igdb/image/upload/t_cover_big/co1r3l.jpg",
+    "size": 6442450944,
+    "size_bytes": 6442450944,
+    "catalog_generated_at": 1792665000,
+    "published_date": 1792665000,
+    "topic_id": 6922517,
+    "url": "https://rutracker.org/forum/viewtopic.php?t=6922517",
+    "type": "autorun",
+    "category": "PC Ports",
+    "autorun": {
+      "dxvk_conf": "dxvk.enableAsync = true\ndxvk.numCompilerThreads = 4\nd3d9.maxFrameLatency = 1\n",
+      "executable": "Spider-Man Web of Shadows.exe",
+      "fps": "20-30",
+      "notes": "20-30 FPS после компиляции шейдеров. Прямой запуск в обход лаунчера.",
+      "overclock": "1963/1152/2133",
+      "registry": "",
+      "renderer": "DXVK",
+      "status": "playable_with_tweaks",
+      "target_folder": "SpiderManWebOfShadows",
+      "translator": "Box64"
+    },
+    "screenshots": [],
+    "languages": {
+      "interface": [],
+      "voice": []
+    }
+  },
+  {
+    "title": "X-Men Origins: Wolverine",
+    "magnet": "magnet:?xt=urn:btih:1C5D68B9F0A172E3C4BF368F904E8A9F8C1D9FC2&dn=X-Men%20Origins:%20Wolverine&tr=http%3A%2F%2Fbt3.t-ru.org%2Fann%3Fmagnet",
+    "cover": "https://images.igdb.com/igdb/image/upload/t_cover_big/co1r5a.jpg",
+    "size": 6979321856,
+    "size_bytes": 6979321856,
+    "catalog_generated_at": 1792665000,
+    "published_date": 1792665000,
+    "topic_id": 6922516,
+    "url": "https://rutracker.org/forum/viewtopic.php?t=6922516",
+    "type": "autorun",
+    "category": "PC Ports",
+    "autorun": {
+      "dxvk_conf": "dxvk.enableAsync = true\ndxvk.numCompilerThreads = 4\nd3d9.maxFrameLatency = 1\n",
+      "executable": "Wolverine.exe",
+      "fps": "30",
+      "notes": "ОБЯЗАТЕЛЬНО транслятор FEX! 30 FPS (редкие просадки до 22). DXVK Sarek 1.13.0.",
+      "overclock": "2091/768/2015",
+      "registry": "",
+      "renderer": "DXVK",
+      "status": "playable",
+      "target_folder": "Wolverine",
+      "translator": "FEX"
+    },
+    "screenshots": [],
+    "languages": {
+      "interface": [],
+      "voice": []
+    }
+  },
+  {
+    "title": "Dead Space 3",
+    "magnet": "magnet:?xt=urn:btih:0B4C57A8E9F061D2B3AE257E893D7F8E7B0C8EB1&dn=Dead%20Space%203&tr=http%3A%2F%2Fbt3.t-ru.org%2Fann%3Fmagnet",
+    "cover": "https://images.igdb.com/igdb/image/upload/t_cover_big/co1x7d.jpg",
+    "size": 11811160064,
+    "size_bytes": 11811160064,
+    "catalog_generated_at": 1792665000,
+    "published_date": 1792665000,
+    "topic_id": 6922515,
+    "url": "https://rutracker.org/forum/viewtopic.php?t=6922515",
+    "type": "autorun",
+    "category": "PC Ports",
+    "autorun": {
+      "dxvk_conf": "dxvk.enableAsync = true\ndxvk.numCompilerThreads = 4\nd3d9.maxFrameLatency = 1\ndxgi.maxFrameLatency = 1\n",
+      "executable": "deadspace3.exe",
+      "fps": "40",
+      "notes": "Обязательно ставить лок 40 FPS! Работает плавно.",
+      "overclock": "1963/1152/2133",
+      "registry": "",
+      "renderer": "DXVK",
+      "status": "playable",
+      "target_folder": "DeadSpace3",
+      "translator": "Box64"
+    },
+    "screenshots": [],
+    "languages": {
+      "interface": [],
+      "voice": []
+    }
+  },
+  {
+    "title": "Dead Space 2",
+    "magnet": "magnet:?xt=urn:btih:9A3B46F7D8E950C1A2FD146D782C6E7D6A9B7DA0&dn=Dead%20Space%202&tr=http%3A%2F%2Fbt3.t-ru.org%2Fann%3Fmagnet",
+    "cover": "https://images.igdb.com/igdb/image/upload/t_cover_big/co1x7c.jpg",
+    "size": 10737418240,
+    "size_bytes": 10737418240,
+    "catalog_generated_at": 1792665000,
+    "published_date": 1792665000,
+    "topic_id": 6922514,
+    "url": "https://rutracker.org/forum/viewtopic.php?t=6922514",
+    "type": "autorun",
+    "category": "PC Ports",
+    "autorun": {
+      "dxvk_conf": "dxvk.enableAsync = true\ndxvk.numCompilerThreads = 4\nd3d9.maxFrameLatency = 1\ndxgi.maxFrameLatency = 1\n",
+      "executable": "deadspace2.exe",
+      "fps": "30",
+      "notes": "30 FPS (лок) стабильно. В начале возможны лаги в главном меню, далее геймплей идет гладко.",
+      "overclock": "1963/1152/2133",
+      "registry": "",
+      "renderer": "DXVK",
+      "status": "playable",
+      "target_folder": "DeadSpace2",
+      "translator": "Box64"
+    },
+    "screenshots": [],
+    "languages": {
+      "interface": [],
+      "voice": []
+    }
+  },
+  {
+    "title": "Faster Than Light (FTL)",
+    "magnet": "magnet:?xt=urn:btih:8F2A35E6C7D849B0F1EC035C671B5D6C5F8A6C9F&dn=Faster%20Than%20Light%20(FTL)&tr=http%3A%2F%2Fbt3.t-ru.org%2Fann%3Fmagnet",
+    "cover": "https://images.igdb.com/igdb/image/upload/t_cover_big/co1r7h.jpg",
+    "size": 262144000,
+    "size_bytes": 262144000,
+    "catalog_generated_at": 1792665000,
+    "published_date": 1792665000,
+    "topic_id": 6922513,
+    "url": "https://rutracker.org/forum/viewtopic.php?t=6922513",
+    "type": "autorun",
+    "category": "PC Ports",
+    "autorun": {
+      "dxvk_conf": "dxvk.enableAsync = true\ndxvk.numCompilerThreads = 2\n",
+      "executable": "FTLGame.exe",
+      "fps": "60",
+      "notes": "Стабильные 60 FPS без необходимости сильного разгона. Легковесный 2D тайтл.",
+      "overclock": "1224/460/1600",
+      "registry": "",
+      "renderer": "DXVK",
+      "status": "playable",
+      "target_folder": "FTL",
+      "translator": "Box64"
+    },
+    "screenshots": [],
+    "languages": {
+      "interface": [],
+      "voice": []
+    }
+  },
+  {
+    "title": "Devil May Cry 4",
+    "magnet": "magnet:?xt=urn:btih:6D0E13C4A5B627F8D9CAE13A459F3B4A3D6E4A7D&dn=Devil%20May%20Cry%204&tr=http%3A%2F%2Fbt3.t-ru.org%2Fann%3Fmagnet",
+    "cover": "https://images.igdb.com/igdb/image/upload/t_cover_big/co1x7f.jpg",
+    "size": 7516192768,
+    "size_bytes": 7516192768,
+    "catalog_generated_at": 1792665000,
+    "published_date": 1792665000,
+    "topic_id": 6922512,
+    "url": "https://rutracker.org/forum/viewtopic.php?t=6922512",
+    "type": "autorun",
+    "category": "PC Ports",
+    "autorun": {
+      "dxvk_conf": "dxvk.enableAsync = true\ndxvk.numCompilerThreads = 4\nd3d9.maxFrameLatency = 1\n",
+      "executable": "DevilMayCry4_DX9.exe",
+      "fps": "40",
+      "notes": "40 FPS (лок) стабильно на non-Special Edition. Статтеры при начальной компиляции шейдеров, далее 40 кадров стабильно.",
+      "overclock": "2200/844/2366",
+      "registry": "",
+      "renderer": "DXVK",
+      "status": "playable",
+      "target_folder": "DMC4",
+      "translator": "Box64"
+    },
+    "screenshots": [],
+    "languages": {
+      "interface": [],
+      "voice": []
+    }
+  },
+  {
+    "title": "Need For Speed: Undercover",
+    "magnet": "magnet:?xt=urn:btih:5C9D02B3F4A516E7C8B9D029348F2A3F2C5D3F6C&dn=Need%20For%20Speed:%20Undercover&tr=http%3A%2F%2Fbt3.t-ru.org%2Fann%3Fmagnet",
+    "cover": "https://images.igdb.com/igdb/image/upload/t_cover_big/co1xck.jpg",
+    "size": 5368709120,
+    "size_bytes": 5368709120,
+    "catalog_generated_at": 1792665000,
+    "published_date": 1792665000,
+    "topic_id": 6922511,
+    "url": "https://rutracker.org/forum/viewtopic.php?t=6922511",
+    "type": "autorun",
+    "category": "PC Ports",
+    "autorun": {
+      "dxvk_conf": "dxvk.enableAsync = true\ndxvk.numCompilerThreads = 4\nd3d9.maxFrameLatency = 1\n",
+      "executable": "nfs.exe",
+      "fps": "15-20",
+      "notes": "Запустилась Portable версия с RuTracker. 640x480 минимальные, DXVK.",
+      "overclock": "1963/1152/2133",
+      "registry": "",
+      "renderer": "DXVK",
+      "status": "playable_with_tweaks",
+      "target_folder": "NFSUndercover",
+      "translator": "Box64"
+    },
+    "screenshots": [],
+    "languages": {
+      "interface": [],
+      "voice": []
+    }
+  },
+  {
+    "title": "Barnyard",
+    "magnet": "magnet:?xt=urn:btih:3C7B12D5910FA8C49E7B28A9F02C4B6E8A1D2E3F&dn=Barnyard&tr=http%3A%2F%2Fbt3.t-ru.org%2Fann%3Fmagnet",
+    "cover": "https://images.igdb.com/igdb/image/upload/t_cover_big/co2047.jpg",
+    "size": 1610612736,
+    "size_bytes": 1610612736,
+    "catalog_generated_at": 1792665000,
+    "published_date": 1792665000,
+    "topic_id": 6922510,
+    "url": "https://rutracker.org/forum/viewtopic.php?t=6922510",
+    "type": "autorun",
+    "category": "PC Ports",
+    "autorun": {
+      "dxvk_conf": "dxvk.enableAsync = true\ndxvk.numCompilerThreads = 4\nd3d9.maxFrameLatency = 1\n",
+      "executable": "Barnyard.exe",
+      "fps": "45+",
+      "notes": "Стабильные 45+ FPS. Требуется твик реестра EnableGamepad=1 для включения геймпада.",
+      "overclock": "1963/1152/2133",
+      "registry": "[Software\\\\THQ\\\\Barnyard]\n\"EnableGamepad\"=dword:00000001\n",
+      "renderer": "DXVK",
+      "status": "playable_with_tweaks",
+      "target_folder": "Barnyard",
+      "translator": "Box64"
+    },
+    "screenshots": [],
+    "languages": {
+      "interface": [],
+      "voice": []
+    }
+  },
+  {
+    "title": "FlatOut 2",
+    "magnet": "magnet:?xt=urn:btih:10B83EF3082FA6CF29D81D227C3DAFCFE5165C01&dn=FlatOut%202&tr=http%3A%2F%2Fbt3.t-ru.org%2Fann%3Fmagnet",
+    "cover": "https://images.igdb.com/igdb/image/upload/t_cover_big/co2046.jpg",
+    "size": 2847592812,
+    "size_bytes": 2847592812,
+    "catalog_generated_at": 1792665000,
+    "published_date": 1792665000,
+    "topic_id": 6922509,
+    "url": "https://rutracker.org/forum/viewtopic.php?t=6922509",
+    "type": "autorun",
+    "category": "PC Ports",
+    "autorun": {
+      "dxvk_conf": "dxvk.enableAsync = true\ndxvk.numCompilerThreads = 4\ndxvk.maxChunkSize = 32\nd3d9.maxFrameLatency = 1\ndxgi.maxFrameLatency = 1\n",
+      "executable": "FlatOut2.exe",
+      "fps": "60",
+      "notes": "Стабильные 55-60 FPS с DXVK Sarek. Управление геймпадом нативно, твик разрешения 720p через реестр.",
+      "overclock": "1785/768/1900",
+      "registry": "[Software\\\\Bugbear\\\\FlatOut2]\n\"DisplayWidth\"=dword:00000500\n\"DisplayHeight\"=dword:000002d0\n\"Fullscreen\"=dword:00000001\n",
+      "renderer": "DXVK",
+      "status": "playable",
+      "target_folder": "FlatOut2",
+      "translator": "Box64"
+    },
+    "screenshots": [],
+    "languages": {
+      "interface": [],
+      "voice": []
+    }
+  },
+  {
+    "title": "Silent Hill 2 Enhanced Edition",
+    "magnet": "magnet:?xt=urn:btih:7E1F24D5B6C738A9E0DBF24B560A4C5B4E7F5B8E&dn=Silent%20Hill%202%20Enhanced%20Edition&tr=http%3A%2F%2Fbt3.t-ru.org%2Fann%3Fmagnet",
+    "cover": "https://images.igdb.com/igdb/image/upload/t_cover_big/co1x7e.jpg",
+    "size": 3758096384,
+    "size_bytes": 3758096384,
+    "catalog_generated_at": 1792665000,
+    "published_date": 1792665000,
+    "topic_id": 6920678,
+    "url": "https://rutracker.org/forum/viewtopic.php?t=6920678",
+    "type": "autorun",
+    "category": "PC Ports",
+    "autorun": {
+      "dxvk_conf": "dxvk.enableAsync = true\ndxvk.numCompilerThreads = 4\nd3d9.maxFrameLatency = 1\n",
+      "executable": "sh2pc.exe",
+      "fps": "30",
+      "notes": "Запуск напрямую через sh2pc.exe в обход лаунчера. Отключить Performance Mode в ini. 30 кадров стабильно.",
+      "overclock": "1785/921/1600",
+      "registry": "",
+      "renderer": "DXVK",
+      "status": "playable",
+      "target_folder": "SilentHill2EE",
+      "translator": "Box64"
+    },
+    "screenshots": [],
+    "languages": {
+      "interface": [],
+      "voice": []
+    }
+  },
+  {
+    "title": "Need For Speed: Carbon",
+    "magnet": "magnet:?xt=urn:btih:4B8C91A2E3F405D6B7A8C918237E192F1B4C2E5B&dn=Need%20For%20Speed:%20Carbon&tr=http%3A%2F%2Fbt3.t-ru.org%2Fann%3Fmagnet",
+    "cover": "https://images.igdb.com/igdb/image/upload/t_cover_big/co1xcj.jpg",
+    "size": 4294967296,
+    "size_bytes": 4294967296,
+    "catalog_generated_at": 1792665000,
+    "published_date": 1792665000,
+    "topic_id": 6919329,
+    "url": "https://rutracker.org/forum/viewtopic.php?t=6919329",
+    "type": "autorun",
+    "category": "PC Ports",
+    "autorun": {
+      "dxvk_conf": "dxvk.enableAsync = true\ndxvk.numCompilerThreads = 4\nd3d9.maxFrameLatency = 1\n",
+      "executable": "NFSC.exe",
+      "fps": "40+",
+      "notes": "40+ FPS (просадки до 30 в каньонах). Рекомендуется Widescreen Fix.",
+      "overclock": "1963/1152/2133",
+      "registry": "",
+      "renderer": "DXVK",
+      "status": "playable_with_tweaks",
+      "target_folder": "NFSC",
+      "translator": "Box64"
+    },
+    "screenshots": [],
+    "languages": {
+      "interface": [],
+      "voice": []
+    }
+  },
+  {
+    "title": "Need For Speed: Most Wanted",
+    "magnet": "magnet:?xt=urn:btih:7A2B91C4E0F18D53B6A2C918237E192F1B4C2E5A&dn=Need%20For%20Speed:%20Most%20Wanted&tr=http%3A%2F%2Fbt3.t-ru.org%2Fann%3Fmagnet",
+    "cover": "https://images.igdb.com/igdb/image/upload/t_cover_big/co1xci.jpg",
+    "size": 3221225472,
+    "size_bytes": 3221225472,
+    "catalog_generated_at": 1792665000,
+    "published_date": 1792665000,
+    "topic_id": 6915309,
+    "url": "https://rutracker.org/forum/viewtopic.php?t=6915309",
+    "type": "autorun",
+    "category": "PC Ports",
+    "autorun": {
+      "dxvk_conf": "dxvk.enableAsync = true\ndxvk.numCompilerThreads = 4\nd3d9.maxFrameLatency = 1\n",
+      "executable": "speed.exe",
+      "fps": "30-60",
+      "notes": "30-60 FPS (редкие просадки до 28 в густом трафике), 800x600 средние настройки, DXVK 1.10.3.",
+      "overclock": "1785/614/1900",
+      "registry": "",
+      "renderer": "DXVK",
+      "status": "playable_with_tweaks",
+      "target_folder": "NFSMW",
+      "translator": "Box64"
+    },
+    "screenshots": [],
+    "languages": {
+      "interface": [],
+      "voice": []
+    }
+  },
+  {
+    "title": "Deus Ex: Human Revolution",
+    "magnet": "magnet:?xt=urn:btih:8F7E2A91B4C302D918237E192F1B4C2E5A7B6C3D&dn=Deus%20Ex:%20Human%20Revolution&tr=http%3A%2F%2Fbt3.t-ru.org%2Fann%3Fmagnet",
+    "cover": "https://images.igdb.com/igdb/image/upload/t_cover_big/co1x77.jpg",
+    "size": 8589934592,
+    "size_bytes": 8589934592,
+    "catalog_generated_at": 1792665000,
+    "published_date": 1792665000,
+    "topic_id": 6910463,
+    "url": "https://rutracker.org/forum/viewtopic.php?t=6910463",
+    "type": "autorun",
+    "category": "PC Ports",
+    "autorun": {
+      "dxvk_conf": "dxvk.enableAsync = true\ndxvk.numCompilerThreads = 4\nd3d9.maxFrameLatency = 1\ndxgi.maxFrameLatency = 1\n",
+      "executable": "DXHR.exe",
+      "fps": "30",
+      "notes": "Играбельно с локом 30 FPS. ВАЖНО: графику и разрешение 960x540 выставлять строго через user.reg (внутриигровое меню сжимает экран).",
+      "overclock": "1963/1152/2133",
+      "registry": "[Software\\\\Eidos\\\\Deus Ex: HR]\n\"Aspect\"=\"16:9\"\n\"Fullscreen\"=dword:00000001\n\"ResolutionWidth\"=dword:000003c0\n\"ResolutionHeight\"=dword:0000021c\n\"AspectRatio\"=dword:00000002\n\"VSync\"=dword:00000000\n",
+      "renderer": "DXVK",
+      "status": "playable_with_tweaks",
+      "target_folder": "DeusExHR",
+      "translator": "Box64"
+    },
+    "screenshots": [],
+    "languages": {
+      "interface": [],
+      "voice": []
+    }
+  },
+  {
     "title": "Lost Odyssey (порт) [NRO][ENG]",
     "magnet": "magnet:?xt=urn:btih:B186C549E9620DD86D8AC7B7B2882C4B2396F3C7&tr=http%3A%2F%2Fbt3.t-ru.org%2Fann%3Fmagnet",
     "cover": "https://i7.imageban.ru/out/2026/10/17/74533c380b5ea89898dbbe22db209fd3.png",
