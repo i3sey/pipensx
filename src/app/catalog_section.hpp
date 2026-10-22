@@ -23,7 +23,9 @@ inline bool isPortTitle(const std::string& titleLower) {
         titleLower.find("repack") != std::string::npos) return false;
 
     if (titleLower.find("хоумбрю") != std::string::npos ||
-        titleLower.find("homebrew") != std::string::npos) return true;
+        titleLower.find("homebrew") != std::string::npos ||
+        titleLower.find("autorun") != std::string::npos ||
+        titleLower.find("wine-nx") != std::string::npos) return true;
     if (titleLower.find("(порт") != std::string::npos ||
         titleLower.find(" порт") != std::string::npos ||
         titleLower.find("порт)") != std::string::npos ||

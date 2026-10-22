@@ -21,3 +21,4 @@ GitHub issues rather than by extending these files.
   those measurements produced, superseding `SYSMODULE_PLAN.md` §4
 - [UI and UX](UI_PLAN.md)
 - [WebSeed support](WEBSEED_PLAN.md)
+- [AutoRun PC Game Integration](AUTORUN_INTEGRATION_PLAN.md)

@@ -53,3 +53,5 @@ bug-reports
 /dht.cache
 .DS_Store
 resources/.DS_Store
+*token*.json
+
