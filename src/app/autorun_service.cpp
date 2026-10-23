@@ -353,6 +353,52 @@ std::string resolveAutorunExecutable(const std::string& sdRoot,
     return findExecutableRelativePath(baseDir, expectedExe);
 }
 
+bool registerGameInLauncherLibrary(const std::string& sdRoot,
+                                   const std::string& exeFullPath,
+                                   const std::string& coverPath) {
+    const std::string iniPath = autorunWineRoot(sdRoot) + "/launcher-library-v2.ini";
+    std::string content;
+    std::ifstream in(iniPath);
+    if (in) {
+        content.assign(std::istreambuf_iterator<char>(in),
+                       std::istreambuf_iterator<char>());
+        in.close();
+    }
+    if (content.find("path=" + exeFullPath) != std::string::npos) {
+        return true;
+    }
+
+    uint32_t nextGameIndex = 0;
+    while (content.find("[game " + std::to_string(nextGameIndex) + "]") != std::string::npos) {
+        ++nextGameIndex;
+    }
+
+    std::ostringstream ss;
+    if (content.empty()) {
+        ss << "version=3\n";
+    } else {
+        ss << content;
+        if (!content.empty() && content.back() != '\n')
+            ss << "\n";
+    }
+
+    ss << "\n[game " << nextGameIndex << "]\n";
+    ss << "path=" << exeFullPath << "\n";
+    ss << "added-order=" << (nextGameIndex + 1) << "\n";
+    ss << "launched-order=0\n";
+    ss << "favorite=0\n";
+    if (!coverPath.empty()) {
+        ss << "portrait-art=" << coverPath << "\n";
+    }
+
+    std::ofstream out(iniPath, std::ios::binary | std::ios::trunc);
+    if (!out)
+        return false;
+    std::string outStr = ss.str();
+    out.write(outStr.data(), static_cast<std::streamsize>(outStr.size()));
+    return true;
+}
+
 std::string autorunForwarderConfigPath(const std::string& sdRoot, uint64_t titleId) {
     return autorunForwardersPath(sdRoot) + "/" + autorunTitleIdToString(titleId) + ".ini";
 }
@@ -781,6 +827,10 @@ bool deployAutorunGame(const std::string& sdRoot,
     if (targetOut) {
         targetOut << fullTarget << "\n";
     }
+
+    // 6. Register game in AutoRun GUI library (launcher-library-v2.ini)
+    std::string coverTarget = "sdmc:/switch/wine/drive_c/Games/" + gameFolder + "/cover.png";
+    registerGameInLauncherLibrary(sdRoot, fullTarget, coverTarget);
 
     return true;
 }
@@ -1648,6 +1698,32 @@ std::vector<uint8_t> makeNca(uint64_t titleId, uint8_t contentType, const std::v
     uint64_t totalSize = 0x4000 + body.size();
     std::memcpy(nca.data() + 0x208, &totalSize, 8);
     std::memcpy(nca.data() + 0x210, &titleId, 8);
+
+    // Section 0 FsHeader at 0x240
+    uint8_t* fsHdr = nca.data() + 0x240;
+    fsHdr[0] = 2; // Version
+    fsHdr[1] = 2; // Format: PartitionFS (PFS0)
+    fsHdr[2] = 1; // Hash type: HierarchicalSha256
+    fsHdr[3] = 1; // Encryption: None
+
+    uint32_t startBlock = 0x4000 / 0x200; // 0x20
+    uint32_t endBlock = static_cast<uint32_t>((totalSize + 0x1ff) / 0x200);
+    std::memcpy(fsHdr + 8, &startBlock, 4);
+    std::memcpy(fsHdr + 12, &endBlock, 4);
+
+    uint8_t bodySha[32] = {0};
+    sha256(body.data(), body.size(), bodySha);
+    std::memcpy(fsHdr + 0x140, bodySha, 32);
+    uint32_t bodySz = static_cast<uint32_t>(body.size());
+    std::memcpy(fsHdr + 0x160, &bodySz, 4);
+    uint32_t layerCount = 1;
+    std::memcpy(fsHdr + 0x164, &layerCount, 4);
+
+    // Section 0 FsHeader SHA256 at offset 0x220 in NCA header
+    uint8_t fsHdrSha[32] = {0};
+    sha256(fsHdr, 0x200, fsHdrSha);
+    std::memcpy(nca.data() + 0x220, fsHdrSha, 32);
+
     nca.insert(nca.end(), body.begin(), body.end());
     return nca;
 }

@@ -116,6 +116,9 @@ std::string autorunRegistryPath(const std::string& sdRoot);
 std::string autorunSystemRegistryPath(const std::string& sdRoot);
 std::string autorunVersionPath(const std::string& sdRoot);
 std::string autorunForwardersPath(const std::string& sdRoot);
+bool registerGameInLauncherLibrary(const std::string& sdRoot,
+                                   const std::string& exeFullPath,
+                                   const std::string& coverPath);
 std::string resolveAutorunExecutable(const std::string& sdRoot,
                                      const std::string& gameFolder,
                                      const std::string& expectedExe);
