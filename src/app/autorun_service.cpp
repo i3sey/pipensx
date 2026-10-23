@@ -22,6 +22,8 @@
 #include <sstream>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <dirent.h>
+#include <queue>
 
 namespace pipensx {
 namespace {
@@ -298,6 +300,57 @@ std::string autorunVersionPath(const std::string& sdRoot) {
 
 std::string autorunForwardersPath(const std::string& sdRoot) {
     return autorunWineRoot(sdRoot) + "/forwarders";
+}
+
+static std::string findExecutableRelativePath(const std::string& baseDir,
+                                             const std::string& targetExe) {
+    if (access((baseDir + "/" + targetExe).c_str(), F_OK) == 0)
+        return targetExe;
+    std::string exeName = targetExe;
+    size_t slash = exeName.find_last_of("/\\");
+    if (slash != std::string::npos)
+        exeName = exeName.substr(slash + 1);
+    std::string exeLower = lowerAscii(exeName);
+
+    std::queue<std::string> dirs;
+    dirs.push("");
+    while (!dirs.empty()) {
+        std::string rel = dirs.front();
+        dirs.pop();
+        std::string full = rel.empty() ? baseDir : (baseDir + "/" + rel);
+        DIR* dir = opendir(full.c_str());
+        if (!dir) continue;
+        struct dirent* entry;
+        while ((entry = readdir(dir)) != nullptr) {
+            if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+                continue;
+            std::string childRel = rel.empty() ? entry->d_name : (rel + "/" + entry->d_name);
+            std::string childFull = baseDir + "/" + childRel;
+            struct stat st{};
+            if (stat(childFull.c_str(), &st) == 0) {
+                if (S_ISDIR(st.st_mode)) {
+                    int depth = 0;
+                    for (char c : childRel) if (c == '/') ++depth;
+                    if (depth <= 2)
+                        dirs.push(childRel);
+                } else if (S_ISREG(st.st_mode)) {
+                    if (lowerAscii(entry->d_name) == exeLower) {
+                        closedir(dir);
+                        return childRel;
+                    }
+                }
+            }
+        }
+        closedir(dir);
+    }
+    return targetExe;
+}
+
+std::string resolveAutorunExecutable(const std::string& sdRoot,
+                                     const std::string& gameFolder,
+                                     const std::string& expectedExe) {
+    const std::string baseDir = autorunGamesPath(sdRoot) + "/" + gameFolder;
+    return findExecutableRelativePath(baseDir, expectedExe);
 }
 
 std::string autorunForwarderConfigPath(const std::string& sdRoot, uint64_t titleId) {
@@ -696,13 +749,37 @@ bool deployAutorunGame(const std::string& sdRoot,
         }
     }
 
-    // 3. Create Windows .lnk on desktop
+    // 3. Locate actual executable relative path (in case of subfolder in torrent)
     const std::string exeName = !profile.executable.empty()
         ? profile.executable : (gameFolder + ".exe");
+    const std::string actualExeRel = findExecutableRelativePath(wineGamesDir, exeName);
+
+    // 4. Create Windows .lnk on all user desktops (wine, steamuser, Public)
     const std::string title = !gameTitle.empty() ? gameTitle : gameFolder;
-    const std::string desktop = autorunDesktopPath(sdRoot);
-    if (!createWineDesktopShortcut(desktop, title, gameFolder, exeName, error)) {
+    const std::string wineRoot = autorunWineRoot(sdRoot);
+    std::vector<std::string> desktops = {
+        autorunDesktopPath(sdRoot),
+        wineRoot + "/drive_c/users/steamuser/Desktop",
+        wineRoot + "/drive_c/users/Public/Desktop",
+    };
+    bool shortcutCreated = false;
+    for (const auto& dPath : desktops) {
+        std::string err;
+        if (createWineDesktopShortcut(dPath, title, gameFolder, actualExeRel, err))
+            shortcutCreated = true;
+    }
+    if (!shortcutCreated) {
+        error = "Failed to create Wine desktop shortcut in user directories.";
         return false;
+    }
+
+    // 5. Update target.txt so AutoRun runtime immediately selects this game on launch
+    const std::string targetTxtPath = wineRoot + "/target.txt";
+    std::string fullTarget = "sdmc:/switch/wine/drive_c/Games/" + gameFolder + "/" + actualExeRel;
+    std::replace(fullTarget.begin(), fullTarget.end(), '\\', '/');
+    std::ofstream targetOut(targetTxtPath, std::ios::binary | std::ios::trunc);
+    if (targetOut) {
+        targetOut << fullTarget << "\n";
     }
 
     return true;

@@ -922,6 +922,7 @@
     "forwarder_failed": "Не удалось создать ярлык: {}",
     "sysclk_applied": "Профиль разгона sys-clk успешно применен!",
     "sysclk_failed": "Не удалось применить профиль sys-clk: {}",
-    "action_create_forwarder": "Создать ярлык в меню Switch"
+    "action_create_forwarder": "Создать ярлык в меню Switch",
+    "queued": "Добавлено. PC-игра будет настроена в среде AutoRun после загрузки."
   }
 }

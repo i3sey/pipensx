@@ -922,6 +922,7 @@
     "forwarder_failed": "Installazione scorciatoia non riuscita: {}",
     "sysclk_applied": "Profilo sys-clk applicato con successo!",
     "sysclk_failed": "Applicazione profilo sys-clk non riuscita: {}",
-    "action_create_forwarder": "Crea scorciatoia nel Menu Home"
+    "action_create_forwarder": "Crea scorciatoia nel Menu Home",
+    "queued": "In coda. Il gioco AutoRun verrà configurato al termine del download."
   }
 }

@@ -922,6 +922,7 @@
     "forwarder_failed": "Failed to install forwarder: {}",
     "sysclk_applied": "sys-clk profile applied successfully!",
     "sysclk_failed": "Failed to apply sys-clk profile: {}",
-    "action_create_forwarder": "Create Home Menu shortcut"
+    "action_create_forwarder": "Create Home Menu shortcut",
+    "queued": "Queued. AutoRun game will be deployed upon download completion."
   }
 }

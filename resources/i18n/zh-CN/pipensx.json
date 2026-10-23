@@ -922,6 +922,7 @@
     "forwarder_failed": "快捷方式安装失败：{}",
     "sysclk_applied": "sys-clk 超频配置应用成功！",
     "sysclk_failed": "应用 sys-clk 超频配置失败：{}",
-    "action_create_forwarder": "在主界面创建快捷方式"
+    "action_create_forwarder": "在主界面创建快捷方式",
+    "queued": "已加入队列。下载完成后将在 AutoRun 环境中部署游戏。"
   }
 }

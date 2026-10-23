@@ -922,6 +922,7 @@
     "forwarder_failed": "Falha ao instalar o atalho: {}",
     "sysclk_applied": "Perfil sys-clk aplicado com sucesso!",
     "sysclk_failed": "Falha ao aplicar o perfil sys-clk: {}",
-    "action_create_forwarder": "Criar atalho no Menu Home"
+    "action_create_forwarder": "Criar atalho no Menu Home",
+    "queued": "Na fila. O jogo AutoRun será configurado após o término do download."
   }
 }

@@ -32,7 +32,8 @@ inline void openAutorunPostInstallDialog(
     std::string gameFolder = !profile.targetFolder.empty()
         ? profile.targetFolder
         : (task ? task->dataPath : gameTitle);
-    std::string executable = profile.executable;
+    const std::string sdRoot = autorun ? autorun->sdRoot() : "sdmc:";
+    std::string executable = resolveAutorunExecutable(sdRoot, gameFolder, profile.executable);
 
     class Body : public brls::Box {
     public:

@@ -922,6 +922,7 @@
     "forwarder_failed": "Échec de l'installation du raccourci : {}",
     "sysclk_applied": "Profil sys-clk appliqué avec succès !",
     "sysclk_failed": "Échec de l'application du profil sys-clk : {}",
-    "action_create_forwarder": "Créer un raccourci Menu Home"
+    "action_create_forwarder": "Créer un raccourci Menu Home",
+    "queued": "Ajouté à la file d'attente. Le jeu AutoRun sera déployé à la fin du téléchargement."
   }
 }

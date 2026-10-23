@@ -922,6 +922,7 @@
     "forwarder_failed": "Error al instalar el acceso directo: {}",
     "sysclk_applied": "¡Perfil sys-clk aplicado con éxito!",
     "sysclk_failed": "Error al aplicar el perfil sys-clk: {}",
-    "action_create_forwarder": "Crear acceso directo en el Menú Home"
+    "action_create_forwarder": "Crear acceso directo en el Menú Home",
+    "queued": "En cola. El juego AutoRun se configurará una vez finalizada la descarga."
   }
 }

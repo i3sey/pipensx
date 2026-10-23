@@ -1276,6 +1276,33 @@ private:
                 }
                 const OneTapPlan plan =
                     planCatalogOneTap(layoutPreview, oneTapContext());
+                if (plan.mode == TransferMode::AutoRunInstall) {
+                    import.fileSelection = plan.fileSelection;
+                    import.packageCount = 0;
+                    import.mode = TransferMode::AutoRunInstall;
+                    if (entry.autorun)
+                        import.autorunFolder = entry.autorun->targetFolder;
+                    std::string id;
+                    std::string importError;
+                    if (!manager_->importDebrid(import, id, importError)) {
+                        removeDebridTransferAsync(providerKind, key, debridId);
+                        operationMessage_ = importError;
+                        brls::Application::notify(importError);
+                    } else {
+                        if (entry.autorun) {
+                            std::string profileError;
+                            saveAutorunProfile(manager_->rootPath(), id, *entry.autorun, profileError);
+                        }
+                        if (deploy_)
+                            deploy_->armAutoCopy(id);
+                        statusLabel_->setText(tr("pipensx/autorun/queued"));
+                        brls::Application::notify(tr("pipensx/autorun/queued"));
+                        if (onChange_)
+                            onChange_();
+                    }
+                    refreshButtons();
+                    return;
+                }
                 if (plan.outcome == OneTapOutcome::QueuePort) {
                     auto pending = std::make_shared<PortImportPending>();
                     pending->debridMode = true;
@@ -1357,6 +1384,43 @@ private:
         }
 
         const OneTapPlan plan = planCatalogOneTap(preview, oneTapContext());
+        if (plan.mode == TransferMode::AutoRunInstall) {
+            std::string autorunFolder;
+            if (entry_.autorun)
+                autorunFolder = entry_.autorun->targetFolder;
+            std::string id;
+            std::string err;
+            if (manager_->importTorrentActions(path, plan.fileSelection, id, err,
+                                               initialPeers, TransferMode::AutoRunInstall,
+                                               autorunFolder)) {
+                log_msg("[autorun] queued autorun task %s in folder %s\n",
+                        id.c_str(), autorunFolder.c_str());
+                if (entry_.autorun) {
+                    std::string profileError;
+                    saveAutorunProfile(manager_->rootPath(), id, *entry_.autorun, profileError);
+                }
+                if (deploy_)
+                    deploy_->armAutoCopy(id);
+                statusLabel_->setText(tr("pipensx/autorun/queued"));
+                brls::Application::notify(tr("pipensx/autorun/queued"));
+                if (onChange_)
+                    onChange_();
+            } else if (catalogLower(err).find("already in the download manager") !=
+                       std::string::npos) {
+                statusLabel_->setText(tr("pipensx/detail/already_in_downloads"));
+                if (onChange_)
+                    onChange_();
+            } else {
+                log_msg("[catalog] autorun import failed from '%s': %s\n",
+                        path.c_str(), err.c_str());
+                diagnostic_error("catalog", "import", "error=%s", err.c_str());
+                operationMessage_ = err;
+                brls::Application::notify(err);
+            }
+            ::unlink(path.c_str());
+            refreshButtons();
+            return;
+        }
         if (plan.outcome == OneTapOutcome::QueuePort) {
             auto pending = std::make_shared<PortImportPending>();
             pending->torrentPath = path;
@@ -1420,6 +1484,8 @@ private:
                        pipensx::TorrentPreview preview,
                        std::vector<uint8_t> initialPeers,
                        TransferMode preferred = TransferMode::StreamInstall) {
+        if (entry_.isAutorun())
+            preferred = TransferMode::AutoRunInstall;
         StreamSelection selection = settings_
             ? settings_->get().streamSelection : StreamSelection::AllFiles;
         brls::Application::pushActivity(new TorrentSelectionActivity(
@@ -1434,6 +1500,9 @@ private:
         context.installedVersion = installedVersionForTitle();
         context.latestVersion = latestVersionForEntry();
         context.installedDlcIds = installedDlcIds();
+        context.isAutorun = entry_.isAutorun();
+        if (entry_.autorun)
+            context.autorunProfile = *entry_.autorun;
         return context;
     }
 

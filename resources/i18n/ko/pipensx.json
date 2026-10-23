@@ -922,6 +922,7 @@
     "forwarder_failed": "바로가기 설치 실패: {}",
     "sysclk_applied": "sys-clk 프로필이 성공적으로 적용되었습니다!",
     "sysclk_failed": "sys-clk 프로필 적용 실패: {}",
-    "action_create_forwarder": "홈 메뉴 바로가기 생성"
+    "action_create_forwarder": "홈 메뉴 바로가기 생성",
+    "queued": "대기열에 추가되었습니다. 다운로드가 완료되면 AutoRun 게임이 배포됩니다."
   }
 }
