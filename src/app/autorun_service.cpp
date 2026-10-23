@@ -126,12 +126,12 @@ bool defaultFetchText(const std::string& url, size_t limit, std::string& body,
         return false;
     }
     curlPinHttpsOnly(curl);
+    curlApplyTrustedSsl(curl);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "pipensx-autorun/1.0");
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
 
     HttpBuffer buffer;
     buffer.limit = limit;
@@ -179,12 +179,12 @@ bool defaultFetchFile(const std::string& url, const std::string& path,
         return false;
     }
     curlPinHttpsOnly(curl);
+    curlApplyTrustedSsl(curl);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "pipensx-autorun/1.0");
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 300L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeFileCallback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &writer);
 
@@ -253,10 +253,13 @@ bool parseSemVer(const std::string& text, std::array<uint64_t, 3>& version) {
 }
 
 bool isNewerRelease(const std::string& candidate, const std::string& current) {
+    if (candidate.empty() || candidate == current)
+        return false;
     std::array<uint64_t, 3> candParts{};
     std::array<uint64_t, 3> currParts{};
-    return parseSemVer(candidate, candParts) &&
-           parseSemVer(current, currParts) && candParts > currParts;
+    if (parseSemVer(candidate, candParts) && parseSemVer(current, currParts))
+        return candParts > currParts;
+    return candidate != current;
 }
 
 } // namespace
@@ -835,6 +838,10 @@ bool extractRuntimeZip(
         std::string member(reinterpret_cast<char*>(name.data()), nameLen);
         const bool isDir = !member.empty() && member.back() == '/';
 
+        // Skip root switch folder entry if present
+        if (member == "switch" || member == "switch/")
+            continue;
+
         // Strip known root prefixes from runtime archives
         if (member.rfind("switch/wine/", 0) == 0)
             member = member.substr(12);
@@ -1017,7 +1024,7 @@ AutorunUpdateCheck AutorunService::checkForUpdates(
 
     const std::string url = !releaseUrl.empty()
         ? releaseUrl
-        : "https://api.github.com/repos/Pipen-dev/wine-nx/releases/latest";
+        : "https://api.github.com/repos/autorunhq/autorun/releases/latest";
 
     std::string body;
     if (!metadataFetcher_(url, kMetadataLimit, body, result.error)) {

@@ -909,19 +909,34 @@ private:
                 auto* dialog = new brls::Dialog(
                     tr("pipensx/autorun/runtime_required_desc"));
                 dialog->addButton(tr("pipensx/autorun/install_runtime"), [this] {
-                    if (autorun_) {
+                    auto alive = alive_;
+                    AutorunService* autorun = autorun_;
+                    brls::async([this, alive, autorun] {
                         std::string error;
-                        AutorunUpdateCheck check = autorun_->checkForUpdates();
-                        if (check.ok && !check.release.archiveUrl.empty()) {
-                            autorun_->downloadAndInstallRuntime(check.release, error);
+                        bool ok = false;
+                        if (autorun) {
+                            AutorunUpdateCheck check = autorun->checkForUpdates();
+                            if (check.ok && !check.release.archiveUrl.empty()) {
+                                ok = autorun->downloadAndInstallRuntime(check.release, error);
+                            } else if (!check.error.empty()) {
+                                error = check.error;
+                            } else {
+                                ok = autorun->bootstrapEnvironment(error);
+                            }
                         } else {
-                            autorun_->bootstrapEnvironment(error);
+                            ok = prepareAutorunEnvironment("sdmc:", error);
                         }
-                    } else {
-                        std::string error;
-                        prepareAutorunEnvironment("sdmc:", error);
-                    }
-                    brls::Application::notify(tr("pipensx/autorun/runtime_installed"));
+                        brls::sync([this, alive, ok, error] {
+                            if (!alive->load())
+                                return;
+                            if (ok) {
+                                brls::Application::notify(tr("pipensx/autorun/runtime_installed"));
+                            } else {
+                                brls::Application::notify(
+                                    tr("pipensx/autorun/runtime_install_failed", error));
+                            }
+                        });
+                    });
                 });
                 dialog->addButton(tr("pipensx/common/cancel"), [] {});
                 dialog->open();

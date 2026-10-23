@@ -1739,7 +1739,7 @@ private:
         auto alive = alive_;
         auto inFlight = runtimeInstallInFlight_;
         AutorunService* autorun = autorun_;
-        std::thread([this, alive, inFlight, autorun]() {
+        brls::async([this, alive, inFlight, autorun]() {
             std::string error;
             bool ok = false;
             if (autorun) {
@@ -1771,7 +1771,7 @@ private:
                         tr("pipensx/autorun/runtime_install_failed", error));
                 }
             });
-        }).detach();
+        });
     }
 
     DownloadManager* manager_;
