@@ -364,11 +364,24 @@ bool registerGameInLauncherLibrary(const std::string& sdRoot,
                        std::istreambuf_iterator<char>());
         in.close();
     }
+
+    // Remove any corrupted [game 0] section from previous buggy writes
+    size_t g0 = content.find("[game 0]");
+    if (g0 != std::string::npos) {
+        size_t nextSect = content.find("\n[", g0 + 1);
+        if (nextSect != std::string::npos)
+            content.erase(g0, nextSect - g0);
+        else
+            content.erase(g0);
+    }
+
     if (content.find("path=" + exeFullPath) != std::string::npos) {
         return true;
     }
 
-    uint32_t nextGameIndex = 0;
+    // AutoRun indexes games starting at 1: [game 1], [game 2], etc.
+    // [game 0] causes "The game library is unreadable" error.
+    uint32_t nextGameIndex = 1;
     while (content.find("[game " + std::to_string(nextGameIndex) + "]") != std::string::npos) {
         ++nextGameIndex;
     }
@@ -384,7 +397,7 @@ bool registerGameInLauncherLibrary(const std::string& sdRoot,
 
     ss << "\n[game " << nextGameIndex << "]\n";
     ss << "path=" << exeFullPath << "\n";
-    ss << "added-order=" << (nextGameIndex + 1) << "\n";
+    ss << "added-order=" << nextGameIndex << "\n";
     ss << "launched-order=0\n";
     ss << "favorite=0\n";
     if (!coverPath.empty()) {

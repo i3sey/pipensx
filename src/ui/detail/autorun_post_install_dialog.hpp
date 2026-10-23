@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <fstream>
 #include <functional>
 #include <memory>
 #include <string>
@@ -102,6 +103,19 @@ inline void openAutorunPostInstallDialog(
         const bool doForwarder = *wantForwarder;
         const bool doSysclk = *wantSysclk;
         const std::string sdRoot = autorun ? autorun->sdRoot() : "sdmc:";
+
+        // Guarantee registration in AutoRun library and target.txt
+        const std::string wineRoot = autorunWineRoot(sdRoot);
+        std::string fullTarget = "sdmc:/switch/wine/drive_c/Games/" + gameFolder + "/" + executable;
+        std::replace(fullTarget.begin(), fullTarget.end(), '\\', '/');
+        const std::string coverTarget = "sdmc:/switch/wine/drive_c/Games/" + gameFolder + "/cover.png";
+        registerGameInLauncherLibrary(sdRoot, fullTarget, coverTarget);
+
+        const std::string targetTxtPath = wineRoot + "/target.txt";
+        std::ofstream targetOut(targetTxtPath, std::ios::binary | std::ios::trunc);
+        if (targetOut) {
+            targetOut << fullTarget << "\n";
+        }
 
         if (doForwarder && !executable.empty()) {
             auto backend = install::createInstallBackend(
