@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * 1'
 
 permissions:
   contents: read
@@ -13,28 +16,68 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      pc: ${{ steps.changes.outputs.pc }}
+      switch: ${{ steps.changes.outputs.switch }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select affected builds
+        id: changes
+        env:
+          CHANGE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          FULL_CHECKS: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+        run: python3 scripts/ci/changes.py
+      - name: Check source lists and native and web translations
+        run: |
+          python3 scripts/check_source_lists.py
+          python3 scripts/check_i18n.py
+          python3 scripts/check_web_i18n.py
+      - name: Scan secrets in new commits (full history for manual and scheduled runs)
+        env:
+          SCAN_RANGE: ${{ steps.changes.outputs.scan_range }}
+        run: |
+          curl -fsSL --retry 3 \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
+            -o /tmp/gitleaks.tar.gz
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          /tmp/gitleaks git . --redact --no-banner --log-opts="$SCAN_RANGE"
+
   tests:
+    needs: checks
+    if: needs.checks.outputs.pc == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      Cactions/cache@0400d5f644dc74513175e3cd8d07132dd4860809_DIR: ${{ github.workspace }}/.ccache/pc
+      Cactions/cache@0400d5f644dc74513175e3cd8d07132dd4860809_BASEDIR: ${{ github.workspace }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
-          submodules: recursive
           persist-credentials: false
-
+      - name: Fetch only the headers needed by PC tests
+        run: git submodule update --init --depth 1 vendor/borealis
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential python3 libcurl4-openssl-dev libssl-dev \
+            build-essential ccache python3 libcurl4-openssl-dev libssl-dev \
             libzstd-dev zlib1g-dev
-
-      - name: Check Makefile.pc ↔ CMakeLists source lists
-        run: python3 scripts/check_source_lists.py
-
-      - name: Run PC tests
-        run: make test
-
+      - uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809
+        with:
+          path: .ccache/pc
+          key: pc-ccache-v1-${{ runner.os }}-${{ github.sha }}
+          restore-keys: pc-ccache-v1-${{ runner.os }}-
+      - name: Build CLI and run all PC tests
+        run: |
+          ccache --max-size=500M
+          make -f Makefile.pc -j2 all test CC="ccache gcc" CXX="ccache g++"
+          ccache --show-stats
       - name: Confirm PC objects stay out of the source tree
         run: |
           if find src tests vendor/libutp vendor/dht -name '*.o' | grep -q .; then
@@ -45,6 +88,8 @@ jobs:
           test -d build-pc
 
   sanitizers:
+    needs: checks
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -67,11 +112,17 @@ jobs:
         run: make -f Makefile.pc fuzz-smoke
 
   switch:
+    needs: checks
+    if: needs.checks.outputs.switch == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     container:
       image: devkitpro/devkita64:latest
     env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache/switch
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
       DEVKITPRO: /opt/devkitpro
       # Same constraint as switch-release.yml: parallel TUs thrash on 7GB runners.
       CMAKE_BUILD_PARALLEL_LEVEL: "1"
@@ -80,25 +131,27 @@ jobs:
         run: |
           apt-get update
           # zstd: build_switch.sh compresses the bundled catalog snapshots.
-          apt-get install -y --no-install-recommends git ca-certificates zstd
+          apt-get install -y --no-install-recommends git ca-certificates zstd ccache
 
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           submodules: recursive
           persist-credentials: false
 
-      - name: Cache devkitPro pacman databases
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+      - uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809
         with:
-          path: /var/lib/pacman/sync
-          key: dkp-pacman-sync-v1
-          restore-keys: dkp-pacman-sync-
+          path: .ccache/switch
+          key: switch-ccache-v1-${{ runner.os }}-${{ github.sha }}
+          restore-keys: switch-ccache-v1-${{ runner.os }}-
 
       - name: Install Switch portlibs
         run: scripts/install_switch_portlibs.sh
 
       - name: Build pipensx.nro
-        run: make switch
+        run: |
+          ccache --max-size=1G
+          make switch
+          ccache --show-stats
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -106,20 +159,3 @@ jobs:
           path: build-switch/pipensx.nro
           if-no-files-found: error
           retention-days: 7
-
-  secrets:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Scan complete history
-        run: |
-          curl -fsSL \
-            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
-            -o /tmp/gitleaks.tar.gz
-          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
-          /tmp/gitleaks git . --redact --no-banner
