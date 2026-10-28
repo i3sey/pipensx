@@ -1,0 +1,191 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      pc: ${{ steps.changes.outputs.pc }}
+      switch: ${{ steps.changes.outputs.switch }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select affected builds
+        id: changes
+        env:
+          CHANGE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          FULL_CHECKS: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+        run: python3 scripts/ci/changes.py
+      - name: Check source lists and native and web translations
+        run: |
+          python3 scripts/check_source_lists.py
+          python3 scripts/check_i18n.py
+          python3 scripts/check_web_i18n.py
+      - name: Scan secrets in new commits (full history for manual and scheduled runs)
+        env:
+          SCAN_RANGE: ${{ steps.changes.outputs.scan_range }}
+        run: |
+          curl -fsSL --retry 3 \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
+            -o /tmp/gitleaks.tar.gz
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          /tmp/gitleaks git . --redact --no-banner --log-opts="$SCAN_RANGE"
+
+  tests:
+    needs: checks
+    if: needs.checks.outputs.pc == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      Cactions/cache@v3_DIR: ${{ github.workspace }}/.ccache/pc
+      Cactions/cache@v3_BASEDIR: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - name: Fetch pinned dependencies from Gitea
+        env:
+          SUBMODULE_TOKEN: ${{ secrets.SUBMODULE_READ_TOKEN }}
+          SERVER_URL: ${{ github.server_url }}
+        run: |
+          git config submodule.vendor/borealis.url "$SERVER_URL/i3sey/borealis.git"
+          auth=$(printf 'i3sey:%s' "$SUBMODULE_TOKEN" | base64 -w0)
+          git -c "http.$SERVER_URL/.extraheader=AUTHORIZATION: basic $auth" \
+            -c "submodule.vendor/borealis.url=$SERVER_URL/i3sey/borealis.git" \
+            submodule update --init --depth 1 vendor/borealis
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ccache python3 libcurl4-openssl-dev libssl-dev \
+            libzstd-dev zlib1g-dev
+      - uses: actions/cache@v3
+        with:
+          path: .ccache/pc
+          key: pc-ccache-v1-${{ runner.os }}-${{ github.sha }}
+          restore-keys: pc-ccache-v1-${{ runner.os }}-
+      - name: Build CLI and run all PC tests
+        run: |
+          ccache --max-size=500M
+          make -f Makefile.pc -j2 all test CC="ccache gcc" CXX="ccache g++"
+          ccache --show-stats
+      - name: Confirm PC objects stay out of the source tree
+        run: |
+          if find src tests vendor/libutp vendor/dht -name '*.o' | grep -q .; then
+            echo "Object files leaked next to sources:" >&2
+            find src tests vendor/libutp vendor/dht -name '*.o' >&2
+            exit 1
+          fi
+          test -d build-pc
+
+  sanitizers:
+    needs: checks
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Fetch pinned dependencies from Gitea
+        env:
+          SUBMODULE_TOKEN: ${{ secrets.SUBMODULE_READ_TOKEN }}
+          SERVER_URL: ${{ github.server_url }}
+        run: |
+          git config submodule.vendor/borealis.url "$SERVER_URL/i3sey/borealis.git"
+          auth=$(printf 'i3sey:%s' "$SUBMODULE_TOKEN" | base64 -w0)
+          git -c "http.$SERVER_URL/.extraheader=AUTHORIZATION: basic $auth" \
+            -c "submodule.vendor/borealis.url=$SERVER_URL/i3sey/borealis.git" \
+            submodule update --init vendor/borealis
+      - name: Fetch public dependencies
+        run: git submodule update --init --recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang python3 libcurl4-openssl-dev libssl-dev \
+            libzstd-dev zlib1g-dev
+
+      - name: PC tests under ASan+UBSan
+        run: make -f Makefile.pc clean && make -f Makefile.pc test SANITIZE=1 -j2
+
+      - name: libFuzzer smoke on bencode and metainfo
+        run: make -f Makefile.pc fuzz-smoke
+
+  switch:
+    needs: checks
+    if: needs.checks.outputs.switch == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    container:
+      image: devkitpro/devkita64:latest
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache/switch
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
+      DEVKITPRO: /opt/devkitpro
+      # Same constraint as switch-release.yml: parallel TUs thrash on 7GB runners.
+      CMAKE_BUILD_PARALLEL_LEVEL: "1"
+    steps:
+      - name: Install git and zstd (container has neither by default)
+        run: |
+          apt-get update
+          # zstd: build_switch.sh compresses the bundled catalog snapshots.
+          apt-get install -y --no-install-recommends git ca-certificates zstd ccache
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Fetch pinned dependencies from Gitea
+        env:
+          SUBMODULE_TOKEN: ${{ secrets.SUBMODULE_READ_TOKEN }}
+          SERVER_URL: ${{ github.server_url }}
+        run: |
+          git config submodule.vendor/borealis.url "$SERVER_URL/i3sey/borealis.git"
+          auth=$(printf 'i3sey:%s' "$SUBMODULE_TOKEN" | base64 -w0)
+          git -c "http.$SERVER_URL/.extraheader=AUTHORIZATION: basic $auth" \
+            -c "submodule.vendor/borealis.url=$SERVER_URL/i3sey/borealis.git" \
+            submodule update --init vendor/borealis
+      - name: Fetch public dependencies
+        run: git submodule update --init --recursive
+
+      - uses: actions/cache@v3
+        with:
+          path: .ccache/switch
+          key: switch-ccache-v1-${{ runner.os }}-${{ github.sha }}
+          restore-keys: switch-ccache-v1-${{ runner.os }}-
+
+      - name: Install Switch portlibs
+        run: scripts/install_switch_portlibs.sh
+
+      - name: Build pipensx.nro
+        run: |
+          ccache --max-size=1G
+          make switch
+          ccache --show-stats
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: pipensx-nro-ci
+          path: build-switch/pipensx.nro
+          if-no-files-found: error
+          retention-days: 7

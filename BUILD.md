@@ -101,3 +101,23 @@ make deploy MTP_DIR='mtp://DEVICE/1: SD Card/switch/pipensx' DEPLOY_CLEAN=1
 make clean
 make audit  # requires gitleaks in PATH
 ```
+
+## CI
+
+Pushes to `main` and pull requests run quick source-list, native/web translation,
+and secret checks before compiling. PC changes build the CLI and run `make test`;
+Switch source, build-script and resource changes build an NRO retained for seven
+days. Documentation-only changes skip compilation. Both builds cache compiler
+results with ccache; object files are rebuilt normally so header changes are safe.
+ASan/UBSan and fuzz smoke run weekly on Monday and on manual `ci` dispatch.
+Manual and weekly runs also check all builds and scan the complete Git history;
+ordinary pushes scan only the new commits (unknown bases fall back to full checks).
+
+GitHub uses `.github/workflows/ci.yml`; Gitea uses `.gitea/workflows/ci.yml`.
+Keep their check selection and build steps aligned. The Gitea 1.22 workflow uses
+v3 cache/artifact actions and the private `i3sey/borealis` dependency mirror,
+pinned to the same submodule commit. `SUBMODULE_READ_TOKEN` is a repository
+Actions secret with read-only repository access. When updating the borealis
+submodule, push its commit to that mirror before pushing pipensx. Other
+submodules still use their public upstreams. The GitHub release workflow remains
+in `.github/workflows/switch-release.yml`.
