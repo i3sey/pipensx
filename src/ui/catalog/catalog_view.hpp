@@ -110,10 +110,15 @@ private:
             ? badge
             : size ? formatBytes(size)
                    : tr("pipensx/catalog/unknown_size");
-        info.iconUrl = row < result_->iconUrls.size()
-            ? result_->iconUrls[row] : std::string();
-        info.iconPreserveAspect = row < result_->iconPreserveAspect.size() &&
-                                  result_->iconPreserveAspect[row] != 0;
+        if (entry && !entry->posterUrl.empty()) {
+            info.iconUrl = entry->posterUrl;
+            info.iconPreserveAspect = true;
+        } else {
+            info.iconUrl = row < result_->iconUrls.size()
+                ? result_->iconUrls[row] : std::string();
+            info.iconPreserveAspect = row < result_->iconPreserveAspect.size() &&
+                                      result_->iconPreserveAspect[row] != 0;
+        }
         info.selectionMode = false;
         info.selected = row < result_->selected.size() && result_->selected[row] != 0;
         info.selectable = row < result_->selectable.size() && result_->selectable[row] != 0;
@@ -129,9 +134,17 @@ private:
         const int start = (row - headerRowCount()) * grid::kColumns;
         const int end = std::min(start + grid::kColumns,
                                  static_cast<int>(result_->iconUrls.size()));
-        for (int i = start; i < end; ++i)
-            metadata_->prefetchImage(result_->iconUrls[static_cast<size_t>(i)],
-                                     GameMetadataService::kImageDimGrid);
+        for (int i = start; i < end; ++i) {
+            const CatalogEntry* entry = entryAt(i);
+            const std::string url = (entry && !entry->posterUrl.empty())
+                ? entry->posterUrl
+                : (static_cast<size_t>(i) < result_->iconUrls.size()
+                       ? result_->iconUrls[static_cast<size_t>(i)]
+                       : std::string());
+            if (!url.empty())
+                metadata_->prefetchImage(url,
+                                         GameMetadataService::kImageDimCard);
+        }
     }
 
     CatalogView* owner_;
@@ -306,7 +319,7 @@ public:
         autorunBannerLabel_->setText(tr("pipensx/autorun/banner_not_installed"));
         autorunBanner_->addView(autorunBannerLabel_);
 
-        autorunInstallButton_ = new brls::Button();
+        autorunInstallButton_ = new InstallButton();
         autorunInstallButton_->setStyle(&brls::BUTTONSTYLE_PRIMARY);
         autorunInstallButton_->setHeight(40);
         autorunInstallButton_->setMarginLeft(16);
@@ -1721,7 +1734,8 @@ private:
     void updateAutorunBanner() {
         if (!autorunBanner_)
             return;
-        if (section_ == CatalogSection::AutoRun && !isAutorunRuntimeInstalled()) {
+        if (section_ == CatalogSection::AutoRun &&
+            (runtimeInstallInFlight_->load() || !isAutorunRuntimeInstalled())) {
             autorunBanner_->setVisibility(brls::Visibility::VISIBLE);
         } else {
             autorunBanner_->setVisibility(brls::Visibility::GONE);
@@ -1733,26 +1747,43 @@ private:
             return;
         if (autorunInstallButton_) {
             autorunInstallButton_->setState(brls::ButtonState::DISABLED);
-            autorunInstallButton_->setAlpha(0.32f);
-            autorunInstallButton_->setText(tr("pipensx/autorun/installing_runtime"));
+            autorunInstallButton_->setAlpha(1.0f);
+            autorunInstallButton_->setProgress(0.0f);
+            autorunInstallButton_->setText(tr("pipensx/autorun/runtime_checking"));
+            autorunBannerLabel_->setText(tr("pipensx/autorun/runtime_checking"));
         }
         auto alive = alive_;
         auto inFlight = runtimeInstallInFlight_;
         AutorunService* autorun = autorun_;
         brls::async([this, alive, inFlight, autorun]() {
+            auto progress = [this, alive](bool extracting, uint64_t current, uint64_t total) {
+                const float fill = total ? std::min(1.0f, float(current) / total) : 0.0f;
+                const auto text = extracting
+                    ? tr("pipensx/autorun/runtime_extracting", current / (1024 * 1024))
+                    : (total ? tr("pipensx/autorun/runtime_downloading", int(fill * 100))
+                             : tr("pipensx/autorun/runtime_downloading_bytes", current / (1024 * 1024)));
+                brls::sync([this, alive, fill, text] {
+                    if (!alive->load()) return;
+                    autorunInstallButton_->setText(text);
+                    autorunInstallButton_->setProgress(fill);
+                    autorunBannerLabel_->setText(text);
+                });
+            };
             std::string error;
             bool ok = false;
             if (autorun) {
                 AutorunUpdateCheck check = autorun->checkForUpdates();
                 if (check.ok && !check.release.archiveUrl.empty()) {
-                    ok = autorun->downloadAndInstallRuntime(check.release, error);
+                    ok = autorun->downloadAndInstallRuntime(check.release, error, false,
+                        [progress](uint64_t current, uint64_t total) { progress(true, current, total); },
+                        [progress](uint64_t current, uint64_t total) { progress(false, current, total); });
                 } else if (!check.error.empty()) {
                     error = check.error;
                 } else {
-                    ok = autorun->bootstrapEnvironment(error);
+                    error = "AutoRun runtime download is unavailable.";
                 }
             } else {
-                ok = prepareAutorunEnvironment("sdmc:", error);
+                error = "AutoRun service is unavailable.";
             }
             brls::sync([this, alive, inFlight, ok, error]() {
                 inFlight->store(false);
@@ -1761,8 +1792,12 @@ private:
                 if (autorunInstallButton_) {
                     autorunInstallButton_->setState(brls::ButtonState::ENABLED);
                     autorunInstallButton_->setAlpha(1.0f);
+                    autorunInstallButton_->setProgress(-1.0f);
                     autorunInstallButton_->setText(tr("pipensx/autorun/install_runtime"));
                 }
+                autorunBannerLabel_->setText(ok
+                    ? tr("pipensx/autorun/runtime_installed")
+                    : tr("pipensx/autorun/runtime_install_failed", error));
                 updateAutorunBanner();
                 if (ok) {
                     brls::Application::notify(tr("pipensx/autorun/runtime_installed"));
@@ -1794,7 +1829,7 @@ private:
     SearchIconButton* searchField_ = nullptr;
     brls::Box* autorunBanner_ = nullptr;
     brls::Label* autorunBannerLabel_ = nullptr;
-    brls::Button* autorunInstallButton_ = nullptr;
+    InstallButton* autorunInstallButton_ = nullptr;
     std::shared_ptr<std::atomic<bool>> runtimeInstallInFlight_ =
         std::make_shared<std::atomic<bool>>(false);
     brls::Button* clearSearch_ = nullptr;

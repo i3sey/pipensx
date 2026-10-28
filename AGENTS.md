@@ -73,6 +73,14 @@ When triaging a user bug report from a QR screenshot or photo, load the
 
 ## Agent skills
 
+### Physical Switch testing
+
+For visual checks or remote navigation on the user's Switch, read
+[switch-visual-test](.agents/skills/switch-visual-test/SKILL.md).
+It includes a Python client for sys-botbase screenshots and controller input.
+Agents need image perception to inspect captured screens. This skill is
+project-local and can be used by any harness that reads this file.
+
 ### Issue tracker
 
 Issues live in GitHub Issues for this repo; use the `gh` CLI for all operations. See `docs/agents/issue-tracker.md`.

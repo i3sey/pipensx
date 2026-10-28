@@ -4,6 +4,8 @@
 #include "app/nacp_language.hpp"
 #include "app/task_files.hpp"
 #include "core/metainfo.h"
+#include "core/sha256.h"
+#include "zip_fixture.hpp"
 #include "install/install_backend.hpp"
 
 #include <borealis/extern/nlohmann/json.hpp>
@@ -145,6 +147,31 @@ void test_release_parsing_and_updates() {
     const std::string draftJson = R"({"tag_name": "v1.2.0", "draft": true, "assets": []})";
     assert(!AutorunService::parseRelease(draftJson, release, error));
 
+    removeTempDir(sd);
+}
+
+void test_runtime_download_cancellation() {
+    const auto sd = createTempDir("runtime_cancel");
+    std::atomic<bool> cancelled{true};
+    unsigned calls = 0;
+    AutorunService service(sd, {}, [&](const std::string&, const std::string& path,
+                                      size_t, std::string&) {
+        ++calls;
+        writeFile(path, "partial archive");
+        cancelled.store(true);
+        return true;
+    });
+    AutorunReleaseInfo release;
+    release.archiveUrl = "https://example.invalid/runtime.zip";
+    std::string error;
+    assert(!service.downloadAndInstallRuntime(release, error, cancelled));
+    assert(calls == 0);
+    cancelled.store(false);
+    assert(!service.downloadAndInstallRuntime(release, error, cancelled));
+    assert(calls == 1);
+    assert(error == "Cancelled.");
+    assert(!fs::exists(autorunWineRoot(sd) + "/.runtime_tmp.zip"));
+    assert(!fs::exists(autorunVersionPath(sd)));
     removeTempDir(sd);
 }
 
@@ -294,12 +321,15 @@ void test_full_game_deploy() {
     profile.executable = "DXHR.exe";
     profile.targetFolder = "DeusExHR";
     profile.dxvkConf = "dxvk.enableAsync = true\nd3d9.maxFrameLatency = 1\n";
+    profile.box64Conf = "BOX64_DYNAREC_BIGBLOCK=0\n";
     profile.registry = R"(
 [Software\\Eidos\\Deus Ex: HR]
 "ResolutionWidth"=dword:000003c0
 "ResolutionHeight"=dword:0000021c
 )";
 
+    fs::create_directories(autorunGamesPath(sd) + "/" + profile.targetFolder);
+    writeFile(autorunGamesPath(sd) + "/" + profile.targetFolder + "/" + profile.executable, "test executable");
     std::string error;
     assert(deployAutorunGame(sd, profile.targetFolder, profile.title, profile, error));
     assert(error.empty());
@@ -331,6 +361,7 @@ void test_full_game_deploy() {
     assert(loaded.executable == profile.executable);
     assert(loaded.targetFolder == profile.targetFolder);
     assert(loaded.dxvkConf == profile.dxvkConf);
+    assert(loaded.box64Conf == profile.box64Conf);
 
     removeAutorunProfile(appRoot, taskId);
     assert(!loadAutorunProfile(appRoot, taskId, loaded, error));
@@ -446,8 +477,8 @@ void test_title_id_and_forwarder_config() {
     assert(title == "FlatOut 2");
     assert(folder == "FlatOut2");
     assert(exe == "FlatOut2.exe");
-    assert(nro == "sdmc:/switch/wine/wine-nx-runtime.nro");
-    assert(argv.find("C:\\Games\\FlatOut2\\FlatOut2.exe") != std::string::npos);
+    assert(nro == autorunRuntimeNroPath(sd));
+    assert(argv.find(autorunGamesPath(sd) + "/FlatOut2/FlatOut2.exe") != std::string::npos);
 
     assert(removeAutorunForwarderConfig(sd, id1, error));
     assert(!fs::exists(cfgPath));
@@ -559,43 +590,167 @@ void test_nacp_and_pfs0() {
     assert(parsed[1].second == data2);
 }
 
+void test_missing_and_nested_executable() {
+    const auto sd = createTempDir("autorun_executable");
+    AutorunProfile profile;
+    profile.targetFolder = "FTL";
+    profile.executable = "FTLGame.exe";
+    profile.translator = "Box64";
+    profile.renderer = "DXVK";
+    std::string error;
+    assert(!deployAutorunGame(sd, "FTL", "FTL", profile, error));
+    assert(error.find("FTLGame.exe") != std::string::npos);
+    assert(!fs::exists(autorunWineRoot(sd) + "/target.txt"));
+    assert(!fs::exists(autorunWineRoot(sd) + "/launcher-library-v2.ini"));
+    // A directory named like the expected executable is not a game binary.
+    fs::create_directories(autorunGamesPath(sd) + "/FTL/FTLGame.exe");
+    assert(resolveAutorunExecutable(sd, "FTL", "FTLGame.exe").empty());
+    fs::remove_all(autorunGamesPath(sd) + "/FTL/FTLGame.exe");
+    fs::create_directories(autorunGamesPath(sd) + "/FTL/release/bin");
+    writeFile(autorunGamesPath(sd) + "/FTL/release/bin/ftlgame.EXE", "test executable");
+    assert(resolveAutorunExecutable(sd, "FTL", "FTLGame.exe") == "release/bin/ftlgame.EXE");
+    error.clear();
+    assert(deployAutorunGame(sd, "FTL", "FTL", profile, error));
+    assert(readFile(autorunWineRoot(sd) + "/target.txt") ==
+        autorunGamesPath(sd) + "/FTL/release/bin/ftlgame.EXE\n");
+    const auto settings = autorunGamesPath(sd) + "/FTL/release/bin/ftlgame.wine-nx.txt";
+    assert(readFile(settings) == "cpu=box64\nd3d=dxvk\n");
+    writeFile(settings, "# user settings\n CPU =fex\nd3d9=wine\ntitle=My FTL\n");
+    assert(deployAutorunGame(sd, "FTL", "FTL", profile, error));
+    assert(readFile(settings) == "# user settings\n CPU =fex\nd3d9=wine\ntitle=My FTL\n");
+    const auto expected = generateShellLink("C:\\Games\\FTL\\release/bin/ftlgame.EXE",
+        "C:\\Games\\FTL\\release/bin");
+    const auto shortcut = readFile(autorunDesktopPath(sd) + "/FTL.lnk");
+    assert(shortcut.size() == expected.size());
+    assert(!std::memcmp(shortcut.data(), expected.data(), expected.size()));
+    removeTempDir(sd);
+}
+
+void test_box64_profile_deployment() {
+    const auto sd = createTempDir("autorun_box64_profile");
+    const auto folder = autorunGamesPath(sd) + "/FTL/release";
+    writeFile(folder + "/FTLGame.exe", "test executable");
+    AutorunProfile profile;
+    profile.executable = "FTLGame.exe";
+    profile.targetFolder = "FTL";
+    profile.box64Conf = "# packed DLLs\r\n BOX64_DYNAREC_BIGBLOCK = 0\r\n"
+        "BOX64_DYNAREC_CALLRET=0\nBOX64_DYNAREC_SAFEFLAGS=2\n";
+    std::string error;
+    assert(deployAutorunGame(sd, "FTL", "FTL", profile, error));
+    const auto path = folder + "/FTLGame.box64.txt";
+    assert(readFile(path) == "BOX64_DYNAREC_BIGBLOCK=0\nBOX64_DYNAREC_CALLRET=0\nBOX64_DYNAREC_SAFEFLAGS=2\n");
+    writeFile(path, "# user override\n BOX64_DYNAREC_BIGBLOCK = 1\n");
+    assert(deployAutorunGame(sd, "FTL", "FTL", profile, error));
+    const auto expected = "# user override\n BOX64_DYNAREC_BIGBLOCK = 1\n"
+        "BOX64_DYNAREC_CALLRET=0\nBOX64_DYNAREC_SAFEFLAGS=2\n";
+    assert(readFile(path) == expected);
+    assert(deployAutorunGame(sd, "FTL", "FTL", profile, error));
+    assert(readFile(path) == expected);
+    for (const auto* invalid : { "BOX64_DYNAREC_CALLRET=\r\n", "BOX64_DYNAREC_CALLRET=abc",
+                                "BOX64_DYNAREC_CALLRET=-1", "bad=value", "no-equals" }) {
+        profile.box64Conf = invalid;
+        error.clear();
+        assert(!deployAutorunGame(sd, "FTL", "FTL", profile, error));
+        assert(error.find("Box64") != std::string::npos);
+        assert(readFile(path) == expected);
+    }
+    // Old saved profiles lack the new field and retain all runtime settings.
+    const auto appRoot = sd + "/pipensx";
+    writeFile(appRoot + "/autorun-old.json", "{\"executable\":\"FTLGame.exe\",\"target_folder\":\"FTL\"}");
+    assert(loadAutorunProfile(appRoot, "old", profile, error));
+    assert(profile.box64Conf.empty());
+    assert(deployAutorunGame(sd, "FTL", "FTL", profile, error));
+    assert(readFile(path) == expected);
+    removeTempDir(sd);
+}
+
+std::string dependencyHash(const std::string& data) {
+    uint8_t digest[32];
+    sha256(data.data(), data.size(), digest);
+    char hex[65];
+    for (size_t i = 0; i < 32; ++i) std::snprintf(hex + i * 2, 3, "%02x", digest[i]);
+    return hex;
+}
+
+void test_verified_dependency_updates() {
+    const auto root = createTempDir("autorun_dependencies");
+    const std::string original = "old packed x86 library", replacement = "new x86 library";
+    const auto archive = zip_fixture::build({{"x64/bass.dll", "wrong architecture"},
+        {"bass.dll", replacement, true}, {"../outside.txt", "must not be extracted"}}, false, 0, false);
+    AutorunDependencyFix fix{"bass.dll", dependencyHash(original), dependencyHash(replacement),
+        "https://publisher.invalid/bass24.zip", dependencyHash(archive)};
+    unsigned fetches = 0;
+    auto fetch = [&](const std::string& url, const std::string& path, size_t limit, std::string&) {
+        ++fetches;
+        assert(url == fix.archiveUrl && limit >= archive.size());
+        writeFile(path, archive);
+        return true;
+    };
+    std::string error;
+    writeFile(root + "/bass.dll", original);
+    assert(installAutorunDependencyFixes(root, {fix}, fetch, error));
+    assert(readFile(root + "/bass.dll") == replacement);
+    assert(readFile(root + "/bass.dll.pipensx-original") == original);
+    assert(!fs::exists(root + "/outside.txt") && !fs::exists(root + "/x64"));
+    assert(fetches == 1);
+    assert(installAutorunDependencyFixes(root, {fix}, fetch, error));
+    assert(fetches == 1); // already fixed, no download
+    writeFile(root + "/bass.dll", original);
+    assert(installAutorunDependencyFixes(root, {fix}, {}, error)); // verified cache, offline
+    assert(readFile(root + "/bass.dll") == replacement);
+    writeFile(root + "/bass.dll", "user custom library");
+    assert(installAutorunDependencyFixes(root, {fix}, fetch, error));
+    assert(readFile(root + "/bass.dll") == "user custom library" && fetches == 1);
+    fs::remove(root + "/bass.dll"); // interrupted FAT replacement, recover using backup
+    assert(installAutorunDependencyFixes(root, {fix}, {}, error));
+    assert(readFile(root + "/bass.dll") == replacement);
+
+    // Corrupt download, selected DLL, or original backup must not replace a DLL.
+    for (int corrupt = 0; corrupt < 3; ++corrupt) {
+        const auto dir = root + "/corrupt" + std::to_string(corrupt);
+        writeFile(dir + "/bass.dll", original);
+        auto rule = fix;
+        if (corrupt == 0) rule.archiveSha256 = std::string(64, '0');
+        if (corrupt == 1) rule.replacementSha256 = std::string(64, '0');
+        if (corrupt == 2) writeFile(dir + "/bass.dll.pipensx-original", "unrelated backup");
+        assert(!installAutorunDependencyFixes(dir, {rule}, fetch, error));
+        assert(readFile(dir + "/bass.dll") == original);
+        assert(!fs::exists(dir + "/bass.dll.pipensx-new"));
+    }
+    const auto pair = root + "/pair";
+    writeFile(pair + "/bass.dll", original);
+    writeFile(pair + "/bassmix.dll", original);
+    auto mixer = fix; mixer.fileName = "bassmix.dll";
+    // First DLL is prepared successfully; failure on the second leaves both old.
+    assert(!installAutorunDependencyFixes(pair, {fix, mixer}, fetch, error));
+    assert(readFile(pair + "/bass.dll") == original);
+    assert(readFile(pair + "/bassmix.dll") == original);
+    assert(!fs::exists(pair + "/bass.dll.pipensx-new"));
+    assert(!fs::exists(pair + "/bassmix.dll.pipensx-new"));
+    removeTempDir(root);
+}
+
 void test_stub_nsp_generation_and_install() {
     const std::string sd = createTempDir("stub_nsp_test");
     const std::string gameTitle = "FlatOut 2";
     uint64_t tid = generateAutorunTitleId(gameTitle);
 
-    // 1. Generate Stub-NSP
-    std::vector<uint8_t> nsp = generateAutorunStubNsp(gameTitle, tid);
-    assert(nsp.size() > 16);
-    assert(nsp[0] == 'P' && nsp[1] == 'F' && nsp[2] == 'S' && nsp[3] == '0');
-
-    std::vector<std::pair<std::string, std::vector<uint8_t>>> files;
-    assert(parsePfs0(nsp.data(), nsp.size(), files));
-    assert(files.size() >= 6);
-
-    // Verify control.nacp exists and parses correctly
-    bool nacpFound = false;
-    for (const auto& f : files) {
-        if (f.first == "control.nacp") {
-            nacpFound = true;
-            std::string name, author;
-            assert(nacpReadLanguage(f.second.data(), f.second.size(), 0, name, author));
-            assert(name == gameTitle);
-            assert(author == "AutoRun / pipensx");
-        }
-    }
-    assert(nacpFound);
+    // PC cannot derive the console's NCA header key; it must never report a
+    // fabricated, uninstallable package as a successful forwarder.
+    assert(generateAutorunStubNsp(gameTitle, tid).empty());
+    fs::create_directories(autorunGamesPath(sd) + "/FlatOut2");
+    writeFile(autorunGamesPath(sd) + "/FlatOut2/FlatOut2.exe", "test executable");
 
     // 2. Install forwarder via InstallBackend
     auto backend = install::createInstallBackend(sd, install::InstallStorageTarget::SdCard);
     assert(backend != nullptr);
 
     std::string error;
-    assert(installAutorunForwarder(sd, *backend, gameTitle, "FlatOut2", "FlatOut2.exe", {}, error));
-    assert(error.empty());
+    assert(!installAutorunForwarder(sd, *backend, gameTitle, "FlatOut2", "FlatOut2.exe", {}, error));
+    assert(!error.empty());
 
     // Verify forwarder config was created
-    assert(fs::is_regular_file(autorunForwarderConfigPath(sd, tid)));
+    assert(!fs::exists(autorunForwarderConfigPath(sd, tid)));
 
     removeTempDir(sd);
 }
@@ -606,6 +761,7 @@ int main() {
     test_path_helpers();
     test_environment_bootstrap_and_preflight();
     test_release_parsing_and_updates();
+    test_runtime_download_cancellation();
     test_validation();
     test_registry_merge_idempotent();
     test_shell_link_generation();
@@ -615,6 +771,9 @@ int main() {
     test_title_id_and_forwarder_config();
     test_sys_clk_profile_parsing_and_config();
     test_nacp_and_pfs0();
+    test_missing_and_nested_executable();
+    test_box64_profile_deployment();
+    test_verified_dependency_updates();
     test_stub_nsp_generation_and_install();
     std::printf("autorun tests passed\n");
     return 0;

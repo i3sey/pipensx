@@ -802,3 +802,10 @@ $(BUILD_DIR)/tests/test_remote_archive: tests/test_remote_archive.cpp tests/zip_
 $(BUILD_DIR)/tests/test_content_registration: tests/test_content_registration.cpp src/install/content_registration.hpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $< $(LDFLAGS)
+
+# Read generated NCA sections on the host; only console crypto/services are stubbed.
+$(BUILD_DIR)/tests/test_autorun_package: tests/test_autorun_package.c \
+        vendor/autorun-forwarder/builder.c vendor/autorun-forwarder/builder.h \
+        tests/autorun_switch/switch.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Itests/autorun_switch -o $@ $< $(LDFLAGS)

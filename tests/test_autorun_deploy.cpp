@@ -26,6 +26,12 @@ std::string createTempDir(const std::string& prefix) {
     return path;
 }
 
+void writeFile(const std::string& path, const std::string& text) {
+    std::ofstream out(path, std::ios::binary);
+    out << text;
+    assert(out.good());
+}
+
 void removeTempDir(const std::string& path) {
     std::error_code ec;
     fs::remove_all(path, ec);
@@ -146,6 +152,8 @@ void test_dxvk_conf_generation() {
     profile.targetFolder = "FlatOut2";
     profile.dxvkConf = "dxvk.enableAsync = true\ndxvk.numCompilerThreads = 4\n";
 
+    fs::create_directories(autorunGamesPath(sd) + "/" + profile.targetFolder);
+    writeFile(autorunGamesPath(sd) + "/" + profile.targetFolder + "/" + profile.executable, "test executable");
     std::string error;
     assert(deployAutorunGame(sd, profile.targetFolder, profile.title, profile, error));
 
@@ -160,6 +168,8 @@ void test_dxvk_conf_generation() {
     defProfile.title = "Generic Game";
     defProfile.executable = "game.exe";
     defProfile.targetFolder = "GenericGame";
+    fs::create_directories(autorunGamesPath(sd) + "/GenericGame");
+    writeFile(autorunGamesPath(sd) + "/GenericGame/game.exe", "test executable");
     assert(deployAutorunGame(sd, defProfile.targetFolder, defProfile.title, defProfile, error));
 
     const std::string defDxvkPath = autorunGamesPath(sd) + "/GenericGame/dxvk.conf";
@@ -181,50 +191,7 @@ void test_stub_nsp_headers_and_nacp() {
     std::string titleIdHex = autorunTitleIdToString(titleId);
     assert(titleIdHex.rfind("0100BEEF", 0) == 0);
 
-    // Build Stub-NSP in memory
-    std::vector<uint8_t> nsp = generateAutorunStubNsp(gameTitle, titleId);
-    assert(nsp.size() > 16);
-
-    // Verify PFS0 magic
-    assert(nsp[0] == 'P' && nsp[1] == 'F' && nsp[2] == 'S' && nsp[3] == '0');
-
-    // Parse and verify PFS0 contents
-    std::vector<std::pair<std::string, std::vector<uint8_t>>> files;
-    assert(parsePfs0(nsp.data(), nsp.size(), files));
-    assert(files.size() >= 6);
-
-    // Check control.nacp
-    bool nacpVerified = false;
-    bool progNcaFound = false;
-    bool metaNcaFound = false;
-    bool controlNcaFound = false;
-    for (const auto& file : files) {
-        if (file.first == "control.nacp") {
-            assert(file.second.size() == 0x4000);
-            std::string parsedName, parsedAuthor;
-            assert(nacpReadLanguage(file.second.data(), file.second.size(), 0, parsedName, parsedAuthor));
-            assert(parsedName == gameTitle);
-            assert(parsedAuthor == "AutoRun / pipensx");
-            nacpVerified = true;
-        } else if (file.first.size() >= 9 && file.first.substr(file.first.size() - 9) == ".cnmt.nca") {
-            metaNcaFound = true;
-            assert(file.second.size() > 0x4000);
-            assert(file.second[0x200] == 'N' && file.second[0x201] == 'C' &&
-                   file.second[0x202] == 'A' && file.second[0x203] == '3');
-            assert(file.second[0x205] == 0); // Meta content type
-        } else if (file.first.size() >= 4 && file.first.substr(file.first.size() - 4) == ".nca") {
-            assert(file.second.size() > 0x4000);
-            assert(file.second[0x200] == 'N' && file.second[0x201] == 'C' &&
-                   file.second[0x202] == 'A' && file.second[0x203] == '3');
-            if (file.second[0x205] == 1) progNcaFound = true;
-            if (file.second[0x205] == 3) controlNcaFound = true;
-        }
-    }
-
-    assert(nacpVerified);
-    assert(metaNcaFound);
-    assert(progNcaFound);
-    assert(controlNcaFound);
+    assert(generateAutorunStubNsp(gameTitle, titleId).empty());
 
     // Verify sys-clk config integration
     const std::string sd = createTempDir("deploy_sysclk_test");

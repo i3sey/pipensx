@@ -32,8 +32,8 @@ DOWNLOAD LATEST - [pipensx.nro](https://github.com/i3sey/pipensx/releases/latest
 - restart-safe piece verification and download recovery
 - tracker, DHT, and PEX peer discovery
 - live, cached catalog loaded from the allowlisted
-  [`pipensx-catalog`](https://github.com/i3sey/pipensx-catalog) release
-  channel (manifest-verified)
+  [Langegen switch-games](https://github.com/Langegen/switch-games) catalog
+  with cover URLs
 - offline magnet resolution when the catalog provides a verified info dictionary
 - download-only mode and sequential NSP/NSZ installation while pieces arrive
 - unified homebrew-port installs: NRO application folders and ZIP/7z payloads
@@ -46,6 +46,12 @@ DOWNLOAD LATEST - [pipensx.nro](https://github.com/i3sey/pipensx/releases/latest
 The public build intentionally starts without a bundled catalog or game
 metadata index. On first use, the Catalog view refreshes from the trusted source
 and then uses its on-SD cache.
+
+If the default catalog is unavailable, open **Settings → Catalog → Catalog
+source** and select **pipensx-catalog**. Selecting a source saves it and
+immediately refreshes the catalog. You can also enter a custom HTTPS JSON
+URL or return to **Default (Langegen)**. Updating the catalog includes its
+cover URLs without a separate artwork-index update.
 
 ## Quick start
 
@@ -106,9 +112,9 @@ safely stopping the active task before exit.
 
 ## Catalog and network behavior
 
-The application fetches `catalog.json` over HTTPS from the built-in
-pipensx-catalog release channel by default: a tiny manifest is checked first
-and the catalog itself downloads only when its SHA-256 changed. Settings let
+The application fetches `switch_games.json` over HTTPS from Langegen by
+default. The optional pipensx-catalog release channel checks a manifest first
+and downloads its catalog only when the SHA-256 changes. Settings let
 you point at any other HTTPS URL
 that serves the same JSON shape. Redirects are limited to the source file's
 directory, except the release-asset hosts of the built-in channel;

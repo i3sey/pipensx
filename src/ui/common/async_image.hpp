@@ -94,7 +94,21 @@ public:
     void draw(NVGcontext* vg, float x, float y, float width, float height,
               brls::Style style, brls::FrameContext* ctx) override {
         flushDeferred();
-        brls::Image::draw(vg, x, y, width, height, style, ctx);
+        if (this->texture == 0)
+            return;
+        if (this->scalingType == brls::ImageScalingType::FIT) {
+            float coordX = x + this->imageX;
+            float coordY = y + this->imageY;
+            this->paint.xform[4] = coordX;
+            this->paint.xform[5] = coordY;
+            nvgBeginPath(vg);
+            nvgRoundedRect(vg, coordX, coordY, this->imageWidth,
+                           this->imageHeight, getCornerRadius());
+            nvgFillPaint(vg, a(this->paint));
+            nvgFill(vg);
+        } else {
+            brls::Image::draw(vg, x, y, width, height, style, ctx);
+        }
     }
 
     void resetArtwork() {
@@ -185,6 +199,7 @@ private:
         const uint64_t startedUs = now_us();
         NVGcontext* vg = brls::Application::getNVGContext();
         innerSetImage(nvgCreateImageRGBA(vg, width, height, 0, pixels));
+        invalidateImageBounds();
         const uint64_t durationUs = now_us() - startedUs;
         budget.recordUpload(frameNumber, bytes, durationUs);
         if (telemetry_enabled())

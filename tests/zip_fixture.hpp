@@ -37,7 +37,7 @@ inline std::string rar4(const std::vector<File>& files, bool large = false) {
 // The prefix offset allows a sparse ZIP64 fixture beyond 4 GiB without
 // allocating a multi-GiB test buffer. Returned data starts at prefixOffset.
 inline std::string build(const std::vector<File>& files, bool zip64 = false,
-                         uint64_t prefixOffset = 0) {
+                         uint64_t prefixOffset = 0, bool streaming = true) {
     std::string out, directory;
     for (const auto& file : files) {
         std::string packed = file.data;
@@ -57,16 +57,20 @@ inline std::string build(const std::vector<File>& files, bool zip64 = false,
         const uint32_t crc = crc32(0, reinterpret_cast<const Bytef*>(file.data.data()), file.data.size());
         const uint64_t offset = prefixOffset + out.size();
         number(out, 0x04034b50, 4); number(out, zip64 ? 45 : 20, 2);
-        number(out, 8, 2); // Data descriptor, as produced by streaming cloud ZIPs.
+        number(out, streaming ? 8 : 0, 2); // Cloud ZIPs use data descriptors.
         number(out, file.deflated ? 8 : 0, 2); number(out, 0, 4);
-        number(out, 0, 4); number(out, zip64 ? 0xffffffff : 0, 4); number(out, zip64 ? 0xffffffff : 0, 4);
+        number(out, streaming ? 0 : crc, 4);
+        number(out, zip64 ? 0xffffffff : streaming ? 0 : packed.size(), 4);
+        number(out, zip64 ? 0xffffffff : streaming ? 0 : file.data.size(), 4);
         number(out, file.path.size(), 2); number(out, zip64 ? 20 : 0, 2); out += file.path;
         if (zip64) { number(out, 1, 2); number(out, 16, 2); number(out, file.data.size(), 8); number(out, packed.size(), 8); }
         out += packed;
-        number(out, 0x08074b50, 4); number(out, crc, 4);
-        number(out, packed.size(), zip64 ? 8 : 4); number(out, file.data.size(), zip64 ? 8 : 4);
+        if (streaming) {
+            number(out, 0x08074b50, 4); number(out, crc, 4);
+            number(out, packed.size(), zip64 ? 8 : 4); number(out, file.data.size(), zip64 ? 8 : 4);
+        }
         number(directory, 0x02014b50, 4); number(directory, 45, 2); number(directory, zip64 ? 45 : 20, 2);
-        number(directory, 8, 2); number(directory, file.deflated ? 8 : 0, 2); number(directory, 0, 4);
+        number(directory, streaming ? 8 : 0, 2); number(directory, file.deflated ? 8 : 0, 2); number(directory, 0, 4);
         number(directory, crc, 4); number(directory, zip64 ? 0xffffffff : packed.size(), 4);
         number(directory, zip64 ? 0xffffffff : file.data.size(), 4);
         number(directory, file.path.size(), 2); number(directory, zip64 ? 28 : 0, 2);

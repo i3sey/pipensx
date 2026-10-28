@@ -109,10 +109,7 @@ struct RetiredCatalogSnapshot {
     std::unordered_map<std::string, size_t> infoHashIndex;
 };
 
-// Built-in pipensx-catalog release channel used when catalogSourceUrl is
-// empty: a tiny manifest fetched first, the ~20 MB catalog only when its
-// SHA-256 changed (manifest-delta). A custom catalogSourceUrl stays a single
-// JSON fetched without any manifest check.
+// Langegen switch-games catalog used when catalogSourceUrl is empty.
 std::string defaultCatalogSourceUrl();
 std::string defaultCatalogManifestUrl();
 

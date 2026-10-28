@@ -20,6 +20,7 @@
 #include "app/app_settings.hpp"
 #include "app/catalog_refresh.hpp"
 #include "app/catalog_service.hpp"
+#include "app/catalog_urls.hpp"
 #include "app/download_manager.hpp"
 #include "app/game_metadata_service.hpp"
 #include "app/installed_title_service.hpp"
@@ -519,7 +520,6 @@ public:
             [this](bool enabled) {
                 AppSettingsData values = settings_->get();
                 bool previousConfirm = values.confirmExit;
-                bool previousWarn = values.warnOnActiveDownload;
                 values.confirmExit = enabled;
                 if (!enabled)
                     values.warnOnActiveDownload = false;
@@ -989,7 +989,7 @@ private:
     void refreshProxyDetail() {
         const std::string& url = settings_->get().proxyUrl;
         proxy_->setDetailText(url.empty()
-            ? tr("pipensx/settings/proxy_direct") : url);
+            ? tr("pipensx/settings/proxy_direct") : formatUrlDetail(url));
     }
 
     void editProxy() {
@@ -1155,14 +1155,42 @@ public:
             });
         content_->addView(refreshCatalog_);
 
-        catalogSource_ = actionCell(tr("pipensx/settings/catalog_source"), "",
+        catalogPreset_ = new brls::SelectorCell();
+        catalogPreset_->init(tr("pipensx/settings/catalog_source"),
+            {tr("pipensx/settings/catalog_source_default"),
+             "pipensx-catalog",
+             tr("pipensx/settings/catalog_source_custom")},
+            catalogPresetIndex(), [this](int selected) {
+                if (refreshInFlight_) {
+                    refreshCatalogSourceDetail();
+                    brls::Application::notify(tr("pipensx/catalog/updating_catalog"));
+                    return;
+                }
+                if (selected == 2) {
+                    refreshCatalogSourceDetail();
+                    editCatalogSource();
+                    return;
+                }
+                AppSettingsData values = settings_->get();
+                values.catalogSourceUrl = selected == 1
+                    ? kAlternativeCatalogUrl : "";
+                if (!persistSettings(settings_, values, "catalog_source_url")) {
+                    refreshCatalogSourceDetail();
+                    return;
+                }
+                refreshCatalogSourceDetail();
+                refreshCatalogNow();
+            });
+        content_->addView(catalogPreset_);
+
+        catalogSource_ = actionCell(tr("pipensx/settings/catalog_source_custom"), "",
             [this] { editCatalogSource(); });
         content_->addView(catalogSource_);
         refreshCatalogSourceDetail();
 
         content_->addView(actionCell(tr("pipensx/settings/update_now"),
             tr("pipensx/settings/update_now_detail"),
-            [this] { updateAllNow(); }));
+            [this] { refreshCatalogNow(); }));
     }
 
     void applyValues() override {
@@ -1172,13 +1200,6 @@ public:
     }
 
 private:
-    // The manual "Update now" action chains catalog then artwork.
-    void updateAllNow() {
-        if (refreshInFlight_)
-            return;
-        refreshCatalogNow([this] { refreshMetadataNow(); });
-    }
-
     void refreshCatalogNow(std::function<void()> onDone = {}) {
         if (refreshInFlight_)
             return;
@@ -1235,84 +1256,57 @@ private:
         });
     }
 
-    void refreshMetadataNow(std::function<void()> onDone = {}) {
-        if (refreshInFlight_ || !metadata_)
-            return;
-        if (!tryBeginCatalogRefresh())
-            return;
-        refreshInFlight_ = true;
-        brls::Application::notify(tr("pipensx/catalog/updating_artwork"));
-        auto alive = alive_;
-        GameMetadataService* metadata = metadata_;
-        AppSettings* settings = settings_;
-        brls::async([this, alive, metadata, settings,
-                     onDone = std::move(onDone)]() mutable {
-            auto snapshot = std::make_shared<MetadataSnapshot>();
-            std::string error;
-            bool ok = metadata->fetchLatest(*snapshot, error);
-            brls::sync([this, alive, ok, snapshot,
-                        error = std::move(error), metadata, settings,
-                        onDone = std::move(onDone)]() mutable {
-                RetiredMetadataSnapshot retired;
-                if (ok) {
-                    retired = metadata->adopt(std::move(*snapshot));
-                    metadata->dropMemoryImageCache();
-                    std::string stampError;
-                    if (!recordCatalogRefreshSuccess(settings, false, true,
-                                                     stampError) &&
-                        !stampError.empty()) {
-                        diagnostic_error("settings", "metadata_refresh_time",
-                                         "error=%s", stampError.c_str());
-                    }
-                }
-                auto retiredHolder = std::make_shared<RetiredMetadataSnapshot>(
-                    std::move(retired));
-                brls::sync([retiredHolder, snapshot] {
-                    brls::async([retiredHolder, snapshot] {});
-                });
-                endCatalogRefresh();
-                if (!alive->load())
-                    return;
-                refreshInFlight_ = false;
-                if (!ok) {
-                    diagnostic_error("metadata", "settings_refresh",
-                                     "error=%s", error.c_str());
-                    brls::Application::notify(formatCatalogRefreshError(error));
-                    return;
-                }
-                if (onMetadataRefreshed_)
-                    onMetadataRefreshed_();
-                brls::Application::notify(
-                    tr("pipensx/catalog/updated_artwork", metadata->size()));
-                if (onDone)
-                    onDone();
-            });
-        });
+    int catalogPresetIndex() const {
+        const auto& url = settings_->get().catalogSourceUrl;
+        if (url.empty() || url == kDefaultCatalogUrl)
+            return 0;
+        return url == kAlternativeCatalogUrl ? 1 : 2;
     }
 
     void refreshCatalogSourceDetail() {
         const std::string& url = settings_->get().catalogSourceUrl;
-        catalogSource_->setDetailText(
-            url.empty() ? tr("pipensx/settings/catalog_source_default") : url);
+        const int index = catalogPresetIndex();
+        catalogPreset_->setSelection(index, true);
+        const bool isCustom = (index == 2);
+        catalogSource_->setVisibility(isCustom ? brls::Visibility::VISIBLE
+                                               : brls::Visibility::GONE);
+        if (isCustom)
+            catalogSource_->setDetailText(formatUrlDetail(url));
     }
 
     void editCatalogSource() {
-        brls::Application::getImeManager()->openForText(
+        if (refreshInFlight_) {
+            refreshCatalogSourceDetail();
+            brls::Application::notify(tr("pipensx/catalog/updating_catalog"));
+            return;
+        }
+        const std::string current = settings_->get().catalogSourceUrl;
+        const std::string initialText =
+            (current.empty() || current == kDefaultCatalogUrl ||
+             current == kAlternativeCatalogUrl)
+                ? "" : current;
+        bool shown = brls::Application::getImeManager()->openForText(
             [this](std::string text) {
                 if (!pipensx::isValidCatalogSourceUrl(text)) {
                     brls::Application::notify(
                         tr("pipensx/settings/catalog_source_invalid"));
+                    refreshCatalogSourceDetail();
                     return;
                 }
                 AppSettingsData values = settings_->get();
                 values.catalogSourceUrl = text;
-                if (!persistSettings(settings_, values, "catalog_source_url"))
+                if (!persistSettings(settings_, values, "catalog_source_url")) {
+                    refreshCatalogSourceDetail();
                     return;
+                }
                 refreshCatalogSourceDetail();
+                refreshCatalogNow();
             },
-            tr("pipensx/settings/catalog_source"),
+            tr("pipensx/settings/catalog_source_custom"),
             tr("pipensx/settings/catalog_source_detail"), 512,
-            settings_->get().catalogSourceUrl, brls::KEYBOARD_DISABLE_NONE);
+            initialText, brls::KEYBOARD_DISABLE_NONE);
+        if (!shown)
+            refreshCatalogSourceDetail();
     }
 
     AppSettings* settings_;
@@ -1321,6 +1315,7 @@ private:
     std::shared_ptr<std::atomic<bool>> alive_;
     std::function<void()> onMetadataRefreshed_;
     brls::BooleanCell* refreshCatalog_ = nullptr;
+    brls::SelectorCell* catalogPreset_ = nullptr;
     brls::DetailCell* catalogSource_ = nullptr;
     bool refreshInFlight_ = false;
 };

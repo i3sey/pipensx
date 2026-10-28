@@ -1,4 +1,5 @@
 #include "../src/app/install_space.hpp"
+#include "../src/app/autorun_service.hpp"
 #include "../src/app/nx_file_types.hpp"
 #include "../src/app/port_archive.hpp"
 #include "../src/app/port_selection.hpp"
@@ -2070,6 +2071,71 @@ int main() {
         assert(portDeploy.receiptState(portId) == SwitchDeployReceiptState::Valid);
         portDeploy.shutdown();
         portManager.shutdown();
+    }
+
+    // AutoRun receipts survive restart and identify the entire game directory.
+    {
+        const auto sd = root + "/autorun-sd";
+        const auto app = sd + "/switch/pipensx";
+        const auto target = sd + "/switch";
+        const std::string id(40, 'a');
+        const auto game = autorunGamesPath(sd) + "/Example";
+        writeFile(game + "/game.exe", "portable executable");
+        writeCompletedQueue(app, id, game, 19, "autorun");
+        AutorunProfile profile;
+        profile.title = "Example";
+        profile.targetFolder = "Example";
+        profile.executable = "game.exe";
+        profile.coverUrl = "https://example.invalid/cover.png";
+        assert(saveAutorunProfile(app, id, profile, error));
+        AutorunProfile loaded;
+        assert(loadAutorunProfile(app, id, loaded, error));
+        assert(loaded.coverUrl == profile.coverUrl);
+        DownloadManager manager(app, false);
+        {
+            SwitchDeployService service(manager, app, target);
+            service.scheduleDeployOfferPoll();
+            std::optional<SwitchDeployService::PendingOffer> offer;
+            for (int i = 0; i < 500 && !offer; ++i) {
+                offer = service.takePendingDeployOffer();
+                if (!offer) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            assert(offer && offer->autorunPostDeploy);
+            assert(service.receiptState(id) == SwitchDeployReceiptState::Valid);
+            service.dismissDeployOffer(id);
+        }
+        {
+            SwitchDeployService service(manager, app, target);
+            service.scheduleDeployOfferPoll();
+            service.shutdown();
+            assert(!service.takePendingDeployOffer());
+        }
+        const auto titleId = generateAutorunTitleId(profile.title);
+        assert(createAutorunForwarderConfig(sd, titleId, profile.title,
+            profile.targetFolder, profile.executable, error));
+        assert(applySysClkProfile(sd, titleId, SysClkProfile{}, error));
+        writeFile(game + "/saves/new.sav", "created after installation");
+        writeFile(autorunGamesPath(sd) + "/Neighbour/keep", "unrelated game");
+        assert(registerGameInLauncherLibrary(sd,
+            autorunGamesPath(sd) + "/Neighbour/other.exe", ""));
+        PortUninstallService uninstall(manager, app, target);
+        PortUninstallPlan plan;
+        assert(uninstall.plan(autorunTitleIdToString(titleId), {}, plan));
+        assert(plan.wholeFolders.size() == 1);
+        PortUninstallReport report;
+        assert(uninstall.uninstallPort(plan, [](std::string&) { return true; }, report));
+        assert(!fs::exists(game));
+        assert(!manager.snapshot(id));
+        assert(!hasSysClkProfile(sd, titleId));
+        assert(!fs::exists(autorunForwarderConfigPath(sd, titleId)));
+        assert(fs::exists(autorunGamesPath(sd) + "/Neighbour/keep"));
+        std::ifstream library(autorunWineRoot(sd) + "/launcher-library-v2.ini");
+        const std::string libraryText((std::istreambuf_iterator<char>(library)), {});
+        assert(libraryText.find("/Example/game.exe") == std::string::npos);
+        assert(libraryText.find("/Neighbour/other.exe") != std::string::npos);
+        assert(!fs::exists(autorunDesktopPath(sd) + "/Example.lnk"));
+        assert(uninstall.uninstallPort(plan, [](std::string&) { return true; }, report));
+        manager.shutdown();
     }
 
     storage.freeBytes = 1024 * 1024;

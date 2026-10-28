@@ -42,8 +42,8 @@ struct AppSettingsData {
     std::string language = "auto";
     AppTheme theme = AppTheme::Dark;
     CatalogFilter catalogFilter = CatalogFilter::Games;
-    // HTTPS URL to a catalog JSON. Empty = built-in pipensx-catalog release
-    // channel (manifest-verified). Validated at parse time; a hand-edited
+    // HTTPS URL to a catalog JSON. Empty = Langegen switch-games
+    // catalog. Validated at parse time; a hand-edited
     // settings.json cannot smuggle a non-HTTPS or credential-bearing URL.
     std::string catalogSourceUrl;
     bool refreshCatalogOnLaunch = false;
@@ -142,12 +142,12 @@ std::string generateWebPin();
 // every request failing with a curl error nobody can read.
 bool isValidProxyUrl(const std::string& value);
 
-// Empty (built-in pipensx-catalog channel) or https:// with a non-empty
+// Empty (Langegen switch-games catalog) or https:// with a non-empty
 // host and path, no userinfo, max 512 chars — same rules enforced at parse
 // and in the UI.
 bool isValidCatalogSourceUrl(const std::string& value);
 
-// User override or the built-in pipensx-catalog release URL.
+// User override or the default Langegen catalog URL.
 std::string effectiveCatalogSourceUrl(const std::string& custom);
 
 // Points libcurl at the proxy for every handle the app creates, including

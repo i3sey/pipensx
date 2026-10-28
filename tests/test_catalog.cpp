@@ -2327,10 +2327,13 @@ void runLiveResolutionIfRequested() {
 // checked against a separate allowlist covering the GitHub release-asset
 // hosts.
 void testTrustedSourceAllowlist() {
-    const std::string kDefault = defaultCatalogSourceUrl();
-    assert(kDefault ==
-           "https://github.com/i3sey/pipensx-catalog/releases/latest/"
-           "download/catalog.json");
+    assert(defaultCatalogSourceUrl() ==
+           "https://raw.githubusercontent.com/Langegen/switch-games/refs/heads/main/"
+           "switch_games.json");
+    const std::string kDefault =
+        "https://github.com/i3sey/pipensx-catalog/releases/latest/download/catalog.json";
+    assert(CatalogService::isTrustedSource(defaultCatalogSourceUrl(),
+                                           defaultCatalogSourceUrl()));
     assert(defaultCatalogManifestUrl() ==
            "https://github.com/i3sey/pipensx-catalog/releases/latest/"
            "download/manifest.json");
@@ -2502,6 +2505,21 @@ void testCatalogSizeBytesPriority() {
     assert(CatalogService::parseJson(json, entries, error));
     assert(entries.size() == 1);
     assert(entries[0].size == 58720256);
+}
+
+void testAutorunBox64ProfileParsing() {
+    const char* json = R"([{
+        "title":"FTL", "type":"autorun",
+        "magnet":"magnet:?xt=urn:btih:8B8016FD97F08E2CC46E3B104B72EC758173C3C9&tr=http%3A%2F%2Fbt.t-ru.org%2Fann%3Fmagnet",
+        "autorun":{"executable":"FTLGame.exe", "target_folder":"FTL",
+                   "box64_conf":"BOX64_DYNAREC_BIGBLOCK=0\nBOX64_DYNAREC_CALLRET=0\n"}
+    }])";
+    std::vector<CatalogEntry> entries;
+    std::string error;
+    assert(CatalogService::parseJson(json, entries, error));
+    assert(entries.size() == 1 && entries[0].autorun);
+    assert(entries[0].autorun->box64Conf ==
+        "BOX64_DYNAREC_BIGBLOCK=0\nBOX64_DYNAREC_CALLRET=0\n");
 }
 
 // Structured pipensx-catalog v2 fields land in the entry; entries without
@@ -3076,6 +3094,7 @@ int main() {
     testCatalogManifestParsing();
     testCatalogBodyVerification();
     testCatalogSizeBytesPriority();
+    testAutorunBox64ProfileParsing();
     testCatalogV2FieldsParsing();
     testCatalogPackageTypeTitleCorrection();
     testCatalogDateStringTolerance();

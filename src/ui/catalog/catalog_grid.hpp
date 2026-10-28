@@ -30,18 +30,17 @@ inline constexpr int kColumns = 6;
 inline constexpr float kCardWidth = 190.0f;
 // Icon is slightly smaller than the plate so the substrate frames it.
 inline constexpr float kCoverInset = 4.0f;
-inline constexpr float kCoverSize = 182.0f;  // kCardWidth - 2 * kCoverInset
-inline constexpr float kCoverHeight = kCoverSize;
+inline constexpr float kCoverWidth = 182.0f;  // kCardWidth - 2 * kCoverInset
+// Catalogue covers are Nintendo box-art images (~393x640, ~1:1.628 aspect ratio).
+// Height matches the vertical box-art aspect ratio for kCoverWidth.
+inline constexpr float kCoverHeight = 296.0f;
+inline constexpr float kCoverSize = kCoverWidth;
 // Icon inside the card uses the same rounding as the card itself so the
 // whole plate reads as one piece.
 inline constexpr float kIconRadius = theme::kRadiusMedium;
-// Catalogue covers are Nintendo box-art images (~393x640), not square
-// eShop icons. FIT them inside the square slot.
-inline constexpr float kGameCoverWidth = 114.0f;
-// Inset + cover + name line (17px) + sub line (15px) + inner margins,
-// no pad after the size line.
-inline constexpr float kCardHeight = 236.0f;
-inline constexpr float kRowHeight = 252.0f;
+// Inset + cover + name line (17px) + sub line (15px) + inner margins + padding.
+inline constexpr float kCardHeight = 348.0f;
+inline constexpr float kRowHeight = 364.0f;
 inline constexpr float kTopInsetHeight = 8.0f;
 inline constexpr float kFocusZoom = 1.06f;
 
@@ -97,7 +96,7 @@ public:
         // Same rounding as the card so the icon sits as a rounded plate
         // inside the substrate.
         cover_ = new brls::Box();
-        cover_->setWidth(grid::kCoverSize);
+        cover_->setWidth(grid::kCoverWidth);
         cover_->setHeight(grid::kCoverHeight);
         cover_->setCornerRadius(grid::kIconRadius);
         cover_->setBackgroundColor(theme::surface());
@@ -112,13 +111,13 @@ public:
         placeholder_->setTextColor(theme::textSecondary());
         cover_->addView(placeholder_);
         image_ = new AsyncRgbaImage();
-        image_->setWidth(grid::kCoverSize);
+        image_->setWidth(grid::kCoverWidth);
         image_->setHeight(grid::kCoverHeight);
         image_->setPositionType(brls::PositionType::ABSOLUTE);
         image_->setPositionTop(0);
         image_->setPositionLeft(0);
         image_->setCornerRadius(grid::kIconRadius);
-        image_->setScalingType(brls::ImageScalingType::FILL);
+        image_->setScalingType(brls::ImageScalingType::FIT);
         cover_->addView(image_);
 
         // Batch-mode selection chip (top-left corner of the cover).
@@ -178,7 +177,7 @@ public:
         sub_->setMarginLeft(theme::kSpacingUnit);
         sub_->setMarginRight(theme::kSpacingUnit);
         sub_->setMarginBottom(0);
-        sub_->setTextColor(theme::textTertiary());
+        sub_->setTextColor(theme::textSecondary());
         addView(sub_);
 
         registerAction("", brls::BUTTON_A, [this](brls::View*) {
@@ -217,7 +216,7 @@ public:
             sub_->setText(info.sub);
         if (!hasCard_ || painted_.subIsBadge != info.subIsBadge)
             sub_->setTextColor(info.subIsBadge ? theme::accent()
-                                               : theme::textTertiary());
+                                               : theme::textSecondary());
         const brls::Visibility markVisibility =
             info.selectionMode ? brls::Visibility::VISIBLE
                                : brls::Visibility::GONE;
@@ -246,14 +245,14 @@ public:
             iconPreserveAspect_ = info.iconPreserveAspect;
             applyZoom(false);
             image_->setScalingType(info.iconPreserveAspect
-                ? brls::ImageScalingType::FIT
-                : brls::ImageScalingType::FILL);
+                ? brls::ImageScalingType::FILL
+                : brls::ImageScalingType::FIT);
         }
         if (currentIconUrl_ != info.iconUrl ||
             (!info.iconUrl.empty() &&
              (artworkService_ != service || !artworkCurrent))) {
             setArtworkUrl(image_, service, info.iconUrl, currentIconUrl_,
-                          imageState_, GameMetadataService::kImageDimGrid);
+                          imageState_, GameMetadataService::kImageDimCard);
         }
         painted_ = info;
         artworkService_ = service;
@@ -267,7 +266,7 @@ public:
         setTextIfChanged(sub_, text);
         if (!hasCard_ || painted_.subIsBadge != badge)
             sub_->setTextColor(badge ? theme::accent()
-                                     : theme::textTertiary());
+                                     : theme::textSecondary());
         painted_.sub = text;
         painted_.subIsBadge = badge;
     }
@@ -308,12 +307,11 @@ private:
     // clips, so the art scales in place without shifting the layout.
     void applyZoom(bool focused) {
         const float zoom = focused ? grid::kFocusZoom : 1.0f;
-        const float baseWidth = iconPreserveAspect_
-            ? grid::kGameCoverWidth
-            : grid::kCoverSize;
-        image_->setDimensions(baseWidth * zoom, grid::kCoverHeight * zoom);
+        const float width = grid::kCoverWidth * zoom;
+        const float height = grid::kCoverHeight * zoom;
+        image_->setDimensions(width, height);
         image_->setPositionTop(-(zoom - 1.0f) * grid::kCoverHeight / 2.0f);
-        image_->setPositionLeft((grid::kCoverSize - baseWidth * zoom) / 2.0f);
+        image_->setPositionLeft(-(zoom - 1.0f) * grid::kCoverWidth / 2.0f);
     }
 
     brls::Box* cover_;

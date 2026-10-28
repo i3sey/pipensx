@@ -30,9 +30,9 @@ inline void openAutorunPostInstallDialog(
     std::string gameTitle = !profile.title.empty()
         ? profile.title
         : (task ? task->name : "Game");
-    std::string gameFolder = !profile.targetFolder.empty()
-        ? profile.targetFolder
-        : (task ? task->dataPath : gameTitle);
+    std::string gameFolder = task
+        ? task->dataPath.substr(task->dataPath.find_last_of('/') + 1)
+        : profile.targetFolder;
     const std::string sdRoot = autorun ? autorun->sdRoot() : "sdmc:";
     std::string executable = resolveAutorunExecutable(sdRoot, gameFolder, profile.executable);
 
@@ -71,7 +71,8 @@ inline void openAutorunPostInstallDialog(
     box->addView(descLabel);
 
     auto wantForwarder = std::make_shared<bool>(true);
-    auto wantSysclk = std::make_shared<bool>(true);
+    const bool sysclkAvailable = isSysClkInstalled(sdRoot) && !profile.overclock.empty();
+    auto wantSysclk = std::make_shared<bool>(sysclkAvailable);
 
     auto* forwarderCell = new brls::BooleanCell();
     forwarderCell->init(tr("pipensx/autorun/option_create_forwarder"), true,
@@ -80,10 +81,11 @@ inline void openAutorunPostInstallDialog(
     box->addView(forwarderCell);
 
     auto* sysclkCell = new brls::BooleanCell();
-    sysclkCell->init(tr("pipensx/autorun/option_apply_sysclk"), true,
+    sysclkCell->init(tr("pipensx/autorun/option_apply_sysclk"), sysclkAvailable,
                      [wantSysclk](bool val) { *wantSysclk = val; });
     sysclkCell->setMarginBottom(8);
     box->addView(sysclkCell);
+    sysclkCell->setVisibility(sysclkAvailable ? brls::Visibility::VISIBLE : brls::Visibility::GONE);
 
     auto dismissed = std::make_shared<std::atomic<bool>>(false);
     auto onDismissShared = std::make_shared<std::function<void()>>(std::move(onDismiss));
@@ -99,55 +101,72 @@ inline void openAutorunPostInstallDialog(
     dialog->addButton(tr("pipensx/common/continue"),
                       [dismissed, onDismissShared, &manager, autorun,
                        wantForwarder, wantSysclk, gameTitle, gameFolder,
-                       executable, profile]() {
+                       executable, profile, taskId]() {
         const bool doForwarder = *wantForwarder;
         const bool doSysclk = *wantSysclk;
         const std::string sdRoot = autorun ? autorun->sdRoot() : "sdmc:";
 
-        // Guarantee registration in AutoRun library and target.txt
-        const std::string wineRoot = autorunWineRoot(sdRoot);
-        std::string fullTarget = "sdmc:/switch/wine/drive_c/Games/" + gameFolder + "/" + executable;
-        std::replace(fullTarget.begin(), fullTarget.end(), '\\', '/');
-        const std::string coverTarget = "sdmc:/switch/wine/drive_c/Games/" + gameFolder + "/cover.png";
-        registerGameInLauncherLibrary(sdRoot, fullTarget, coverTarget);
-
-        const std::string targetTxtPath = wineRoot + "/target.txt";
-        std::ofstream targetOut(targetTxtPath, std::ios::binary | std::ios::trunc);
-        if (targetOut) {
-            targetOut << fullTarget << "\n";
-        }
-
-        if (doForwarder && !executable.empty()) {
-            auto backend = install::createInstallBackend(
-                manager.rootPath(), install::InstallStorageTarget::SdCard);
-            std::string forwarderErr;
-            const std::vector<uint8_t> iconJpeg;
-            if (backend && installAutorunForwarder(sdRoot, *backend, gameTitle,
-                                                  gameFolder, executable,
-                                                  iconJpeg, forwarderErr)) {
-                brls::Application::notify(tr("pipensx/autorun/forwarder_installed"));
-            } else {
-                brls::Application::notify(
-                    tr("pipensx/autorun/forwarder_failed", forwarderErr));
-            }
-        }
-
-        if (doSysclk && !profile.overclock.empty()) {
-            std::string sysclkErr;
-            const uint64_t titleId = generateAutorunTitleId(gameTitle);
-            SysClkProfile sysProfile;
-            parseOverclockProfile(profile.overclock, sysProfile);
-            if (applySysClkProfile(sdRoot, titleId, sysProfile, sysclkErr)) {
-                brls::Application::notify(tr("pipensx/autorun/sysclk_applied"));
-            } else {
-                brls::Application::notify(
-                    tr("pipensx/autorun/sysclk_failed", sysclkErr));
-            }
-        }
-
-        if (!dismissed->exchange(true) && *onDismissShared) {
+        if (!dismissed->exchange(true) && *onDismissShared)
             (*onDismissShared)();
-        }
+        brls::async([&manager, doForwarder, doSysclk, sdRoot,
+                     gameTitle, gameFolder, executable, profile, taskId] {
+            auto notify = [](std::string message) {
+                brls::sync([message = std::move(message)] {
+                    brls::Application::notify(message);
+                });
+            };
+            std::string leaseError;
+            auto lease = manager.beginExternalDeploy(taskId, leaseError);
+            if (!lease) {
+                notify(leaseError);
+                return;
+            }
+            if (executable.empty()) {
+                notify(tr("pipensx/autorun/forwarder_failed", "Game executable not found."));
+                return;
+            }
+            // Guarantee registration in AutoRun library and target.txt
+            const std::string wineRoot = autorunWineRoot(sdRoot);
+            std::string fullTarget = autorunGamesPath(sdRoot) + "/" + gameFolder + "/" + executable;
+            std::replace(fullTarget.begin(), fullTarget.end(), '\\', '/');
+            const std::string coverTarget = autorunGamesPath(sdRoot) + "/" + gameFolder + "/cover.png";
+            registerGameInLauncherLibrary(sdRoot, fullTarget, coverTarget);
+
+            const std::string targetTxtPath = wineRoot + "/target.txt";
+            std::ofstream targetOut(targetTxtPath, std::ios::binary | std::ios::trunc);
+            if (targetOut) {
+                targetOut << fullTarget << "\n";
+            }
+
+            if (doForwarder && !executable.empty()) {
+                auto backend = install::createInstallBackend(
+                    manager.rootPath(), install::InstallStorageTarget::SdCard);
+                std::string forwarderErr;
+                const auto iconJpeg = loadAutorunGameIcon(sdRoot, gameFolder, profile.coverUrl);
+                if (backend && installAutorunForwarder(sdRoot, *backend, gameTitle,
+                                                      gameFolder, executable,
+                                                      iconJpeg, forwarderErr)) {
+                    notify(tr("pipensx/autorun/forwarder_installed"));
+                } else {
+                    notify(
+                        tr("pipensx/autorun/forwarder_failed", forwarderErr));
+                }
+            }
+
+            if (doSysclk && !profile.overclock.empty()) {
+                std::string sysclkErr;
+                const uint64_t titleId = generateAutorunTitleId(gameTitle);
+                SysClkProfile sysProfile;
+                parseOverclockProfile(profile.overclock, sysProfile);
+                if (applySysClkProfile(sdRoot, titleId, sysProfile, sysclkErr)) {
+                    notify(tr("pipensx/autorun/sysclk_applied"));
+                } else {
+                    notify(
+                        tr("pipensx/autorun/sysclk_failed", sysclkErr));
+                }
+            }
+
+        });
     });
 
     dialog->addButton(tr("pipensx/common/skip"), [dismissed, onDismissShared]() {

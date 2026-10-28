@@ -228,7 +228,7 @@ bool httpGet(const std::string& url, std::string& body, std::string& error,
     }
     if (!CatalogService::isTrustedSource(effectiveUrl, sourceUrl)) {
         bool trusted = false;
-        if (sourceUrl == kDefaultCatalogUrl ||
+        if (sourceUrl == kAlternativeCatalogUrl ||
             sourceUrl == kDefaultCatalogManifestUrl) {
             // `releases/latest/download` answers with a redirect to a
             // release-asset host outside the source directory, so the
@@ -459,7 +459,7 @@ std::string catalogSourceTrustPrefix(const std::string& url) {
 }
 
 std::string catalogSourceLabel(const std::string& sourceUrl) {
-    if (sourceUrl == kDefaultCatalogUrl ||
+    if (sourceUrl == kAlternativeCatalogUrl ||
         sourceUrl == kDefaultCatalogManifestUrl)
         return "pipensx-catalog";
     if (sourceUrl.size() > 8 && sourceUrl.compare(0, 8, "https://") == 0)
@@ -633,6 +633,7 @@ bool CatalogService::parseJson(const std::string& json,
             profile.renderer = readString(ar, "renderer", 64);
             profile.notes = readString(ar, "notes", 2048);
             profile.dxvkConf = readString(ar, "dxvk_conf", 4096);
+            profile.box64Conf = readString(ar, "box64_conf", 4096);
             profile.registry = readString(ar, "registry", 8192);
             if (!profile.executable.empty() && !profile.targetFolder.empty()) {
                 entry.autorun = std::move(profile);
@@ -769,7 +770,7 @@ bool CatalogService::load(std::string& error) {
 
 bool CatalogService::isTrustedSource(const std::string& url,
                                      const std::string& sourceUrl) {
-    if (sourceUrl == kDefaultCatalogUrl ||
+    if (sourceUrl == kAlternativeCatalogUrl ||
         sourceUrl == kDefaultCatalogManifestUrl) {
         // Hosts (with path prefixes) allowed to serve the built-in channel.
         // Only the pipensx-catalog repo; every network fetch is gated on
@@ -887,7 +888,7 @@ bool CatalogService::fetchLatest(std::vector<CatalogEntry>& parsed,
         error = "Catalog URL is not on the trusted host list.";
         return false;
     }
-    if (sourceUrl == kDefaultCatalogUrl ||
+    if (sourceUrl == kAlternativeCatalogUrl ||
         sourceUrl == kDefaultCatalogManifestUrl)
         return fetchDefaultChannel(parsed, error, cancelled);
     std::string catalogBody;
@@ -960,8 +961,8 @@ bool CatalogService::fetchDefaultChannel(
         }
     }
     std::string catalogBody;
-    if (!httpGet(kDefaultCatalogUrl, catalogBody, error,
-                 kDefaultCatalogUrl, cancelled))
+    if (!httpGet(kAlternativeCatalogUrl, catalogBody, error,
+                 kAlternativeCatalogUrl, cancelled))
         return false;
     if (!verifyCatalogBody(catalogBody, manifest, error))
         return false;
