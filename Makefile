@@ -7,7 +7,7 @@ NRO_SRC ?= $(CURDIR)/build-switch/pipensx.nro
 PIPENSX_DAEMON_HEAP_MB ?= 32
 DEPLOY_CLEAN ?= 0
 
-.PHONY: help pc test switch probe daemon clean audit deploy
+.PHONY: help pc test switch probe daemon clean audit deploy bot-deploy bot-run
 
 help:
 	@echo "pipensx build targets:"
@@ -18,6 +18,8 @@ help:
 	@echo "  make daemon   Build the pipensx daemon sysmodule (src/daemon/)"
 	@echo "  make audit    Scan the complete Git history with gitleaks"
 	@echo "  make deploy MTP_DIR='mtp://...' [DEPLOY_CLEAN=1]"
+	@echo "  make bot-deploy Upload build-switch/pipensx.nro to Switch via sys-botbase"
+	@echo "  make bot-run  Build, upload, and launch pipensx via sys-botbase"
 	@echo "  make clean    Remove PC and Switch build outputs"
 
 pc:
@@ -57,6 +59,12 @@ audit:
 deploy:
 	MTP_DIR="$(MTP_DIR)" NRO_SRC="$(NRO_SRC)" \
 	DEPLOY_CLEAN="$(DEPLOY_CLEAN)" scripts/deploy_switch.sh
+
+bot-deploy: switch
+	python3 .agents/skills/switch-visual-test/scripts/switch_bot.py upload "$(NRO_SRC)"
+
+bot-run: bot-deploy
+	python3 .agents/skills/switch-visual-test/scripts/switch_bot.py launch-pipensx
 
 clean:
 	$(MAKE) -f Makefile.pc clean

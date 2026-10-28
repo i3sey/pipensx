@@ -409,6 +409,36 @@ bool inspectImage(const std::vector<uint8_t>& bytes, int& width, int& height) {
            validDecodedImageSize(width, height);
 }
 
+bool isSwitchBoxartTemplate(int width, int height, const uint8_t* pixels) {
+    if (width < 370 || width > 410 || height < 620 || height > 660 || !pixels)
+        return false;
+    // Check right latch pixel near (width - 6, height / 2)
+    // and top rim pixel near (width / 2, 5).
+    // The 3D plastic case template has consistent grey plastic borders (R, G, B >= 180).
+    const uint8_t* pRight =
+        pixels + (static_cast<size_t>(height / 2) * width + (width - 6)) * 4;
+    const uint8_t* pTop =
+        pixels + (5 * width + width / 2) * 4;
+    return (pRight[0] >= 180 && pRight[1] >= 180 && pRight[2] >= 180 &&
+            pTop[0] >= 180 && pTop[1] >= 180 && pTop[2] >= 180);
+}
+
+std::vector<uint8_t> cropSwitchBoxartTemplate(const uint8_t* pixels, int& width, int& height) {
+    constexpr int cropLeft = 0;
+    constexpr int cropTop = 16;
+    const int newWidth = width > 18 ? width - 18 : width;
+    const int newHeight = height > 32 ? height - 32 : height;
+    std::vector<uint8_t> cropped(static_cast<size_t>(newWidth) * newHeight * 4);
+    for (int y = 0; y < newHeight; ++y) {
+        const uint8_t* srcRow = pixels + (static_cast<size_t>(cropTop + y) * width + cropLeft) * 4;
+        uint8_t* dstRow = cropped.data() + static_cast<size_t>(y) * newWidth * 4;
+        std::memcpy(dstRow, srcRow, static_cast<size_t>(newWidth) * 4);
+    }
+    width = newWidth;
+    height = newHeight;
+    return cropped;
+}
+
 // Produce the requested size class directly from stb's decode buffer. For an
 // oversized source this avoids first copying the full RGBA image into a vector
 // and then allocating another vector for the thumbnail.
@@ -1765,8 +1795,14 @@ void GameMetadataService::imageLocalWorkerMain() const {
                           &width, &height, &channels, 4)
                     : nullptr;
                 if (pixels && validDecodedImageSize(width, height)) {
+                    std::vector<uint8_t> cropped;
+                    const uint8_t* sourcePixels = pixels;
+                    if (isSwitchBoxartTemplate(width, height, pixels)) {
+                        cropped = cropSwitchBoxartTemplate(pixels, width, height);
+                        sourcePixels = cropped.data();
+                    }
                     std::vector<uint8_t> rgba =
-                        sizedRgba(pixels, width, height, job.maxDim);
+                        sizedRgba(sourcePixels, width, height, job.maxDim);
                     auto decoded = std::make_shared<DecodedImage>();
                     decoded->width = width;
                     decoded->height = height;

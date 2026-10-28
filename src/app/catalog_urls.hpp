@@ -1,14 +1,13 @@
 #pragma once
 
-// Single source of truth for the built-in pipensx-catalog release channel.
-// Header-only so translation units linked without catalog_service.cpp
-// (app_settings in unit tests) share the literals without a link dependency.
 namespace pipensx {
 
-// Default catalog channel: manifest-verified release asset. An empty
-// catalog_source_url means the manifest+catalog pair; a custom URL stays a
-// single JSON fetched without any manifest check.
 inline constexpr char kDefaultCatalogUrl[] =
+    "https://raw.githubusercontent.com/Langegen/switch-games/refs/heads/main/"
+    "switch_games.json";
+
+// The release channel verifies its catalog against the companion manifest.
+inline constexpr char kAlternativeCatalogUrl[] =
     "https://github.com/i3sey/pipensx-catalog/releases/latest/download/"
     "catalog.json";
 inline constexpr char kDefaultCatalogManifestUrl[] =

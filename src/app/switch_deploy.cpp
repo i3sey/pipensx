@@ -441,8 +441,12 @@ bool rollbackMoveJob(const std::string& appRoot,
 
 bool saveReceipt(const std::string& root, const SwitchDeployPlan& plan,
                  const std::vector<std::string>& unpacked,
-                 const std::vector<std::string>& titleIds) {
-    std::string blob = "d5:filesl";
+                 const std::vector<std::string>& titleIds,
+                 const std::string& autorunFolder = {}) {
+    std::string blob = "d";
+    if (!autorunFolder.empty())
+        blob += "14:autorun-folder" + bstr(autorunFolder);
+    blob += "5:filesl";
     for (const SwitchDeployEntry& entry : plan.files) {
         blob += "d6:digest";
         blob += bstr(std::string(reinterpret_cast<const char*>(
@@ -569,6 +573,19 @@ bool loadReceipt(const std::string& root, const std::string& taskId,
         }
     }
     return true;
+}
+
+std::string receiptAutorunFolder(const std::string& root, const std::string& taskId) {
+    std::string blob;
+    if (!readBlob(receiptPath(root, taskId), blob)) return {};
+    const char* cursor = blob.data();
+    const char* end = cursor + blob.size();
+    be_node_t node;
+    std::string folder;
+    if (!be_decode(&cursor, end, &node) || cursor != end || node.type != BE_DICT ||
+        !readString(node, "autorun-folder", folder) ||
+        !taskFilePathIsFatCompatible(folder)) return {};
+    return folder;
 }
 
 constexpr uint64_t kFat32FileMax = 0xFFFFFFFFu;
@@ -2787,19 +2804,24 @@ bool SwitchDeployService::deployAutorun(const std::string& taskId, std::string& 
     loadAutorunProfile(appRoot_, taskId, profile, profileError);
 
     const std::string sdRoot = sdRootForSwitchRoot(targetRoot_);
-    std::string gameFolder = profile.targetFolder;
-    if (gameFolder.empty()) {
-        const size_t slash = task->dataPath.find_last_of('/');
-        gameFolder = (slash != std::string::npos) ? task->dataPath.substr(slash + 1) : task->name;
+    const std::string gameRoot = autorunGamesPath(sdRoot) + "/";
+    if (task->dataPath.rfind(gameRoot, 0) != 0) {
+        error = "AutoRun task is outside the game directory.";
+        return false;
     }
+    const std::string gameFolder = task->dataPath.substr(gameRoot.size());
     const std::string gameTitle = !profile.title.empty() ? profile.title : task->name;
     if (!deployAutorunGame(sdRoot, gameFolder, gameTitle, profile, error)) {
         return false;
     }
     mkdirs(appRoot_ + "/deployments");
-    std::string blob = "d5:fileslee5:titlelee4:type7:autorun4:task" + bstr(taskId) +
-                       "7:versioni2ee";
-    atomicWrite(receiptPath(appRoot_, taskId), blob);
+    SwitchDeployPlan receipt;
+    receipt.taskId = taskId;
+    if (!saveReceipt(appRoot_, receipt, {},
+                     {autorunTitleIdToString(generateAutorunTitleId(gameTitle))}, gameFolder)) {
+        error = "Unable to save AutoRun deployment receipt.";
+        return false;
+    }
     return true;
 }
 
@@ -3182,6 +3204,21 @@ bool PortUninstallService::plan(const std::string& titleId,
                     result.taskHasData = true;
             }
         }
+        const auto recordedFolder = receiptAutorunFolder(appRoot_, taskId);
+        if (!recordedFolder.empty()) {
+            wholeFolders.insert("wine/drive_c/Games/" + recordedFolder);
+            continue;
+        }
+        if (task && task->mode == TransferMode::AutoRunInstall) {
+            const std::string prefix = targetRoot_ + "/wine/drive_c/Games/";
+            if (task->dataPath.rfind(prefix, 0) != 0)
+                return false;
+            const std::string folder = task->dataPath.substr(prefix.size());
+            if (!taskFilePathIsFatCompatible(folder))
+                return false;
+            wholeFolders.insert("wine/drive_c/Games/" + folder);
+            continue;
+        }
         if (!unpackedKnown) {
             // v1 receipt: rebuild the unpacked member list from the archive
             // headers still present in the task data. When the archive is
@@ -3328,6 +3365,16 @@ bool PortUninstallService::deleteDeployed(
     removeExact(sdRootForSwitchRoot(targetRoot_), plan.sdRootFiles,
                 plan.sdRootSplitFiles);
     for (const std::string& folder : plan.wholeFolders) {
+        const std::string autorunPrefix = "wine/drive_c/Games/";
+        if (folder.rfind(autorunPrefix, 0) == 0) {
+            std::string error;
+            const auto id = std::strtoull(plan.titleId.c_str(), nullptr, 16);
+            if (!removeAutorunGameRegistration(sdRootForSwitchRoot(targetRoot_),
+                    folder.substr(autorunPrefix.size()), id, error)) {
+                fail(error);
+                continue;
+            }
+        }
         const std::string full = targetRoot_ + "/" + folder;
         struct stat st {};
         if (lstat(full.c_str(), &st) != 0) {
@@ -3369,7 +3416,11 @@ bool PortUninstallService::uninstallPort(
     PortUninstallReport& report) const {
     report = {};
     report.filesDeleted = deleteDeployed(plan, report);
+    if (!report.filesDeleted)
+        return false;
     report.tasksRemoved = removeTasks(plan, report);
+    if (!report.tasksRemoved)
+        return false;
     std::string shortcutError;
     report.shortcutRemoved =
         !uninstallShortcut || uninstallShortcut(shortcutError);

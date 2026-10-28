@@ -21,7 +21,7 @@ include(${BOREALIS_LIBRARY}/cmake/commonOption.cmake)
 include(${BOREALIS_LIBRARY}/cmake/toolchain.cmake)
 
 set(PIPENSX_VERSION "1.0.0" CACHE STRING "pipensx release version")
-project(pipensx VERSION ${PIPENSX_VERSION} LANGUAGES C CXX)
+project(pipensx VERSION ${PIPENSX_VERSION} LANGUAGES C CXX ASM)
 
 # devkitA64 defaults Release to "-g -O2": the debug info balloons the ELF to
 # ~90 MB and slows every compile and link, while elf2nro strips it from the
@@ -209,18 +209,11 @@ target_compile_options(pipensx_updater PRIVATE
 )
 
 program_target(autorun_forwarder
-    "src/autorun/autorun_forwarder.c")
-set_target_properties(autorun_forwarder PROPERTIES
-    C_STANDARD 11
-)
-target_include_directories(autorun_forwarder PRIVATE src)
-target_compile_definitions(autorun_forwarder PRIVATE __SWITCH__)
-target_compile_options(autorun_forwarder PRIVATE
-    -Wall
-    -Wextra
-    -ffunction-sections
-    -fdata-sections
-)
+    "vendor/autorun-forwarder/hbl/source/main.c")
+target_sources(autorun_forwarder PRIVATE vendor/autorun-forwarder/hbl/source/trampoline.s)
+set_target_properties(autorun_forwarder PROPERTIES C_STANDARD 11)
+target_compile_definitions(autorun_forwarder PRIVATE VERSION="3.0.0")
+target_link_options(autorun_forwarder PRIVATE -Wl,-wrap,exit)
 
 # Sysmodule probe (docs/plans/SYSMODULE_PLAN.md, ESHOP_APPLET_PLAN.md §5.4):
 # a daemon that answers the background-download and half-awake hypotheses on
@@ -281,6 +274,7 @@ set(APP_SOURCES
     src/platform/switch_performance.cpp
     ${APP_SERVICE_SOURCES}
     src/install/install_backend_switch.cpp
+    vendor/autorun-forwarder/builder.c
     src/main_switch.cpp
     ${UI_SOURCES}
     vendor/qrcodegen/qrcodegen.cpp
@@ -429,17 +423,17 @@ add_custom_target(sync_update_helper ALL
 )
 add_custom_target(sync_autorun_forwarder ALL
     COMMAND ${CMAKE_COMMAND} -E make_directory "${ROMFS_DIR}"
-    COMMAND ${NX_NACPTOOL_EXE}
-        --create "AutoRun Forwarder" "AutoRun / pipensx" "1.0.0"
-        autorun_forwarder.nacp
-    COMMAND ${NX_ELF2NRO_EXE}
-        autorun_forwarder.elf "${ROMFS_DIR}/autorun-forwarder.nro"
-        --icon=${APP_ICON}
-        --nacp=autorun_forwarder.nacp
-    DEPENDS autorun_forwarder
-    BYPRODUCTS "${ROMFS_DIR}/autorun-forwarder.nro" autorun_forwarder.nacp
+    COMMAND ${NX_ELF2NSO_EXE} $<TARGET_FILE:autorun_forwarder> "${ROMFS_DIR}/autorun-loader.nso"
+    COMMAND ${NX_NPDMTOOL_EXE}
+        "${CMAKE_CURRENT_SOURCE_DIR}/vendor/autorun-forwarder/hbl/hbl.json"
+        "${ROMFS_DIR}/autorun-loader.npdm"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${APP_ICON}" "${ROMFS_DIR}/autorun-icon.jpg"
+    DEPENDS autorun_forwarder vendor/autorun-forwarder/hbl/hbl.json
+    BYPRODUCTS "${ROMFS_DIR}/autorun-loader.nso" "${ROMFS_DIR}/autorun-loader.npdm"
+        "${ROMFS_DIR}/autorun-icon.jpg"
     VERBATIM
 )
+
 file(COPY
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/borealis/resources/img/sys
     DESTINATION ${ROMFS_DIR}/img

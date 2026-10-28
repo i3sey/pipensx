@@ -620,6 +620,9 @@ private:
                 return tr("pipensx/downloads/status_checking");
             }
             case DownloadStatus::Downloading: {
+                if (task.source == TaskSource::Torrent && task.peers == 0 &&
+                    task.speedBytesPerSecond == 0)
+                    return tr("pipensx/detail/finding_peers");
                 return tr("pipensx/detail/status_downloading",
                           percentOf(progressOf(task)));
             }
@@ -909,31 +912,58 @@ private:
                 auto* dialog = new brls::Dialog(
                     tr("pipensx/autorun/runtime_required_desc"));
                 dialog->addButton(tr("pipensx/autorun/install_runtime"), [this] {
+                    setBusy(true);
+                    cancelled_->store(false);
+                    primary_->setText(tr("pipensx/autorun/runtime_checking"));
+                    primary_->setProgress(0.0f);
+                    primary_->setState(brls::ButtonState::DISABLED);
+                    secondary_->setState(brls::ButtonState::DISABLED);
                     auto alive = alive_;
+                    auto cancelled = cancelled_;
                     AutorunService* autorun = autorun_;
-                    brls::async([this, alive, autorun] {
+                    brls::async([this, alive, autorun, cancelled] {
+                        auto progress = [this, alive](bool extracting, uint64_t current, uint64_t total) {
+                            const float fill = total ? std::min(1.0f, float(current) / total) : 0.0f;
+                            const auto text = extracting
+                                ? tr("pipensx/autorun/runtime_extracting", current / (1024 * 1024))
+                                : (total ? tr("pipensx/autorun/runtime_downloading", percentOf(fill))
+                                         : tr("pipensx/autorun/runtime_downloading_bytes", current / (1024 * 1024)));
+                            brls::sync([this, alive, fill, text] {
+                                if (!alive->load()) return;
+                                primary_->setText(text);
+                                primary_->setProgress(fill);
+                                statusLabel_->setText(text + tr("pipensx/detail/cancel_hint"));
+                            });
+                        };
                         std::string error;
                         bool ok = false;
                         if (autorun) {
                             AutorunUpdateCheck check = autorun->checkForUpdates();
                             if (check.ok && !check.release.archiveUrl.empty()) {
-                                ok = autorun->downloadAndInstallRuntime(check.release, error);
+                                ok = autorun->downloadAndInstallRuntime(check.release, error, *cancelled,
+                                    [progress](uint64_t current, uint64_t total) { progress(true, current, total); },
+                                    [progress](uint64_t current, uint64_t total) { progress(false, current, total); });
                             } else if (!check.error.empty()) {
                                 error = check.error;
                             } else {
-                                ok = autorun->bootstrapEnvironment(error);
+                                error = "AutoRun runtime download is unavailable.";
                             }
                         } else {
-                            ok = prepareAutorunEnvironment("sdmc:", error);
+                            error = "AutoRun service is unavailable.";
                         }
                         brls::sync([this, alive, ok, error] {
                             if (!alive->load())
                                 return;
+                            setBusy(false);
+                            refreshButtons();
                             if (ok) {
+                                operationMessage_ = tr("pipensx/autorun/runtime_installed");
+                                statusLabel_->setText(operationMessage_);
                                 brls::Application::notify(tr("pipensx/autorun/runtime_installed"));
                             } else {
-                                brls::Application::notify(
-                                    tr("pipensx/autorun/runtime_install_failed", error));
+                                operationMessage_ = tr("pipensx/autorun/runtime_install_failed", error);
+                                statusLabel_->setText(operationMessage_);
+                                brls::Application::notify(operationMessage_);
                             }
                         });
                     });
@@ -1029,8 +1059,10 @@ private:
                     return;
                 last = text;
                 brls::sync([this, alive, text] {
-                    if (alive->load() && busy_)
+                    if (alive->load() && busy_) {
+                        primary_->setText(text);
                         statusLabel_->setText(text + tr("pipensx/detail/cancel_hint"));
+                    }
                 });
             };
             std::vector<uint8_t> initialPeers;
@@ -1291,7 +1323,9 @@ private:
                     } else {
                         if (entry.autorun) {
                             std::string profileError;
-                            saveAutorunProfile(manager_->rootPath(), id, *entry.autorun, profileError);
+                            auto profile = *entry.autorun;
+                            profile.coverUrl = presentation_.coverUrl;
+                            saveAutorunProfile(manager_->rootPath(), id, profile, profileError);
                         }
                         if (deploy_)
                             deploy_->armAutoCopy(id);
@@ -1397,7 +1431,9 @@ private:
                         id.c_str(), autorunFolder.c_str());
                 if (entry_.autorun) {
                     std::string profileError;
-                    saveAutorunProfile(manager_->rootPath(), id, *entry_.autorun, profileError);
+                    auto profile = *entry_.autorun;
+                    profile.coverUrl = presentation_.coverUrl;
+                    saveAutorunProfile(manager_->rootPath(), id, profile, profileError);
                 }
                 if (deploy_)
                     deploy_->armAutoCopy(id);

@@ -46,6 +46,19 @@ inline brls::DetailCell* actionCell(const std::string& title,
     return cell;
 }
 
+// Formats a URL or long string for DetailCell so it does not overflow to the left.
+inline std::string formatUrlDetail(const std::string& url, size_t maxLen = 28) {
+    if (url.size() <= maxLen)
+        return url;
+    const size_t ellipsisLen = 3;  // "..."
+    if (maxLen <= ellipsisLen)
+        return url.substr(0, maxLen);
+    const size_t keep = maxLen - ellipsisLen;
+    const size_t prefix = keep / 2;
+    const size_t suffix = keep - prefix;
+    return url.substr(0, prefix) + "..." + url.substr(url.size() - suffix);
+}
+
 // Persist through AppSettings and surface the error as a notification.
 // Shared by every panel so a failed write always looks the same.
 inline bool persistSettings(AppSettings* settings,

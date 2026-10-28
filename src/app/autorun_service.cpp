@@ -1,11 +1,22 @@
 #include "autorun_service.hpp"
 #include "core/sha256.h"
+extern "C" {
+#include "core/util.h"
+}
 #include "curl_https.hpp"
 #include "download_manager.hpp"
 #include "install/install_backend.hpp"
 #include "port_selection.hpp"
 #include "task_files.hpp"
 #include "update_service.hpp"
+#ifdef __SWITCH__
+#include <switch.h>
+#include <borealis/extern/nanovg/stb_image.h>
+#define STB_IMAGE_WRITE_STATIC
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "../../vendor/borealis/library/lib/extern/glfw/deps/stb_image_write.h"
+#include "../../vendor/autorun-forwarder/builder.h"
+#endif
 
 #include <borealis/extern/nlohmann/json.hpp>
 #include <curl/curl.h>
@@ -17,6 +28,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <sstream>
@@ -164,8 +176,10 @@ bool defaultFetchText(const std::string& url, size_t limit, std::string& body,
     return true;
 }
 
-bool defaultFetchFile(const std::string& url, const std::string& path,
-                      size_t limit, std::string& error) {
+bool fetchFileWithProgress(const std::string& url, const std::string& path,
+                      size_t limit, std::string& error,
+                      const std::atomic<bool>* cancelled,
+                      const AutorunService::ProgressCallback& progress) {
     FileWriter writer;
     writer.output.open(path, std::ios::binary | std::ios::trunc);
     writer.limit = limit;
@@ -190,6 +204,19 @@ bool defaultFetchFile(const std::string& url, const std::string& path,
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeFileCallback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &writer);
 
+    struct Transfer {
+        const std::atomic<bool>* cancelled;
+        const AutorunService::ProgressCallback* progress;
+    } transfer{cancelled, &progress};
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &transfer);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION,
+        +[](void* context, curl_off_t total, curl_off_t current, curl_off_t, curl_off_t) -> int {
+            const auto& transfer = *static_cast<Transfer*>(context);
+            if (transfer.cancelled && transfer.cancelled->load()) return 1;
+            if (*transfer.progress) (*transfer.progress)(current, total);
+            return 0;
+        });
     CURLcode res = curl_easy_perform(curl);
     long status = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
@@ -212,6 +239,11 @@ bool defaultFetchFile(const std::string& url, const std::string& path,
         return false;
     }
     return true;
+}
+
+bool defaultFetchFile(const std::string& url, const std::string& path,
+                      size_t limit, std::string& error) {
+    return fetchFileWithProgress(url, path, limit, error, nullptr, {});
 }
 
 std::string lowerAscii(std::string s) {
@@ -304,7 +336,9 @@ std::string autorunForwardersPath(const std::string& sdRoot) {
 
 static std::string findExecutableRelativePath(const std::string& baseDir,
                                              const std::string& targetExe) {
-    if (access((baseDir + "/" + targetExe).c_str(), F_OK) == 0)
+    struct stat direct{};
+    if (!targetExe.empty() && stat((baseDir + "/" + targetExe).c_str(), &direct) == 0 &&
+        S_ISREG(direct.st_mode))
         return targetExe;
     std::string exeName = targetExe;
     size_t slash = exeName.find_last_of("/\\");
@@ -343,7 +377,7 @@ static std::string findExecutableRelativePath(const std::string& baseDir,
         }
         closedir(dir);
     }
-    return targetExe;
+    return {};
 }
 
 std::string resolveAutorunExecutable(const std::string& sdRoot,
@@ -757,6 +791,9 @@ bool createWineDesktopShortcut(const std::string& desktopPath,
     }
     std::string targetWin = "C:\\Games\\" + targetFolder + "\\" + executable;
     std::string workWin = "C:\\Games\\" + targetFolder;
+    const auto exeDir = executable.find_last_of("/\\");
+    if (exeDir != std::string::npos)
+        workWin += "\\" + executable.substr(0, exeDir);
     std::vector<uint8_t> linkBytes = generateShellLink(targetWin, workWin);
     std::string filePath = desktopPath + "/" + shortcutName + ".lnk";
     std::ofstream out(filePath, std::ios::binary | std::ios::trunc);
@@ -773,12 +810,440 @@ bool createWineDesktopShortcut(const std::string& desktopPath,
     return true;
 }
 
+namespace {
+
+bool seedAutorunSettingsFile(const std::string& path,
+                            const std::vector<std::pair<std::string, std::string>>& defaults,
+                            std::string& error) {
+    if (defaults.empty()) return true;
+    std::ifstream in(path, std::ios::binary);
+    if (!in && access(path.c_str(), F_OK) == 0) {
+        error = "Unable to read AutoRun program settings: " + path;
+        return false;
+    }
+    std::string text((std::istreambuf_iterator<char>(in)), {});
+    bool changed = false;
+    for (const auto& setting : defaults) {
+        bool present = false;
+        std::istringstream lines(text);
+        std::string line;
+        while (std::getline(lines, line)) {
+            const auto eq = line.find('=');
+            if (eq == std::string::npos) continue;
+            auto key = lowerAscii(line.substr(0, eq));
+            const auto begin = key.find_first_not_of(" \t");
+            const auto end = key.find_last_not_of(" \t");
+            if (begin == std::string::npos) continue;
+            key = key.substr(begin, end - begin + 1);
+            if (key == lowerAscii(setting.first) || (setting.first == "d3d" && key == "d3d9")) {
+                present = true;
+                break;
+            }
+        }
+        // Seed recommendations once; retain the user's per-game choices.
+        if (!present) {
+            if (!text.empty() && text.back() != '\n') text += '\n';
+            text += setting.first + "=" + setting.second + "\n";
+            changed = true;
+        }
+    }
+    if (!changed) return true;
+    const auto temp = path + ".tmp";
+    std::ofstream out(temp, std::ios::binary | std::ios::trunc);
+    out << text;
+    out.close();
+    if (!out || std::rename(temp.c_str(), path.c_str()) != 0) {
+        std::remove(temp.c_str());
+        error = "Unable to write AutoRun program settings: " + path;
+        return false;
+    }
+    return true;
+}
+
+bool seedAutorunProgramSettings(const std::string& executablePath,
+                               const AutorunProfile& profile, std::string& error) {
+    std::vector<std::pair<std::string, std::string>> defaults;
+    const auto cpu = lowerAscii(profile.translator);
+    if (cpu == "box64" || cpu == "fex")
+        defaults.emplace_back("cpu", cpu);
+    const auto renderer = lowerAscii(profile.renderer);
+    if (renderer == "dxvk" || renderer == "dxvk+vkd3d")
+        defaults.emplace_back("d3d", renderer);
+    else if (renderer == "wine" || renderer == "wined3d")
+        defaults.emplace_back("d3d", "wine");
+    if (executablePath.size() < 4 ||
+        lowerAscii(executablePath.substr(executablePath.size() - 4)) != ".exe") {
+        error = "AutoRun target is not an EXE: " + executablePath;
+        return false;
+    }
+    const auto stem = executablePath.substr(0, executablePath.size() - 4);
+    if (!seedAutorunSettingsFile(stem + ".wine-nx.txt", defaults, error))
+        return false;
+    std::vector<std::pair<std::string, std::string>> box64;
+    std::istringstream options(profile.box64Conf);
+    std::string line;
+    while (std::getline(options, line)) {
+        const auto begin = line.find_first_not_of(" \t\r");
+        if (begin == std::string::npos || line[begin] == '#' || line[begin] == ';') continue;
+        const auto eq = line.find('=', begin);
+        if (eq == std::string::npos) {
+            error = "Invalid Box64 option: " + line;
+            return false;
+        }
+        const auto keyEnd = line.find_last_not_of(" \t", eq - 1);
+        const auto key = line.substr(begin, keyEnd - begin + 1);
+        auto value = line.substr(eq + 1);
+        const auto valueBegin = value.find_first_not_of(" \t\r");
+        const auto valueEnd = value.find_last_not_of(" \t\r");
+        if (key.rfind("BOX64_DYNAREC_", 0) != 0 ||
+            key.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789") != std::string::npos ||
+            valueBegin == std::string::npos) {
+            error = "Invalid Box64 option: " + line;
+            return false;
+        }
+        value = value.substr(valueBegin, valueEnd - valueBegin + 1);
+        if (value.find_first_not_of("0123456789") != std::string::npos || value.size() > 5) {
+            error = "Invalid Box64 option value: " + line;
+            return false;
+        }
+        box64.emplace_back(key, value);
+    }
+    return seedAutorunSettingsFile(stem + ".box64.txt", box64, error);
+}
+
+} // namespace
+
+namespace {
+
+constexpr size_t kDependencyArchiveLimit = 8 * 1024 * 1024;
+constexpr size_t kDependencyFileLimit = 2 * 1024 * 1024;
+
+std::string autorunFileSha256(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return {};
+    sha256_ctx_t ctx;
+    sha256_init(&ctx);
+    std::array<char, 32768> buffer{};
+    while (in) {
+        in.read(buffer.data(), buffer.size());
+        sha256_update(&ctx, buffer.data(), static_cast<size_t>(in.gcount()));
+    }
+    if (!in.eof()) return {};
+    uint8_t digest[32];
+    sha256_final(&ctx, digest);
+    static const char hex[] = "0123456789abcdef";
+    std::string result;
+    for (auto byte : digest) {
+        result += hex[byte >> 4];
+        result += hex[byte & 15];
+    }
+    return result;
+}
+
+bool autorunCopyFile(const std::string& from, const std::string& to) {
+    std::ifstream in(from, std::ios::binary);
+    std::ofstream out(to, std::ios::binary | std::ios::trunc);
+    if (!in || !out) return false;
+    out << in.rdbuf();
+    out.close();
+    return !in.bad() && !out.fail();
+}
+
+// Select only a root member (never the x64 DLL in the same SDK). Nothing else
+// in the publisher's archive is extracted into the game's directory.
+bool readDependencyZipMember(const std::string& archive, const std::string& name,
+                             std::vector<uint8_t>& output) {
+    std::ifstream in(archive, std::ios::binary);
+    std::array<uint8_t, 30> header{};
+    while (in.read(reinterpret_cast<char*>(header.data()), header.size())) {
+        if (readU32le(header.data()) != 0x04034b50) return false;
+        const auto flags = readU16le(header.data() + 6);
+        const auto method = readU16le(header.data() + 8);
+        const auto crc = readU32le(header.data() + 14);
+        const auto packed = readU32le(header.data() + 18);
+        const auto size = readU32le(header.data() + 22);
+        const auto nameSize = readU16le(header.data() + 26);
+        const auto extraSize = readU16le(header.data() + 28);
+        if ((flags & 9) || packed > kDependencyArchiveLimit) return false;
+        std::string member(nameSize, '\0');
+        if (!in.read(member.data(), nameSize)) return false;
+        in.seekg(extraSize, std::ios::cur);
+        if (member != name) {
+            in.seekg(packed, std::ios::cur);
+            continue;
+        }
+        if (!size || size > kDependencyFileLimit) return false;
+        std::vector<uint8_t> input(packed);
+        if (!in.read(reinterpret_cast<char*>(input.data()), packed)) return false;
+        output.resize(size);
+        if (method == 0) {
+            if (packed != size) return false;
+            output = std::move(input);
+        } else if (method == 8) {
+            z_stream stream{};
+            stream.next_in = input.data(); stream.avail_in = packed;
+            stream.next_out = output.data(); stream.avail_out = size;
+            if (inflateInit2(&stream, -MAX_WBITS) != Z_OK) return false;
+            const auto rc = inflate(&stream, Z_FINISH);
+            inflateEnd(&stream);
+            if (rc != Z_STREAM_END || stream.total_in != packed || stream.total_out != size)
+                return false;
+        } else return false;
+        return static_cast<uint32_t>(crc32(0, output.data(), output.size())) == crc;
+    }
+    return false;
+}
+
+} // namespace
+
+bool installAutorunDependencyFixes(
+    const std::string& gameDirectory,
+    const std::vector<AutorunDependencyFix>& fixes,
+    const AutorunService::AssetFetcher& fetcher,
+    std::string& error) {
+    struct Pending { const AutorunDependencyFix* fix; std::string target, backup, staged; };
+    std::vector<Pending> pending;
+    auto fail = [&](const std::string& detail) {
+        error = detail;
+        for (const auto& item : pending) std::remove(item.staged.c_str());
+        return false;
+    };
+    const auto cache = gameDirectory + "/.pipensx-compat";
+    for (const auto& fix : fixes) {
+        if (fix.fileName.empty() || fix.fileName.find_first_of("/\\") != std::string::npos ||
+            fix.fileName == "." || fix.fileName == ".." ||
+            fix.archiveUrl.rfind("https://", 0) != 0 || fix.originalSha256.size() != 64 ||
+            fix.replacementSha256.size() != 64 || fix.archiveSha256.size() != 64)
+            return fail("Invalid AutoRun dependency rule.");
+        const auto target = gameDirectory + "/" + fix.fileName;
+        const auto backup = target + ".pipensx-original";
+        // Recover a power loss between unlink and rename on FAT. Never treat
+        // an unrelated existing backup as the original file.
+        if (access(target.c_str(), F_OK) != 0 &&
+            autorunFileSha256(backup) == fix.originalSha256) {
+            if (!autorunCopyFile(backup, target))
+                return fail("Unable to restore dependency: " + target);
+        }
+        const auto current = autorunFileSha256(target);
+        if (current == fix.replacementSha256) continue;
+        if (current != fix.originalSha256) continue; // user replacement / other release
+        if (!makeDirectories(cache))
+            return fail("Unable to create dependency cache: " + cache);
+        pending.push_back({&fix, target, backup, target + ".pipensx-new"});
+        const auto archive = cache + "/" + fix.fileName + ".zip";
+        if (autorunFileSha256(archive) != fix.archiveSha256) {
+            const auto part = archive + ".part";
+            if (!fetcher || !fetcher(fix.archiveUrl, part, kDependencyArchiveLimit, error)) {
+                std::remove(part.c_str());
+                return fail("Unable to download " + fix.fileName + ": " + error);
+            }
+            if (autorunFileSha256(part) != fix.archiveSha256) {
+                std::remove(part.c_str());
+                return fail("Dependency archive checksum mismatch: " + fix.fileName);
+            }
+            std::remove(archive.c_str());
+            if (std::rename(part.c_str(), archive.c_str()) != 0) {
+                std::remove(part.c_str());
+                return fail("Unable to cache dependency: " + fix.fileName);
+            }
+        }
+        std::vector<uint8_t> content;
+        if (!readDependencyZipMember(archive, fix.fileName, content))
+            return fail("Unable to extract dependency: " + fix.fileName);
+        std::ofstream out(pending.back().staged, std::ios::binary | std::ios::trunc);
+        out.write(reinterpret_cast<const char*>(content.data()), content.size());
+        out.close();
+        if (!out || autorunFileSha256(pending.back().staged) != fix.replacementSha256)
+            return fail("Dependency file checksum mismatch: " + fix.fileName);
+    }
+    // Fetch and verify the whole dependency set before changing any game file.
+    for (const auto& item : pending) {
+        if (access(item.backup.c_str(), F_OK) == 0) {
+            if (autorunFileSha256(item.backup) != item.fix->originalSha256)
+                return fail("Dependency backup does not match original: " + item.backup);
+        } else if (!autorunCopyFile(item.target, item.backup) ||
+                   autorunFileSha256(item.backup) != item.fix->originalSha256)
+            return fail("Unable to back up dependency: " + item.target);
+    }
+    std::vector<const Pending*> changed;
+    for (const auto& item : pending) {
+        changed.push_back(&item);
+        // libnx/FAT rename cannot replace an existing file. The verified backup
+        // above makes this recoverable, including after a restart.
+        if (std::remove(item.target.c_str()) != 0 ||
+            std::rename(item.staged.c_str(), item.target.c_str()) != 0) {
+            for (const auto* prior : changed) {
+                if (!autorunCopyFile(prior->backup, prior->target))
+                    log_msg("[autorun] dependency restore failed path='%s'\n", prior->target.c_str());
+            }
+            return fail("Unable to install dependency: " + item.target);
+        }
+        log_msg("[autorun] dependency updated file='%s' backup='%s'\n",
+                item.target.c_str(), item.backup.c_str());
+    }
+    return true;
+}
+
+namespace {
+
+bool repairKnownAutorunDependencies(const std::string& exePath,
+                                   AutorunProfile& launchProfile,
+                                   const AutorunAssetFetcher& fetcher,
+                                   std::string& error) {
+    if (lowerAscii(fileNamePart(exePath)) != "ftlgame.exe") return true;
+    const auto directory = exePath.substr(0, exePath.find_last_of('/'));
+    if (access((directory + "/ftl.dat").c_str(), F_OK) != 0) return true;
+    // FTL 1.6.13b GOG: the old Petite startup code in this exact BASS pair
+    // faults in AutoRun 2640 before FTL's entry point. The publisher's newer
+    // x86 2.4 libraries preserve the API and were verified on the console.
+    static const std::vector<AutorunDependencyFix> fixes = {
+        {"bass.dll", "4964a9e7787b28a94f60d9b6edfa82ce813ede9303cabd7863261edbec05efb8",
+         "ce5e97630cf4e1ef12a9afad785683414b7504efc443766333360ad2ed142eba",
+         "https://www.un4seen.com/files/bass24.zip",
+         "3a03ec9a33d0f4f9d167660da51c8bb1432e8977496995455ab137277d69636e"},
+        {"bassmix.dll", "2428a9f428ee5e6332b1199ccfc1edd2bac9a2dc811d812576abe2e1fe2c415d",
+         "4ccefb281fe22dfaa79b1a70537036665a21bd770a0431146c339b516bce5758",
+         "https://www.un4seen.com/files/bassmix24.zip",
+         "9e7fe1af3122c0d78d07cb2788cd52aef4e47b6c6f8ad0022ad5e40320516796"}
+    };
+    // Treat the pair as a unit: do not upgrade BASSmix against an unknown
+    // version of BASS or change a user's custom/modded library set.
+    for (const auto& fix : fixes) {
+        auto hash = autorunFileSha256(directory + "/" + fix.fileName);
+        if (hash.empty()) hash = autorunFileSha256(directory + "/" + fix.fileName + ".pipensx-original");
+        if (hash != fix.originalSha256 && hash != fix.replacementSha256) return true;
+    }
+    if (!installAutorunDependencyFixes(directory, fixes,
+            fetcher ? fetcher : AutorunAssetFetcher(defaultFetchFile), error))
+        return false;
+    // Reproduce the settings of the successful hardware run. An explicit
+    // per-game choice remains authoritative in seedAutorunProgramSettings.
+    if (launchProfile.translator.empty()) launchProfile.translator = "Box64";
+    if (launchProfile.box64Conf.empty())
+        launchProfile.box64Conf = "BOX64_DYNAREC_BIGBLOCK=0\nBOX64_DYNAREC_CALLRET=0\n"
+            "BOX64_DYNAREC_SAFEFLAGS=2\nBOX64_DYNAREC_NATIVEFLAGS=0\nBOX64_DYNAREC_FORWARD=0\n";
+    return true;
+}
+
+} // namespace
+
+bool removeAutorunGameRegistration(const std::string& sdRoot,
+    const std::string& gameFolder, uint64_t titleId, std::string& error) {
+    if (!taskFilePathIsFatCompatible(gameFolder)) {
+        error = "Invalid AutoRun game folder.";
+        return false;
+    }
+    const auto prefix = autorunGamesPath(sdRoot) + "/" + gameFolder + "/";
+    const auto library = autorunWineRoot(sdRoot) + "/launcher-library-v2.ini";
+    std::ifstream input(library);
+    if (input) {
+        std::string result, block, line;
+        auto flush = [&] {
+            std::istringstream lines(block);
+            std::string entry;
+            bool matches = false;
+            while (std::getline(lines, entry))
+                if (entry.rfind("path=" + prefix, 0) == 0) matches = true;
+            if (!matches) result += block;
+            block.clear();
+        };
+        while (std::getline(input, line)) {
+            if (!line.empty() && line.front() == '[') flush();
+            block += line + "\n";
+        }
+        flush();
+        input.close();
+        std::ofstream out(library, std::ios::binary | std::ios::trunc);
+        out << result;
+        out.close();
+        if (!out) { error = "Unable to update AutoRun library."; return false; }
+    }
+    const auto target = autorunWineRoot(sdRoot) + "/target.txt";
+    std::ifstream targetIn(target);
+    std::string selected;
+    std::getline(targetIn, selected);
+    if (selected.rfind(prefix, 0) == 0 && unlink(target.c_str()) != 0 && errno != ENOENT) {
+        error = "Unable to remove AutoRun target."; return false;
+    }
+    std::string title, folder, executable, nro, argv, ignored;
+    if (readAutorunForwarderConfig(sdRoot, titleId, title, folder, executable, nro, argv, ignored) &&
+        title.find_first_of("/\\") == std::string::npos && title != "." && title != "..") {
+        for (const auto* user : {"wine", "steamuser", "Public"}) {
+            const auto shortcut = autorunWineRoot(sdRoot) + "/drive_c/users/" + user +
+                "/Desktop/" + title + ".lnk";
+            if (unlink(shortcut.c_str()) != 0 && errno != ENOENT) {
+                error = "Unable to remove Wine shortcut."; return false;
+            }
+        }
+    }
+    return removeSysClkProfile(sdRoot, titleId, error) &&
+           removeAutorunForwarderConfig(sdRoot, titleId, error);
+}
+
+std::vector<uint8_t> loadAutorunGameIcon(const std::string& sdRoot,
+    const std::string& gameFolder, const std::string& coverUrl) {
+#ifdef __SWITCH__
+    if (!taskFilePathIsFatCompatible(gameFolder)) return {};
+    const auto folder = autorunGamesPath(sdRoot) + "/" + gameFolder;
+    const auto source = folder + "/.pipensx-cover";
+    std::string error;
+    std::string imagePath;
+    for (const auto* name : {"cover.jpg", "cover.png"}) {
+        if (access((folder + "/" + name).c_str(), R_OK) == 0) {
+            imagePath = folder + "/" + name;
+            break;
+        }
+    }
+    if (imagePath.empty() && !coverUrl.empty() &&
+        defaultFetchFile(coverUrl, source, 8 * 1024 * 1024, error))
+        imagePath = source;
+    if (imagePath.empty()) return {};
+    int width = 0, height = 0, channels = 0;
+    auto* pixels = stbi_load(imagePath.c_str(), &width, &height, &channels, 3);
+    if (imagePath == source) {
+        const auto cover = folder + "/cover.png";
+        if (pixels) rename(source.c_str(), cover.c_str());
+        else unlink(source.c_str());
+    }
+    if (!pixels || width <= 0 || height <= 0) {
+        stbi_image_free(pixels);
+        return {};
+    }
+    std::vector<uint8_t> square(256 * 256 * 3);
+    for (int y = 0; y < 256; ++y)
+        for (int x = 0; x < 256; ++x)
+            for (int c = 0; c < 3; ++c)
+                square[(y * 256 + x) * 3 + c] =
+                    pixels[((y * height / 256) * width + x * width / 256) * 3 + c];
+    stbi_image_free(pixels);
+    std::vector<uint8_t> jpeg;
+    stbi_write_jpg_to_func([](void* context, void* data, int size) {
+        auto& out = *static_cast<std::vector<uint8_t>*>(context);
+        const auto* bytes = static_cast<uint8_t*>(data);
+        out.insert(out.end(), bytes, bytes + size);
+    }, &jpeg, 256, 256, 3, square.data(), 90);
+    return jpeg;
+#else
+    (void)sdRoot; (void)gameFolder; (void)coverUrl;
+    return {};
+#endif
+}
+
 bool deployAutorunGame(const std::string& sdRoot,
                        const std::string& gameFolder,
                        const std::string& gameTitle,
                        const AutorunProfile& profile,
                        std::string& error) {
-    if (gameFolder.empty()) {
+    return deployAutorunGame(sdRoot, gameFolder, gameTitle, profile, error, {});
+}
+
+bool deployAutorunGame(const std::string& sdRoot,
+                       const std::string& gameFolder,
+                       const std::string& gameTitle,
+                       const AutorunProfile& profile,
+                       std::string& error,
+                       const AutorunAssetFetcher& dependencyFetcher) {
+    if (!taskFilePathIsFatCompatible(gameFolder)) {
         error = "Game folder must not be empty.";
         return false;
     }
@@ -788,7 +1253,24 @@ bool deployAutorunGame(const std::string& sdRoot,
         return false;
     }
 
-    // 1. Write dxvk.conf
+    // Resolve before writing launcher state; a download can contain only an installer.
+    const std::string exeName = !profile.executable.empty()
+        ? profile.executable : (gameFolder + ".exe");
+    const std::string actualExeRel = findExecutableRelativePath(wineGamesDir, exeName);
+
+    if (actualExeRel.empty()) {
+        error = "Game executable not found: " + exeName + ". Install or extract the game first.";
+        return false;
+    }
+
+    AutorunProfile launchProfile = profile;
+    const auto exePath = wineGamesDir + "/" + actualExeRel;
+    if (!repairKnownAutorunDependencies(exePath, launchProfile, dependencyFetcher, error))
+        return false;
+    if (!seedAutorunProgramSettings(exePath, launchProfile, error))
+        return false;
+
+    // Write dxvk.conf
     const std::string dxvkPath = wineGamesDir + "/dxvk.conf";
     const std::string dxvkContent = !profile.dxvkConf.empty()
         ? profile.dxvkConf : kDefaultDxvkConf;
@@ -799,8 +1281,12 @@ bool deployAutorunGame(const std::string& sdRoot,
     }
     dxvkOut.write(dxvkContent.data(), static_cast<std::streamsize>(dxvkContent.size()));
     dxvkOut.close();
+    if (!dxvkOut) {
+        error = "Unable to write dxvk.conf at: " + dxvkPath;
+        return false;
+    }
 
-    // 2. Merge user.reg
+    // Merge user.reg
     if (!profile.registry.empty()) {
         const std::string regPath = autorunRegistryPath(sdRoot);
         if (!mergeUserRegistry(regPath, profile.registry, error)) {
@@ -808,12 +1294,7 @@ bool deployAutorunGame(const std::string& sdRoot,
         }
     }
 
-    // 3. Locate actual executable relative path (in case of subfolder in torrent)
-    const std::string exeName = !profile.executable.empty()
-        ? profile.executable : (gameFolder + ".exe");
-    const std::string actualExeRel = findExecutableRelativePath(wineGamesDir, exeName);
-
-    // 4. Create Windows .lnk on all user desktops (wine, steamuser, Public)
+    // Create Windows .lnk on all user desktops (wine, steamuser, Public)
     const std::string title = !gameTitle.empty() ? gameTitle : gameFolder;
     const std::string wineRoot = autorunWineRoot(sdRoot);
     std::vector<std::string> desktops = {
@@ -832,19 +1313,24 @@ bool deployAutorunGame(const std::string& sdRoot,
         return false;
     }
 
-    // 5. Update target.txt so AutoRun runtime immediately selects this game on launch
+    // target.txt preselects the game in AutoRun; direct launch uses NRO argv.
     const std::string targetTxtPath = wineRoot + "/target.txt";
-    std::string fullTarget = "sdmc:/switch/wine/drive_c/Games/" + gameFolder + "/" + actualExeRel;
+    std::string fullTarget = autorunGamesPath(sdRoot) + "/" + gameFolder + "/" + actualExeRel;
     std::replace(fullTarget.begin(), fullTarget.end(), '\\', '/');
     std::ofstream targetOut(targetTxtPath, std::ios::binary | std::ios::trunc);
-    if (targetOut) {
-        targetOut << fullTarget << "\n";
+    targetOut << fullTarget << "\n";
+    targetOut.close();
+    if (!targetOut) {
+        error = "Unable to write AutoRun target: " + targetTxtPath;
+        return false;
     }
 
-    // 6. Register game in AutoRun GUI library (launcher-library-v2.ini)
-    std::string coverTarget = "sdmc:/switch/wine/drive_c/Games/" + gameFolder + "/cover.png";
-    registerGameInLauncherLibrary(sdRoot, fullTarget, coverTarget);
-
+    // Register game in AutoRun GUI library (launcher-library-v2.ini)
+    std::string coverTarget = autorunGamesPath(sdRoot) + "/" + gameFolder + "/cover.png";
+    if (!registerGameInLauncherLibrary(sdRoot, fullTarget, coverTarget)) {
+        error = "Unable to register game in AutoRun library.";
+        return false;
+    }
     return true;
 }
 
@@ -859,6 +1345,7 @@ bool saveAutorunProfile(const std::string& appRoot,
     std::string path = appRoot + "/autorun-" + taskId + ".json";
     nlohmann::json j;
     j["title"] = profile.title;
+    j["cover_url"] = profile.coverUrl;
     j["executable"] = profile.executable;
     j["target_folder"] = profile.targetFolder;
     j["status"] = profile.status;
@@ -868,6 +1355,7 @@ bool saveAutorunProfile(const std::string& appRoot,
     j["renderer"] = profile.renderer;
     j["notes"] = profile.notes;
     j["dxvk_conf"] = profile.dxvkConf;
+    j["box64_conf"] = profile.box64Conf;
     j["registry"] = profile.registry;
 
     std::string content = j.dump(2);
@@ -903,6 +1391,7 @@ bool loadAutorunProfile(const std::string& appRoot,
         return false;
     }
     profile.title = j.value("title", "");
+    profile.coverUrl = j.value("cover_url", "");
     profile.executable = j.value("executable", "");
     profile.targetFolder = j.value("target_folder", "");
     profile.status = j.value("status", "");
@@ -912,6 +1401,7 @@ bool loadAutorunProfile(const std::string& appRoot,
     profile.renderer = j.value("renderer", "");
     profile.notes = j.value("notes", "");
     profile.dxvkConf = j.value("dxvk_conf", "");
+    profile.box64Conf = j.value("box64_conf", "");
     profile.registry = j.value("registry", "");
     return true;
 }
@@ -1096,12 +1586,8 @@ AutorunService::AutorunService(std::string sdRoot,
             return defaultFetchText(url, limit, body, error);
         };
     }
-    if (!assetFetcher_) {
-        assetFetcher_ = [](const std::string& url, const std::string& path,
-                           size_t limit, std::string& error) {
-            return defaultFetchFile(url, path, limit, error);
-        };
-    }
+    if (!assetFetcher_)
+        assetFetcher_ = defaultFetchFile;
 }
 
 AutorunService::~AutorunService() = default;
@@ -1162,17 +1648,31 @@ AutorunUpdateCheck AutorunService::checkForUpdates(
     AutorunUpdateCheck result;
     result.installedVersion = installedVersion();
 
-    const std::string url = !releaseUrl.empty()
-        ? releaseUrl
-        : "https://api.github.com/repos/autorunhq/autorun/releases/latest";
-
-    std::string body;
-    if (!metadataFetcher_(url, kMetadataLimit, body, result.error)) {
-        result.ok = false;
-        return result;
+    std::vector<std::string> candidateUrls;
+    if (!releaseUrl.empty()) {
+        candidateUrls.push_back(releaseUrl);
+    } else {
+        candidateUrls.push_back(
+            "https://api.github.com/repos/qret/autorun/releases/latest");
+        candidateUrls.push_back(
+            "https://api.github.com/repos/autorunhq/autorun/releases/latest");
     }
 
-    if (!parseRelease(body, result.release, result.error)) {
+    bool fetched = false;
+    for (const auto& url : candidateUrls) {
+        std::string body;
+        std::string fetchErr;
+        if (metadataFetcher_(url, kMetadataLimit, body, fetchErr)) {
+            if (parseRelease(body, result.release, fetchErr)) {
+                fetched = true;
+                result.error.clear();
+                break;
+            }
+        }
+        result.error = fetchErr;
+    }
+
+    if (!fetched) {
         result.ok = false;
         return result;
     }
@@ -1226,11 +1726,19 @@ bool AutorunService::downloadAndInstallRuntime(
     const AutorunReleaseInfo& release,
     std::string& error,
     const std::atomic<bool>& cancelled,
-    const ProgressCallback& progress) const {
+    const ProgressCallback& progress,
+    const ProgressCallback& downloadProgress) const {
     const std::string tempZip = autorunWineRoot(sdRoot_) + "/.runtime_tmp.zip";
     makeDirectories(autorunWineRoot(sdRoot_));
 
-    if (!assetFetcher_(release.archiveUrl, tempZip, kRuntimeArchiveLimit, error)) {
+    if (cancelled.load()) { error = "Cancelled."; return false; }
+    const auto builtin = assetFetcher_.target<decltype(&defaultFetchFile)>();
+    const bool fetched = builtin && *builtin == &defaultFetchFile
+        ? fetchFileWithProgress(release.archiveUrl, tempZip, kRuntimeArchiveLimit,
+                                error, &cancelled, downloadProgress)
+        : assetFetcher_(release.archiveUrl, tempZip, kRuntimeArchiveLimit, error);
+    if (!fetched || cancelled.load()) {
+        if (cancelled.load()) error = "Cancelled.";
         unlink(tempZip.c_str());
         return false;
     }
@@ -1250,7 +1758,7 @@ bool AutorunService::deployTask(
     std::string title = !profile.title.empty()
         ? profile.title
         : task.name;
-    return deployAutorunGame(sdRoot_, gameFolder, title, profile, error);
+    return deployAutorunGame(sdRoot_, gameFolder, title, profile, error, assetFetcher_);
 }
 
 uint64_t generateAutorunTitleId(const std::string& gameTitle) {
@@ -1289,8 +1797,8 @@ bool createAutorunForwarderConfig(const std::string& sdRoot,
         return false;
     }
     const std::string titleIdHex = autorunTitleIdToString(titleId);
-    const std::string nroPath = "sdmc:/switch/wine/wine-nx-runtime.nro";
-    const std::string wineTarget = "C:\\Games\\" + gameFolder + "\\" + executable;
+    const std::string nroPath = autorunRuntimeNroPath(sdRoot);
+    const std::string wineTarget = autorunGamesPath(sdRoot) + "/" + gameFolder + "/" + executable;
     const std::string nroArgv = "\"" + nroPath + "\" \"" + wineTarget + "\"";
 
     out << "[forwarder]\n";
@@ -1677,186 +2185,41 @@ bool parsePfs0(const uint8_t* data, size_t size,
     return true;
 }
 
-namespace {
-
-const std::vector<uint8_t>& defaultIconJpeg() {
-    static const std::vector<uint8_t> kFallback = []() {
-        std::ifstream in("resources/icon.jpg", std::ios::binary);
-        if (in) {
-            return std::vector<uint8_t>((std::istreambuf_iterator<char>(in)),
-                                        std::istreambuf_iterator<char>());
-        }
-        return std::vector<uint8_t>{
-            0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 'J', 'F', 'I', 'F', 0x00, 0x01, 0x01, 0x00, 0x00, 0x01,
-            0x00, 0x01, 0x00, 0x00, 0xFF, 0xDB, 0x00, 0x43, 0x00, 0x08, 0x06, 0x06, 0x07, 0x06, 0x05, 0x08,
-            0x07, 0x07, 0x07, 0x09, 0x09, 0x08, 0x0A, 0x0C, 0x14, 0x0D, 0x0C, 0x0B, 0x0B, 0x0C, 0x19, 0x12,
-            0x13, 0x0F, 0x14, 0x1D, 0x1A, 0x1F, 0x1E, 0x1D, 0x1A, 0x1C, 0x1C, 0x20, 0x24, 0x2E, 0x27, 0x20,
-            0x22, 0x2C, 0x23, 0x1C, 0x1C, 0x28, 0x37, 0x29, 0x2C, 0x30, 0x31, 0x34, 0x34, 0x34, 0x1F, 0x27,
-            0x39, 0x3D, 0x38, 0x32, 0x3C, 0x2E, 0x33, 0x34, 0x32, 0xFF, 0xC0, 0x00, 0x0B, 0x08, 0x01, 0x00,
-            0x01, 0x00, 0x01, 0x01, 0x11, 0x00, 0xFF, 0xC4, 0x00, 0x1F, 0x00, 0x00, 0x01, 0x05, 0x01, 0x01,
-            0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04,
-            0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0xFF, 0xDA, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3F,
-            0x00, 0x7F, 0x00, 0xFF, 0xD9
-        };
-    }();
-    return kFallback;
-}
-
-std::vector<uint8_t> makeNca(uint64_t titleId, uint8_t contentType, const std::vector<uint8_t>& body) {
-    std::vector<uint8_t> nca(0x4000, 0);
-    nca[0x200] = 'N'; nca[0x201] = 'C'; nca[0x202] = 'A'; nca[0x203] = '3';
-    nca[0x204] = 0; // Distribution type (download)
-    nca[0x205] = contentType; // 1 = Program, 3 = Control, 0 = Meta
-    nca[0x206] = 2; // Key generation
-    uint64_t totalSize = 0x4000 + body.size();
-    std::memcpy(nca.data() + 0x208, &totalSize, 8);
-    std::memcpy(nca.data() + 0x210, &titleId, 8);
-
-    // Section 0 FsHeader at 0x240
-    uint8_t* fsHdr = nca.data() + 0x240;
-    fsHdr[0] = 2; // Version
-    fsHdr[1] = 2; // Format: PartitionFS (PFS0)
-    fsHdr[2] = 1; // Hash type: HierarchicalSha256
-    fsHdr[3] = 1; // Encryption: None
-
-    uint32_t startBlock = 0x4000 / 0x200; // 0x20
-    uint32_t endBlock = static_cast<uint32_t>((totalSize + 0x1ff) / 0x200);
-    std::memcpy(fsHdr + 8, &startBlock, 4);
-    std::memcpy(fsHdr + 12, &endBlock, 4);
-
-    uint8_t bodySha[32] = {0};
-    sha256(body.data(), body.size(), bodySha);
-    std::memcpy(fsHdr + 0x140, bodySha, 32);
-    uint32_t bodySz = static_cast<uint32_t>(body.size());
-    std::memcpy(fsHdr + 0x160, &bodySz, 4);
-    uint32_t layerCount = 1;
-    std::memcpy(fsHdr + 0x164, &layerCount, 4);
-
-    // Section 0 FsHeader SHA256 at offset 0x220 in NCA header
-    uint8_t fsHdrSha[32] = {0};
-    sha256(fsHdr, 0x200, fsHdrSha);
-    std::memcpy(nca.data() + 0x220, fsHdrSha, 32);
-
-    nca.insert(nca.end(), body.begin(), body.end());
-    return nca;
-}
-
-std::string bytesToHex(const uint8_t* bytes, size_t len) {
-    static const char hexDigits[] = "0123456789abcdef";
-    std::string res;
-    res.reserve(len * 2);
-    for (size_t i = 0; i < len; ++i) {
-        res.push_back(hexDigits[(bytes[i] >> 4) & 0x0F]);
-        res.push_back(hexDigits[bytes[i] & 0x0F]);
-    }
-    return res;
-}
-
-} // namespace
-
 std::vector<uint8_t> generateAutorunStubNsp(
     const std::string& title,
     uint64_t titleId,
-    const std::vector<uint8_t>& iconJpeg) {
-    std::string titleIdHex = autorunTitleIdToString(titleId);
-    std::vector<uint8_t> nacp = generateNacp(title, "AutoRun / pipensx", "1.0.0");
-    const std::vector<uint8_t>& icon = !iconJpeg.empty() ? iconJpeg : defaultIconJpeg();
-
-    // 1. Program payload (forwarder executable)
-    std::vector<uint8_t> progPayload;
-    {
-        std::ifstream nroIn("romfs:/autorun-forwarder.nro", std::ios::binary);
-        if (!nroIn) {
-            nroIn.open("build-switch/romfs/autorun-forwarder.nro", std::ios::binary);
-        }
-        if (nroIn) {
-            progPayload.assign(std::istreambuf_iterator<char>(nroIn),
-                               std::istreambuf_iterator<char>());
-        }
+    const std::vector<uint8_t>& iconJpeg,
+    const std::string& target) {
+#ifdef __SWITCH__
+    auto readAsset = [](const char* path) {
+        std::ifstream in(path, std::ios::binary);
+        return std::vector<uint8_t>(std::istreambuf_iterator<char>(in), {});
+    };
+    const auto main = readAsset("romfs:/autorun-loader.nso");
+    const auto npdm = readAsset("romfs:/autorun-loader.npdm");
+    const auto icon = iconJpeg.empty() ? readAsset("romfs:/autorun-icon.jpg") : iconJpeg;
+    void* data = nullptr;
+    size_t size = 0;
+    const std::string argv = "sdmc:/switch/wine/wine-nx-runtime.nro" +
+        (target.empty() ? std::string() : " \"" + target + "\"");
+    const Result rc = pipensxBuildForwarder(titleId, title.c_str(),
+        "sdmc:/switch/wine/wine-nx-runtime.nro", argv.c_str(),
+        main.data(), main.size(), npdm.data(), npdm.size(), icon.data(), icon.size(),
+        &data, &size);
+    if (R_FAILED(rc)) {
+        log_msg("[autorun] forwarder build failed result=0x%08x\n", rc);
+        return {};
     }
-    if (progPayload.empty()) {
-        progPayload.resize(0x1000, 0);
-        progPayload[0x10] = 'N';
-        progPayload[0x11] = 'R';
-        progPayload[0x12] = 'O';
-        progPayload[0x13] = '0';
-        uint32_t sz = 0x1000;
-        std::memcpy(progPayload.data() + 0x18, &sz, 4);
-    }
-
-    // 2. Control NCA
-    std::vector<uint8_t> controlPfs0 = buildPfs0({
-        { "control.nacp", nacp },
-        { "icon_AmericanEnglish.dat", icon }
-    });
-    std::vector<uint8_t> controlNca = makeNca(titleId, 3 /* Control */, controlPfs0);
-
-    // 3. Program NCA
-    std::vector<uint8_t> progNca = makeNca(titleId, 1 /* Program */, progPayload);
-
-    // 4. CNMT NCA
-    uint8_t progSha[32] = {0};
-    sha256(progNca.data(), progNca.size(), progSha);
-
-    uint8_t controlSha[32] = {0};
-    sha256(controlNca.data(), controlNca.size(), controlSha);
-
-    std::vector<uint8_t> cnmtData(0x20 + 0x10 + 56 * 2, 0);
-    std::memcpy(cnmtData.data(), &titleId, 8);
-    cnmtData[12] = 0x80; // NcmContentMetaType_Application
-    cnmtData[13] = 0;    // NcmContentMetaPlatform_Nx
-    uint16_t extSize = 0x10;
-    std::memcpy(cnmtData.data() + 14, &extSize, 2);
-    uint16_t contentCount = 2;
-    std::memcpy(cnmtData.data() + 16, &contentCount, 2);
-
-    uint64_t patchId = titleId ^ 0x800;
-    std::memcpy(cnmtData.data() + 0x20, &patchId, 8);
-
-    // Record 0 (Program)
-    uint8_t* pRec = cnmtData.data() + 0x30;
-    std::memcpy(pRec, progSha, 32);
-    std::memcpy(pRec + 32, progSha, 16); // content_id
-    uint32_t progSzLow = static_cast<uint32_t>(progNca.size() & 0xFFFFFFFF);
-    uint8_t progSzHigh = static_cast<uint8_t>((progNca.size() >> 32) & 0xFF);
-    std::memcpy(pRec + 48, &progSzLow, 4);
-    pRec[52] = progSzHigh;
-    pRec[53] = 0;
-    pRec[54] = 1; // Program
-    pRec[55] = 0;
-
-    // Record 1 (Control)
-    uint8_t* cRec = cnmtData.data() + 0x30 + 56;
-    std::memcpy(cRec, controlSha, 32);
-    std::memcpy(cRec + 32, controlSha, 16); // content_id
-    uint32_t ctlSzLow = static_cast<uint32_t>(controlNca.size() & 0xFFFFFFFF);
-    uint8_t ctlSzHigh = static_cast<uint8_t>((controlNca.size() >> 32) & 0xFF);
-    std::memcpy(cRec + 48, &ctlSzLow, 4);
-    cRec[52] = ctlSzHigh;
-    cRec[53] = 0;
-    cRec[54] = 3; // Control
-    cRec[55] = 0;
-
-    std::vector<uint8_t> cnmtPfs0 = buildPfs0({
-        { titleIdHex + "_00000000.cnmt", cnmtData }
-    });
-    std::vector<uint8_t> metaNca = makeNca(titleId, 0 /* Meta */, cnmtPfs0);
-
-    uint8_t metaSha[32] = {0};
-    sha256(metaNca.data(), metaNca.size(), metaSha);
-
-    std::string progName = bytesToHex(progSha, 16) + ".nca";
-    std::string controlName = bytesToHex(controlSha, 16) + ".nca";
-    std::string metaName = bytesToHex(metaSha, 16) + ".cnmt.nca";
-
-    return buildPfs0({
-        { controlName, controlNca },
-        { metaName, metaNca },
-        { progName, progNca },
-        { "control.nacp", nacp },
-        { "icon_AmericanEnglish.dat", icon },
-        { titleIdHex + ".cnmt", cnmtData }
-    });
+    const auto* bytes = static_cast<const uint8_t*>(data);
+    std::vector<uint8_t> result(bytes, bytes + size);
+    std::free(data);
+    return result;
+#else
+    // A PC cannot derive the console's NCA header key. Never fabricate a package
+    // that passes the PC backend but cannot be installed on hardware.
+    (void)title; (void)titleId; (void)iconJpeg; (void)target;
+    return {};
+#endif
 }
 
 bool installAutorunForwarder(const std::string& sdRoot,
@@ -1874,13 +2237,15 @@ bool installAutorunForwarder(const std::string& sdRoot,
     uint64_t titleId = generateAutorunTitleId(gameTitle);
     std::string titleIdHex = autorunTitleIdToString(titleId);
 
-    if (!createAutorunForwarderConfig(sdRoot, titleId, gameTitle, gameFolder, executable, error)) {
+    const std::string resolved = resolveAutorunExecutable(sdRoot, gameFolder, executable);
+    if (resolved.empty()) {
+        error = "Game executable not found: " + executable;
         return false;
     }
-
-    std::vector<uint8_t> nsp = generateAutorunStubNsp(gameTitle, titleId, iconJpeg);
+    const std::string target = autorunGamesPath(sdRoot) + "/" + gameFolder + "/" + resolved;
+    std::vector<uint8_t> nsp = generateAutorunStubNsp(gameTitle, titleId, iconJpeg, target);
     if (nsp.empty()) {
-        error = "Failed to generate stub NSP.";
+        error = "Unable to build AutoRun forwarder; check the log and bundled loader assets (requires Switch).";
         return false;
     }
 
@@ -1892,6 +2257,9 @@ bool installAutorunForwarder(const std::string& sdRoot,
 
     std::string taskId = "autorun-fwd-" + titleIdHex;
     std::string packageName = gameTitle + " [" + titleIdHex + "].nsp";
+
+    if (!createAutorunForwarderConfig(sdRoot, titleId, gameTitle, gameFolder, resolved, error))
+        return false;
 
     if (!backend.beginPackage(taskId, packageName)) {
         error = backend.error();

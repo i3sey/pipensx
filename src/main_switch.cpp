@@ -264,6 +264,7 @@ public:
         });
         tabs->setNavTabVisible(NavIconType::Home,
                                settings->get().showHomeTab);
+        tabs->setNavTabVisible(NavIconType::AutoRun, false);
         tabs_ = tabs;
         refreshUpdateBadge();
         frame_ = new brls::AppletFrame(tabs);
@@ -1406,6 +1407,15 @@ int main(int argc, char** argv) {
                     const std::string offerId = offer->taskId;
                     if (offer->autorunPostDeploy) {
                         deployOfferDialogOpen = true;
+                        pipensx::AutorunProfile profile;
+                        std::string profileError;
+                        if (pipensx::loadAutorunProfile(manager.rootPath(), offerId, profile, profileError) &&
+                            profile.coverUrl.empty()) {
+                            if (const auto* entry = catalog.findByInfoHash(offerId)) {
+                                profile.coverUrl = entry->posterUrl;
+                                pipensx::saveAutorunProfile(manager.rootPath(), offerId, profile, profileError);
+                            }
+                        }
                         pipensx::ui::openAutorunPostInstallDialog(
                             offerId, manager, &autorun,
                             [&deploy, offerId, &deployOfferDialogOpen] {

@@ -10,11 +10,15 @@
 
 namespace pipensx {
 
+using AutorunAssetFetcher = std::function<bool(
+    const std::string&, const std::string&, size_t, std::string&)>;
+
 struct TorrentPreview;
 struct DownloadTask;
 
 struct AutorunProfile {
     std::string title;
+    std::string coverUrl;
     std::string executable;
     std::string targetFolder;
     std::string status;
@@ -24,6 +28,7 @@ struct AutorunProfile {
     std::string renderer;
     std::string notes;
     std::string dxvkConf;
+    std::string box64Conf;
     std::string registry;
 
     bool valid() const {
@@ -106,6 +111,12 @@ inline constexpr const char* kDefaultDxvkConf =
     "d3d9.maxFrameLatency = 1\n"
     "dxgi.maxFrameLatency = 1\n";
 
+bool removeAutorunGameRegistration(const std::string& sdRoot,
+    const std::string& gameFolder, uint64_t titleId, std::string& error);
+
+std::vector<uint8_t> loadAutorunGameIcon(const std::string& sdRoot,
+    const std::string& gameFolder, const std::string& coverUrl);
+
 // Path resolvers for AutoRun relative to the Switch SD root.
 std::string autorunWineRoot(const std::string& sdRoot);
 std::string autorunRuntimeNroPath(const std::string& sdRoot);
@@ -162,7 +173,7 @@ bool removeSysClkProfile(const std::string& sdRoot,
                          uint64_t titleId,
                          std::string& error);
 
-// Stub-NSP forwarder and PFS0 generator.
+// Forwarder package and PFS0 helpers.
 std::vector<uint8_t> generateNacp(const std::string& title,
                                   const std::string& author = "AutoRun / pipensx",
                                   const std::string& version = "1.0.0");
@@ -173,10 +184,13 @@ std::vector<uint8_t> buildPfs0(
 bool parsePfs0(const uint8_t* data, size_t size,
                std::vector<std::pair<std::string, std::vector<uint8_t>>>& outFiles);
 
+// Requires Switch crypto and bundled NSO/NPDM assets; returns empty on PC.
+// target is the SD path to an EXE; empty opens the AutoRun launcher.
 std::vector<uint8_t> generateAutorunStubNsp(
     const std::string& title,
     uint64_t titleId,
-    const std::vector<uint8_t>& iconJpeg = {});
+    const std::vector<uint8_t>& iconJpeg = {},
+    const std::string& target = {});
 
 bool installAutorunForwarder(const std::string& sdRoot,
                              install::InstallBackend& backend,
@@ -222,12 +236,18 @@ bool createWineDesktopShortcut(const std::string& desktopPath,
                                const std::string& executable,
                                std::string& error);
 
-// Post-deploy hook: writes dxvk.conf, merges user.reg, creates desktop shortcut.
+// Repair known dependencies, apply runtime profiles, and register the game.
 bool deployAutorunGame(const std::string& sdRoot,
                        const std::string& gameFolder,
                        const std::string& gameTitle,
                        const AutorunProfile& profile,
                        std::string& error);
+bool deployAutorunGame(const std::string& sdRoot,
+                       const std::string& gameFolder,
+                       const std::string& gameTitle,
+                       const AutorunProfile& profile,
+                       std::string& error,
+                       const AutorunAssetFetcher& dependencyFetcher);
 
 // Task-level persistence of Autorun profiles.
 bool saveAutorunProfile(const std::string& appRoot,
@@ -255,8 +275,7 @@ class AutorunService {
 public:
     using MetadataFetcher = std::function<bool(
         const std::string&, size_t, std::string&, std::string&)>;
-    using AssetFetcher = std::function<bool(
-        const std::string&, const std::string&, size_t, std::string&)>;
+    using AssetFetcher = AutorunAssetFetcher;
     using ProgressCallback = std::function<void(uint64_t, uint64_t)>;
 
     explicit AutorunService(std::string sdRoot = "sdmc:",
@@ -291,14 +310,15 @@ public:
         const AutorunReleaseInfo& release,
         std::string& error,
         const std::atomic<bool>& cancelled = false,
-        const ProgressCallback& progress = {}) const;
+        const ProgressCallback& progress = {},
+        const ProgressCallback& downloadProgress = {}) const;
 
     bool deployGame(
         const std::string& gameFolder,
         const std::string& gameTitle,
         const AutorunProfile& profile,
         std::string& error) const {
-        return deployAutorunGame(sdRoot_, gameFolder, gameTitle, profile, error);
+        return deployAutorunGame(sdRoot_, gameFolder, gameTitle, profile, error, assetFetcher_);
     }
 
     bool deployTask(
@@ -344,7 +364,7 @@ public:
         return removeSysClkProfile(sdRoot_, titleId, error);
     }
 
-    // Phase 5: Stub-NSP & Forwarder Installation
+    // Forwarder installation
     std::vector<uint8_t> generateStubNsp(
         const std::string& gameTitle,
         uint64_t titleId,
@@ -372,5 +392,21 @@ private:
     MetadataFetcher metadataFetcher_;
     AssetFetcher assetFetcher_;
 };
+
+// A dependency update applies only to an exact known file fingerprint. Packages
+// come from their publisher; both archive and selected member are SHA-256 pinned.
+struct AutorunDependencyFix {
+    std::string fileName;
+    std::string originalSha256;
+    std::string replacementSha256;
+    std::string archiveUrl;
+    std::string archiveSha256;
+};
+
+bool installAutorunDependencyFixes(
+    const std::string& gameDirectory,
+    const std::vector<AutorunDependencyFix>& fixes,
+    const AutorunService::AssetFetcher& fetcher,
+    std::string& error);
 
 } // namespace pipensx
