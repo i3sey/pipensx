@@ -6,14 +6,20 @@ BUILD_DIR="${BUILD_DIR:-${ROOT}/build-switch}"
 CMAKE_BIN="${CMAKE_BIN:-cmake}"
 PIPENSX_METADATA_INDEX="${PIPENSX_METADATA_INDEX:-${ROOT}/resources/catalog/game_metadata_index.json}"
 PIPENSX_VERSION="${PIPENSX_VERSION:-0.0.0}"
+PIPENSX_BUNDLE_CATALOG="${PIPENSX_BUNDLE_CATALOG:-OFF}"
 
 if [[ -z "${DEVKITPRO:-}" ]]; then
     echo "DEVKITPRO is not set." >&2
     exit 1
 fi
 
-for tool in "${CMAKE_BIN}" zstd "${DEVKITPRO}/tools/bin/uam" \
-    "${DEVKITPRO}/tools/bin/nacptool" "${DEVKITPRO}/tools/bin/elf2nro"; do
+REQUIRED_TOOLS=("${CMAKE_BIN}" "${DEVKITPRO}/tools/bin/uam" \
+    "${DEVKITPRO}/tools/bin/nacptool" "${DEVKITPRO}/tools/bin/elf2nro")
+if [[ "${PIPENSX_BUNDLE_CATALOG}" == "ON" || "${PIPENSX_BUNDLE_CATALOG}" == "1" || "${PIPENSX_BUNDLE_CATALOG}" == "TRUE" ]]; then
+    REQUIRED_TOOLS+=(zstd)
+fi
+
+for tool in "${REQUIRED_TOOLS[@]}"; do
     if [[ "${tool}" == */* ]]; then
         [[ -x "${tool}" ]] || { echo "Missing tool: ${tool}" >&2; exit 1; }
     else
@@ -38,6 +44,7 @@ done
     -DUSE_DEKO3D=ON \
     "-DPIPENSX_VERSION=${PIPENSX_VERSION}" \
     "-DPIPENSX_METADATA_INDEX=${PIPENSX_METADATA_INDEX}" \
+    "-DPIPENSX_BUNDLE_CATALOG=${PIPENSX_BUNDLE_CATALOG}" \
     -DCMAKE_BUILD_TYPE=Release
 "${CMAKE_BIN}" --build "${BUILD_DIR}" --target pipensx.nro --parallel
 

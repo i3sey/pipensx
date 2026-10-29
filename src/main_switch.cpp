@@ -1361,7 +1361,10 @@ int main(int argc, char** argv) {
                         continue;
                     lastTaskStatus[task.id] = task.status;
                     if (task.status == pipensx::DownloadStatus::Completed) {
-                        if ((task.mode == pipensx::TransferMode::DownloadOnly ||
+                        if (task.mode == pipensx::TransferMode::PortInstall &&
+                            deploy.autoCopyArmed(task.id)) {
+                            // Port is armed for automatic deployment: do not pop up manual notice!
+                        } else if ((task.mode == pipensx::TransferMode::DownloadOnly ||
                              task.mode == pipensx::TransferMode::PortInstall) &&
                             pipensx::taskHasPortOrArchiveFiles(manager.rootPath(), task)) {
                             pipensx::ui::openPortNoticeDialog();

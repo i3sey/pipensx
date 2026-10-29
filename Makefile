@@ -31,6 +31,7 @@ test:
 switch:
 	CMAKE_BIN="$(CMAKE_BIN)" \
 	PIPENSX_METADATA_INDEX="$(PIPENSX_METADATA_INDEX)" \
+	PIPENSX_BUNDLE_CATALOG="$(PIPENSX_BUNDLE_CATALOG)" \
 	$(MAKE) -f Makefile.switch
 
 # Kept out of `make switch`: the probe is an investigation artifact, not part of

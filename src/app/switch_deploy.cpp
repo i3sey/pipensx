@@ -1256,7 +1256,9 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
         roots.emplace(lowerAscii(root), root);
     }
     for (const TaskFileInfo& file : result.inventory.files) {
-        if (!file.package || file.action != TaskFileAction::Download ||
+        if (!file.package ||
+            (file.action != TaskFileAction::Download &&
+             file.action != TaskFileAction::Install) ||
             file.state != TaskFileState::Present ||
             !sourceFileSafe(result.inventory, file))
             continue;
@@ -2181,7 +2183,9 @@ bool SwitchDeployService::start(const std::string& taskId,
     bool manual = false;
     if (!loadLayout(taskId, rules, manual, error)) return false;
     const auto task = manager_.snapshot(taskId);
-    if (!manualApproved &&
+    const bool autoArmed = autoCopyArmed(taskId);
+    const bool portAutoStart = autoArmed && (task && task->mode == TransferMode::PortInstall && !manual);
+    if (!manualApproved && !portAutoStart &&
         ((task && task->mode == TransferMode::PortInstall) || manual)) {
         error = "This port waits for installation from the web panel.";
         clearInspecting(taskId);
@@ -2906,10 +2910,6 @@ void SwitchDeployService::clearInspecting(const std::string& taskId) {
                 return false;
             }
         }
-        // Every port waits for saved choices and an explicit start in the
-        // remote panel, even when an older task has an auto-copy marker.
-        if (task->mode == TransferMode::PortInstall)
-            return false;
         const bool markerArmed = autoCopyArmed(taskId);
         PortLayoutRules rules;
         bool manualLayout = false;
@@ -2952,7 +2952,8 @@ void SwitchDeployService::clearInspecting(const std::string& taskId) {
             autoArmed = true;
         if (autoArmed) {
             const bool missingLayout =
-                inspection.problem == SwitchDeployProblem::LayoutNotFound;
+                inspection.problem == SwitchDeployProblem::LayoutNotFound &&
+                task->mode != TransferMode::PortInstall;
             if (!inspection.canStart() &&
                 !switchDeployOffersCopy(inspection.problem) && !missingLayout) {
                 clearInspecting(taskId);

@@ -6,6 +6,9 @@ set(PIPENSX_CATALOG_SNAPSHOT
 set(PIPENSX_METADATA_INDEX
     "${CMAKE_CURRENT_SOURCE_DIR}/resources/catalog/game_metadata_index.json"
     CACHE FILEPATH "Bundled game metadata index snapshot for offline first launch")
+option(PIPENSX_BUNDLE_CATALOG
+    "Bundle catalog snapshot and metadata for offline first launch"
+    OFF)
 
 set(BOREALIS_LIBRARY ${CMAKE_CURRENT_SOURCE_DIR}/vendor/borealis/library)
 set(PLATFORM_SWITCH ON CACHE BOOL "" FORCE)
@@ -471,79 +474,83 @@ file(COPY
     ${CMAKE_CURRENT_SOURCE_DIR}/resources/ssl
     DESTINATION ${ROMFS_DIR}
 )
-# Never reuse catalog data left in an existing build directory. Public builds
-# ship both the pipensx-catalog snapshot and the metadata index snapshots for
-# offline first launch.
+# When PIPENSX_BUNDLE_CATALOG is enabled, ship both the pipensx-catalog
+# snapshot and the metadata index snapshots for offline first launch.
+# By default (OFF), the application starts with an empty catalog and
+# downloads the latest release catalog and metadata on first start.
 file(REMOVE_RECURSE ${ROMFS_DIR}/catalog)
-get_filename_component(PIPENSX_CATALOG_SNAPSHOT_ABS
-    "${PIPENSX_CATALOG_SNAPSHOT}" ABSOLUTE)
-if (NOT EXISTS "${PIPENSX_CATALOG_SNAPSHOT_ABS}")
-    message(FATAL_ERROR
-        "PIPENSX_CATALOG_SNAPSHOT does not exist: ${PIPENSX_CATALOG_SNAPSHOT_ABS}")
-endif ()
 set(PIPENSX_NRO_DEPENDS pipensx)
 list(APPEND PIPENSX_NRO_DEPENDS sync_update_helper)
 list(APPEND PIPENSX_NRO_DEPENDS sync_autorun_forwarder)
 list(APPEND PIPENSX_NRO_DEPENDS sync_i18n)
 list(APPEND PIPENSX_NRO_DEPENDS sync_web)
-# The two JSON snapshots are ~19 MB — over 80% of the NRO uncompressed — and
-# JSON compresses ~5x, so they ship as zstd frames that the load path
-# decompresses (src/app/snapshot_zstd.cpp). Host zstd is required for the
-# Switch build; scripts/build_switch.sh checks for it too.
-find_program(ZSTD_EXE zstd)
-if (NOT ZSTD_EXE)
-    message(FATAL_ERROR
-        "zstd not found on the host — required to compress the bundled "
-        "catalog snapshots into romfs")
-endif ()
-add_custom_command(
-    OUTPUT "${ROMFS_DIR}/catalog/switch_games.json.zst"
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${ROMFS_DIR}/catalog"
-    COMMAND ${CMAKE_COMMAND} -E rm -f "${ROMFS_DIR}/catalog/switch_games.json"
-    COMMAND ${ZSTD_EXE} -15 -q -f
-        -o "${ROMFS_DIR}/catalog/switch_games.json.zst"
-        "${PIPENSX_CATALOG_SNAPSHOT_ABS}"
-    DEPENDS "${PIPENSX_CATALOG_SNAPSHOT_ABS}"
-    VERBATIM
-)
-add_custom_target(sync_catalog_snapshot ALL
-    DEPENDS "${ROMFS_DIR}/catalog/switch_games.json.zst"
-)
-list(APPEND PIPENSX_NRO_DEPENDS sync_catalog_snapshot)
-file(GLOB PIPENSX_DESCRIPTION_PACKS CONFIGURE_DEPENDS
-    "${CMAKE_SOURCE_DIR}/resources/catalog/descriptions/*.pdx")
-if (PIPENSX_DESCRIPTION_PACKS)
-    add_custom_target(sync_catalog_descriptions ALL
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${ROMFS_DIR}/catalog/descriptions"
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${CMAKE_SOURCE_DIR}/resources/catalog/descriptions"
-            "${ROMFS_DIR}/catalog/descriptions"
-        DEPENDS ${PIPENSX_DESCRIPTION_PACKS}
-        VERBATIM)
-    list(APPEND PIPENSX_NRO_DEPENDS sync_catalog_descriptions)
-endif ()
-if (PIPENSX_METADATA_INDEX)
-    get_filename_component(PIPENSX_METADATA_INDEX_ABS
-        "${PIPENSX_METADATA_INDEX}" ABSOLUTE)
-    if (NOT EXISTS "${PIPENSX_METADATA_INDEX_ABS}")
+
+if (PIPENSX_BUNDLE_CATALOG)
+    get_filename_component(PIPENSX_CATALOG_SNAPSHOT_ABS
+        "${PIPENSX_CATALOG_SNAPSHOT}" ABSOLUTE)
+    if (NOT EXISTS "${PIPENSX_CATALOG_SNAPSHOT_ABS}")
         message(FATAL_ERROR
-            "PIPENSX_METADATA_INDEX does not exist: ${PIPENSX_METADATA_INDEX_ABS}")
+            "PIPENSX_CATALOG_SNAPSHOT does not exist: ${PIPENSX_CATALOG_SNAPSHOT_ABS}")
+    endif ()
+    # The two JSON snapshots are ~19 MB — over 80% of the NRO uncompressed — and
+    # JSON compresses ~5x, so they ship as zstd frames that the load path
+    # decompresses (src/app/snapshot_zstd.cpp). Host zstd is required for the
+    # Switch build; scripts/build_switch.sh checks for it too.
+    find_program(ZSTD_EXE zstd)
+    if (NOT ZSTD_EXE)
+        message(FATAL_ERROR
+            "zstd not found on the host — required to compress the bundled "
+            "catalog snapshots into romfs")
     endif ()
     add_custom_command(
-        OUTPUT "${ROMFS_DIR}/catalog/game_metadata_index.json.zst"
+        OUTPUT "${ROMFS_DIR}/catalog/switch_games.json.zst"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${ROMFS_DIR}/catalog"
-        COMMAND ${CMAKE_COMMAND} -E rm -f
-            "${ROMFS_DIR}/catalog/game_metadata_index.json"
+        COMMAND ${CMAKE_COMMAND} -E rm -f "${ROMFS_DIR}/catalog/switch_games.json"
         COMMAND ${ZSTD_EXE} -15 -q -f
-            -o "${ROMFS_DIR}/catalog/game_metadata_index.json.zst"
-            "${PIPENSX_METADATA_INDEX_ABS}"
-        DEPENDS "${PIPENSX_METADATA_INDEX_ABS}"
+            -o "${ROMFS_DIR}/catalog/switch_games.json.zst"
+            "${PIPENSX_CATALOG_SNAPSHOT_ABS}"
+        DEPENDS "${PIPENSX_CATALOG_SNAPSHOT_ABS}"
         VERBATIM
     )
-    add_custom_target(sync_metadata_index ALL
-        DEPENDS "${ROMFS_DIR}/catalog/game_metadata_index.json.zst"
+    add_custom_target(sync_catalog_snapshot ALL
+        DEPENDS "${ROMFS_DIR}/catalog/switch_games.json.zst"
     )
-    list(APPEND PIPENSX_NRO_DEPENDS sync_metadata_index)
+    list(APPEND PIPENSX_NRO_DEPENDS sync_catalog_snapshot)
+    file(GLOB PIPENSX_DESCRIPTION_PACKS CONFIGURE_DEPENDS
+        "${CMAKE_SOURCE_DIR}/resources/catalog/descriptions/*.pdx")
+    if (PIPENSX_DESCRIPTION_PACKS)
+        add_custom_target(sync_catalog_descriptions ALL
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${ROMFS_DIR}/catalog/descriptions"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${CMAKE_SOURCE_DIR}/resources/catalog/descriptions"
+                "${ROMFS_DIR}/catalog/descriptions"
+            DEPENDS ${PIPENSX_DESCRIPTION_PACKS}
+            VERBATIM)
+        list(APPEND PIPENSX_NRO_DEPENDS sync_catalog_descriptions)
+    endif ()
+    if (PIPENSX_METADATA_INDEX)
+        get_filename_component(PIPENSX_METADATA_INDEX_ABS
+            "${PIPENSX_METADATA_INDEX}" ABSOLUTE)
+        if (NOT EXISTS "${PIPENSX_METADATA_INDEX_ABS}")
+            message(FATAL_ERROR
+                "PIPENSX_METADATA_INDEX does not exist: ${PIPENSX_METADATA_INDEX_ABS}")
+        endif ()
+        add_custom_command(
+            OUTPUT "${ROMFS_DIR}/catalog/game_metadata_index.json.zst"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${ROMFS_DIR}/catalog"
+            COMMAND ${CMAKE_COMMAND} -E rm -f
+                "${ROMFS_DIR}/catalog/game_metadata_index.json"
+            COMMAND ${ZSTD_EXE} -15 -q -f
+                -o "${ROMFS_DIR}/catalog/game_metadata_index.json.zst"
+                "${PIPENSX_METADATA_INDEX_ABS}"
+            DEPENDS "${PIPENSX_METADATA_INDEX_ABS}"
+            VERBATIM
+        )
+        add_custom_target(sync_metadata_index ALL
+            DEPENDS "${ROMFS_DIR}/catalog/game_metadata_index.json.zst"
+        )
+        list(APPEND PIPENSX_NRO_DEPENDS sync_metadata_index)
+    endif ()
 endif ()
 gen_dksh(${ROMFS_DIR}/shaders)
 

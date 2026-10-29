@@ -128,16 +128,23 @@ inline bool torrentHasInstallableExtras(const TorrentPreview& preview) {
     return false;
 }
 
-// True homebrew ports have an NRO (and maybe a zip). A retail dump plus a
-// rusifikator zip or LayeredFS tree is still a game torrent — stream-install
-// the NSP and leave extras optional. Zip/LayeredFS-only torrents stay ports.
-inline bool torrentPortLayoutDetected(const TorrentPreview& preview) {
-    if (!candidatePortPayloadRoots(preview).empty())
-        return true;
-    if (torrentHasPackageFiles(preview))
+inline bool isTorrentFileInstallable(const TorrentPreview& preview, size_t fileIndex) {
+    if (fileIndex >= preview.files.size())
         return false;
-    return torrentHasPortArchive(preview) ||
-           torrentHasLayeredFsPayload(preview);
+    const auto& file = preview.files[fileIndex];
+    if (file.package)
+        return true;
+    if (file.cartridge)
+        return false;
+    const std::string logical = torrentLogicalPath(preview, file);
+    if (extraAcceptsInstallAction(file.path) || extraAcceptsInstallAction(logical))
+        return true;
+    const std::vector<std::string> roots = candidatePortPayloadRoots(preview);
+    for (const std::string& root : roots) {
+        if (pathUnderPortRoot(logical, root))
+            return true;
+    }
+    return false;
 }
 
 // Explicit forwarder/recomp labels plus a homebrew payload identify a
@@ -160,6 +167,18 @@ inline bool torrentHasLabeledPortForwarders(const TorrentPreview& preview) {
         found = true;
     }
     return found && !candidatePortPayloadRoots(preview).empty();
+}
+
+// True homebrew ports have an NRO (and maybe a zip). A retail dump plus a
+// rusifikator zip or LayeredFS tree is still a game torrent — stream-install
+// the NSP and leave extras optional. Zip/LayeredFS-only torrents stay ports.
+inline bool torrentPortLayoutDetected(const TorrentPreview& preview) {
+    if (!candidatePortPayloadRoots(preview).empty())
+        return true;
+    if (torrentHasPackageFiles(preview))
+        return false;
+    return torrentHasPortArchive(preview) ||
+           torrentHasLayeredFsPayload(preview);
 }
 
 // Detail-card one-tap uses the resolved files, not the catalog tab.
@@ -304,7 +323,8 @@ inline bool selectionIsPortTransaction(const TorrentPreview& preview,
             !isLayeredFsRomfsPath(file.path) && !isLayeredFsExefsPath(file.path) &&
             switchPayloadRelativePath(file.path, switchRelative);
         if (hasNroExtension(file.path) || switchPayload ||
-            (!retailPackages && isDeployableExtraPath(file.path)))
+            (!retailPackages && isDeployableExtraPath(file.path)) ||
+            isTorrentFileInstallable(preview, i))
             payload = true;
     }
     if (packageCount)

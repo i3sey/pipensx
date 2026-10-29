@@ -167,7 +167,8 @@ bool readFile(const std::string& path, std::string& data,
 
 bool httpGet(const std::string& url, std::string& body, std::string& error,
              const std::string& sourceUrl,
-             const std::atomic<bool>* cancelled) {
+             const std::atomic<bool>* cancelled,
+             const CatalogService::ProgressCallback& progress = {}) {
     body.clear();
     if (failIfCancelled(cancelled, error))
         return false;
@@ -193,13 +194,30 @@ bool httpGet(const std::string& url, std::string& body, std::string& error,
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeHttp);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buffer);
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+
+    struct TransferContext {
+        const std::atomic<bool>* cancelled = nullptr;
+        CatalogService::ProgressCallback progress;
+        uint64_t lastUpdateMs = 0;
+    };
+    TransferContext ctx{cancelled, progress, 0};
+
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION,
-        +[](void* opaque, curl_off_t, curl_off_t, curl_off_t, curl_off_t) {
-            const auto* flag = static_cast<const std::atomic<bool>*>(opaque);
-            return cancellationRequested(flag) ? 1 : 0;
+        +[](void* opaque, curl_off_t dltotal, curl_off_t dlnow, curl_off_t, curl_off_t) -> int {
+            auto* ctx = static_cast<TransferContext*>(opaque);
+            if (cancellationRequested(ctx->cancelled))
+                return 1;
+            if (ctx->progress && dltotal > 0) {
+                float p = std::clamp(static_cast<float>(dlnow) / static_cast<float>(dltotal), 0.0f, 1.0f);
+                uint64_t now = now_ms();
+                if (now - ctx->lastUpdateMs >= 80 || dlnow == dltotal) {
+                    ctx->lastUpdateMs = now;
+                    ctx->progress(p);
+                }
+            }
+            return 0;
         });
-    curl_easy_setopt(curl, CURLOPT_XFERINFODATA,
-                     const_cast<std::atomic<bool>*>(cancelled));
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &ctx);
     curlApplyTrustedSsl(curl);
     curlPinHttpsOnly(curl);
     curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
@@ -739,7 +757,7 @@ bool CatalogService::prepareInitialSnapshot(CatalogSnapshot& snapshot,
     std::string cacheError;
     if (loadFileSnapshot(cachePath_, kCachedCatalogLabel, snapshot, cacheError))
         return true;
-    if (!bundledPath_.empty()) {
+    if (!bundledPath_.empty() && access(bundledPath_.c_str(), R_OK) == 0) {
         if (loadFileSnapshot(bundledPath_, kBundledCatalogLabel, snapshot,
                              error))
             return true;
@@ -877,7 +895,8 @@ bool CatalogService::verifyCatalogBody(const std::string& body,
 bool CatalogService::fetchLatest(std::vector<CatalogEntry>& parsed,
                                  std::string& error,
                                  const std::string& sourceUrl,
-                                 const std::atomic<bool>* cancelled) {
+                                 const std::atomic<bool>* cancelled,
+                                 ProgressCallback progress) {
     // Network fetch + parse + cache write only, so it never touches entries_.
     // The cached catalogue in memory survives a failure — the caller keeps
     // showing it on error.
@@ -890,9 +909,9 @@ bool CatalogService::fetchLatest(std::vector<CatalogEntry>& parsed,
     }
     if (sourceUrl == kAlternativeCatalogUrl ||
         sourceUrl == kDefaultCatalogManifestUrl)
-        return fetchDefaultChannel(parsed, error, cancelled);
+        return fetchDefaultChannel(parsed, error, cancelled, progress);
     std::string catalogBody;
-    if (!httpGet(sourceUrl, catalogBody, error, sourceUrl, cancelled))
+    if (!httpGet(sourceUrl, catalogBody, error, sourceUrl, cancelled, progress))
         return false;
     if (!parseJson(catalogBody, parsed, error, cancelled))
         return false;
@@ -915,7 +934,8 @@ bool CatalogService::fetchLatest(std::vector<CatalogEntry>& parsed,
 // so a broken or substituted file never reaches the cache.
 bool CatalogService::fetchDefaultChannel(
     std::vector<CatalogEntry>& parsed, std::string& error,
-    const std::atomic<bool>* cancelled) {
+    const std::atomic<bool>* cancelled,
+    const ProgressCallback& progress) {
     parsed.clear();
     std::string manifestBody;
     if (!httpGet(kDefaultCatalogManifestUrl, manifestBody, error,
@@ -962,7 +982,7 @@ bool CatalogService::fetchDefaultChannel(
     }
     std::string catalogBody;
     if (!httpGet(kAlternativeCatalogUrl, catalogBody, error,
-                 kAlternativeCatalogUrl, cancelled))
+                 kAlternativeCatalogUrl, cancelled, progress))
         return false;
     if (!verifyCatalogBody(catalogBody, manifest, error))
         return false;
@@ -991,9 +1011,10 @@ bool CatalogService::fetchDefaultChannel(
 bool CatalogService::fetchLatest(CatalogSnapshot& snapshot,
                                  std::string& error,
                                  const std::string& sourceUrl,
-                                 const std::atomic<bool>* cancelled) {
+                                 const std::atomic<bool>* cancelled,
+                                 ProgressCallback progress) {
     snapshot = {};
-    if (!fetchLatest(snapshot.entries, error, sourceUrl, cancelled))
+    if (!fetchLatest(snapshot.entries, error, sourceUrl, cancelled, progress))
         return false;
     if (failIfCancelled(cancelled, error)) {
         snapshot = {};

@@ -425,8 +425,8 @@ public:
             if (!catalogRefreshInFlight())
                 setRefreshInFlight(false);
         }
-        rebuildEntries(true);
         refreshCatalogIfDue();
+        rebuildEntries(true);
     }
 
     void openSearchKeyboard() {
@@ -1531,17 +1531,18 @@ private:
         // Bundled dumps do not count. Auto-refresh when this console has never
         // pulled the catalogue, or the last pull was not today. A cached
         // snapshot from today still skips the fetch if the wall stamp is missing.
+        const bool catalogEmpty = !catalog_ || catalog_->entries().empty();
         const uint64_t wallSec =
             settings_ ? settings_->get().lastCatalogRefreshWallSec : 0;
         const int64_t snapshot = catalog_ ? catalog_->snapshotEpochSec() : 0;
         const bool cached = catalog_ && catalog_->snapshotFromCache() &&
-                            !catalog_->entries().empty();
-        const bool catalogDue = catalogAutoRefreshDue(
+                            !catalogEmpty;
+        const bool catalogDue = catalogEmpty || catalogAutoRefreshDue(
             wallSec, snapshot, cached,
             wallSec != 0 && isLocalToday(static_cast<int64_t>(wallSec)),
             snapshot > 0 && isLocalToday(snapshot));
         const bool metadataDue = metadata_ && settings_ &&
-            dailyRefreshDue(now_ms(), settings_->get().lastMetadataRefreshMs);
+            (catalogEmpty || dailyRefreshDue(now_ms(), settings_->get().lastMetadataRefreshMs));
         refreshSources(catalogDue, catalogDue || metadataDue, false);
     }
 
@@ -1627,9 +1628,16 @@ private:
                 });
             }
             if (fetchCatalog) {
+                auto progressCb = [this, alive](float p) {
+                    brls::sync([this, alive, p] {
+                        if (alive->load()) {
+                            freshnessBadge_->setProgress(p);
+                        }
+                    });
+                };
                 batch->catalogOk = catalog->fetchLatest(
                     batch->catalog, batch->catalogError, catalogSourceUrl,
-                    cancelled.get());
+                    cancelled.get(), progressCb);
             }
             if (metadataFetch.joinable())
                 metadataFetch.join();

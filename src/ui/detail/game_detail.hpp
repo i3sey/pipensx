@@ -1131,11 +1131,16 @@ private:
         auto host = std::make_shared<PortInstallDialogHost>();
         auto alive = alive_;
         auto cancelled = cancelled_;
+        const bool layoutOk = torrentPortLayoutDetected(pending->preview);
         *host = openPortInstallDialog(
-            [this, alive, pending] {
+            [this, alive, pending, layoutOk] {
                 if (!alive->load())
                     return;
-                finishPortImport(*pending);
+                if (!layoutOk) {
+                    openFileSelectionForPort(*pending);
+                } else {
+                    finishPortImport(*pending);
+                }
             },
             [this, alive, cancelled, pending] {
                 cancelled->store(true);
@@ -1151,6 +1156,24 @@ private:
                 }
             });
         setPortInstallReady(*host, portLayoutStatus(pending->preview));
+    }
+
+    void openFileSelectionForPort(PortImportPending& pending) {
+        setBusy(false);
+        refreshButtons();
+        StreamSelection selection = settings_
+            ? settings_->get().streamSelection : StreamSelection::AllFiles;
+        if (pending.debridMode) {
+            brls::Application::pushActivity(new TorrentSelectionActivity(
+                manager_, "", std::move(pending.preview),
+                TransferMode::PortInstall, selection, {}, pending.debrid,
+                {}, deploy_));
+        } else {
+            brls::Application::pushActivity(new TorrentSelectionActivity(
+                manager_, pending.torrentPath, std::move(pending.preview),
+                TransferMode::PortInstall, selection, std::move(pending.peers),
+                {}, {}, deploy_));
+        }
     }
 
     void finishPortImport(PortImportPending& pending) {
@@ -1301,7 +1324,7 @@ private:
                         TransferMode::StreamInstall, selection, {}, import,
                         [providerKind, key, debridId] {
                             removeDebridTransferAsync(providerKind, key, debridId);
-                        }));
+                        }, deploy_));
                     log_msg("[DEBUG-debrid-picker] push complete id=%s\n",
                             debridId.c_str());
                     return;
@@ -1363,7 +1386,7 @@ private:
                         import,
                         [providerKind, key, debridId] {
                             removeDebridTransferAsync(providerKind, key, debridId);
-                        }));
+                        }, deploy_));
                     return;
                 }
                 import.fileSelection = plan.fileSelection;
@@ -1526,7 +1549,7 @@ private:
             ? settings_->get().streamSelection : StreamSelection::AllFiles;
         brls::Application::pushActivity(new TorrentSelectionActivity(
             manager_, path, std::move(preview), preferred,
-            selection, std::move(initialPeers)));
+            selection, std::move(initialPeers), {}, {}, deploy_));
     }
 
     OneTapContext oneTapContext() const {

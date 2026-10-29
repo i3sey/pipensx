@@ -2138,6 +2138,62 @@ int main() {
         manager.shutdown();
     }
 
+    // Heuristic analysis & 3-state file installability test:
+    {
+        TorrentPreview preview;
+        preview.name = "MyAwesomePort";
+        preview.multi = true;
+        preview.files = {
+            {"switch/MyAwesomePort/MyAwesomePort.nro", 1024, false, false, false},
+            {"switch/MyAwesomePort/data/levels.pak", 2048, false, false, false},
+            {"switch/MyAwesomePort/config.ini", 256, false, false, false},
+            {"forwarder.nsp", 4096, true, false, false},
+            {"readme.txt", 128, false, false, false},
+            {"info.nfo", 64, false, false, false},
+        };
+
+        assert(isTorrentFileInstallable(preview, 0)); // NRO
+        assert(isTorrentFileInstallable(preview, 1)); // port data file
+        assert(isTorrentFileInstallable(preview, 2)); // port config file
+        assert(isTorrentFileInstallable(preview, 3)); // NSP forwarder
+        assert(!isTorrentFileInstallable(preview, 4)); // readme.txt (junk outside)
+        assert(!isTorrentFileInstallable(preview, 5)); // info.nfo (junk outside)
+    }
+
+    // Auto-deploy for armed port installation without web panel blocker:
+    {
+        const std::string portRoot = root + "/armed-port";
+        const std::string portData = portRoot + "/downloads/task";
+        const std::string portTarget = portRoot + "/sd/switch";
+        const std::string portId = "8888888888888888888888888888888888888888";
+        fs::create_directories(portTarget);
+        writeFile(portData + "/switch/testport/testport.nro", nro);
+        writeCompletedQueue(portRoot, portId, portData, nro.size(), "port", "completed");
+        TaskFileManifest portManifest;
+        portManifest.taskId = portId;
+        TaskFileRecord nroRec;
+        nroRec.logicalPath = "switch/testport/testport.nro";
+        nroRec.localPath = nroRec.logicalPath;
+        nroRec.size = nro.size();
+        nroRec.action = TaskFileAction::Install;
+        portManifest.files.push_back(nroRec);
+        assert(saveTaskFileManifest(portRoot, portManifest, error));
+
+        DownloadManager portManager(portRoot, false);
+        SwitchDeployService portDeploy(portManager, portRoot, portTarget);
+        assert(portDeploy.armAutoCopy(portId));
+        assert(portDeploy.autoCopyArmed(portId));
+
+        // When autoCopy is armed by the user UI, start must succeed without web panel error:
+        assert(portDeploy.start(portId, error));
+        for (int i = 0; i < 500 && portDeploy.snapshot().active(); ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        assert(portDeploy.snapshot().phase == SwitchDeployPhase::Completed);
+        assert(fs::exists(portTarget + "/testport/testport.nro"));
+        portDeploy.shutdown();
+        portManager.shutdown();
+    }
+
     storage.freeBytes = 1024 * 1024;
     setStorageSpaceOverride(nullptr);
     fs::remove_all(root);

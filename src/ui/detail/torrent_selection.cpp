@@ -196,7 +196,7 @@ void TorrentSelectionDataSource::cycleFolder(size_t groupIndex) {
     bool allInstallable = true;
     for (size_t index : group.indices) {
         const TorrentSelectionEntry& entry = entries_[index];
-        if (!entry.package && !extraAcceptsInstallAction(entry.path))
+        if (!entry.package && !entry.installable && !extraAcceptsInstallAction(entry.path))
             allInstallable = false;
     }
 
@@ -281,7 +281,7 @@ void TorrentSelectionDataSource::cycleEntry(int entryIndex) {
         return;
     TorrentSelectionEntry& entry =
         entries_[static_cast<size_t>(entryIndex)];
-    if (entry.package || extraAcceptsInstallAction(entry.path)) {
+    if (entry.package || entry.installable || extraAcceptsInstallAction(entry.path)) {
         entry.action = entry.action == FileAction::Install
             ? FileAction::Download
             : entry.action == FileAction::Download ? FileAction::Skip

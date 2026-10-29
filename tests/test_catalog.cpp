@@ -2750,6 +2750,21 @@ void testBundledCatalogSnapshotLoadsWithoutNetwork() {
     rmdir(root.c_str());
 }
 
+void testMissingBundledCatalogSnapshotFallsBackToEmpty() {
+    const std::string root = "/tmp/pipensx-missing-bundled-" +
+        std::to_string(static_cast<long long>(getpid()));
+    mkdir(root.c_str(), 0755);
+    {
+        CatalogService catalog(root, "non_existent_bundled_path.json");
+        std::string error;
+        assert(catalog.load(error));
+        assert(catalog.generation() == 1);
+        assert(catalog.entries().empty());
+        assert(error.empty());
+    }
+    rmdir(root.c_str());
+}
+
 void testCachedCatalogSnapshotFromCache() {
     const std::string root = "/tmp/pipensx-cached-snapshot-" +
         std::to_string(static_cast<long long>(getpid()));
@@ -3103,6 +3118,7 @@ int main() {
     testLangegenSchemaParsing();
     testLangegenLanguageFields();
     testBundledCatalogSnapshotLoadsWithoutNetwork();
+    testMissingBundledCatalogSnapshotFallsBackToEmpty();
     testCachedCatalogSnapshotFromCache();
     testBundledMetadataSnapshotLoadsWithoutNetwork();
     testCatalogBrowseBuilder();

@@ -18,8 +18,12 @@ inline std::string portArchiveChoiceKey(std::string path, bool alternative) {
     const std::string name = path.substr(slash == std::string::npos ? 0 : slash + 1);
     const std::string stem = name.substr(0, name.find_last_of('.'));
     if (alternative) {
-        if (stem != "switch_russmod" && stem != "switch_rusmod" &&
-            stem != "switch_russian" && stem != "switch_rus" && stem != "switch_ru")
+        const bool isAlt =
+            stem == "switch_russ" || stem == "switch_rus" || stem == "switch_ru" ||
+            stem == "switch_russian" || stem == "switch_russmod" || stem == "switch_rusmod" ||
+            stem == "switch_rus_mod" || stem == "switch_russ_mod" ||
+            stem.rfind("switch_rus", 0) == 0 || stem.rfind("switch_ru", 0) == 0;
+        if (!isAlt)
             return {};
     } else if (stem != "switch") return {};
     return parent + "switch";

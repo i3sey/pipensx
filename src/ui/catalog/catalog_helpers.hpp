@@ -17,6 +17,7 @@
 #include "app/game_metadata_service.hpp"
 #include "ui/common/async_image.hpp"
 #include "ui/common/busy_pulse.hpp"
+#include "ui/common/progress_bar.hpp"
 #include "ui/theme.hpp"
 
 namespace pipensx::ui {
@@ -317,6 +318,38 @@ public:
         label_->setFocusable(false);
         label_->setShrink(0.0f);
         addView(label_);
+
+        progressBar_ = new ProgressBar();
+        progressBar_->setWidth(70);
+        progressBar_->setHeight(6);
+        progressBar_->setCornerRadius(3.0f);
+        progressBar_->setMarginLeft(8);
+        progressBar_->setFocusable(false);
+        progressBar_->setVisibility(brls::Visibility::GONE);
+        addView(progressBar_);
+
+        percentLabel_ = new brls::Label();
+        percentLabel_->setFontSize(theme::kFontCaption);
+        percentLabel_->setTextColor(theme::textSecondary());
+        percentLabel_->setMarginLeft(5);
+        percentLabel_->setSingleLine(true);
+        percentLabel_->setFocusable(false);
+        percentLabel_->setShrink(0.0f);
+        percentLabel_->setVisibility(brls::Visibility::GONE);
+        addView(percentLabel_);
+    }
+
+    void setProgress(float progress) {
+        if (progress < 0.0f) {
+            progressBar_->setVisibility(brls::Visibility::GONE);
+            percentLabel_->setVisibility(brls::Visibility::GONE);
+            return;
+        }
+        progressBar_->setProgress(progress);
+        progressBar_->setVisibility(brls::Visibility::VISIBLE);
+        int percent = std::clamp(static_cast<int>(std::round(progress * 100.0f)), 0, 100);
+        percentLabel_->setText(std::to_string(percent) + "%");
+        percentLabel_->setVisibility(brls::Visibility::VISIBLE);
     }
 
     void update(bool busy, bool refreshInFlight, AppSettings* settings,
@@ -332,6 +365,10 @@ public:
                 : (cached && snapshot > 0 && isLocalToday(snapshot));
         const CatalogFreshness state = resolveCatalogFreshness(
             busy || refreshInFlight, wallSec, snapshot, hasEntries, isToday);
+        if (state.kind != CatalogFreshness::Kind::Updating) {
+            progressBar_->setVisibility(brls::Visibility::GONE);
+            percentLabel_->setVisibility(brls::Visibility::GONE);
+        }
         switch (state.kind) {
             case CatalogFreshness::Kind::Updating:
                 label_->setText(tr("pipensx/catalog/freshness_updating"));
@@ -358,15 +395,23 @@ public:
         if (busy) {
             busyDot_->setVisibility(brls::Visibility::VISIBLE);
             startBusyPulse(busyDot_);
+            progressBar_->setVisibility(brls::Visibility::VISIBLE);
+            percentLabel_->setVisibility(brls::Visibility::VISIBLE);
         } else {
             stopBusyPulse(busyDot_);
             busyDot_->setVisibility(brls::Visibility::GONE);
+            progressBar_->setVisibility(brls::Visibility::GONE);
+            percentLabel_->setVisibility(brls::Visibility::GONE);
+            progressBar_->setProgress(0.0f);
+            percentLabel_->setText("");
         }
     }
 
 private:
     brls::Label* busyDot_ = nullptr;
     brls::Label* label_ = nullptr;
+    ProgressBar* progressBar_ = nullptr;
+    brls::Label* percentLabel_ = nullptr;
 };
 
 }  // namespace pipensx::ui

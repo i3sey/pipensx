@@ -1251,6 +1251,7 @@ int main() {
             usleep(10000);
         }
         assert(armed);
+        assert(manager.save(error));
         manager.shutdown();
         {
             DownloadManager reloaded(fastResumeRoot, false);

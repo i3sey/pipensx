@@ -134,15 +134,19 @@ public:
     bool prepareInitialSnapshot(CatalogSnapshot& snapshot,
                                 std::string& error) const;
 
+    using ProgressCallback = std::function<void(float)>;
+
     // Pool-thread safe: fetch, parse and persist without touching live state.
     // The CatalogSnapshot overload also builds the lookup index and is the
     // refresh-path API; the vector overload remains for startup/tests.
     bool fetchLatest(std::vector<CatalogEntry>& parsed, std::string& error,
                      const std::string& sourceUrl,
-                     const std::atomic<bool>* cancelled = nullptr);
+                     const std::atomic<bool>* cancelled = nullptr,
+                     ProgressCallback progress = {});
     bool fetchLatest(CatalogSnapshot& snapshot, std::string& error,
                      const std::string& sourceUrl,
-                     const std::atomic<bool>* cancelled = nullptr);
+                     const std::atomic<bool>* cancelled = nullptr,
+                     ProgressCallback progress = {});
     // UI-thread only: publish a freshly fetched batch. The CatalogSnapshot
     // overload only moves ready containers; the vector compatibility overload
     // builds its index synchronously and is not used by refresh UI paths.
@@ -226,7 +230,8 @@ private:
     // cached manifest, verified catalog download. Never touches live state.
     bool fetchDefaultChannel(std::vector<CatalogEntry>& parsed,
                              std::string& error,
-                             const std::atomic<bool>* cancelled);
+                             const std::atomic<bool>* cancelled,
+                             const ProgressCallback& progress = {});
 
     std::string rootPath_;
     std::string catalogRoot_;

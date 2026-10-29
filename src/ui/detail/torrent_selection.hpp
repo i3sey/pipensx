@@ -16,6 +16,7 @@
 #include "app/install_space.hpp"
 #include "app/nx_file_types.hpp"
 #include "app/port_selection.hpp"
+#include "app/switch_deploy.hpp"
 #include "ui/catalog/catalog_helpers.hpp"
 #include "ui/common/action_icon.hpp"
 #include "ui/common/storage_meter.hpp"
@@ -32,6 +33,7 @@ struct TorrentSelectionEntry {
     bool compressed = false;
     bool cartridge = false;
     bool conflict = false;
+    bool installable = false;
     FileAction action = FileAction::Download;
 };
 
@@ -48,7 +50,7 @@ inline std::string fileKindLabel(const TorrentSelectionEntry& entry) {
     if (!entry.package) {
         if (entry.cartridge)
             return tr("pipensx/torrent/kind_cartridge");
-        if (extraAcceptsInstallAction(entry.path))
+        if (entry.installable || extraAcceptsInstallAction(entry.path))
             return tr("pipensx/torrent/kind_extra");
         return tr("pipensx/torrent/kind_other");
     }
@@ -427,8 +429,12 @@ public:
         (void)root;
         const std::vector<uint8_t> mask =
             pipensx::selectPortInstallActions(preview);
-        for (size_t i = 0; i < entries_.size() && i < mask.size(); ++i)
-            entries_[i].action = static_cast<FileAction>(mask[i]);
+        for (size_t i = 0; i < entries_.size() && i < mask.size(); ++i) {
+            if (mask[i] != static_cast<uint8_t>(FileAction::Skip) && entries_[i].installable)
+                entries_[i].action = FileAction::Install;
+            else
+                entries_[i].action = static_cast<FileAction>(mask[i]);
+        }
     }
 
     void toggleExefsPatches(const TorrentPreview& preview) {
@@ -536,8 +542,9 @@ public:
                              StreamSelection initialSelection,
                              std::vector<uint8_t> initialPeers = {},
                              DebridImport debridImport = {},
-                             std::function<void()> abandon = {})
-        : manager_(manager), path_(std::move(path)),
+                             std::function<void()> abandon = {},
+                             SwitchDeployService* deploy = nullptr)
+        : manager_(manager), deploy_(deploy), path_(std::move(path)),
           preview_(std::move(preview)), preferred_(preferred),
           initialSelection_(initialSelection),
           initialPeers_(std::move(initialPeers)),
@@ -804,12 +811,15 @@ public:
             entry.package = file.package;
             entry.compressed = file.compressed;
             entry.cartridge = file.cartridge;
+            entry.installable = isTorrentFileInstallable(preview_, i);
             if (!existingSelection.empty()) {
                 entry.action = static_cast<FileAction>(existingSelection[i]);
             } else if (!portDefaults.empty()) {
-                entry.action = static_cast<FileAction>(portDefaults[i]);
+                entry.action = (portDefaults[i] != static_cast<uint8_t>(FileAction::Skip) && entry.installable)
+                    ? FileAction::Install
+                    : static_cast<FileAction>(portDefaults[i]);
             } else if (preferred_ == TransferMode::StreamInstall &&
-                       file.package) {
+                       (file.package || entry.installable)) {
                 entry.action = FileAction::Install;
             } else if (initialSelection_ == StreamSelection::AllFiles ||
                        preferred_ != TransferMode::StreamInstall) {
@@ -1196,6 +1206,9 @@ public:
             import.packageCount = static_cast<uint32_t>(installs);
             imported = manager_->importDebrid(import, id, error);
         }
+        if (imported && mode == TransferMode::PortInstall && deploy_) {
+            deploy_->armAutoCopy(id);
+        }
         if (!imported) {
             if (catalogLower(error).find("already in the download manager") !=
                 std::string::npos) {
@@ -1218,6 +1231,7 @@ public:
     }
 
     DownloadManager* manager_;
+    SwitchDeployService* deploy_ = nullptr;
     std::string path_;
     pipensx::TorrentPreview preview_;
     TransferMode preferred_;
