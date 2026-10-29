@@ -1224,6 +1224,23 @@ private:
         const int shelfRow = returnFocusShelf_;
         returnFocusHash_.clear();
         returnFocusShelf_ = -1;
+
+        // If popActivity() already restored focus onto the opening card on a
+        // live recycler cell, keep the user's existing scroll position intact.
+        brls::View* current = brls::Application::getCurrentFocus();
+        if (auto* card = dynamic_cast<GameCard*>(current)) {
+            if (lowerAscii(card->infoHash()) == lowerAscii(hash)) {
+                for (auto* cell : visibleCells<brls::RecyclerCell>(recycler_)) {
+                    if (auto* rowCell = dynamic_cast<GridRowCell*>(cell)) {
+                        for (auto* child : rowCell->getChildren()) {
+                            if (child == card)
+                                return;
+                        }
+                    }
+                }
+            }
+        }
+
         restoreFocus(hash, shelfRow);
     }
 
