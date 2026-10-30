@@ -180,28 +180,20 @@ void TorrentSelectionDataSource::cycleFolder(size_t groupIndex) {
     if (group.indices.empty())
         return;
 
-    bool allPackages = true;
+    bool anyInstallable = false;
     bool allInstall = true;
     bool allDownload = true;
     for (size_t index : group.indices) {
         const TorrentSelectionEntry& entry = entries_[index];
-        if (!entry.package)
-            allPackages = false;
-        if (entry.action != FileAction::Install)
+        anyInstallable |= entry.installable;
+        if (entry.action != (entry.installable ? FileAction::Install : FileAction::Download))
             allInstall = false;
         if (entry.action != FileAction::Download)
             allDownload = false;
     }
 
-    bool allInstallable = true;
-    for (size_t index : group.indices) {
-        const TorrentSelectionEntry& entry = entries_[index];
-        if (!entry.package && !entry.installable && !extraAcceptsInstallAction(entry.path))
-            allInstallable = false;
-    }
-
     FileAction next;
-    if (allPackages || allInstallable) {
+    if (anyInstallable) {
         if (allInstall)
             next = FileAction::Download;
         else if (allDownload)
@@ -216,7 +208,8 @@ void TorrentSelectionDataSource::cycleFolder(size_t groupIndex) {
     }
 
     for (size_t index : group.indices)
-        entries_[index].action = next;
+        entries_[index].action = next == FileAction::Install && !entries_[index].installable
+            ? FileAction::Download : next;
 }
 
 const TorrentSelectionDataSource::VisibleRow*
@@ -281,7 +274,7 @@ void TorrentSelectionDataSource::cycleEntry(int entryIndex) {
         return;
     TorrentSelectionEntry& entry =
         entries_[static_cast<size_t>(entryIndex)];
-    if (entry.package || entry.installable || extraAcceptsInstallAction(entry.path)) {
+    if (entry.installable) {
         entry.action = entry.action == FileAction::Install
             ? FileAction::Download
             : entry.action == FileAction::Download ? FileAction::Skip
@@ -290,6 +283,12 @@ void TorrentSelectionDataSource::cycleEntry(int entryIndex) {
         entry.action = entry.action == FileAction::Download
             ? FileAction::Skip
             : FileAction::Download;
+    }
+    if (owner_ && entry.action == FileAction::Install && hasNroExtension(entry.path)) {
+        auto actions = fileActions();
+        installPortApplication(owner_->preview_, static_cast<size_t>(entryIndex), actions);
+        for (size_t i = 0; i < entries_.size(); ++i)
+            entries_[i].action = static_cast<FileAction>(actions[i]);
     }
 }
 

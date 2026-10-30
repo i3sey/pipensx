@@ -684,7 +684,7 @@ int main() {
         std::string ignoredTaskId;
         assert(!manager.importTorrentActions(
             readmeSource, actions, ignoredTaskId, error));
-        assert(error == "Only NSP/NSZ package files can be installed.");
+        assert(error == "This file has no supported installation destination.");
         assert(manager.snapshot().empty());
     }
 
@@ -698,12 +698,42 @@ int main() {
         assert(task.mode == TransferMode::PortInstall);
         assert(task.packageCount == 1);
         assert((task.fileSelection == std::vector<uint8_t>{
-            static_cast<uint8_t>(FileAction::Download),
-            static_cast<uint8_t>(FileAction::Download),
-            static_cast<uint8_t>(FileAction::Download),
+            static_cast<uint8_t>(FileAction::Install),
+            static_cast<uint8_t>(FileAction::Install),
+            static_cast<uint8_t>(FileAction::Install),
         }));
         assert(manager.remove(portTaskId, true, error));
         removeAll(portRoot);
+    }
+
+    {
+        const std::string downloadPortRoot = std::string(root) + "/port-download-only";
+        DownloadManager manager(downloadPortRoot, false);
+        pipensx::TorrentPreview preview;
+        assert(DownloadManager::previewTorrent(portSource, preview, error));
+        const std::vector<uint8_t> downloads(preview.files.size(),
+                                           static_cast<uint8_t>(FileAction::Download));
+        std::string id;
+        assert(manager.importTorrentActions(portSource, downloads, id, error));
+        assert(manager.snapshot(id)->mode == TransferMode::DownloadOnly);
+        assert(manager.snapshot(id)->packageCount == 0);
+        assert(manager.snapshot(id)->fileSelection == downloads);
+        assert(manager.remove(id, true, error));
+        pipensx::DebridImport import;
+        import.infoHash = preview.infoHash;
+        import.name = preview.name;
+        import.totalBytes = preview.totalBytes;
+        import.debridId = "download-port";
+        import.torrentPath = portSource;
+        import.mode = TransferMode::DownloadOnly;
+        import.fileSelection = downloads;
+        assert(manager.importDebrid(import, id, error));
+        assert(manager.snapshot(id)->mode == TransferMode::DownloadOnly);
+        assert(manager.snapshot(id)->packageCount == 0);
+        assert(manager.snapshot(id)->fileSelection == downloads);
+        assert(manager.remove(id, true, error));
+        manager.shutdown();
+        removeAll(downloadPortRoot);
     }
 
     {
@@ -1012,7 +1042,7 @@ int main() {
         std::string selectiveTaskId;
         assert(manager.importTorrentActions(
             selectiveSource, actions, selectiveTaskId, error));
-        assert(manager.snapshot()[0].mode == TransferMode::PortInstall);
+        assert(manager.snapshot()[0].mode == TransferMode::DownloadOnly);
         const std::string dataPath = manager.snapshot()[0].dataPath + "/selection";
         // Disk files are created on first write (lazy open). This torrent
         // has no seeds; skipped files must still never be touched.

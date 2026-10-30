@@ -609,7 +609,7 @@ bool buildTaskFileInventory(const std::string& appRoot,
         if (record.action == TaskFileAction::Skip) {
             file.state = TaskFileState::Skipped;
         } else if (record.action == TaskFileAction::Install &&
-                   record.package) {
+                   record.package && task.mode == TransferMode::StreamInstall) {
             file.state = task.status == DownloadStatus::Installed
                 ? TaskFileState::Installed : TaskFileState::Pending;
         } else if (!result.settled) {

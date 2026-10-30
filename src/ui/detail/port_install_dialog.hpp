@@ -17,6 +17,7 @@ struct PortInstallDialogHost {
     brls::Dialog* dialog = nullptr;
     brls::Label* status = nullptr;
     brls::Button* continueButton = nullptr;
+    brls::Button* downloadButton = nullptr;
     std::shared_ptr<std::atomic<bool>> live;
     std::shared_ptr<std::atomic<bool>> proceeded;
     std::shared_ptr<std::atomic<bool>> continueReady;
@@ -26,9 +27,13 @@ struct PortInstallDialogHost {
 // Continue is a no-op until setPortInstallReady(). B / Cancel abort.
 inline PortInstallDialogHost openPortInstallDialog(
     std::function<void()> onContinue,
+    std::function<void()> onDownload,
     std::function<void()> onCancel,
     const std::string& statusText = {},
-    bool continueEnabled = false) {
+    bool continueEnabled = false,
+    const std::string& warningText = {},
+    const std::string& continueText = {},
+    const std::string& downloadText = {}) {
     PortInstallDialogHost host;
     host.live = std::make_shared<std::atomic<bool>>(true);
     host.proceeded = std::make_shared<std::atomic<bool>>(false);
@@ -59,7 +64,7 @@ inline PortInstallDialogHost openPortInstallDialog(
     warning->setFontSize(brls::Application::getStyle()["brls/dialog/fontSize"]);
     warning->setHorizontalAlign(brls::HorizontalAlign::CENTER);
     warning->setSingleLine(false);
-    warning->setText(tr("pipensx/port_install/unofficial"));
+    warning->setText(warningText.empty() ? tr("pipensx/port_install/unofficial") : warningText);
     box->addView(warning);
 
     auto* status = new brls::Label();
@@ -91,8 +96,8 @@ inline PortInstallDialogHost openPortInstallDialog(
 
     auto* dialog = new brls::Dialog(box);
     host.dialog = dialog;
-    dialog->addButton(tr("pipensx/common/continue"), [] {});
-    dialog->addButton(tr("pipensx/common/cancel"), [] {});
+    dialog->addButton(continueText.empty() ? tr("pipensx/port_install/try_automatic") : continueText, [] {});
+    dialog->addButton(downloadText.empty() ? tr("pipensx/port_install/download_only") : downloadText, [] {});
 
     brls::Button* first = nullptr;
     brls::Button* second = nullptr;
@@ -111,6 +116,7 @@ inline PortInstallDialogHost openPortInstallDialog(
     };
     findButtons(dialog);
     host.continueButton = first;
+    host.downloadButton = second;
 
     if (first) {
         first->setState(continueEnabled ? brls::ButtonState::ENABLED
@@ -130,16 +136,17 @@ inline PortInstallDialogHost openPortInstallDialog(
             });
     }
     if (second) {
+        auto onDownloadShared = std::make_shared<std::function<void()>>(std::move(onDownload));
         second->registerClickAction(
             [dialog, live = host.live, proceeded = host.proceeded,
-             onCancelShared](brls::View*) {
+             onDownloadShared](brls::View*) {
                 if (!live->load())
                     return true;
                 proceeded->store(true);
                 live->store(false);
-                dialog->close([onCancelShared] {
-                    if (*onCancelShared)
-                        (*onCancelShared)();
+                dialog->close([onDownloadShared] {
+                    if (*onDownloadShared)
+                        (*onDownloadShared)();
                 });
                 return true;
             });

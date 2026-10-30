@@ -270,6 +270,13 @@
     "folder_files": "{} 个文件"
   },
   "port_install": {
+    "try_automatic": "尝试自动安装",
+    "download_only": "仅下载",
+    "download_queued": "已加入下载。文件将保留在下载文件夹中。",
+    "extras_warning": "此资源包含移植游戏、模组、汉化或其他可安装的附加文件。",
+    "extras_hint": "按推荐安装游戏包并跳过附加文件，或手动选择要安装、下载和跳过的文件。",
+    "regular_install": "继续常规安装",
+    "choose_manually": "手动选择文件",
     "unofficial": "这是非官方自制移植。安装时可能仍需额外步骤。",
     "indexing": "正在读取种子文件…",
     "layout_detected": "已检测到移植结构。pipensx 会尝试安装，但仍可能需要额外设置。",

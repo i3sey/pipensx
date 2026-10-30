@@ -227,15 +227,15 @@ void testDirectAndProviders(const std::string& root) {
         assert(plan.outcome == OneTapOutcome::QueuePort);
         assert(plan.mode == TransferMode::PortInstall);
         assert(plan.packageCount == 1);
-        assert(plan.fileSelection == std::vector<uint8_t>({1, 1, 1}));
+        assert(plan.fileSelection == std::vector<uint8_t>({2, 2, 2}));
         port.files.push_back({"switch_russmod.7z", 1658000000, false, false, false});
         port.files.push_back({"switch_extra.7z", 1000, false, false, false});
         const auto original = planCatalogOneTap(port, context);
         assert(original.mode == TransferMode::PortInstall);
-        assert(original.fileSelection == std::vector<uint8_t>({1, 1, 1, 0, 1}));
+        assert(original.fileSelection == std::vector<uint8_t>({2, 2, 2, 0, 2}));
         port.files.erase(port.files.begin()); // Standalone Russian version is valid.
         const auto standalone = planCatalogOneTap(port, context);
-        assert(standalone.fileSelection == std::vector<uint8_t>({1, 1, 1, 1}));
+        assert(standalone.fileSelection == std::vector<uint8_t>({2, 2, 2, 2}));
         port.files.erase(port.files.begin() + 2, port.files.end());
         port.files.insert(port.files.begin(), {"switch.7z", 55750, false, false, false});
         port.files[1].path = "Native Game.nsp";
@@ -255,12 +255,12 @@ void testDirectAndProviders(const std::string& root) {
                                  1000, false, false, false});
         const auto plan = planCatalogOneTap(nfs, context);
         assert(plan.outcome == OneTapOutcome::QueuePort);
-        assert(plan.fileSelection == std::vector<uint8_t>(11, 1));
+        assert(plan.fileSelection == std::vector<uint8_t>(11, 2));
         // Recompiled NSP with external data can have no separate NRO.
         nfs.files[0].length = 40 * 1024 * 1024;
         nfs.files[1].path = "Homebrew/switch/nfsu2/game.dat";
         assert(planCatalogOneTap(nfs, context).outcome == OneTapOutcome::QueuePort);
-        assert(planCatalogOneTap(nfs, context).fileSelection == std::vector<uint8_t>(11, 1));
+        assert(planCatalogOneTap(nfs, context).fileSelection == std::vector<uint8_t>(11, 2));
     }
 
     {

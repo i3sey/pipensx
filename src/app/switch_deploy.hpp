@@ -220,9 +220,8 @@ public:
     bool remotePortRequest(const std::string& action, const std::string& taskId,
                            const std::string& body, std::string& json,
                            std::string& error);
-    // Background scan for legacy deployments. Stream-install tasks without
-    // an auto-copy marker become a UI prompt. PortInstall tasks always wait
-    // for saved destinations and an explicit start in the remote panel.
+    // Install actions authorize background deployment. Saved remote layouts
+    // still require an explicit start from the panel.
     struct PendingOffer {
         std::string taskId;
         SwitchDeployInspection inspection;

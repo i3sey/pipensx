@@ -73,7 +73,8 @@ void writeCompletedQueue(const std::string& root, const std::string& taskId,
                          const std::string& mode = "download",
                          const std::string& status = "completed",
                          uint32_t packageCount = 0,
-                         uint32_t packagesDone = 0) {
+                         uint32_t packagesDone = 0,
+                         const std::string& selection = std::string(2, '\1')) {
     std::string queue = "d5:tasksl";
     queue += "d9:completed" + std::string("i") + std::to_string(total) + "e";
     queue += "4:data" + bstr(dataPath);
@@ -87,7 +88,7 @@ void writeCompletedQueue(const std::string& root, const std::string& taskId,
              "e13:packages-donei" + std::to_string(packagesDone) + "e";
     queue += "11:pieces-donei0e12:pieces-totali0e";
     queue += "8:provider" + bstr("torbox");
-    queue += "9:selection" + bstr(std::string(2, '\1'));
+    queue += "9:selection" + bstr(selection);
     queue += "6:source" + bstr("debrid");
     queue += "6:status" + bstr(status);
     queue += "5:totali" + std::to_string(total) + "e";
@@ -222,9 +223,14 @@ int main() {
         assert(torrentPortLayoutDetected(preview));
         const auto mask = selectPortInstallActions(preview);
         assert(mask.size() == 3);
-        assert(mask[0] == static_cast<uint8_t>(FileAction::Download));
-        assert(mask[1] == static_cast<uint8_t>(FileAction::Download));
+        assert(mask[0] == static_cast<uint8_t>(FileAction::Install));
+        assert(mask[1] == static_cast<uint8_t>(FileAction::Install));
         assert(mask[2] == static_cast<uint8_t>(FileAction::Skip));
+        assert(portInstallableFiles(preview) == std::vector<bool>({true, true, false}));
+        std::vector<uint8_t> picked(3, static_cast<uint8_t>(FileAction::Skip));
+        installPortApplication(preview, 0, picked);
+        assert(picked == mask);
+        assert(!selectionIsPortTransaction(preview, std::vector<uint8_t>(3, 1)));
     }
     {
         TorrentPreview preview;
@@ -236,8 +242,8 @@ int main() {
         assert(torrentHasPortArchive(preview));
         assert(!torrentPortLayoutDetected(preview));
         const auto mask = selectPortInstallActions(preview);
-        assert(mask[0] == static_cast<uint8_t>(FileAction::Download));
-        assert(mask[1] == static_cast<uint8_t>(FileAction::Download));
+        assert(mask[0] == static_cast<uint8_t>(FileAction::Install));
+        assert(mask[1] == static_cast<uint8_t>(FileAction::Install));
         assert(mask[2] == static_cast<uint8_t>(FileAction::Skip));
     }
     {
@@ -247,6 +253,15 @@ int main() {
         const auto mask = selectPortInstallActions(preview);
         assert(mask.size() == 1);
         assert(mask[0] == static_cast<uint8_t>(FileAction::Download));
+    }
+    {
+        TorrentPreview preview;
+        preview.files = {{"game.nsp", 100, true, false, false},
+                         {"translation.zip", 50, false, false, false}};
+        assert(selectionIsPortTransaction(preview, {0, 2}));
+        assert(selectionIsPortTransaction(preview, {1, 2}));
+        assert(!selectionIsPortTransaction(preview, {2, 2}));
+        assert(!selectionIsPortTransaction(preview, {1, 1}));
     }
     {
         TorrentPreview preview;
@@ -267,10 +282,10 @@ int main() {
         assert(!torrentPortLayoutDetected(preview));
         const auto mask = selectPortInstallActions(preview);
         assert(mask.size() == 5);
-        assert(mask[0] == static_cast<uint8_t>(FileAction::Download));
-        assert(mask[1] == static_cast<uint8_t>(FileAction::Download));
+        assert(mask[0] == static_cast<uint8_t>(FileAction::Install));
+        assert(mask[1] == static_cast<uint8_t>(FileAction::Install));
         assert(mask[2] == static_cast<uint8_t>(FileAction::Skip));
-        assert(mask[3] == static_cast<uint8_t>(FileAction::Download));
+        assert(mask[3] == static_cast<uint8_t>(FileAction::Install));
         assert(mask[4] == static_cast<uint8_t>(FileAction::Skip));
         assert(isLayeredFsRomfsPath(
             "prefix/atmosphere/contents/0100b00b51230000/romfs/a"));
@@ -333,7 +348,7 @@ int main() {
         };
         assert(cardOneTapUsesPortInstall(marioPort));
         const auto marioMask = selectPortInstallActions(marioPort);
-        assert(marioMask == std::vector<uint8_t>({1, 1, 1, 1, 0, 1}));
+        assert(marioMask == std::vector<uint8_t>({2, 2, 2, 2, 0, 2}));
         assert(selectionIsPortTransaction(marioPort, marioMask));
         // A native game in the same release must retain the regular flow.
         marioPort.files.push_back({"Other Game.nsp", 32 * 1024 * 1024, true, false, false});
@@ -356,15 +371,15 @@ int main() {
         };
         assert(cardOneTapUsesPortInstall(oldRoot));
         const auto mask = selectPortInstallActions(oldRoot);
-        assert(mask[0] == static_cast<uint8_t>(FileAction::Download));
-        assert(mask[1] == static_cast<uint8_t>(FileAction::Download));
+        assert(mask[0] == static_cast<uint8_t>(FileAction::Install));
+        assert(mask[1] == static_cast<uint8_t>(FileAction::Install));
         assert(mask[2] == static_cast<uint8_t>(FileAction::Skip));
         assert(mask[3] == static_cast<uint8_t>(FileAction::Skip));
         std::vector<uint8_t> toggled(oldRoot.files.size(),
                                      static_cast<uint8_t>(FileAction::Skip));
         toggleExefsPatchActions(oldRoot, toggled);
         assert(toggled[0] == static_cast<uint8_t>(FileAction::Skip));
-        assert(toggled[2] == static_cast<uint8_t>(FileAction::Download));
+        assert(toggled[2] == static_cast<uint8_t>(FileAction::Install));
         toggleExefsPatchActions(oldRoot, toggled);
         assert(toggled[2] == static_cast<uint8_t>(FileAction::Skip));
     }
@@ -383,9 +398,9 @@ int main() {
         assert(torrentPortLayoutDetected(preview));
         const auto mask = selectPortInstallActions(preview);
         assert(mask.size() == 3);
-        assert(mask[0] == static_cast<uint8_t>(FileAction::Download));
-        assert(mask[1] == static_cast<uint8_t>(FileAction::Download));
-        assert(mask[2] == static_cast<uint8_t>(FileAction::Download));
+        assert(mask[0] == static_cast<uint8_t>(FileAction::Install));
+        assert(mask[1] == static_cast<uint8_t>(FileAction::Install));
+        assert(mask[2] == static_cast<uint8_t>(FileAction::Install));
     }
 
     assert(portArchiveSolidFitsRam(0, 0));
@@ -2071,6 +2086,68 @@ int main() {
         assert(portDeploy.receiptState(portId) == SwitchDeployReceiptState::Valid);
         portDeploy.shutdown();
         portManager.shutdown();
+    }
+
+    // Explicit Install actions survive restart and authorize automatic deployment;
+    // Download files in the same application tree and packages remain untouched.
+    {
+        const auto app = root + "/automatic-port";
+        const auto data = app + "/downloads/task";
+        const auto target = app + "/sd/switch";
+        const std::string id(40, 'a');
+        const auto archive = writeStoredZip({{"switch/Auto/packed.bin", "PACKED"}});
+        const auto package = makeTestNsp(std::string(4096, 'N'));
+        const std::vector<std::pair<std::string, std::string>> files = {
+            {"switch/Auto/Game.nro", nro},
+            {"switch/Auto/data.bin", "DATA"},
+            {"assets.zip", archive},
+            {"switch/Auto/optional.bin", "KEEP-IN-DOWNLOADS"},
+            {"Forwarder.nsp", package},
+            {"Download-only.nsp", package},
+        };
+        TaskFileManifest manifest;
+        manifest.taskId = id;
+        uint64_t total = 0;
+        for (size_t i = 0; i < files.size(); ++i) {
+            writeFile(data + "/" + files[i].first, files[i].second);
+            TaskFileRecord file;
+            file.logicalPath = file.localPath = files[i].first;
+            file.size = files[i].second.size();
+            file.action = i == 3 || i == 5 ? TaskFileAction::Download : TaskFileAction::Install;
+            file.package = i >= 4;
+            manifest.files.push_back(file);
+            total += file.size;
+        }
+        fs::create_directories(target);
+        writeCompletedQueue(app, id, data, total, "port", "completed", 1, 0,
+                            std::string("\2\2\2\1\2\1", 6));
+        assert(saveTaskFileManifest(app, manifest, error));
+        DownloadManager manager(app, false);
+        SwitchDeployService deploy(manager, app, target);
+        const auto plan = deploy.inspect(id);
+        assert(plan.canStart());
+        assert(plan.plan.files.size() == 2);
+        assert(plan.plan.archives.size() == 1);
+        assert(plan.plan.packages.size() == 1);
+        assert(plan.plan.packages[0].sourceRelativePath == "Forwarder.nsp");
+        deploy.scheduleDeployOfferPoll();
+        deploy.shutdown();
+        const auto offer = deploy.takePendingDeployOffer();
+        assert(offer && offer->autoStart && offer->taskId == id);
+        assert(deploy.start(id, error));
+        for (int i = 0; i < 500 && deploy.snapshot().active(); ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        assert(deploy.snapshot().phase == SwitchDeployPhase::Completed);
+        assert(fs::exists(target + "/Auto/Game.nro"));
+        assert(fs::exists(target + "/Auto/data.bin"));
+        assert(fs::exists(target + "/Auto/packed.bin"));
+        assert(!fs::exists(target + "/Auto/optional.bin"));
+        assert(fs::exists(data + "/switch/Auto/optional.bin"));
+        assert(fs::exists(data + "/Download-only.nsp"));
+        assert(manager.snapshot(id)->packagesInstalled == 1);
+        assert(deploy.receiptState(id) == SwitchDeployReceiptState::Valid);
+        deploy.shutdown();
+        manager.shutdown();
     }
 
     // AutoRun receipts survive restart and identify the entire game directory.

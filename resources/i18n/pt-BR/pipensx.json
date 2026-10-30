@@ -270,13 +270,20 @@
     "folder_files": "{} arquivos"
   },
   "port_install": {
+    "try_automatic": "Tentar instalação automática",
+    "download_only": "Apenas baixar",
+    "download_queued": "Adicionado para download. Os arquivos ficarão na pasta de downloads.",
+    "extras_warning": "Este torrent inclui um port, mod, tradução ou outros extras instaláveis.",
+    "extras_hint": "Instale os pacotes recomendados sem extras ou escolha manualmente o que instalar, baixar e ignorar.",
+    "regular_install": "Instalação normal",
+    "choose_manually": "Selecionar arquivos manualmente",
     "unofficial": "Este é um port homebrew não oficial. Podem ser necessários passos extras para instalá-lo.",
     "indexing": "Lendo arquivos do torrent...",
     "layout_detected": "Estrutura do port detectada. O pipensx tentará instalá-la, mas ainda pode ser preciso configuração extra.",
     "layout_layered": "Payload Atmosphere LayeredFS detectado. Os arquivos serão movidos para a raiz do SD; depois da instalação, o torrent não poderá mais ser semeado nem verificado.",
     "layout_missing": "Nenhuma pasta switch/ nem switch.zip / switch.7z foi encontrada. O pipensx baixará os arquivos; ainda pode ser preciso configuração extra.",
     "queued": "Adicionado. Os arquivos serão copiados para /switch quando o download terminar.",
-    "copy_skipped": "Download concluído. Ainda pode ser preciso configuração extra para instalar este port.",
+    "copy_skipped": "A instalação automática não terminou. Os arquivos baixados foram mantidos. Abra Selecionar arquivos para revisar a instalação.",
     "how_to_install": "Como instalar",
     "notice_dialog_body": "Este não é um jogo padrão do Switch, mas um port ou arquivo. Os arquivos foram salvos na pasta de downloads. Para executá-lo, extraia-os para a raiz do cartão SD ou use o DBI."
   },

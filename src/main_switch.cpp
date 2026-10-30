@@ -1307,6 +1307,9 @@ int main(int argc, char** argv) {
                     const auto deployed =
                         manager.snapshotUi(deployState.taskId);
                     if (deployed &&
+                        std::find(deployed->fileSelection.begin(), deployed->fileSelection.end(),
+                                  static_cast<uint8_t>(pipensx::FileAction::Download)) ==
+                            deployed->fileSelection.end() &&
                         (deployed->status ==
                              pipensx::DownloadStatus::Completed ||
                          deployed->status ==
@@ -1361,11 +1364,7 @@ int main(int argc, char** argv) {
                         continue;
                     lastTaskStatus[task.id] = task.status;
                     if (task.status == pipensx::DownloadStatus::Completed) {
-                        if (task.mode == pipensx::TransferMode::PortInstall &&
-                            deploy.autoCopyArmed(task.id)) {
-                            // Port is armed for automatic deployment: do not pop up manual notice!
-                        } else if ((task.mode == pipensx::TransferMode::DownloadOnly ||
-                             task.mode == pipensx::TransferMode::PortInstall) &&
+                        if (task.mode == pipensx::TransferMode::DownloadOnly &&
                             pipensx::taskHasPortOrArchiveFiles(manager.rootPath(), task)) {
                             pipensx::ui::openPortNoticeDialog();
                         } else {
@@ -1435,24 +1434,12 @@ int main(int argc, char** argv) {
                             brls::Application::notify(startError.empty()
                                 ? tr("pipensx/deploy/failed")
                                 : startError);
-                    } else if (offer->autoStart &&
-                               (inspection.problem ==
-                                    pipensx::SwitchDeployProblem::Conflict ||
-                                inspection.problem ==
-                                    pipensx::SwitchDeployProblem::NoSpace ||
-                                inspection.problem ==
-                                    pipensx::SwitchDeployProblem::NoRam)) {
-                        deploy.dismissDeployOffer(offerId);
-                        brls::Application::pushActivity(
-                            new pipensx::ui::SwitchDeployPreviewActivity(
-                                std::move(inspection), &deploy),
-                            brls::TransitionAnimation::NONE);
                     } else if (offer->autoStart) {
                         deploy.clearAutoCopy(offerId);
                         deploy.dismissDeployOffer(offerId);
                         brls::Application::notify(
-                            tr("pipensx/port_install/copy_skipped"));
-                        pipensx::ui::openPortNoticeDialog();
+                            tr("pipensx/port_install/copy_skipped") +
+                            (inspection.detail.empty() ? std::string() : " " + inspection.detail));
                     } else {
                     deployOfferDialogOpen = true;
                     const auto task = manager.snapshotUi(offerId);

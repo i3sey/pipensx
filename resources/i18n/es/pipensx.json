@@ -270,6 +270,13 @@
     "folder_files": "{} archivos"
   },
   "port_install": {
+    "try_automatic": "Probar instalación automática",
+    "download_only": "Solo descargar",
+    "download_queued": "Añadido para descargar. Los archivos permanecerán en la carpeta de descargas.",
+    "extras_warning": "Esta distribución incluye un port, mod, traducción u otros extras instalables.",
+    "extras_hint": "Instala los paquetes recomendados sin extras o elige qué instalar, descargar y omitir.",
+    "regular_install": "Instalación normal",
+    "choose_manually": "Elegir archivos manualmente",
     "unofficial": "Este es un port homebrew no oficial. Puede que hagan falta pasos extra para instalarlo.",
     "indexing": "Leyendo archivos del torrent...",
     "layout_detected": "Estructura del port detectada. pipensx intentará instalarla, pero puede que aún haga falta configuración extra.",

@@ -110,6 +110,26 @@ The interface displays contextual controller hints. The main actions cover
 adding torrents, opening details, pausing/resuming, retrying/rechecking, and
 safely stopping the active task before exit.
 
+## Ports, mods, and translations
+
+Installing a homebrew port offers **Try automatic install** or **Download only**.
+Automatic installation downloads the selected payload, copies or extracts it to
+the SD card, and then installs bundled NSP/NSZ forwarders without another
+confirmation. Download only leaves the files in the downloads folder.
+
+**Select files** lets you choose **Install**, **Download**, or **Skip** for each
+file. Install is available for NSP/NSZ, recognized NRO application files, ZIP/7z
+payloads, and supported LayeredFS mods and translations. Installing an NRO also
+selects its companion application files; individual choices can then be adjusted.
+Applying Install to a folder installs supported files and downloads the rest.
+Selected installation actions run automatically after downloading.
+
+When a regular game release includes installable extras, Install offers the
+normal recommended game packages without extras, or the manual file selector.
+Executable patches remain an explicit choice in the selector. If automatic
+deployment fails, the application reports the reason and retains downloaded
+files. The web panel remains available for custom destination folders.
+
 ## Catalog and network behavior
 
 The application fetches `switch_games.json` over HTTPS from Langegen by

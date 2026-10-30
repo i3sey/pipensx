@@ -212,7 +212,7 @@ inline bool torrentHasExefsPatches(const TorrentPreview& preview) {
     return false;
 }
 
-// Picker opt-in. Turns every exefs member to Download, or back to Skip when
+// Picker opt-in. Turns every exefs member to Install, or back to Skip when
 // they are already all selected. Other rows are left alone. One-tap never
 // calls this.
 inline void toggleExefsPatchActions(const TorrentPreview& preview,
@@ -226,7 +226,7 @@ inline void toggleExefsPatchActions(const TorrentPreview& preview,
         const uint8_t action = i < actions.size()
             ? actions[i]
             : static_cast<uint8_t>(FileAction::Skip);
-        if (action != static_cast<uint8_t>(FileAction::Download))
+        if (action != static_cast<uint8_t>(FileAction::Install))
             enable = true;
     }
     if (!any)
@@ -235,7 +235,7 @@ inline void toggleExefsPatchActions(const TorrentPreview& preview,
         actions.resize(preview.files.size(),
                        static_cast<uint8_t>(FileAction::Skip));
     const uint8_t next = static_cast<uint8_t>(
-        enable ? FileAction::Download : FileAction::Skip);
+        enable ? FileAction::Install : FileAction::Skip);
     for (size_t i = 0; i < preview.files.size(); ++i)
         if (pathIsExefsPatch(preview, preview.files[i]))
             actions[i] = next;
@@ -263,12 +263,42 @@ inline std::vector<uint8_t> selectPortPayloadActions(
     return mask;
 }
 
-// A port is downloaded completely before deployment. Packages deliberately
-// use Download here (not Install): SwitchDeployService installs them from the
-// settled local files only after the payload receipt has been committed.
+inline std::vector<bool> portInstallableFiles(const TorrentPreview& preview) {
+    const auto roots = candidatePortPayloadRoots(preview);
+    std::vector<bool> installable(preview.files.size(), false);
+    for (size_t i = 0; i < preview.files.size(); ++i) {
+        const auto& file = preview.files[i];
+        if (file.cartridge) continue;
+        const std::string logical = torrentLogicalPath(preview, file);
+        installable[i] = file.package || extraAcceptsInstallAction(logical);
+        for (const auto& root : roots)
+            if (pathUnderPortRoot(logical, root)) { installable[i] = true; break; }
+    }
+    return installable;
+}
+
+inline void installPortApplication(const TorrentPreview& preview, size_t index,
+                                    std::vector<uint8_t>& actions) {
+    if (index >= preview.files.size() || !hasNroExtension(preview.files[index].path)) return;
+    const auto logical = torrentLogicalPath(preview, preview.files[index]);
+    std::string relative, root;
+    if (!switchPayloadRelativePath(logical, relative, &root)) root = portParentPath(logical);
+    actions.resize(preview.files.size(), static_cast<uint8_t>(FileAction::Skip));
+    for (size_t i = 0; i < preview.files.size(); ++i) {
+        const auto& file = preview.files[i];
+        const auto path = torrentLogicalPath(preview, file);
+        if (!file.package && !file.cartridge && !isLayeredFsRomfsPath(path) &&
+            !isLayeredFsExefsPath(path) && pathUnderPortRoot(path, portSelectionLower(root)))
+            actions[i] = static_cast<uint8_t>(FileAction::Install);
+    }
+}
+
+// Install is consent to deployment. Port packages stay on disk until the
+// payload stage completes; the transfer mode keeps them out of streaming.
 inline std::vector<uint8_t> selectPortInstallActions(
     const TorrentPreview& preview) {
     std::vector<uint8_t> mask = selectPortPayloadActions(preview);
+    const auto installable = portInstallableFiles(preview);
     std::vector<std::string> primaryArchives;
     for (size_t i = 0; i < preview.files.size(); ++i) {
         const std::string key = portArchiveChoiceKey(preview.files[i].path, false);
@@ -284,12 +314,15 @@ inline std::vector<uint8_t> selectPortInstallActions(
     for (size_t i = 0; i < preview.files.size(); ++i) {
         const TorrentPreview::File& file = preview.files[i];
         if (file.package) {
-            mask[i] = static_cast<uint8_t>(FileAction::Download);
+            mask[i] = static_cast<uint8_t>(FileAction::Install);
         } else if (file.cartridge) {
             mask[i] = static_cast<uint8_t>(FileAction::Skip);
         }
-        if (mask[i] != static_cast<uint8_t>(FileAction::Skip))
+        if (mask[i] != static_cast<uint8_t>(FileAction::Skip)) {
+            if (installable[i])
+                mask[i] = static_cast<uint8_t>(FileAction::Install);
             ++selected;
+        }
     }
     if (selected == 0) {
         for (uint8_t& action : mask)
@@ -306,10 +339,14 @@ inline bool selectionIsPortTransaction(const TorrentPreview& preview,
                                        size_t* packageCount = nullptr) {
     size_t packages = 0;
     bool payload = false;
-    const bool retailPackages = torrentHasPackageFiles(preview);
     const bool portBundle = cardOneTapUsesPortInstall(preview);
+    bool selectedPackages = false;
+    for (size_t i = 0; i < actions.size() && i < preview.files.size(); ++i)
+        selectedPackages |= preview.files[i].package &&
+                            actions[i] == static_cast<uint8_t>(FileAction::Install);
+    const auto roots = candidatePortPayloadRoots(preview);
     for (size_t i = 0; i < actions.size() && i < preview.files.size(); ++i) {
-        if (actions[i] == static_cast<uint8_t>(FileAction::Skip))
+        if (actions[i] != static_cast<uint8_t>(FileAction::Install))
             continue;
         const TorrentPreview::File& file = preview.files[i];
         if (file.package) {
@@ -323,9 +360,13 @@ inline bool selectionIsPortTransaction(const TorrentPreview& preview,
             !isLayeredFsRomfsPath(file.path) && !isLayeredFsExefsPath(file.path) &&
             switchPayloadRelativePath(file.path, switchRelative);
         if (hasNroExtension(file.path) || switchPayload ||
-            (!retailPackages && isDeployableExtraPath(file.path)) ||
-            isTorrentFileInstallable(preview, i))
+            (!selectedPackages && (isDeployableExtraPath(file.path) ||
+                                   isLayeredFsExefsPath(file.path))))
             payload = true;
+        if (!isLayeredFsRomfsPath(file.path) && !isLayeredFsExefsPath(file.path))
+            for (const auto& root : roots)
+                if (pathUnderPortRoot(torrentLogicalPath(preview, file), root))
+                    payload = true;
     }
     if (packageCount)
         *packageCount = packages;

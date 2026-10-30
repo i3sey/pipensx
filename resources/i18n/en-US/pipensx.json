@@ -270,13 +270,20 @@
     "folder_files": "{} files"
   },
   "port_install": {
+    "try_automatic": "Try automatic install",
+    "download_only": "Download only",
+    "download_queued": "Added for download. Files will stay in the downloads folder.",
+    "extras_warning": "This release includes a port, mod, translation, or other installable extras.",
+    "extras_hint": "Continue with the recommended game packages and skip extras, or choose what to install, download, and skip manually.",
+    "regular_install": "Continue normal install",
+    "choose_manually": "Select files manually",
     "unofficial": "This is an unofficial homebrew port. Extra steps may still be required to install it.",
     "indexing": "Reading torrent files...",
     "layout_detected": "Port structure detected. pipensx will try to install it, but extra setup may still be needed.",
     "layout_layered": "Atmosphere LayeredFS payload detected. Files will be moved to the SD root, so this torrent cannot be seeded or rechecked after installation.",
     "layout_missing": "No switch/ folder or switch.zip / switch.7z was found. pipensx will download the files; extra setup may still be needed.",
     "queued": "Added. The port payload will be deployed when the download finishes.",
-    "copy_skipped": "Download finished. Extra setup may still be needed to install this port.",
+    "copy_skipped": "Automatic installation could not finish. Downloaded files are kept. Open Select files to review the installation.",
     "how_to_install": "How to install",
     "notice_dialog_body": "This is not a standard Switch game, but a port or archive. Files have been saved to the downloads folder. To run it, extract them to the root of the SD card or use DBI."
   },

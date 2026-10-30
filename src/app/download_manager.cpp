@@ -754,17 +754,8 @@ bool DownloadManager::mergeImportSelection(DownloadTask& task,
     for (size_t i = 0; i < merged.size(); ++i)
         merged[i] = std::max(merged[i], incoming[i]);
 
-    // Mode reconciliation. PortInstall retains packages on disk for the
-    // post-deploy install stage (never SINK), so an added package rides
-    // along as Download. A task that gained an Install package while in
-    // DownloadOnly mode upgrades to StreamInstall; packagesInstalled is
-    // necessarily 0 there, so no installed prefix has to stay aligned.
+    // PortInstall retains packages on disk without changing their actions.
     const bool promotePort = task.mode == TransferMode::DownloadOnly && incomingMode == TransferMode::PortInstall;
-    if (task.mode == TransferMode::PortInstall || promotePort) {
-        for (size_t i = 0; i < merged.size(); ++i)
-            if (preview->files[i].package)
-                merged[i] = actionValue(FileAction::Download);
-    }
     if (task.packagesInstalled > 0 &&
         task.mode == TransferMode::StreamInstall) {
         // The coordinator SKIPs the first packagesInstalled entries of the
@@ -817,6 +808,12 @@ bool DownloadManager::mergeImportSelection(DownloadTask& task,
     if (promotePort) task.mode = TransferMode::PortInstall;
     if (installPackageAdded && task.mode == TransferMode::DownloadOnly)
         task.mode = TransferMode::StreamInstall;
+    if (task.mode == TransferMode::PortInstall) {
+        task.packageCount = 0;
+        for (size_t i = 0; i < merged.size(); ++i)
+            if (preview->files[i].package && merged[i] == actionValue(FileAction::Install))
+                ++task.packageCount;
+    }
     task.fileSelection = std::move(merged);
     // Stale fast-resume bits: the saved bitfield pre-marks previously
     // skipped pieces done (skipped-range preset). Presetting it over the
@@ -969,9 +966,18 @@ bool DownloadManager::importTorrent(const std::string& path,
         return importTorrentActions(path, actions, taskId, error, initialPeers,
                                     TransferMode::AutoRunInstall, autorunFolder);
     }
-    if (selectedFiles.empty() && torrentPortLayoutDetected(preview))
+    if (mode != TransferMode::DownloadOnly && selectedFiles.empty() && torrentPortLayoutDetected(preview))
         return importTorrentActions(path, selectPortInstallActions(preview),
                                     taskId, error, initialPeers);
+    if (mode == TransferMode::PortInstall) {
+        auto actions = selectPortInstallActions(preview);
+        const auto installable = portInstallableFiles(preview);
+        if (!selectedFiles.empty())
+            for (size_t i = 0; i < actions.size(); ++i)
+                actions[i] = !selectedFiles[i] ? actionValue(FileAction::Skip)
+                    : actionValue(installable[i] ? FileAction::Install : FileAction::Download);
+        return importTorrentActions(path, actions, taskId, error, initialPeers);
+    }
     return importTorrentActions(path,
                                 actionsFromLegacySelection(preview, mode,
                                                            selectedFiles),
@@ -999,47 +1005,31 @@ bool DownloadManager::importTorrentActions(
     }
 
     std::vector<uint8_t> selection = fileActions;
-    if (selection.empty() && torrentPortLayoutDetected(preview))
+    if (requestedMode != TransferMode::DownloadOnly && selection.empty() && torrentPortLayoutDetected(preview))
         selection = selectPortInstallActions(preview);
     bool useSelection = !selection.empty();
     uint32_t installPackageCount = 0;
-    uint32_t selectedPackageCount = 0;
     bool hasSelectedFiles = false;
-    bool selectedNro = false;
-    bool selectedZipOrLayered = false;
+    const auto installable = portInstallableFiles(preview);
     for (size_t i = 0; i < preview.files.size(); ++i) {
         uint8_t action = useSelection
             ? selection[i]
             : actionValue(defaultFileAction(preview.files[i].package,
-                                            TransferMode::StreamInstall));
+                                            requestedMode));
         if (!isValidFileAction(action)) {
             error = "Selected file action is invalid.";
             return false;
         }
         if (action != actionValue(FileAction::Skip)) {
             hasSelectedFiles = true;
-            const std::string logical = torrentLogicalPath(preview,
-                                                            preview.files[i]);
-            if (!preview.files[i].package && !preview.files[i].cartridge) {
-                if (hasNroExtension(logical))
-                    selectedNro = true;
-                else if (isPortArchiveName(logical) ||
-                         isLayeredFsRomfsPath(logical))
-                    selectedZipOrLayered = true;
-            }
-            if (preview.files[i].package)
-                ++selectedPackageCount;
         }
         if (action == actionValue(FileAction::Install)) {
             if (preview.files[i].package)
                 ++installPackageCount;
         }
         if (action == actionValue(FileAction::Install) &&
-            !preview.files[i].package &&
-            !extraAcceptsInstallAction(
-                torrentLogicalPath(preview, preview.files[i])) &&
-            !isTorrentFileInstallable(preview, i)) {
-            error = "Only NSP/NSZ package files can be installed.";
+            !installable[i]) {
+            error = "This file has no supported installation destination.";
             return false;
         }
     }
@@ -1056,15 +1046,7 @@ bool DownloadManager::importTorrentActions(
                 selection[i] = actionValue(FileAction::Download);
         }
     } else {
-        portInstall =
-            selectedNro || (selectedZipOrLayered && selectedPackageCount == 0);
-        if (portInstall && useSelection) {
-            // Packages are retained on disk for the post-deploy install stage.
-            for (size_t i = 0; i < selection.size(); ++i)
-                if (preview.files[i].package &&
-                    selection[i] != actionValue(FileAction::Skip))
-                    selection[i] = actionValue(FileAction::Download);
-        }
+        portInstall = selectionIsPortTransaction(preview, selection);
         mode = portInstall
             ? TransferMode::PortInstall
             : installPackageCount > 0 ? TransferMode::StreamInstall
@@ -1118,8 +1100,7 @@ bool DownloadManager::importTorrentActions(
     task.status = DownloadStatus::Queued;
     task.mode = mode;
     task.packageCount = (mode == TransferMode::AutoRunInstall) ? 0
-                      : portInstall ? selectedPackageCount
-                                    : installPackageCount;
+                      : installPackageCount;
     task.fileSelection = std::move(selection);
     task.initialPeers = initialPeers;
     // Fast resume: a genuinely fresh download has nothing on disk to find,
@@ -1174,12 +1155,10 @@ bool DownloadManager::importDebrid(const DebridImport& import,
                 error = "Selected file actions do not match torrent contents.";
                 return false;
             }
-            if (importSelection.empty() && torrentPortLayoutDetected(preview))
+            if (import.mode != TransferMode::DownloadOnly && importSelection.empty() && torrentPortLayoutDetected(preview))
                 importSelection = selectPortInstallActions(preview);
-            bool selectedNro = false;
-            bool selectedZipOrLayered = false;
             importPackageCount = 0;
-            uint32_t selectedPackages = 0;
+            const auto installable = portInstallableFiles(preview);
             for (size_t i = 0; i < preview.files.size(); ++i) {
                 const uint8_t action = importSelection.empty()
                     ? actionValue(defaultFileAction(
@@ -1187,30 +1166,22 @@ bool DownloadManager::importDebrid(const DebridImport& import,
                     : importSelection[i];
                 if (action == actionValue(FileAction::Skip))
                     continue;
-                const std::string logical = torrentLogicalPath(
-                    preview, preview.files[i]);
-                if (!preview.files[i].package &&
-                    !preview.files[i].cartridge) {
-                    if (hasNroExtension(logical))
-                        selectedNro = true;
-                    else if (isPortArchiveName(logical) ||
-                             isLayeredFsRomfsPath(logical))
-                        selectedZipOrLayered = true;
+                if (action == actionValue(FileAction::Install) &&
+                    !installable[i]) {
+                    error = "This file has no supported installation destination.";
+                    return false;
                 }
-                if (preview.files[i].package)
-                    ++selectedPackages;
+                if (preview.files[i].package && action == actionValue(FileAction::Install))
+                    ++importPackageCount;
             }
-            importPackageCount = selectedPackages;
             if (import.mode == TransferMode::AutoRunInstall) {
                 importMode = TransferMode::AutoRunInstall;
                 importPackageCount = 0;
-            } else if (selectedNro ||
-                (selectedZipOrLayered && selectedPackages == 0)) {
+            } else if (selectionIsPortTransaction(preview, importSelection)) {
                 importMode = TransferMode::PortInstall;
-                for (size_t i = 0; i < importSelection.size(); ++i)
-                    if (preview.files[i].package &&
-                        importSelection[i] != actionValue(FileAction::Skip))
-                        importSelection[i] = actionValue(FileAction::Download);
+            } else {
+                importMode = importPackageCount > 0 ? TransferMode::StreamInstall
+                                                    : TransferMode::DownloadOnly;
             }
         }
     }

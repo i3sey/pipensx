@@ -65,9 +65,9 @@ int main() {
         std::vector<uint8_t> selection = defaultInstallSelection(
             preview, mode, StreamSelection::PackagesOnly);
         assert((selection == std::vector<uint8_t>{
-            static_cast<uint8_t>(FileAction::Download),
-            static_cast<uint8_t>(FileAction::Download),
-            static_cast<uint8_t>(FileAction::Download),
+            static_cast<uint8_t>(FileAction::Install),
+            static_cast<uint8_t>(FileAction::Install),
+            static_cast<uint8_t>(FileAction::Install),
             static_cast<uint8_t>(FileAction::Skip),
         }));
 
@@ -96,6 +96,11 @@ int main() {
         assert(estimate.downloadBytes == 1280);
         assert(estimate.packageBytes == 1024);
         assert(estimate.requiredBytes == 2304);
+        estimate = estimateInstallSpace(preview, {1, 2}, TransferMode::PortInstall);
+        assert(estimate.packageFiles == 0);
+        assert(estimate.downloadBytes == 1280);
+        assert(estimate.packageBytes == 0);
+        assert(estimate.requiredBytes == 1280);
     }
 
     // A retail dump plus a payload archive is still stream-install: the zip
@@ -348,8 +353,8 @@ int main() {
         assert(!selectionIsPortTransaction(preview, hybrid, &packages));
         assert(packages == 1);
         const std::vector<uint8_t> port = {
-            static_cast<uint8_t>(FileAction::Download),
-            static_cast<uint8_t>(FileAction::Download),
+            static_cast<uint8_t>(FileAction::Install),
+            static_cast<uint8_t>(FileAction::Install),
         };
         preview.files = {
             {"switch/Game/Game.nro", 256, false, false, false},
@@ -358,8 +363,8 @@ int main() {
         assert(selectionIsPortTransaction(preview, port, &packages));
         assert(packages == 1);
         const auto mask = selectPortInstallActions(preview);
-        assert(mask[0] == static_cast<uint8_t>(FileAction::Download));
-        assert(mask[1] == static_cast<uint8_t>(FileAction::Download));
+        assert(mask[0] == static_cast<uint8_t>(FileAction::Install));
+        assert(mask[1] == static_cast<uint8_t>(FileAction::Install));
     }
 
     std::puts("install space tests passed");

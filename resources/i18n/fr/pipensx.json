@@ -270,13 +270,20 @@
     "folder_files": "{} fichiers"
   },
   "port_install": {
+    "try_automatic": "Essayer l’installation automatique",
+    "download_only": "Télécharger seulement",
+    "download_queued": "Ajouté au téléchargement. Les fichiers resteront dans le dossier des téléchargements.",
+    "extras_warning": "Cette distribution contient un port, un mod, une traduction ou d’autres suppléments installables.",
+    "extras_hint": "Installez les paquets recommandés sans suppléments ou choisissez les fichiers à installer, télécharger et ignorer.",
+    "regular_install": "Installation normale",
+    "choose_manually": "Choisir les fichiers manuellement",
     "unofficial": "Ceci est un port homebrew non officiel. Des étapes supplémentaires peuvent encore être nécessaires pour l'installer.",
     "indexing": "Lecture des fichiers du torrent...",
     "layout_detected": "Structure du port détectée. pipensx va tenter de l'installer, mais une configuration supplémentaire peut encore être nécessaire.",
     "layout_layered": "Payload Atmosphere LayeredFS détecté. Les fichiers seront déplacés à la racine de la SD ; le torrent ne pourra plus être partagé ni revérifié après installation.",
     "layout_missing": "Aucun dossier switch/ ni archive switch.zip / switch.7z n'a été trouvé. pipensx téléchargera les fichiers ; une configuration supplémentaire peut encore être nécessaire.",
     "queued": "Ajouté. Les fichiers seront copiés vers /switch à la fin du téléchargement.",
-    "copy_skipped": "Téléchargement terminé. Une configuration supplémentaire peut encore être nécessaire pour installer ce port.",
+    "copy_skipped": "L’installation automatique n’a pas abouti. Les fichiers téléchargés sont conservés. Ouvrez Choisir les fichiers pour vérifier la sélection.",
     "how_to_install": "Comment installer",
     "notice_dialog_body": "Il ne s'agit pas d'un jeu Switch standard, mais d'un portage ou d'une archive. Les fichiers sont enregistrés dans le dossier de téléchargement. Pour le lancer, extrayez-les à la racine de la carte SD ou utilisez DBI."
   },

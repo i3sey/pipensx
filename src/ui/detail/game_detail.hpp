@@ -1133,14 +1133,13 @@ private:
         auto cancelled = cancelled_;
         const bool layoutOk = torrentPortLayoutDetected(pending->preview);
         *host = openPortInstallDialog(
-            [this, alive, pending, layoutOk] {
+            [this, alive, pending] {
                 if (!alive->load())
                     return;
-                if (!layoutOk) {
-                    openFileSelectionForPort(*pending);
-                } else {
-                    finishPortImport(*pending);
-                }
+                finishPortImport(*pending, true);
+            },
+            [this, alive, pending] {
+                if (alive->load()) finishPortImport(*pending, false);
             },
             [this, alive, cancelled, pending] {
                 cancelled->store(true);
@@ -1158,27 +1157,11 @@ private:
         setPortInstallReady(*host, portLayoutStatus(pending->preview));
     }
 
-    void openFileSelectionForPort(PortImportPending& pending) {
-        setBusy(false);
-        refreshButtons();
-        StreamSelection selection = settings_
-            ? settings_->get().streamSelection : StreamSelection::AllFiles;
-        if (pending.debridMode) {
-            brls::Application::pushActivity(new TorrentSelectionActivity(
-                manager_, "", std::move(pending.preview),
-                TransferMode::PortInstall, selection, {}, pending.debrid,
-                {}, deploy_));
-        } else {
-            brls::Application::pushActivity(new TorrentSelectionActivity(
-                manager_, pending.torrentPath, std::move(pending.preview),
-                TransferMode::PortInstall, selection, std::move(pending.peers),
-                {}, {}, deploy_));
-        }
-    }
-
-    void finishPortImport(PortImportPending& pending) {
+    void finishPortImport(PortImportPending& pending, bool automatic) {
         std::vector<uint8_t> mask =
-            selectPortInstallActions(pending.preview);
+            automatic ? selectPortInstallActions(pending.preview)
+                      : std::vector<uint8_t>(pending.preview.files.size(),
+                                            static_cast<uint8_t>(FileAction::Download));
         std::string id;
         std::string err;
         bool ok = false;
@@ -1191,7 +1174,8 @@ private:
                     mask[i] != static_cast<uint8_t>(FileAction::Skip))
                     ++pending.debrid.packageCount;
             }
-            pending.debrid.mode = TransferMode::PortInstall;
+            pending.debrid.mode = automatic ? TransferMode::PortInstall : TransferMode::DownloadOnly;
+            if (!automatic) pending.debrid.packageCount = 0;
             ok = manager_->importDebrid(pending.debrid, id, err);
             if (!ok && !pending.debridId.empty())
                 removeDebridTransferAsync(pending.providerKind,
@@ -1204,15 +1188,17 @@ private:
             pending.torrentPath.clear();
         }
         if (ok) {
-            if (deploy_)
+            if (automatic && deploy_)
                 deploy_->armAutoCopy(id);
-            statusLabel_->setText(tr("pipensx/port_install/queued"));
-            brls::Application::notify(tr("pipensx/port_install/queued"));
+            const auto message = tr(automatic ? "pipensx/port_install/queued"
+                                              : "pipensx/port_install/download_queued");
+            statusLabel_->setText(message);
+            brls::Application::notify(message);
             if (onChange_)
                 onChange_();
         } else if (catalogLower(err).find("already in the download manager") !=
                    std::string::npos) {
-            if (deploy_)
+            if (automatic && deploy_)
                 deploy_->armAutoCopy(catalogLower(entry_.infoHash));
             statusLabel_->setText(tr("pipensx/detail/already_in_downloads"));
             if (onChange_)
@@ -1329,6 +1315,8 @@ private:
                             debridId.c_str());
                     return;
                 }
+                auto queueResolved = [this, alive, import, layoutPreview, entry,
+                                      providerKind, key, debridId]() mutable {
                 const OneTapPlan plan =
                     planCatalogOneTap(layoutPreview, oneTapContext());
                 if (plan.mode == TransferMode::AutoRunInstall) {
@@ -1406,12 +1394,52 @@ private:
                         onChange_();
                 }
                 refreshButtons();
+                };
+                if (!cardOneTapUsesPortInstall(layoutPreview) &&
+                    !entry.isAutorun() && torrentHasInstallableExtras(layoutPreview)) {
+                    showExtrasChoice(std::move(queueResolved),
+                        [this, import, layoutPreview, providerKind, key, debridId]() mutable {
+                            brls::Application::pushActivity(new TorrentSelectionActivity(
+                                manager_, "", std::move(layoutPreview), TransferMode::StreamInstall,
+                                settings_->get().streamSelection, {}, import,
+                                [providerKind, key, debridId] {
+                                    removeDebridTransferAsync(providerKind, key, debridId);
+                                }));
+                        }, [providerKind, key, debridId] {
+                            removeDebridTransferAsync(providerKind, key, debridId);
+                        });
+                } else {
+                    queueResolved();
+                }
             });
         });
     }
 
+    void showExtrasChoice(std::function<void()> regular,
+                          std::function<void()> picker,
+                          std::function<void()> cancel) {
+        setBusy(true);
+        auto alive = alive_;
+        auto resume = [this, alive](std::function<void()> action) {
+            return [this, alive, action = std::move(action)] {
+                if (!alive->load()) return;
+                setBusy(false);
+                refreshButtons();
+                action();
+            };
+        };
+        openPortInstallDialog(resume(std::move(regular)), resume(std::move(picker)),
+            [this, alive, cancel = std::move(cancel)] {
+                cancel();
+                if (alive->load()) { setBusy(false); refreshButtons(); }
+            }, tr("pipensx/port_install/extras_hint"), true,
+            tr("pipensx/port_install/extras_warning"),
+            tr("pipensx/port_install/regular_install"),
+            tr("pipensx/port_install/choose_manually"));
+    }
+
     void finishImport(const std::string& path, bool forcePicker,
-                      std::vector<uint8_t> initialPeers) {
+                      std::vector<uint8_t> initialPeers, bool extrasAcknowledged = false) {
         pipensx::TorrentPreview preview;
         std::string error;
         if (!DownloadManager::previewTorrent(path, preview, error)) {
@@ -1441,6 +1469,14 @@ private:
         }
 
         const OneTapPlan plan = planCatalogOneTap(preview, oneTapContext());
+        if (!extrasAcknowledged && !entry_.isAutorun() &&
+            !cardOneTapUsesPortInstall(preview) && torrentHasInstallableExtras(preview)) {
+            showExtrasChoice(
+                [this, path, initialPeers] { finishImport(path, false, initialPeers, true); },
+                [this, path, preview, initialPeers] { openSelection(path, preview, initialPeers); },
+                [path] { ::unlink(path.c_str()); });
+            return;
+        }
         if (plan.mode == TransferMode::AutoRunInstall) {
             std::string autorunFolder;
             if (entry_.autorun)

@@ -1183,8 +1183,11 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
         if (rule != manualRules.end() && !rule->second.enabled)
             file.action = TaskFileAction::Skip;
     }
+    const bool explicitInstall = preferMainPortArchives && manualRules.empty() && std::any_of(
+        result.inventory.files.begin(), result.inventory.files.end(),
+        [](const TaskFileInfo& file) { return file.action == TaskFileAction::Install; });
     std::set<std::string> ignoredVariants;
-    if (preferMainPortArchives && !installExtrasOnly) {
+    if (preferMainPortArchives && !installExtrasOnly && !explicitInstall) {
         std::set<std::string> primaryArchives;
         for (const auto& file : result.inventory.files)
             if (file.state == TaskFileState::Present && !file.package && !file.cartridge &&
@@ -1202,11 +1205,11 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
             }
         }
     }
-    auto extraCopies = [installExtrasOnly, &ignoredVariants](const TaskFileInfo& file) {
+    auto extraCopies = [installExtrasOnly, explicitInstall, &ignoredVariants](const TaskFileInfo& file) {
         if (ignoredVariants.count(file.logicalPath)) return false;
         if (file.package || file.cartridge)
             return false;
-        if (installExtrasOnly)
+        if (installExtrasOnly || explicitInstall)
             return file.action == TaskFileAction::Install;
         return file.action == TaskFileAction::Download ||
                file.action == TaskFileAction::Install;
@@ -1242,11 +1245,12 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
     // archive layouts behave differently and rejected multi-port releases.
     std::map<std::string, std::string> roots;
     for (const TaskFileInfo& file : result.inventory.files) {
-        if (!extraCopies(file) || file.state != TaskFileState::Present ||
-            !hasNroExtension(file.logicalPath) ||
-            !sourceFileSafe(result.inventory, file) ||
-            !validNro(file.absolutePath))
-            continue;
+        if (!hasNroExtension(file.logicalPath)) continue;
+        if (extraCopies(file)) {
+            if (file.state != TaskFileState::Present ||
+                !sourceFileSafe(result.inventory, file) || !validNro(file.absolutePath))
+                continue;
+        } else if (!explicitInstall) continue;
         const std::vector<std::string> parts = splitPath(file.logicalPath);
         if (parts.empty())
             continue;
@@ -1257,8 +1261,8 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
     }
     for (const TaskFileInfo& file : result.inventory.files) {
         if (!file.package ||
-            (file.action != TaskFileAction::Download &&
-             file.action != TaskFileAction::Install) ||
+            (file.action != TaskFileAction::Install &&
+             (explicitInstall || file.action != TaskFileAction::Download)) ||
             file.state != TaskFileState::Present ||
             !sourceFileSafe(result.inventory, file))
             continue;
@@ -1273,7 +1277,7 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
     // Some ports embed their executable in the NSP and supply only data in
     // switch/. Downloaded local packages + an explicit tree are sufficient;
     // native packages already streamed/installed do not enter this branch.
-    if (!result.plan.packages.empty()) {
+    if (!result.plan.packages.empty() || explicitInstall) {
         for (const auto& file : result.inventory.files) {
             if (!extraCopies(file) || file.state != TaskFileState::Present ||
                 isPortArchiveName(file.logicalPath) ||
@@ -2184,9 +2188,11 @@ bool SwitchDeployService::start(const std::string& taskId,
     if (!loadLayout(taskId, rules, manual, error)) return false;
     const auto task = manager_.snapshot(taskId);
     const bool autoArmed = autoCopyArmed(taskId);
-    const bool portAutoStart = autoArmed && (task && task->mode == TransferMode::PortInstall && !manual);
-    if (!manualApproved && !portAutoStart &&
-        ((task && task->mode == TransferMode::PortInstall) || manual)) {
+    const bool installApproved = autoArmed || (task && std::find(
+        task->fileSelection.begin(), task->fileSelection.end(),
+        static_cast<uint8_t>(FileAction::Install)) != task->fileSelection.end());
+    if (!manualApproved &&
+        (((task && task->mode == TransferMode::PortInstall) && !installApproved) || manual)) {
         error = "This port waits for installation from the web panel.";
         clearInspecting(taskId);
         return false;
@@ -2280,8 +2286,10 @@ void SwitchDeployService::run(DownloadManager::ExternalDeployLease lease,
     std::vector<std::string> receiptTitleIds;
     {
         std::set<std::string> seen;
+        const bool explicitInstall = std::any_of(inventory.files.begin(), inventory.files.end(),
+            [](const TaskFileInfo& file) { return file.action == TaskFileAction::Install; });
         for (const TaskFileInfo& file : inventory.files)
-            if (file.package)
+            if (file.package && (!explicitInstall || file.action == TaskFileAction::Install))
                 for (const std::string& id : titleIdsInPath(file.logicalPath))
                     if (seen.insert(id).second)
                         receiptTitleIds.push_back(id);
@@ -2911,6 +2919,11 @@ void SwitchDeployService::clearInspecting(const std::string& taskId) {
             }
         }
         const bool markerArmed = autoCopyArmed(taskId);
+        // Only explicit Install actions or armed auto-copy authorize unattended deployment.
+        if (task->mode == TransferMode::PortInstall && !markerArmed &&
+            std::find(task->fileSelection.begin(), task->fileSelection.end(),
+                      static_cast<uint8_t>(FileAction::Install)) == task->fileSelection.end())
+            return false;
         PortLayoutRules rules;
         bool manualLayout = false;
         std::string layoutError;

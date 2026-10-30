@@ -187,6 +187,8 @@ InstallSpaceEstimate estimateInstallSpace(
 
     bool streamedPackage = false;
     bool unknownCompressedPackage = false;
+    const bool explicitInstall = std::find(fileActions.begin(), fileActions.end(),
+        static_cast<uint8_t>(FileAction::Install)) != fileActions.end();
     for (size_t i = 0; i < count; ++i) {
         const TorrentPreview::File& file = preview.files[i];
         uint8_t action = useSelection
@@ -204,7 +206,8 @@ InstallSpaceEstimate estimateInstallSpace(
         const bool packageInstall = file.package &&
             ((mode == TransferMode::StreamInstall &&
               action == static_cast<uint8_t>(FileAction::Install)) ||
-             mode == TransferMode::PortInstall);
+             (mode == TransferMode::PortInstall &&
+              (!explicitInstall || action == static_cast<uint8_t>(FileAction::Install))));
         if (packageInstall) {
             ++result.packageFiles;
             streamedPackage = true;

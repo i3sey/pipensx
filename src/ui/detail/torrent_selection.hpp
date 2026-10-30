@@ -50,7 +50,7 @@ inline std::string fileKindLabel(const TorrentSelectionEntry& entry) {
     if (!entry.package) {
         if (entry.cartridge)
             return tr("pipensx/torrent/kind_cartridge");
-        if (entry.installable || extraAcceptsInstallAction(entry.path))
+        if (entry.installable)
             return tr("pipensx/torrent/kind_extra");
         return tr("pipensx/torrent/kind_other");
     }
@@ -310,18 +310,21 @@ public:
         thread_->setDepth(group.depth);
         uint64_t bytes = 0;
         bool allInstall = true, allDownload = true, allSkip = true;
+        bool anyInstallable = false;
         for (size_t index : group.indices) {
             if (index >= entries.size())
                 continue;
             bytes += entries[index].length;
             const FileAction action = entries[index].action;
-            if (action != FileAction::Install)
+            anyInstallable |= entries[index].installable;
+            if (action != (entries[index].installable ? FileAction::Install : FileAction::Download))
                 allInstall = false;
             if (action != FileAction::Download)
                 allDownload = false;
             if (action != FileAction::Skip)
                 allSkip = false;
         }
+        allInstall = allInstall && anyInstallable;
         icon_->setKind(allInstall ? ActionIconKind::Install
                                   : allDownload ? ActionIconKind::Download
                                                 : ActionIconKind::Skip);
@@ -395,7 +398,7 @@ public:
     void setAll(bool selected) {
         for (auto& entry : entries_) {
             entry.action = selected
-                ? (entry.package ? FileAction::Install : FileAction::Download)
+                ? (entry.installable ? FileAction::Install : FileAction::Download)
                 : FileAction::Skip;
         }
     }
@@ -469,6 +472,13 @@ public:
             if (entry.action == FileAction::Download)
                 ++count;
         return count;
+    }
+
+    size_t packageInstallCount() const {
+        return static_cast<size_t>(std::count_if(entries_.begin(), entries_.end(),
+            [](const TorrentSelectionEntry& entry) {
+                return entry.package && entry.action == FileAction::Install;
+            }));
     }
 
     std::vector<uint8_t> fileActions() const {
@@ -802,6 +812,7 @@ public:
         }
 
         std::vector<TorrentSelectionEntry> entries;
+        const auto installable = portInstallableFiles(preview_);
         entries.reserve(preview_.files.size());
         for (size_t i = 0; i < preview_.files.size(); ++i) {
             const auto& file = preview_.files[i];
@@ -811,7 +822,7 @@ public:
             entry.package = file.package;
             entry.compressed = file.compressed;
             entry.cartridge = file.cartridge;
-            entry.installable = isTorrentFileInstallable(preview_, i);
+            entry.installable = installable[i];
             if (!existingSelection.empty()) {
                 entry.action = static_cast<FileAction>(existingSelection[i]);
             } else if (!portDefaults.empty()) {
@@ -1010,10 +1021,11 @@ public:
     void refreshSummary() {
         refreshConflicts();
         size_t selected = dataSource_->selectedCount();
-        size_t installs = dataSource_->installCount();
+        const size_t installFiles = dataSource_->installCount();
+        size_t installs = dataSource_->packageInstallCount();
         size_t downloads = dataSource_->downloadCount();
         std::vector<uint8_t> actions = dataSource_->fileActions();
-        TransferMode mode = installs > 0
+        TransferMode mode = installFiles > 0
             ? TransferMode::StreamInstall
             : TransferMode::DownloadOnly;
         size_t portPackages = 0;
@@ -1023,10 +1035,7 @@ public:
             downloads = 0;
             for (size_t i = 0; i < actions.size() &&
                                i < preview_.files.size(); ++i) {
-                if (preview_.files[i].package &&
-                    actions[i] != static_cast<uint8_t>(FileAction::Skip)) {
-                    actions[i] = static_cast<uint8_t>(FileAction::Download);
-                } else if (actions[i] ==
+                if (actions[i] ==
                            static_cast<uint8_t>(FileAction::Download)) {
                     ++downloads;
                 }
@@ -1043,8 +1052,8 @@ public:
         // summary stays on counts.
         std::string text = tr("pipensx/torrent/summary", selected,
                               preview_.files.size());
-        if (installs > 0) {
-            text += tr("pipensx/torrent/summary_install", installs);
+        if (installFiles > 0) {
+            text += tr("pipensx/torrent/summary_install", installFiles);
             if (downloads > 0)
                 text += tr("pipensx/torrent/summary_download", downloads);
         } else if (downloads > 0) {
@@ -1067,12 +1076,13 @@ public:
             meter_->setUnavailable();
 
         const std::string destination =
-            installDestinationLabel(manager_->installTarget());
+            installDestinationLabel(installs > 0 ? manager_->installTarget()
+                : pipensx::install::InstallStorageTarget::SdCard);
         if (selected == 0) {
             installSelected_->setText(tr("pipensx/common/continue"));
-        } else if (installs > 0) {
+        } else if (installFiles > 0) {
             installSelected_->setText(tr(
-                "pipensx/torrent/cta_install", installs, destination,
+                "pipensx/torrent/cta_install", installFiles, destination,
                 formatBytes(estimate.requiredBytes)));
         } else {
             installSelected_->setText(tr(
@@ -1111,19 +1121,14 @@ public:
             return;
         }
 
-        size_t installs = dataSource_->installCount();
-        TransferMode mode = installs > 0
+        size_t installs = dataSource_->packageInstallCount();
+        TransferMode mode = dataSource_->installCount() > 0
             ? TransferMode::StreamInstall
             : TransferMode::DownloadOnly;
         size_t portPackages = 0;
         if (selectedPortTransaction(actions, portPackages)) {
             mode = TransferMode::PortInstall;
             installs = portPackages;
-            for (size_t i = 0; i < actions.size() &&
-                               i < preview_.files.size(); ++i)
-                if (preview_.files[i].package &&
-                    actions[i] != static_cast<uint8_t>(FileAction::Skip))
-                    actions[i] = static_cast<uint8_t>(FileAction::Download);
         }
         const auto estimate = pipensx::estimateInstallSpace(preview_, actions,
                                                             mode);
@@ -1187,18 +1192,13 @@ public:
         if (selectedPortTransaction(actions, portPackages)) {
             mode = TransferMode::PortInstall;
             installs = portPackages;
-            for (size_t i = 0; i < actions.size() &&
-                               i < preview_.files.size(); ++i)
-                if (preview_.files[i].package &&
-                    actions[i] != static_cast<uint8_t>(FileAction::Skip))
-                    actions[i] = static_cast<uint8_t>(FileAction::Download);
         }
         std::string id;
         std::string error;
         bool imported;
         if (debridImport_.debridId.empty()) {
             imported = manager_->importTorrentActions(path_, actions, id, error,
-                                                       initialPeers_);
+                                                       initialPeers_, mode);
         } else {
             DebridImport import = debridImport_;
             import.mode = mode;
@@ -1224,7 +1224,9 @@ public:
         finished_ = true;
         const std::string destination =
             installDestinationLabel(manager_->installTarget());
-        brls::Application::notify(mode == TransferMode::StreamInstall
+        brls::Application::notify(mode == TransferMode::PortInstall
+            ? tr("pipensx/port_install/queued")
+            : mode == TransferMode::StreamInstall
             ? tr("pipensx/torrent/added_installing", destination)
             : tr("pipensx/torrent/added"));
         brls::Application::popActivity();
