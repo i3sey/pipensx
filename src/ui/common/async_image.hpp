@@ -96,6 +96,14 @@ public:
         flushDeferred();
         if (this->texture == 0)
             return;
+        if (artworkFadeStartedUs_ != 0) {
+            const float t = std::min(1.0f,
+                static_cast<float>(now_us() - artworkFadeStartedUs_) / 180000.0f);
+            // A quiet reveal over the existing placeholder; layout stays fixed.
+            setAlpha(std::max(0.001f, t * (2.0f - t)));
+            if (t >= 1.0f)
+                artworkFadeStartedUs_ = 0;
+        }
         if (this->scalingType == brls::ImageScalingType::FIT) {
             float coordX = x + this->imageX;
             float coordY = y + this->imageY;
@@ -113,6 +121,8 @@ public:
 
     void resetArtwork() {
         deferred_.reset();
+        artworkFadeStartedUs_ = 0;
+        setAlpha(1.0f);
         clear();
     }
 
@@ -198,7 +208,12 @@ private:
             return false;
         const uint64_t startedUs = now_us();
         NVGcontext* vg = brls::Application::getNVGContext();
+        const bool firstArtwork = this->texture == 0;
         innerSetImage(nvgCreateImageRGBA(vg, width, height, 0, pixels));
+        if (firstArtwork && this->texture != 0) {
+            artworkFadeStartedUs_ = now_us();
+            setAlpha(0.001f);
+        }
         invalidateImageBounds();
         const uint64_t durationUs = now_us() - startedUs;
         budget.recordUpload(frameNumber, bytes, durationUs);
@@ -252,6 +267,7 @@ private:
             deferred_.reset();
     }
 
+    uint64_t artworkFadeStartedUs_ = 0;
     std::shared_ptr<AsyncImageLifetime> lifetime_;
     std::optional<DeferredRgba> deferred_;
 };

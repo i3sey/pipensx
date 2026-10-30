@@ -157,7 +157,8 @@
   "detail": {
     "install_size": "Объём установки",
     "install_hint": "Установка добавит игру на консоль.",
-    "installed_hint": "Установлена на этой консоли. Обновления и DLC можно ставить.",
+    "install_extras": "Обновления / DLC",
+    "installed_hint": "Можно установить обновления и DLC.",
     "screenshots": "Скриншоты",
     "screenshot_preview": "Качество превью · {}×{}",
     "screenshot_loading": "Загрузка скриншота…",

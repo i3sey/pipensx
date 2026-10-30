@@ -33,6 +33,10 @@
 #include "ui/common/async_image.hpp"
 #include "ui/common/busy_pulse.hpp"
 #include "ui/common/storage_meter.hpp"
+#include "ui/common/detail_frame.hpp"
+#include "ui/common/description_text.hpp"
+#include "ui/common/detail_title.hpp"
+#include "ui/common/stick_scrolling_frame.hpp"
 #include "ui/common/ui_helpers.hpp"
 #include "ui/detail/port_install_dialog.hpp"
 #include "ui/detail/screenshot_viewer.hpp"
@@ -66,7 +70,7 @@ class InstallButton : public brls::Button {
             nvgIntersectScissor(vg, x + doneWidth, y, width - doneWidth, height);
             nvgBeginPath(vg);
             nvgRoundedRect(vg, x, y, width, height, radius);
-            nvgFillColor(vg, theme::panel());
+            nvgFillColor(vg, a(theme::panel()));
             nvgFill(vg);
             nvgRestore(vg);
         }
@@ -143,8 +147,8 @@ public:
         installBytes_ = entry_.size;
         scheduleSizeMeterRefresh();
 
-        frame_ = new brls::AppletFrame(content);
-        frame_->setTitle(presentation_.title);
+        frame_ = new DetailFrame(content);
+        frame_->setTitle(detailPageTitle(presentation_.title));
     }
 
     ~GameDetailActivity() override {
@@ -203,11 +207,9 @@ public:
     }
 
 private:
-    static constexpr float kLeftColumnWidth = 320.0f;
-    // coverUrl is the metadata banner for nearly every real entry, and an
-    // eShop banner is 16:9 — at 320 wide it already draws 180 tall under FIT,
-    // so anything past 200 was letterbox the column could not afford.
-    static constexpr float kCoverHeight = 200.0f;
+    static constexpr float kLeftColumnWidth = 260.0f;
+    // Leave room for a two-line storage header and a separate status area.
+    static constexpr float kCoverHeight = 210.0f;
 
     // Left column: cover, full-width Install / Select files, size, status (F3).
     //
@@ -219,6 +221,7 @@ private:
     void buildLeftColumn(brls::Box* content) {
         auto* left = new brls::Box(brls::Axis::COLUMN);
         left->setWidth(kLeftColumnWidth);
+        left->setShrink(0);
         left->setMarginRight(32);
         // Backstop for the budget above: statusLabel_ carries torrent errors and
         // resolve progress, both of which can wrap to an unpredictable number of
@@ -232,8 +235,9 @@ private:
             auto* plate = new brls::Box();
             plate->setWidth(kLeftColumnWidth);
             plate->setHeight(kCoverHeight);
+            plate->setShrink(0);
             plate->setCornerRadius(theme::kRadiusSmall);
-            plate->setBackgroundColor(theme::surface());
+            plate->setBackgroundColor(brls::TRANSPARENT);
             auto* cover = new AsyncRgbaImage();
             cover->setWidth(kLeftColumnWidth);
             cover->setHeight(kCoverHeight);
@@ -258,6 +262,7 @@ private:
         primary_->setStyle(&brls::BUTTONSTYLE_PRIMARY);
         primary_->setFontSize(theme::kFontBody);
         primary_->setHeight(64);
+        primary_->setShrink(0);
         primary_->setMarginTop(16);
         primary_->setText(tr("pipensx/common/install"));
         primary_->registerClickAction([this](brls::View*) {
@@ -266,21 +271,14 @@ private:
         });
         left->addView(primary_);
 
-        installContract_ = new brls::Label();
-        installContract_->setFontSize(theme::kFontCaption);
-        installContract_->setTextColor(theme::textTertiary());
-        installContract_->setMarginTop(6);
-        installContract_->setSingleLine(false);
-        installContract_->setText(entry_.isAutorun()
-            ? tr("pipensx/autorun/install_contract")
-            : tr("pipensx/detail/smart_install_contract"));
-        left->addView(installContract_);
 
         // File selection and the wishlist toggle share one row: a fourth full-width
         // button does not fit the column budget, and a square star needs no
         // translation (Russian "В избранном" would not fit it anyway).
         auto* actions = new brls::Box(brls::Axis::ROW);
         actions->setMarginTop(12);
+        actions->setHeight(56);
+        actions->setShrink(0);
 
         secondary_ = new brls::Button();
         secondary_->setStyle(&brls::BUTTONSTYLE_DEFAULT);
@@ -314,19 +312,28 @@ private:
 
         // How much of the card this release eats. Seeded from the catalog size
         // and refined to the exact figure once the torrent metadata resolves.
-        sizeMeter_ = new StorageMeter();
+        sizeMeter_ = new StorageMeter(true);
         sizeMeter_->setHeader(storageMeterHeader(
             settings_ ? installTargetFor(settings_->get().installLocation)
                       : manager_->installTarget()));
-        sizeMeter_->setMarginTop(20);
+        sizeMeter_->setMarginTop(16);
+        sizeMeter_->setShrink(0);
         left->addView(sizeMeter_);
 
         statusLabel_ = new brls::Label();
         statusLabel_->setFontSize(theme::kFontCaption);
-        statusLabel_->setMarginTop(8);
+        statusLabel_->setSingleLine(false);
+        statusLabel_->setShrink(0);
         statusLabel_->setTextColor(theme::accent());
-        statusLabel_->setText(tr("pipensx/detail/install_hint"));
-        left->addView(statusLabel_);
+        statusLabel_->setText("");
+        // Keep long errors/mod warnings readable without compressing the meter.
+        auto* statusScroll = new brls::ScrollingFrame();
+        statusScroll->setScrollingBehavior(brls::ScrollingBehavior::CENTERED);
+        statusScroll->setHeight(48);
+        statusScroll->setShrink(0);
+        statusScroll->setMarginTop(8);
+        statusScroll->setContentView(statusLabel_);
+        left->addView(statusScroll);
 
         content->addView(left);
     }
@@ -335,7 +342,7 @@ private:
     // title already lives in the AppletFrame header, so do not repeat it here.
     void buildRightColumn(brls::Box* content) {
         auto* right = new brls::Box(brls::Axis::COLUMN);
-        right->setPadding(0, 12, 24, 0);
+        right->setPadding(0, 32, 24, 0);
 
         buildFactsTable(right);
 
@@ -411,16 +418,21 @@ private:
             right->addView(warning);
         }
 
-        // Raw catalog release title (moved off the list per F2).
-        auto* release = new brls::Label();
-        release->setFontSize(theme::kFontCaption);
-        release->setMarginTop(16);
-        release->setTextColor(theme::textTertiary());
-        release->setText(tr("pipensx/detail/release_line", entry_.title));
-        right->addView(release);
+        // Preserve source details only when they differ from the page title.
+        if (entry_.title != detailPageTitle(presentation_.title)) {
+            auto* release = new brls::Label();
+            release->setFontSize(theme::kFontCaption);
+            release->setMarginTop(16);
+            release->setTextColor(theme::textTertiary());
+            release->setSingleLine(false);
+            release->setText(tr("pipensx/detail/release_line", entry_.title));
+            right->addView(release);
+        }
 
-        auto* scroll = new brls::ScrollingFrame();
+        auto* scroll = new StickScrollingFrame();
         scroll->setGrow(1);
+        scroll->setShrink(1);
+        scroll->setMinWidth(0);
         scroll->setContentView(right);
         content->addView(scroll);
     }
@@ -536,14 +548,21 @@ private:
         auto* key = new brls::Label();
         key->setFontSize(theme::kFontCaption);
         key->setTextColor(theme::textTertiary());
-        key->setWidth(160);
+        key->setWidth(205);
+        key->setMarginRight(20);
+        key->setSingleLine(false);
+        key->setShrink(0);
         key->setText(name);
         row->addView(key);
         auto* val = new brls::Label();
         val->setFontSize(theme::kFontCaption);
         val->setTextColor(theme::textSecondary());
         val->setGrow(1);
-        val->setText(value);
+        val->setShrink(1);
+        val->setMinWidth(0);
+        val->setSingleLine(false);
+        val->setText(catalogLower(value) == "unknown"
+                         ? tr("pipensx/common/unknown") : value);
         row->addView(val);
         table->addView(row);
     }
@@ -554,6 +573,7 @@ private:
         if (text.empty() && entry_.autorun && !entry_.autorun->notes.empty()) {
             text = entry_.autorun->notes;
         }
+        text = compactDescription(text);
         if (text.empty()) {
             auto* missing = new brls::Label();
             missing->setFontSize(theme::kFontSmall);
@@ -564,6 +584,7 @@ private:
         }
         auto* desc = new brls::Label();
         desc->setFontSize(theme::kFontSmall);
+        desc->setSingleLine(false);
         desc->setMarginTop(24);
         bool truncated = text.size() > 900;
         desc->setText(truncated ? shortDescription(text) : text);
@@ -832,8 +853,6 @@ private:
             secondary_->setState((deploying || task->status == DownloadStatus::Committing)
                                      ? brls::ButtonState::DISABLED
                                      : brls::ButtonState::ENABLED);
-            if (installContract_)
-                installContract_->setVisibility(brls::Visibility::GONE);
             // B6: an install/update failure used to leave only the raw
             // backend line; append the actionable hint (mods / firmware /
             // sigpatches) so a post-update "won't boot" names the fix.
@@ -846,13 +865,12 @@ private:
                 setTextIfChanged(statusLabel_,
                                  tr("pipensx/downloads/status_completed_saved"));
         } else {
-            setTextIfChanged(primary_, tr("pipensx/common/install"));
+            setTextIfChanged(primary_, tr(installed_ && installed_->contains(titleId_)
+                ? "pipensx/detail/install_extras" : "pipensx/common/install"));
             primary_->setProgress(-1.0f);
             primary_->setState(brls::ButtonState::ENABLED);
             setTextIfChanged(secondary_, tr("pipensx/torrent/frame_title"));
             secondary_->setState(brls::ButtonState::ENABLED);
-            if (installContract_)
-                installContract_->setVisibility(brls::Visibility::VISIBLE);
             if (!operationMessage_.empty())
                 setTextIfChanged(statusLabel_, operationMessage_);
             else if (installed_ && installed_->contains(titleId_)) {
@@ -878,8 +896,7 @@ private:
                                      tr("pipensx/detail/installed_hint"));
                 }
             } else
-                setTextIfChanged(statusLabel_,
-                                 tr("pipensx/detail/install_hint"));
+                setTextIfChanged(statusLabel_, "");
         }
     }
 
@@ -1738,7 +1755,6 @@ private:
     std::shared_ptr<std::atomic<bool>> cancelled_;
     brls::AppletFrame* frame_ = nullptr;
     InstallButton* primary_ = nullptr;
-    brls::Label* installContract_ = nullptr;
     brls::Button* secondary_ = nullptr;
     brls::Button* favorite_ = nullptr;
     StorageMeter* sizeMeter_ = nullptr;

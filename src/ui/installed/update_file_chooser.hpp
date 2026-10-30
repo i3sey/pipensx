@@ -9,6 +9,7 @@
 #include <vector>
 
 #include <borealis.hpp>
+#include "ui/common/smooth_recycler.hpp"
 
 #include "app/download_manager.hpp"
 #include "app/install_space.hpp"
@@ -77,7 +78,7 @@ public:
         meter_->setMarginBottom(10);
         content->addView(meter_);
 
-        recycler_ = new brls::RecyclerFrame();
+        recycler_ = new SmoothRecyclerFrame();
         recycler_->setGrow(1);
         recycler_->setPadding(6, 0, 6, 0);
         recycler_->estimatedRowHeight = 82;

@@ -8,6 +8,7 @@
 #include <vector>
 
 #include <borealis.hpp>
+#include "ui/common/smooth_recycler.hpp"
 
 #include "app/app_settings.hpp"
 #include "app/download_list_refresh.hpp"
@@ -69,7 +70,7 @@ public:
         summary_->setVisibility(brls::Visibility::GONE);
         addView(summary_);
 
-        recycler_ = new brls::RecyclerFrame();
+        recycler_ = new SmoothRecyclerFrame();
         recycler_->setGrow(1);
         recycler_->setPadding(6, 32, 6, 32);
         recycler_->estimatedRowHeight = 108;

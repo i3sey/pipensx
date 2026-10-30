@@ -157,7 +157,8 @@
   "detail": {
     "install_size": "Tamaño de instalación",
     "install_hint": "Instalar añade este juego a tu consola.",
-    "installed_hint": "Instalado en esta consola. Aún puedes instalar actualizaciones o DLC.",
+    "install_extras": "Actualizar / DLC",
+    "installed_hint": "Se pueden instalar actualizaciones y DLC.",
     "screenshots": "Capturas de pantalla",
     "screenshot_preview": "Calidad de vista previa · {}×{}",
     "screenshot_loading": "Cargando captura…",

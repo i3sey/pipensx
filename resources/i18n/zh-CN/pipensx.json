@@ -157,7 +157,8 @@
   "detail": {
     "install_size": "安装大小",
     "install_hint": "安装会将此游戏添加到你的主机。",
-    "installed_hint": "已安装在本机。你仍可安装更新或 DLC。",
+    "install_extras": "更新 / DLC",
+    "installed_hint": "可以安装更新和 DLC。",
     "screenshots": "截图",
     "screenshot_preview": "预览质量 · {}×{}",
     "screenshot_loading": "正在加载截图…",

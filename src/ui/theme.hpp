@@ -81,7 +81,7 @@ inline const Token kTokens[] = {
     // and the app background at rgb(45,45,45), so the empty slot goes well
     // below both and the used chunk well above.
     {"pipensx/meter_track", nvgRGB(205, 207, 213), nvgRGB(24, 24, 27)},
-    {"pipensx/meter_used", nvgRGB(0, 195, 227), nvgRGB(0, 195, 227)},   // Joy-Con Neon Blue #00C3E3
+    {"pipensx/meter_used", nvgRGB(0, 195, 227), nvgRGB(0, 195, 227)}, // Switch turquoise.
     {"pipensx/meter_border", nvgRGBA(0, 0, 0, 50), nvgRGBA(255, 255, 255, 55)},
 
     {"pipensx/graph_bg", nvgRGBA(208, 210, 216, 120), nvgRGBA(30, 31, 36, 120)},

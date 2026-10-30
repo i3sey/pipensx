@@ -13,6 +13,7 @@
 #include <vector>
 
 #include <borealis.hpp>
+#include "ui/common/smooth_recycler.hpp"
 
 #include "app/app_settings.hpp"
 #include "app/download_manager.hpp"
@@ -84,7 +85,7 @@ public:
     FilePickerActivity(DownloadManager* manager, AppSettings* settings)
         : manager_(manager), settings_(settings), currentPath_("sdmc:/"),
           alive_(std::make_shared<std::atomic<bool>>(true)) {
-        recycler_ = new brls::RecyclerFrame();
+        recycler_ = new SmoothRecyclerFrame();
         recycler_->setPadding(8, 32, 8, 32);
         recycler_->estimatedRowHeight = 64;
         recycler_->registerCell("File", [] { return new FileCell(); });

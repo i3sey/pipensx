@@ -13,6 +13,7 @@
 #include <vector>
 
 #include <borealis.hpp>
+#include "ui/common/smooth_recycler.hpp"
 
 #include "app/app_settings.hpp"
 #include "app/catalog_presentation.hpp"
@@ -203,7 +204,7 @@ public:
           onSourcesRefreshed_(std::move(onSourcesRefreshed)), section_(section),
           freshnessBadge_(new CatalogFreshnessBadge()),
           alive_(std::make_shared<std::atomic<bool>>(true)) {
-        recycler_ = new brls::RecyclerFrame();
+        recycler_ = new SmoothRecyclerFrame();
         recycler_->setGrow(1);
         recycler_->setPadding(6, 28, 6, 28);
         recycler_->estimatedRowHeight = grid::kRowHeight;
@@ -1101,7 +1102,7 @@ private:
         title->setFontSize(theme::kFontBody);
         title->setMarginBottom(12);
         panel->addView(title);
-        auto* recycler = new brls::RecyclerFrame();
+        auto* recycler = new SmoothRecyclerFrame();
         recycler->setGrow(1);
         recycler->estimatedRowHeight =
             brls::Application::getStyle()["brls/dropdown/listItemHeight"];

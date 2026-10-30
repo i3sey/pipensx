@@ -88,7 +88,7 @@ private:
             const float radius = std::min(4.0f, height / 2.0f);
             nvgBeginPath(vg);
             nvgRoundedRect(vg, x, y, width, height, radius);
-            nvgFillColor(vg, theme::meterTrack());
+            nvgFillColor(vg, a(theme::meterTrack()));
             nvgFill(vg);
 
             if (total_ > 0) {
@@ -107,7 +107,7 @@ private:
                     nvgBeginPath(vg);
                     nvgRoundedRectVarying(vg, x, y, usedW, height, radius,
                                           right, right, radius);
-                    nvgFillColor(vg, theme::meterUsed());
+                    nvgFillColor(vg, a(theme::meterUsed()));
                     nvgFill(vg);
                 }
             }
@@ -116,7 +116,7 @@ private:
             nvgRoundedRect(vg, x + 0.5f, y + 0.5f, width - 1.0f, height - 1.0f,
                            radius);
             nvgStrokeWidth(vg, 1.0f);
-            nvgStrokeColor(vg, theme::meterBorder());
+            nvgStrokeColor(vg, a(theme::meterBorder()));
             nvgStroke(vg);
         }
 

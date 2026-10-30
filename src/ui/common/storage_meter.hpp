@@ -30,38 +30,47 @@ namespace pipensx::ui {
 
 class StorageMeter : public brls::Box {
 public:
-    StorageMeter() : brls::Box(brls::Axis::COLUMN) {
+    explicit StorageMeter(bool stackedHeader = false)
+        : brls::Box(brls::Axis::COLUMN) {
         setFocusable(false);
         // Hard guarantee against overflow: View::frame() scissors children to
         // this rect when clipsToBounds is set.
         setClipsToBounds(true);
 
-        head_ = new brls::Box(brls::Axis::ROW);
+        head_ = new brls::Box(stackedHeader ? brls::Axis::COLUMN
+                                           : brls::Axis::ROW);
         head_->setFocusable(false);
+        head_->setShrink(0);
         head_->setJustifyContent(brls::JustifyContent::SPACE_BETWEEN);
-        head_->setAlignItems(brls::AlignItems::CENTER);
+        head_->setAlignItems(stackedHeader ? brls::AlignItems::FLEX_START
+                                           : brls::AlignItems::CENTER);
         head_->setMarginBottom(6);
         head_->setVisibility(brls::Visibility::GONE);
 
         title_ = new brls::Label();
         title_->setSingleLine(true);
+        title_->setShrink(0);
         title_->setFontSize(theme::kFontCaption);
         title_->setTextColor(theme::textTertiary());
         head_->addView(title_);
 
         value_ = new brls::Label();
         value_->setSingleLine(true);
+        value_->setShrink(0);
         value_->setFontSize(theme::kFontCaption);
         value_->setTextColor(theme::textPrimary());
-        value_->setMarginLeft(10);
+        value_->setMarginLeft(stackedHeader ? 0 : 10);
+        value_->setMarginTop(stackedHeader ? 4 : 0);
         head_->addView(value_);
         addView(head_);
 
         bar_ = new MeterBar();
+        bar_->setShrink(0);
         addView(bar_);
 
         foot_ = new brls::Box(brls::Axis::ROW);
         foot_->setFocusable(false);
+        foot_->setShrink(0);
         foot_->setAlignItems(brls::AlignItems::CENTER);
         foot_->setMarginTop(6);
 
@@ -89,7 +98,7 @@ public:
     void setHeader(const std::string& title) {
         headerTitle_ = title;
         hasHeader_ = !title.empty();
-        title_->setText(title);
+        refreshHeader();
         applyVisibility();
     }
 
@@ -110,7 +119,7 @@ public:
     void setUnavailable() {
         bar_->setData(0, 0, 0, false);
         installDot_->setInsufficient(false);
-        title_->setText(headerTitle_);  // drop any "(est.)" qualifier
+        refreshHeader();
         value_->setText("");
         caption_->setText(tr("pipensx/storage/unavailable"));
     }
@@ -123,6 +132,7 @@ public:
         }
         bar_->setData(total, free, 0, false);
         installDot_->setInsufficient(false);
+        refreshHeader();
         value_->setText(formatBytesShort(free));
         caption_->setText(tr("pipensx/storage/free", formatBytesShort(free)));
     }
@@ -137,13 +147,10 @@ public:
         }
         bar_->setData(total, free, installBytes, insufficient);
         installDot_->setInsufficient(insufficient);
-        // The console font draws '~' as a raised accent, so the "still a guess"
-        // marker lives in the header title rather than in front of the number.
-        title_->setText(exact ? headerTitle_
-                              : tr("pipensx/storage/estimate_suffix",
-                                   headerTitle_));
         value_->setText(installBytes == 0 ? tr("pipensx/common/unknown")
-                                          : formatBytes(installBytes));
+            : tr("pipensx/storage/install_bytes",
+                 (exact ? std::string() : std::string("≈")) +
+                     formatBytes(installBytes)));
         if (insufficient) {
             const uint64_t shortfall =
                 installBytes > free ? installBytes - free : 0;
@@ -168,6 +175,7 @@ public:
         }
         bar_->setData(total, free, installBytes, insufficient);
         installDot_->setInsufficient(insufficient);
+        refreshHeader();
         value_->setText(tr("pipensx/storage/install_bytes",
                            formatBytes(installBytes)));
         const uint64_t used = total >= free ? total - free : 0;
@@ -209,14 +217,14 @@ private:
             nvgRoundedRect(vg, x, y, width, height, 3.0f);
             switch (kind_) {
                 case Kind::Used:
-                    nvgFillColor(vg, theme::meterUsed());
+                    nvgFillColor(vg, a(theme::meterUsed()));
                     break;
                 case Kind::Install:
-                    nvgFillColor(vg, insufficient_ ? theme::error()
-                                                   : theme::accent());
+                    nvgFillColor(vg, a(insufficient_ ? theme::error()
+                                                   : theme::accent()));
                     break;
                 case Kind::Free:
-                    nvgFillColor(vg, theme::meterTrack());
+                    nvgFillColor(vg, a(theme::meterTrack()));
                     break;
             }
             nvgFill(vg);
@@ -225,7 +233,7 @@ private:
                 nvgRoundedRect(vg, x + 0.5f, y + 0.5f, width - 1.0f,
                                height - 1.0f, 3.0f);
                 nvgStrokeWidth(vg, 1.0f);
-                nvgStrokeColor(vg, theme::meterBorder());
+                nvgStrokeColor(vg, a(theme::meterBorder()));
                 nvgStroke(vg);
             }
         }
@@ -265,7 +273,7 @@ private:
             // Empty slot = remaining free space / unknown capacity.
             nvgBeginPath(vg);
             nvgRoundedRect(vg, x, y, width, height, radius);
-            nvgFillColor(vg, theme::meterTrack());
+            nvgFillColor(vg, a(theme::meterTrack()));
             nvgFill(vg);
 
             float usedW = 0.0f;
@@ -303,7 +311,7 @@ private:
                     const bool tail =
                         installW <= 0.0f && usedW >= width - 0.5f;
                     segmentPath(vg, x, y, usedW, height, radius, true, tail);
-                    nvgFillColor(vg, theme::meterUsed());
+                    nvgFillColor(vg, a(theme::meterUsed()));
                     nvgFill(vg);
                 }
                 if (installW > 0.0f) {
@@ -311,8 +319,8 @@ private:
                     const bool tail = usedW + installW >= width - 0.5f;
                     segmentPath(vg, x + usedW, y, installW, height, radius,
                                 head, tail);
-                    nvgFillColor(vg, insufficient_ ? theme::error()
-                                                   : theme::accent());
+                    nvgFillColor(vg, a(insufficient_ ? theme::error()
+                                                   : theme::accent()));
                     nvgFill(vg);
                 }
                 // Crisp boundary between the two filled chunks.
@@ -320,7 +328,7 @@ private:
                     nvgBeginPath(vg);
                     nvgRect(vg, x + usedW - kSeparator / 2.0f, y, kSeparator,
                             height);
-                    nvgFillColor(vg, theme::meterTrack());
+                    nvgFillColor(vg, a(theme::meterTrack()));
                     nvgFill(vg);
                 }
                 // Card capacity, when the bar had to be scaled past it. Skipped
@@ -328,7 +336,7 @@ private:
                 if (markerX > x + 3.0f && markerX < x + width - 3.0f) {
                     nvgBeginPath(vg);
                     nvgRect(vg, markerX - kMarker / 2.0f, y, kMarker, height);
-                    nvgFillColor(vg, theme::textPrimary());
+                    nvgFillColor(vg, a(theme::textPrimary()));
                     nvgFill(vg);
                 }
             }
@@ -342,7 +350,7 @@ private:
             nvgRoundedRect(vg, x + stroke / 2.0f, y + stroke / 2.0f,
                            width - stroke, height - stroke, radius);
             nvgStrokeWidth(vg, stroke);
-            nvgStrokeColor(vg, failing ? theme::error() : theme::meterBorder());
+            nvgStrokeColor(vg, a(failing ? theme::error() : theme::meterBorder()));
             nvgStroke(vg);
         }
 
@@ -392,6 +400,12 @@ private:
         label->setText(text);
         legend_->addView(label);
         return dot;
+    }
+
+    void refreshHeader() {
+        // Storage polling also calls setHeader(); keep unchanged text stable.
+        if (title_->getFullText() != headerTitle_)
+            title_->setText(headerTitle_);
     }
 
     void applyVisibility() {

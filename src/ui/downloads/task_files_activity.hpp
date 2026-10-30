@@ -8,6 +8,7 @@
 #include <vector>
 
 #include <borealis.hpp>
+#include "ui/common/smooth_recycler.hpp"
 
 #include "app/switch_deploy.hpp"
 #include "ui/common/ui_helpers.hpp"
@@ -257,7 +258,7 @@ public:
         filters->setMarginBottom(8);
         content->addView(filters);
 
-        recycler_ = new brls::RecyclerFrame();
+        recycler_ = new SmoothRecyclerFrame();
         recycler_->setGrow(1);
         recycler_->estimatedRowHeight = 104;
         recycler_->registerCell("File", [] { return new TaskFileCell(); });

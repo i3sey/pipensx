@@ -157,7 +157,8 @@
   "detail": {
     "install_size": "설치 용량",
     "install_hint": "설치하면 이 게임이 본체에 추가됩니다.",
-    "installed_hint": "이 본체에 설치되어 있습니다. 업데이트나 DLC는 계속 설치할 수 있습니다.",
+    "install_extras": "업데이트 / DLC",
+    "installed_hint": "업데이트와 DLC를 설치할 수 있습니다.",
     "screenshots": "스크린샷",
     "screenshot_preview": "미리보기 화질 · {}×{}",
     "screenshot_loading": "스크린샷을 불러오는 중…",

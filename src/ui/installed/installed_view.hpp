@@ -7,6 +7,7 @@
 #include <vector>
 
 #include <borealis.hpp>
+#include "ui/common/smooth_recycler.hpp"
 
 #include "app/app_settings.hpp"
 #include "app/catalog_batch_installer.hpp"
@@ -380,7 +381,7 @@ public:
         status_->setTextColor(theme::textTertiary());
         addView(status_);
 
-        recycler_ = new brls::RecyclerFrame();
+        recycler_ = new SmoothRecyclerFrame();
         recycler_->setGrow(1);
         recycler_->setPadding(6, 32, 6, 32);
         recycler_->estimatedRowHeight = 92;
