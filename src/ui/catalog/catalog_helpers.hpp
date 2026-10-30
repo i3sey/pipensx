@@ -122,6 +122,54 @@ inline std::string playerFilterLabel(PlayerFilter filter) {
     return {};
 }
 
+inline std::string catalogGenreLabel(const std::string& genre) {
+    if (genre == catalog_genres::kAction)
+        return tr("pipensx/catalog/genre_action");
+    if (genre == catalog_genres::kAdventure)
+        return tr("pipensx/catalog/genre_adventure");
+    if (genre == catalog_genres::kArcade)
+        return tr("pipensx/catalog/genre_arcade");
+    if (genre == catalog_genres::kBoardCard)
+        return tr("pipensx/catalog/genre_board_card");
+    if (genre == catalog_genres::kFighting)
+        return tr("pipensx/catalog/genre_fighting");
+    if (genre == catalog_genres::kHorror)
+        return tr("pipensx/catalog/genre_horror");
+    if (genre == catalog_genres::kMetroidvania)
+        return tr("pipensx/catalog/genre_metroidvania");
+    if (genre == catalog_genres::kMultiplayer)
+        return tr("pipensx/catalog/genre_multiplayer");
+    if (genre == catalog_genres::kMusicRhythm)
+        return tr("pipensx/catalog/genre_music_rhythm");
+    if (genre == catalog_genres::kParty)
+        return tr("pipensx/catalog/genre_party");
+    if (genre == catalog_genres::kPlatformer)
+        return tr("pipensx/catalog/genre_platformer");
+    if (genre == catalog_genres::kPointClick)
+        return tr("pipensx/catalog/genre_point_click");
+    if (genre == catalog_genres::kPuzzle)
+        return tr("pipensx/catalog/genre_puzzle");
+    if (genre == catalog_genres::kRacing)
+        return tr("pipensx/catalog/genre_racing");
+    if (genre == catalog_genres::kRoguelike)
+        return tr("pipensx/catalog/genre_roguelike");
+    if (genre == catalog_genres::kRpg)
+        return tr("pipensx/catalog/genre_rpg");
+    if (genre == catalog_genres::kShooter)
+        return tr("pipensx/catalog/genre_shooter");
+    if (genre == catalog_genres::kSimulation)
+        return tr("pipensx/catalog/genre_simulation");
+    if (genre == catalog_genres::kSports)
+        return tr("pipensx/catalog/genre_sports");
+    if (genre == catalog_genres::kStrategy)
+        return tr("pipensx/catalog/genre_strategy");
+    if (genre == catalog_genres::kUtility)
+        return tr("pipensx/catalog/genre_utility");
+    if (genre == catalog_genres::kVisualNovel)
+        return tr("pipensx/catalog/genre_visual_novel");
+    return genre;
+}
+
 // Detail-page fact: "up to 4 - split screen, local co-op". Empty when the
 // index knows neither a player count nor a mode, so the row disappears.
 inline std::string playersFact(const GameMetadata* metadata) {    if (!metadata)

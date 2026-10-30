@@ -47,6 +47,10 @@ using pipensx::catalogEntryIsPort;
 using pipensx::catalogEntryInSection;
 using pipensx::catalogEntryHasMatchedTitle;
 using pipensx::catalogEntryMatchesPlayerFilter;
+namespace catalog_genres = pipensx::catalog_genres;
+using pipensx::catalogCanonicalizeGenreToken;
+using pipensx::catalogEntryGenres;
+using pipensx::catalogEntryMatchesGenreFilter;
 using pipensx::PlayerFilter;
 using pipensx::adoptCatalogRefresh;
 using pipensx::catalogRefreshInFlight;
@@ -2328,8 +2332,8 @@ void runLiveResolutionIfRequested() {
 // hosts.
 void testTrustedSourceAllowlist() {
     assert(defaultCatalogSourceUrl() ==
-           "https://raw.githubusercontent.com/Langegen/switch-games/refs/heads/main/"
-           "switch_games.json");
+           "https://raw.githubusercontent.com/Langegen/switch-game-collection/main/"
+           "RU_catalog.json");
     const std::string kDefault =
         "https://github.com/i3sey/pipensx-catalog/releases/latest/download/catalog.json";
     assert(CatalogService::isTrustedSource(defaultCatalogSourceUrl(),
@@ -2347,8 +2351,7 @@ void testTrustedSourceAllowlist() {
         kDefault));
 
     assert(!CatalogService::isTrustedSource(
-        "https://raw.githubusercontent.com/Langegen/switch-games/"
-        "refs/heads/main/switch_games.json",
+        "https://raw.githubusercontent.com/Langegen/switch-game-collection/main/RU_catalog.json",
         kDefault));
     assert(!CatalogService::isTrustedSource(
         "http://github.com/i3sey/pipensx-catalog/releases/latest/download/"
@@ -3102,8 +3105,119 @@ void testMetadataSharedIndexSurvivesAdopt() {
     rmdir(root.c_str());
 }
 
+void testCatalogGenreCanonicalization() {
+    CatalogEntry entry1;
+    entry1.genre = "3D Platformer, Action, Adventure, Homebrew";
+    std::vector<std::string> genres1 = catalogEntryGenres(entry1, nullptr);
+    assert((std::find(genres1.begin(), genres1.end(), catalog_genres::kAction) != genres1.end()));
+    assert((std::find(genres1.begin(), genres1.end(), catalog_genres::kAdventure) != genres1.end()));
+    assert((std::find(genres1.begin(), genres1.end(), catalog_genres::kPlatformer) != genres1.end()));
+    assert((std::find(genres1.begin(), genres1.end(), catalog_genres::kUtility) != genres1.end()));
+
+    // Synonyms and typos
+    CatalogEntry entry2;
+    entry2.genre = "Role-Playing, BeatEmUp, Simulator, Sport, Roguelite";
+    std::vector<std::string> genres2 = catalogEntryGenres(entry2, nullptr);
+    assert((std::find(genres2.begin(), genres2.end(), catalog_genres::kRpg) != genres2.end()));
+    assert((std::find(genres2.begin(), genres2.end(), catalog_genres::kFighting) != genres2.end()));
+    assert((std::find(genres2.begin(), genres2.end(), catalog_genres::kSimulation) != genres2.end()));
+    assert((std::find(genres2.begin(), genres2.end(), catalog_genres::kSports) != genres2.end()));
+    assert((std::find(genres2.begin(), genres2.end(), catalog_genres::kRoguelike) != genres2.end()));
+
+    CatalogEntry entryTypos;
+    entryTypos.genre = "Actionь, Platforer, Adventur, Rougelite";
+    std::vector<std::string> genresTypos = catalogEntryGenres(entryTypos, nullptr);
+    assert((std::find(genresTypos.begin(), genresTypos.end(), catalog_genres::kAction) != genresTypos.end()));
+    assert((std::find(genresTypos.begin(), genresTypos.end(), catalog_genres::kPlatformer) != genresTypos.end()));
+    assert((std::find(genresTypos.begin(), genresTypos.end(), catalog_genres::kAdventure) != genresTypos.end()));
+    assert((std::find(genresTypos.begin(), genresTypos.end(), catalog_genres::kRoguelike) != genresTypos.end()));
+
+    // Russian genre strings
+    CatalogEntry entryRu;
+    entryRu.genre = "экшн, приключения, ролевая игра, шутер, гонки";
+    std::vector<std::string> genresRu = catalogEntryGenres(entryRu, nullptr);
+    assert((std::find(genresRu.begin(), genresRu.end(), catalog_genres::kAction) != genresRu.end()));
+    assert((std::find(genresRu.begin(), genresRu.end(), catalog_genres::kAdventure) != genresRu.end()));
+    assert((std::find(genresRu.begin(), genresRu.end(), catalog_genres::kRpg) != genresRu.end()));
+    assert((std::find(genresRu.begin(), genresRu.end(), catalog_genres::kShooter) != genresRu.end()));
+    assert((std::find(genresRu.begin(), genresRu.end(), catalog_genres::kRacing) != genresRu.end()));
+
+    // Filter matching on composite string
+    std::unordered_set<std::string> filter = {catalog_genres::kAction};
+    assert(catalogEntryMatchesGenreFilter(entry1, nullptr, filter));
+    assert(!catalogEntryMatchesGenreFilter(entry2, nullptr, filter));
+    filter = {catalog_genres::kRpg};
+    assert(catalogEntryMatchesGenreFilter(entry2, nullptr, filter));
+}
+
+void testCatalogDiffIncrementalSync() {
+    std::vector<CatalogEntry> entries;
+    CatalogEntry e1;
+    e1.topicId = 100;
+    e1.infoHash = "1111111111111111111111111111111111111111";
+    e1.title = "Game 1";
+    CatalogEntry e2;
+    e2.topicId = 200;
+    e2.infoHash = "2222222222222222222222222222222222222222";
+    e2.title = "Game 2";
+    CatalogEntry e3;
+    e3.topicId = 300;
+    e3.infoHash = "3333333333333333333333333333333333333333";
+    e3.title = "Game 3";
+    entries.push_back(e1);
+    entries.push_back(e2);
+    entries.push_back(e3);
+
+    const std::string diffJson = R"({
+      "version": 1,
+      "generated_at": 1726992000,
+      "window_hours": 72,
+      "deleted_topic_ids": ["200"],
+      "added_or_updated": {
+        "ru": [
+          {
+            "title": "Game 4 [NSZ][RUS]",
+            "topic_id": "400",
+            "magnet": "magnet:?xt=urn:btih:8B8016FD97F08E2CC46E3B104B72EC758173C3C9&tr=http%3A%2F%2Fbt.t-ru.org%2Fann%3Fmagnet",
+            "size": "1.00 GB",
+            "genre": "Action"
+          }
+        ]
+      }
+    })";
+
+    std::string error;
+    assert(CatalogService::applyDiff(diffJson, "ru", entries, error));
+    assert(entries.size() == 3);
+    // 200 was deleted, 400 was added, 100 and 300 remain
+    bool has100 = false, has200 = false, has300 = false, has400 = false;
+    for (const auto& e : entries) {
+        if (e.topicId == 100) has100 = true;
+        if (e.topicId == 200) has200 = true;
+        if (e.topicId == 300) has300 = true;
+        if (e.topicId == 400) has400 = true;
+    }
+    assert(has100);
+    assert(!has200);
+    assert(has300);
+    assert(has400);
+
+    // Test JSON patch string
+    const std::string cachedJson = R"([
+      {"title":"G1","topic_id":"100","magnet":"magnet:?xt=urn:btih:1111111111111111111111111111111111111111"},
+      {"title":"G2","topic_id":"200","magnet":"magnet:?xt=urn:btih:2222222222222222222222222222222222222222"}
+    ])";
+    std::string patched;
+    assert(CatalogService::patchCatalogJsonDiff(cachedJson, diffJson, "ru", patched));
+    assert(patched.find("100") != std::string::npos);
+    assert(patched.find("200") == std::string::npos);
+    assert(patched.find("400") != std::string::npos);
+}
+
 int main() {
     testMagnetParsing();
+    testCatalogGenreCanonicalization();
+    testCatalogDiffIncrementalSync();
     testTrustedSourceAllowlist();
     testCatalogTrustedRedirect();
     testCatalogManifestParsing();

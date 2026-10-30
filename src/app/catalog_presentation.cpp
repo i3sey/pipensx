@@ -284,22 +284,312 @@ bool catalogFoldedContains(const std::string& haystack,
            std::string::npos;
 }
 
+namespace {
+
+std::string trimGenreToken(const std::string& token) {
+    size_t start = 0;
+    while (start < token.size() &&
+           (std::isspace(static_cast<unsigned char>(token[start])) ||
+            token[start] == '"' || token[start] == '\''))
+        ++start;
+    size_t end = token.size();
+    while (end > start &&
+           (std::isspace(static_cast<unsigned char>(token[end - 1])) ||
+            token[end - 1] == '"' || token[end - 1] == '\''))
+        --end;
+    return token.substr(start, end - start);
+}
+
+} // namespace
+
+void catalogCanonicalizeGenreToken(const std::string& rawToken,
+                                   std::unordered_set<std::string>& out) {
+    const std::string token = trimGenreToken(rawToken);
+    if (token.empty())
+        return;
+    const std::string lower = catalogFoldForSearch(token);
+
+    // Multi-genre composites
+    if (lower == "action rpg" || lower == "action-rpg" || lower == "action/rpg") {
+        out.insert(catalog_genres::kAction);
+        out.insert(catalog_genres::kRpg);
+        return;
+    }
+    if (lower == "action-adventure" || lower == "action adventure" ||
+        lower == "action adventure > survival" || lower == "action/adventure") {
+        out.insert(catalog_genres::kAction);
+        out.insert(catalog_genres::kAdventure);
+        return;
+    }
+    if (lower == "strategy arcade") {
+        out.insert(catalog_genres::kStrategy);
+        out.insert(catalog_genres::kArcade);
+        return;
+    }
+    if (lower == "platformer action" || lower == "stealth action") {
+        out.insert(catalog_genres::kPlatformer);
+        out.insert(catalog_genres::kAction);
+        return;
+    }
+
+    // Action
+    if (lower == "action" || lower == "actions" || lower == "actionь" ||
+        lower == "экшн" || lower == "экшен" || lower == "slasher" ||
+        lower == "hack and slash" || lower == "hack-and-slash" ||
+        lower == "hack'n'slash" || lower == "hack-n-slash" || lower == "musou" ||
+        lower == "stealth" || lower == "stealh") {
+        out.insert(catalog_genres::kAction);
+        return;
+    }
+
+    // Adventure
+    if (lower == "adventure" || lower == "adventur" || lower == "aventure" ||
+        lower == "advenutre" || lower == "приключение" || lower == "приключения" ||
+        lower == "quest") {
+        out.insert(catalog_genres::kAdventure);
+        return;
+    }
+
+    // Arcade
+    if (lower == "arcade" || lower == "аркада" || lower == "arkanoid" ||
+        lower == "pinball") {
+        out.insert(catalog_genres::kArcade);
+        return;
+    }
+
+    // Platformer
+    if (lower == "platformer" || lower == "3d platformer" ||
+        lower == "3d platformerm" || lower == "platfromer" ||
+        lower == "platfomer" || lower == "platforer" ||
+        lower == "платформер" || lower == "runner") {
+        out.insert(catalog_genres::kPlatformer);
+        return;
+    }
+
+    // Puzzle
+    if (lower == "puzzle" || lower == "puzze" || lower == "пазл" ||
+        lower == "sokoban" || lower == "hidden objects" ||
+        lower == "поиск предметов" || lower == "казуальные игры") {
+        out.insert(catalog_genres::kPuzzle);
+        return;
+    }
+
+    // RPG
+    if (lower == "role-playing" || lower == "rpg" || lower == "role playing" ||
+        lower == "role-play" || lower == "jrpg" || lower == "jrole-playing" ||
+        lower == "ролевая игра" || lower == "ролевая" ||
+        lower == "dungeon crawler") {
+        out.insert(catalog_genres::kRpg);
+        return;
+    }
+
+    // Strategy
+    if (lower == "strategy" || lower == "stategy" || lower == "стратегия" ||
+        lower == "стратегии" || lower == "tactic" || lower == "tactics" ||
+        lower == "tactical strategy" || lower == "tactical rpg" ||
+        lower == "real-time strategy" || lower == "turn based" ||
+        lower == "пошаговая" || lower == "tower defense" ||
+        lower == "city-building") {
+        out.insert(catalog_genres::kStrategy);
+        return;
+    }
+
+    // Simulation
+    if (lower == "simulation" || lower == "simulator" || lower == "симулятор" ||
+        lower == "economical simulator" || lower == "farm" || lower == "flight" ||
+        lower == "sim" || lower == "sandbox" || lower == "food" ||
+        lower == "interactive model kit") {
+        out.insert(catalog_genres::kSimulation);
+        return;
+    }
+
+    // Shooter
+    if (lower == "shooter" || lower == "first-person shooter" ||
+        lower == "first person shooter" || lower == "fps" ||
+        lower == "first-person" || lower == "first person" ||
+        lower == "shootemup" || lower == "shoot'em up" || lower == "shoot em up" ||
+        lower == "bullet hell" || lower == "twin-stick" || lower == "run & gun" ||
+        lower == "run&gun" || lower == "run'n'gun" || lower == "шутер" ||
+        lower == "шутер от первого лица") {
+        out.insert(catalog_genres::kShooter);
+        return;
+    }
+
+    // Fighting
+    if (lower == "fighting" || lower == "beatemup" || lower == "beat 'em up" ||
+        lower == "beatmeup" || lower == "brawler") {
+        out.insert(catalog_genres::kFighting);
+        return;
+    }
+
+    // Racing
+    if (lower == "racing" || lower == "racnig" || lower == "гонки" ||
+        lower == "bike" || lower == "moto") {
+        out.insert(catalog_genres::kRacing);
+        return;
+    }
+
+    // Sports
+    if (lower == "sports" || lower == "sport" || lower == "fitness") {
+        out.insert(catalog_genres::kSports);
+        return;
+    }
+
+    // Board & Card
+    if (lower == "board game" || lower == "board games" ||
+        lower == "настольная" || lower == "настольная игра" ||
+        lower == "tcg" || lower == "tgc" || lower == "карточная пошаговая") {
+        out.insert(catalog_genres::kBoardCard);
+        return;
+    }
+
+    // Party
+    if (lower == "party" || lower == "вечеринка") {
+        out.insert(catalog_genres::kParty);
+        return;
+    }
+
+    // Music & Rhythm
+    if (lower == "music" || lower == "rhythm" || lower == "musical" ||
+        lower == "karaoke" || lower == "музыка" || lower == "ритм-игра" ||
+        lower == "audiogame") {
+        out.insert(catalog_genres::kMusicRhythm);
+        return;
+    }
+
+    // Visual Novel
+    if (lower == "visual novel" || lower == "visual nove" ||
+        lower == "viusal novel" || lower == "interactive fiction" ||
+        lower == "interactive fiction (if)" || lower == "if" ||
+        lower == "interactive movie" || lower == "fmv" || lower == "otome" ||
+        lower == "eroge" || lower == "hentai" || lower == "ecchi") {
+        out.insert(catalog_genres::kVisualNovel);
+        return;
+    }
+
+    // Horror
+    if (lower == "horror") {
+        out.insert(catalog_genres::kHorror);
+        return;
+    }
+
+    // Roguelike
+    if (lower == "roguelike" || lower == "roguelite" || lower == "rougelite" ||
+        lower == "rogulite" || lower == "rogutelite" || lower == "roguelute") {
+        out.insert(catalog_genres::kRoguelike);
+        return;
+    }
+
+    // Metroidvania
+    if (lower == "metroidvania" || lower == "metrodivania" ||
+        lower == "метроидвания") {
+        out.insert(catalog_genres::kMetroidvania);
+        return;
+    }
+
+    // Point & Click
+    if (lower == "point & click" || lower == "point-and-click" ||
+        lower == "point and click") {
+        out.insert(catalog_genres::kPointClick);
+        return;
+    }
+
+    // Multiplayer
+    if (lower == "multiplayer" || lower == "online multiplayer" ||
+        lower == "communication" || lower == "battle royale") {
+        out.insert(catalog_genres::kMultiplayer);
+        return;
+    }
+
+    // Utility / Homebrew / Apps
+    if (lower == "homebrew" || lower == "emulation" || lower == "emulator" ||
+        lower == "эмулятор для пк" || lower == "application" ||
+        lower == "utility" || lower == "education" || lower == "learning" ||
+        lower == "study" || lower == "training" || lower == "video" ||
+        lower == "lifestyle" || lower == "practical" || lower == "modification") {
+        out.insert(catalog_genres::kUtility);
+        return;
+    }
+
+    // Ignore noise tags (settings/art-styles/placeholders)
+    if (lower == "b&w" || lower == "b&w (отдельный режим)" ||
+        lower == "weird" || lower == "unknown" || lower == "indie" ||
+        lower == "va" || lower == "vr" || lower == "streaming" ||
+        lower == "other" || lower == "updates" || lower == "ports") {
+        return;
+    }
+
+    // Preserve custom / unexpected genre tokens
+    out.insert(token);
+}
+
+std::vector<std::string> catalogEntryGenres(const CatalogEntry& entry,
+                                            const GameMetadata* metadata) {
+    std::unordered_set<std::string> canonical;
+    if (metadata && !metadata->categories.empty()) {
+        for (const std::string& cat : metadata->categories)
+            catalogCanonicalizeGenreToken(cat, canonical);
+    } else if (!entry.genre.empty()) {
+        size_t start = 0;
+        for (size_t i = 0; i <= entry.genre.size(); ++i) {
+            if (i == entry.genre.size() || entry.genre[i] == ',' ||
+                entry.genre[i] == '/' || entry.genre[i] == ';') {
+                if (i > start) {
+                    catalogCanonicalizeGenreToken(
+                        entry.genre.substr(start, i - start), canonical);
+                }
+                start = i + 1;
+            }
+        }
+    }
+    std::vector<std::string> result(canonical.begin(), canonical.end());
+    std::sort(result.begin(), result.end());
+    return result;
+}
+
+bool catalogEntryMatchesGenreFilter(
+    const CatalogEntry& entry,
+    const GameMetadata* metadata,
+    const std::unordered_set<std::string>& filters) {
+    if (filters.empty())
+        return true;
+    const std::vector<std::string> genres = catalogEntryGenres(entry, metadata);
+    for (const std::string& g : genres) {
+        if (filters.count(g) != 0)
+            return true;
+    }
+    if (metadata) {
+        for (const std::string& cat : metadata->categories)
+            if (filters.count(cat) != 0)
+                return true;
+    }
+    if (!entry.genre.empty() && filters.count(entry.genre) != 0)
+        return true;
+    return false;
+}
+
 bool catalogEntryMatchesSearch(const CatalogEntry& entry,
                                const GameMetadata* metadata,
-                               const std::string& needleFolded) {    if (needleFolded.empty())
+                               const std::string& needleFolded) {
+    if (needleFolded.empty())
         return true;
     if (catalogFoldedContains(entry.title, needleFolded))
         return true;
     if (!entry.genre.empty() &&
         catalogFoldedContains(entry.genre, needleFolded))
         return true;
-    if (!metadata)
-        return false;
-    if (!metadata->name.empty() &&
-        catalogFoldedContains(metadata->name, needleFolded))
-        return true;
-    for (const std::string& category : metadata->categories) {
-        if (catalogFoldedContains(category, needleFolded))
+    if (metadata) {
+        if (!metadata->name.empty() &&
+            catalogFoldedContains(metadata->name, needleFolded))
+            return true;
+        for (const std::string& category : metadata->categories) {
+            if (catalogFoldedContains(category, needleFolded))
+                return true;
+        }
+    }
+    const std::vector<std::string> genres = catalogEntryGenres(entry, metadata);
+    for (const std::string& g : genres) {
+        if (catalogFoldedContains(g, needleFolded))
             return true;
     }
     return false;
@@ -333,13 +623,10 @@ bool buildCatalogBrowse(const CatalogBrowseRequest& request,
         const GameMetadata* meta =
             result.metadata->findByInfoHash(entry.infoHash);
         if (catalogEntryInSection(entry, meta, request.section)) {
-            if (meta) {
-                for (const std::string& category : meta->categories)
-                    if (!category.empty())
-                        genres.insert(category);
-            } else if (!entry.genre.empty()) {
-                genres.insert(entry.genre);
-            }
+            const std::vector<std::string> entryGenres =
+                catalogEntryGenres(entry, meta);
+            for (const std::string& g : entryGenres)
+                genres.insert(g);
         }
 
         const std::string hash = foldAscii(entry.infoHash);
@@ -353,18 +640,9 @@ bool buildCatalogBrowse(const CatalogBrowseRequest& request,
             continue;
         if (!catalogEntryMatchesPlayerFilter(meta, entry, request.playerFilter))
             continue;
-        if (!request.genreFilters.empty()) {
-            bool matchedGenre = false;
-            if (meta) {
-                for (const std::string& category : meta->categories)
-                    matchedGenre = matchedGenre ||
-                        request.genreFilters.count(category) != 0;
-            }
-            matchedGenre = matchedGenre || (!entry.genre.empty() &&
-                request.genreFilters.count(entry.genre) != 0);
-            if (!matchedGenre)
-                continue;
-        }
+        if (!request.genreFilters.empty() &&
+            !catalogEntryMatchesGenreFilter(entry, meta, request.genreFilters))
+            continue;
         if (!catalogEntryMatchesSearch(entry, meta, needle))
             continue;
         result.indices.push_back(static_cast<int>(i));

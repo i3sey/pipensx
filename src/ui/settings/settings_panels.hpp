@@ -1211,7 +1211,8 @@ private:
         CatalogService* catalog = catalog_;
         AppSettings* settings = settings_;
         const std::string catalogSourceUrl =
-            effectiveCatalogSourceUrl(settings_->get().catalogSourceUrl);
+            effectiveCatalogSourceUrl(settings_->get().catalogSourceUrl,
+                                      settings_->get().language);
         brls::async([this, alive, catalog, settings, catalogSourceUrl,
                      onDone = std::move(onDone)]() mutable {
             auto snapshot = std::make_shared<CatalogSnapshot>();

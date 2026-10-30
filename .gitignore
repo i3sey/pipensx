@@ -36,6 +36,7 @@ bug_reports/
 # Local scratch / working directories
 .codex/
 .codex-remote-attachments/
+.pi/
 .tmp/
 dist/
 /rutracker-*.xml.xz

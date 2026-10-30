@@ -356,9 +356,12 @@ bool isValidCatalogSourceUrl(const std::string& value) {
     return true;
 }
 
-std::string effectiveCatalogSourceUrl(const std::string& custom) {
+std::string effectiveCatalogSourceUrl(const std::string& custom,
+                                      const std::string& language) {
     if (!custom.empty())
         return custom;
+    if (!language.empty())
+        return catalogSourceUrlForLanguage(language);
     return kDefaultCatalogUrl;
 }
 

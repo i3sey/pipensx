@@ -737,6 +737,11 @@ private:
         }
         selectedHashes_ = result->selectedHashes;
         genreSheetGenres_ = result->genres;
+        std::sort(genreSheetGenres_.begin(), genreSheetGenres_.end(),
+                  [](const std::string& a, const std::string& b) {
+                      return catalogFoldForSearch(ui::catalogGenreLabel(a)) <
+                             catalogFoldForSearch(ui::catalogGenreLabel(b));
+                  });
         publishedBrowse_ = result;
         dataSource_->setEntries(result, metadata_);
         dataSource_->setMessage(query_.empty()
@@ -947,7 +952,7 @@ private:
         if (genreFilters_.empty())
             return tr("pipensx/catalog/filter_genres");
         if (genreFilters_.size() == 1)
-            return *genreFilters_.begin();
+            return ui::catalogGenreLabel(*genreFilters_.begin());
         return tr("pipensx/catalog/filter_genres") + " · " +
                std::to_string(genreFilters_.size());
     }
@@ -996,7 +1001,7 @@ private:
             if (i >= owner_->genreSheetGenres_.size())
                 return;
             const std::string& name = owner_->genreSheetGenres_[i];
-            cell->title->setText(name);
+            cell->title->setText(ui::catalogGenreLabel(name));
             cell->setSelected(owner_->genreFilters_.count(name) != 0);
         }
 
@@ -1048,6 +1053,14 @@ private:
     void openGenreSheet() {
         if (genreSheet_)
             return;
+        if (publishedBrowse_) {
+            genreSheetGenres_ = publishedBrowse_->genres;
+            std::sort(genreSheetGenres_.begin(), genreSheetGenres_.end(),
+                      [](const std::string& a, const std::string& b) {
+                          return catalogFoldForSearch(ui::catalogGenreLabel(a)) <
+                                 catalogFoldForSearch(ui::catalogGenreLabel(b));
+                      });
+        }
         genreSheet_ = new brls::Box();
         genreSheet_->setPositionType(brls::PositionType::ABSOLUTE);
         genreSheet_->setPositionTop(0);
@@ -1628,7 +1641,8 @@ private:
         CatalogService* catalog = catalog_;
         GameMetadataService* metadata = metadata_;
         const std::string catalogSourceUrl =
-            effectiveCatalogSourceUrl(settings_->get().catalogSourceUrl);
+            effectiveCatalogSourceUrl(settings_->get().catalogSourceUrl,
+                                      settings_->get().language);
         AppSettings* settings = settings_;
         auto cancelled = refreshCancellation_;
         uint64_t startedMs = now_ms();

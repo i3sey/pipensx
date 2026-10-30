@@ -22,6 +22,7 @@ extern "C" {
 #include <set>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <unordered_set>
 
 namespace pipensx {
 
@@ -480,6 +481,10 @@ std::string catalogSourceLabel(const std::string& sourceUrl) {
     if (sourceUrl == kAlternativeCatalogUrl ||
         sourceUrl == kDefaultCatalogManifestUrl)
         return "pipensx-catalog";
+    if (sourceUrl.rfind(kCatalogCollectionBaseUrl, 0) == 0)
+        return "switch-game-collection";
+    if (sourceUrl.rfind("https://raw.githubusercontent.com/Langegen/switch-games/", 0) == 0)
+        return "switch-games";
     if (sourceUrl.size() > 8 && sourceUrl.compare(0, 8, "https://") == 0)
         return sourceUrl.substr(8);
     return sourceUrl;
@@ -892,6 +897,180 @@ bool CatalogService::verifyCatalogBody(const std::string& body,
     return true;
 }
 
+bool CatalogService::applyDiff(const std::string& diffJson,
+                              const std::string& langKey,
+                              std::vector<CatalogEntry>& entries,
+                              std::string& error,
+                              const std::atomic<bool>* cancelled) {
+    if (failIfCancelled(cancelled, error))
+        return false;
+    nlohmann::json root = nlohmann::json::parse(diffJson, nullptr, false);
+    if (root.is_discarded() || !root.is_object()) {
+        error = "Catalog diff is not a valid JSON object.";
+        return false;
+    }
+    if (root.value("version", 0) != 1) {
+        error = "Unsupported catalog diff version.";
+        return false;
+    }
+
+    std::unordered_set<uint32_t> deletedTopicIds;
+    if (root.contains("deleted_topic_ids") && root["deleted_topic_ids"].is_array()) {
+        for (const auto& item : root["deleted_topic_ids"]) {
+            if (item.is_number_unsigned()) {
+                deletedTopicIds.insert(item.get<uint32_t>());
+            } else if (item.is_string()) {
+                const std::string& s = item.get_ref<const std::string&>();
+                if (!s.empty()) {
+                    try {
+                        deletedTopicIds.insert(static_cast<uint32_t>(std::stoul(s)));
+                    } catch (...) {}
+                }
+            }
+        }
+    }
+
+    if (!deletedTopicIds.empty()) {
+        entries.erase(std::remove_if(entries.begin(), entries.end(),
+            [&](const CatalogEntry& e) {
+                return e.topicId != 0 && deletedTopicIds.count(e.topicId) != 0;
+            }), entries.end());
+    }
+
+    if (root.contains("added_or_updated") && root["added_or_updated"].is_object()) {
+        const auto& aou = root["added_or_updated"];
+        std::string effectiveLang = langKey;
+        if (!aou.contains(effectiveLang) && aou.contains("ru"))
+            effectiveLang = "ru";
+        else if (!aou.contains(effectiveLang) && aou.contains("en"))
+            effectiveLang = "en";
+
+        if (aou.contains(effectiveLang) && aou[effectiveLang].is_array()) {
+            std::vector<CatalogEntry> newOrUpdated;
+            std::string parseError;
+            std::string arrayDump = aou[effectiveLang].dump();
+            if (parseJson(arrayDump, newOrUpdated, parseError, cancelled)) {
+                std::unordered_map<std::string, size_t> byHash;
+                std::unordered_map<uint32_t, size_t> byTopic;
+                byHash.reserve(entries.size());
+                for (size_t i = 0; i < entries.size(); ++i) {
+                    byHash.emplace(lowerAscii(entries[i].infoHash), i);
+                    if (entries[i].topicId != 0)
+                        byTopic.emplace(entries[i].topicId, i);
+                }
+                for (auto& item : newOrUpdated) {
+                    const std::string h = lowerAscii(item.infoHash);
+                    auto itHash = byHash.find(h);
+                    if (itHash != byHash.end()) {
+                        entries[itHash->second] = std::move(item);
+                        continue;
+                    }
+                    if (item.topicId != 0) {
+                        auto itTopic = byTopic.find(item.topicId);
+                        if (itTopic != byTopic.end()) {
+                            entries[itTopic->second] = std::move(item);
+                            continue;
+                        }
+                    }
+                    byHash.emplace(h, entries.size());
+                    if (item.topicId != 0)
+                        byTopic.emplace(item.topicId, entries.size());
+                    entries.push_back(std::move(item));
+                }
+            }
+        }
+    }
+
+    std::stable_sort(entries.begin(), entries.end(),
+                     [](const CatalogEntry& left, const CatalogEntry& right) {
+                         if (left.publishedAt != right.publishedAt)
+                             return left.publishedAt > right.publishedAt;
+                         if (left.topicId != right.topicId)
+                             return left.topicId > right.topicId;
+                         return false;
+                     });
+
+    return true;
+}
+
+bool CatalogService::patchCatalogJsonDiff(const std::string& cachedJson,
+                                          const std::string& diffJson,
+                                          const std::string& langKey,
+                                          std::string& patchedJson) {
+    nlohmann::json root = nlohmann::json::parse(cachedJson, nullptr, false);
+    if (root.is_discarded() || !root.is_array())
+        return false;
+    nlohmann::json diff = nlohmann::json::parse(diffJson, nullptr, false);
+    if (diff.is_discarded() || !diff.is_object())
+        return false;
+
+    std::unordered_set<std::string> deletedTopicIds;
+    if (diff.contains("deleted_topic_ids") && diff["deleted_topic_ids"].is_array()) {
+        for (const auto& item : diff["deleted_topic_ids"]) {
+            if (item.is_string())
+                deletedTopicIds.insert(item.get<std::string>());
+            else if (item.is_number_unsigned())
+                deletedTopicIds.insert(std::to_string(item.get<uint64_t>()));
+        }
+    }
+
+    if (!deletedTopicIds.empty()) {
+        nlohmann::json filtered = nlohmann::json::array();
+        for (auto& item : root) {
+            std::string topicStr;
+            if (item.contains("topic_id")) {
+                if (item["topic_id"].is_string())
+                    topicStr = item["topic_id"].get<std::string>();
+                else if (item["topic_id"].is_number_unsigned())
+                    topicStr = std::to_string(item["topic_id"].get<uint64_t>());
+            }
+            if (topicStr.empty() || deletedTopicIds.count(topicStr) == 0)
+                filtered.push_back(std::move(item));
+        }
+        root = std::move(filtered);
+    }
+
+    if (diff.contains("added_or_updated") && diff["added_or_updated"].is_object()) {
+        const auto& aou = diff["added_or_updated"];
+        std::string effectiveLang = langKey;
+        if (!aou.contains(effectiveLang) && aou.contains("ru"))
+            effectiveLang = "ru";
+        else if (!aou.contains(effectiveLang) && aou.contains("en"))
+            effectiveLang = "en";
+
+        if (aou.contains(effectiveLang) && aou[effectiveLang].is_array()) {
+            std::unordered_map<std::string, size_t> byTopic;
+            for (size_t i = 0; i < root.size(); ++i) {
+                if (root[i].contains("topic_id")) {
+                    if (root[i]["topic_id"].is_string())
+                        byTopic[root[i]["topic_id"].get<std::string>()] = i;
+                    else if (root[i]["topic_id"].is_number_unsigned())
+                        byTopic[std::to_string(root[i]["topic_id"].get<uint64_t>())] = i;
+                }
+            }
+            for (const auto& item : aou[effectiveLang]) {
+                std::string topicStr;
+                if (item.contains("topic_id")) {
+                    if (item["topic_id"].is_string())
+                        topicStr = item["topic_id"].get<std::string>();
+                    else if (item["topic_id"].is_number_unsigned())
+                        topicStr = std::to_string(item["topic_id"].get<uint64_t>());
+                }
+                if (!topicStr.empty() && byTopic.count(topicStr)) {
+                    root[byTopic[topicStr]] = item;
+                } else {
+                    if (!topicStr.empty())
+                        byTopic[topicStr] = root.size();
+                    root.push_back(item);
+                }
+            }
+        }
+    }
+
+    patchedJson = root.dump();
+    return true;
+}
+
 bool CatalogService::fetchLatest(std::vector<CatalogEntry>& parsed,
                                  std::string& error,
                                  const std::string& sourceUrl,
@@ -910,6 +1089,41 @@ bool CatalogService::fetchLatest(std::vector<CatalogEntry>& parsed,
     if (sourceUrl == kAlternativeCatalogUrl ||
         sourceUrl == kDefaultCatalogManifestUrl)
         return fetchDefaultChannel(parsed, error, cancelled, progress);
+
+    // switch-game-collection: attempt fast incremental diff first if cache exists
+    if (sourceUrl.rfind(kCatalogCollectionBaseUrl, 0) == 0) {
+        std::string cachedBody;
+        std::string cacheError;
+        std::vector<CatalogEntry> cachedEntries;
+        if (readFile(cachePath_, cachedBody, cacheError) &&
+            parseJson(cachedBody, cachedEntries, cacheError, cancelled) &&
+            !cachedEntries.empty()) {
+            std::string diffBody;
+            std::string diffError;
+            if (httpGet(kCatalogDiffUrl, diffBody, diffError, kCatalogDiffUrl,
+                        cancelled)) {
+                std::string langKey = "ru";
+                if (sourceUrl.find("EN_catalog") != std::string::npos) langKey = "en";
+                else if (sourceUrl.find("ES_catalog") != std::string::npos) langKey = "es";
+                else if (sourceUrl.find("FR_catalog") != std::string::npos) langKey = "fr";
+                else if (sourceUrl.find("DE_catalog") != std::string::npos) langKey = "de";
+                else if (sourceUrl.find("IT_catalog") != std::string::npos) langKey = "it";
+                else if (sourceUrl.find("PT_BR_catalog") != std::string::npos) langKey = "pt_br";
+                else if (sourceUrl.find("ZH_Hans_catalog") != std::string::npos) langKey = "zh_hans";
+
+                std::string patchedJson;
+                if (patchCatalogJsonDiff(cachedBody, diffBody, langKey, patchedJson) &&
+                    applyDiff(diffBody, langKey, cachedEntries, diffError, cancelled)) {
+                    parsed = std::move(cachedEntries);
+                    writeAtomic(cachePath_, patchedJson, diffError, cancelled);
+                    log_msg("[catalog] incremental diff applied successfully (%zu entries)\n",
+                            parsed.size());
+                    return true;
+                }
+            }
+        }
+    }
+
     std::string catalogBody;
     if (!httpGet(sourceUrl, catalogBody, error, sourceUrl, cancelled, progress))
         return false;

@@ -242,6 +242,47 @@ bool catalogEntryMatchesPlayerFilter(const GameMetadata* metadata,
                                      const CatalogEntry& entry,
                                      PlayerFilter filter);
 
+namespace catalog_genres {
+inline constexpr const char* kAction = "Action";
+inline constexpr const char* kAdventure = "Adventure";
+inline constexpr const char* kArcade = "Arcade";
+inline constexpr const char* kBoardCard = "Board & Card";
+inline constexpr const char* kFighting = "Fighting";
+inline constexpr const char* kHorror = "Horror";
+inline constexpr const char* kMetroidvania = "Metroidvania";
+inline constexpr const char* kMultiplayer = "Multiplayer";
+inline constexpr const char* kMusicRhythm = "Music & Rhythm";
+inline constexpr const char* kParty = "Party";
+inline constexpr const char* kPlatformer = "Platformer";
+inline constexpr const char* kPointClick = "Point & Click";
+inline constexpr const char* kPuzzle = "Puzzle";
+inline constexpr const char* kRacing = "Racing";
+inline constexpr const char* kRoguelike = "Roguelike";
+inline constexpr const char* kRpg = "RPG";
+inline constexpr const char* kShooter = "Shooter";
+inline constexpr const char* kSimulation = "Simulation";
+inline constexpr const char* kSports = "Sports";
+inline constexpr const char* kStrategy = "Strategy";
+inline constexpr const char* kUtility = "Utility";
+inline constexpr const char* kVisualNovel = "Visual Novel";
+} // namespace catalog_genres
+
+// Canonicalize a single raw genre token (or composite like "Action RPG").
+// Merges and maps synonyms, typos, and variations to canonical genres.
+void catalogCanonicalizeGenreToken(const std::string& token,
+                                   std::unordered_set<std::string>& out);
+
+// Parses raw composite genre strings and metadata categories into canonical,
+// deduped, and sorted genres.
+std::vector<std::string> catalogEntryGenres(const CatalogEntry& entry,
+                                            const GameMetadata* metadata);
+
+// True when an entry matches any of the active genre filters.
+bool catalogEntryMatchesGenreFilter(
+    const CatalogEntry& entry,
+    const GameMetadata* metadata,
+    const std::unordered_set<std::string>& filters);
+
 // UTF-8 aware folding for search: ASCII A-Z → a-z plus Cyrillic capitals
 // (А-Я → а-я, Ѐ-Џ → ѐ-џ so Ё → ё). The old search folded
 // ASCII only, so a Russian query in one case never matched a title in the

@@ -490,8 +490,14 @@ void testCatalogSourceUrlValidation() {
         "https://user:pass@cdn.example.com/repo/catalog.json"));
     assert(!isValidCatalogSourceUrl(std::string(513, 'a')));
     assert(effectiveCatalogSourceUrl("") ==
-           "https://raw.githubusercontent.com/Langegen/switch-games/refs/heads/main/"
-           "switch_games.json");
+           "https://raw.githubusercontent.com/Langegen/switch-game-collection/main/"
+           "RU_catalog.json");
+    assert(effectiveCatalogSourceUrl("", "en") ==
+           "https://raw.githubusercontent.com/Langegen/switch-game-collection/main/"
+           "EN_catalog.json");
+    assert(effectiveCatalogSourceUrl("", "es") ==
+           "https://raw.githubusercontent.com/Langegen/switch-game-collection/main/"
+           "ES_catalog.json");
     assert(effectiveCatalogSourceUrl("https://cdn.example.com/x.json") ==
            "https://cdn.example.com/x.json");
 }

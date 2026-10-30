@@ -147,8 +147,9 @@ bool isValidProxyUrl(const std::string& value);
 // and in the UI.
 bool isValidCatalogSourceUrl(const std::string& value);
 
-// User override or the default Langegen catalog URL.
-std::string effectiveCatalogSourceUrl(const std::string& custom);
+// User override or the default Langegen switch-game-collection catalog URL.
+std::string effectiveCatalogSourceUrl(const std::string& custom,
+                                      const std::string& language = "");
 
 // Points libcurl at the proxy for every handle the app creates, including
 // ones already constructed — curl re-reads the environment per transfer, so

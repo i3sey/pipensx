@@ -200,6 +200,20 @@ public:
                           std::string& error,
                           const std::atomic<bool>* cancelled = nullptr);
 
+    // Incremental diff from switch-game-collection catalog_diff.json:
+    // removes deleted_topic_ids and upserts added_or_updated entries for langKey.
+    static bool applyDiff(const std::string& diffJson,
+                          const std::string& langKey,
+                          std::vector<CatalogEntry>& entries,
+                          std::string& error,
+                          const std::atomic<bool>* cancelled = nullptr);
+
+    // Patch raw cached catalog JSON array with diff JSON for fast on-disk persistence.
+    static bool patchCatalogJsonDiff(const std::string& cachedJson,
+                                     const std::string& diffJson,
+                                     const std::string& langKey,
+                                     std::string& patchedJson);
+
     // True when `url` is allowed to serve catalog bytes for `sourceUrl`.
     // The built-in channel keeps a repo-prefix allowlist; a custom source
     // trusts only redirects within the source file's directory.
