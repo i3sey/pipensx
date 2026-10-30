@@ -54,8 +54,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
-      Cactions/cache@v3_DIR: ${{ github.workspace }}/.ccache/pc
-      Cactions/cache@v3_BASEDIR: ${{ github.workspace }}
+      CCACHE_DIR: ${{ github.workspace }}/.ccache/pc
+      CCACHE_BASEDIR: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -66,10 +66,15 @@ jobs:
           SERVER_URL: ${{ github.server_url }}
         run: |
           git config submodule.vendor/borealis.url "$SERVER_URL/i3sey/borealis.git"
-          auth=$(printf 'i3sey:%s' "$SUBMODULE_TOKEN" | base64 -w0)
-          git -c "http.$SERVER_URL/.extraheader=AUTHORIZATION: basic $auth" \
-            -c "submodule.vendor/borealis.url=$SERVER_URL/i3sey/borealis.git" \
-            submodule update --init --depth 1 vendor/borealis
+          if [ -n "$SUBMODULE_TOKEN" ]; then
+            auth=$(printf 'i3sey:%s' "$SUBMODULE_TOKEN" | base64 -w0)
+            git -c "http.$SERVER_URL/.extraheader=AUTHORIZATION: basic $auth" \
+              -c "submodule.vendor/borealis.url=$SERVER_URL/i3sey/borealis.git" \
+              submodule update --init --depth 1 vendor/borealis
+          else
+            git -c "submodule.vendor/borealis.url=$SERVER_URL/i3sey/borealis.git" \
+              submodule update --init --depth 1 vendor/borealis
+          fi
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -110,10 +115,15 @@ jobs:
           SERVER_URL: ${{ github.server_url }}
         run: |
           git config submodule.vendor/borealis.url "$SERVER_URL/i3sey/borealis.git"
-          auth=$(printf 'i3sey:%s' "$SUBMODULE_TOKEN" | base64 -w0)
-          git -c "http.$SERVER_URL/.extraheader=AUTHORIZATION: basic $auth" \
-            -c "submodule.vendor/borealis.url=$SERVER_URL/i3sey/borealis.git" \
-            submodule update --init vendor/borealis
+          if [ -n "$SUBMODULE_TOKEN" ]; then
+            auth=$(printf 'i3sey:%s' "$SUBMODULE_TOKEN" | base64 -w0)
+            git -c "http.$SERVER_URL/.extraheader=AUTHORIZATION: basic $auth" \
+              -c "submodule.vendor/borealis.url=$SERVER_URL/i3sey/borealis.git" \
+              submodule update --init vendor/borealis
+          else
+            git -c "submodule.vendor/borealis.url=$SERVER_URL/i3sey/borealis.git" \
+              submodule update --init vendor/borealis
+          fi
       - name: Fetch public dependencies
         run: git submodule update --init --recursive
 
@@ -149,8 +159,8 @@ jobs:
       - name: Install git and zstd (container has neither by default)
         run: |
           apt-get update
-          # zstd: build_switch.sh compresses the bundled catalog snapshots.
-          apt-get install -y --no-install-recommends git ca-certificates zstd ccache
+          # zstd: build_switch.sh compresses the bundled catalog snapshots; nodejs for actions/checkout.
+          apt-get install -y --no-install-recommends git ca-certificates zstd ccache nodejs
 
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -161,10 +171,15 @@ jobs:
           SERVER_URL: ${{ github.server_url }}
         run: |
           git config submodule.vendor/borealis.url "$SERVER_URL/i3sey/borealis.git"
-          auth=$(printf 'i3sey:%s' "$SUBMODULE_TOKEN" | base64 -w0)
-          git -c "http.$SERVER_URL/.extraheader=AUTHORIZATION: basic $auth" \
-            -c "submodule.vendor/borealis.url=$SERVER_URL/i3sey/borealis.git" \
-            submodule update --init vendor/borealis
+          if [ -n "$SUBMODULE_TOKEN" ]; then
+            auth=$(printf 'i3sey:%s' "$SUBMODULE_TOKEN" | base64 -w0)
+            git -c "http.$SERVER_URL/.extraheader=AUTHORIZATION: basic $auth" \
+              -c "submodule.vendor/borealis.url=$SERVER_URL/i3sey/borealis.git" \
+              submodule update --init vendor/borealis
+          else
+            git -c "submodule.vendor/borealis.url=$SERVER_URL/i3sey/borealis.git" \
+              submodule update --init vendor/borealis
+          fi
       - name: Fetch public dependencies
         run: git submodule update --init --recursive
 
