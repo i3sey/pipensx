@@ -81,11 +81,6 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential ccache python3 libcurl4-openssl-dev libssl-dev \
             libzstd-dev zlib1g-dev p7zip-full
-      - uses: actions/cache@v3
-        with:
-          path: .ccache/pc
-          key: pc-ccache-v1-${{ runner.os }}-${{ github.sha }}
-          restore-keys: pc-ccache-v1-${{ runner.os }}-
       - name: Build CLI and run all PC tests
         run: |
           ccache --max-size=500M
@@ -182,12 +177,6 @@ jobs:
           fi
       - name: Fetch public dependencies
         run: git submodule update --init --recursive
-
-      - uses: actions/cache@v3
-        with:
-          path: .ccache/switch
-          key: switch-ccache-v1-${{ runner.os }}-${{ github.sha }}
-          restore-keys: switch-ccache-v1-${{ runner.os }}-
 
       - name: Install Switch portlibs
         run: scripts/install_switch_portlibs.sh
