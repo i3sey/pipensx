@@ -4,6 +4,24 @@
 
 namespace pipensx {
 
+// Recognized language alternative directory or archive component.
+inline bool isPortLanguageName(std::string name) {
+    for (char& ch : name) {
+        if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
+    }
+    return name == "russian" || name == "rus" || name == "ru" ||
+           name == "english" || name == "eng" || name == "en" ||
+           name == "german" || name == "de" || name == "deu" ||
+           name == "french" || name == "fr" || name == "fra" ||
+           name == "spanish" || name == "es" || name == "esp" ||
+           name == "italian" || name == "it" || name == "ita" ||
+           name == "portuguese" || name == "pt" || name == "pt-br" ||
+           name == "japanese" || name == "ja" || name == "jp" ||
+           name == "chinese" || name == "zh" || name == "zh-cn" ||
+           name == "korean" || name == "ko" || name == "kor" ||
+           name == "polish" || name == "pl" || name == "pol";
+}
+
 // A named Russian-mod alternative is not a second volume of switch.7z.
 // Match only known sibling alternatives; unrelated/complementary archives
 // remain selected, and a standalone alternative remains installable.

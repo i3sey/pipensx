@@ -291,6 +291,58 @@ int main() {
         std::filesystem::remove_all(badRoot);
     }
 
+    {
+        // Port install test: streamInstall = false with package + data files
+        // marked FileAction::Install must configure all files as STORAGE_FILE_DISK
+        // and NOT fail with "Only NSP/NSZ package files can be installed."
+        metainfo_t portMi{};
+        std::snprintf(portMi.name, sizeof(portMi.name), "port-bundle");
+        portMi.piece_length = 4 * 1024 * 1024;
+        portMi.total_length = 3000;
+        portMi.num_pieces = 1;
+        portMi.piece_hashes = static_cast<uint8_t*>(std::calloc(1, 20));
+        assert(portMi.piece_hashes);
+        portMi.num_files = 3;
+        portMi.files = static_cast<mi_file_t*>(std::calloc(3, sizeof(mi_file_t)));
+        assert(portMi.files);
+        std::snprintf(portMi.files[0].path, sizeof(portMi.files[0].path), "forwarder.nsp");
+        portMi.files[0].length = 1000;
+        portMi.files[0].offset = 0;
+        std::snprintf(portMi.files[1].path, sizeof(portMi.files[1].path), "game.nro");
+        portMi.files[1].length = 1000;
+        portMi.files[1].offset = 1000;
+        std::snprintf(portMi.files[2].path, sizeof(portMi.files[2].path), "assets.7z");
+        portMi.files[2].length = 1000;
+        portMi.files[2].offset = 2000;
+
+        const std::string portRoot = root + "-port-test";
+        std::filesystem::remove_all(portRoot);
+        std::filesystem::create_directories(portRoot);
+        const std::string portTaskId = "cccccccccccccccccccccccccccccccccccccccc";
+        pipensx::StreamBudgetArbiter portArbiter;
+        std::vector<uint8_t> portSelection = {
+            static_cast<uint8_t>(pipensx::FileAction::Install),
+            static_cast<uint8_t>(pipensx::FileAction::Install),
+            static_cast<uint8_t>(pipensx::FileAction::Install),
+        };
+
+        pipensx::PackageCoordinator portCoord(
+            portMi, portTaskId, portRoot,
+            false /* streamInstall = false */,
+            portSelection, 0,
+            pipensx::install::InstallStorageTarget::SdCard,
+            portArbiter, nullptr);
+        assert(portCoord.error().empty());
+        assert(portCoord.configs().size() == 3);
+        assert(portCoord.configs()[0].mode == STORAGE_FILE_DISK);
+        assert(portCoord.configs()[1].mode == STORAGE_FILE_DISK);
+        assert(portCoord.configs()[2].mode == STORAGE_FILE_DISK);
+        assert(portCoord.packageCount() == 0);
+
+        metainfo_free(&portMi);
+        std::filesystem::remove_all(portRoot);
+    }
+
     struct stat st{};
     std::string committed = root + "/install-sim/" + taskId + "-game.nsp";
     assert(stat(committed.c_str(), &st) == 0);

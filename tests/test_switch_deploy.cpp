@@ -2271,6 +2271,64 @@ int main() {
         portManager.shutdown();
     }
 
+    // Port with alternative language overlay directory overriding base files:
+    {
+        const std::string portRoot = root + "/overlay-port";
+        const std::string portData = portRoot + "/downloads/task";
+        const std::string portTarget = portRoot + "/sd/switch";
+        const std::string portId = "7777777777777777777777777777777777777777";
+        fs::create_directories(portTarget);
+        writeFile(portData + "/switch/testport/testport.nro", nro);
+        writeFile(portData + "/switch/testport/data/lang.pak", "english_base_data");
+        writeFile(portData + "/russian/switch/testport/data/lang.pak", "russian_translated_data");
+        writeCompletedQueue(portRoot, portId, portData, nro.size() + 40, "port", "completed");
+
+        TaskFileManifest portManifest;
+        portManifest.taskId = portId;
+        TaskFileRecord rec1;
+        rec1.logicalPath = "switch/testport/testport.nro";
+        rec1.localPath = rec1.logicalPath;
+        rec1.size = nro.size();
+        rec1.action = TaskFileAction::Install;
+        portManifest.files.push_back(rec1);
+
+        TaskFileRecord rec2;
+        rec2.logicalPath = "switch/testport/data/lang.pak";
+        rec2.localPath = rec2.logicalPath;
+        rec2.size = std::string("english_base_data").size();
+        rec2.action = TaskFileAction::Install;
+        portManifest.files.push_back(rec2);
+
+        TaskFileRecord rec3;
+        rec3.logicalPath = "russian/switch/testport/data/lang.pak";
+        rec3.localPath = rec3.logicalPath;
+        rec3.size = std::string("russian_translated_data").size();
+        rec3.action = TaskFileAction::Install;
+        portManifest.files.push_back(rec3);
+        assert(saveTaskFileManifest(portRoot, portManifest, error));
+
+        DownloadManager portManager(portRoot, false);
+        SwitchDeployService portDeploy(portManager, portRoot, portTarget);
+        auto inspection = portDeploy.inspect(portId);
+        assert(inspection.canStart());
+        assert(inspection.problem == SwitchDeployProblem::None);
+        assert(inspection.plan.files.size() == 2); // NRO + 1 overridden pak
+        assert(inspection.plan.ignoredFiles == 1); // 1 base pak ignored in favor of russian
+
+        assert(portDeploy.armAutoCopy(portId));
+        assert(portDeploy.start(portId, error));
+        for (int i = 0; i < 500 && portDeploy.snapshot().active(); ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        assert(portDeploy.snapshot().phase == SwitchDeployPhase::Completed);
+        assert(fs::exists(portTarget + "/testport/testport.nro"));
+        std::ifstream resultFile(portTarget + "/testport/data/lang.pak");
+        std::string content((std::istreambuf_iterator<char>(resultFile)), {});
+        assert(content == "russian_translated_data"); // Russian translation took precedence
+
+        portDeploy.shutdown();
+        portManager.shutdown();
+    }
+
     storage.freeBytes = 1024 * 1024;
     setStorageSpaceOverride(nullptr);
     fs::remove_all(root);

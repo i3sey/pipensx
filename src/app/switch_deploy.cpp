@@ -1677,6 +1677,56 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
         bool file = false;
     };
     std::map<std::string, LayoutPath> layoutPaths;
+    struct PlannedLooseFile {
+        size_t planIndex = 0;
+        size_t rootSpecificity = 0;
+        std::string sourceLogical;
+    };
+    std::map<std::string, PlannedLooseFile> plannedLoose;
+
+    auto assessEntry = [&](SwitchDeployEntry& e) -> bool {
+        struct stat destination {};
+        if (lstat(e.destinationPath.c_str(), &destination) != 0) {
+            if (errno != ENOENT) {
+                setProblem(result, SwitchDeployProblem::Io,
+                           e.destinationPath);
+                return false;
+            }
+            e.state = SwitchDeployEntryState::Missing;
+            result.plan.bytesToCopy += e.size;
+        } else if (!S_ISREG(destination.st_mode) ||
+                   S_ISLNK(destination.st_mode) ||
+                   static_cast<uint64_t>(destination.st_size) != e.size) {
+            e.state = SwitchDeployEntryState::ExistingConflict;
+            ++result.plan.conflictFiles;
+        } else {
+            std::array<uint8_t, 32> destinationDigest {};
+            if (!hashFile(e.sourcePath, e.sha256) ||
+                !hashFile(e.destinationPath, destinationDigest)) {
+                setProblem(result, SwitchDeployProblem::Io,
+                           "Unable to hash an existing file.");
+                return false;
+            }
+            if (e.sha256 == destinationDigest) {
+                e.state = SwitchDeployEntryState::ExistingIdentical;
+                ++result.plan.identicalFiles;
+            } else {
+                e.state = SwitchDeployEntryState::ExistingConflict;
+                ++result.plan.conflictFiles;
+            }
+        }
+        return true;
+    };
+
+    auto unassessEntry = [&](const SwitchDeployEntry& e) {
+        result.plan.totalBytes -= e.size;
+        if (e.state == SwitchDeployEntryState::Missing)
+            result.plan.bytesToCopy -= e.size;
+        else if (e.state == SwitchDeployEntryState::ExistingIdentical)
+            --result.plan.identicalFiles;
+        else if (e.state == SwitchDeployEntryState::ExistingConflict)
+            --result.plan.conflictFiles;
+    };
     for (const TaskFileInfo& file : result.inventory.files) {
         const auto manual = manualRules.find(file.logicalPath);
         if (manual != manualRules.end() && !manual->second.directory.empty()) continue;
@@ -1749,6 +1799,45 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
                        SwitchDeployUnsafeReason::AppDirectory);
             return result;
         }
+        const std::string foldedDestination = lowerAscii(destinationRelative);
+        const size_t currentSpecificity = selectedRoot->second.size();
+        auto plannedLooseIt = plannedLoose.find(foldedDestination);
+        if (plannedLooseIt != plannedLoose.end()) {
+            if (currentSpecificity > plannedLooseIt->second.rootSpecificity) {
+                // Incoming file is from a more specific overlay root: override previous base file.
+                unassessEntry(result.plan.files[plannedLooseIt->second.planIndex]);
+                SwitchDeployEntry entry;
+                entry.sourcePath = file.absolutePath;
+                entry.sourceRelativePath = file.logicalPath;
+                entry.destinationRelativePath = destinationRelative;
+                entry.destinationPath = targetRoot + "/" + destinationRelative;
+                entry.size = file.size;
+                entry.nro = hasNroExtension(file.logicalPath);
+                result.plan.totalBytes += entry.size;
+                if (!destinationParentsSafe(targetRoot, destinationRelative)) {
+                    setProblem(result, SwitchDeployProblem::UnsafePath,
+                               destinationRelative);
+                    return result;
+                }
+                if (!assessEntry(entry))
+                    return result;
+                result.plan.files[plannedLooseIt->second.planIndex] = std::move(entry);
+                plannedLooseIt->second.rootSpecificity = currentSpecificity;
+                plannedLooseIt->second.sourceLogical = file.logicalPath;
+                ++result.plan.ignoredFiles;
+                continue;
+            } else if (currentSpecificity < plannedLooseIt->second.rootSpecificity) {
+                // Previously planned file is already from a more specific overlay root: ignore this base file.
+                ++result.plan.ignoredFiles;
+                continue;
+            } else {
+                setProblem(result, SwitchDeployProblem::UnsafePath,
+                           "The layout contains a duplicate destination path.",
+                           SwitchDeployUnsafeReason::NameCollision);
+                return result;
+            }
+        }
+
         std::string layoutPath;
         for (size_t i = 0; i < destinationParts.size(); ++i) {
             if (!layoutPath.empty())
@@ -1776,7 +1865,6 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
             }
         }
 
-        const std::string foldedDestination = lowerAscii(destinationRelative);
         const std::string plannedKey = "switch:" + foldedDestination;
         auto planned = plannedFiles.find(plannedKey);
         if (planned != plannedFiles.end()) {
@@ -1802,36 +1890,12 @@ SwitchDeployInspection inspectSwitchDeploy(TaskFileInventory inventory,
                        destinationRelative);
             return result;
         }
-        struct stat destination {};
-        if (lstat(entry.destinationPath.c_str(), &destination) != 0) {
-            if (errno != ENOENT) {
-                setProblem(result, SwitchDeployProblem::Io,
-                           entry.destinationPath);
-                return result;
-            }
-            entry.state = SwitchDeployEntryState::Missing;
-            result.plan.bytesToCopy += entry.size;
-        } else if (!S_ISREG(destination.st_mode) ||
-                   S_ISLNK(destination.st_mode) ||
-                   static_cast<uint64_t>(destination.st_size) != entry.size) {
-            entry.state = SwitchDeployEntryState::ExistingConflict;
-            ++result.plan.conflictFiles;
-        } else {
-            std::array<uint8_t, 32> destinationDigest {};
-            if (!hashFile(entry.sourcePath, entry.sha256) ||
-                !hashFile(entry.destinationPath, destinationDigest)) {
-                setProblem(result, SwitchDeployProblem::Io,
-                           "Unable to hash an existing file.");
-                return result;
-            }
-            if (entry.sha256 == destinationDigest) {
-                entry.state = SwitchDeployEntryState::ExistingIdentical;
-                ++result.plan.identicalFiles;
-            } else {
-                entry.state = SwitchDeployEntryState::ExistingConflict;
-                ++result.plan.conflictFiles;
-            }
-        }
+        if (!assessEntry(entry))
+            return result;
+        plannedLoose.emplace(foldedDestination,
+                             PlannedLooseFile{result.plan.files.size(),
+                                              currentSpecificity,
+                                              file.logicalPath});
         result.plan.files.push_back(std::move(entry));
     }
     if (!manualPathsSafe()) return result;

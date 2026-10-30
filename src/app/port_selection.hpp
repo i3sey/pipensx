@@ -310,6 +310,34 @@ inline std::vector<uint8_t> selectPortInstallActions(
         if (!key.empty() && std::find(primaryArchives.begin(), primaryArchives.end(), key) != primaryArchives.end())
             mask[i] = static_cast<uint8_t>(FileAction::Skip);
     }
+    bool hasPrimaryTree = false;
+    for (size_t i = 0; i < preview.files.size(); ++i) {
+        const auto& file = preview.files[i];
+        if (file.package || file.cartridge || isPortArchiveName(file.path))
+            continue;
+        const std::string logical = torrentLogicalPath(preview, file);
+        std::string relative, root;
+        if (switchPayloadRelativePath(logical, relative, &root)) {
+            const std::string rootBase = preview.multi ? preview.name : "";
+            if (portSelectionLower(root) == portSelectionLower(rootBase))
+                hasPrimaryTree = true;
+        }
+    }
+    if (hasPrimaryTree) {
+        for (size_t i = 0; i < preview.files.size(); ++i) {
+            const auto& file = preview.files[i];
+            if (file.package || file.cartridge || isPortArchiveName(file.path))
+                continue;
+            const std::string logical = torrentLogicalPath(preview, file);
+            std::string relative, root;
+            if (switchPayloadRelativePath(logical, relative, &root)) {
+                const auto slash = root.find_last_of("/\\");
+                const std::string dir = slash == std::string::npos ? root : root.substr(slash + 1);
+                if (isPortLanguageName(dir))
+                    mask[i] = static_cast<uint8_t>(FileAction::Skip);
+            }
+        }
+    }
     size_t selected = 0;
     for (size_t i = 0; i < preview.files.size(); ++i) {
         const TorrentPreview::File& file = preview.files[i];

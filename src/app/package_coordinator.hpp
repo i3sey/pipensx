@@ -80,14 +80,14 @@ public:
                 configs_[i].mode = STORAGE_FILE_SKIP;
                 continue;
             }
-            if (action == FileAction::Download ||
+            if (!streamInstall_ ||
+                action == FileAction::Download ||
                 (action == FileAction::Install &&
                  !isPackageName(metainfo_.files[i].path))) {
                 configs_[i].mode = STORAGE_FILE_DISK;
                 continue;
             }
-            if (!streamInstall_ ||
-                !isPackageName(metainfo_.files[i].path)) {
+            if (!isPackageName(metainfo_.files[i].path)) {
                 error_ = "Only NSP/NSZ package files can be installed.";
                 return;
             }
