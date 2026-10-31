@@ -303,6 +303,10 @@ struct PortUninstallReport {
     }
 };
 
+// Local installed artwork recorded by a port receipt; empty when unavailable.
+std::string deployedPortIconPath(const std::string& appRoot,
+                                 const std::string& taskId);
+
 // Stateless helper for full port removal from "My Games": deployed files →
 // download task + data → the ncm shortcut (injected, keeps this service free
 // of InstalledTitleService so it builds on PC) → receipts and auto-copy

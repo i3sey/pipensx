@@ -29,6 +29,10 @@ extern "C" {
 #include <sys/stat.h>
 #include <unistd.h>
 
+#ifdef __SWITCH__
+#include <switch.h>
+#endif
+
 namespace pipensx {
 namespace {
 
@@ -3219,6 +3223,21 @@ bool receiptMatchesTitle(const std::string& root, const std::string& taskId,
 
 } // namespace
 
+std::string deployedPortIconPath(const std::string& appRoot,
+                                 const std::string& taskId) {
+    std::vector<ReceiptFile> files;
+    std::vector<std::string> unpacked;
+    std::vector<std::string> titles;
+    if (!loadReceipt(appRoot, taskId, files, unpacked, nullptr, &titles))
+        return {};
+    for (const auto& title : titles) {
+        const std::string path = appRoot + "/installed-icons/" + title + ".jpg";
+        if (regularPathExists(path))
+            return path;
+    }
+    return {};
+}
+
 PortUninstallService::PortUninstallService(DownloadManager& manager,
                                            std::string appRoot,
                                            std::string targetRoot)
@@ -3404,6 +3423,18 @@ bool PortUninstallService::deleteDeployed(
         if (report.error.empty())
             report.error = detail;
     };
+    auto fileFailure = [&](const std::string& relative, int savedErrno,
+                           unsigned nativeResult) {
+        ++report.filesFailed;
+        char code[96];
+        std::snprintf(code, sizeof(code), " (errno=%d, result=0x%08x)",
+                      savedErrno, nativeResult);
+        const std::string detail = "Unable to remove " + relative + ": " +
+                                  std::strerror(savedErrno) + code;
+        log_msg("[port-uninstall] file_failed path=%s errno=%d result=0x%08x\n",
+                relative.c_str(), savedErrno, nativeResult);
+        fail(detail);
+    };
     auto removeExact = [&](const std::string& root,
                            const std::vector<std::string>& files,
                            const std::vector<std::string>& splitFiles) {
@@ -3413,14 +3444,22 @@ bool PortUninstallService::deleteDeployed(
             if (lstat(full.c_str(), &st) != 0) {
                 if (errno == ENOENT)
                     ++report.filesMissing;
-                else
-                    fail("Unable to remove " + relative + ".");
+                else {
+                    const int savedErrno = errno;
+                    unsigned nativeResult = 0;
+#ifdef __SWITCH__
+                    nativeResult = fsdevGetLastResult();
+#endif
+                    fileFailure(relative, savedErrno, nativeResult);
+                }
                 continue;
             }
             if (S_ISDIR(st.st_mode)) {
                 if (!std::binary_search(splitFiles.begin(), splitFiles.end(),
-                                        relative))
+                                        relative)) {
+                    fileFailure(relative, EISDIR, 0);
                     continue;
+                }
                 if (!removeTreeBestEffort(full)) {
                     ++report.filesFailed;
                     fail("Unable to remove split file " + relative + ".");
@@ -3430,9 +3469,20 @@ bool PortUninstallService::deleteDeployed(
                 pruneEmptyParents(root, full);
                 continue;
             }
-            if (std::remove(full.c_str()) != 0) {
-                ++report.filesFailed;
-                fail("Unable to remove " + relative + ".");
+            // This path is a regular file. Use unlink directly: remove()
+            // may attempt a directory operation and mask the original FS
+            // result, making a failed removal impossible to diagnose.
+            if (::unlink(full.c_str()) != 0) {
+                const int savedErrno = errno;
+                unsigned nativeResult = 0;
+#ifdef __SWITCH__
+                nativeResult = fsdevGetLastResult();
+#endif
+                if (savedErrno == ENOENT) {
+                    ++report.filesMissing;
+                    continue;
+                }
+                fileFailure(relative, savedErrno, nativeResult);
                 continue;
             }
             ++report.filesRemoved;
@@ -3494,11 +3544,18 @@ bool PortUninstallService::uninstallPort(
     PortUninstallReport& report) const {
     report = {};
     report.filesDeleted = deleteDeployed(plan, report);
-    if (!report.filesDeleted)
+    if (!report.filesDeleted) {
+        log_msg("[port-uninstall] partial title=%s files=%zu missing=%zu failed=%zu %s\n",
+                plan.titleId.c_str(), report.filesRemoved, report.filesMissing,
+                report.filesFailed, report.error.c_str());
         return false;
+    }
     report.tasksRemoved = removeTasks(plan, report);
-    if (!report.tasksRemoved)
+    if (!report.tasksRemoved) {
+        log_msg("[port-uninstall] partial title=%s stage=tasks %s\n",
+                plan.titleId.c_str(), report.error.c_str());
         return false;
+    }
     std::string shortcutError;
     report.shortcutRemoved =
         !uninstallShortcut || uninstallShortcut(shortcutError);

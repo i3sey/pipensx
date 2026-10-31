@@ -898,6 +898,24 @@ int main() {
     // port folder survives, the folder itself stays, empty subfolders go.
     writeFile(portTarget + "/MyPort/user-save.bin", "KEEP");
     writeFile(portTarget + "/KeepMe/keep.txt", "KEEP");
+    // A regular deployed file replaced with a directory must not be treated
+    // as a successful deletion. Keep the receipt and task for a safe retry.
+    PortUninstallPlan blockedPlan = portPlan;
+    blockedPlan.switchFiles = {"MyPort/blocked.bin"};
+    fs::create_directories(portTarget + "/MyPort/blocked.bin");
+    PortUninstallReport blockedReport;
+    bool shortcutCalled = false;
+    assert(!portUninstall.uninstallPort(blockedPlan,
+        [&shortcutCalled](std::string&) { shortcutCalled = true; return true; },
+        blockedReport));
+    assert(!shortcutCalled);
+    assert(blockedReport.filesFailed == 1);
+    assert(blockedReport.error.find("blocked.bin") != std::string::npos);
+    assert(blockedReport.error.find("errno=") != std::string::npos);
+    assert(portUninstall.receiptExists(portId));
+    assert(portManager.snapshot(portId));
+    fs::remove(portTarget + "/MyPort/blocked.bin");
+
     PortUninstallReport portReport;
     assert(portUninstall.uninstallPort(
         portPlan,
