@@ -230,7 +230,18 @@ inline RecoveryAccount recoveryAccountOf(const DownloadTask& task) {
     in.trustedPieces = task.recoveryTrusted || task.recoveryTrustedClaim ||
                        !task.resumeBitfield.empty();
     in.bytePoint = task.recoveryBytePoint;
-    return accountRecovery(in);
+    RecoveryAccount account = accountRecovery(in);
+    // Finished tasks retain their saved-byte counters, but have no recovery
+    // work pending. Do not turn the final result into a new hash scan.
+    if (task.status == DownloadStatus::Completed ||
+        task.status == DownloadStatus::Installed) {
+        account.work = RecoveryWork::None;
+        account.savedBytes = downloaded.first;
+        account.reworkBytes = 0;
+        account.verifyingSaved = false;
+        account.byteExact = false;
+    }
+    return account;
 }
 
 // Stream-install progress fraction. While a package is installing or

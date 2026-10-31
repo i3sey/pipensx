@@ -310,5 +310,23 @@ int main() {
         assert(account.downloadedBytes == 100);
         (void)blended;
     }
+    for (auto status : {DownloadStatus::Completed, DownloadStatus::Installed}) {
+        for (auto source : {TaskSource::Torrent, TaskSource::Debrid}) {
+            DownloadTask task;
+            task.status = status;
+            task.source = source;
+            task.mode = TransferMode::PortInstall;
+            task.completedBytes = task.totalBytes = 850;
+            task.recoveryUnitBytes = 400;
+            const auto account = recoveryAccountOf(task);
+            assert(account.work == RecoveryWork::None);
+            assert(account.downloadedBytes == 850);
+            assert(account.savedBytes == 850);
+            assert(account.reworkBytes == 0);
+            assert(!account.verifyingSaved);
+            assert(!account.byteExact);
+            assert(recoveryNotice(account, false) == pipensx::RecoveryNotice::None);
+        }
+    }
     return 0;
 }
