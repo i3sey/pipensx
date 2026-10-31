@@ -44,6 +44,8 @@ build_switch:
       fi
       echo "Building pipensx version: ${VERSION}"
       echo "RELEASE_TAG=${VERSION}" > build.env
+      CLEAN_VERSION="${VERSION#v}"
+      export PIPENSX_VERSION="${CLEAN_VERSION%%-*}"
     - make switch
     - cd build-switch
     - sha256sum pipensx.nro > pipensx.nro.sha256
