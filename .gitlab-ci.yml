@@ -16,7 +16,7 @@ workflow:
 
 build_switch:
   stage: build
-  image: devkitpro/devkita64:zstd
+  image: devkitpro/devkita64:latest
   before_script:
     - apt-get update && apt-get install -y --no-install-recommends git ca-certificates zstd
   script:
