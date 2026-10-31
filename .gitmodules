@@ -1,6 +1,6 @@
 [submodule "vendor/borealis"]
 	path = vendor/borealis
-	url = https://github.com/i3sey/borealis.git
+	url = https://gitlab.com/pipensx-group/borealis.git
 	branch = moonlight_wiliwili
 [submodule "vendor/glm"]
 	path = vendor/glm

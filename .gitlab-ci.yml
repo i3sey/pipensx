@@ -1,0 +1,73 @@
+stages:
+  - build
+  - release
+
+variables:
+  GIT_SUBMODULE_STRATEGY: recursive
+  RELEASE_VERSION:
+    value: ""
+    description: "Version tag for the release (e.g. v0.4.1). If left blank, defaults to v<date>-<sha>."
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "web"
+    - if: $CI_COMMIT_TAG
+
+build_switch:
+  stage: build
+  image: devkitpro/devkita64:zstd
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends git ca-certificates zstd
+  script:
+    - |
+      if [ -n "$CI_COMMIT_TAG" ]; then
+        VERSION="$CI_COMMIT_TAG"
+      elif [ -n "$RELEASE_VERSION" ]; then
+        VERSION="$RELEASE_VERSION"
+      else
+        VERSION="v$(date +%Y.%m.%d)-${CI_COMMIT_SHORT_SHA}"
+      fi
+      echo "Building pipensx version: ${VERSION}"
+      echo "RELEASE_TAG=${VERSION}" > build.env
+    - make switch
+    - cd build-switch
+    - sha256sum pipensx.nro > pipensx.nro.sha256
+  artifacts:
+    reports:
+      dotenv: build.env
+    paths:
+      - build-switch/pipensx.nro
+      - build-switch/pipensx.nro.sha256
+    expire_in: 1 week
+
+publish_release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  needs:
+    - job: build_switch
+      artifacts: true
+  before_script:
+    - apk add --no-cache curl
+    - |
+      echo "Uploading pipensx.nro and checksum to GitLab Generic Package Registry..."
+      curl --fail-with-body --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+        --upload-file build-switch/pipensx.nro \
+        "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/pipensx/${RELEASE_TAG}/pipensx.nro"
+      curl --fail-with-body --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+        --upload-file build-switch/pipensx.nro.sha256 \
+        "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/pipensx/${RELEASE_TAG}/pipensx.nro.sha256"
+  script:
+    - echo "Publishing release ${RELEASE_TAG}..."
+  release:
+    tag_name: "${RELEASE_TAG}"
+    name: "Release ${RELEASE_TAG}"
+    description: "Automated on-demand build of pipensx ${RELEASE_TAG}."
+    ref: "${CI_COMMIT_SHA}"
+    assets:
+      links:
+        - name: "pipensx.nro"
+          url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/pipensx/${RELEASE_TAG}/pipensx.nro"
+          direct_asset_url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/pipensx/${RELEASE_TAG}/pipensx.nro"
+        - name: "pipensx.nro.sha256"
+          url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/pipensx/${RELEASE_TAG}/pipensx.nro.sha256"
+          direct_asset_url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/pipensx/${RELEASE_TAG}/pipensx.nro.sha256"

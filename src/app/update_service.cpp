@@ -33,9 +33,9 @@ namespace {
 #endif
 
 constexpr const char* kLatestReleaseUrl =
-    "https://api.github.com/repos/i3sey/pipensx/releases/latest";
+    "https://gitlab.com/api/v4/projects/88330126/releases/permalink/latest";
 constexpr const char* kReleaseAssetPrefix =
-    "https://github.com/i3sey/pipensx/releases/download/";
+    "https://gitlab.com/";
 constexpr size_t kMetadataLimit = 512 * 1024;
 constexpr size_t kChecksumLimit = 1024;
 constexpr size_t kNroLimit = 64 * 1024 * 1024;
@@ -140,7 +140,7 @@ bool fetchText(const std::string& url, size_t limit, std::string& body,
     HttpBuffer buffer;
     buffer.limit = limit;
     curl_slist* headers = curl_slist_append(nullptr,
-        "Accept: application/vnd.github+json");
+        "Accept: application/json");
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeString);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buffer);
@@ -259,8 +259,8 @@ bool fetchWithRetry(Fetch fetch, std::string& error,
 }
 
 bool trustedAssetUrl(const std::string& url) {
-    return url.compare(0, std::strlen(kReleaseAssetPrefix),
-                       kReleaseAssetPrefix) == 0;
+    return url.rfind("https://gitlab.com/", 0) == 0 ||
+           url.rfind("https://github.com/i3sey/pipensx/releases/download/", 0) == 0;
 }
 
 bool parseVersion(const std::string& text, std::array<uint64_t, 3>& version) {
@@ -441,27 +441,39 @@ bool UpdateService::parseRelease(const std::string& json, ReleaseInfo& release,
     release = {};
     nlohmann::json root = nlohmann::json::parse(json, nullptr, false);
     if (root.is_discarded() || !root.is_object()) {
-        error = "GitHub returned an invalid release.";
+        error = "Release server returned an invalid release.";
         return false;
     }
-    if (root.value("draft", true) || root.value("prerelease", true)) {
-        error = "GitHub latest release is not published and stable.";
+    if (root.value("draft", false) || root.value("prerelease", false)) {
+        error = "Release is not published and stable.";
         return false;
     }
     release.version = root.value("tag_name", "");
     if (!isNewerVersion(release.version, "0.0.0")) {
-        error = "GitHub release has an invalid version tag.";
+        error = "Release has an invalid version tag.";
         return false;
     }
-    if (!root.contains("assets") || !root["assets"].is_array()) {
-        error = "GitHub release has no assets.";
+    const nlohmann::json* assetItems = nullptr;
+    if (root.contains("assets")) {
+        if (root["assets"].is_array())
+            assetItems = &root["assets"];
+        else if (root["assets"].is_object() && root["assets"].contains("links") &&
+                 root["assets"]["links"].is_array())
+            assetItems = &root["assets"]["links"];
+    }
+    if (!assetItems || assetItems->empty()) {
+        error = "Release has no assets.";
         return false;
     }
-    for (const auto& asset : root["assets"]) {
+    for (const auto& asset : *assetItems) {
         if (!asset.is_object())
             continue;
         const std::string name = asset.value("name", "");
-        const std::string url = asset.value("browser_download_url", "");
+        std::string url = asset.value("browser_download_url", "");
+        if (url.empty())
+            url = asset.value("direct_asset_url", "");
+        if (url.empty())
+            url = asset.value("url", "");
         if (!trustedAssetUrl(url))
             continue;
         if (name == "pipensx.nro")
@@ -470,7 +482,7 @@ bool UpdateService::parseRelease(const std::string& json, ReleaseInfo& release,
             release.checksumUrl = url;
     }
     if (release.nroUrl.empty() || release.checksumUrl.empty()) {
-        error = "GitHub release must include pipensx.nro and pipensx.nro.sha256.";
+        error = "Release must include pipensx.nro and pipensx.nro.sha256.";
         return false;
     }
     return true;

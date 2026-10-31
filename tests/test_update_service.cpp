@@ -60,6 +60,15 @@ std::string releaseJson(const std::string& version, bool checksum = true) {
            "]}";
 }
 
+std::string gitlabReleaseJson(const std::string& version, bool checksum = true) {
+    return "{\"tag_name\":\"" + version + "\",\"assets\":{\"links\":["
+           "{\"name\":\"pipensx.nro\",\"url\":\"https://gitlab.com/api/v4/projects/88330126/packages/generic/pipensx/" +
+           version + "/pipensx.nro\"}" +
+           (checksum ? ",{\"name\":\"pipensx.nro.sha256\",\"url\":\"https://gitlab.com/api/v4/projects/88330126/packages/generic/pipensx/" +
+            version + "/pipensx.nro.sha256\"}" : "") +
+           "]}}";
+}
+
 void write(const std::string& path, const std::string& value) {
     std::ofstream output(path, std::ios::binary | std::ios::trunc);
     output << value;
@@ -136,6 +145,13 @@ void testVersionsAndReleaseValidation() {
                                                 release, error));
     assert(release.version == "v1.2.3");
     assert(!pipensx::UpdateService::parseRelease(releaseJson("v1.2.3", false),
+                                                 release, error));
+    assert(pipensx::UpdateService::parseRelease(gitlabReleaseJson("v1.2.3"),
+                                                release, error));
+    assert(release.version == "v1.2.3");
+    assert(release.nroUrl ==
+           "https://gitlab.com/api/v4/projects/88330126/packages/generic/pipensx/v1.2.3/pipensx.nro");
+    assert(!pipensx::UpdateService::parseRelease(gitlabReleaseJson("v1.2.3", false),
                                                  release, error));
 }
 
