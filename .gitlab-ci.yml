@@ -27,8 +27,8 @@ workflow:
 build_switch:
   stage: build
   image: devkitpro/devkita64:latest
-  variables:
-    BUILD_JOBS: "2"
+  tags:
+    - arch-local
   rules:
     - if: $CI_COMMIT_TAG
     - if: $CI_PIPELINE_SOURCE == "web"
@@ -48,6 +48,8 @@ build_switch:
       echo "RELEASE_TAG=${VERSION}" > build.env
       CLEAN_VERSION="${VERSION#v}"
       export PIPENSX_VERSION="${CLEAN_VERSION%%-*}"
+      export PIPENSX_ENABLE_LTO="ON"
+      export BUILD_JOBS="0"
     - make switch
     - cd build-switch
     - sha256sum pipensx.nro > pipensx.nro.sha256
@@ -62,6 +64,8 @@ build_switch:
 publish_release:
   stage: release
   image: registry.gitlab.com/gitlab-org/release-cli:latest
+  tags:
+    - arch-local
   rules:
     - if: $CI_COMMIT_TAG
     - if: $CI_PIPELINE_SOURCE == "web"
