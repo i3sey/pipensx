@@ -111,14 +111,14 @@ brls::RecyclerCell* DownloadDataSource::cellForRow(
         recycler->dequeueReusableCell("Download"));
     if (const DownloadTask* task = taskAt(index))
         cell->setTask(*task, owner_->metadataService(),
-                      &owner_->deploySnapshot());
+                      &owner_->deploySnapshot(), owner_->rootPath());
     return cell;
 }
 
 void DownloadDataSource::didSelectRowAt(brls::RecyclerFrame*,
                                          brls::IndexPath index) {
     if (const DownloadTask* task = taskAt(index))
-        owner_->openRowMenu(task->id);
+        owner_->openDetails(task->id);
     else
         owner_->openFilePicker();
 }

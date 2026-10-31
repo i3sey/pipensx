@@ -317,7 +317,7 @@
     "summary_errors": "{0} errori",
     "summary_speed": "{0} ↓",
     "summary_eta": "ETA {0}",
-    "remove_question": "Rimuovere questo download da pipensx?",
+    "remove_question": "Rimuovere questa attività? Puoi conservare o eliminare i file scaricati. Giochi e port installati rimangono; disinstallali da I miei giochi.",
     "remove_keep": "Mantieni dati scaricati",
     "remove_delete": "Elimina dati scaricati",
     "status_queued": "In coda",
@@ -379,7 +379,20 @@
     "action_debrid": "Un download debrid non può essere verificato",
     "action_not_queued": "Si può spostare solo un download in coda",
     "action_removing": "Questo download è già in rimozione",
-    "action_not_found": "Questo download non è più nell'elenco"
+    "action_not_found": "Questo download non è più nell'elenco",
+    "workspace_title": "Download",
+    "add_download": "Aggiungi",
+    "manage": "Azioni",
+    "filter_all": "Tutti",
+    "filter_active": "Attivi",
+    "filter_queue": "In coda",
+    "filter_finished": "Completati",
+    "filter_errors": "Errori",
+    "filter_empty": "Nessun download qui",
+    "filter_empty_body": "Scegli un altro filtro o aggiungi un download.",
+    "details": "Dettagli",
+    "result_installed": "Installato · {} salvati",
+    "result_saved": "Scaricato · {} salvati"
   },
   "files": {
     "title": "File scaricati",
@@ -537,7 +550,10 @@
     "update_choose_more": "Altri bundle ({0})...",
     "update_choose_file": "Scegli i file aggiornamento",
     "update_nothing_selected": "Seleziona almeno un file.",
-    "section_other": "Altro"
+    "section_other": "Altro",
+    "uninstall_partial_short": "Rimozione incompleta",
+    "uninstall_partial": "File rimossi: {}. Errori: {}.\n{}\nIl gioco resta nella lista. Riprova; i file già rimossi verranno ignorati.",
+    "actions": "Azioni"
   },
   "updates": {
     "empty_title": "Nessun aggiornamento trovato",

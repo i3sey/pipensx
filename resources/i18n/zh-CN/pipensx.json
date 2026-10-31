@@ -317,7 +317,7 @@
     "summary_speed": "{0} ↓",
     "summary_eta": "剩余 {0}",
     "move_to_top_failed": "无法重排队列：{}",
-    "remove_question": "将此下载从 pipensx 中移除？",
+    "remove_question": "移除此下载任务？可以保留或删除下载的源文件。已安装的游戏和移植版将保留，请在“我的游戏”中卸载。",
     "remove_keep": "保留已下载数据",
     "remove_delete": "删除已下载数据",
     "status_queued": "排队中",
@@ -379,7 +379,20 @@
     "action_debrid": "Debrid 下载无法校验",
     "action_not_queued": "只能移动队列中的下载",
     "action_removing": "此下载已在删除中",
-    "action_not_found": "列表中已没有此下载"
+    "action_not_found": "列表中已没有此下载",
+    "workspace_title": "下载",
+    "add_download": "添加下载",
+    "manage": "操作",
+    "filter_all": "全部",
+    "filter_active": "进行中",
+    "filter_queue": "排队中",
+    "filter_finished": "已完成",
+    "filter_errors": "错误",
+    "filter_empty": "暂无下载",
+    "filter_empty_body": "请选择其他筛选条件或添加下载。",
+    "details": "详情",
+    "result_installed": "已安装 · 已保存 {}",
+    "result_saved": "已下载 · 已保存 {}"
   },
   "files": {
     "title": "已下载文件",
@@ -537,7 +550,10 @@
     "update_choose_more": "其他捆绑包（{0}）…",
     "update_choose_file": "选择更新文件",
     "update_nothing_selected": "请至少选择一个文件。",
-    "section_other": "其他"
+    "section_other": "其他",
+    "uninstall_partial_short": "卸载未完成",
+    "uninstall_partial": "已删除文件：{}。失败：{}。\n{}\n游戏条目已保留。可以重试卸载，已删除的文件将跳过。",
+    "actions": "操作"
   },
   "updates": {
     "empty_title": "未找到更新",

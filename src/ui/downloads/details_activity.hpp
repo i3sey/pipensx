@@ -57,17 +57,17 @@ public:
         eta_ = addLine(progressCard, theme::kFontSmall);
         eta_->setTextColor(theme::textSecondary());
 
-        auto* speedCard = addCard(left, tr("pipensx/downloads/card_speed"));
+        speedCard_ = addCard(left, tr("pipensx/downloads/card_speed"));
         auto* speedLegend = new brls::Box(brls::Axis::ROW);
         speedLegend->setAlignItems(brls::AlignItems::CENTER);
         speedLegend->setMarginBottom(6);
         downloadSpeed_ = addSpeedLegend(speedLegend, theme::accent(), nullptr);
         installSpeed_ = addSpeedLegend(speedLegend, theme::success(),
                                        &installSpeedItem_);
-        speedCard->addView(speedLegend);
+        speedCard_->addView(speedLegend);
         speedGraph_ = new SpeedGraphView();
         speedGraph_->setHeight(64);
-        speedCard->addView(speedGraph_);
+        speedCard_->addView(speedGraph_);
 
         networkCard_ = addCard(left, tr("pipensx/downloads/card_network"));
         networkCard_->setVisibility(brls::Visibility::GONE);
@@ -606,6 +606,11 @@ private:
             doneBytes = account.downloadedBytes;
             totalBytes = account.downloadTotalBytes;
         }
+        const bool finished = finishedDownloadStatus(task->status) && !deploying;
+        speedCard_->setVisibility(finished ? brls::Visibility::GONE
+                                           : brls::Visibility::VISIBLE);
+        progressBar_->setVisibility(finished ? brls::Visibility::GONE
+                                             : brls::Visibility::VISIBLE);
         progressBar_->setProgress(progress);
         if (task && !deploying && !fetching &&
             (account.verifyingSaved || account.showInstalled))
@@ -669,7 +674,7 @@ private:
             installSpeedItem_->setVisibility(brls::Visibility::GONE);
         }
         const bool direct = task->source == TaskSource::Torrent;
-        networkCard_->setVisibility(direct ? brls::Visibility::VISIBLE
+        networkCard_->setVisibility(direct && !finished ? brls::Visibility::VISIBLE
                                            : brls::Visibility::GONE);
         if (direct) {
             setTextIfChanged(peers_, tr("pipensx/downloads/peers_line",
@@ -702,6 +707,10 @@ private:
                                task.status == DownloadStatus::Error;
         setTextIfChanged(pauseButton_, resumable ? tr("pipensx/common/resume")
                                                  : tr("pipensx/common/pause"));
+        pauseButton_->setVisibility(caps.pause.allowed || caps.resume.allowed
+            ? brls::Visibility::VISIBLE : brls::Visibility::GONE);
+        verifyButton_->setVisibility(caps.verify.allowed
+            ? brls::Visibility::VISIBLE : brls::Visibility::GONE);
         setButtonAvailable(pauseButton_,
                            caps.pause.allowed || caps.resume.allowed);
         setButtonAvailable(verifyButton_, caps.verify.allowed);
@@ -815,6 +824,7 @@ private:
     brls::Button* pauseButton_;
     brls::Button* verifyButton_;
     brls::Button* removeButton_;
+    brls::Box* speedCard_;
     ProgressBar* progressBar_;
     brls::Label* progress_;
     brls::Label* package_;

@@ -22,12 +22,13 @@ public:
         setFocusable(true);
         setAxis(brls::Axis::ROW);
         setAlignItems(brls::AlignItems::CENTER);
-        setPadding(12, 20, 12, 20);
-        setHeight(108);
+        setPadding(16, 20, 16, 20);
+        setHeight(132);
+        setCornerRadius(theme::kRadiusLarge);
 
         thumb_ = new brls::Box();
-        thumb_->setWidth(72);
-        thumb_->setHeight(72);
+        thumb_->setWidth(80);
+        thumb_->setHeight(80);
         thumb_->setCornerRadius(6);
         thumb_->setBackgroundColor(theme::surface());
         thumb_->setMarginRight(16);
@@ -38,8 +39,8 @@ public:
         placeholder_->setTextColor(theme::textSecondary());
         thumb_->addView(placeholder_);
         image_ = new AsyncRgbaImage();
-        image_->setWidth(72);
-        image_->setHeight(72);
+        image_->setWidth(80);
+        image_->setHeight(80);
         image_->setPositionType(brls::PositionType::ABSOLUTE);
         image_->setPositionTop(0);
         image_->setPositionLeft(0);
@@ -50,6 +51,7 @@ public:
 
         auto* right = new brls::Box(brls::Axis::COLUMN);
         right->setGrow(1);
+        right->setShrink(1);
         right->setJustifyContent(brls::JustifyContent::CENTER);
 
         auto* top = new brls::Box(brls::Axis::ROW);
@@ -59,19 +61,23 @@ public:
         title_->setAutoAnimate(false);
         title_->setFontSize(22);
         title_->setGrow(1);
+        title_->setShrink(1);
+        title_->setMarginRight(24);
         status_ = new brls::Label();
         status_->setSingleLine(true);
         status_->setAutoAnimate(false);
         status_->setFontSize(17);
         status_->setTextColor(theme::accent());
+        status_->setShrink(0);
         top->addView(title_);
         top->addView(status_);
 
         meta_ = new brls::Label();
         meta_->setSingleLine(true);
         meta_->setAutoAnimate(false);
-        meta_->setFontSize(16);
-        meta_->setMarginTop(6);
+        meta_->setFontSize(theme::kFontSmall);
+        meta_->setTextColor(theme::textSecondary());
+        meta_->setMarginTop(8);
         meta_->setMarginBottom(9);
 
         progress_ = new ProgressBar();
@@ -79,12 +85,13 @@ public:
         right->addView(meta_);
         right->addView(progress_);
         addView(right);
-        updateActionHint(brls::BUTTON_A, tr("pipensx/common/more"));
+        updateActionHint(brls::BUTTON_A, tr("pipensx/downloads/details"));
     }
 
     void setTask(const DownloadTask& task, GameMetadataService* service,
-                 const SwitchDeploySnapshot* deploy = nullptr) {
-        updateActionHint(brls::BUTTON_A, tr("pipensx/common/more"));
+                 const SwitchDeploySnapshot* deploy = nullptr,
+                 const std::string& appRoot = {}) {
+        updateActionHint(brls::BUTTON_A, tr("pipensx/downloads/details"));
         const uint64_t deployGen = deploy ? deploy->generation : 0;
         const uint64_t deployBytes = deploy && deploy->taskId == task.id
             ? deploy->bytesCopied : 0;
@@ -195,32 +202,20 @@ public:
         }
         const bool deployActive = deploy && deploy->taskId == task.id &&
                                   deploy->active();
-        if (!deployActive) {
-            const RecoveryAccount account = recoveryAccountOf(task);
-            const std::string notice = recoveryNoticeText(task);
-            if (!notice.empty() || account.showInstalled ||
-                account.verifyingSaved) {
-                std::string recovery = recoveryAxesText(task);
-                if (!notice.empty()) {
-                    if (!recovery.empty())
-                        recovery += "   ";
-                    recovery += notice;
-                }
-                if (task.status == DownloadStatus::Downloading) {
-                    const auto split = meta.find("   ");
-                    if (split != std::string::npos)
-                        recovery += meta.substr(split);
-                } else if (task.status == DownloadStatus::Installing ||
-                           task.status == DownloadStatus::Committing) {
-                    if (!task.currentPackage.empty())
-                        recovery += "   " + task.currentPackage;
-                } else if (task.status == DownloadStatus::Error &&
-                           !task.error.empty()) {
-                    recovery += "   " + task.error;
-                }
-                meta = recovery;
-            }
+        const bool finished = task.status == DownloadStatus::Completed ||
+                              task.status == DownloadStatus::Installed;
+        const bool deployed = deploy && deploy->taskId == task.id &&
+                              deploy->phase == SwitchDeployPhase::Completed;
+        if (!deployActive && finished) {
+            meta = tr(deployed || task.status == DownloadStatus::Installed
+                ? "pipensx/downloads/result_installed"
+                : "pipensx/downloads/result_saved", formatBytes(wanted.second));
         }
+        progress_->setVisibility(finished && !deployActive
+            ? brls::Visibility::GONE : brls::Visibility::VISIBLE);
+        if (!deployActive && task.status == DownloadStatus::Error &&
+            !task.error.empty())
+            meta = task.error;
         setTextIfChanged(meta_, meta);
 
         if (!sameTask || !image_->hasArtwork()) {
@@ -230,6 +225,8 @@ public:
                 if (found)
                     iconUrl = found->iconUrl;
             }
+            if (iconUrl.empty() && !appRoot.empty())
+                iconUrl = deployedPortIconPath(appRoot, task.id);
             setArtworkUrl(image_, service, iconUrl, currentIconUrl_, imageState_,
                           GameMetadataService::kImageDimIcon);
         }

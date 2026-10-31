@@ -317,7 +317,7 @@
     "summary_speed": "{0} ↓",
     "summary_eta": "ETA {0}",
     "move_to_top_failed": "Impossible de réordonner la file : {}",
-    "remove_question": "Retirer ce téléchargement de pipensx ?",
+    "remove_question": "Supprimer cette tâche ? Les fichiers téléchargés peuvent être conservés ou supprimés. Les jeux et ports installés restent ; désinstallez-les dans Mes jeux.",
     "remove_keep": "Conserver les données téléchargées",
     "remove_delete": "Supprimer les données téléchargées",
     "status_queued": "En file",
@@ -379,7 +379,20 @@
     "action_debrid": "Un téléchargement debrid ne peut pas être vérifié",
     "action_not_queued": "Seule une tâche en file peut être déplacée",
     "action_removing": "Ce téléchargement est déjà en cours de suppression",
-    "action_not_found": "Ce téléchargement n'est plus dans la liste"
+    "action_not_found": "Ce téléchargement n'est plus dans la liste",
+    "workspace_title": "Téléchargements",
+    "add_download": "Ajouter",
+    "manage": "Actions",
+    "filter_all": "Tous",
+    "filter_active": "En cours",
+    "filter_queue": "En attente",
+    "filter_finished": "Terminés",
+    "filter_errors": "Erreurs",
+    "filter_empty": "Aucun téléchargement ici",
+    "filter_empty_body": "Choisissez un autre filtre ou ajoutez un téléchargement.",
+    "details": "Détails",
+    "result_installed": "Installé · {} conservés",
+    "result_saved": "Téléchargé · {} conservés"
   },
   "files": {
     "title": "Fichiers téléchargés",
@@ -537,7 +550,10 @@
     "update_choose_more": "Autres paquets ({0})...",
     "update_choose_file": "Choisir les fichiers de mise à jour",
     "update_nothing_selected": "Sélectionnez au moins un fichier.",
-    "section_other": "Autres"
+    "section_other": "Autres",
+    "uninstall_partial_short": "Suppression incomplète",
+    "uninstall_partial": "Fichiers supprimés : {}. Échecs : {}.\n{}\nLe jeu reste dans la liste. Réessayez ; les fichiers déjà supprimés seront ignorés.",
+    "actions": "Actions"
   },
   "updates": {
     "empty_title": "Aucune mise à jour trouvée",

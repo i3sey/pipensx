@@ -60,46 +60,79 @@ public:
              AppSettings* settings, SwitchDeployService* deploy = nullptr)
         : brls::Box(brls::Axis::COLUMN), manager_(manager), metadata_(metadata),
           settings_(settings), deploy_(deploy) {
+        auto* toolbar = new brls::Box(brls::Axis::ROW);
+        toolbar->setPadding(20, 32, 12, 32);
+        toolbar->setAlignItems(brls::AlignItems::CENTER);
+        auto* heading = new brls::Label();
+        heading->setText(tr("pipensx/downloads/workspace_title"));
+        heading->setFontSize(theme::kFontTitle);
+        heading->setGrow(1);
+        toolbar->addView(heading);
+        addButton_ = new brls::Button();
+        auto* add = addButton_;
+        add->setText(tr("pipensx/downloads/add_download"));
+        add->setMarginRight(16);
+        add->registerClickAction([this](brls::View*) {
+            openFilePicker();
+            return true;
+        });
+        toolbar->addView(add);
+        auto* actions = new brls::Button();
+        actions->setText(tr("pipensx/downloads/manage"));
+        actions->registerClickAction([this](brls::View*) {
+            openManageMenu();
+            return true;
+        });
+        toolbar->addView(actions);
+        addView(toolbar);
+
+        filters_ = new brls::Box(brls::Axis::ROW);
+        auto* filters = filters_;
+        filters->setPadding(0, 32, 12, 32);
+        const char* keys[] = {"filter_all", "filter_active", "filter_queue",
+                              "filter_finished", "filter_errors"};
+        for (int i = 0; i < 5; ++i) {
+            auto* button = new brls::Button();
+            button->setFontSize(theme::kFontSmall);
+            button->setGrow(1);
+            button->setMarginRight(i == 4 ? 0 : 12);
+            button->registerClickAction([this, i](brls::View*) {
+                selectedFilter_ = i;
+                pendingReload_ = true;
+                refresh();
+                return true;
+            });
+            filterButtons_.push_back(button);
+            filterKeys_.push_back(std::string("pipensx/downloads/") + keys[i]);
+            filters->addView(button);
+        }
+        addView(filters);
         summary_ = new brls::Label();
-        summary_->setFontSize(15);
-        summary_->setMarginTop(10);
-        summary_->setMarginBottom(4);
+        summary_->setFontSize(theme::kFontCaption);
         summary_->setMarginLeft(32);
         summary_->setMarginRight(32);
-        summary_->setTextColor(theme::textTertiary());
-        summary_->setVisibility(brls::Visibility::GONE);
+        summary_->setMarginBottom(8);
+        summary_->setTextColor(theme::textSecondary());
         addView(summary_);
 
         recycler_ = new SmoothRecyclerFrame();
         recycler_->setGrow(1);
         recycler_->setPadding(6, 32, 6, 32);
-        recycler_->estimatedRowHeight = 108;
+        recycler_->estimatedRowHeight = 132;
         recycler_->registerCell("Download", [] { return new DownloadCell(); });
         recycler_->registerCell("Message", [] { return new MessageCell(); });
         dataSource_ = new DownloadDataSource(this);
         recycler_->setDataSource(dataSource_);
         recyclerHost_ = recyclerHost(recycler_);
         addView(recyclerHost_);
-        registerAction(tr("pipensx/downloads/import"), brls::BUTTON_X,
+        registerAction(tr("pipensx/downloads/add_download"), brls::BUTTON_X,
                        [this](brls::View*) {
             openFilePicker();
             return true;
         });
-        registerAction(tr("pipensx/downloads/pause_all"), brls::BUTTON_Y,
+        registerAction(tr("pipensx/downloads/manage"), brls::BUTTON_Y,
                        [this](brls::View*) {
-            pauseResumeAll();
-            return true;
-        });
-        // ZL/ZR hints are tappable, same as Import and Pause all. The count
-        // covers finished tasks the list itself may be hiding.
-        registerAction(tr("pipensx/downloads/clear_completed", size_t{0}),
-                       brls::BUTTON_LT, [this](brls::View*) {
-            confirmClearEntries();
-            return true;
-        });
-        registerAction(tr("pipensx/downloads/clear_files"), brls::BUTTON_RT,
-                       [this](brls::View*) {
-            confirmClearFiles();
+            openManageMenu();
             return true;
         });
         refresh();
@@ -329,6 +362,8 @@ public:
         timer_.stop();
     }
 
+    const std::string& rootPath() const { return manager_->rootPath(); }
+
     GameMetadataService* metadataService() const { return metadata_; }
     const SwitchDeploySnapshot& deploySnapshot() const {
         return deploySnapshot_;
@@ -340,7 +375,8 @@ private:
             return emptyState_;
         emptyState_ = new EmptyStateView();
         emptyState_->setContent(
-            tr("pipensx/downloads/empty_title"),
+            tr(selectedFilter_ == 0 ? "pipensx/downloads/empty_title"
+                                    : "pipensx/downloads/filter_empty"),
             tr("pipensx/downloads/empty_body"),
             tr("pipensx/downloads/import_action"),
             [this] { openFilePicker(); });
@@ -356,22 +392,44 @@ private:
         return false;
     }
 
-    void updateClearHints(const std::vector<DownloadTask>& all) {
-        const ClearCompletedPlan plan =
-            planClearCompleted(all, manager_->externalDeployTaskId());
-        const bool any = plan.clearable + plan.skippedBusy > 0;
-        if (clearHintsReady_ && plan.clearable == clearableShown_ &&
-            plan.skippedBusy == skippedShown_ && any == clearAvailable_)
-            return;
-        updateActionHint(brls::BUTTON_LT,
-                         tr("pipensx/downloads/clear_completed",
-                            plan.clearable));
-        setActionAvailable(brls::BUTTON_LT, any);
-        setActionAvailable(brls::BUTTON_RT, any);
-        clearableShown_ = plan.clearable;
-        skippedShown_ = plan.skippedBusy;
-        clearAvailable_ = any;
-        clearHintsReady_ = true;
+    bool matchesFilter(const DownloadTask& task,
+                       const std::string& leasedId, int filter) const {
+        const bool finished = finishedDownloadStatus(task.status);
+        switch (filter) {
+            case 1:
+                return task.id == leasedId || (!finished &&
+                    task.status != DownloadStatus::Queued &&
+                    task.status != DownloadStatus::Error);
+            case 2: return task.status == DownloadStatus::Queued;
+            case 3: return finished && task.id != leasedId;
+            case 4: return task.status == DownloadStatus::Error;
+            default: return true;
+        }
+    }
+
+    void openManageMenu() {
+        const auto tasks = manager_->snapshotUi();
+        const bool pausable = hasPausableTask(tasks,
+                                             manager_->externalDeployTaskId());
+        std::vector<std::string> labels = {
+            tr(pausable ? "pipensx/downloads/pause_all"
+                        : "pipensx/downloads/resume_all"),
+            tr("pipensx/downloads/clear_completed",
+               planClearCompleted(tasks, manager_->externalDeployTaskId()).clearable),
+            tr("pipensx/downloads/clear_files")};
+        auto alive = alive_;
+        auto* menu = new brls::Dropdown(tr("pipensx/downloads/manage"), labels,
+            [this, alive, pausable](int selected) {
+                brls::sync([this, alive, pausable, selected] {
+                    if (!alive->load())
+                        return;
+                    if (selected == 0) {
+                        if (pausable) pauseAll(); else resumeAll();
+                    } else if (selected == 1) confirmClearEntries();
+                    else if (selected == 2) confirmClearFiles();
+                });
+            });
+        brls::Application::pushActivity(new brls::Activity(menu));
     }
 
     void confirmClearEntries() {
@@ -498,6 +556,8 @@ private:
         if (tasks.empty())
             return {};
         const pipensx::QueueSummary s = summarizeQueue(tasks, now_ms());
+        if (!s.downloading && !s.queued && !s.installing && !s.paused && !s.errors)
+            return {};
         std::string text = tr("pipensx/downloads/summary_counts",
                               s.downloading, s.queued, s.installing);
         if (s.paused)
@@ -539,8 +599,60 @@ private:
                                                          : SwitchDeploySnapshot{};
         const std::string activeDeployTask = deployState.active()
             ? deployState.taskId : std::string();
-        updateClearHints(next);
-        if (settings_ && !settings_->get().showCompletedDownloads) {
+        std::vector<size_t> filterCounts(filterButtons_.size());
+        size_t lastVisibleFilter = 0;
+        bool filterVisibilityChanged = false;
+        for (size_t i = 0; i < filterButtons_.size(); ++i) {
+            filterCounts[i] = std::count_if(next.begin(), next.end(),
+                [this, &activeDeployTask, i](const DownloadTask& task) {
+                    return matchesFilter(task, activeDeployTask,
+                                         static_cast<int>(i));
+                });
+            if (filterCounts[i] > 0)
+                lastVisibleFilter = i;
+            const bool visible = filterCounts[i] > 0;
+            filterVisibilityChanged |= visible !=
+                (filterButtons_[i]->getVisibility() == brls::Visibility::VISIBLE);
+        }
+        // An overlay may restore focus to one of these buttons on dismissal.
+        // Defer hiding it until this view owns focus again.
+        brls::View* filterFocus = brls::Application::getCurrentFocus();
+        if (filterVisibilityChanged && activityStackHasOverlay() &&
+            !viewContains(this, filterFocus)) {
+            pendingReload_ = true;
+            return;
+        }
+        if (filterCounts[selectedFilter_] == 0 && selectedFilter_ != 0) {
+            selectedFilter_ = 0;
+            pendingReload_ = true;
+        }
+        for (size_t i = 0; i < filterButtons_.size(); ++i) {
+            auto* button = filterButtons_[i];
+            const bool visible = filterCounts[i] > 0;
+            // Move focus before hiding its owner, including the last filter.
+            if (!visible && viewContains(button, filterFocus))
+                brls::Application::giveFocus(filterCounts[0] > 0
+                    ? static_cast<brls::View*>(filterButtons_[0])
+                    : static_cast<brls::View*>(addButton_));
+            button->setVisibility(visible ? brls::Visibility::VISIBLE
+                                          : brls::Visibility::GONE);
+            button->setMarginRight(i == lastVisibleFilter ? 0 : 12);
+            button->setText(tr(filterKeys_[i].c_str()) + "  " +
+                            std::to_string(filterCounts[i]));
+            button->setStyle(static_cast<int>(i) == selectedFilter_
+                ? &brls::BUTTONSTYLE_PRIMARY : &brls::BUTTONSTYLE_DEFAULT);
+        }
+        filters_->setVisibility(filterCounts[0] > 0
+            ? brls::Visibility::VISIBLE : brls::Visibility::GONE);
+        const std::string summary = summaryText(next);
+        setTextIfChanged(summary_, summary);
+        summary_->setVisibility(summary.empty() ? brls::Visibility::GONE
+                                                : brls::Visibility::VISIBLE);
+        next.erase(std::remove_if(next.begin(), next.end(),
+            [this, &activeDeployTask](const DownloadTask& task) {
+                return !matchesFilter(task, activeDeployTask, selectedFilter_);
+            }), next.end());
+        if (selectedFilter_ == 0 && settings_ && !settings_->get().showCompletedDownloads) {
             next.erase(std::remove_if(next.begin(), next.end(),
                 [&activeDeployTask](const DownloadTask& task) {
                     return task.id != activeDeployTask &&
@@ -548,11 +660,6 @@ private:
                             task.status == DownloadStatus::Installed);
                 }), next.end());
         }
-        setTextIfChanged(summary_, summaryText(next));
-        updateActionHint(brls::BUTTON_Y,
-                         hasPausableTask(next, activeDeployTask)
-                             ? tr("pipensx/downloads/pause_all")
-                             : tr("pipensx/downloads/resume_all"));
         uint64_t settingsGeneration = settings_ ? settings_->generation() : 0;
         bool settingsChanged = settingsGeneration != settingsGeneration_;
         const DownloadListUpdate listed = downloadListUpdate(
@@ -577,7 +684,7 @@ private:
             for (auto* cell : visibleCells<DownloadCell>(recycler_))
                 if (const DownloadTask* task =
                         dataSource_->taskAt(cell->getIndexPath()))
-                    cell->setTask(*task, metadata_, &deploySnapshot_);
+                    cell->setTask(*task, metadata_, &deploySnapshot_, rootPath());
             logRefresh(false, false);
             return;
         }
@@ -609,13 +716,22 @@ private:
             dataSource_->indexForTask(focusedTaskId));
         recycler_->reloadData();
         const bool empty = tasks_.empty();
-        if (empty)
-            ensureEmptyState()->setVisibility(brls::Visibility::VISIBLE);
+        if (empty) {
+            ensureEmptyState()->setContent(
+                tr(selectedFilter_ == 0 ? "pipensx/downloads/empty_title"
+                                       : "pipensx/downloads/filter_empty"),
+                tr(selectedFilter_ == 0 ? "pipensx/downloads/empty_body"
+                                       : "pipensx/downloads/filter_empty_body"),
+                tr("pipensx/downloads/add_download"),
+                [this] { openFilePicker(); });
+            emptyState_->setVisibility(brls::Visibility::VISIBLE);
+        }
         else if (emptyState_)
             emptyState_->setVisibility(brls::Visibility::GONE);
         recyclerHost_->setVisibility(empty ? brls::Visibility::GONE
                                            : brls::Visibility::VISIBLE);
-        if (ownsFocus) {
+        if (ownsFocus && (focusedCell ||
+                          (emptyState_ && viewContains(emptyState_, focused)))) {
             if (empty) {
                 brls::Application::giveFocus(ensureEmptyState());
             } else {
@@ -649,10 +765,11 @@ private:
     std::shared_ptr<std::atomic<bool>> alive_ =
         std::make_shared<std::atomic<bool>>(true);
     bool clearInFlight_ = false;
-    bool clearHintsReady_ = false;
-    bool clearAvailable_ = false;
-    size_t clearableShown_ = 0;
-    size_t skippedShown_ = 0;
+    brls::Button* addButton_ = nullptr;
+    brls::Box* filters_ = nullptr;
+    int selectedFilter_ = 0;
+    std::vector<brls::Button*> filterButtons_;
+    std::vector<std::string> filterKeys_;
 };
 
 }  // namespace pipensx::ui

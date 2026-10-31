@@ -317,7 +317,7 @@
     "summary_errors": "{0} errors",
     "summary_speed": "{0} ↓",
     "summary_eta": "ETA {0}",
-    "remove_question": "Remove this download from pipensx?",
+    "remove_question": "Remove this download task? Downloaded data can be kept or deleted. Installed games and ports stay installed; uninstall them from My Games.",
     "remove_keep": "Keep downloaded data",
     "remove_delete": "Delete downloaded data",
     "status_queued": "Queued",
@@ -379,7 +379,20 @@
     "action_debrid": "A debrid download cannot be verified",
     "action_not_queued": "Only a queued download can be moved",
     "action_removing": "This download is already being removed",
-    "action_not_found": "This download is no longer in the list"
+    "action_not_found": "This download is no longer in the list",
+    "workspace_title": "Downloads",
+    "add_download": "Add download",
+    "manage": "Actions",
+    "filter_all": "All",
+    "filter_active": "Active",
+    "filter_queue": "Queued",
+    "filter_finished": "Finished",
+    "filter_errors": "Errors",
+    "filter_empty": "No downloads here",
+    "filter_empty_body": "Choose another filter or add a download.",
+    "details": "Details",
+    "result_installed": "Installed · {} saved",
+    "result_saved": "Downloaded · {} saved"
   },
   "files": {
     "title": "Downloaded files",
@@ -537,7 +550,10 @@
     "update_choose_more": "Other bundles ({0})...",
     "update_choose_file": "Choose the update files",
     "update_nothing_selected": "Select at least one file.",
-    "section_other": "Other"
+    "section_other": "Other",
+    "uninstall_partial_short": "Removal incomplete",
+    "uninstall_partial": "Files removed: {}. Failed: {}.\n{}\nThe game entry is kept. You can retry Uninstall; files already removed will be skipped.",
+    "actions": "Actions"
   },
   "updates": {
     "empty_title": "No updates found",

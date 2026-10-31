@@ -317,7 +317,7 @@
     "summary_speed": "{0} ↓",
     "summary_eta": "Tiempo restante {0}",
     "move_to_top_failed": "No se pudo reordenar la cola: {}",
-    "remove_question": "¿Quitar esta descarga de pipensx?",
+    "remove_question": "¿Eliminar esta tarea? Puedes conservar o borrar los archivos descargados. Los juegos y ports instalados se conservan; desinstálalos en Mis juegos.",
     "remove_keep": "Conservar datos descargados",
     "remove_delete": "Eliminar datos descargados",
     "status_queued": "Na fila",
@@ -379,7 +379,20 @@
     "action_debrid": "Una descarga de debrid no se puede verificar",
     "action_not_queued": "Solo se puede mover una descarga en cola",
     "action_removing": "Esta descarga ya se está eliminando",
-    "action_not_found": "Esta descarga ya no está en la lista"
+    "action_not_found": "Esta descarga ya no está en la lista",
+    "workspace_title": "Descargas",
+    "add_download": "Añadir",
+    "manage": "Acciones",
+    "filter_all": "Todas",
+    "filter_active": "Activas",
+    "filter_queue": "En cola",
+    "filter_finished": "Finalizadas",
+    "filter_errors": "Errores",
+    "filter_empty": "No hay descargas aquí",
+    "filter_empty_body": "Elige otro filtro o añade una descarga.",
+    "details": "Detalles",
+    "result_installed": "Instalado · {} guardados",
+    "result_saved": "Descargado · {} guardados"
   },
   "files": {
     "title": "Archivos descargados",
@@ -537,7 +550,10 @@
     "update_choose_more": "Otros paquetes ({0})...",
     "update_choose_file": "Elige los archivos de actualización",
     "update_nothing_selected": "Selecciona al menos un archivo.",
-    "section_other": "Otros"
+    "section_other": "Otros",
+    "uninstall_partial_short": "Eliminación incompleta",
+    "uninstall_partial": "Archivos eliminados: {}. Errores: {}.\n{}\nEl juego sigue en la lista. Puedes reintentar; se omitirán los archivos ya eliminados.",
+    "actions": "Acciones"
   },
   "updates": {
     "empty_title": "No se encontraron actualizaciones",

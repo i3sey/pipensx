@@ -317,7 +317,7 @@
     "summary_errors": "오류 {0}",
     "summary_speed": "{0} ↓",
     "summary_eta": "남은 시간 {0}",
-    "remove_question": "이 다운로드를 pipensx에서 제거할까요?",
+    "remove_question": "이 다운로드 작업을 삭제할까요? 다운로드한 파일은 유지하거나 삭제할 수 있습니다. 설치된 게임과 포트는 유지됩니다. 내 게임에서 제거하세요.",
     "remove_keep": "다운로드한 데이터 유지",
     "remove_delete": "다운로드한 데이터 삭제",
     "status_queued": "대기 중",
@@ -379,7 +379,20 @@
     "action_debrid": "디브리드 다운로드는 검증할 수 없습니다",
     "action_not_queued": "대기 중인 다운로드만 이동할 수 있습니다",
     "action_removing": "이 다운로드는 이미 제거 중입니다",
-    "action_not_found": "이 다운로드는 더 이상 목록에 없습니다"
+    "action_not_found": "이 다운로드는 더 이상 목록에 없습니다",
+    "workspace_title": "다운로드",
+    "add_download": "추가",
+    "manage": "작업",
+    "filter_all": "전체",
+    "filter_active": "진행 중",
+    "filter_queue": "대기 중",
+    "filter_finished": "완료",
+    "filter_errors": "오류",
+    "filter_empty": "다운로드 없음",
+    "filter_empty_body": "다른 필터를 선택하거나 다운로드를 추가하세요.",
+    "details": "자세히",
+    "result_installed": "설치됨 · {} 저장됨",
+    "result_saved": "다운로드됨 · {} 저장됨"
   },
   "files": {
     "title": "다운로드한 파일",
@@ -537,7 +550,10 @@
     "update_choose_more": "다른 번들 ({0})...",
     "update_choose_file": "업데이트 파일 선택",
     "update_nothing_selected": "파일을 하나 이상 선택하세요.",
-    "section_other": "기타"
+    "section_other": "기타",
+    "uninstall_partial_short": "제거 미완료",
+    "uninstall_partial": "삭제된 파일: {}. 실패: {}.\n{}\n게임 항목이 유지됩니다. 다시 제거하면 이미 삭제된 파일은 건너뜁니다.",
+    "actions": "작업"
   },
   "updates": {
     "empty_title": "업데이트가 없습니다",
