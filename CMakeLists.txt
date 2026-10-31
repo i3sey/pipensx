@@ -28,11 +28,14 @@ project(pipensx VERSION ${PIPENSX_VERSION} LANGUAGES C CXX ASM)
 
 # devkitA64 defaults Release to "-g -O2": the debug info balloons the ELF to
 # ~90 MB and slows every compile and link, while elf2nro strips it from the
-# NRO anyway. Keep Release lean.
+# NRO anyway. Keep Release lean. LTO is optional to avoid OOM on memory-constrained CI.
+option(PIPENSX_ENABLE_LTO "Enable Link-Time Optimization" OFF)
 if (PLATFORM_SWITCH)
     set(CMAKE_C_FLAGS_RELEASE "-O2 -DNDEBUG")
     set(CMAKE_CXX_FLAGS_RELEASE "-O2 -DNDEBUG")
-    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+    if (PIPENSX_ENABLE_LTO)
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+    endif ()
 endif ()
 
 set(APP_TITLE "pipensx")

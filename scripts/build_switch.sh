@@ -46,6 +46,7 @@ done
     "-DPIPENSX_METADATA_INDEX=${PIPENSX_METADATA_INDEX}" \
     "-DPIPENSX_BUNDLE_CATALOG=${PIPENSX_BUNDLE_CATALOG}" \
     -DCMAKE_BUILD_TYPE=Release
-"${CMAKE_BIN}" --build "${BUILD_DIR}" --target pipensx.nro --parallel
+BUILD_JOBS="${BUILD_JOBS:-2}"
+"${CMAKE_BIN}" --build "${BUILD_DIR}" --target pipensx.nro -j "${BUILD_JOBS}"
 
 echo "Built: ${BUILD_DIR}/pipensx.nro"
