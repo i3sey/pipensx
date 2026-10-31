@@ -1,17 +1,17 @@
 # pipensx
 
-[![CI](https://github.com/i3sey/pipensx/actions/workflows/ci.yml/badge.svg)](https://github.com/i3sey/pipensx/actions/workflows/ci.yml)
+[![Pipeline Status](https://gitlab.com/pipensx-group/pipensx/badges/main/pipeline.svg)](https://gitlab.com/pipensx-group/pipensx/-/pipelines)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
-[![Downloads](https://img.shields.io/github/downloads/i3sey/pipensx/latest/pipensx.nro)](https://github.com/i3sey/pipensx/releases/latest)
+[![Latest Release](https://gitlab.com/pipensx-group/pipensx/-/badges/release.svg)](https://gitlab.com/pipensx-group/pipensx/-/releases)
 
 Native BitTorrent download manager and streaming package installer for
 Nintendo Switch homebrew.
 
-DOWNLOAD LATEST - [pipensx.nro](https://github.com/i3sey/pipensx/releases/latest/download/pipensx.nro)
+DOWNLOAD LATEST - [pipensx.nro](https://gitlab.com/pipensx-group/pipensx/-/releases)
 
-<img src="resources/2026071001590800_anonymized.jpg" width="400"> <img src="resources/2026071002002700_anonymized.jpg" width="400">
+<img src="resources/screen_catalog.jpg" width="400"> <img src="resources/screen_detail.jpg" width="400">
 <br><br>
-<img src="resources/2026071002003500_anonymized.jpg" width="400"> <img src="resources/2026071002004100.jpg" width="400">
+<img src="resources/screen_downloads.jpg" width="400"> <img src="resources/screen_installed.jpg" width="400">
 
 
 > [!IMPORTANT]
@@ -29,11 +29,11 @@ DOWNLOAD LATEST - [pipensx.nro](https://github.com/i3sey/pipensx/releases/latest
 - native Borealis interface with controller, touch, light/dark, handheld, and
   docked support
 - persistent FIFO queue with pause, resume, retry, recheck, and safe shutdown
+- redesigned Downloads workspace with live category filters (All, Active, Queued, Finished, Errors)
+- refined Installed Games view with direct actions (Open in catalog, Update, Ignore, Uninstall) and facts table
 - restart-safe piece verification and download recovery
 - tracker, DHT, and PEX peer discovery
-- live, cached catalog loaded from the allowlisted
-  [Langegen switch-games](https://github.com/Langegen/switch-games) catalog
-  with cover URLs
+- live, cached catalog loaded from the trusted Langegen catalog with cover URLs
 - offline magnet resolution when the catalog provides a verified info dictionary
 - download-only mode and sequential NSP/NSZ installation while pieces arrive
 - unified homebrew-port installs: NRO application folders and ZIP/7z payloads
@@ -43,22 +43,21 @@ DOWNLOAD LATEST - [pipensx.nro](https://github.com/i3sey/pipensx/releases/latest
 - optional HTTPS/SOCKS proxy for catalog, artwork, and debrid HTTPS traffic
 - download diagnostics, speed history, peer state, and extended telemetry
 
-The public build intentionally starts without a bundled catalog or game
-metadata index. On first use, the Catalog view refreshes from the trusted source
-and then uses its on-SD cache.
+The public build intentionally starts without a bundled catalog. On first use,
+the Catalog view refreshes from the trusted Langegen source and then uses its
+on-SD cache.
 
-If the default catalog is unavailable, open **Settings → Catalog → Catalog
-source** and select **pipensx-catalog**. Selecting a source saves it and
-immediately refreshes the catalog. You can also enter a custom HTTPS JSON
-URL or return to **Default (Langegen)**. Updating the catalog includes its
-cover URLs without a separate artwork-index update.
+If you wish to use an alternative catalog source, open **Settings → Catalog →
+Catalog source** and select **Custom URL**. You can enter any custom HTTPS JSON
+URL or return to **Default (Langegen)** at any time. Updating the catalog
+includes its cover URLs without a separate artwork update.
 
 ## Quick start
 
 Clone the pinned submodules:
 
 ```bash
-git clone --recurse-submodules https://github.com/i3sey/pipensx.git
+git clone --recurse-submodules https://gitlab.com/pipensx-group/pipensx.git
 cd pipensx
 ```
 
@@ -81,7 +80,7 @@ metadata input, and deployment helpers.
 
 ## Install on Nintendo Switch
 
-Copy the [NRO](https://github.com/i3sey/pipensx/releases/latest/download/pipensx.nro) to:
+Download the latest [pipensx.nro](https://gitlab.com/pipensx-group/pipensx/-/releases) and copy it to:
 
 ```text
 SD:/switch/pipensx/pipensx.nro
