@@ -49,7 +49,6 @@ build_switch:
       CLEAN_VERSION="${VERSION#v}"
       export PIPENSX_VERSION="${CLEAN_VERSION%%-*}"
       export PIPENSX_ENABLE_LTO="ON"
-      export BUILD_JOBS="0"
     - make switch
     - cd build-switch
     - sha256sum pipensx.nro > pipensx.nro.sha256

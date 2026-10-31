@@ -39,14 +39,21 @@ done
 [[ -f "${ROOT}/vendor/borealis/library/CMakeLists.txt" ]] ||
     { echo "Missing Borealis submodule. Run: git submodule update --init --recursive" >&2; exit 1; }
 
+PIPENSX_ENABLE_LTO="${PIPENSX_ENABLE_LTO:-ON}"
+
 "${CMAKE_BIN}" -S "${ROOT}" -B "${BUILD_DIR}" \
     -DPLATFORM_SWITCH=ON \
     -DUSE_DEKO3D=ON \
     "-DPIPENSX_VERSION=${PIPENSX_VERSION}" \
     "-DPIPENSX_METADATA_INDEX=${PIPENSX_METADATA_INDEX}" \
     "-DPIPENSX_BUNDLE_CATALOG=${PIPENSX_BUNDLE_CATALOG}" \
+    "-DPIPENSX_ENABLE_LTO=${PIPENSX_ENABLE_LTO}" \
     -DCMAKE_BUILD_TYPE=Release
-BUILD_JOBS="${BUILD_JOBS:-2}"
-"${CMAKE_BIN}" --build "${BUILD_DIR}" --target pipensx.nro -j "${BUILD_JOBS}"
+
+JOBS="${BUILD_JOBS:-$(nproc)}"
+if [[ "${JOBS}" == "0" ]]; then
+    JOBS="$(nproc)"
+fi
+"${CMAKE_BIN}" --build "${BUILD_DIR}" --target pipensx.nro -j "${JOBS}"
 
 echo "Built: ${BUILD_DIR}/pipensx.nro"
