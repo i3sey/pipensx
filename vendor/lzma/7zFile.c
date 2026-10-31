@@ -90,7 +90,7 @@ WRes OutFile_Open(CSzFile *p, const char *name)
   #if defined(USE_WINDOWS_FILE) || defined(USE_FOPEN)
   return File_Open(p, name, 1);
   #else
-  p->fd = creat(name, 0666);
+  p->fd = open(name, O_WRONLY | O_CREAT | O_TRUNC, 0666);
   return (p->fd != -1) ? 0 : errno;
   #endif
 }
