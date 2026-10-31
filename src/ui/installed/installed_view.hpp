@@ -551,7 +551,8 @@ public:
         catalogButton_->setMarginBottom(8);
         catalogButton_->registerClickAction([this](brls::View*) {
             if (!selectedTitle_.titleId.empty())
-                openInCatalog(selectedTitle_.titleId);
+                openInCatalog(selectedTitle_.titleId, selectedTitle_.version,
+                              selectedTitle_.name);
             return true;
         });
         selectionPanel_->addView(catalogButton_);
@@ -594,7 +595,7 @@ public:
                 it->second.state == GameUpdateState::UpdateAvailable) {
                 installUpdate(title.titleId, it->second.foundVersion);
             } else {
-                openInCatalog(title.titleId);
+                openInCatalog(title.titleId, title.version, title.name);
             }
         });
         reload();
@@ -796,14 +797,57 @@ private:
         reload();
     }
 
+    static std::string normalizeName(const std::string& s) {
+        std::string res;
+        res.reserve(s.size());
+        for (char c : s) {
+            unsigned char uc = static_cast<unsigned char>(c);
+            if (std::isalnum(uc)) {
+                res.push_back(static_cast<char>(std::tolower(uc)));
+            } else if (res.empty() || res.back() != ' ') {
+                res.push_back(' ');
+            }
+        }
+        while (!res.empty() && res.back() == ' ')
+            res.pop_back();
+        return res;
+    }
+
+    static bool isModOrPortRelease(const std::string& title) {
+        std::string lower;
+        lower.reserve(title.size());
+        for (char c : title)
+            lower.push_back(static_cast<char>(
+                std::tolower(static_cast<unsigned char>(c))));
+
+        const size_t bracket = lower.find('[');
+        const std::string titlePart =
+            bracket != std::string::npos ? lower.substr(0, bracket) : lower;
+
+        if (titlePart.find("ctgp") != std::string::npos ||
+            titlePart.find(" мод") != std::string::npos ||
+            titlePart.find("mod") != std::string::npos ||
+            titlePart.find("порт") != std::string::npos ||
+            titlePart.find("port") != std::string::npos ||
+            titlePart.find("hack") != std::string::npos ||
+            titlePart.find("хак") != std::string::npos ||
+            titlePart.find("хоумбрю") != std::string::npos ||
+            titlePart.find("homebrew") != std::string::npos)
+            return true;
+        return false;
+    }
+
     const CatalogEntry* catalogEntryForTitle(
         const std::string& titleId,
-        const std::string& foundVersion = {}) const {
+        const std::string& foundVersion = {},
+        const std::string& installedVersion = {},
+        const std::string& installedName = {}) const {
         if (!catalog_)
             return nullptr;
         std::vector<const GameMetadata*> entries;
         if (metadata_)
             metadata_->findByTitleId(titleId, entries);
+
         // B3: the update check names the wanted version — open the bundle
         // carrying it, not the newest-published one (usually the base
         // game), so "install update" does not download the whole game.
@@ -816,15 +860,58 @@ private:
                     return direct;
             }
         }
+
+        // When navigating to the catalog for an installed title, prefer
+        // a release bundle that matches the installed version.
+        if (foundVersion.empty() && !installedVersion.empty() &&
+            installedVersion != "0" && metadata_) {
+            if (const GameMetadata* match =
+                    GameMetadataService::preferVersionMatch(entries,
+                                                           installedVersion)) {
+                if (const CatalogEntry* direct =
+                        catalog_->findByInfoHash(match->infoHash))
+                    return direct;
+            }
+        }
+
+        const std::string normInstalled = normalizeName(installedName);
         const CatalogEntry* best = nullptr;
+        int64_t bestScore = std::numeric_limits<int64_t>::min();
+
+        auto evaluateCandidate = [&](const CatalogEntry* candidate,
+                                     const GameMetadata* meta) {
+            if (!candidate)
+                return;
+            int64_t score = 0;
+
+            // Heavily penalize standalone mod / port / fan releases when matching
+            // a base game title ID.
+            if (isModOrPortRelease(candidate->title))
+                score -= 10000000000LL;
+
+            if (!normInstalled.empty()) {
+                const std::string normCand = normalizeName(candidate->title);
+                if (normCand.find(normInstalled) != std::string::npos)
+                    score += 5000000000LL;
+                if (meta) {
+                    const std::string normMeta = normalizeName(meta->name);
+                    if (normMeta.find(normInstalled) != std::string::npos)
+                        score += 2000000000LL;
+                }
+            }
+
+            score += candidate->publishedAt;
+
+            if (!best || score > bestScore) {
+                best = candidate;
+                bestScore = score;
+            }
+        };
+
         for (const GameMetadata* meta : entries) {
             if (!meta)
                 continue;
-            const CatalogEntry* candidate =
-                catalog_->findByInfoHash(meta->infoHash);
-            if (candidate &&
-                (!best || candidate->publishedAt > best->publishedAt))
-                best = candidate;
+            evaluateCandidate(catalog_->findByInfoHash(meta->infoHash), meta);
         }
         if (best)
             return best;
@@ -836,16 +923,18 @@ private:
             if (entry.titleId.empty() ||
                 catalogLower(entry.titleId) != want)
                 continue;
-            if (!best || entry.publishedAt > best->publishedAt)
-                best = &entry;
+            evaluateCandidate(&entry, nullptr);
         }
         return best;
     }
 
     void openCatalogPage(const std::string& titleId, bool autoInstall,
-                         const std::string& foundVersion = {}) {
+                         const std::string& foundVersion = {},
+                         const std::string& installedVersion = {},
+                         const std::string& installedName = {}) {
         const CatalogEntry* catalogEntry =
-            catalogEntryForTitle(titleId, foundVersion);
+            catalogEntryForTitle(titleId, foundVersion, installedVersion,
+                                 installedName);
         if (!catalogEntry) {
             brls::Application::notify(
                 tr("pipensx/installed/update_no_bundle"));
@@ -866,8 +955,10 @@ private:
             nullptr, favorites_, deploy_, autoInstall));
     }
 
-    void openInCatalog(const std::string& titleId) {
-        openCatalogPage(titleId, false);
+    void openInCatalog(const std::string& titleId,
+                       const std::string& installedVersion = {},
+                       const std::string& installedName = {}) {
+        openCatalogPage(titleId, false, {}, installedVersion, installedName);
     }
 
     void installUpdate(const std::string& titleId,
