@@ -1555,7 +1555,7 @@ private:
     }
 
     void refreshCatalog() {
-        refreshSources(true, metadata_ != nullptr, true);
+        refreshSources(true, false, true);
     }
 
     void refreshCatalogIfDue() {
@@ -1572,9 +1572,7 @@ private:
             wallSec, snapshot, cached,
             wallSec != 0 && isLocalToday(static_cast<int64_t>(wallSec)),
             snapshot > 0 && isLocalToday(snapshot));
-        const bool metadataDue = metadata_ && settings_ &&
-            (catalogEmpty || dailyRefreshDue(now_ms(), settings_->get().lastMetadataRefreshMs));
-        refreshSources(catalogDue, catalogDue || metadataDue, false);
+        refreshSources(catalogDue, false, false);
     }
 
     void notifyRefreshResult(bool fetchCatalog, bool fetchMetadata,

@@ -1158,7 +1158,6 @@ public:
         catalogPreset_ = new brls::SelectorCell();
         catalogPreset_->init(tr("pipensx/settings/catalog_source"),
             {tr("pipensx/settings/catalog_source_default"),
-             "pipensx-catalog",
              tr("pipensx/settings/catalog_source_custom")},
             catalogPresetIndex(), [this](int selected) {
                 if (refreshInFlight_) {
@@ -1166,14 +1165,13 @@ public:
                     brls::Application::notify(tr("pipensx/catalog/updating_catalog"));
                     return;
                 }
-                if (selected == 2) {
+                if (selected == 1) {
                     refreshCatalogSourceDetail();
                     editCatalogSource();
                     return;
                 }
                 AppSettingsData values = settings_->get();
-                values.catalogSourceUrl = selected == 1
-                    ? kAlternativeCatalogUrl : "";
+                values.catalogSourceUrl = "";
                 if (!persistSettings(settings_, values, "catalog_source_url")) {
                     refreshCatalogSourceDetail();
                     return;
@@ -1261,14 +1259,14 @@ private:
         const auto& url = settings_->get().catalogSourceUrl;
         if (url.empty() || url == kDefaultCatalogUrl)
             return 0;
-        return url == kAlternativeCatalogUrl ? 1 : 2;
+        return 1;
     }
 
     void refreshCatalogSourceDetail() {
         const std::string& url = settings_->get().catalogSourceUrl;
         const int index = catalogPresetIndex();
         catalogPreset_->setSelection(index, true);
-        const bool isCustom = (index == 2);
+        const bool isCustom = (index == 1);
         catalogSource_->setVisibility(isCustom ? brls::Visibility::VISIBLE
                                                : brls::Visibility::GONE);
         if (isCustom)
@@ -1283,8 +1281,7 @@ private:
         }
         const std::string current = settings_->get().catalogSourceUrl;
         const std::string initialText =
-            (current.empty() || current == kDefaultCatalogUrl ||
-             current == kAlternativeCatalogUrl)
+            (current.empty() || current == kDefaultCatalogUrl)
                 ? "" : current;
         bool shown = brls::Application::getImeManager()->openForText(
             [this](std::string text) {

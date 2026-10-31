@@ -144,10 +144,7 @@ public:
                                  std::string bundledPath =
                                      "romfs:/catalog/"
                                      "game_metadata_index.json.zst",
-                                 std::string manifestUrl =
-                                     "https://github.com/i3sey/"
-                                     "pipensx-metadata/releases/latest/"
-                                     "download/manifest.json",
+                                 std::string manifestUrl = {},
                                  MetadataFetcher metadataFetcher = {},
                                  ImageFetcher imageFetcher = {});
     ~GameMetadataService();

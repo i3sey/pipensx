@@ -1058,8 +1058,15 @@ bool GameMetadataService::fetchLatest(MetadataSnapshot& snapshot,
     };
     if (failIfRefreshCancelled(cancelled, error))
         return false;
-    if (!isTrustedSource(manifestUrl_)) {
-        error = "Metadata manifest URL is not trusted.";
+    if (manifestUrl_.empty() || !isTrustedSource(manifestUrl_)) {
+        std::string cacheError;
+        MetadataSnapshot cached;
+        if (loadCachedSnapshot(cached, cacheError, cancelled)) {
+            snapshot = std::move(cached);
+            error.clear();
+            return true;
+        }
+        error = "No remote metadata source configured.";
         return false;
     }
     std::vector<uint8_t> manifestBytes;
