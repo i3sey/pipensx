@@ -2005,7 +2005,7 @@ void testImageSizeClassesCacheSeparately() {
     assert(getcwd(cwd, sizeof(cwd)));
     // Bundled 1280x720 JPEG — big enough that the card class must shrink it.
     const std::string source =
-        std::string(cwd) + "/resources/2026071002004100.jpg";
+        std::string(cwd) + "/resources/screen_downloads.jpg";
     const std::string root = "/tmp/pipensx-image-class-test-" +
                              std::to_string(static_cast<long long>(getpid()));
     {
@@ -2075,7 +2075,7 @@ void testImageThumbnailReusesLargerDecode() {
     const std::string source = root + "/source.jpg";
     mkdir(root.c_str(), 0755);
     {
-        std::ifstream input("resources/2026071002004100.jpg", std::ios::binary);
+        std::ifstream input("resources/screen_downloads.jpg", std::ios::binary);
         std::ofstream output(source, std::ios::binary | std::ios::trunc);
         output << input.rdbuf();
         assert(input.good() && output.good());

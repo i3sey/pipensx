@@ -1,22 +1,36 @@
 stages:
+  - test
   - build
+  - deploy
   - release
+
+include:
+  - template: Jobs/Secret-Detection.latest.gitlab-ci.yml
+  - template: Jobs/SAST.latest.gitlab-ci.yml
 
 variables:
   GIT_SUBMODULE_STRATEGY: recursive
   RELEASE_VERSION:
     value: ""
     description: "Version tag for the release (e.g. v0.4.1). If left blank, defaults to v<date>-<sha>."
+  SECRET_DETECTION_EXCLUDED_PATHS: "vendor, tests/fixtures, bug-reports"
+  SAST_EXCLUDED_PATHS: "vendor, tests/fixtures, bug-reports"
 
 workflow:
   rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
     - if: $CI_PIPELINE_SOURCE == "web"
     - if: $CI_PIPELINE_SOURCE == "api"
-    - if: $CI_COMMIT_TAG
 
 build_switch:
   stage: build
   image: devkitpro/devkita64:latest
+  rules:
+    - if: $CI_COMMIT_TAG
+    - if: $CI_PIPELINE_SOURCE == "web"
+    - if: $CI_PIPELINE_SOURCE == "api"
   before_script:
     - apt-get update && apt-get install -y --no-install-recommends git ca-certificates zstd
   script:
@@ -44,6 +58,10 @@ build_switch:
 publish_release:
   stage: release
   image: registry.gitlab.com/gitlab-org/release-cli:latest
+  rules:
+    - if: $CI_COMMIT_TAG
+    - if: $CI_PIPELINE_SOURCE == "web"
+    - if: $CI_PIPELINE_SOURCE == "api"
   needs:
     - job: build_switch
       artifacts: true
@@ -72,3 +90,14 @@ publish_release:
         - name: "pipensx.nro.sha256"
           url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/pipensx/${RELEASE_TAG}/pipensx.nro.sha256"
           link_type: "package"
+
+pages:
+  stage: deploy
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  script:
+    - mkdir -p public
+    - cp -r site/* public/
+  artifacts:
+    paths:
+      - public

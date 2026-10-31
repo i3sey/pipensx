@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>pipensx — BitTorrent & Package Installer for Nintendo Switch</title>
+  <meta name="description" content="Native Nintendo Switch BitTorrent client and package installer. Direct streaming installation for NSP, NSZ and XCI without requiring double free space.">
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 rx=%2220%22 fill=%22%23e60012%22/><text y=%2268%22 x=%2250%22 text-anchor=%22middle%22 font-family=%22monospace%22 font-weight=%22bold%22 font-size=%2250%22 fill=%22white%22>P</text></svg>">
+</head>
+<body>
+
+  <!-- Site Header -->
+  <header class="site-header">
+    <div class="header-container">
+      <a href="#" class="brand">
+        <span class="brand-badge">NX</span>
+        <span class="brand-title">pipensx</span>
+        <span class="brand-version">v0.4.x</span>
+      </a>
+
+      <nav aria-label="Main Navigation">
+        <ul class="nav-links">
+          <li><a href="#features" class="nav-link" data-i18n="navFeatures">Features</a></li>
+          <li><a href="#screenshots" class="nav-link" data-i18n="navScreenshots">Screenshots</a></li>
+          <li><a href="#installation" class="nav-link" data-i18n="navInstall">Installation</a></li>
+          <li><a href="#specs" class="nav-link" data-i18n="navSpecs">Specs</a></li>
+          <li>
+            <div class="lang-switch" role="group" aria-label="Language selector">
+              <button class="lang-btn active" data-lang="en" type="button" aria-label="English">EN</button>
+              <button class="lang-btn" data-lang="ru" type="button" aria-label="Русский">RU</button>
+            </div>
+          </li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <!-- Hero Section -->
+    <section class="hero-section">
+      <div class="container hero-grid">
+        <div class="hero-content">
+          <div class="hero-tag">
+            <span class="hero-tag-dot" aria-hidden="true"></span>
+            <span data-i18n="heroTag">NINTENDO SWITCH HOMEBREW</span>
+          </div>
+
+          <h1 class="hero-heading" data-i18n="heroHeading">
+            BitTorrent client & package installer for Nintendo Switch
+          </h1>
+
+          <p class="hero-lead" data-i18n="heroLead">
+            Download games, updates, DLC and fan ports directly on your console. Installs NSP, NSZ and XCI packages on the fly without needing twice the free storage space.
+          </p>
+
+          <div class="hero-actions">
+            <a href="https://gitlab.com/pipensx-group/pipensx/-/releases" class="btn btn-primary" target="_blank" rel="noopener">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              <span data-i18n="btnDownload">Download pipensx.nro</span>
+            </a>
+            <a href="https://gitlab.com/pipensx-group/pipensx" class="btn btn-secondary" target="_blank" rel="noopener">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M22.65 14.39L12 22.13 1.35 14.39a.84.84 0 0 1-.3-.94l1.22-3.78 2.44-7.51A.42.42 0 0 1 4.82 2a.43.43 0 0 1 .58 0 .42.42 0 0 1 .11.18l2.44 7.49h8.1l2.44-7.49a.42.42 0 0 1 .11-.18.43.43 0 0 1 .58 0 .42.42 0 0 1 .11.18l2.44 7.51L23 13.45a.84.84 0 0 1-.35.94z"/></svg>
+              <span data-i18n="btnGitLab">GitLab Repository</span>
+            </a>
+          </div>
+
+          <div class="hero-meta">
+            <span data-i18n="metaCFW">CFW: Atmosphère</span>
+            <span aria-hidden="true">/</span>
+            <span data-i18n="metaArch">C11 / C++20</span>
+            <span aria-hidden="true">/</span>
+            <span data-i18n="metaUI">Borealis 60 FPS</span>
+          </div>
+        </div>
+
+        <div class="hero-banner-card zoomable">
+          <img src="images/screen_downloads.jpg" alt="pipensx downloads screen running on Nintendo Switch" class="banner-screen-img" loading="eager">
+          <div class="banner-caption">
+            <span data-i18n="bannerCaption">Downloads view: Active torrent transfers and categories</span>
+            <span style="font-family: var(--font-mono); color: var(--accent-red);">1280x720 NX</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Capabilities / Features -->
+    <section id="features" class="section">
+      <div class="container">
+        <div class="section-header">
+          <div class="section-label" data-i18n="featuresLabel">CAPABILITIES</div>
+          <h2 class="section-title" data-i18n="featuresTitle">Engineered specifically for Nintendo Switch</h2>
+        </div>
+
+        <div class="features-grid">
+          <article class="feature-card">
+            <span class="feature-badge">NSP / NSZ / XCI</span>
+            <h3 class="feature-title" data-i18n="featStreamTitle">Direct Streaming Installation</h3>
+            <p class="feature-desc" data-i18n="featStreamDesc">
+              Streams package data directly into NAND or SD card storage while downloading. Eliminates the requirement to keep 30 GB free for the archive plus 30 GB for the installed game.
+            </p>
+          </article>
+
+          <article class="feature-card">
+            <span class="feature-badge">HTTPS / CLOUD</span>
+            <h3 class="feature-title" data-i18n="featDebridTitle">Debrid & HTTP Acceleration</h3>
+            <p class="feature-desc" data-i18n="featDebridDesc">
+              Native support for TorBox, TorrServer, Real-Debrid, and AllDebrid. Downloads cached torrents over encrypted HTTPS connections at full line speed.
+            </p>
+          </article>
+
+          <article class="feature-card">
+            <span class="feature-badge">P2P PROTOCOL</span>
+            <h3 class="feature-title" data-i18n="featTorrentTitle">Embedded BitTorrent Engine</h3>
+            <p class="feature-desc" data-i18n="featTorrentDesc">
+              Complete standalone C11 BitTorrent core with libutp, mainline DHT, tracker scrape, piece integrity hashing, and optimized SD card write buffering.
+            </p>
+          </article>
+
+          <article class="feature-card">
+            <span class="feature-badge">ATMOSPHÈRE</span>
+            <h3 class="feature-title" data-i18n="featLibraryTitle">Installed Titles & Port Manager</h3>
+            <p class="feature-desc" data-i18n="featLibraryDesc">
+              Inspect installed games, base builds, DLCs, and version numbers. Automatically detects PC game ports and deploys LayeredFS game files.
+            </p>
+          </article>
+
+          <article class="feature-card">
+            <span class="feature-badge">CONTROLLER FIRST</span>
+            <h3 class="feature-title" data-i18n="featBorealisTitle">Native Controller Interface</h3>
+            <p class="feature-desc" data-i18n="featBorealisDesc">
+              Fluid 60 FPS interface built on Borealis. Full support for Joy-Cons, Pro Controllers, D-Pad, analog stick scrolling, and capacitive touchscreen.
+            </p>
+          </article>
+
+          <article class="feature-card">
+            <span class="feature-badge">VERIFIED CI</span>
+            <h3 class="feature-title" data-i18n="featSecurityTitle">Open & Audited Source</h3>
+            <p class="feature-desc" data-i18n="featSecurityDesc">
+              No telemetry, no hidden accounts, and zero proprietary trackers. Source code is open and scanned via GitLab Secret Detection and SAST.
+            </p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- Actual Screenshots Gallery -->
+    <section id="screenshots" class="section">
+      <div class="container">
+        <div class="section-header">
+          <div class="section-label" data-i18n="screensLabel">INTERFACE</div>
+          <h2 class="section-title" data-i18n="screensTitle">Actual Nintendo Switch captures</h2>
+        </div>
+
+        <div class="gallery-grid">
+          <!-- Screenshot 1: Catalog -->
+          <article class="gallery-card">
+            <div class="gallery-img-wrapper zoomable">
+              <img src="images/screen_catalog.jpg" alt="pipensx game catalog with grid view and covers" class="gallery-img" loading="lazy">
+              <span class="gallery-zoom-hint" aria-hidden="true">&#x1F50D; Click to enlarge</span>
+            </div>
+            <div class="gallery-info">
+              <h3 class="gallery-title" data-i18n="screen1Title">Game Catalog & Navigation</h3>
+              <p class="gallery-desc" data-i18n="screen1Desc">Fast catalog grid with cover art, release details, genres, and instant search.</p>
+            </div>
+          </article>
+
+          <!-- Screenshot 2: Detail -->
+          <article class="gallery-card">
+            <div class="gallery-img-wrapper zoomable">
+              <img src="images/screen_detail.jpg" alt="pipensx game details view with description and versions" class="gallery-img" loading="lazy">
+              <span class="gallery-zoom-hint" aria-hidden="true">&#x1F50D; Click to enlarge</span>
+            </div>
+            <div class="gallery-info">
+              <h3 class="gallery-title" data-i18n="screen2Title">Details & Versions</h3>
+              <p class="gallery-desc" data-i18n="screen2Desc">Inspect version numbers, descriptions, screenshots, and choose download sources.</p>
+            </div>
+          </article>
+
+          <!-- Screenshot 3: Downloads -->
+          <article class="gallery-card">
+            <div class="gallery-img-wrapper zoomable">
+              <img src="images/screen_downloads.jpg" alt="pipensx downloads manager with download speeds and active torrents" class="gallery-img" loading="lazy">
+              <span class="gallery-zoom-hint" aria-hidden="true">&#x1F50D; Click to enlarge</span>
+            </div>
+            <div class="gallery-info">
+              <h3 class="gallery-title" data-i18n="screen3Title">Active Downloads Queue</h3>
+              <p class="gallery-desc" data-i18n="screen3Desc">Track transfer speed, peer count, ETA, download categories, and installation progress.</p>
+            </div>
+          </article>
+
+          <!-- Screenshot 4: Installed Games -->
+          <article class="gallery-card">
+            <div class="gallery-img-wrapper zoomable">
+              <img src="images/screen_installed.jpg" alt="pipensx installed games library with updates and sidebar actions" class="gallery-img" loading="lazy">
+              <span class="gallery-zoom-hint" aria-hidden="true">&#x1F50D; Click to enlarge</span>
+            </div>
+            <div class="gallery-info">
+              <h3 class="gallery-title" data-i18n="screen4Title">Installed Titles & Management</h3>
+              <p class="gallery-desc" data-i18n="screen4Desc">Direct sidebar actions: view updates, inspect DLC, uninstall files, and launch games.</p>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- Installation Guide -->
+    <section id="installation" class="section">
+      <div class="container">
+        <div class="section-header">
+          <div class="section-label" data-i18n="installLabel">GETTING STARTED</div>
+          <h2 class="section-title" data-i18n="installTitle">Installation Guide</h2>
+        </div>
+
+        <div class="guide-tabs" role="tablist">
+          <button class="tab-btn active" data-tab="tab-dbi" role="tab" aria-selected="true" data-i18n="tabDBI">Method 1: DBI (USB-C)</button>
+          <button class="tab-btn" data-tab="tab-sd" role="tab" aria-selected="false" data-i18n="tabSD">Method 2: MicroSD Card</button>
+        </div>
+
+        <!-- DBI Panel -->
+        <div id="tab-dbi" class="guide-panel active" role="tabpanel">
+          <ol class="guide-steps">
+            <li class="guide-step">
+              <div class="step-title" data-i18n="dbiStep1Title">Connect your Nintendo Switch</div>
+              <p class="step-text" data-i18n="dbiStep1Desc">Plug your Switch into your computer using a standard USB-C data cable.</p>
+            </li>
+            <li class="guide-step">
+              <div class="step-title" data-i18n="dbiStep2Title">Start MTP Responder in DBI</div>
+              <p class="step-text" data-i18n="dbiStep2Desc">Open DBI from the Homebrew Menu and select "Run MTP Responder".</p>
+            </li>
+            <li class="guide-step">
+              <div class="step-title" data-i18n="dbiStep3Title">Open Switch storage on computer</div>
+              <p class="step-text" data-i18n="dbiStep3Desc">Open the mounted "Switch" storage drive on your PC and navigate to "1: External SD Card" -> "switch".</p>
+            </li>
+            <li class="guide-step">
+              <div class="step-title" data-i18n="dbiStep4Title">Copy pipensx.nro</div>
+              <p class="step-text" data-i18n="dbiStep4Desc">Create folder "pipensx" and place pipensx.nro into it: /switch/pipensx/pipensx.nro.</p>
+              <div class="code-box">External SD Card/switch/pipensx/pipensx.nro</div>
+            </li>
+            <li class="guide-step">
+              <div class="step-title" data-i18n="dbiStep5Title">Exit MTP Responder</div>
+              <p class="step-text" data-i18n="dbiStep5Desc">Press [X] on your Nintendo Switch to stop MTP Responder. pipensx will now appear in your Homebrew Menu.</p>
+            </li>
+          </ol>
+        </div>
+
+        <!-- MicroSD Panel -->
+        <div id="tab-sd" class="guide-panel" role="tabpanel">
+          <ol class="guide-steps">
+            <li class="guide-step">
+              <div class="step-title" data-i18n="sdStep1Title">Turn off console or open Hekate UMS</div>
+              <p class="step-text" data-i18n="sdStep1Desc">Safely power off your Nintendo Switch and remove the microSD card, or boot into Hekate and choose Tools -> USB Tools -> SD Card.</p>
+            </li>
+            <li class="guide-step">
+              <div class="step-title" data-i18n="sdStep2Title">Insert card into PC card reader</div>
+              <p class="step-text" data-i18n="sdStep2Desc">Connect the microSD card to your computer via card reader.</p>
+            </li>
+            <li class="guide-step">
+              <div class="step-title" data-i18n="sdStep3Title">Copy executable to SD card</div>
+              <p class="step-text" data-i18n="sdStep3Desc">Copy pipensx.nro into the switch folder: SD:/switch/pipensx/pipensx.nro.</p>
+              <div class="code-box">SD:/switch/pipensx/pipensx.nro</div>
+            </li>
+            <li class="guide-step">
+              <div class="step-title" data-i18n="sdStep4Title">Insert card back and boot CFW</div>
+              <p class="step-text" data-i18n="sdStep4Desc">Reinsert the card into the console and boot into Atmosphère CFW.</p>
+            </li>
+          </ol>
+        </div>
+
+        <!-- Crucial Title Override Warning -->
+        <div class="alert-card">
+          <div class="alert-heading">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2L1 21h22L12 2zm1 14h-2v-2h2v2zm0-4h-2V8h2v4z"/></svg>
+            <span data-i18n="alertTitle">Important: Launch via Title Override (Full RAM Mode)</span>
+          </div>
+          <p class="alert-text" data-i18n="alertDesc">
+            Do NOT launch pipensx from the Album icon (Applet Mode). Applet mode restricts memory to ~400 MB, causing out-of-memory errors during torrent decompression. Hold [R] while launching any installed game on the Switch home screen to launch the Homebrew Menu in full RAM mode (3.2+ GB).
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Technical Specifications -->
+    <section id="specs" class="section">
+      <div class="container">
+        <div class="section-header">
+          <div class="section-label" data-i18n="specsLabel">TECHNICAL DETAILS</div>
+          <h2 class="section-title" data-i18n="specsTitle">System Requirements</h2>
+        </div>
+
+        <table class="specs-table">
+          <tbody>
+            <tr>
+              <th data-i18n="specPlatform">Target Platform</th>
+              <td data-i18n="specPlatformVal">Nintendo Switch (V1, V2, Lite, OLED) running Atmosphère CFW</td>
+            </tr>
+            <tr>
+              <th data-i18n="specFormat">Executable Format</th>
+              <td data-i18n="specFormatVal">Homebrew NRO (.nro)</td>
+            </tr>
+            <tr>
+              <th data-i18n="specMemory">Memory Ceiling</th>
+              <td data-i18n="specMemoryVal">Title Override mode recommended (3.2 GB RAM available)</td>
+            </tr>
+            <tr>
+              <th data-i18n="specPackages">Supported Packages</th>
+              <td data-i18n="specPackagesVal">NSP, NSZ (Zstandard compression), XCI</td>
+            </tr>
+            <tr>
+              <th data-i18n="specProtocols">Network Protocols</th>
+              <td data-i18n="specProtocolsVal">BitTorrent, uTP, DHT, HTTPS (TorBox, TorrServer, Real-Debrid)</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <!-- Screenshot Modal Lightbox -->
+  <div id="img-modal" class="modal-overlay" role="dialog" aria-modal="true" aria-label="Screenshot lightbox">
+    <div class="modal-content">
+      <button id="modal-close" class="modal-close-btn" type="button" aria-label="Close dialog">&times;</button>
+      <img id="modal-img" src="" alt="" class="modal-img">
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <footer class="site-footer">
+    <div class="container footer-content">
+      <p data-i18n="footerText">pipensx is open-source software built for Nintendo Switch homebrew enthusiasts.</p>
+      <ul class="footer-links">
+        <li><a href="https://gitlab.com/pipensx-group/pipensx/-/releases" class="footer-link" target="_blank" rel="noopener" data-i18n="footerReleases">Releases</a></li>
+        <li><a href="https://gitlab.com/pipensx-group/pipensx" class="footer-link" target="_blank" rel="noopener" data-i18n="footerGitLab">GitLab</a></li>
+        <li><a href="https://gitlab.com/pipensx-group/pipensx/-/wikis/home" class="footer-link" target="_blank" rel="noopener" data-i18n="footerDocs">Documentation</a></li>
+      </ul>
+    </div>
+  </footer>
+
+  <script src="js/main.js"></script>
+</body>
+</html>
