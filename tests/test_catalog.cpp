@@ -1999,6 +1999,81 @@ void testImageCacheBudgetAndLru() {
     rmdir(root.c_str());
 }
 
+void testBoxartCrop() {
+    char temporary[] = "/tmp/pipensx-boxart-XXXXXX";
+    const char* directory = mkdtemp(temporary);
+    assert(directory);
+    const std::string root = directory;
+    {
+        GameMetadataService service(root, root + "/missing.json");
+        for (const auto& size : std::vector<std::pair<int, int>>{
+                 {368, 600}, {390, 640}, {552, 900}, {397, 600}, {256, 256}, {10, 15}}) {
+            for (int kind = 0; kind < 4; ++kind) {
+                const int width = size.first, height = size.second;
+                const int top = (height * 16 + 639) / 640;
+                const int right = (width * 18 + 389) / 390;
+                const int whiteMargin = width / 20;
+                std::vector<uint8_t> bmp(54 + width * height * 4, 0);
+                auto put32 = [&](size_t offset, uint32_t value) {
+                    for (int b = 0; b < 4; ++b) bmp[offset + b] = value >> (b * 8);
+                };
+                bmp[0] = 'B'; bmp[1] = 'M'; put32(2, bmp.size());
+                put32(10, 54); put32(14, 40); put32(18, width); put32(22, height);
+                bmp[26] = 1; bmp[28] = 32;
+                for (int y = 0; y < height; ++y) {
+                    for (int x = 0; x < width; ++x) {
+                        auto* pixel = bmp.data() + 54 +
+                            (static_cast<size_t>(height - 1 - y) * width + x) * 4;
+                        // Red poster, or a white poster with no plastic case.
+                        pixel[0] = pixel[1] = kind == 1 ? 255 : 20;
+                        pixel[2] = 255; pixel[3] = 255;
+                        if (kind == 2 && ((x == width / 2 && y == 5) ||
+                                          (x == width - 6 && y == height / 2)))
+                            pixel[0] = pixel[1] = pixel[2] = 224;
+                        if (kind == 3 && (x < whiteMargin || x >= width - whiteMargin ||
+                                          y < whiteMargin || y >= height - whiteMargin))
+                            pixel[0] = pixel[1] = pixel[2] = 255;
+                        if (kind == 0 && (y < top || y >= height - top || x >= width - right))
+                            pixel[0] = pixel[1] = pixel[2] = x >= width - right ? 192 : 224;
+                    }
+                }
+                const std::string source = root + "/" + std::to_string(width) +
+                    "-" + std::to_string(kind) + ".bmp";
+                {
+                    std::ofstream output(source, std::ios::binary);
+                    output.write(reinterpret_cast<const char*>(bmp.data()), bmp.size());
+                }
+                std::mutex mutex;
+                std::condition_variable ready;
+                bool done = false;
+                GameMetadataService::ImageData image;
+                service.requestImage(source, [&](GameMetadataService::ImageData data) {
+                    std::lock_guard<std::mutex> lock(mutex);
+                    image = std::move(data); done = true; ready.notify_all();
+                }, GameMetadataService::kImageDimFull);
+                std::unique_lock<std::mutex> lock(mutex);
+                assert(ready.wait_for(lock, std::chrono::seconds(10), [&] { return done; }));
+                assert(image);
+                const bool cropped = kind == 0 && width >= 180 && width != height && width != 397;
+                const bool whiteTrimmed = kind == 3 && width >= 20 && width != height;
+                assert(image->width == (cropped ? width - right :
+                    whiteTrimmed ? width - 2 * (whiteMargin + std::max(1, width / 400)) : width));
+                assert(image->height == (cropped ? height - 2 * top :
+                    whiteTrimmed ? height - 2 * (whiteMargin + std::max(1, width / 400)) : height));
+                if (cropped || whiteTrimmed) {
+                    for (size_t i = 0; i < image->pixels.size(); i += 4)
+                        assert(image->pixels[i] == 255 && image->pixels[i + 1] == 20);
+                }
+                unlink(source.c_str());
+            }
+        }
+    }
+    rmdir((root + "/catalog/metadata").c_str());
+    rmdir((root + "/catalog/images").c_str());
+    rmdir((root + "/catalog").c_str());
+    rmdir(root.c_str());
+}
+
 // One source, four decode classes. Small list icons and grid tiles must not
 // share the 360px card decode (that upload blows Switch mapping slack), and the
 // fullscreen viewer must not inherit any smaller class.
@@ -3638,6 +3713,7 @@ int main() {
     testOversizedImageRejectedBeforeDecode();
     testImageMemoryCache();
     testImageCacheBudgetAndLru();
+    testBoxartCrop();
     testImageSizeClassesCacheSeparately();
     testImageThumbnailReusesLargerDecode();
     testImageNetworkThrottledDuringActiveTransfer();

@@ -411,30 +411,87 @@ bool inspectImage(const std::vector<uint8_t>& bytes, int& width, int& height) {
 }
 
 bool isSwitchBoxartTemplate(int width, int height, const uint8_t* pixels) {
-    if (width < 370 || width > 410 || height < 620 || height > 660 || !pixels)
+    if (!pixels || width < 180 || height < 300 ||
+        width * 1000 < height * 600 || width * 1000 > height * 630)
         return false;
-    // Check right latch pixel near (width - 6, height / 2)
-    // and top rim pixel near (width / 2, 5).
-    // The 3D plastic case template has consistent grey plastic borders (R, G, B >= 180).
-    const uint8_t* pRight =
-        pixels + (static_cast<size_t>(height / 2) * width + (width - 6)) * 4;
-    const uint8_t* pTop =
-        pixels + (5 * width + width / 2) * 4;
-    return (pRight[0] >= 180 && pRight[1] >= 180 && pRight[2] >= 180 &&
-            pTop[0] >= 180 && pTop[1] >= 180 && pTop[2] >= 180);
+    // The source resizes its plastic-case template (currently 368x600).
+    // Sample both rims proportionally; white artwork alone is not a case.
+    const int rimY = std::max(1, (height * 5 + 320) / 640);
+    const int rimX = width - std::max(1, (width * 6 + 195) / 390);
+    auto grey = [](const uint8_t* p, int maximum) {
+        const int low = std::min({p[0], p[1], p[2]});
+        const int high = std::max({p[0], p[1], p[2]});
+        return low >= 180 && high <= maximum && high - low <= 12;
+    };
+    int topMatches = 0, rightMatches = 0;
+    for (int part = 1; part <= 3; ++part) {
+        const auto* top = pixels + (static_cast<size_t>(rimY) * width +
+                                    width * part / 4) * 4;
+        const auto* right = pixels + (static_cast<size_t>(height * part / 4) *
+                                      width + rimX) * 4;
+        topMatches += grey(top, 255);
+        rightMatches += grey(right, 235);
+    }
+    return topMatches >= 2 && rightMatches >= 2;
 }
 
-std::vector<uint8_t> cropSwitchBoxartTemplate(const uint8_t* pixels, int& width, int& height) {
-    constexpr int cropLeft = 0;
-    constexpr int cropTop = 16;
-    const int newWidth = width > 18 ? width - 18 : width;
-    const int newHeight = height > 32 ? height - 32 : height;
+std::vector<uint8_t> cropSwitchBoxartTemplate(const uint8_t* pixels,
+                                             int& width, int& height) {
+    const int cropTop = (height * 16 + 639) / 640;
+    const int cropRight = (width * 18 + 389) / 390;
+    const int newWidth = width - cropRight;
+    const int newHeight = height - 2 * cropTop;
     std::vector<uint8_t> cropped(static_cast<size_t>(newWidth) * newHeight * 4);
     for (int y = 0; y < newHeight; ++y) {
-        const uint8_t* srcRow = pixels + (static_cast<size_t>(cropTop + y) * width + cropLeft) * 4;
+        const uint8_t* srcRow = pixels +
+            static_cast<size_t>(cropTop + y) * width * 4;
         uint8_t* dstRow = cropped.data() + static_cast<size_t>(y) * newWidth * 4;
         std::memcpy(dstRow, srcRow, static_cast<size_t>(newWidth) * 4);
     }
+    width = newWidth;
+    height = newHeight;
+    return cropped;
+}
+
+std::vector<uint8_t> trimWhitePosterBorder(const uint8_t* pixels,
+                                           int& width, int& height) {
+    if (width * 2 < height || width * 5 > height * 4)
+        return {};
+    auto white = [&](int x, int y) {
+        const auto* p = pixels + (static_cast<size_t>(y) * width + x) * 4;
+        return p[0] >= 235 && p[1] >= 235 && p[2] >= 235;
+    };
+    auto whiteRow = [&](int y) {
+        int count = 0;
+        for (int x = 0; x < width; ++x) count += white(x, y);
+        return count * 100 >= width * 98;
+    };
+    auto whiteColumn = [&](int x) {
+        int count = 0;
+        for (int y = 0; y < height; ++y) count += white(x, y);
+        return count * 100 >= height * 98;
+    };
+    int top = 0, bottom = 0, left = 0, right = 0;
+    while (top < height / 10 && whiteRow(top)) ++top;
+    while (bottom < height / 10 && whiteRow(height - 1 - bottom)) ++bottom;
+    while (left < width / 10 && whiteColumn(left)) ++left;
+    while (right < width / 10 && whiteColumn(width - 1 - right)) ++right;
+    // Require a bounded frame on all four sides; blank/light artwork stays intact.
+    if (top < std::max(1, height / 100) || bottom < std::max(1, height / 100) ||
+        left < std::max(1, width / 100) || right < std::max(1, width / 100) ||
+        top == height / 10 || bottom == height / 10 ||
+        left == width / 10 || right == width / 10)
+        return {};
+    // Step past the JPEG halo at the paper/art boundary.
+    const int inset = std::max(1, std::min(width, height) / 400);
+    left += inset; right += inset; top += inset; bottom += inset;
+    const int newWidth = width - left - right;
+    const int newHeight = height - top - bottom;
+    std::vector<uint8_t> cropped(static_cast<size_t>(newWidth) * newHeight * 4);
+    for (int y = 0; y < newHeight; ++y)
+        std::memcpy(cropped.data() + static_cast<size_t>(y) * newWidth * 4,
+                    pixels + (static_cast<size_t>(top + y) * width + left) * 4,
+                    static_cast<size_t>(newWidth) * 4);
     width = newWidth;
     height = newHeight;
     return cropped;
@@ -1805,7 +1862,10 @@ void GameMetadataService::imageLocalWorkerMain() const {
                 if (pixels && validDecodedImageSize(width, height)) {
                     std::vector<uint8_t> cropped;
                     const uint8_t* sourcePixels = pixels;
-                    if (isSwitchBoxartTemplate(width, height, pixels)) {
+                    cropped = trimWhitePosterBorder(pixels, width, height);
+                    if (!cropped.empty()) {
+                        sourcePixels = cropped.data();
+                    } else if (isSwitchBoxartTemplate(width, height, pixels)) {
                         cropped = cropSwitchBoxartTemplate(pixels, width, height);
                         sourcePixels = cropped.data();
                     }
