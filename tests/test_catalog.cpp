@@ -2716,6 +2716,19 @@ void testCatalogMultiTitles() {
     assert(catalogEntryMatchesSearch(legacy, nullptr, catalogFoldForSearch("0100123400000000")));
 }
 
+void testCatalogUpdateVersionParsing() {
+    const std::string prefix = R"({"title":"Game","magnet":"magnet:?xt=urn:btih:8B8016FD97F08E2CC46E3B104B72EC758173C3C9&tr=http%3A%2F%2Fbt.t-ru.org%2Fann%3Fmagnet","title_id":"0100AAAA00000000",)";
+    for (const auto& test : std::vector<std::pair<std::string, std::string>>{
+             {"65536", "65536"}, {"0", "0"}, {"4294967295", "4294967295"},
+             {"4294967296", ""}, {"-1", ""}, {"1.5", ""},
+             {"\"65536\"", ""}, {"null", ""}}) {
+        std::vector<CatalogEntry> entries;
+        std::string error;
+        assert(CatalogService::parseJson("[" + prefix + "\"update_version\":" + test.first + "}]", entries, error));
+        assert(entries.size() == 1 && entries[0].updateVersion == test.second);
+    }
+}
+
 void testCatalogV2FieldsParsing() {
     const char* json =
         "[{"
@@ -3480,6 +3493,7 @@ int main() {
     testCatalogSizeBytesPriority();
     testAutorunBox64ProfileParsing();
     testCatalogMultiTitles();
+    testCatalogUpdateVersionParsing();
     testCatalogV2FieldsParsing();
     testCatalogPackageTypeTitleCorrection();
     testCatalogDateStringTolerance();

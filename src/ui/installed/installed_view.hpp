@@ -845,15 +845,9 @@ private:
         if (!catalog_)
             return nullptr;
         const std::string requestedVersion = foundVersion.empty() ? installedVersion : foundVersion;
-        if (!requestedVersion.empty()) {
-            for (const CatalogEntry& entry : catalog_->entries()) {
-                for (const auto& title : entry.titles) {
-                    if (catalogLower(title.titleId) == catalogLower(titleId) &&
-                        title.updateVersion == requestedVersion)
-                        return &entry;
-                }
-            }
-        }
+        if (const CatalogEntry* match = findCatalogUpdateVersion(
+                catalog_->entries(), titleId, requestedVersion))
+            return match;
         std::vector<const GameMetadata*> entries;
         if (metadata_)
             metadata_->findByTitleId(titleId, entries);
@@ -866,8 +860,18 @@ private:
                     GameMetadataService::preferVersionMatch(entries,
                                                            foundVersion)) {
                 if (const CatalogEntry* direct =
-                        catalog_->findByInfoHash(match->infoHash))
-                    return direct;
+                        catalog_->findByInfoHash(match->infoHash)) {
+                    const std::string catalogVersion = catalogUpdateVersion(*direct, titleId);
+                    const bool hasTitles = direct->hasTitlesField || !direct->titles.empty();
+                    const bool containsTitle = std::any_of(
+                        direct->titles.begin(), direct->titles.end(),
+                        [&](const CatalogTitle& title) {
+                            return catalogLower(title.titleId) == catalogLower(titleId);
+                        });
+                    if ((!hasTitles || containsTitle) &&
+                        (catalogVersion.empty() || catalogVersion == foundVersion))
+                        return direct;
+                }
             }
         }
 
@@ -883,6 +887,9 @@ private:
                     return direct;
             }
         }
+
+        if (!foundVersion.empty())
+            return nullptr;
 
         const std::string normInstalled = normalizeName(installedName);
         const CatalogEntry* best = nullptr;

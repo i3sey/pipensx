@@ -73,6 +73,26 @@ void testCatalogVersionsArePerTitle() {
     assert(versions.empty());
 }
 
+void testCatalogReleaseVersions() {
+    pipensx::CatalogEntry single;
+    single.titleId = "0100AAAA00000000";
+    single.updateVersion = "131072";
+    pipensx::CatalogEntry bundle = single;
+    bundle.hasTitlesField = true;
+    bundle.titles = {{"0100AAAA00000000", "65536", "1.0"},
+                     {"0100BBBB00000000", "196608", "2.0"}};
+    std::vector<pipensx::CatalogEntry> entries{bundle, single};
+    std::vector<std::string> versions;
+    pipensx::collectCatalogUpdateVersions(entries, "0100aaaa00000000", versions);
+    assert((versions == std::vector<std::string>{"65536", "131072"}));
+    assert(pipensx::findCatalogUpdateVersion(entries, "0100AAAA00000000", "131072") == &entries[1]);
+    assert(pipensx::findCatalogUpdateVersion(entries, "0100BBBB00000000", "196608") == &entries[0]);
+    assert(!pipensx::findCatalogUpdateVersion(entries, "0100BBBB00000000", "131072"));
+    assert(!pipensx::findCatalogUpdateVersion(entries, "0100AAAA00000000", "bad"));
+    entries[0].titles.clear();
+    assert(pipensx::catalogUpdateVersion(entries[0], "0100AAAA00000000").empty());
+}
+
 void testSourceUnknownWhenNoEntryOrEmptyVersion() {
     FakeSource source;
     GameUpdateService service(&source, StatePath);
@@ -390,6 +410,7 @@ void testResultsGenerationBumpsOnRecheck() {
 int main() {
     reset();
     testCatalogVersionsArePerTitle();
+    testCatalogReleaseVersions();
     testSourceUnknownWhenNoEntryOrEmptyVersion();
     testNullSourceReportsSourceUnknown();
     testNoInstalledVersionIsCheckError();

@@ -15,6 +15,7 @@
 #include "app/add_release.hpp"
 #include "app/app_settings.hpp"
 #include "app/catalog_presentation.hpp"
+#include "app/game_update_service.hpp"
 #include "app/game_update_install.hpp"
 #include "ui/i18n.hpp"
 #include "app/catalog_service.hpp"
@@ -1709,12 +1710,15 @@ private:
     }
 
     std::string latestVersionForEntry() const {
-        if (!entry_.titles.empty()) {
+        if (entry_.hasTitlesField || !entry_.titles.empty()) {
             for (const auto& title : entry_.titles)
                 if (catalogLower(title.titleId) == catalogLower(titleId_))
                     return title.updateVersion;
             return {};
         }
+        const std::string catalogVersion = catalogUpdateVersion(entry_, titleId_);
+        if (!catalogVersion.empty())
+            return catalogVersion;
         const GameMetadata* metadata =
             metadata_->findByInfoHash(entry_.infoHash, titleId_);
         return metadata ? metadata->latestVersion : std::string();

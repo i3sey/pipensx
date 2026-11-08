@@ -52,6 +52,7 @@ struct CatalogEntry {
        Russian locale. */
     std::string titleId;
     std::vector<CatalogTitle> titles;
+    bool hasTitlesField = false;
     std::string performance;
     std::string multiplayer;
     std::string interfaceLang;
@@ -61,6 +62,7 @@ struct CatalogEntry {
        free-text fields above when these are missing. */
     std::string packageType;
     std::string version;
+    std::string updateVersion;
     std::vector<std::string> languagesInterface;
     std::vector<std::string> languagesVoice;
     std::string languageNote;

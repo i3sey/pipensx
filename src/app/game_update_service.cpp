@@ -85,17 +85,44 @@ GameUpdateService::GameUpdateService(const IUpdateMetadataSource* source,
                                      std::string statePath)
     : source_(source), statePath_(std::move(statePath)) {}
 
-void collectCatalogUpdateVersions(const std::vector<CatalogEntry>& entries,
-                                  const std::string& titleId,
-                                  std::vector<std::string>& out) {
+std::string catalogUpdateVersion(const CatalogEntry& entry,
+                                 const std::string& titleId) {
     std::string key = titleId;
     std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) {
         return static_cast<char>(std::toupper(c));
     });
-    for (const auto& entry : entries)
+    if (entry.hasTitlesField || !entry.titles.empty()) {
         for (const auto& title : entry.titles)
-            if (title.titleId == key && !title.updateVersion.empty())
-                out.push_back(title.updateVersion);
+            if (title.titleId == key)
+                return title.updateVersion;
+        return {};
+    }
+    return entry.titleId == key ? entry.updateVersion : std::string();
+}
+
+const CatalogEntry* findCatalogUpdateVersion(const std::vector<CatalogEntry>& entries,
+                                             const std::string& titleId,
+                                             const std::string& version) {
+    uint64_t wanted = 0;
+    if (!parseDecimal(version, wanted))
+        return nullptr;
+    for (const auto& entry : entries) {
+        uint64_t candidate = 0;
+        if (parseDecimal(catalogUpdateVersion(entry, titleId), candidate) &&
+            candidate == wanted)
+            return &entry;
+    }
+    return nullptr;
+}
+
+void collectCatalogUpdateVersions(const std::vector<CatalogEntry>& entries,
+                                  const std::string& titleId,
+                                  std::vector<std::string>& out) {
+    for (const auto& entry : entries) {
+        std::string version = catalogUpdateVersion(entry, titleId);
+        if (!version.empty())
+            out.push_back(std::move(version));
+    }
 }
 
 GameUpdateResult GameUpdateService::compute(

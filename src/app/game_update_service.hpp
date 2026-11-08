@@ -14,6 +14,12 @@ namespace pipensx {
 class CatalogService;
 struct CatalogEntry;
 
+std::string catalogUpdateVersion(const CatalogEntry& entry,
+                                 const std::string& titleId);
+const CatalogEntry* findCatalogUpdateVersion(const std::vector<CatalogEntry>& entries,
+                                             const std::string& titleId,
+                                             const std::string& version);
+
 void collectCatalogUpdateVersions(const std::vector<CatalogEntry>& entries,
                                   const std::string& titleId,
                                   std::vector<std::string>& out);

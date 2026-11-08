@@ -638,6 +638,7 @@ bool CatalogService::parseJson(const std::string& json,
                            return static_cast<char>(std::toupper(c));
                        });
         const std::string titles = readString(item, "titles", 65536);
+        entry.hasTitlesField = !titles.empty();
         size_t start = 0;
         while (start < titles.size()) {
             size_t end = titles.find(';', start);
@@ -689,6 +690,18 @@ bool CatalogService::parseJson(const std::string& json,
                 else if (titleLower.find("[xci") != std::string::npos ||
                          titleLower.find(".xci") != std::string::npos)
                     entry.packageType = "xci";
+            }
+        }
+        if (item.contains("update_version") && item["update_version"].is_number_integer()) {
+            const auto& value = item["update_version"];
+            if (value.is_number_unsigned()) {
+                uint64_t number = value.get<uint64_t>();
+                if (number <= UINT32_MAX)
+                    entry.updateVersion = std::to_string(number);
+            } else {
+                int64_t number = value.get<int64_t>();
+                if (number >= 0 && static_cast<uint64_t>(number) <= UINT32_MAX)
+                    entry.updateVersion = std::to_string(number);
             }
         }
         entry.version = readString(item, "version", 32);
