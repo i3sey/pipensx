@@ -545,6 +545,14 @@ private:
         add(tr("pipensx/installed/open_in_catalog"), [this, title] {
             openInCatalog(title.titleId, title.version, title.name);
         });
+        if (title.hasLayeredFsMods) {
+            add(tr("pipensx/installed/mods_info_action"), [] {
+                auto* dialog = new brls::Dialog(
+                    tr("pipensx/installed/mods_info"));
+                dialog->addButton(tr("pipensx/common/ok"), [] {});
+                dialog->open();
+            });
+        }
         add(tr(ignored ? "pipensx/installed/unignore_updates"
                        : "pipensx/installed/ignore_updates"), [this, title] {
             selectedTitle_ = title;
