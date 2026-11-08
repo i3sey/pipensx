@@ -93,9 +93,11 @@ publish_release:
       links:
         - name: "pipensx.nro"
           url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/pipensx/${RELEASE_TAG}/pipensx.nro"
+          filepath: "/pipensx.nro"
           link_type: "package"
         - name: "pipensx.nro.sha256"
           url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/pipensx/${RELEASE_TAG}/pipensx.nro.sha256"
+          filepath: "/pipensx.nro.sha256"
           link_type: "package"
 
 pages:

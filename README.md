@@ -7,7 +7,7 @@
 Native BitTorrent download manager and streaming package installer for
 Nintendo Switch homebrew.
 
-DOWNLOAD LATEST - [pipensx.nro](https://gitlab.com/pipensx-group/pipensx/-/releases)
+DOWNLOAD LATEST - [pipensx.nro](https://gitlab.com/pipensx-group/pipensx/-/releases/permalink/latest/downloads/pipensx.nro)
 
 <img src="resources/screen_catalog.jpg" width="400"> <img src="resources/screen_detail.jpg" width="400">
 <br><br>
@@ -86,7 +86,7 @@ metadata input, and deployment helpers.
 
 ## Install on Nintendo Switch
 
-Download the latest [pipensx.nro](https://gitlab.com/pipensx-group/pipensx/-/releases) and copy it to:
+Download the latest [pipensx.nro](https://gitlab.com/pipensx-group/pipensx/-/releases/permalink/latest/downloads/pipensx.nro) and copy it to:
 
 ```text
 SD:/switch/pipensx/pipensx.nro
