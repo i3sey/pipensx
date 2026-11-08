@@ -1,4 +1,5 @@
 #include "app/app_settings.hpp"
+#include "app/catalog_urls.hpp"
 #include "app/display_policy.hpp"
 #include "app/companion_settings.hpp"
 #include "app/download_manager.hpp"  // clampMaxActiveDownloads
@@ -491,7 +492,7 @@ void testCatalogSourceUrlValidation() {
     assert(!isValidCatalogSourceUrl(std::string(513, 'a')));
     assert(effectiveCatalogSourceUrl("") ==
            "https://raw.githubusercontent.com/Langegen/switch-game-collection/main/"
-           "RU_catalog.json");
+           "EN_catalog.json");
     assert(effectiveCatalogSourceUrl("", "en") ==
            "https://raw.githubusercontent.com/Langegen/switch-game-collection/main/"
            "EN_catalog.json");
@@ -500,6 +501,47 @@ void testCatalogSourceUrlValidation() {
            "ES_catalog.json");
     assert(effectiveCatalogSourceUrl("https://cdn.example.com/x.json") ==
            "https://cdn.example.com/x.json");
+}
+
+void testCatalogLanguageSelection() {
+    const struct {
+        const char* locale;
+        const char* filename;
+        const char* diffKey;
+    } cases[] = {
+        {"en-US", "EN_catalog.json", "en"},
+        {"en-GB", "EN_catalog.json", "en"},
+        {"fr", "FR_catalog.json", "fr"},
+        {"fr-CA", "FR_catalog.json", "fr"},
+        {"ru", "RU_catalog.json", "ru"},
+        {"ru-RU", "RU_catalog.json", "ru"},
+        {"es-419", "ES_catalog.json", "es"},
+        {"de", "DE_catalog.json", "de"},
+        {"it", "IT_catalog.json", "it"},
+        {"pt-BR", "PT_BR_catalog.json", "pt_br"},
+        {"zh-CN", "ZH_Hans_catalog.json", "zh_hans"},
+        {"ko", "EN_catalog.json", "en"},
+        {"ja", "EN_catalog.json", "en"},
+        {"unknown", "EN_catalog.json", "en"},
+        {"", "EN_catalog.json", "en"},
+        {"auto", "EN_catalog.json", "en"},
+    };
+    for (const auto& item : cases) {
+        const std::string expected =
+            std::string(pipensx::kCatalogCollectionBaseUrl) + item.filename;
+        assert(effectiveCatalogSourceUrl("", "auto", item.locale) == expected);
+        assert(effectiveCatalogSourceUrl("", "", item.locale) == expected);
+        assert(effectiveCatalogSourceUrl("", item.locale, "en-US") == expected);
+        assert(pipensx::catalogDiffLangKey(item.locale) == item.diffKey);
+        assert(effectiveCatalogSourceUrl("", "ru", item.locale) ==
+               pipensx::kDefaultCatalogUrl);
+        for (const std::string& custom : {
+                 std::string("https://cdn.example.com/x.json"),
+                 std::string(pipensx::kDefaultCatalogUrl)}) {
+            assert(effectiveCatalogSourceUrl(custom, "auto", item.locale) == custom);
+            assert(effectiveCatalogSourceUrl(custom, item.locale, "en-US") == custom);
+        }
+    }
 }
 
 void testProxySettingReachesEnvironment() {
@@ -649,6 +691,7 @@ int main() {
     testInvalidProxyUrlIsCleared();
     testInvalidCatalogSourceUrlIsCleared();
     testCatalogSourceUrlValidation();
+    testCatalogLanguageSelection();
     testProxySettingReachesEnvironment();
     testDailyRefreshDue();
     testIsLocalToday();

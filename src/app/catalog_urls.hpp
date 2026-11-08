@@ -42,7 +42,9 @@ inline std::string catalogSourceUrlForLanguage(const std::string& lang) {
         return std::string(kCatalogCollectionBaseUrl) + "PT_BR_catalog.json";
     if (lang == "zh-CN" || lang == "zh-Hans" || lang == "zh")
         return std::string(kCatalogCollectionBaseUrl) + "ZH_Hans_catalog.json";
-    return std::string(kCatalogCollectionBaseUrl) + "RU_catalog.json";
+    if (lang == "ru" || lang == "ru-RU")
+        return std::string(kCatalogCollectionBaseUrl) + "RU_catalog.json";
+    return std::string(kCatalogCollectionBaseUrl) + "EN_catalog.json";
 }
 
 inline std::string catalogDiffLangKey(const std::string& lang) {
@@ -60,7 +62,9 @@ inline std::string catalogDiffLangKey(const std::string& lang) {
         return "pt_br";
     if (lang == "zh-CN" || lang == "zh-Hans" || lang == "zh")
         return "zh_hans";
-    return "ru";
+    if (lang == "ru" || lang == "ru-RU")
+        return "ru";
+    return "en";
 }
 
 } // namespace pipensx

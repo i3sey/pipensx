@@ -1641,7 +1641,8 @@ private:
         GameMetadataService* metadata = metadata_;
         const std::string catalogSourceUrl =
             effectiveCatalogSourceUrl(settings_->get().catalogSourceUrl,
-                                      settings_->get().language);
+                                      settings_->get().language,
+                                      brls::Application::getLocale());
         AppSettings* settings = settings_;
         auto cancelled = refreshCancellation_;
         uint64_t startedMs = now_ms();

@@ -361,12 +361,12 @@ bool isValidCatalogSourceUrl(const std::string& value) {
 }
 
 std::string effectiveCatalogSourceUrl(const std::string& custom,
-                                      const std::string& language) {
+                                      const std::string& language,
+                                      const std::string& appLocale) {
     if (!custom.empty())
         return custom;
-    if (!language.empty())
-        return catalogSourceUrlForLanguage(language);
-    return kDefaultCatalogUrl;
+    return catalogSourceUrlForLanguage(
+        language.empty() || language == "auto" ? appLocale : language);
 }
 
 bool isValidProxyUrl(const std::string& value) {

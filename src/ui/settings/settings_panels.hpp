@@ -1231,7 +1231,8 @@ private:
         AppSettings* settings = settings_;
         const std::string catalogSourceUrl =
             effectiveCatalogSourceUrl(settings_->get().catalogSourceUrl,
-                                      settings_->get().language);
+                                      settings_->get().language,
+                                      brls::Application::getLocale());
         brls::async([this, alive, catalog, settings, catalogSourceUrl,
                      onDone = std::move(onDone)]() mutable {
             auto snapshot = std::make_shared<CatalogSnapshot>();
@@ -1278,13 +1279,15 @@ private:
 
     int catalogPresetIndex() const {
         const auto& url = settings_->get().catalogSourceUrl;
-        if (url.empty() || url == kDefaultCatalogUrl)
+        if (url.empty())
             return 0;
         return 1;
     }
 
     void refreshCatalogSourceDetail() {
-        const std::string& url = settings_->get().catalogSourceUrl;
+        const std::string url = effectiveCatalogSourceUrl(
+            settings_->get().catalogSourceUrl, settings_->get().language,
+            brls::Application::getLocale());
         const int index = catalogPresetIndex();
         catalogPreset_->setSelection(index, true);
         const bool isCustom = (index == 1);
@@ -1301,9 +1304,7 @@ private:
             return;
         }
         const std::string current = settings_->get().catalogSourceUrl;
-        const std::string initialText =
-            (current.empty() || current == kDefaultCatalogUrl)
-                ? "" : current;
+        const std::string initialText = current;
         bool shown = brls::Application::getImeManager()->openForText(
             [this](std::string text) {
                 if (!pipensx::isValidCatalogSourceUrl(text)) {
