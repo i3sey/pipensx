@@ -184,6 +184,8 @@
     "unchecked": "Não verificado"
   },
   "detail": {
+    "topic_action": "Tópico no RuTracker",
+    "topic_qr_hint": "Escaneie com o celular para ler os detalhes e comentários da distribuição.",
     "install_size": "Tamanho de instalação",
     "install_hint": "Instalar adiciona este jogo ao seu console.",
     "install_extras": "Atualizações / DLC",

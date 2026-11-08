@@ -184,6 +184,8 @@
     "unchecked": "Unchecked"
   },
   "detail": {
+    "topic_action": "RuTracker topic",
+    "topic_qr_hint": "Scan with your phone to read the release details and comments.",
     "install_size": "Install size",
     "install_hint": "Install adds this game to your console.",
     "install_extras": "Updates / DLC",

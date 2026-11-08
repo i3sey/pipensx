@@ -2918,6 +2918,53 @@ void testCatalogDateStringTolerance() {
     assert(entries[0].publishedAt == 1759300000);
 }
 
+void testRutrackerTopicUrl() {
+    CatalogEntry entry;
+    const std::string canonical =
+        "https://rutracker.org/forum/viewtopic.php?t=6892780";
+    entry.topicUrl = canonical;
+    assert(catalogRutrackerTopicUrl(entry) == canonical);
+    entry.topicId = 6892780;
+    assert(catalogRutrackerTopicUrl(entry) == canonical);
+    entry.topicUrl = "https://www.rutracker.org/forum/viewtopic.php?t=06892780";
+    assert(catalogRutrackerTopicUrl(entry) == canonical);
+    entry.topicId = 123;
+    assert(catalogRutrackerTopicUrl(entry).empty());
+    entry.topicId = 0;
+    for (const char* invalid : {
+        "", "https://example.org/forum/viewtopic.php?t=1",
+        "https://rutracker.org.evil.test/forum/viewtopic.php?t=1",
+        "https://rutracker.org@evil.test/forum/viewtopic.php?t=1",
+        "https://user:secret@rutracker.org/forum/viewtopic.php?t=1",
+        "http://rutracker.org/forum/viewtopic.php?t=1",
+        "https://rutracker.org:443/forum/viewtopic.php?t=1",
+        "https://rutracker.org/forum/viewforum.php?t=1",
+        "https://rutracker.org/forum/viewtopic.php?t=",
+        "https://rutracker.org/forum/viewtopic.php?t=0",
+        "https://rutracker.org/forum/viewtopic.php?t=-1",
+        "https://rutracker.org/forum/viewtopic.php?t=+1",
+        "https://rutracker.org/forum/viewtopic.php?t=1&token=secret",
+        "https://rutracker.org/forum/viewtopic.php?t=1&pin=1234",
+        "https://rutracker.org/forum/viewtopic.php?t=1&t=2",
+        "https://rutracker.org/forum/viewtopic.php?t=1#secret",
+        "https://rutracker.org/forum/viewtopic.php?t=%31",
+        "https://rutracker.org/forum/viewtopic.php?t=1/",
+        "https://rutracker.org/forum/viewtopic.php?t=1\n",
+        "https://rutracker.org/forum/viewtopic.php?t=18446744073709551616",
+        "magnet:?xt=urn:btih:8B8016FD97F08E2CC46E3B104B72EC758173C3C9"
+    }) {
+        entry.topicUrl = invalid;
+        assert(catalogRutrackerTopicUrl(entry).empty());
+        assert(resolveCatalogPresentation(entry, nullptr).topicUrl.empty());
+    }
+    entry.topicUrl.clear();
+    entry.topicId = 6892780;
+    assert(catalogRutrackerTopicUrl(entry).empty());
+    entry.topicId = 0;
+    entry.topicUrl = "https://rutracker.org/forum/viewtopic.php?t=18446744073709551615";
+    assert(catalogRutrackerTopicUrl(entry) == entry.topicUrl);
+}
+
 // The detail card resolves structured v2 facts from the entry: package,
 // version, languages, players. A structured performance note wins over the
 // legacy free-text performance; without it the legacy text stays.
@@ -3703,6 +3750,7 @@ int main() {
     testCatalogImageFormat();
     testCatalogDateStringTolerance();
     testCatalogV2PresentationResolution();
+    testRutrackerTopicUrl();
     testCatalogParsing();
     testLangegenSchemaParsing();
     testLangegenLanguageFields();

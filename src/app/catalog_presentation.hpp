@@ -79,6 +79,8 @@ struct CatalogRowPresentation {
 CatalogRowPresentation resolveCatalogRow(const CatalogEntry& entry,
                                          const GameMetadata* metadata);
 
+std::string catalogRutrackerTopicUrl(const CatalogEntry& entry);
+
 CatalogPresentation resolveCatalogPresentation(
     const CatalogEntry& entry, const GameMetadata* metadata,
     TextPreference preference = TextPreference::Metadata,

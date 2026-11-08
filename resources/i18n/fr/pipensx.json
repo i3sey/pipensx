@@ -184,6 +184,8 @@
     "unchecked": "Non vérifié"
   },
   "detail": {
+    "topic_action": "Sujet sur RuTracker",
+    "topic_qr_hint": "Scannez avec votre téléphone pour lire la description et les commentaires.",
     "install_size": "Taille d'installation",
     "install_hint": "Installer ajoute ce jeu à votre console.",
     "install_extras": "Mises à jour / DLC",

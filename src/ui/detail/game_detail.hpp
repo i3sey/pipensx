@@ -37,6 +37,7 @@
 #include "ui/common/detail_frame.hpp"
 #include "ui/common/description_text.hpp"
 #include "ui/common/detail_title.hpp"
+#include "ui/common/qr_view.hpp"
 #include "ui/common/stick_scrolling_frame.hpp"
 #include "ui/common/ui_helpers.hpp"
 #include "ui/detail/port_install_dialog.hpp"
@@ -172,6 +173,13 @@ public:
     brls::View* createContentView() override { return frame_; }
 
     void onContentAvailable() override {
+        if (!presentation_.topicUrl.empty()) {
+            registerAction(tr("pipensx/detail/topic_action"), brls::BUTTON_BACK,
+                           [this](brls::View*) {
+                showTopicQr();
+                return true;
+            });
+        }
         registerAction(tr("pipensx/common/cancel"), brls::BUTTON_Y,
                        [this](brls::View*) {
             if (busy_)
@@ -438,6 +446,37 @@ private:
         scroll->setMinWidth(0);
         scroll->setContentView(right);
         content->addView(scroll);
+    }
+
+    void showTopicQr() {
+        auto* box = new brls::Box(brls::Axis::COLUMN);
+        box->setAlignItems(brls::AlignItems::CENTER);
+        box->setPadding(24, 24, 24, 24);
+        auto* title = new brls::Label();
+        title->setText(tr("pipensx/detail/topic_action"));
+        title->setFontSize(theme::kFontHeading);
+        title->setMarginBottom(16);
+        box->addView(title);
+        auto* qr = new QrCodeView(presentation_.topicUrl, true);
+        qr->setWidth(288);
+        qr->setHeight(288);
+        qr->setShrink(0);
+        box->addView(qr);
+        auto* url = new brls::Label();
+        url->setText(presentation_.topicUrl);
+        url->setFontSize(theme::kFontSmall);
+        url->setMarginTop(16);
+        box->addView(url);
+        auto* hint = new brls::Label();
+        hint->setText(tr("pipensx/detail/topic_qr_hint"));
+        hint->setFontSize(theme::kFontSmall);
+        hint->setSingleLine(false);
+        hint->setHorizontalAlign(brls::HorizontalAlign::CENTER);
+        hint->setMarginTop(8);
+        box->addView(hint);
+        auto* dialog = new brls::Dialog(box);
+        dialog->addButton(tr("pipensx/common/close"), [] {});
+        dialog->open();
     }
 
     // S4: facts as label/value rows instead of one glued string.

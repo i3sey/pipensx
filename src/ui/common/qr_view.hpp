@@ -29,7 +29,8 @@ class QrCodeView : public brls::View {
 public:
     static constexpr float kDefaultSize = 176.0f;
 
-    explicit QrCodeView(std::string value) : value_(std::move(value)) {
+    explicit QrCodeView(std::string value, bool highContrast = false)
+        : value_(std::move(value)), highContrast_(highContrast) {
         setWidth(kDefaultSize);
         setHeight(kDefaultSize);
         try {
@@ -55,7 +56,7 @@ public:
 
     void draw(NVGcontext* vg, float x, float y, float width, float height,
               brls::Style, brls::FrameContext*) override {
-        const NVGcolor paper =
+        const NVGcolor paper = highContrast_ ? theme::qrPaper() :
             brls::Application::getTheme().getColor(
                 "brls/button/default_enabled_background");
         nvgBeginPath(vg);
@@ -94,7 +95,8 @@ private:
     // transparent so the card fill shows through, exactly like the old
     // rect-per-module rendering.
     int createTexture(NVGcontext* vg) {
-        const NVGcolor ink = theme::textPrimary();
+        const NVGcolor ink = highContrast_ ? theme::qrInk()
+                                          : theme::textPrimary();
         std::vector<std::uint8_t> pixels(
             static_cast<std::size_t>(cells_) * cells_ * 4, 0);
         for (int row = 0; row < cells_ - kQuietZone * 2; row++) {
@@ -114,6 +116,7 @@ private:
     }
 
     std::string value_;
+    bool highContrast_ = false;
     std::optional<qrcodegen::QrCode> qr_;
     int cells_ = 0;
     int texture_ = 0;

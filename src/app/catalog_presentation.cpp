@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cctype>
 #include <initializer_list>
+#include <limits>
 #include <sstream>
 #include <unordered_set>
 
@@ -137,6 +138,37 @@ CatalogRowPresentation resolveCatalogRow(const CatalogEntry& entry,
     return result;
 }
 
+std::string catalogRutrackerTopicUrl(const CatalogEntry& entry) {
+    static const std::string prefix =
+        "https://rutracker.org/forum/viewtopic.php?t=";
+    static const std::string wwwPrefix =
+        "https://www.rutracker.org/forum/viewtopic.php?t=";
+    const std::string& url = entry.topicUrl;
+    size_t offset;
+    if (url.compare(0, prefix.size(), prefix) == 0)
+        offset = prefix.size();
+    else if (url.compare(0, wwwPrefix.size(), wwwPrefix) == 0)
+        offset = wwwPrefix.size();
+    else
+        return {};
+
+    uint64_t id = 0;
+    if (offset == url.size() || url.size() - offset > 20)
+        return {};
+    for (; offset < url.size(); ++offset) {
+        const unsigned char c = url[offset];
+        if (c < '0' || c > '9' ||
+            id > (std::numeric_limits<uint64_t>::max() - (c - '0')) / 10)
+            return {};
+        id = id * 10 + (c - '0');
+    }
+    if (id == 0 || (entry.topicId != 0 && entry.topicId != id))
+        return {};
+    // A bare topicId carries no source provenance, so it cannot identify
+    // a RuTracker topic in an arbitrary custom catalog.
+    return prefix + std::to_string(id);
+}
+
 CatalogPresentation resolveCatalogPresentation(
     const CatalogEntry& entry, const GameMetadata* metadata,
     TextPreference preference, const std::string& locale) {
@@ -186,7 +218,7 @@ CatalogPresentation resolveCatalogPresentation(
     result.playersMin = entry.playersMin;
     result.playersMax = entry.playersMax;
     result.playersOnline = entry.playersOnline;
-    result.topicUrl = entry.topicUrl;
+    result.topicUrl = catalogRutrackerTopicUrl(entry);
     result.screenshots = mergeScreenshotUrls(metadata, entry, 6);
     return result;
 }

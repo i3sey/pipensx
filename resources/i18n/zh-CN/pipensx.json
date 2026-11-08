@@ -184,6 +184,8 @@
     "unchecked": "未检查"
   },
   "detail": {
+    "topic_action": "RuTracker 帖子",
+    "topic_qr_hint": "用手机扫描，查看资源描述和评论。",
     "install_size": "安装大小",
     "install_hint": "安装会将此游戏添加到你的主机。",
     "install_extras": "更新 / DLC",

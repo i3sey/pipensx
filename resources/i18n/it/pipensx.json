@@ -184,6 +184,8 @@
     "unchecked": "Unchecked"
   },
   "detail": {
+    "topic_action": "Discussione su RuTracker",
+    "topic_qr_hint": "Scansiona con il telefono per leggere la descrizione e i commenti.",
     "install_size": "Dimensione installazione",
     "install_hint": "L'installazione aggiunge questo gioco alla console.",
     "install_extras": "Aggiornamenti / DLC",

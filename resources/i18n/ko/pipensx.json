@@ -184,6 +184,8 @@
     "unchecked": "미확인"
   },
   "detail": {
+    "topic_action": "RuTracker 게시글",
+    "topic_qr_hint": "휴대폰으로 스캔하여 배포 설명과 댓글을 확인하세요.",
     "install_size": "설치 용량",
     "install_hint": "설치하면 이 게임이 본체에 추가됩니다.",
     "install_extras": "업데이트 / DLC",
