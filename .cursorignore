@@ -27,7 +27,7 @@ bug-reports/
 *.webp
 *.gif
 
-# Catalog dumps (tens of MB). Un-ignore when editing catalog parsers.
+# Catalog dumps (tens of MB). Open specific fixtures for parser work.
 resources/catalog/*.json
 
 # Historical notes and design experiments; open explicitly when needed

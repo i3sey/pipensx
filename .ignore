@@ -5,3 +5,10 @@
 /docs/archive/
 /docs/plans/
 /docs/mockups/
+
+# Generated agent indexes and local harness state
+/.cache/
+/.codegraph/
+/.codewhale/
+/.opencode/
+/.tmp/

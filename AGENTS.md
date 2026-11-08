@@ -5,14 +5,20 @@ installation. C11 core, C++ app services, Borealis UI.
 
 ## Start here
 
-- Search `src/` and `tests/` for the task first. Read headers and nearby tests
-  before changing behavior. Use clangd when available.
+- Check `git status --short` and the current branch before editing. Preserve
+  existing changes; do not reset, stash, or overwrite them to simplify the task.
+- For behavior changes, search `src/` and `tests/` first. Read headers and nearby
+  tests before editing. For tooling/docs work, start with the relevant config.
+  Use clangd when available; use scoped `rg` searches otherwise.
 - [README.md](README.md): product behavior.
   [BUILD.md](BUILD.md): dependencies and build options.
   [docs/README.md](docs/README.md): feature docs, approved plans and historical notes.
 - Source and tests establish implemented behavior. Roadmaps and dated audits
   describe proposals or snapshots; verify their claims against the code.
-- Load only the skill and feature docs relevant to the task.
+- Load only the skill and feature docs relevant to the task. Do not read every
+  skill, roadmap, or dependency tree at startup.
+- See [agent workflow](docs/agents/workflow.md) for focused checks, clangd setup,
+  and completion reporting.
 
 ## Code and checks
 
@@ -20,8 +26,8 @@ installation. C11 core, C++ app services, Borealis UI.
   `src/ui/`: Borealis; `src/install/` and `src/platform/`: platform boundaries.
   Browser companion assets live in `resources/web/`; `site/` is the public site.
 - Switch uses C++20; shared core/app code must also compile as C11/C++17 on PC.
-  Source lists live in `CMakeLists.txt` and `Makefile.pc`; tests are registered
-  in `Makefile.pc`, not CMake. Objects and binaries belong in `build-pc/`.
+  Source lists live in `CMakeLists.txt` and `Makefile.pc`; native tests are discovered as
+  `tests/test_*.c` and `tests/test_*.cpp`, with link rules in `Makefile.pc`. Objects and binaries belong in `build-pc/`.
 - Shared/core/app/install changes: `make -f Makefile.pc test`.
   Switch changes: also `make switch`. CLI changes: also `make pc`.
   Documentation-only changes: check links and `git diff --check`.
@@ -30,8 +36,9 @@ installation. C11 core, C++ app services, Borealis UI.
 - Native locale changes: add keys to `en-US`, mirror `ru`, `pt-BR`, `fr`, and run
   `python3 scripts/check_i18n.py`. Browser strings: also run
   `python3 scripts/check_web_i18n.py`.
-- After source-list or compiler-flag changes, regenerate the clangd database:
-  `make -f Makefile.pc clean && bear -- make -f Makefile.pc test`.
+- After source-list or compiler-flag changes, regenerate the clangd database
+  using the [workflow commands](docs/agents/workflow.md#clangd-database).
+  `.clangd` expects `build-pc/compile_commands.json`.
 
 ## Task-specific instructions
 
@@ -59,9 +66,11 @@ installation. C11 core, C++ app services, Borealis UI.
 <!-- antislop:start -->
 ## antislop
 
-For UI, copy, accessibility, responsive layout or code comments, read the
+For UI, product copy, accessibility, responsive layout or code-comment work, read the
 [core](.agents/skills/antislop/SKILL.md) and follow its Two Usage Modes section.
 Then load only the relevant skill under `.agents/skills/`:
 `antislop-ui`, `antislop-copywriting`, `antislop-human`,
 `antislop-layoutmobile` or `antislop-code` (`SKILL.md` in each folder).
+Technical instructions and build/config maintenance do not require design or
+copywriting skills unless the task also changes product copy or UI.
 <!-- antislop:end -->
