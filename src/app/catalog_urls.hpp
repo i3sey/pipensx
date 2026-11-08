@@ -15,6 +15,31 @@ inline constexpr char kCatalogDiffUrl[] =
     "https://raw.githubusercontent.com/Langegen/switch-game-collection/main/"
     "catalog_diff.json";
 
+inline constexpr char kCatalogApiBaseUrl[] =
+    "https://api.github.com/repos/Langegen/switch-game-collection/contents/";
+inline constexpr char kCatalogMirrorBaseUrl[] =
+    "https://gitlab.com/api/v4/projects/88330126/packages/generic/langegen/";
+inline constexpr char kCatalogMirrorManifestUrl[] =
+    "https://gitlab.com/api/v4/projects/88330126/packages/generic/langegen/"
+    "latest/manifest.json";
+
+inline std::string langegenCatalogFile(const std::string& url) {
+    if (url.rfind(kCatalogCollectionBaseUrl, 0) != 0)
+        return {};
+    const std::string file = url.substr(sizeof(kCatalogCollectionBaseUrl) - 1);
+    for (const char* allowed : {"RU_catalog.json", "EN_catalog.json",
+             "ES_catalog.json", "FR_catalog.json", "DE_catalog.json",
+             "IT_catalog.json", "PT_BR_catalog.json", "ZH_Hans_catalog.json",
+             "catalog_diff.json"})
+        if (file == allowed)
+            return file;
+    return {};
+}
+
+inline std::string langegenCatalogApiUrl(const std::string& file) {
+    return std::string(kCatalogApiBaseUrl) + file + "?ref=main";
+}
+
 inline constexpr char kLegacyCatalogUrl[] =
     "https://raw.githubusercontent.com/Langegen/switch-games/refs/heads/main/"
     "switch_games.json";

@@ -181,7 +181,10 @@ bool httpGet(const std::string& url, std::string& body, std::string& error,
     }
     HttpBuffer buffer;
     curl_slist* headers = nullptr;
-    headers = curl_slist_append(headers, "Accept: application/vnd.github+json");
+    headers = curl_slist_append(headers,
+        url.rfind(kCatalogApiBaseUrl, 0) == 0
+            ? "Accept: application/vnd.github.raw+json"
+            : "Accept: application/vnd.github+json");
     headers = curl_slist_append(headers, "X-GitHub-Api-Version: 2022-11-28");
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
@@ -493,8 +496,10 @@ std::string catalogSourceLabel(const std::string& sourceUrl) {
 
 } // namespace
 
-CatalogService::CatalogService(std::string rootPath, std::string bundledPath)
-    : rootPath_(std::move(rootPath)),
+CatalogService::CatalogService(std::string rootPath, std::string bundledPath,
+                               HttpFetcher httpFetcher)
+    : httpFetcher_(httpFetcher ? std::move(httpFetcher) : httpGet),
+      rootPath_(std::move(rootPath)),
       catalogRoot_(rootPath_ + "/catalog"),
       cachePath_(catalogRoot_ + "/catalog.json"),
       manifestPath_(catalogRoot_ + "/manifest.json"),
@@ -794,6 +799,24 @@ bool CatalogService::load(std::string& error) {
 
 bool CatalogService::isTrustedSource(const std::string& url,
                                      const std::string& sourceUrl) {
+    const std::string file = langegenCatalogFile(sourceUrl);
+    if (!file.empty()) {
+        if (url == sourceUrl || url == langegenCatalogApiUrl(file) ||
+            url == kCatalogMirrorManifestUrl)
+            return true;
+        const std::string prefix = kCatalogMirrorBaseUrl;
+        const std::string suffix = "/" + file + ".zst";
+        if (url.size() != prefix.size() + 64 + suffix.size() ||
+            url.rfind(prefix, 0) != 0 ||
+            url.compare(prefix.size() + 64, suffix.size(), suffix) != 0)
+            return false;
+        return std::all_of(url.begin() + prefix.size(),
+                           url.begin() + prefix.size() + 64,
+                           [](unsigned char c) {
+                               return (c >= '0' && c <= '9') ||
+                                      (c >= 'a' && c <= 'f');
+                           });
+    }
     if (sourceUrl == kAlternativeCatalogUrl ||
         sourceUrl == kDefaultCatalogManifestUrl) {
         // Hosts (with path prefixes) allowed to serve the built-in channel.
@@ -1072,6 +1095,92 @@ bool CatalogService::patchCatalogJsonDiff(const std::string& cachedJson,
     return true;
 }
 
+bool CatalogService::fetchResource(
+    const std::string& sourceUrl, std::string& body, std::string& error,
+    const std::atomic<bool>* cancelled, const ProgressCallback& progress,
+    const std::function<bool(const std::string&, std::string&)>& validate,
+    bool allowMirror) {
+    const std::string file = langegenCatalogFile(sourceUrl);
+    std::vector<std::string> urls{sourceUrl};
+    if (!file.empty())
+        urls.push_back(langegenCatalogApiUrl(file));
+    std::string failures;
+    for (const std::string& url : urls) {
+        if (failIfCancelled(cancelled, error))
+            return false;
+        body.clear();
+        if (progress)
+            progress(0.0f);
+        if (httpFetcher_(url, body, error, sourceUrl, cancelled, progress) &&
+            validate(body, error)) {
+            if (failIfCancelled(cancelled, error))
+                return false;
+            error.clear();
+            return true;
+        }
+        if (failIfCancelled(cancelled, error))
+            return false;
+        if (!failures.empty())
+            failures += " ";
+        failures += error;
+        log_msg("[catalog] fetch failed: %s: %s\n", url.c_str(), error.c_str());
+    }
+    if (!file.empty() && allowMirror) {
+        std::string manifestBody;
+        bool ok = httpFetcher_(kCatalogMirrorManifestUrl, manifestBody, error,
+                               sourceUrl, cancelled, {});
+        if (failIfCancelled(cancelled, error))
+            return false;
+        if (ok) {
+            const auto manifest = manifestBody.size() <= kMaxManifestBytes
+                ? nlohmann::json::parse(manifestBody, nullptr, false)
+                : nlohmann::json();
+            const bool valid = manifest.is_object() &&
+                manifest.contains("schemaVersion") &&
+                manifest["schemaVersion"] == 1 &&
+                manifest.contains("files") && manifest["files"].is_object() &&
+                manifest["files"].contains(file) &&
+                manifest["files"][file].is_object();
+            CatalogManifest expected;
+            if (valid) {
+                const auto& entry = manifest["files"][file];
+                if (entry.contains("sha256") && entry["sha256"].is_string() &&
+                    entry.contains("bytes") && entry["bytes"].is_number_unsigned()) {
+                    expected.catalogSha256 = entry["sha256"].get<std::string>();
+                    const uint64_t bytes = entry["bytes"].get<uint64_t>();
+                    if (bytes > 0 && bytes <= kMaxCatalogBytes)
+                        expected.catalogBytes = static_cast<size_t>(bytes);
+                }
+            }
+            const std::string url = std::string(kCatalogMirrorBaseUrl) +
+                expected.catalogSha256 + "/" + file + ".zst";
+            if (expected.catalogBytes == 0 || !isTrustedSource(url, sourceUrl)) {
+                error = "Catalog mirror manifest is invalid.";
+            } else {
+                body.clear();
+                if (progress)
+                    progress(0.0f);
+                if (httpFetcher_(url, body, error, sourceUrl, cancelled, progress) &&
+                    !failIfCancelled(cancelled, error) &&
+                    decompressZstd(body, kMaxCatalogBytes, error) &&
+                    verifyCatalogBody(body, expected, error) && validate(body, error)) {
+                    if (failIfCancelled(cancelled, error))
+                        return false;
+                    log_msg("[catalog] using GitLab mirror: %s\n", file.c_str());
+                    error.clear();
+                    return true;
+                }
+            }
+        }
+        if (failIfCancelled(cancelled, error))
+            return false;
+        failures += " GitLab mirror: " + error;
+    }
+    body.clear();
+    error = std::move(failures);
+    return false;
+}
+
 bool CatalogService::fetchLatest(std::vector<CatalogEntry>& parsed,
                                  std::string& error,
                                  const std::string& sourceUrl,
@@ -1092,7 +1201,7 @@ bool CatalogService::fetchLatest(std::vector<CatalogEntry>& parsed,
         return fetchDefaultChannel(parsed, error, cancelled, progress);
 
     // switch-game-collection: attempt fast incremental diff first if cache exists
-    if (sourceUrl.rfind(kCatalogCollectionBaseUrl, 0) == 0) {
+    if (!langegenCatalogFile(sourceUrl).empty()) {
         std::string cachedBody;
         std::string cacheError;
         std::vector<CatalogEntry> cachedEntries;
@@ -1101,8 +1210,19 @@ bool CatalogService::fetchLatest(std::vector<CatalogEntry>& parsed,
             !cachedEntries.empty()) {
             std::string diffBody;
             std::string diffError;
-            if (httpGet(kCatalogDiffUrl, diffBody, diffError, kCatalogDiffUrl,
-                        cancelled)) {
+            if (fetchResource(kCatalogDiffUrl, diffBody, diffError, cancelled, {},
+                    [](const std::string& body, std::string& error) {
+                        const auto diff = nlohmann::json::parse(body, nullptr, false);
+                        if (diff.is_object() && diff.contains("version") &&
+                            diff["version"] == 1 &&
+                            diff.contains("added_or_updated") &&
+                            diff["added_or_updated"].is_object() &&
+                            diff.contains("deleted_topic_ids") &&
+                            diff["deleted_topic_ids"].is_array())
+                            return true;
+                        error = "Catalog diff is invalid.";
+                        return false;
+                    }, false)) {
                 std::string langKey = "ru";
                 if (sourceUrl.find("EN_catalog") != std::string::npos) langKey = "en";
                 else if (sourceUrl.find("ES_catalog") != std::string::npos) langKey = "es";
@@ -1126,10 +1246,13 @@ bool CatalogService::fetchLatest(std::vector<CatalogEntry>& parsed,
     }
 
     std::string catalogBody;
-    if (!httpGet(sourceUrl, catalogBody, error, sourceUrl, cancelled, progress))
+    if (!fetchResource(sourceUrl, catalogBody, error, cancelled, progress,
+            [&](const std::string& body, std::string& parseError) {
+                return parseJson(body, parsed, parseError, cancelled);
+            })) {
+        parsed.clear();
         return false;
-    if (!parseJson(catalogBody, parsed, error, cancelled))
-        return false;
+    }
     if (failIfCancelled(cancelled, error)) {
         parsed.clear();
         return false;

@@ -1,5 +1,6 @@
 #include "app/app_settings.hpp"
 #include "app/catalog_service.hpp"
+#include "app/catalog_urls.hpp"
 #include "app/catalog_refresh.hpp"
 #include "app/catalog_presentation.hpp"
 #include "app/game_metadata_service.hpp"
@@ -31,6 +32,7 @@ extern "C" {
 #include <thread>
 #include <unistd.h>
 #include <vector>
+#include <zstd.h>
 
 using pipensx::AppSettings;
 using pipensx::CatalogEntry;
@@ -2419,6 +2421,169 @@ void testCatalogTrustedRedirect() {
 // Manifest of the default release channel: schema 2 with matching
 // sha256/bytes/entries. Wrong schemas, bad hashes and out-of-limit
 // sizes/counts are rejected before any catalog byte is trusted.
+void testLangegenCatalogFallbacks() {
+    const std::string source = pipensx::catalogSourceUrlForLanguage("fr");
+    const std::string api = pipensx::langegenCatalogApiUrl("FR_catalog.json");
+    const std::string body =
+        "[{\"title\":\"Fallback test\",\"magnet\":\"magnet:?xt=urn:btih:"
+        "0123456789abcdef0123456789abcdef01234567"
+        "&tr=http://bt.t-ru.org/ann?magnet\"}]";
+    uint8_t digest[32];
+    sha256(body.data(), body.size(), digest);
+    std::string hash;
+    for (uint8_t byte : digest) {
+        char hex[3];
+        std::snprintf(hex, sizeof(hex), "%02x", byte);
+        hash += hex;
+    }
+    const std::string mirrorUrl = std::string(pipensx::kCatalogMirrorBaseUrl) +
+        hash + "/FR_catalog.json.zst";
+    std::string compressed(ZSTD_compressBound(body.size()), '\0');
+    const size_t size = ZSTD_compress(compressed.data(), compressed.size(),
+                                      body.data(), body.size(), 1);
+    assert(!ZSTD_isError(size));
+    compressed.resize(size);
+
+    for (const std::string mode : {"raw", "api", "invalid-raw", "mirror",
+                                   "corrupt", "size", "manifest", "cancel",
+                                   "custom", "diff", "diff-api", "invalid-diff"}) {
+        char temporary[] = "/tmp/pipensx-fallback-test-XXXXXX";
+        const char* directory = mkdtemp(temporary);
+        assert(directory);
+        const std::string root = directory;
+        std::vector<std::string> requests;
+        std::atomic<bool> cancelled{false};
+        const std::string requestedSource = mode == "custom"
+            ? "https://example.com/custom/catalog.json" : source;
+        CatalogService service(root, {},
+            [&](const std::string& url, std::string& data, std::string& error,
+                const std::string& original, const std::atomic<bool>*,
+                const CatalogService::ProgressCallback&) {
+                requests.push_back(url);
+                assert(CatalogService::isTrustedSource(url, original));
+                if (mode == "cancel") {
+                    cancelled.store(true);
+                    error = "cancelled in transfer";
+                    return false;
+                }
+                if (mode == "diff-api" &&
+                    url == pipensx::langegenCatalogApiUrl("catalog_diff.json")) {
+                    data = "{\"version\":1,\"added_or_updated\":{},\"deleted_topic_ids\":[]}";
+                    return true;
+                }
+                if (mode == "invalid-diff" && url == pipensx::kCatalogDiffUrl) {
+                    data = "{\"version\":1}";
+                    return true;
+                }
+                if (url == source && mode == "raw") {
+                    data = body;
+                    return true;
+                }
+                if (url == source && mode == "invalid-raw") {
+                    data = "<html>upstream error</html>";
+                    return true;
+                }
+                if (url == api && (mode == "api" || mode == "invalid-raw")) {
+                    data = body;
+                    return true;
+                }
+                if (url == pipensx::kCatalogMirrorManifestUrl) {
+                    data = "{\"schemaVersion\":1,\"files\":{\"FR_catalog.json\":{"
+                        "\"sha256\":\"" + (mode == "manifest" ? "../evil" : hash) +
+                        "\",\"bytes\":" + std::to_string(body.size() +
+                            (mode == "size" ? 1 : 0)) + "}}}";
+                    return true;
+                }
+                if (url == mirrorUrl) {
+                    if (mode == "corrupt") {
+                        std::string changed = body;
+                        changed[changed.find("Fallback")] = 'X';
+                        data.resize(ZSTD_compressBound(changed.size()));
+                        const size_t n = ZSTD_compress(data.data(), data.size(),
+                            changed.data(), changed.size(), 1);
+                        assert(!ZSTD_isError(n));
+                        data.resize(n);
+                    } else {
+                        data = compressed;
+                    }
+                    return true;
+                }
+                error = "HTTP 503";
+                data = "partial response";
+                return false;
+            });
+        if (mode == "diff" || mode == "corrupt" || mode == "diff-api" ||
+            mode == "invalid-diff")
+            writeTextFile(root + "/catalog/catalog.json", body);
+        std::vector<CatalogEntry> parsed;
+        std::string error;
+        const bool ok = service.fetchLatest(parsed, error, requestedSource, &cancelled);
+        const bool expected = mode == "raw" || mode == "api" ||
+            mode == "invalid-raw" || mode == "mirror" || mode == "diff" ||
+            mode == "diff-api" || mode == "invalid-diff";
+        assert(ok == expected);
+        if (ok) {
+            assert(error.empty());
+            assert(parsed.size() == 1);
+            assert(parsed[0].title == "Fallback test");
+        } else {
+            assert(!error.empty());
+            assert(parsed.empty());
+        }
+        if (mode == "raw" || mode == "custom" || mode == "cancel")
+            assert(requests.size() == 1);
+        if (mode == "api" || mode == "invalid-raw") {
+            assert(requests.size() == 2);
+            assert(requests[1] == api);
+        }
+        if (mode == "diff-api") {
+            assert(requests.size() == 2);
+            assert(requests[1] == pipensx::langegenCatalogApiUrl("catalog_diff.json"));
+        }
+        if (mode == "mirror") {
+            assert(requests == std::vector<std::string>({source, api,
+                pipensx::kCatalogMirrorManifestUrl, mirrorUrl}));
+        }
+        if (mode == "manifest")
+            assert(requests.size() == 3);
+        if (mode == "diff") {
+            assert(requests.size() == 6);
+            assert(requests[0] == pipensx::kCatalogDiffUrl);
+            assert(requests[1] == pipensx::langegenCatalogApiUrl("catalog_diff.json"));
+            assert(requests.back() == mirrorUrl);
+        }
+        if (mode == "corrupt") {
+            std::ifstream cached(root + "/catalog/catalog.json");
+            const std::string retained((std::istreambuf_iterator<char>(cached)), {});
+            assert(retained == body);
+        }
+        unlink((root + "/catalog/catalog.json").c_str());
+        rmdir((root + "/catalog").c_str());
+        rmdir(root.c_str());
+    }
+
+    assert(CatalogService::isTrustedSource(api, source));
+    assert(CatalogService::isTrustedSource(mirrorUrl, source));
+    for (const std::string bad : {
+            "http://api.github.com/repos/Langegen/switch-game-collection/contents/FR_catalog.json?ref=main",
+            "https://api.github.com.evil/repos/Langegen/switch-game-collection/contents/FR_catalog.json?ref=main",
+            "https://api.github.com/repos/evil/switch-game-collection/contents/FR_catalog.json?ref=main",
+            "https://gitlab.com/api/v4/projects/1/packages/generic/langegen/latest/manifest.json"})
+        assert(!CatalogService::isTrustedSource(bad, source));
+    assert(!CatalogService::isTrustedSource(mirrorUrl + "?redirect=evil", source));
+    assert(!CatalogService::isTrustedSource(mirrorUrl,
+        pipensx::catalogSourceUrlForLanguage("en")));
+    for (const std::string lang : {"ru", "en", "es", "fr", "de", "it", "pt-BR", "zh-CN"}) {
+        const std::string url = pipensx::catalogSourceUrlForLanguage(lang);
+        const std::string file = pipensx::langegenCatalogFile(url);
+        assert(!file.empty());
+        assert(CatalogService::isTrustedSource(pipensx::langegenCatalogApiUrl(file), url));
+    }
+    assert(pipensx::langegenCatalogFile(source + "?x=y").empty());
+    assert(pipensx::langegenCatalogFile(
+        std::string(pipensx::kCatalogCollectionBaseUrl) + "../private.json").empty());
+}
+
 void testCatalogManifestParsing() {
     const char* valid =
         "{\"schemaVersion\":2,\"generatedAt\":\"2026-10-02T12:00:00Z\","
@@ -3220,6 +3385,7 @@ int main() {
     testCatalogDiffIncrementalSync();
     testTrustedSourceAllowlist();
     testCatalogTrustedRedirect();
+    testLangegenCatalogFallbacks();
     testCatalogManifestParsing();
     testCatalogBodyVerification();
     testCatalogSizeBytesPriority();

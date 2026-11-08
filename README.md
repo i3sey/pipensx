@@ -137,12 +137,16 @@ files. The web panel remains available for custom destination folders.
 
 ## Catalog and network behavior
 
-The application fetches `switch_games.json` over HTTPS from Langegen by
-default. The optional pipensx-catalog release channel checks a manifest first
+The application fetches a language-specific catalog over HTTPS from Langegen by
+default. It tries GitHub Raw, then the GitHub API, then a stored GitLab mirror
+snapshot with size and SHA-256 verification. See
+[Catalog mirror](docs/CATALOG_MIRROR.md) for publication and refresh behavior.
+The deprecated pipensx-catalog release channel checks a manifest first
 and downloads its catalog only when the SHA-256 changes. Settings let
 you point at any other HTTPS URL
 that serves the same JSON shape. Redirects are limited to the source file's
-directory, except the release-asset hosts of the built-in channel;
+directory, except the exact fallback resources of Langegen and the
+release-asset hosts of the built-in release channel;
 look-alike hosts are rejected before catalog bytes are parsed. A
 failed refresh leaves the last valid SD-card cache active.
 

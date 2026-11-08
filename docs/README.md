@@ -8,6 +8,7 @@ build setup. [AGENTS.md](../AGENTS.md) contains repository instructions;
 
 | Area | Document |
 | --- | --- |
+| Langegen fallback downloads and mirror updates | [Catalog mirror](CATALOG_MIRROR.md) |
 | Offline catalog descriptions | [Description packs](OFFLINE_DESCRIPTIONS.md) |
 | Browser catalog and installed library | [Remote library](REMOTE_LIBRARY.md) |
 | Port destinations and deployment review | [Remote port layout](REMOTE_PORT_LAYOUT.md) |

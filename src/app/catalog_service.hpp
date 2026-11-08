@@ -124,8 +124,14 @@ struct CatalogManifest {
 
 class CatalogService {
 public:
+    using ProgressCallback = std::function<void(float)>;
+    using HttpFetcher = std::function<bool(
+        const std::string&, std::string&, std::string&, const std::string&,
+        const std::atomic<bool>*, const ProgressCallback&)>;
+
     explicit CatalogService(std::string rootPath,
-                            std::string bundledPath = {});
+                            std::string bundledPath = {},
+                            HttpFetcher httpFetcher = {});
 
     bool load(std::string& error);
 
@@ -133,8 +139,6 @@ public:
     // cache (or the bundled fallback) without touching the live UI snapshot.
     bool prepareInitialSnapshot(CatalogSnapshot& snapshot,
                                 std::string& error) const;
-
-    using ProgressCallback = std::function<void(float)>;
 
     // Pool-thread safe: fetch, parse and persist without touching live state.
     // The CatalogSnapshot overload also builds the lookup index and is the
@@ -235,6 +239,12 @@ public:
                                   std::string& error);
 
 private:
+    bool fetchResource(const std::string& sourceUrl, std::string& body,
+                       std::string& error, const std::atomic<bool>* cancelled,
+                       const ProgressCallback& progress,
+                       const std::function<bool(const std::string&, std::string&)>& validate,
+                       bool allowMirror = true);
+    HttpFetcher httpFetcher_;
     bool loadFileSnapshot(const std::string& path, const std::string& label,
                           CatalogSnapshot& snapshot,
                           std::string& error) const;
