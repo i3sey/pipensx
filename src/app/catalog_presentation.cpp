@@ -575,6 +575,11 @@ bool catalogEntryMatchesSearch(const CatalogEntry& entry,
         return true;
     if (catalogFoldedContains(entry.title, needleFolded))
         return true;
+    if (catalogFoldedContains(entry.titleId, needleFolded))
+        return true;
+    for (const auto& title : entry.titles)
+        if (catalogFoldedContains(title.titleId, needleFolded))
+            return true;
     if (!entry.genre.empty() &&
         catalogFoldedContains(entry.genre, needleFolded))
         return true;
@@ -779,9 +784,11 @@ bool buildCatalogBrowse(const CatalogBrowseRequest& request,
             result.metadata->findByInfoHash(entry.infoHash);
         CatalogRowPresentation presentation = resolveCatalogRow(entry, meta);
         std::string baseBadge;
-        if (!presentation.titleId.empty() &&
-            request.installedTitleIds.count(
-                upperAscii(presentation.titleId)) != 0)
+        if ((!presentation.titleId.empty() &&
+             request.installedTitleIds.count(upperAscii(presentation.titleId)) != 0) ||
+            std::any_of(entry.titles.begin(), entry.titles.end(), [&](const CatalogTitle& title) {
+                return request.installedTitleIds.count(upperAscii(title.titleId)) != 0;
+            }))
             baseBadge = request.installedBadge;
         else if (entry.isAutorun() && entry.autorun) {
             baseBadge = autorunCompatibilityBadge(*entry.autorun);
@@ -880,8 +887,11 @@ std::vector<size_t> patchCatalogInstalledBadge(
         const GameMetadata* meta = result.metadata
             ? result.metadata->findByInfoHash(entry.infoHash) : nullptr;
         const std::string titleId = resolveCatalogRow(entry, meta).titleId;
-        const bool installed = !titleId.empty() &&
-            installedTitleIds.count(upperAscii(titleId)) != 0;
+        const bool installed = (!titleId.empty() &&
+            installedTitleIds.count(upperAscii(titleId)) != 0) ||
+            std::any_of(entry.titles.begin(), entry.titles.end(), [&](const CatalogTitle& title) {
+                return installedTitleIds.count(upperAscii(title.titleId)) != 0;
+            });
         const std::string next = installed ? badge : std::string();
         if (result.baseBadges[row] == next)
             continue;

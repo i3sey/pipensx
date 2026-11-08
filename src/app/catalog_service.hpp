@@ -22,6 +22,12 @@ enum class CatalogHealth {
     Dead,
 };
 
+struct CatalogTitle {
+    std::string titleId;
+    std::string updateVersion;
+    std::string version;
+};
+
 struct CatalogEntry {
     std::string infoHash;
     std::string title;
@@ -45,6 +51,7 @@ struct CatalogEntry {
        voice_lang are releaser notes; the detail card shows them only in the
        Russian locale. */
     std::string titleId;
+    std::vector<CatalogTitle> titles;
     std::string performance;
     std::string multiplayer;
     std::string interfaceLang;

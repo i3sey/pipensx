@@ -134,6 +134,8 @@ public:
         presentation_ = resolveCatalogPresentation(entry_, found,
             catalogTextPreference(), brls::Application::getLocale());
         titleId_ = presentation_.titleId;
+        if (autoInstall_ && !entry_.titleId.empty())
+            titleId_ = entry_.titleId;
         playersFact_ = playersFact(found);
         if (playersFact_.empty())
             playersFact_ = catalogPlayersFact(entry_);
@@ -1707,6 +1709,12 @@ private:
     }
 
     std::string latestVersionForEntry() const {
+        if (!entry_.titles.empty()) {
+            for (const auto& title : entry_.titles)
+                if (catalogLower(title.titleId) == catalogLower(titleId_))
+                    return title.updateVersion;
+            return {};
+        }
         const GameMetadata* metadata =
             metadata_->findByInfoHash(entry_.infoHash, titleId_);
         return metadata ? metadata->latestVersion : std::string();

@@ -637,6 +637,33 @@ bool CatalogService::parseJson(const std::string& json,
                        entry.titleId.begin(), [](unsigned char c) {
                            return static_cast<char>(std::toupper(c));
                        });
+        const std::string titles = readString(item, "titles", 65536);
+        size_t start = 0;
+        while (start < titles.size()) {
+            size_t end = titles.find(';', start);
+            if (end == std::string::npos) end = titles.size();
+            const std::string part = titles.substr(start, end - start);
+            const size_t a = part.find(':');
+            const size_t b = a == std::string::npos ? a : part.find(':', a + 1);
+            if (a == 16 && b != std::string::npos &&
+                part.find(':', b + 1) == std::string::npos) {
+                CatalogTitle title{part.substr(0, a), part.substr(a + 1, b - a - 1), part.substr(b + 1)};
+                std::transform(title.titleId.begin(), title.titleId.end(), title.titleId.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+                bool validId = title.titleId.compare(0, 4, "0100") == 0 &&
+                    std::all_of(title.titleId.begin(), title.titleId.end(), [](unsigned char c) { return std::isxdigit(c); });
+                uint64_t version = 0;
+                bool validVersion = true;
+                for (unsigned char c : title.updateVersion) {
+                    if (c < '0' || c > '9' || version > (UINT32_MAX - (c - '0')) / 10) { validVersion = false; break; }
+                    version = version * 10 + c - '0';
+                }
+                if (validId && validVersion && title.version.size() <= 32 &&
+                    std::none_of(entry.titles.begin(), entry.titles.end(), [&](const CatalogTitle& existing) { return existing.titleId == title.titleId; }))
+                    entry.titles.push_back(std::move(title));
+            }
+            start = end + 1;
+        }
         entry.performance = readString(item, "performance", 256);
         entry.multiplayer = readString(item, "multiplayer", 128);
         entry.interfaceLang = readString(item, "interface_lang", 256);

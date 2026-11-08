@@ -11,6 +11,13 @@
 
 namespace pipensx {
 
+class CatalogService;
+struct CatalogEntry;
+
+void collectCatalogUpdateVersions(const std::vector<CatalogEntry>& entries,
+                                  const std::string& titleId,
+                                  std::vector<std::string>& out);
+
 // Per-app state of the game-update check (check-only feature: it reports
 // whether an update exists, it never downloads one).
 enum class GameUpdateState {
@@ -52,6 +59,8 @@ public:
     // (every title reports SourceUnknown).
     explicit GameUpdateService(const IUpdateMetadataSource* source,
                                std::string statePath);
+
+    void setCatalog(const CatalogService* catalog) { catalog_ = catalog; }
 
     GameUpdateService(const GameUpdateService&) = delete;
     GameUpdateService& operator=(const GameUpdateService&) = delete;
@@ -104,11 +113,13 @@ private:
                              const std::string& currentVersion) const;
 
     const IUpdateMetadataSource* source_;
+    const CatalogService* catalog_ = nullptr;
     std::string statePath_;
     GameUpdateResults results_;
     std::set<std::string> ignored_;
     uint64_t installedGeneration_ = 0;
     uint64_t metadataRefreshMs_ = 0;
+    uint64_t catalogGeneration_ = 0;
     uint64_t lastCheckedAt_ = 0;
     uint64_t resultsGeneration_ = 0;
     bool checking_ = false;

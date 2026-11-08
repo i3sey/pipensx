@@ -844,6 +844,16 @@ private:
         const std::string& installedName = {}) const {
         if (!catalog_)
             return nullptr;
+        const std::string requestedVersion = foundVersion.empty() ? installedVersion : foundVersion;
+        if (!requestedVersion.empty()) {
+            for (const CatalogEntry& entry : catalog_->entries()) {
+                for (const auto& title : entry.titles) {
+                    if (catalogLower(title.titleId) == catalogLower(titleId) &&
+                        title.updateVersion == requestedVersion)
+                        return &entry;
+                }
+            }
+        }
         std::vector<const GameMetadata*> entries;
         if (metadata_)
             metadata_->findByTitleId(titleId, entries);
@@ -913,16 +923,18 @@ private:
                 continue;
             evaluateCandidate(catalog_->findByInfoHash(meta->infoHash), meta);
         }
-        if (best)
-            return best;
-
         // Metadata-backed titles use the O(1) info-hash index above. Keep the
         // direct title-id fallback for older/custom catalogues without metadata.
         const std::string want = catalogLower(titleId);
         for (const CatalogEntry& entry : catalog_->entries()) {
-            if (entry.titleId.empty() ||
-                catalogLower(entry.titleId) != want)
+            const auto match = std::find_if(entry.titles.begin(), entry.titles.end(),
+                [&](const CatalogTitle& title) { return catalogLower(title.titleId) == want; });
+            if (match == entry.titles.end() && catalogLower(entry.titleId) != want)
                 continue;
+            const std::string& wantedVersion = foundVersion.empty() ? installedVersion : foundVersion;
+            if (match != entry.titles.end() && !wantedVersion.empty() &&
+                match->updateVersion == wantedVersion)
+                return &entry;
             evaluateCandidate(&entry, nullptr);
         }
         return best;

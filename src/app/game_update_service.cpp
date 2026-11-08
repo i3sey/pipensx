@@ -1,4 +1,7 @@
 #include "game_update_service.hpp"
+#include "catalog_service.hpp"
+#include <algorithm>
+#include <cctype>
 
 #include <borealis/extern/nlohmann/json.hpp>
 
@@ -82,13 +85,30 @@ GameUpdateService::GameUpdateService(const IUpdateMetadataSource* source,
                                      std::string statePath)
     : source_(source), statePath_(std::move(statePath)) {}
 
+void collectCatalogUpdateVersions(const std::vector<CatalogEntry>& entries,
+                                  const std::string& titleId,
+                                  std::vector<std::string>& out) {
+    std::string key = titleId;
+    std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) {
+        return static_cast<char>(std::toupper(c));
+    });
+    for (const auto& entry : entries)
+        for (const auto& title : entry.titles)
+            if (title.titleId == key && !title.updateVersion.empty())
+                out.push_back(title.updateVersion);
+}
+
 GameUpdateResult GameUpdateService::compute(
     const std::string& titleId, const std::string& currentVersion) const {
     GameUpdateResult result;
     result.currentVersion = currentVersion;
 
     std::vector<std::string> candidates;
-    if (!source_ || !source_->collectLatestVersions(titleId, candidates)) {
+    if (source_)
+        source_->collectLatestVersions(titleId, candidates);
+    if (catalog_)
+        collectCatalogUpdateVersions(catalog_->entries(), titleId, candidates);
+    if (candidates.empty()) {
         // No entry at all for this title: no update source (req #7).
         result.state = GameUpdateState::SourceUnknown;
         return result;
@@ -191,6 +211,7 @@ void GameUpdateService::checkAll(const std::vector<InstalledTitle>& titles,
     ++resultsGeneration_;
     installedGeneration_ = installedGeneration;
     metadataRefreshMs_ = metadataRefreshMs;
+    catalogGeneration_ = catalog_ ? catalog_->generation() : 0;
     lastCheckedAt_ = checkedAt;
     checking_ = false;
     save(saveError);
@@ -354,7 +375,8 @@ bool GameUpdateService::stale(uint64_t installedGeneration,
     if (lastCheckedAt_ == 0)
         return false;
     return installedGeneration_ != installedGeneration ||
-           metadataRefreshMs_ != metadataRefreshMs;
+           metadataRefreshMs_ != metadataRefreshMs ||
+           (catalog_ && catalogGeneration_ != catalog_->generation());
 }
 
 } // namespace pipensx

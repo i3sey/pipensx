@@ -2699,6 +2699,23 @@ void testAutorunBox64ProfileParsing() {
 // Structured pipensx-catalog v2 fields land in the entry; entries without
 // them keep empty/zero values so the detail card can fall back to the
 // free-text fields.
+void testCatalogMultiTitles() {
+    const char* json = R"([{"title":"Collection","magnet":"magnet:?xt=urn:btih:8B8016FD97F08E2CC46E3B104B72EC758173C3C9&tr=http%3A%2F%2Fbt.t-ru.org%2Fann%3Fmagnet","title_id":"0100AAAA00000000","titles":"0100aaaa00000000:65536:1.1;0100BBBB00000000:131072:2.0;0100CCCC00000000::;0100bbbb00000000:9:duplicate;bad:7:x;0100DDDD00000000:bad:x;0100EEEE00000000:4294967296:x;0100FFFF00000000:1:x:broken"}])";
+    std::vector<CatalogEntry> entries;
+    std::string error;
+    assert(CatalogService::parseJson(json, entries, error));
+    assert(entries.size() == 1 && entries[0].titles.size() == 3);
+    assert(entries[0].titles[0].titleId == "0100AAAA00000000");
+    assert(entries[0].titles[0].updateVersion == "65536");
+    assert(entries[0].titles[1].updateVersion == "131072");
+    assert(entries[0].titles[2].updateVersion.empty());
+    assert(catalogEntryMatchesSearch(entries[0], nullptr, catalogFoldForSearch("0100bbbb00000000")));
+    assert(!catalogEntryMatchesSearch(entries[0], nullptr, catalogFoldForSearch("0100dddd00000000")));
+    CatalogEntry legacy;
+    legacy.titleId = "0100123400000000";
+    assert(catalogEntryMatchesSearch(legacy, nullptr, catalogFoldForSearch("0100123400000000")));
+}
+
 void testCatalogV2FieldsParsing() {
     const char* json =
         "[{"
@@ -3462,6 +3479,7 @@ int main() {
     testCatalogBodyVerification();
     testCatalogSizeBytesPriority();
     testAutorunBox64ProfileParsing();
+    testCatalogMultiTitles();
     testCatalogV2FieldsParsing();
     testCatalogPackageTypeTitleCorrection();
     testCatalogDateStringTolerance();

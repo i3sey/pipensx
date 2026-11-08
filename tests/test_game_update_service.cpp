@@ -1,4 +1,5 @@
 #include "app/game_update_service.hpp"
+#include "app/catalog_service.hpp"
 #include "app/installed_title_service.hpp"
 
 #include <cassert>
@@ -55,6 +56,22 @@ InstalledTitle title(const std::string& titleId, const std::string& version) {
 }
 
 // --- state machine ---
+
+void testCatalogVersionsArePerTitle() {
+    pipensx::CatalogEntry bundle;
+    bundle.titles = {{"0100AAAA00000000", "65536", "1.1"},
+                     {"0100BBBB00000000", "196608", "2.0"},
+                     {"0100CCCC00000000", "", ""}};
+    std::vector<std::string> versions;
+    pipensx::collectCatalogUpdateVersions({bundle}, "0100bbbb00000000", versions);
+    assert(versions == std::vector<std::string>{"196608"});
+    versions.clear();
+    pipensx::collectCatalogUpdateVersions({bundle}, "0100AAAA00000000", versions);
+    assert(versions == std::vector<std::string>{"65536"});
+    versions.clear();
+    pipensx::collectCatalogUpdateVersions({bundle}, "0100CCCC00000000", versions);
+    assert(versions.empty());
+}
 
 void testSourceUnknownWhenNoEntryOrEmptyVersion() {
     FakeSource source;
@@ -372,6 +389,7 @@ void testResultsGenerationBumpsOnRecheck() {
 
 int main() {
     reset();
+    testCatalogVersionsArePerTitle();
     testSourceUnknownWhenNoEntryOrEmptyVersion();
     testNullSourceReportsSourceUnknown();
     testNoInstalledVersionIsCheckError();

@@ -884,8 +884,8 @@ int main(int argc, char** argv) {
                 return ready;
             });
         webServer.setOneTapContextLookup(
-            [&installed, &metadata](const std::string& infoHash,
-                                    const std::string& titleId) {
+            [&installed, &metadata, &catalog](const std::string& infoHash,
+                                              const std::string& titleId) {
                 pipensx::OneTapContext context;
                 context.titleId = titleId;
                 auto sameId = [](std::string left, std::string right) {
@@ -908,9 +908,17 @@ int main(int argc, char** argv) {
                             }
                         }
                         context.installedDlcIds = installed.dlcTitleIds();
-                        if (const pipensx::GameMetadata* meta =
-                                metadata.findByInfoHash(infoHash, titleId))
+                        const auto* entry = catalog.findByInfoHash(infoHash);
+                        if (entry && !entry->titles.empty()) {
+                            for (const auto& title : entry->titles)
+                                if (sameId(title.titleId, titleId)) {
+                                    context.latestVersion = title.updateVersion;
+                                    break;
+                                }
+                        } else if (const pipensx::GameMetadata* meta =
+                                       metadata.findByInfoHash(infoHash, titleId)) {
                             context.latestVersion = meta->latestVersion;
+                        }
                     })) {
                     log_msg("[web] install context timed out for %s\n",
                             infoHash.c_str());
@@ -932,6 +940,7 @@ int main(int argc, char** argv) {
         startupStage("GameUpdateService load");
         GameUpdateService gameUpdates(&metadata,
                                       "sdmc:/switch/pipensx/game-updates.json");
+        gameUpdates.setCatalog(&catalog);
         std::string gameUpdatesError;
         if (!gameUpdates.load(gameUpdatesError))
             diagnostic_error("game_updates", "load", "error=%s",
@@ -946,7 +955,20 @@ int main(int argc, char** argv) {
                         std::vector<const GameMetadata*> matches;
                         metadata.findByTitleId(title.titleId, matches);
                         const CatalogEntry* bundle = nullptr;
-                        if (const auto* exact = GameMetadataService::preferVersionMatch(
+                        for (const auto& candidate : catalog.entries()) {
+                            for (const auto& item : candidate.titles) {
+                                uint64_t candidateId = 0;
+                                if (!result.foundVersion.empty() &&
+                                    item.updateVersion == result.foundVersion &&
+                                    InstalledTitleService::parseTitleId(item.titleId, candidateId) &&
+                                    candidateId == title.applicationId) {
+                                    bundle = &candidate;
+                                    break;
+                                }
+                            }
+                            if (bundle) break;
+                        }
+                        if (!bundle) if (const auto* exact = GameMetadataService::preferVersionMatch(
                                 matches, result.foundVersion))
                             bundle = catalog.findByInfoHash(exact->infoHash);
                         if (!bundle) for (const auto* match : matches) {
@@ -958,9 +980,16 @@ int main(int argc, char** argv) {
                         // Same direct-id fallback as the native Installed view.
                         if (!bundle) for (const auto& candidate : catalog.entries()) {
                             uint64_t candidateId = 0;
-                            if (InstalledTitleService::parseTitleId(candidate.titleId, candidateId) &&
-                                candidateId == title.applicationId &&
-                                (!bundle || candidate.publishedAt > bundle->publishedAt))
+                            bool matchesId = InstalledTitleService::parseTitleId(candidate.titleId, candidateId) &&
+                                             candidateId == title.applicationId;
+                            for (const auto& item : candidate.titles) {
+                                if (InstalledTitleService::parseTitleId(item.titleId, candidateId) &&
+                                    candidateId == title.applicationId) {
+                                    matchesId = true;
+                                    break;
+                                }
+                            }
+                            if (matchesId && (!bundle || candidate.publishedAt > bundle->publishedAt))
                                 bundle = &candidate;
                         }
                         rows.push_back({{"titleId", title.titleId}, {"name", title.name},
