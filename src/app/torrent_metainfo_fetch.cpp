@@ -306,12 +306,21 @@ bool createDebridWithMetainfoFallback(
     const std::string& tmpTorrentPath, std::atomic<bool>& cancelled,
     std::chrono::steady_clock::time_point deadline, std::string& debridId,
     DebridInfo& info, std::string& error,
-    const std::function<void(DebridCreateStage)>& onStage) {
+    const std::function<void(DebridCreateStage)>& onStage,
+    bool keepUncached) {
     debridId.clear();
     info = DebridInfo{};
     error.clear();
 
     auto cleanupTmp = [&]() { unlink(tmpTorrentPath.c_str()); };
+    auto retainPending = [&]() {
+        if (!keepUncached || debridId.empty() || cancelled.load() ||
+            info.phase == DebridInfo::Phase::Failed)
+            return false;
+        error = "Torrent kept in the debrid service for caching. Try adding it again later.";
+        cleanupTmp();
+        return true;
+    };
 
     if (cancelled.load()) {
         error = "Cancelled.";
@@ -328,6 +337,8 @@ bool createDebridWithMetainfoFallback(
             cleanupTmp();
             return true;
         }
+        if (retainPending())
+            return false;
     }
     if (!debridId.empty()) {
         std::string ignored;
@@ -376,6 +387,8 @@ bool createDebridWithMetainfoFallback(
     }
     if (!pollUntilFiles(provider, debridId, cancelled, fileDeadline, info,
                         error)) {
+        if (retainPending())
+            return false;
         std::string ignored;
         provider.remove(debridId, ignored);
         debridId.clear();

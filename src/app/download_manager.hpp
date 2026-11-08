@@ -432,6 +432,8 @@ public:
     // The keys themselves stay on the setters above.
     void setActiveDebridProvider(DebridProviderKind kind);
     DebridProviderKind activeDebridProvider() const;
+    void setKeepUncachedDebrid(bool enabled) { keepUncachedDebrid_.store(enabled); }
+    bool keepUncachedDebrid() const { return keepUncachedDebrid_.load(); }
     std::string activeDebridCredential() const;
     // `error` is a taskActionReasonName() code when the command is refused.
     bool pause(const std::string& taskId, std::string& error);
@@ -650,6 +652,7 @@ private:
     std::string realdebridApiKey_;
     std::string alldebridApiKey_;
     DebridProviderKind activeDebridProvider_ = DebridProviderKind::TorBox;
+    std::atomic<bool> keepUncachedDebrid_{false};
     // Off until someone opts in. The constructor starts the worker before any
     // caller can configure the manager, so a restored Queued torrent task is
     // eligible for pickup during that window — defaulting to true would let it

@@ -158,6 +158,7 @@ bool parseSettings(const std::string& text, AppSettingsData& values,
         !readString(root, "web_server_pin", values.webServerPin, error) ||
         !readBool(root, "torrenting_enabled", values.torrentingEnabled,
                   error) ||
+        !readBool(root, "keep_uncached_debrid", values.keepUncachedDebrid, error) ||
         !readBool(root, "live_seeding_enabled", values.liveSeedingEnabled, error) ||
         !readBool(root, "seeding_notice_ack", values.seedingNoticeAcknowledged, error) ||
         !readString(root, "torbox_api_key", values.torboxApiKey, error) ||
@@ -292,6 +293,7 @@ std::string serializeSettings(const AppSettingsData& values) {
     root["web_server_pin"] = values.webServerPin;
     root["max_active_downloads"] = values.maxActiveDownloads;
     root["torrenting_enabled"] = values.torrentingEnabled;
+    root["keep_uncached_debrid"] = values.keepUncachedDebrid;
     root["live_seeding_enabled"] = values.liveSeedingEnabled;
     root["seeding_notice_ack"] = values.seedingNoticeAcknowledged;
     root["torbox_api_key"] = values.torboxApiKey;
@@ -458,6 +460,7 @@ bool AppSettingsData::operator==(const AppSettingsData& other) const {
            realdebridApiKey == other.realdebridApiKey &&
            alldebridApiKey == other.alldebridApiKey &&
            debridProvider == other.debridProvider &&
+           keepUncachedDebrid == other.keepUncachedDebrid &&
            firstRunCompleted == other.firstRunCompleted &&
            proxyUrl == other.proxyUrl;
 }

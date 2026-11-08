@@ -42,6 +42,7 @@ inline void applyCompanionSettingsRuntime(const AppSettingsData& values,
     manager.setRealdebridApiKey(values.realdebridApiKey);
     manager.setAlldebridApiKey(values.alldebridApiKey);
     manager.setActiveDebridProvider(values.debridProvider);
+    manager.setKeepUncachedDebrid(values.keepUncachedDebrid);
     applyProxySetting(values.proxyUrl);
     telemetry_set_enabled(values.extendedTelemetry ? 1 : 0);
 }

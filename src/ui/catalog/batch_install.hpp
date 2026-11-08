@@ -324,8 +324,9 @@ private:
         auto entries = entries_;
         const bool debridMode = debridMode_;
         StreamSelection selection = selection_;
+        const bool keepUncached = settings_ && settings_->get().keepUncachedDebrid;
         brls::async([this, alive, cancelled, installer, provider, entries,
-                     debridMode, selection] {
+                     debridMode, selection, keepUncached] {
             auto progress = [this, alive](
                                 const pipensx::BatchPrepareProgress& value) {
                 std::string stage;
@@ -353,7 +354,7 @@ private:
             auto prepared = std::make_shared<BatchPreparation>(
                 debridMode && provider
                     ? installer->prepareViaDebrid(entries, selection,
-                          *provider, *cancelled, progress)
+                          *provider, *cancelled, progress, {}, keepUncached)
                     : installer->prepare(entries, selection, *cancelled,
                           progress));
             brls::sync([this, alive, prepared] {

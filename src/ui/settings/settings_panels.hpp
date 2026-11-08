@@ -781,7 +781,7 @@ private:
 
 class SourcePanel : public SettingsPanel {
 public:
-    SourcePanel(AppSettings* settings,
+    SourcePanel(AppSettings* settings, DownloadManager* manager,
                 std::function<void()> onChangeSource)
         : settings_(settings), onChangeSource_(std::move(onChangeSource)) {
         addSection(content_, tr("pipensx/settings/section_debrid"));
@@ -796,6 +796,23 @@ public:
         downloadSource_->setId("settings-debrid-link");
         content_->addView(downloadSource_);
         addNote(content_, tr("pipensx/settings/source_hint"));
+
+        keepUncached_ = new brls::BooleanCell();
+        keepUncached_->setId("settings-keep-uncached-debrid");
+        keepUncached_->init(tr("pipensx/settings/keep_uncached_debrid"),
+            settings_->get().keepUncachedDebrid, [this, manager](bool enabled) {
+                auto values = settings_->get();
+                const bool previous = values.keepUncachedDebrid;
+                values.keepUncachedDebrid = enabled;
+                if (!persistSettings(settings_, values, "keep_uncached_debrid")) {
+                    keepUncached_->setOn(previous, false);
+                    return;
+                }
+                if (manager)
+                    manager->setKeepUncachedDebrid(enabled);
+            });
+        content_->addView(keepUncached_);
+        addNote(content_, tr("pipensx/settings/keep_uncached_debrid_hint"));
 
         addSection(content_, tr("pipensx/settings/source_current"));
         statusValue_ = addStatusRow(content_,
@@ -872,6 +889,7 @@ private:
     AppSettings* settings_;
     std::function<void()> onChangeSource_;
     brls::DetailCell* downloadSource_ = nullptr;
+    brls::BooleanCell* keepUncached_ = nullptr;
     brls::Label* statusValue_ = nullptr;
     brls::Label* providerValue_ = nullptr;
     brls::Label* torrentingValue_ = nullptr;

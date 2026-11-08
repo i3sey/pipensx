@@ -367,7 +367,7 @@ BatchPreparation CatalogBatchInstaller::prepareUpdatesViaDebrid(
     DebridProvider& provider,
     std::atomic<bool>& cancelled,
     const ProgressCallback& progress,
-    DebridBatchTiming timing) const {
+    DebridBatchTiming timing, bool keepUncached) const {
     if (std::string(provider.name()) == "realdebrid") {
         auto result = metadataOnlyInstaller(rootPath_).prepareUpdates(
             targets, cancelled, progress);
@@ -402,7 +402,7 @@ BatchPreparation CatalogBatchInstaller::prepareUpdatesViaDebrid(
         std::string err;
         if (!createDebridWithMetainfoFallback(
                 provider, magnet, hash, target.entry.infoDict, tmp, cancelled,
-                deadline, id, info, err)) {
+                deadline, id, info, err, {}, keepUncached)) {
             if (cancelled.load()) {
                 result.cancelled_ = true;
                 return result;
@@ -506,7 +506,7 @@ BatchPreparation CatalogBatchInstaller::prepareViaDebrid(
     DebridProvider& provider,
     std::atomic<bool>& cancelled,
     const ProgressCallback& progress,
-    DebridBatchTiming timing) const {
+    DebridBatchTiming timing, bool keepUncached) const {
     if (std::string(provider.name()) == "realdebrid") {
         auto result = metadataOnlyInstaller(rootPath_).prepare(
             entries, selection, cancelled, progress);
@@ -551,7 +551,7 @@ BatchPreparation CatalogBatchInstaller::prepareViaDebrid(
         std::string err;
         if (!createDebridWithMetainfoFallback(
                 provider, entry.magnetUri, hash, entry.infoDict, tmp, cancelled,
-                deadline, id, info, err)) {
+                deadline, id, info, err, {}, keepUncached)) {
             if (cancelled.load()) {
                 result.cancelled_ = true;
                 removeAll();

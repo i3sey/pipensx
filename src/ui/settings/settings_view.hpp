@@ -72,7 +72,7 @@ public:
         panels_[static_cast<size_t>(SettingsSection::Downloads)] =
             new DownloadsPanel(settings_, manager_);
         panels_[static_cast<size_t>(SettingsSection::Source)] =
-            source_ = new SourcePanel(settings_,
+            source_ = new SourcePanel(settings_, manager_,
                                      [this] { openDownloadSource(); });
         panels_[static_cast<size_t>(SettingsSection::Network)] =
             new NetworkPanel(settings_, manager_, webServer,
@@ -143,6 +143,7 @@ private:
         manager_->setRealdebridApiKey(values.realdebridApiKey);
         manager_->setAlldebridApiKey(values.alldebridApiKey);
         manager_->setActiveDebridProvider(values.debridProvider);
+        manager_->setKeepUncachedDebrid(values.keepUncachedDebrid);
         source_->refreshDetail();
     }
 

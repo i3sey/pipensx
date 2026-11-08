@@ -1217,7 +1217,7 @@ void testSelectionPathsNoMatchReturnsFailed() {
     assert(stat((data + "/gamma.bin").c_str(), &st) != 0);
 }
 
-void testMagnetFileFallback() {
+void testMagnetFileFallback(bool keepUncached = false) {
     const std::string root = "/tmp/pipensx-torbox-fallback-test";
     system(("rm -rf " + root).c_str());
     ::mkdir(root.c_str(), 0777);
@@ -1234,6 +1234,8 @@ void testMagnetFileFallback() {
         {"mylist", infoReadyJson("data.bin", 4)},
         {"requestdl", "{\"success\":true,\"data\":\"https://x/dl\"}"},
     };
+    if (keepUncached)
+        script.erase(script.begin() + 2, script.begin() + 4);
     TorboxProvider provider("key", scriptedTransport(&script));
     DebridTransfer transfer(provider, memoryFetcher("data"));
 
@@ -1244,6 +1246,7 @@ void testMagnetFileFallback() {
     DebridTaskSpec spec;
     spec.taskId = "hash";
     spec.magnet = "magnet:?xt=urn:btih:hash";
+    spec.keepUncached = keepUncached;
     spec.torrentPath = torrentPath;
     spec.dataPath = root;
     spec.workingRoot = root;
@@ -1258,6 +1261,8 @@ void testMagnetFileFallback() {
     assert(result == DebridRunResult::Finished);
     assert(script.empty());
     std::puts("magnet->file fallback ok");
+    if (!keepUncached)
+        testMagnetFileFallback(true);
 }
 
 void testOutOfOrderRangesAssembleInOrder() {

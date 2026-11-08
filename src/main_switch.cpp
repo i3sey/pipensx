@@ -767,6 +767,7 @@ int main(int argc, char** argv) {
         manager.setRealdebridApiKey(settings.get().realdebridApiKey);
         manager.setAlldebridApiKey(settings.get().alldebridApiKey);
         manager.setActiveDebridProvider(settings.get().debridProvider);
+        manager.setKeepUncachedDebrid(settings.get().keepUncachedDebrid);
         manager.setTorrentingEnabled(settings.get().torrentingEnabled);
         manager.setLiveSeedingEnabled(settings.get().liveSeedingEnabled);
         metadata.setImageNetwork(

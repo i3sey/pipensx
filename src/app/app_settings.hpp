@@ -108,6 +108,7 @@ struct AppSettingsData {
     std::string realdebridApiKey;
     std::string alldebridApiKey;
     DebridProviderKind debridProvider = DebridProviderKind::TorBox;
+    bool keepUncachedDebrid = false;
     bool firstRunCompleted = false;
     // Outbound proxy for HTTPS calls the app makes (catalog, artwork,
     // updates, hosted debrid). Empty = direct. Peer traffic does NOT go

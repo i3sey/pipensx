@@ -1090,7 +1090,8 @@ private:
             BatchPreparation prepared =
                 debrid
                     ? installer->prepareUpdatesViaDebrid(
-                        targets, *provider, *cancelled, progress)
+                        targets, *provider, *cancelled, progress, {},
+                        manager->keepUncachedDebrid())
                     : installer->prepareUpdates(targets, *cancelled,
                                                 progress);
             BatchEnqueueResult result =

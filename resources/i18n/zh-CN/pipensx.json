@@ -651,6 +651,8 @@
     "can_free": "可释放：{}"
   },
   "settings": {
+    "keep_uncached_debrid": "在 debrid 中保留未缓存的种子",
+    "keep_uncached_debrid_hint": "获取元数据超时后，将种子保留在服务商账户中以供缓存。稍后重新添加即可下载。取消操作仍会删除种子。",
     "section_catalog": "目录",
     "section_downloads": "下载",
     "section_diagnostics": "诊断",
@@ -874,6 +876,7 @@
     "note": "你可以稍后在设置中更改。"
   },
   "debrid": {
+    "kept_for_caching": "种子已保留在 debrid 服务中以供缓存。请稍后重新添加。",
     "link_hint": "用同一网络下的设备扫描二维码，或手动输入你的 {} API 密钥。它只存储在 pipensx 设置中。",
     "link_hint_url": "输入你的 TorrServer 地址，例如 http://192.168.1.10:8090。它只存储在 pipensx 设置中。",
     "link_title": "配置 {}",

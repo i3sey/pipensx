@@ -43,6 +43,7 @@ struct DebridTaskSpec {
     std::string debridId;
     std::string torrentPath;
     std::string magnet;
+    bool keepUncached = false;
     std::string dataPath;
     std::string workingRoot;
     install::InstallStorageTarget installTarget;

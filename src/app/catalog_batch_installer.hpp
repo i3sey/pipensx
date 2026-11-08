@@ -121,7 +121,7 @@ public:
         DebridProvider& provider,
         std::atomic<bool>& cancelled,
         const ProgressCallback& progress,
-        DebridBatchTiming timing = {}) const;
+        DebridBatchTiming timing = {}, bool keepUncached = false) const;
 
     // Update enqueue: torrent items go through importTorrentActions, so a
     // repeated "Update all" lands in the merge path and a repeat that adds
@@ -139,7 +139,7 @@ public:
         DebridProvider& provider,
         std::atomic<bool>& cancelled,
         const ProgressCallback& progress,
-        DebridBatchTiming timing = {}) const;
+        DebridBatchTiming timing = {}, bool keepUncached = false) const;
 
     BatchEnqueueResult enqueueViaDebrid(
         BatchPreparation& prepared,

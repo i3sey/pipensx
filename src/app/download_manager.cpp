@@ -2810,6 +2810,7 @@ void DownloadManager::runDebridTask(const ClaimedTask& claim) {
     DebridTaskSpec spec;
     spec.taskId = activeId;
     spec.debridId = claim.debridId;
+    spec.keepUncached = keepUncachedDebrid();
     spec.torrentPath = claim.metainfoPath;
     spec.dataPath = claim.dataPath;
     spec.workingRoot = rootPath_;

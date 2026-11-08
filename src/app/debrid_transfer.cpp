@@ -999,7 +999,8 @@ Step pollUntilReady(RunContext& ctx) {
     int failures = 0;
     int staleSelectionPolls = 0;
     bool canFallback =
-        ctx.magnetCreated && !ctx.fallbackUsed && !ctx.spec.torrentPath.empty();
+        ctx.magnetCreated && !ctx.fallbackUsed && !ctx.spec.torrentPath.empty() &&
+        !ctx.spec.keepUncached;
     Clock::time_point windowStart = Clock::now();
     auto replaceFinalizedRealDebridSelection = [&]() -> Step {
         if (ctx.selectionReplacementCreated) {

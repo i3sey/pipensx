@@ -201,7 +201,86 @@ static void runLiveCacheFetchIfRequested() {
     curl_global_cleanup();
 }
 
+class PendingProvider : public DebridProvider {
+public:
+    int magnets = 0, uploads = 0, removals = 0;
+    bool ready = false, failed = false, cancelOnPoll = false;
+    std::atomic<bool>* cancelled = nullptr;
+    bool validate(std::string&) override { return true; }
+    bool createFromMagnet(const std::string&, std::string& id,
+                          std::string&) override {
+        ++magnets;
+        id = "pending";
+        return true;
+    }
+    bool createFromFile(const std::string&, std::string&, std::string&) override {
+        ++uploads;
+        return false;
+    }
+    bool fetchInfo(const std::string&, DebridInfo& info, std::string&) override {
+        info = {};
+        info.phase = failed ? DebridInfo::Phase::Failed
+                            : DebridInfo::Phase::Downloading;
+        if (ready)
+            info.files.push_back({"1", "test.nsp", 1});
+        if (cancelOnPoll)
+            cancelled->store(true);
+        return true;
+    }
+    bool selectFiles(const std::string&, const std::vector<std::string>&,
+                     std::string&) override { return true; }
+    bool resolveDownloadUrl(const std::string&, const DebridInfo&, size_t,
+                            const DebridFile&, std::string&,
+                            std::string&) override { return false; }
+    bool remove(const std::string&, std::string&) override {
+        ++removals;
+        return true;
+    }
+    const char* name() const override { return "pending"; }
+};
+
+static void testKeepUncached() {
+    char dir[] = "/tmp/pipensx-keepXXXXXX";
+    assert(mkdtemp(dir));
+    const std::string path = std::string(dir) + "/out.torrent";
+    const std::string magnet = std::string("magnet:?xt=urn:btih:") + kHash +
+        "&tr=http://bt.t-ru.org/ann?magnet";
+    for (int scenario = 0; scenario < 5; ++scenario) {
+        std::atomic<bool> cancelled{false};
+        PendingProvider provider;
+        provider.cancelled = &cancelled;
+        provider.cancelOnPoll = scenario == 2;
+        provider.failed = scenario == 3;
+        provider.ready = scenario == 4;
+        const bool keep = scenario != 0;
+        std::string id, error;
+        DebridInfo info;
+        std::ofstream(path) << "temporary data";
+        const bool ok = createDebridWithMetainfoFallback(
+            provider, magnet, kHash, decodeB64(kInfoDictB64), path,
+            cancelled, std::chrono::steady_clock::now(), id, info, error,
+            {}, keep);
+        assert(ok == provider.ready);
+        assert(provider.magnets == 1);
+        assert(access(path.c_str(), F_OK) != 0);
+        if (scenario == 1) {
+            assert(id == "pending");
+            assert(provider.removals == 0 && provider.uploads == 0);
+            assert(error.find("kept") != std::string::npos);
+        } else if (provider.ready) {
+            assert(id == "pending");
+            assert(provider.removals == 0 && provider.uploads == 0);
+        } else {
+            assert(id.empty());
+            assert(provider.removals == 1);
+            assert(provider.uploads == (provider.cancelOnPoll ? 0 : 1));
+        }
+    }
+    rmdir(dir);
+}
+
 int main() {
+    testKeepUncached();
     testItorrentsUrl();
     testWriteFromInfoDict();
     testRejectBadBody();

@@ -651,6 +651,8 @@
     "can_free": "확보 가능: {}"
   },
   "settings": {
+    "keep_uncached_debrid": "캐시되지 않은 토렌트를 debrid에 유지",
+    "keep_uncached_debrid_hint": "메타데이터 확인이 오래 걸리면 캐시할 수 있도록 제공자 계정에 토렌트를 유지합니다. 나중에 다시 추가하여 다운로드하세요. 취소하면 삭제됩니다.",
     "section_catalog": "카탈로그",
     "section_downloads": "다운로드",
     "section_diagnostics": "진단",
@@ -874,6 +876,7 @@
     "note": "나중에 설정에서 바꿀 수 있습니다."
   },
   "debrid": {
+    "kept_for_caching": "캐시할 수 있도록 debrid 서비스에 토렌트를 유지했습니다. 나중에 다시 추가하세요.",
     "link_hint": "같은 네트워크의 기기에서 코드를 스캔하거나 {} API 키를 직접 입력하세요. 키는 pipensx 설정에만 저장됩니다. 유효한 프리미엄 구독이 필요하며, 무료 계정으로는 토렌트를 추가할 수 없습니다.",
     "link_hint_url": "TorrServer 주소를 입력하세요. 예: http://192.168.1.10:8090. 주소는 pipensx 설정에만 저장됩니다.",
     "link_title": "{} 설정",

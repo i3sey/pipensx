@@ -155,6 +155,13 @@ One to four downloads may run concurrently, while stream installation remains
 serialized. Existing files are verified before a task starts or resumes.
 Interrupted package streams resume from their last persisted safe point;
 packages committed before the interruption remain installed and are skipped.
+
+In **Settings → Source**, enable **Keep uncached torrents in debrid**
+to leave pending magnets in your provider account when metadata resolution
+times out. Add the release again later to download it. Cloud caching and any
+required file selection follow the provider's rules. Cancelling preparation
+still removes its transfer; the option is off by default.
+
 Runtime behavior such as sleep/wake, long installs, and `/switch` file copying
 must ultimately be validated on physical Switch hardware.
 

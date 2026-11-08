@@ -1243,6 +1243,7 @@ private:
         auto cancelled = cancelled_;
         const AppSettingsData values = settings_->get();
         const DebridProviderKind providerKind = values.debridProvider;
+        const bool keepUncached = values.keepUncachedDebrid;
         log_msg("[debrid-intent] source=switch phase=install-click hash=%s provider=%d\n",
                 entry_.infoHash.c_str(), static_cast<int>(providerKind));
         const std::string key = activeDebridKey(values);
@@ -1250,7 +1251,7 @@ private:
         const std::string root = manager_->rootPath();
         const uint32_t serial = gCatalogTempSerial.fetch_add(1);
         brls::async([this, alive, cancelled, providerKind, key, entry, mode,
-                     forcePicker, root, serial] {
+                     forcePicker, root, serial, keepUncached] {
             auto provider = makeDebridProvider(providerKind, key);
             std::string debridId;
             std::string error;
@@ -1282,12 +1283,12 @@ private:
             const bool ok = createDebridWithMetainfoFallback(
                 *provider, entry.magnetUri, catalogLower(entry.infoHash),
                 entry.infoDict, tmp, *cancelled, deadline, debridId, info,
-                error, onStage);
+                error, onStage, keepUncached);
             log_msg("[DEBUG-debrid-picker] create ok=%d id=%s files=%u\n",
                     ok ? 1 : 0, debridId.c_str(),
                     static_cast<unsigned>(info.files.size()));
             brls::sync([this, alive, cancelled, ok, error, debridId, info,
-                        entry, providerKind, key, mode, forcePicker] {
+                        entry, providerKind, key, mode, forcePicker, keepUncached] {
                 if (!alive->load() || cancelled->load()) {
                     if (!debridId.empty())
                         removeDebridTransferAsync(providerKind, key, debridId);
@@ -1299,10 +1300,12 @@ private:
                 }
                 setBusy(false);
                 if (!ok) {
-                    if (!debridId.empty())
+                    const bool retained = keepUncached && !debridId.empty();
+                    if (!retained && !debridId.empty())
                         removeDebridTransferAsync(providerKind, key, debridId);
-                    operationMessage_ = error.empty()
-                        ? tr("pipensx/debrid/magnet_unavailable") : error;
+                    operationMessage_ = retained
+                        ? tr("pipensx/debrid/kept_for_caching")
+                        : (error.empty() ? tr("pipensx/debrid/magnet_unavailable") : error);
                     refreshButtons();
                     brls::Application::notify(operationMessage_);
                     return;

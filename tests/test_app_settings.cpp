@@ -157,6 +157,7 @@ void testUpdatePersistsEveryPublicSetting() {
     changed.maxActiveDownloads = 3;
     changed.catalogDisclaimerAcknowledged = true;
     changed.torrentingEnabled = true;
+    changed.keepUncachedDebrid = true;
     changed.torboxApiKey = "0a1b2c3d-4e5f-6789-abcd-ef0123456789";
     changed.realdebridApiKey = "rd-token-example";
     changed.alldebridApiKey = "ad-key-example";
@@ -197,6 +198,7 @@ void testOldSettingsJsonDefaultsRefreshTimes() {
     assert(settings.get().catalogDisclaimerAcknowledged);
     assert(settings.get().checkForUpdatesOnLaunch);
     assert(!settings.get().showHomeTab);
+    assert(!settings.get().keepUncachedDebrid);
 }
 
 void testInvalidFileFailsClosedToDefaults() {

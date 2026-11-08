@@ -479,7 +479,8 @@ AddOutcome ReleaseAdder::addViaDebrid(
     hashed.infoHashHex = hash;
     if (!createDebridWithMetainfoFallback(
             *provider, hashed.magnetUri, hash, hashed.infoDict, tmp, cancelled,
-            deadline, debridId, info, error, onStage)) {
+            deadline, debridId, info, error, onStage,
+            manager_.keepUncachedDebrid())) {
         outcome.error = cancelled.load()
                             ? "Cancelled."
                             : (error.empty() ? "Unable to resolve torrent metadata."
@@ -534,8 +535,14 @@ AddOutcome ReleaseAdder::addTorrentFile(const AddRequest& request,
     if (!pollDebridUntilFiles(*provider, debridId, cancelled, deadline, info,
                               error) ||
         cancelled.load()) {
-        std::string ignored;
-        provider->remove(debridId, ignored);
+        const bool retained = manager_.keepUncachedDebrid() &&
+            !cancelled.load() && info.phase != DebridInfo::Phase::Failed;
+        if (!retained) {
+            std::string ignored;
+            provider->remove(debridId, ignored);
+        } else {
+            error = "Torrent kept in the debrid service for caching. Try adding it again later.";
+        }
         outcome.error = cancelled.load()
                             ? "Cancelled."
                             : (error.empty() ? "Unable to resolve torrent metadata."

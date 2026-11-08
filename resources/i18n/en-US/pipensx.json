@@ -651,6 +651,8 @@
     "can_free": "You can free: {}"
   },
   "settings": {
+    "keep_uncached_debrid": "Keep uncached torrents in debrid",
+    "keep_uncached_debrid_hint": "If metadata takes too long, keep the torrent in your provider account for caching. Add it again later to download. Cancelling still removes it.",
     "section_catalog": "Catalog",
     "section_downloads": "Downloads",
     "section_diagnostics": "Diagnostics",
@@ -874,6 +876,7 @@
     "note": "You can change this later in Settings."
   },
   "debrid": {
+    "kept_for_caching": "Torrent kept in the debrid service for caching. Try adding it again later.",
     "link_hint": "Scan the code from a device on the same network, or type your {} API key by hand. It is stored only in the pipensx settings. An active premium subscription is required — free accounts cannot add torrents.",
     "link_hint_url": "Enter the address of your TorrServer, for example http://192.168.1.10:8090. It is stored only in the pipensx settings.",
     "link_title": "Set up {}",
