@@ -2468,7 +2468,8 @@ void testLangegenCatalogFallbacks() {
                 }
                 if (mode == "diff-api" &&
                     url == pipensx::langegenCatalogApiUrl("catalog_diff.json")) {
-                    data = "{\"version\":1,\"added_or_updated\":{},\"deleted_topic_ids\":[]}";
+                    data = "{\"version\":1,\"generated_at\":" + std::to_string(time(nullptr)) +
+                        ",\"window_hours\":72,\"added_or_updated\":{\"fr\":[]},\"deleted_topic_ids\":[]}";
                     return true;
                 }
                 if (mode == "invalid-diff" && url == pipensx::kCatalogDiffUrl) {
@@ -2515,6 +2516,10 @@ void testLangegenCatalogFallbacks() {
         if (mode == "diff" || mode == "corrupt" || mode == "diff-api" ||
             mode == "invalid-diff")
             writeTextFile(root + "/catalog/catalog.json", body);
+        if (mode == "diff" || mode == "diff-api" || mode == "invalid-diff")
+            writeTextFile(root + "/catalog/catalog.json.sync", "{\"source\":\"" + source +
+                "\",\"language\":\"fr\",\"synced_at\":" + std::to_string(time(nullptr) - 1) +
+                ",\"sha256\":\"" + hash + "\"}");
         std::vector<CatalogEntry> parsed;
         std::string error;
         const bool ok = service.fetchLatest(parsed, error, requestedSource, &cancelled);
@@ -2558,6 +2563,7 @@ void testLangegenCatalogFallbacks() {
             assert(retained == body);
         }
         unlink((root + "/catalog/catalog.json").c_str());
+        unlink((root + "/catalog/catalog.json.sync").c_str());
         rmdir((root + "/catalog").c_str());
         rmdir(root.c_str());
     }
@@ -3379,10 +3385,76 @@ void testCatalogDiffIncrementalSync() {
     assert(patched.find("400") != std::string::npos);
 }
 
+void testCatalogDiffCacheProvenance() {
+    const std::string source = pipensx::catalogSourceUrlForLanguage("fr");
+    const std::string english = pipensx::catalogSourceUrlForLanguage("en");
+    const std::string body = R"([{"title":"Original","topic_id":"1","magnet":"magnet:?xt=urn:btih:1111111111111111111111111111111111111111&tr=http://bt.t-ru.org/ann?magnet"}])";
+    const std::string updated = R"([{"title":"Full","topic_id":"1","magnet":"magnet:?xt=urn:btih:1111111111111111111111111111111111111111&tr=http://bt.t-ru.org/ann?magnet"}])";
+    const int64_t now = time(nullptr);
+    for (const std::string mode : {"fresh", "boundary", "expired", "future", "missing",
+                                   "language", "source", "bad-time", "bad-version", "failure"}) {
+        char temporary[] = "/tmp/pipensx-provenance-XXXXXX";
+        const char* directory = mkdtemp(temporary);
+        assert(directory);
+        const std::string root = directory;
+        std::vector<std::string> requests;
+        int64_t generated = now;
+        std::string diff = "{\"version\":" + std::string(mode == "bad-version" ? "2" : "1") +
+            ",\"generated_at\":" + (mode == "bad-time" ? "\"bad\"" : std::to_string(generated)) +
+            ",\"window_hours\":72,\"deleted_topic_ids\":[],\"added_or_updated\":{\"fr\":[]}}";
+        CatalogService service(root, {}, [&](const std::string& url, std::string& data,
+                std::string& error, const std::string&, const std::atomic<bool>*,
+                const CatalogService::ProgressCallback&) {
+            requests.push_back(url);
+            if (url == pipensx::kCatalogDiffUrl && mode != "failure") { data = diff; return true; }
+            if (url == source || url == english || url == "https://example.com/catalog.json") {
+                if (mode == "failure") { error = "offline"; return false; }
+                data = updated; return true;
+            }
+            error = "offline"; return false;
+        });
+        writeTextFile(root + "/catalog/catalog.json", body);
+        uint8_t digest[32];
+        sha256(body.data(), body.size(), digest);
+        std::string hash;
+        for (uint8_t byte : digest) { char hex[3]; std::snprintf(hex, sizeof(hex), "%02x", byte); hash += hex; }
+        int64_t synced = now - 1;
+        if (mode == "boundary") synced = now - 72 * 3600;
+        if (mode == "expired") synced = now - 72 * 3600 - 1;
+        if (mode == "future") synced = now + 1;
+        if (mode != "missing")
+            writeTextFile(root + "/catalog/catalog.json.sync", "{\"source\":\"" + source +
+                "\",\"language\":\"fr\",\"synced_at\":" + std::to_string(synced) +
+                ",\"sha256\":\"" + hash + "\"}");
+        std::vector<CatalogEntry> entries;
+        std::string error;
+        const std::string requested = mode == "language" ? english :
+            mode == "source" ? "https://example.com/catalog.json" : source;
+        const bool ok = service.fetchLatest(entries, error, requested);
+        assert(ok == (mode != "failure"));
+        if (mode == "fresh" || mode == "boundary") {
+            assert(requests.size() == 1 && requests[0] == pipensx::kCatalogDiffUrl);
+            assert(entries[0].title == "Original");
+        } else if (mode != "failure") {
+            assert(entries[0].title == "Full");
+            if (mode == "missing" || mode == "language" || mode == "source" || mode == "future")
+                assert(requests[0] == requested);
+        } else {
+            std::ifstream input(root + "/catalog/catalog.json");
+            assert(std::string((std::istreambuf_iterator<char>(input)), {}) == body);
+        }
+        unlink((root + "/catalog/catalog.json").c_str());
+        unlink((root + "/catalog/catalog.json.sync").c_str());
+        rmdir((root + "/catalog").c_str());
+        rmdir(root.c_str());
+    }
+}
+
 int main() {
     testMagnetParsing();
     testCatalogGenreCanonicalization();
     testCatalogDiffIncrementalSync();
+    testCatalogDiffCacheProvenance();
     testTrustedSourceAllowlist();
     testCatalogTrustedRedirect();
     testLangegenCatalogFallbacks();

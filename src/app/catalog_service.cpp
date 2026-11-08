@@ -303,6 +303,57 @@ bool writeAtomic(const std::string& path, const std::string& data,
     return false;
 }
 
+std::string cacheDigest(const std::string& body) {
+    uint8_t digest[32];
+    sha256(body.data(), body.size(), digest);
+    static const char hex[] = "0123456789abcdef";
+    std::string result;
+    result.reserve(64);
+    for (uint8_t byte : digest) {
+        result += hex[byte >> 4];
+        result += hex[byte & 15];
+    }
+    return result;
+}
+
+bool positiveInteger(const nlohmann::json& object, const char* key, int64_t& value) {
+    if (!object.contains(key) || !object[key].is_number_integer())
+        return false;
+    if (object[key].is_number_unsigned() &&
+        object[key].get<uint64_t>() > static_cast<uint64_t>(INT64_MAX))
+        return false;
+    value = object[key].get<int64_t>();
+    return value > 0;
+}
+
+bool compatibleDiff(const std::string& body, const std::string& language,
+                    int64_t syncedAt, int64_t now, int64_t& generatedAt) {
+    const auto diff = nlohmann::json::parse(body, nullptr, false);
+    int64_t hours = 0;
+    if (!diff.is_object() || !diff.contains("version") || diff["version"] != 1 ||
+        !positiveInteger(diff, "generated_at", generatedAt) ||
+        !positiveInteger(diff, "window_hours", hours) || hours > INT64_MAX / 3600 ||
+        now <= 0 || generatedAt > now || syncedAt > generatedAt ||
+        generatedAt - syncedAt > hours * 3600 ||
+        !diff.contains("deleted_topic_ids") || !diff["deleted_topic_ids"].is_array() ||
+        !diff.contains("added_or_updated") || !diff["added_or_updated"].is_object() ||
+        !diff["added_or_updated"].contains(language) ||
+        !diff["added_or_updated"][language].is_array())
+        return false;
+    for (const auto& item : diff["deleted_topic_ids"])
+        if (!item.is_string() && !item.is_number_unsigned()) return false;
+    const auto& updates = diff["added_or_updated"][language];
+    for (const auto& item : updates)
+        if (!item.is_object()) return false;
+    if (!updates.empty()) {
+        std::vector<CatalogEntry> parsed;
+        std::string error;
+        if (!CatalogService::parseJson(updates.dump(), parsed, error) ||
+            parsed.size() != updates.size()) return false;
+    }
+    return true;
+}
+
 CatalogHealth parseHealth(const nlohmann::json& item) {
     if (!item.contains("health") || !item["health"].is_string())
         return CatalogHealth::Unknown;
@@ -1200,46 +1251,53 @@ bool CatalogService::fetchLatest(std::vector<CatalogEntry>& parsed,
         sourceUrl == kDefaultCatalogManifestUrl)
         return fetchDefaultChannel(parsed, error, cancelled, progress);
 
-    // switch-game-collection: attempt fast incremental diff first if cache exists
+    const std::string metadataPath = cachePath_ + ".sync";
+    const int64_t fetchStartedAt = static_cast<int64_t>(time(nullptr));
     if (!langegenCatalogFile(sourceUrl).empty()) {
-        std::string cachedBody;
-        std::string cacheError;
-        std::vector<CatalogEntry> cachedEntries;
-        if (readFile(cachePath_, cachedBody, cacheError) &&
-            parseJson(cachedBody, cachedEntries, cacheError, cancelled) &&
-            !cachedEntries.empty()) {
-            std::string diffBody;
-            std::string diffError;
-            if (fetchResource(kCatalogDiffUrl, diffBody, diffError, cancelled, {},
-                    [](const std::string& body, std::string& error) {
-                        const auto diff = nlohmann::json::parse(body, nullptr, false);
-                        if (diff.is_object() && diff.contains("version") &&
-                            diff["version"] == 1 &&
-                            diff.contains("added_or_updated") &&
-                            diff["added_or_updated"].is_object() &&
-                            diff.contains("deleted_topic_ids") &&
-                            diff["deleted_topic_ids"].is_array())
-                            return true;
-                        error = "Catalog diff is invalid.";
-                        return false;
-                    }, false)) {
-                std::string langKey = "ru";
-                if (sourceUrl.find("EN_catalog") != std::string::npos) langKey = "en";
-                else if (sourceUrl.find("ES_catalog") != std::string::npos) langKey = "es";
-                else if (sourceUrl.find("FR_catalog") != std::string::npos) langKey = "fr";
-                else if (sourceUrl.find("DE_catalog") != std::string::npos) langKey = "de";
-                else if (sourceUrl.find("IT_catalog") != std::string::npos) langKey = "it";
-                else if (sourceUrl.find("PT_BR_catalog") != std::string::npos) langKey = "pt_br";
-                else if (sourceUrl.find("ZH_Hans_catalog") != std::string::npos) langKey = "zh_hans";
+        std::string langKey = "ru";
+        if (sourceUrl.find("EN_catalog") != std::string::npos) langKey = "en";
+        else if (sourceUrl.find("ES_catalog") != std::string::npos) langKey = "es";
+        else if (sourceUrl.find("FR_catalog") != std::string::npos) langKey = "fr";
+        else if (sourceUrl.find("DE_catalog") != std::string::npos) langKey = "de";
+        else if (sourceUrl.find("IT_catalog") != std::string::npos) langKey = "it";
+        else if (sourceUrl.find("PT_BR_catalog") != std::string::npos) langKey = "pt_br";
+        else if (sourceUrl.find("ZH_Hans_catalog") != std::string::npos) langKey = "zh_hans";
 
-                std::string patchedJson;
-                if (patchCatalogJsonDiff(cachedBody, diffBody, langKey, patchedJson) &&
-                    applyDiff(diffBody, langKey, cachedEntries, diffError, cancelled)) {
-                    parsed = std::move(cachedEntries);
-                    writeAtomic(cachePath_, patchedJson, diffError, cancelled);
-                    log_msg("[catalog] incremental diff applied successfully (%zu entries)\n",
-                            parsed.size());
-                    return true;
+        std::string cachedBody, metadataBody, cacheError;
+        std::vector<CatalogEntry> cachedEntries;
+        int64_t syncedAt = 0;
+        if (readFile(metadataPath, metadataBody, cacheError) &&
+            readFile(cachePath_, cachedBody, cacheError)) {
+            const auto metadata = nlohmann::json::parse(metadataBody, nullptr, false);
+            if (metadata.is_object() && metadata.contains("source") && metadata["source"] == sourceUrl &&
+                metadata.contains("language") && metadata["language"] == langKey &&
+                metadata.contains("sha256") && metadata["sha256"] == cacheDigest(cachedBody) &&
+                positiveInteger(metadata, "synced_at", syncedAt) &&
+                syncedAt <= fetchStartedAt &&
+                parseJson(cachedBody, cachedEntries, cacheError, cancelled) &&
+                !cachedEntries.empty()) {
+                std::string diffBody, diffError;
+                int64_t generatedAt = 0;
+                if (fetchResource(kCatalogDiffUrl, diffBody, diffError, cancelled, {},
+                        [&](const std::string& body, std::string& validationError) {
+                            if (compatibleDiff(body, langKey, syncedAt, fetchStartedAt, generatedAt))
+                                return true;
+                            validationError = "Catalog diff is invalid or outside the cache window.";
+                            return false;
+                        }, false)) {
+                    std::string patchedJson;
+                    if (patchCatalogJsonDiff(cachedBody, diffBody, langKey, patchedJson) &&
+                        applyDiff(diffBody, langKey, cachedEntries, diffError, cancelled) &&
+                        writeAtomic(cachePath_, patchedJson, error, cancelled)) {
+                        const nlohmann::json metadataOut = {{"source", sourceUrl},
+                            {"language", langKey}, {"synced_at", generatedAt},
+                            {"sha256", cacheDigest(patchedJson)}};
+                        std::string metadataError;
+                        writeAtomic(metadataPath, metadataOut.dump(), metadataError, cancelled);
+                        parsed = std::move(cachedEntries);
+                        return true;
+                    }
+                    if (failIfCancelled(cancelled, error)) return false;
                 }
             }
         }
@@ -1257,8 +1315,24 @@ bool CatalogService::fetchLatest(std::vector<CatalogEntry>& parsed,
         parsed.clear();
         return false;
     }
+    unlink(metadataPath.c_str());
     if (!writeAtomic(cachePath_, catalogBody, error, cancelled))
         return false;
+    if (!langegenCatalogFile(sourceUrl).empty() && fetchStartedAt > 0) {
+        std::string language = "ru";
+        const std::string file = langegenCatalogFile(sourceUrl);
+        if (file == "EN_catalog.json") language = "en";
+        else if (file == "ES_catalog.json") language = "es";
+        else if (file == "FR_catalog.json") language = "fr";
+        else if (file == "DE_catalog.json") language = "de";
+        else if (file == "IT_catalog.json") language = "it";
+        else if (file == "PT_BR_catalog.json") language = "pt_br";
+        else if (file == "ZH_Hans_catalog.json") language = "zh_hans";
+        const nlohmann::json metadata = {{"source", sourceUrl}, {"language", language},
+            {"synced_at", fetchStartedAt}, {"sha256", cacheDigest(catalogBody)}};
+        std::string metadataError;
+        writeAtomic(metadataPath, metadata.dump(), metadataError, cancelled);
+    }
     if (failIfCancelled(cancelled, error)) {
         parsed.clear();
         return false;
@@ -1308,6 +1382,7 @@ bool CatalogService::fetchDefaultChannel(
                     parsed.clear();
                     return false;
                 }
+                unlink((cachePath_ + ".sync").c_str());
                 log_msg("[catalog] manifest unchanged (%s), "
                         "catalog kept from cache\n",
                         manifest.catalogSha256.substr(0, 12).c_str());
@@ -1335,6 +1410,7 @@ bool CatalogService::fetchDefaultChannel(
         parsed.clear();
         return false;
     }
+    unlink((cachePath_ + ".sync").c_str());
     if (!writeAtomic(cachePath_, catalogBody, error, cancelled))
         return false;
     if (!writeAtomic(manifestPath_, manifestBody, error, cancelled))
