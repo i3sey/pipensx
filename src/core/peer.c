@@ -1,4 +1,5 @@
 #include "peer.h"
+#include "client_identity.h"
 #include "bencode.h"
 #include "util.h"
 #include "utp.h"
@@ -67,6 +68,17 @@ int peer_flush(peer_t *p) {
     ssize_t n = transport_write(p, p->sbuf, p->sbuf_len);
     if (n < 0) return 0;
     if (n > 0) {
+        uint32_t sent = (uint32_t)n;
+        if (p->upload_end) {
+            uint32_t end = sent < p->upload_end ? sent : p->upload_end;
+            if (end > p->upload_start) {
+                uint32_t payload = end - p->upload_start;
+                p->uploaded += payload;
+                if (p->uploaded_total) *p->uploaded_total += payload;
+            }
+            p->upload_start = sent < p->upload_start ? p->upload_start - sent : 0;
+            p->upload_end = sent < p->upload_end ? p->upload_end - sent : 0;
+        }
         memmove(p->sbuf, p->sbuf + (size_t)n, p->sbuf_len - (uint32_t)n);
         p->sbuf_len -= (uint32_t)n;
     }
@@ -87,6 +99,7 @@ static int send_msg(peer_t *p, const uint8_t *payload, uint32_t plen) {
             (size_t)p->sbuf_len + 4 + plen > sizeof(p->sbuf)) {
             log_msg("[peer] send queue full, dropping frame (%u+%u)\n",
                     p->sbuf_len, 4 + plen);
+            p->state = PS_DEAD;
             return 0;
         }
     }
@@ -106,7 +119,7 @@ static void build_handshake(uint8_t hs[BT_HANDSHAKE_LEN], const peer_ctx_t *ctx)
     memset(hs+20, 0, 8);
     /* Set extension bit (byte 5, bit 4 from right = 0x10) and DHT bit (byte 7, bit 0) */
     hs[25] = 0x10;  /* extension protocol (BEP10) */
-    hs[27] = 0x01;  /* DHT */
+    hs[27] = (ctx->private_torrent ? 0 : 0x01) | 0x04;
     memcpy(hs+28, ctx->info_hash, 20);
     memcpy(hs+48, ctx->peer_id,   20);
 }
@@ -133,6 +146,9 @@ static peer_t *peer_alloc(struct sockaddr_in addr, const peer_ctx_t *ctx) {
     p->last_recv_ms    = p->connect_time_ms;
     p->last_send_ms    = p->connect_time_ms;
     p->mse_enabled     = ctx->use_mse;
+    p->private_torrent = ctx->private_torrent;
+    p->upload_only = ctx->upload_only;
+    p->uploaded_total = ctx->uploaded_total;
     return p;
 }
 
@@ -183,7 +199,6 @@ void peer_destroy(peer_t *p) {
 
 /* --- BEP10 extension handshake --- */
 int peer_send_ext_handshake(peer_t *p, uint16_t listen_port) {
-    /* Build: d8:completei0e1:md6:ut_pexi1ee1:p<port>e */
     uint8_t buf[256];
     size_t off = 0;
     buf[off++] = MSG_EXTENDED; /* 20 */
@@ -192,10 +207,13 @@ int peer_send_ext_handshake(peer_t *p, uint16_t listen_port) {
     buf[off++] = 'd';
     /* m dict */
     off += snprintf((char*)buf+off, sizeof(buf)-off, "1:md");
-    off += snprintf((char*)buf+off, sizeof(buf)-off, "6:ut_pexi%de", EXT_PEX_ID);
+    if (!p->private_torrent)
+        off += snprintf((char*)buf+off, sizeof(buf)-off, "6:ut_pexi%de", EXT_PEX_ID);
     buf[off++] = 'e'; /* end m */
     off += snprintf((char*)buf+off, sizeof(buf)-off, "1:pi%ue", (unsigned)listen_port);
-    off += snprintf((char*)buf+off, sizeof(buf)-off, "11:upload_onlyi0e");
+    off += snprintf((char*)buf+off, sizeof(buf)-off, "11:upload_onlyi%de", p->upload_only);
+    off += snprintf((char*)buf+off, sizeof(buf)-off, "1:v%zu:%s",
+                    sizeof(PIPENSX_CLIENT_NAME) - 1, PIPENSX_CLIENT_NAME);
     buf[off++] = 'e'; /* end outer dict */
     int r = send_msg(p, buf, (uint32_t)off);
     p->ext_handshake_sent = 1;
@@ -234,7 +252,7 @@ static void parse_pex(peer_t *p __attribute__((unused)), const uint8_t *data, ui
 
 /* --- send ut_pex --- */
 int peer_send_pex(peer_t *p, const uint8_t *compact6, uint32_t cnt) {
-    if (!p->peer_ext_pex || cnt == 0) return 1;
+    if (p->private_torrent || !p->peer_ext_pex || cnt == 0) return 1;
     /* Build extended msg: [MSG_EXTENDED][peer_ext_pex id][bencode] */
     uint8_t buf[512];
     size_t off = 0;
@@ -267,6 +285,82 @@ int peer_send_bitfield(peer_t *p, const uint8_t *bf, uint32_t bf_bytes) {
 int peer_send_interested(peer_t *p) {
     p->am_interested = 1;
     return send_byte_msg(p, MSG_INTERESTED);
+}
+
+int peer_set_interested(peer_t *p, int interested) {
+    interested = !!interested;
+    if (p->am_interested == interested) return 1;
+    if (!send_byte_msg(p, interested ? MSG_INTERESTED : MSG_NOT_INTEREST)) return 0;
+    p->am_interested = interested;
+    return 1;
+}
+
+static int reject_upload(peer_t *p, uint32_t index, uint32_t offset, uint32_t length);
+
+int peer_set_choked(peer_t *p, int choked) {
+    choked = !!choked;
+    if (p->peer_choked == choked) return 1;
+    if (!send_byte_msg(p, choked ? MSG_CHOKE : MSG_UNCHOKE)) return 0;
+    p->peer_choked = choked;
+    if (choked) {
+        if (p->supports_fast)
+            for (uint32_t i = 0; i < p->upload_count; ++i) {
+                block_req_t *r = &p->uploads[i];
+                if (!reject_upload(p, (uint32_t)r->index, (uint32_t)r->offset,
+                                     (uint32_t)r->length)) return 0;
+            }
+        p->upload_count = 0;
+    }
+    return 1;
+}
+
+static uint32_t read_u32(const uint8_t *b) {
+    return ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) |
+           ((uint32_t)b[2] << 8) | b[3];
+}
+
+static void write_u32(uint8_t *b, uint32_t value) {
+    b[0] = (uint8_t)(value >> 24); b[1] = (uint8_t)(value >> 16);
+    b[2] = (uint8_t)(value >> 8); b[3] = (uint8_t)value;
+}
+
+static int reject_upload(peer_t *p, uint32_t index, uint32_t offset, uint32_t length) {
+    ++p->upload_rejected;
+    if (!p->supports_fast)
+        return peer_set_choked(p, 1) && peer_set_choked(p, 0);
+    uint8_t msg[13] = {MSG_REJECT_REQUEST};
+    write_u32(msg + 1, index); write_u32(msg + 5, offset); write_u32(msg + 9, length);
+    return send_msg(p, msg, sizeof(msg));
+}
+
+int peer_upload(peer_t *p, const peer_ctx_t *ctx,
+                int (*read_block)(void *, uint32_t, uint32_t, uint8_t *, uint32_t),
+                void *user, uint32_t *budget) {
+    if (p->peer_choked || !p->upload_count || p->upload_end || p->sbuf_len)
+        return 1;
+    block_req_t req = p->uploads[0];
+    if ((uint32_t)req.length > *budget) return 1;
+    memmove(p->uploads, p->uploads + 1, (--p->upload_count) * sizeof(req));
+    uint8_t frame[13 + (1 << 14)];
+    if (!ctx->our_bf || !bf_has(ctx->our_bf, (uint32_t)req.index) ||
+        !read_block(user, (uint32_t)req.index, (uint32_t)req.offset,
+                    frame + 13, (uint32_t)req.length))
+        return reject_upload(p, (uint32_t)req.index, (uint32_t)req.offset,
+                              (uint32_t)req.length);
+    write_u32(frame, 9 + (uint32_t)req.length);
+    frame[4] = MSG_PIECE;
+    write_u32(frame + 5, (uint32_t)req.index);
+    write_u32(frame + 9, (uint32_t)req.offset);
+    uint32_t size = 13 + (uint32_t)req.length;
+    /* Own the frame before eviction; RC4 and control messages share one stream. */
+    if (p->mse_active) rc4_crypt(&p->mse.send_rc4, frame, p->sbuf, size);
+    else memcpy(p->sbuf, frame, size);
+    p->sbuf_len = size;
+    p->upload_start = 13;
+    p->upload_end = size;
+    p->last_send_ms = now_ms();
+    *budget -= (uint32_t)req.length;
+    return peer_flush(p);
 }
 
 int peer_send_have(peer_t *p, uint32_t index) {
@@ -363,6 +457,7 @@ static int process_handshake(peer_t *p, const peer_ctx_t *ctx) {
     }
     /* Check extension bit (byte 25 of reserved = hs[25], bit 4) */
     p->supports_ext = (hs[25] & 0x10) != 0;
+    p->supports_fast = (hs[27] & 0x04) != 0;
     /* Consume handshake */
     p->rbuf_head += BT_HANDSHAKE_LEN;
     p->state = PS_ACTIVE;
@@ -459,6 +554,65 @@ static int process_message(peer_t *p, const peer_ctx_t *ctx,
     uint32_t plen = msg_len - 1;
 
     switch (id) {
+    case 14:
+    case 15:
+        if (!p->supports_fast || plen != 0) return -1;
+        memset(p->bitfield, id == 14 ? 255 : 0, p->bf_bytes);
+        break;
+    case 13:
+    case 17:
+        if (!p->supports_fast || plen != 4 || read_u32(payload) >= ctx->num_pieces)
+            return -1;
+        break;
+    case MSG_REQUEST:
+    case MSG_CANCEL: {
+        if (plen != 12) return -1;
+        uint32_t index = read_u32(payload), offset = read_u32(payload + 4);
+        uint32_t length = read_u32(payload + 8);
+        if (index >= ctx->num_pieces || !ctx->piece_length || !length ||
+            length > (1u << 14) || offset >= ctx->piece_length ||
+            length > ctx->piece_length - offset ||
+            (uint64_t)index * ctx->piece_length + offset + length > ctx->total_length)
+            return -1;
+        if (id == MSG_CANCEL) {
+            for (uint32_t i = 0; i < p->upload_count; ++i) {
+                block_req_t *r = &p->uploads[i];
+                if ((uint32_t)r->index == index && (uint32_t)r->offset == offset &&
+                    (uint32_t)r->length == length) {
+                    if (p->supports_fast && !reject_upload(p, index, offset, length))
+                        return -1;
+                    memmove(r, r + 1, (--p->upload_count - i) * sizeof(*r));
+                    break;
+                }
+            }
+        } else if (p->peer_choked) {
+            ++p->upload_requests;
+            if (p->supports_fast && !reject_upload(p, index, offset, length)) return -1;
+        } else {
+            ++p->upload_requests;
+            if (!ctx->our_bf || !bf_has(ctx->our_bf, index)) {
+                if (++p->missing_uploads > 16 || !reject_upload(p, index, offset, length))
+                    return -1;
+            } else if (p->upload_count == 64) {
+                if (!peer_set_choked(p, 1)) return -1;
+                if (p->supports_fast && !reject_upload(p, index, offset, length)) return -1;
+            } else {
+                p->missing_uploads = 0;
+                p->uploads[p->upload_count++] = (block_req_t){
+                    (int)index, (int)offset, (int)length, 0};
+            }
+        }
+        break;
+    }
+    case MSG_REJECT_REQUEST:
+        if (!p->supports_fast || plen != 12) return -1;
+        /* The scheduler expires the request and releases its piece block. */
+        for (int i = 0; i < p->pipeline_len; ++i)
+            if (p->pipeline[i].index == (int)read_u32(payload) &&
+                p->pipeline[i].offset == (int)read_u32(payload + 4) &&
+                p->pipeline[i].length == (int)read_u32(payload + 8))
+                p->pipeline[i].requested_ms = 0;
+        break;
     case MSG_CHOKE:
         p->am_choked = 1;
         break;
@@ -544,7 +698,7 @@ static int process_message(peer_t *p, const peer_ctx_t *ctx,
             uint8_t ext_id = payload[0];
             if (ext_id == EXT_HANDSHAKE_ID) {
                 parse_ext_handshake(p, payload+1, plen-1);
-            } else if (p->peer_ext_pex && ext_id == p->peer_ext_pex) {
+            } else if (!p->private_torrent && p->peer_ext_pex && ext_id == p->peer_ext_pex) {
                 parse_pex(p, payload+1, plen-1, on_peers, ud);
             }
         }
@@ -623,10 +777,10 @@ int peer_process(peer_t *p, const peer_ctx_t *ctx,
                window, so there is no socket option to set. */
             if (p->transport == TRANSPORT_TCP)
                 net_set_tcp_receive_buffer(p->fd);
+            peer_send_bitfield(p, ctx->our_bf, ctx->bf_bytes);
             if (p->supports_ext)
                 peer_send_ext_handshake(p, ctx->listen_port);
-            peer_send_bitfield(p, ctx->our_bf, ctx->bf_bytes);
-            peer_send_interested(p);
+            peer_set_interested(p, !ctx->upload_only);
         }
     }
 

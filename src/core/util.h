@@ -68,3 +68,6 @@ static inline int bf_has(const uint8_t *bf, uint32_t idx) {
 static inline void bf_set(uint8_t *bf, uint32_t idx) {
     bf[idx/8] |= (1u << (7 - idx%8));
 }
+static inline void bf_clear(uint8_t *bf, uint32_t idx) {
+    bf[idx >> 3] &= (uint8_t)~(0x80u >> (idx & 7));
+}

@@ -1,3 +1,4 @@
+#include "../core/client_identity.h"
 #include "web_seed_source.hpp"
 
 #include <cstdio>
@@ -234,7 +235,7 @@ bool WebSeedSource::fetchPiece(uint32_t piece, std::vector<uint8_t>& out) {
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "pipensx/0.4");
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, PIPENSX_USER_AGENT);
 
     CURLcode rc = curl_easy_perform(curl);
     long status = 0;

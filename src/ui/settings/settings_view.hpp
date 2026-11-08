@@ -137,6 +137,7 @@ private:
         for (size_t i = 0; i < kSettingsSectionCount; ++i)
             panels_[i]->applyValues();
         manager_->setTorrentingEnabled(values.torrentingEnabled);
+        manager_->setLiveSeedingEnabled(values.liveSeedingEnabled);
         manager_->setTorboxApiKey(values.torboxApiKey);
         manager_->setTorrserverUrl(values.torrserverUrl);
         manager_->setRealdebridApiKey(values.realdebridApiKey);

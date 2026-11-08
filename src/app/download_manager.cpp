@@ -236,6 +236,10 @@ DownloadTask copyTaskUi(const DownloadTask& src) {
     dst.wantedTotalBytes = src.wantedTotalBytes;
     dst.wantedCompletedBytes = src.wantedCompletedBytes;
     dst.speedBytesPerSecond = src.speedBytesPerSecond;
+    dst.uploadedBytes = src.uploadedBytes;
+    dst.uploadSpeedBytesPerSecond = src.uploadSpeedBytesPerSecond;
+    dst.seedCacheBytes = src.seedCacheBytes;
+    dst.seeding = src.seeding;
     dst.downloadProgressUpdatedAtMs = src.downloadProgressUpdatedAtMs;
     dst.peers = src.peers;
     dst.dhtGood = src.dhtGood;
@@ -1664,7 +1668,7 @@ bool DownloadManager::remove(const std::string& taskId, bool deleteData,
         return false;
     }
 
-    if (task->status == DownloadStatus::Checking ||
+    if (task->seeding || task->status == DownloadStatus::Checking ||
         task->status == DownloadStatus::Fetching ||
         task->status == DownloadStatus::Downloading ||
         task->status == DownloadStatus::Installing ||
@@ -1825,8 +1829,18 @@ DownloadManager::beginExternalDeploy(const std::string& taskId,
         error = "Finish the download before copying files to /switch.";
         return std::nullopt;
     }
+    if (task->seeding) {
+        for (const auto& runner : runners_)
+            if (runner->taskId == taskId) runner->stopSeeding = true;
+        condition_.wait(lock, [this, &taskId] { return !runnerActiveLocked(taskId); });
+        task = findLocked(taskId);
+        if (!task) {
+            error = "Download task not found.";
+            return std::nullopt;
+        }
+    }
     for (const auto& runner : runners_) {
-        if (runner && runner->taskId == taskId) {
+        if (runner && runner->taskId == taskId && !runner->done) {
             error = "The download is still closing its files.";
             return std::nullopt;
         }
@@ -2034,12 +2048,13 @@ std::string DownloadManager::serializeStateLocked() const {
         state << "6:source" << bstr(persistedSource(task.source));
         state << "6:status" << bstr(persistedStatus(task.status));
         state << "5:total" << bint(task.totalBytes);
+        state << "8:uploaded" << bint(task.uploadedBytes);
         state << "16:wanted-completed" << bint(task.wantedCompletedBytes);
         state << "12:wanted-total" << bint(task.wantedTotalBytes);
         state << "e";
     }
     state << "e";
-    state << "7:versioni8e";
+    state << "7:versioni9e";
     state << "e";
     return state.str();
 }
@@ -2258,7 +2273,7 @@ void DownloadManager::load() {
         version.type != BE_INT ||
         (version.ival != 1 && version.ival != 2 && version.ival != 3 &&
          version.ival != 4 && version.ival != 5 && version.ival != 6 &&
-         version.ival != 7 && version.ival != 8))
+         version.ival != 7 && version.ival != 8 && version.ival != 9))
         return;
 
     be_node_t list;
@@ -2352,6 +2367,8 @@ void DownloadManager::load() {
             if (dictionaryInteger(item, "pieces-total", piecesTotal))
                 task.piecesTotal = static_cast<uint32_t>(piecesTotal);
         }
+        if (version.ival >= 9)
+            dictionaryInteger(item, "uploaded", task.uploadedBytes);
         if (version.ival >= 8) {
             uint64_t installBytes = 0;
             uint64_t installTotal = 0;
@@ -2433,6 +2450,11 @@ bool DownloadManager::removeLocked(std::unique_lock<std::mutex>& lock,
     for (auto it = tasks_.begin(); it != tasks_.end(); ++it) {
         if (it->id != id)
             continue;
+        if (it->seeding) {
+            it->status = DownloadStatus::Removing;
+            it->error = deleteData ? "delete-data" : "keep-data";
+            return true;
+        }
         const bool dataPathManaged =
             isManagedChild(downloadRoot_, it->dataPath) ||
             (it->mode == TransferMode::AutoRunInstall &&
@@ -2648,6 +2670,22 @@ void DownloadManager::schedulerMain() {
             break;
         if (runners_.size() >= maxActive_)
             continue;
+        bool seedClosing = false;
+        for (const auto& runner : runners_) {
+            if (runner->seeding && !runner->done) {
+                seedClosing = true;
+                runner->stopSeeding = true;
+            }
+        }
+        if (seedClosing) {
+            condition_.wait(lock, [this] {
+                if (stopping_) return true;
+                for (const auto& runner : runners_)
+                    if (runner->seeding && !runner->done) return false;
+                return true;
+            });
+            continue;
+        }
         DownloadTask* task = claimableLocked();
         if (!task)
             continue;
@@ -3032,7 +3070,7 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
        Every start of a tracker-less task injects the RuTracker mirror pool
        in memory — this heals downloads queued by older builds without
        touching the stored .torrent on disk. */
-    if (metainfo.num_trackers == 0) {
+    if (metainfo.num_trackers == 0 && !metainfo.is_private) {
         injectMissingFallbackTrackers(metainfo);
         log_msg("[manager] task %s had no trackers; injected %u RuTracker "
                 "fallback announce(s)\n",
@@ -3042,6 +3080,8 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
 
     std::unique_ptr<PackageCoordinator> coordinator;
     torrent_options_t options {};
+    options.upload_enabled = liveSeedingEnabled_.load();
+    options.defer_completed = mode == TransferMode::StreamInstall;
     {
         coordinator = std::make_unique<PackageCoordinator>(
             metainfo, activeId, rootPath_,
@@ -3102,6 +3142,8 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
             // Was 64 (1 MiB), which pinned even 2 MB/s peers at the ceiling.
             options.request_pipeline_limit = 256;
             options.hedge_after_ms = 5000;
+            options.seed_cache_bytes = options.upload_enabled
+                ? coordinator->seedCacheBytes() : 0;
         }
         options.telemetry_tag = activeId.c_str();
         if (!resumeBitfield.empty()) {
@@ -3167,6 +3209,12 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
     }
 
     bool finished = false;
+    uint64_t uploadedBeforeSession = 0;
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        if (const DownloadTask* task = findLocked(activeId))
+            uploadedBeforeSession = task->uploadedBytes;
+    }
     // Crash checkpoint (B1): the claim above consumed the trusted bitfield,
     // and the tick loop below only kept progress in memory until a
     // pause/error/finish teardown — a kill mid-transfer lost both, so the
@@ -3185,6 +3233,9 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
     uint64_t lastCheckpointBytes = 0;
     bool downloadingSeen = false;
     while (!stopping_) {
+        torrent_set_upload_enabled(torrent, liveSeedingEnabled_.load());
+        if (mode == TransferMode::StreamInstall && liveSeedingEnabled_.load())
+            torrent_set_seed_cache_limit(torrent, coordinator->seedCacheBytes());
         {
             std::unique_lock<std::mutex> lock(mutex_);
             DownloadTask* task = findLocked(activeId);
@@ -3250,6 +3301,14 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
 
         torrent_stat_t stat;
         torrent_stat(torrent, &stat);
+        {
+            std::unique_lock<std::mutex> lock(mutex_);
+            if (DownloadTask* task = findLocked(activeId)) {
+                task->uploadedBytes = uploadedBeforeSession + stat.uploaded;
+                task->uploadSpeedBytesPerSecond = stat.upload_bps;
+                task->seedCacheBytes = stat.seed_cache_bytes;
+            }
+        }
         if (running > 0 && mode == TransferMode::StreamInstall) {
             torrent_set_strict_lookahead(
                 torrent,
@@ -3390,11 +3449,41 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
         if (running < 0)
             break;
         if (!running) {
-            bool installOk = mode != TransferMode::StreamInstall ||
-                             coordinator->finish();
+            torrent_enter_upload_only(torrent, 0);
+            bool installOk = true;
+            if (mode == TransferMode::StreamInstall) {
+                coordinator->finishBegin();
+                while (true) {
+                    const auto drain = coordinator->finishPoll();
+                    if (drain != PackageCoordinator::DrainState::Running) {
+                        installOk = drain == PackageCoordinator::DrainState::Done;
+                        break;
+                    }
+                    {
+                        std::unique_lock<std::mutex> lock(mutex_);
+                        const DownloadTask* task = findLocked(activeId);
+                        if (stopping_ || !task || task->status == DownloadStatus::Paused ||
+                            task->status == DownloadStatus::Removing) {
+                            installOk = false;
+                            break;
+                        }
+                    }
+                    if (torrent_tick(torrent) < 0) {
+                        installOk = false;
+                        break;
+                    }
+                    torrent_stat_t upload;
+                    torrent_stat(torrent, &upload);
+                    std::unique_lock<std::mutex> lock(mutex_);
+                    if (DownloadTask* task = findLocked(activeId)) {
+                        task->uploadedBytes = uploadedBeforeSession + upload.uploaded;
+                        task->uploadSpeedBytesPerSecond = upload.upload_bps;
+                    }
+                }
+            }
             std::unique_lock<std::mutex> lock(mutex_);
             DownloadTask* task = findLocked(activeId);
-            if (task && task->status != DownloadStatus::Removing &&
+            if (!stopping_ && task && task->status != DownloadStatus::Removing &&
                 task->status != DownloadStatus::Paused) {
                 if (!installOk) {
                     task->status = DownloadStatus::Error;
@@ -3418,6 +3507,61 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
                         activeId.c_str());
             }
             break;
+        }
+    }
+
+    if (finished && (mode == TransferMode::StreamInstall ||
+                     mode == TransferMode::DownloadOnly)) {
+        torrent_enter_upload_only(torrent, 1);
+        webSeed.reset();
+        {
+            std::unique_lock<std::mutex> lock(mutex_);
+            if (DownloadTask* task = findLocked(activeId)) {
+                task->seeding = liveSeedingEnabled_.load();
+                slot->seeding = task->seeding;
+                if (slot->holdsInstallToken) {
+                    slot->holdsInstallToken = false;
+                    installTokenHeld_ = false;
+                }
+                persistState(lock);
+            }
+        }
+        log_msg("[seed] task=%s upload-only until exit or next transfer\n", activeId.c_str());
+        while (!stopping_ && torrentingEnabled_.load() && liveSeedingEnabled_.load()) {
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                const DownloadTask* task = findLocked(activeId);
+                if (!task || slot->stopSeeding || (task->status != DownloadStatus::Installed &&
+                              task->status != DownloadStatus::Completed)) break;
+                bool needsMemory = false;
+                for (const DownloadTask& next : tasks_)
+                    if (next.id != activeId &&
+                        (next.status == DownloadStatus::Queued ||
+                         next.status == DownloadStatus::Checking ||
+                         next.status == DownloadStatus::Fetching ||
+                         next.status == DownloadStatus::Downloading ||
+                         next.status == DownloadStatus::Installing ||
+                         next.status == DownloadStatus::Committing ||
+                         next.status == DownloadStatus::Verifying))
+                        needsMemory = true;
+                if (needsMemory) break;
+            }
+            if (torrent_tick(torrent) < 0) break;
+            torrent_stat_t upload;
+            torrent_stat(torrent, &upload);
+            if (!upload.available_pieces) break;
+            std::unique_lock<std::mutex> lock(mutex_);
+            if (DownloadTask* task = findLocked(activeId)) {
+                task->uploadedBytes = uploadedBeforeSession + upload.uploaded;
+                task->uploadSpeedBytesPerSecond = upload.upload_bps;
+                task->seedCacheBytes = upload.seed_cache_bytes;
+                if (now_ms() - lastCheckpointMs >= kResumeCheckpointMs &&
+                    task->uploadedBytes != lastCheckpointBytes) {
+                    lastCheckpointBytes = task->uploadedBytes;
+                    lastCheckpointMs = now_ms();
+                    persistState(lock);
+                }
+            }
         }
     }
 
@@ -3446,12 +3590,16 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
     {
         std::unique_lock<std::mutex> lock(mutex_);
         DownloadTask* task = findLocked(activeId);
+        if (task) task->seeding = false;
         if (task && task->status == DownloadStatus::Removing) {
             bool deleteData = task->error == "delete-data";
             std::string removeError;
             removeLocked(lock, activeId, deleteData, removeError);
         } else if (task) {
             task->speedBytesPerSecond = 0;
+            task->seeding = false;
+            task->uploadSpeedBytesPerSecond = 0;
+            task->seedCacheBytes = 0;
             // F3: a mid-run re-import expanded the selection; the merge
             // cleared the fast-resume bitfield because the old bits pre-mark
             // the added files' pieces as done (skipped-range preset). Keep

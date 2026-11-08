@@ -1,9 +1,15 @@
 # pipensx PC build (Linux/macOS)
 # Public shortcut: make pc (or directly: make -f Makefile.pc)
 # Requires: gcc, libcurl (apt: libcurl4-openssl-dev)
+.DEFAULT_GOAL := all
 
 # All objects and linked binaries land here — never next to sources.
 BUILD_DIR ?= build-pc
+export PIPENSX_VERSION
+PIPENSX_BUILD_VERSION := $(shell python3 scripts/version.py $(if $(PIPENSX_VERSION),--version '$(subst ','"'"',$(PIPENSX_VERSION))'))
+ifeq ($(strip $(PIPENSX_BUILD_VERSION)),)
+$(error Cannot resolve pipensx version)
+endif
 
 CC      = gcc
 CXX     = g++
@@ -21,6 +27,14 @@ CXXFLAGS = -O2 -Wall -Wextra -std=c++17 -D_GLIBCXX_ASSERTIONS \
             -Ivendor/libutp \
             $(shell pkg-config --cflags libcurl)
 LDFLAGS = $(shell pkg-config --libs libcurl) -lm -lcrypto
+CFLAGS += -DPIPENSX_VERSION=\"$(PIPENSX_BUILD_VERSION)\"
+CXXFLAGS += -DPIPENSX_VERSION=\"$(PIPENSX_BUILD_VERSION)\"
+VERSION_STAMP := $(BUILD_DIR)/.version
+.PHONY: FORCE_VERSION
+$(VERSION_STAMP): FORCE_VERSION
+	@mkdir -p $(BUILD_DIR)
+	@printf '%s\n' '$(PIPENSX_BUILD_VERSION)' > $@.tmp
+	@cmp -s $@.tmp $@ && rm $@.tmp || mv $@.tmp $@
 INSTALL_LDFLAGS = -lzstd -lcrypto -lz
 
 # Opt-in: make -f Makefile.pc test SANITIZE=1
@@ -53,6 +67,7 @@ CORE_SOURCES = \
     src/core/net.c        \
     src/core/peer.c       \
     src/core/piece.c      \
+    src/core/seed_cache.c \
     src/core/tracker.c    \
     src/core/dht.c        \
     src/core/peer_handoff.c \
@@ -69,6 +84,9 @@ TEST_SOURCES := $(wildcard tests/test_*.c tests/test_*.cpp)
 TEST_BINS := $(sort $(patsubst tests/%,$(BUILD_DIR)/tests/%,$(basename $(TEST_SOURCES))))
 # DHT against live routers — always last so a bad network cannot hide others.
 TEST_BINS_EARLY := $(filter-out $(BUILD_DIR)/tests/test_manager,$(TEST_BINS))
+VERSION_OBJECTS := $(addprefix $(BUILD_DIR)/,$(patsubst %.cpp,%.o,$(wildcard src/app/*.cpp src/install/*.cpp src/platform/*.cpp tests/*.cpp)))
+# Keep the stamp out of $^: test recipes pass their prerequisites to the linker.
+$(OBJS) $(VERSION_OBJECTS) $(TEST_BINS) $(TARGET): .EXTRA_PREREQS := $(VERSION_STAMP)
 
 # Shared by test_manager and test_queue_controls (and anything else that
 # links the full DownloadManager graph).
@@ -375,6 +393,7 @@ $(BUILD_DIR)/tests/test_probe_report: tests/test_probe_report.c src/probe/probe_
 
 test: $(TEST_BINS)
 	python3 scripts/check_source_lists.py
+	python3 tests/test_build_version.py
 	@set -e; for t in $(TEST_BINS_EARLY); do echo "== $$t"; ./$$t; done
 	python3 tests/test_bug_report_decode.py
 	python3 tests/test_telemetry_analyzer.py
@@ -719,6 +738,19 @@ $(BUILD_DIR)/tests/test_peer: tests/test_peer.c src/core/peer.c src/core/net.c \
 		$(UTP_OBJS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -lstdc++ -Wl,--wrap=setsockopt
+
+$(BUILD_DIR)/tests/test_seed_cache: tests/test_seed_cache.c src/core/seed_cache.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Isrc -o $@ $^ -Wl,--wrap=malloc
+
+$(BUILD_DIR)/tests/test_client_identity: tests/test_client_identity.c src/core/client_identity.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Isrc -o $@ $<
+
+$(BUILD_DIR)/tests/test_live_seeding: tests/test_live_seeding.cpp \
+		$(MANAGER_TEST_OBJS) $(BUILD_DIR)/src/app/http_server.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -lzstd -lcrypto -lz -pthread
 
 $(BUILD_DIR)/tests/test_tracker: tests/test_tracker.c src/core/tracker.c \
 		src/core/bencode.c src/core/util.c src/core/net.c

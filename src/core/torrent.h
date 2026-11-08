@@ -31,6 +31,9 @@ typedef struct {
      */
     const uint8_t *have_bitfield;
     uint32_t have_bitfield_len;
+    int upload_enabled;
+    int defer_completed;
+    uint64_t seed_cache_bytes;
 } torrent_options_t;
 
 typedef struct {
@@ -41,6 +44,10 @@ typedef struct {
     uint32_t dht_good;
     uint32_t dht_dubious;
     uint64_t downloaded;  /* bytes received during this session */
+    uint64_t uploaded;
+    uint64_t upload_bps;
+    uint64_t seed_cache_bytes;
+    uint32_t available_pieces;
     uint64_t completed_bytes;
     uint64_t total_bytes;
     /* Bytes never wanted: pieces over SKIP files (and the consumed prefix of
@@ -86,6 +93,9 @@ uint32_t torrent_adopt_stashed_peers(torrent_t *t);
  * Returns 0 when download is complete.
  */
 int  torrent_tick(torrent_t *t);
+void torrent_enter_upload_only(torrent_t *t, int committed);
+void torrent_set_seed_cache_limit(torrent_t *t, uint64_t bytes);
+void torrent_set_upload_enabled(torrent_t *t, int enabled);
 
 /*
  * Web-seed (BEP-19) support. The application fetches whole pieces over HTTP and

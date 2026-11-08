@@ -43,6 +43,7 @@ typedef struct {
     char     trackers[MAX_TRACKERS][512];
 
     /* Web seeds (BEP-19 "url-list": GetRight-style HTTP/FTP payload mirrors) */
+    int is_private;
     uint32_t num_web_seeds;
     char     web_seeds[MAX_WEB_SEEDS][512];
 } metainfo_t;

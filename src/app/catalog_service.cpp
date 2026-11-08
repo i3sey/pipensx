@@ -1,3 +1,4 @@
+#include "../core/client_identity.h"
 #include "catalog_service.hpp"
 #include "catalog_urls.hpp"
 #include "curl_https.hpp"
@@ -184,7 +185,7 @@ bool httpGet(const std::string& url, std::string& body, std::string& error,
     headers = curl_slist_append(headers, "X-GitHub-Api-Version: 2022-11-28");
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "pipensx/0.4");
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, PIPENSX_USER_AGENT);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
     /* Every handle here runs on a background thread; without this

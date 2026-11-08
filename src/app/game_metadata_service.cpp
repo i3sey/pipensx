@@ -1,3 +1,4 @@
+#include "../core/client_identity.h"
 #include "game_metadata_service.hpp"
 #include "curl_https.hpp"
 #include "snapshot_zstd.hpp"
@@ -195,7 +196,7 @@ bool httpGetOnce(const std::string& url, size_t limit,
     HttpBuffer buffer;
     buffer.limit = limit;
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "pipensx/0.4");
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, PIPENSX_USER_AGENT);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, followRedirects ? 1L : 0L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 8L);
     const bool relayRequest =

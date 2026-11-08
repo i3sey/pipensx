@@ -188,6 +188,10 @@ void test_heap_availability_wins_over_post_allocation_kernel_headroom() {
 } // namespace
 
 int main() {
+    const auto titleBudget = pipensx::calculateStreamRamBudget(3200 * MiB, 4 * MiB);
+    assert(titleBudget.valid && titleBudget.seedCacheBytes > 2048 * MiB);
+    assert(titleBudget.seedCacheBytes + titleBudget.peakBytes +
+           titleBudget.reserveBytes + 64 * MiB <= titleBudget.availableBytes);
     test_full_budget_matches_existing_fast_path();
     test_constrained_memory_reduces_both_windows();
     test_low_memory_scales_reserve_instead_of_rejecting_install();

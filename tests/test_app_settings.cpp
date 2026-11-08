@@ -612,6 +612,20 @@ void testTransferScreenPolicy() {
 }
 
 int main() {
+    cleanup();
+    {
+        AppSettings settings(SettingsPath, LegacyPath);
+        assert(settings.get().liveSeedingEnabled && !settings.get().seedingNoticeAcknowledged);
+        auto values = settings.get();
+        values.liveSeedingEnabled = false;
+        values.seedingNoticeAcknowledged = true;
+        std::string error;
+        assert(settings.update(values, error));
+        AppSettings restored(SettingsPath, LegacyPath);
+        assert(restored.load(error));
+        assert(!restored.get().liveSeedingEnabled && restored.get().seedingNoticeAcknowledged);
+    }
+    cleanup();
     testDisplaySettingsMigrationAndRestart();
     testInvalidDisplaySettingsDoNotReplaceCurrentValues();
     testTransferScreenPolicy();

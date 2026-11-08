@@ -10,6 +10,12 @@ typedef int (*tracker_cancel_cb)(void *user);
 #define TRACKER_EVENT_COMPLETED 1
 #define TRACKER_EVENT_STARTED   2
 #define TRACKER_EVENT_STOPPED   3
+#define TRACKER_EVENT_PAUSED    4
+
+uint32_t tracker_announce_stats(const metainfo_t *mi, const uint8_t *peer_id,
+    uint16_t listen_port, int64_t downloaded, int64_t left, int64_t uploaded,
+    uint8_t *compact_out, uint32_t max_peers, int event,
+    tracker_cancel_cb cancel, void *cancel_user);
 
 /*
  * Announce to trackers and collect compact peer list.
@@ -60,6 +66,12 @@ typedef struct tracker_announce_result {
     int tracker_failure;
     char failure_reason[128];
 } tracker_announce_result_t;
+
+uint32_t tracker_announce_url_stats(const char *url, const uint8_t *info_hash,
+    const uint8_t *peer_id, uint16_t listen_port, int64_t downloaded,
+    int64_t left, int64_t uploaded, uint8_t *compact_out, uint32_t max_peers,
+    tracker_announce_result_t *result, int event,
+    tracker_cancel_cb cancel, void *cancel_user);
 
 uint32_t tracker_announce_url_ex(const char    *url,
                                  const uint8_t *info_hash,

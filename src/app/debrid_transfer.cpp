@@ -1,3 +1,4 @@
+#include "../core/client_identity.h"
 #include "debrid_transfer.hpp"
 #include "curl_https.hpp"
 #include "download_manager.hpp"
@@ -788,6 +789,7 @@ RangeFetcher curlRangeFetcher() {
         // even when consecutive file URLs point to different CDN hosts.
         curl_easy_setopt(curl, CURLOPT_MAXCONNECTS, 1L);
         curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+        curl_easy_setopt(curl, CURLOPT_USERAGENT, PIPENSX_USER_AGENT);
         if (state.ranged) {
             char range[80];
             std::snprintf(range, sizeof(range), "%llu-%llu",

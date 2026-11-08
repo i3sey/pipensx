@@ -329,6 +329,7 @@ public:
     // torrent thread's next torrent_set_strict_lookahead call.
     void applyBudget(const StreamRamBudget& budget) {
         std::lock_guard<std::mutex> lock(queueMutex_);
+        seedCacheBytes_.store(budget.valid ? budget.seedCacheBytes : 0);
         if (!budget.valid) {
             // Shrunk below viability mid-flight: keep the last workable
             // configuration; the gate's backpressure still bounds RAM.
@@ -368,6 +369,27 @@ public:
     std::string error() const {
         std::lock_guard<std::mutex> lock(queueMutex_);
         return error_;
+    }
+
+    uint64_t seedCacheBytes() const { return seedCacheBytes_.load(); }
+
+    enum class DrainState { Running, Done, Error };
+
+    void finishBegin() {
+        std::lock_guard<std::mutex> lock(queueMutex_);
+        accepting_ = false;
+        queueReady_.notify_all();
+    }
+
+    DrainState finishPoll() {
+        std::lock_guard<std::mutex> lock(queueMutex_);
+        if (!error_.empty()) return DrainState::Error;
+        if (!pending_.empty() || !queue_.empty() || processing_)
+            return DrainState::Running;
+        drainComplete_ = true;
+        stopping_ = true;
+        queueReady_.notify_all();
+        return DrainState::Done;
     }
 
     bool finish() {
@@ -1212,6 +1234,7 @@ private:
     size_t processingBytes_ = 0;
     size_t maxQueuedBytes_ = 32 * 1024 * 1024;
     size_t maxBufferedBytes_ = 64 * 1024 * 1024;
+    std::atomic<uint64_t> seedCacheBytes_{0};
     uint64_t pieceLengthBytes_ = 4 * 1024 * 1024;
     uint64_t requestAheadBytes_ = 64 * 1024 * 1024;
     uint32_t producerOrdinal_ = 0;

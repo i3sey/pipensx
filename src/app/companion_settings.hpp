@@ -32,6 +32,7 @@ bool applyCompanionSettingsPatch(AppSettingsData& values,
 inline void applyCompanionSettingsRuntime(const AppSettingsData& values,
                                           DownloadManager& manager) {
     manager.setMaxActiveDownloads(values.maxActiveDownloads);
+    manager.setLiveSeedingEnabled(values.liveSeedingEnabled);
     manager.setInstallTarget(values.installLocation ==
                                      InstallLocation::SystemMemory
                                  ? install::InstallStorageTarget::Nand

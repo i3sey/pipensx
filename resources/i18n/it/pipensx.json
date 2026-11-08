@@ -1,4 +1,11 @@
 {
+  "seeding": {
+    "notice": "La condivisione aiuta gli altri a scaricare giochi e mantiene disponibili i torrent. pipensx condivide i blocchi verificati durante il download e l’installazione, poi, dopo l’installazione, quelli rimasti in RAM fino all’uscita o al prossimo trasferimento. Usa la connessione e può influire sulla velocità di download. Puoi disattivarla in Impostazioni → Download.",
+    "acknowledge": "Ho capito",
+    "setting": "Condividi blocchi torrent",
+    "status": "Condivisione",
+    "stats": "↑ {} · Inviati {}"
+  },
   "app": {
     "title": "pipensx",
     "exit": "Esci",

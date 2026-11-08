@@ -56,6 +56,8 @@ public:
         currentPackage_->setAutoAnimate(false);
         eta_ = addLine(progressCard, theme::kFontSmall);
         eta_->setTextColor(theme::textSecondary());
+        uploadStats_ = addLine(progressCard, theme::kFontSmall);
+        uploadStats_->setTextColor(theme::textSecondary());
 
         speedCard_ = addCard(left, tr("pipensx/downloads/card_speed"));
         auto* speedLegend = new brls::Box(brls::Axis::ROW);
@@ -663,6 +665,14 @@ private:
         setTextIfChanged(downloadSpeed_,
                           tr("pipensx/downloads/speed_download",
                              formatSpeed(task->speedBytesPerSecond)));
+        if (task->seeding || task->uploadedBytes || task->seedCacheBytes) {
+            uploadStats_->setVisibility(brls::Visibility::VISIBLE);
+            setTextIfChanged(uploadStats_, tr("pipensx/seeding/stats",
+                formatSpeed(task->uploadSpeedBytesPerSecond), formatBytes(task->uploadedBytes)) +
+                (task->seedCacheBytes ? " · RAM " + formatBytes(task->seedCacheBytes) : ""));
+            if (task->seeding)
+                setTextIfChanged(status_, tr("pipensx/seeding/status"));
+        } else uploadStats_->setVisibility(brls::Visibility::GONE);
         const uint64_t installSpeed = currentInstallSpeed(*task, now);
         if (task->mode == TransferMode::StreamInstall ||
             task->mode == TransferMode::PortInstall) {
@@ -832,6 +842,7 @@ private:
     brls::Label* currentPackage_;
     brls::Label* eta_;
     brls::Label* downloadSpeed_;
+    brls::Label* uploadStats_;
     brls::Label* installSpeed_;
     brls::Box* installSpeedItem_;
     SpeedGraphView* speedGraph_;

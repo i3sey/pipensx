@@ -164,7 +164,15 @@ int main() {
         assert(coordinator.error().empty());
         assert(coordinator.configs()[0].ready_bytes == resumeOffset);
         assert(feedRange(coordinator, nsp, resumeOffset, nsp.size()));
-        assert(coordinator.finish());
+        coordinator.finishBegin();
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        auto drain = coordinator.finishPoll();
+        while (drain == pipensx::PackageCoordinator::DrainState::Running &&
+               std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            drain = coordinator.finishPoll();
+        }
+        assert(drain == pipensx::PackageCoordinator::DrainState::Done);
     }
     // A committed package leaves neither artifact behind.
     assert(!pipensx::install::loadInstallJournal(journalPath, saved));

@@ -2,6 +2,7 @@
 // Range requests, fetched piece-by-piece through the real curl path, then
 // reassembled and compared to the served payload.
 #include "../src/app/web_seed_source.hpp"
+#include "../src/core/client_identity.h"
 
 #include <arpa/inet.h>
 #include <atomic>
@@ -36,6 +37,9 @@ void serve_connection(int fd) {
             break;
     }
     req[got] = 0;
+
+    const std::string agent = "User-Agent: " PIPENSX_USER_AGENT "\r\n";
+    assert(strstr(req, agent.c_str()));
 
     uint64_t a = 0, b = 0;
     const char* r = strcasestr(req, "Range: bytes=");

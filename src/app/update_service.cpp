@@ -1,3 +1,4 @@
+#include "../core/client_identity.h"
 #include "update_service.hpp"
 #include "update_transaction.h"
 #include "curl_https.hpp"
@@ -27,10 +28,6 @@ extern "C" {
 
 namespace pipensx {
 namespace {
-
-#ifndef PIPENSX_VERSION
-#define PIPENSX_VERSION "0.0.0"
-#endif
 
 constexpr const char* kLatestReleaseUrl =
     "https://gitlab.com/api/v4/projects/88330126/releases/permalink/latest";
@@ -109,7 +106,7 @@ bool configureCurl(CURL* curl, const std::string& url, TransferKind kind,
         return false;
     }
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "pipensx/" PIPENSX_VERSION);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, PIPENSX_USER_AGENT);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
@@ -499,8 +496,9 @@ UpdateCheckResult UpdateService::check() const {
     if (!parseRelease(body, result.release, result.error))
         return result;
     result.ok = true;
+    const std::string currentVersion = PIPENSX_VERSION;
     result.updateAvailable = isNewerVersion(result.release.version,
-                                            PIPENSX_VERSION);
+        currentVersion.substr(0, currentVersion.find_first_of("-+")));
     return result;
 }
 

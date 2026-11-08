@@ -112,6 +112,10 @@ struct DownloadTask {
     uint64_t wantedTotalBytes = 0;
     uint64_t wantedCompletedBytes = 0;
     uint64_t speedBytesPerSecond = 0;
+    uint64_t uploadedBytes = 0;
+    uint64_t uploadSpeedBytesPerSecond = 0;
+    uint64_t seedCacheBytes = 0;
+    bool seeding = false;
     uint64_t downloadProgressUpdatedAtMs = 0;
     uint32_t peers = 0;
     uint32_t dhtGood = 0;
@@ -419,6 +423,7 @@ public:
     std::string torboxApiKey() const;
     void setTorrentingEnabled(bool enabled);
     bool torrentingEnabled() const;
+    void setLiveSeedingEnabled(bool enabled) { liveSeedingEnabled_ = enabled; }
     void setAutorunWineRoot(std::string root);
     const std::string& autorunWineRoot() const;
     void setAutorunGamesRoot(std::string root);
@@ -570,6 +575,8 @@ private:
         std::string taskId;
         uint32_t slotIndex = 0;
         bool holdsInstallToken = false;
+        bool seeding = false;
+        bool stopSeeding = false;
         std::atomic<bool> done{false};
     };
 
@@ -648,6 +655,7 @@ private:
     // eligible for pickup during that window — defaulting to true would let it
     // reach a tracker on a console where the user has torrenting disabled.
     std::atomic<bool> torrentingEnabled_{false};
+    std::atomic<bool> liveSeedingEnabled_{true};
 
     mutable std::mutex mutex_;
     std::condition_variable condition_;

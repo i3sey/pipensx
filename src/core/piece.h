@@ -104,6 +104,9 @@ typedef struct {
        (piece reset), -1 write error (piece reset). Optional. */
     void           (*hash_result_cb)(void *user, uint32_t idx, int status);
     void            *hash_result_user;
+    void           (*verified_data_cb)(void *user, uint32_t idx,
+                                        const uint8_t *data, uint32_t len);
+    void            *verified_data_user;
 } piece_mgr_t;
 
 piece_mgr_t *piece_mgr_create(const metainfo_t *mi, storage_t *store);

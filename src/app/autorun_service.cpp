@@ -1,3 +1,4 @@
+#include "../core/client_identity.h"
 #include "autorun_service.hpp"
 #include "core/sha256.h"
 extern "C" {
@@ -144,7 +145,7 @@ bool defaultFetchText(const std::string& url, size_t limit, std::string& body,
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "pipensx-autorun/1.0");
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, PIPENSX_USER_AGENT);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
 
     HttpBuffer buffer;
@@ -199,7 +200,7 @@ bool fetchFileWithProgress(const std::string& url, const std::string& path,
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "pipensx-autorun/1.0");
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, PIPENSX_USER_AGENT);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 300L);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeFileCallback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &writer);

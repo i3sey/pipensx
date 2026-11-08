@@ -1,3 +1,4 @@
+#include "client_identity.h"
 #include "tracker.h"
 #include "bencode.h"
 #include "util.h"
@@ -71,6 +72,7 @@ static const char *tracker_event_query(int event) {
     case TRACKER_EVENT_COMPLETED: return "&event=completed";
     case TRACKER_EVENT_STARTED:   return "&event=started";
     case TRACKER_EVENT_STOPPED:   return "&event=stopped";
+    case TRACKER_EVENT_PAUSED:    return "&event=paused";
     default: return "";
     }
 }
@@ -79,7 +81,7 @@ static int http_build_announce_url(char *out, size_t outsz, const char *url,
                                    const uint8_t *info_hash,
                                    const uint8_t *peer_id,
                                    uint16_t listen_port,
-                                   int64_t downloaded, int64_t left,
+                                   int64_t downloaded, int64_t left, int64_t uploaded,
                                    int event) {
     char ih_enc[64], pid_enc[64];
     url_encode_hash(ih_enc, sizeof(ih_enc), info_hash, 20);
@@ -87,11 +89,11 @@ static int http_build_announce_url(char *out, size_t outsz, const char *url,
 
     int n = snprintf(out, outsz,
                      "%s%cinfo_hash=%s&peer_id=%s&port=%u"
-                     "&uploaded=0&downloaded=%lld&left=%lld"
+                     "&uploaded=%lld&downloaded=%lld&left=%lld"
                      "&compact=1%s&numwant=200",
                      url, strchr(url, '?') ? '&' : '?', ih_enc, pid_enc,
                      (unsigned)listen_port,
-                     (long long)downloaded, (long long)left,
+                     (long long)uploaded, (long long)downloaded, (long long)left,
                      tracker_event_query(event));
     return n >= 0 && (size_t)n < outsz;
 }
@@ -111,7 +113,7 @@ static uint32_t http_announce_once(const char *url,
                                    const uint8_t *info_hash,
                                    const uint8_t *peer_id,
                                    uint16_t listen_port,
-                                   int64_t downloaded, int64_t left,
+                                   int64_t downloaded, int64_t left, int64_t uploaded,
                                    uint8_t *compact_out, uint32_t max_peers,
                                    int event,
                                    int *request_ok,
@@ -122,7 +124,7 @@ static uint32_t http_announce_once(const char *url,
         return 0;
     char full_url[1024];
     if (!http_build_announce_url(full_url, sizeof(full_url), url, info_hash,
-                                 peer_id, listen_port, downloaded, left,
+                                 peer_id, listen_port, downloaded, left, uploaded,
                                  event))
         return 0;
 
@@ -131,7 +133,7 @@ static uint32_t http_announce_once(const char *url,
 
     curl_buf_t buf = {0};
     curl_easy_setopt(curl, CURLOPT_URL, full_url);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "pipensx/0.4");
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, PIPENSX_USER_AGENT);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);
     /* Every handle here runs on a background thread; without this
@@ -217,14 +219,14 @@ static uint32_t http_announce(const char *url,
                               const uint8_t *info_hash,
                               const uint8_t *peer_id,
                               uint16_t listen_port,
-                              int64_t downloaded, int64_t left,
+                              int64_t downloaded, int64_t left, int64_t uploaded,
                               uint8_t *compact_out, uint32_t max_peers,
                               int event,
                               tracker_announce_result_t *result,
                               const tracker_cancel_t *cancel) {
     int request_ok = 0;
     return http_announce_once(url, info_hash, peer_id, listen_port,
-                              downloaded, left, compact_out, max_peers,
+                              downloaded, left, uploaded, compact_out, max_peers,
                               event, &request_ok, result, cancel);
 }
 
@@ -256,7 +258,7 @@ static void udp_build_announce_packet(uint8_t ann[98], uint64_t conn_id,
                                       const uint8_t *info_hash,
                                       const uint8_t *peer_id,
                                       uint16_t listen_port,
-                                      int64_t downloaded, int64_t left,
+                                      int64_t downloaded, int64_t left, int64_t uploaded,
                                       int event) {
     memset(ann, 0, 98);
     wr64be(ann, conn_id);
@@ -266,7 +268,8 @@ static void udp_build_announce_packet(uint8_t ann[98], uint64_t conn_id,
     memcpy(ann + 36, peer_id, 20);
     wr64be(ann + 56, downloaded < 0 ? 0 : (uint64_t)downloaded);
     wr64be(ann + 64, left < 0 ? 0 : (uint64_t)left);
-    wr32be(ann + 80, (uint32_t)event);
+    wr64be(ann + 72, uploaded < 0 ? 0 : (uint64_t)uploaded);
+    wr32be(ann + 80, event == TRACKER_EVENT_PAUSED ? 0 : (uint32_t)event);
     /* num_want: -1 lets the tracker choose its default. */
     ann[92]=0xFF; ann[93]=0xFF; ann[94]=0xFF; ann[95]=0xFF;
     ann[96]=(listen_port>>8)&0xFF; ann[97]=listen_port&0xFF;
@@ -311,7 +314,7 @@ static uint32_t udp_announce(const char *host, uint16_t tport,
                              const uint8_t *info_hash,
                              const uint8_t *peer_id,
                              uint16_t listen_port,
-                             int64_t downloaded, int64_t left,
+                             int64_t downloaded, int64_t left, int64_t uploaded,
                              uint8_t *compact_out, uint32_t max_peers,
                              int event,
                              const tracker_cancel_t *cancel) {
@@ -391,7 +394,7 @@ static uint32_t udp_announce(const char *host, uint16_t tport,
     uint8_t ann[98];
     txid++;
     udp_build_announce_packet(ann, conn_id, txid, info_hash, peer_id,
-                              listen_port, downloaded, left, event);
+                              listen_port, downloaded, left, uploaded, event);
 
     uint8_t resp[1500];
     ssize_t rlen = 0;
@@ -480,6 +483,22 @@ uint32_t tracker_announce_url_ex_cancel_event(
                                  int event,
                                  tracker_cancel_cb cancel_callback,
                                  void *cancel_user) {
+    return tracker_announce_url_stats(url, info_hash, peer_id, listen_port,
+        downloaded, left, 0, compact_out, max_peers, result, event,
+        cancel_callback, cancel_user);
+}
+
+uint32_t tracker_announce_url_stats(
+                                 const char *url,
+                                 const uint8_t *info_hash,
+                                 const uint8_t *peer_id,
+                                 uint16_t listen_port,
+                                 int64_t downloaded, int64_t left, int64_t uploaded,
+                                 uint8_t *compact_out, uint32_t max_peers,
+                                 tracker_announce_result_t *result,
+                                 int event,
+                                 tracker_cancel_cb cancel_callback,
+                                 void *cancel_user) {
     tracker_result_init(result);
     if (!url || !info_hash || !peer_id || !compact_out || !max_peers)
         return 0;
@@ -489,7 +508,7 @@ uint32_t tracker_announce_url_ex_cancel_event(
         return 0;
     if (strncmp(url, "http", 4) == 0) {
         count = http_announce(url, info_hash, peer_id, listen_port,
-                              downloaded, left, compact_out, max_peers,
+                              downloaded, left, uploaded, compact_out, max_peers,
                               event, result, &cancel);
         if (result)
             result->peers = count;
@@ -501,7 +520,7 @@ uint32_t tracker_announce_url_ex_cancel_event(
         if (sscanf(url + 6, "%127[^:/]:%hu", host, &port) < 1)
             return 0;
         count = udp_announce(host, port, info_hash, peer_id, listen_port,
-                             downloaded, left, compact_out, max_peers,
+                             downloaded, left, uploaded, compact_out, max_peers,
                              event, &cancel);
         if (result)
             result->peers = count;
@@ -540,6 +559,17 @@ uint32_t tracker_announce_with_event(const metainfo_t *mi,
                           uint8_t *compact_out, uint32_t max_peers,
                           int event,
                           tracker_cancel_cb cancel, void *cancel_user) {
+    return tracker_announce_stats(mi, peer_id, listen_port, downloaded, left,
+        0, compact_out, max_peers, event, cancel, cancel_user);
+}
+
+uint32_t tracker_announce_stats(const metainfo_t *mi,
+                          const uint8_t *peer_id,
+                          uint16_t listen_port,
+                          int64_t downloaded, int64_t left, int64_t uploaded,
+                          uint8_t *compact_out, uint32_t max_peers,
+                          int event,
+                          tracker_cancel_cb cancel, void *cancel_user) {
     uint32_t total = 0;
     uint8_t tmp[200*6];
 
@@ -554,8 +584,8 @@ uint32_t tracker_announce_with_event(const metainfo_t *mi,
         const char *url = mi->trackers[t];
         uint32_t n = 0;
 
-        n = tracker_announce_url_ex_cancel_event(
-            url, mi->info_hash, peer_id, listen_port, downloaded, left, tmp,
+        n = tracker_announce_url_stats(
+            url, mi->info_hash, peer_id, listen_port, downloaded, left, uploaded, tmp,
             200, NULL, event, cancel, cancel_user);
 
         uint32_t can = (total + n <= max_peers) ? n : max_peers - total;

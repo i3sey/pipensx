@@ -136,6 +136,13 @@ void testUploadedNroStagesWithoutGithub() {
 }
 
 void testVersionsAndReleaseValidation() {
+    pipensx::UpdateService service(Target,
+        [](const std::string&, size_t, std::string& body, std::string&) {
+            body = releaseJson("v999.0.0");
+            return true;
+        });
+    const auto checked = service.check();
+    assert(checked.ok && checked.updateAvailable);
     assert(pipensx::UpdateService::isNewerVersion("v1.2.3", "1.2.2"));
     assert(!pipensx::UpdateService::isNewerVersion("1.2.3", "1.2.3"));
     assert(!pipensx::UpdateService::isNewerVersion("next", "1.2.3"));

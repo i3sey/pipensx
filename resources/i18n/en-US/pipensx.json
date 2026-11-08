@@ -1,4 +1,11 @@
 {
+  "seeding": {
+    "notice": "Sharing helps other players download games and keeps torrents available. pipensx shares verified pieces while downloading and installing. After installation, it shares what remains in RAM until you exit or start another transfer. Sharing uses your connection and may affect download speed. You can turn it off in Settings → Downloads.",
+    "acknowledge": "Understood",
+    "setting": "Share torrent pieces",
+    "status": "Sharing",
+    "stats": "↑ {} · Shared {}"
+  },
   "app": {
     "title": "pipensx",
     "exit": "Exit",

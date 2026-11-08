@@ -32,6 +32,7 @@ struct StreamRamBudget {
        lookaheadMax * piece_length: the picker window is in pieces so a
        16 MiB torrent can still AIMD 8/32/64, while this cap stays ~64–128 MiB. */
     uint64_t maxPieceBufferBytes = 0;
+    uint64_t seedCacheBytes = 0;
 };
 
 // Assumed free RAM when heap detection is unavailable (PC builds).

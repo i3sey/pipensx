@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "../src/core/bencode.h"
+#include "../src/core/sha1.h"
 #include "../src/core/torrent.c"
 
 /* Minimal multi-file torrent whose single file has the given "path" list. */
@@ -736,7 +737,62 @@ static void test_adopt_stashed_peer(void) {
     torrent_drop_stashed_peers(hash);
 }
 
+static int accept_sink(void *user, uint32_t file, int64_t offset,
+                        const uint8_t *data, size_t len) {
+    (void)file; (void)offset; (void)data;
+    *(size_t *)user += len;
+    return 1;
+}
+
+static void test_sink_ring_retains_only_verified_pieces(void) {
+    char dir[] = "/tmp/pipensx-seed-ring-XXXXXX";
+    assert(mkdtemp(dir));
+    uint8_t data[16384], hashes[60];
+    memset(data, 42, sizeof(data));
+    for (int i = 0; i < 3; ++i) sha1(data, sizeof(data), hashes + 20 * i);
+    mi_file_t file = {0};
+    strcpy(file.path, "payload.nsp"); file.length = 3 * sizeof(data);
+    metainfo_t mi = {0};
+    strcpy(mi.name, "payload.nsp");
+    mi.piece_length = sizeof(data); mi.total_length = file.length;
+    mi.num_pieces = 3; mi.num_files = 1; mi.files = &file; mi.piece_hashes = hashes;
+    size_t consumed = 0;
+    storage_file_config_t config = {0};
+    config.mode = STORAGE_FILE_SINK; config.sink = accept_sink; config.user = &consumed;
+    torrent_t t = {0};
+    t.mi = mi; t.upload_enabled = 1;
+    t.store = storage_open_ex(&mi, dir, &config); assert(t.store);
+    t.pm = piece_mgr_create(&mi, t.store); assert(t.pm);
+    t.pm->verified_data_cb = cache_verified; t.pm->verified_data_user = &t;
+    torrent_set_seed_cache_limit(&t, 2 * sizeof(data));
+    data[0] ^= 1;
+    assert(piece_mgr_got_block(t.pm, 0, 0, data, sizeof(data)) > 0);
+    piece_mgr_hash_flush(t.pm);
+    assert(t.pm->num_done == 0 && consumed == 0 && !seed_cache_get(t.seed_cache, 0));
+    data[0] ^= 1;
+    for (uint32_t i = 0; i < 3; ++i) {
+        assert(piece_mgr_got_block(t.pm, i, 0, data, sizeof(data)) > 0);
+        piece_mgr_hash_flush(t.pm);
+    }
+    assert(consumed == 3 * sizeof(data) && t.pm->num_done == 3);
+    assert(bf_has(t.pm->have_bf, 0) && !bf_has(t.pm->available_bf, 0));
+    assert(bf_has(t.pm->available_bf, 1) && bf_has(t.pm->available_bf, 2));
+    uint8_t block[16384];
+    assert(!read_upload(&t, 0, 0, block, sizeof(block)));
+    assert(read_upload(&t, 1, 0, block, sizeof(block)) && !memcmp(data, block, sizeof(data)));
+    torrent_enter_upload_only(&t, 1);
+    int64_t downloaded, left;
+    t.downloaded = 54321;
+    torrent_announce_totals(&t, &downloaded, &left);
+    assert(downloaded == 54321 && left == sizeof(data));
+    assert(t.upload_only && t.available_pieces == 2);
+    torrent_set_seed_cache_limit(&t, 0);
+    assert(!t.seed_cache && !t.available_pieces && t.pm->num_done == 3);
+    piece_mgr_destroy(t.pm); storage_close(t.store); rmdir(dir);
+}
+
 int main(void) {
+    test_sink_ring_retains_only_verified_pieces();
     test_ema_update();
     test_last_piece_age_marks_missing_sample();
     test_adaptive_hedge_follows_median_latency();

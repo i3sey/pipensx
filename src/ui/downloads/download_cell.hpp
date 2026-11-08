@@ -216,6 +216,11 @@ public:
         if (!deployActive && task.status == DownloadStatus::Error &&
             !task.error.empty())
             meta = task.error;
+        if (!deployActive && (task.seeding || task.uploadedBytes || task.seedCacheBytes)) {
+            meta += "   " + tr("pipensx/seeding/stats",
+                formatSpeed(task.uploadSpeedBytesPerSecond), formatBytes(task.uploadedBytes));
+            if (task.seeding) setTextIfChanged(status_, tr("pipensx/seeding/status"));
+        }
         setTextIfChanged(meta_, meta);
 
         if (!sameTask || !image_->hasArtwork()) {

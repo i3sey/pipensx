@@ -1,4 +1,11 @@
 {
+  "seeding": {
+    "notice": "Le partage aide les autres à télécharger des jeux et maintient les torrents disponibles. pipensx partage les blocs vérifiés pendant le téléchargement et l’installation, puis, après l’installation, ceux conservés en RAM jusqu’à la fermeture ou au prochain transfert. Le partage utilise votre connexion et peut affecter la vitesse de téléchargement. Vous pouvez le désactiver dans Paramètres → Téléchargements.",
+    "acknowledge": "Compris",
+    "setting": "Partager les blocs des torrents",
+    "status": "Partage",
+    "stats": "↑ {} · Envoyé {}"
+  },
   "app": {
     "title": "pipensx",
     "exit": "Quitter",

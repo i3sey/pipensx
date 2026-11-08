@@ -1,4 +1,6 @@
 #include "torrent.h"
+#include "client_identity.h"
+#include "seed_cache.h"
 #include "piece.h"
 #include "tracker.h"
 #include "net.h"
@@ -185,6 +187,12 @@ struct torrent {
 
     /* Stats */
     uint64_t downloaded;
+    uint64_t uploaded, upload_bps, last_uploaded;
+    uint64_t upload_token_time;
+    uint32_t upload_tokens, upload_cursor;
+    int upload_enabled, upload_only, defer_completed, install_committed;
+    seed_cache_t *seed_cache;
+    uint32_t available_pieces;
     uint64_t speed_bytes; /* accumulated since last speed update */
     uint64_t speed_bps;
     uint64_t speed_time_ms;
@@ -247,6 +255,7 @@ struct torrent {
     uint32_t        announce_count;   /* guarded by announce_mutex */
     uint8_t         announce_compact[200*6];
     int64_t         announce_downloaded;
+    int64_t         announce_uploaded;
     int64_t         announce_left;
     int             announce_event;
     int             tracker_started_event_sent;
@@ -802,6 +811,11 @@ static void fill_ctx(torrent_t *t, peer_ctx_t *ctx) {
     ctx->our_bf      = t->pm->available_bf;
     ctx->listen_port = t->listen_port;
     ctx->use_mse     = 1; /* try MSE/PE first to reach encryption-required peers */
+    ctx->piece_length = (uint32_t)t->mi.piece_length;
+    ctx->total_length = (uint64_t)t->mi.total_length;
+    ctx->private_torrent = t->mi.is_private;
+    ctx->upload_only = t->upload_only;
+    ctx->uploaded_total = &t->uploaded;
 }
 
 /* Magnet → torrent live sockets. Compact IPs (PERF_PLAN 7.7) still reconnect;
@@ -886,11 +900,97 @@ uint32_t torrent_adopt_stashed_peers(torrent_t *t) {
 }
 
 static void broadcast_have(torrent_t *t, uint32_t idx) {
+    if (!bf_has(t->pm->available_bf, idx)) return;
     for (int i = 0; i < MAX_ACTIVE_PEERS; i++) {
         peer_t *p = t->peers[i];
         if (p && p->state == PS_ACTIVE)
             peer_send_have(p, idx);
     }
+}
+
+static void cache_verified(void *user, uint32_t index,
+                            const uint8_t *data, uint32_t len) {
+    torrent_t *t = user;
+    if (!t->seed_cache || !t->upload_enabled) {
+        if (bf_has(t->pm->available_bf, index)) ++t->available_pieces;
+        return;
+    }
+    ++t->available_pieces;
+    uint32_t old = seed_cache_put(t->seed_cache, index, data, len);
+    if (old != UINT32_MAX &&
+        !storage_range_readable(t->store, (int64_t)old * t->mi.piece_length,
+                                 (size_t)piece_len(t->pm, old))) {
+        bf_clear(t->pm->available_bf, old);
+        if (t->available_pieces) --t->available_pieces;
+    }
+    bf_set(t->pm->available_bf, index);
+}
+
+static int read_upload(void *user, uint32_t index, uint32_t offset,
+                        uint8_t *out, uint32_t len) {
+    torrent_t *t = user;
+    const uint8_t *data = seed_cache_get(t->seed_cache, index);
+    if (data) { memcpy(out, data + offset, len); return 1; }
+    return storage_read(t->store, (int64_t)index * t->mi.piece_length + offset,
+                         out, len) == (int)len;
+}
+
+void torrent_set_seed_cache_limit(torrent_t *t, uint64_t bytes) {
+    if (!t || !t->pm || t->mi.piece_length <= 0) return;
+    uint64_t slots64 = bytes / (uint64_t)t->mi.piece_length;
+    uint32_t slots = slots64 < t->mi.num_pieces ? (uint32_t)slots64 : t->mi.num_pieces;
+    if (!slots && !t->seed_cache) return;
+    if (t->seed_cache && slots >= t->seed_cache->slots) return;
+    if (t->seed_cache) {
+        for (uint32_t i = 0; i < t->seed_cache->slots; ++i) {
+            uint32_t index = t->seed_cache->indices[i];
+            if (index != UINT32_MAX &&
+                !storage_range_readable(t->store, (int64_t)index * t->mi.piece_length,
+                                         (size_t)piece_len(t->pm, index)))
+                bf_clear(t->pm->available_bf, index);
+        }
+        seed_cache_destroy(t->seed_cache);
+        t->seed_cache = NULL;
+        t->available_pieces = 0;
+        for (uint32_t i = 0; i < t->pm->num_pieces; ++i)
+            if (bf_has(t->pm->available_bf, i)) ++t->available_pieces;
+    }
+    if (slots)
+        t->seed_cache = seed_cache_create(slots, (uint32_t)t->mi.piece_length);
+    uint32_t allocated = t->seed_cache ? t->seed_cache->slots : 0;
+    log_msg("[seed] cache slots=%u bytes=%llu requested_bytes=%llu blocks=%u\n",
+        allocated, (unsigned long long)allocated * (uint64_t)t->mi.piece_length,
+        (unsigned long long)slots * (uint64_t)t->mi.piece_length,
+        t->seed_cache ? t->seed_cache->block_count : 0);
+}
+
+void torrent_set_upload_enabled(torrent_t *t, int enabled) {
+    t->upload_enabled = !!enabled;
+    if (!enabled) torrent_set_seed_cache_limit(t, 0);
+}
+
+static void upload_tick(torrent_t *t, uint64_t now) {
+    peer_ctx_t ctx; fill_ctx(t, &ctx);
+    uint64_t elapsed = now - t->upload_token_time;
+    uint64_t tokens = t->upload_tokens + elapsed * (1024 * 1024) / 1000;
+    t->upload_tokens = (uint32_t)(tokens > 65536 ? 65536 : tokens);
+    t->upload_token_time = now;
+    uint32_t slots = 0;
+    for (int i = 0; i < MAX_ACTIVE_PEERS; ++i) {
+        peer_t *p = t->peers[i];
+        if (!p || p->state != PS_ACTIVE) continue;
+        int unchoke = t->upload_enabled && p->peer_interested && slots < 4;
+        if (unchoke) ++slots;
+        if (!peer_set_choked(p, !unchoke)) p->state = PS_DEAD;
+    }
+    for (uint32_t j = 0; j < MAX_ACTIVE_PEERS; ++j) {
+        uint32_t i = (t->upload_cursor + j) % MAX_ACTIVE_PEERS;
+        peer_t *p = t->peers[i];
+        if (!p || p->state != PS_ACTIVE) continue;
+        if (!peer_upload(p, &ctx, read_upload, t, &t->upload_tokens))
+            p->state = PS_DEAD;
+    }
+    t->upload_cursor = (t->upload_cursor + 1) % MAX_ACTIVE_PEERS;
 }
 
 static int peer_slot_taken(const torrent_t *t, uint32_t ip, uint16_t port) {
@@ -1618,9 +1718,9 @@ static void *announce_worker(void *arg) {
     /* mi/peer_id/listen_port are immutable for the torrent's life;
        downloaded/left were snapshotted before the thread was launched. */
     uint8_t compact[200*6];
-    uint32_t n = tracker_announce_with_event(
+    uint32_t n = tracker_announce_stats(
         &t->mi, t->peer_id, t->listen_port, t->announce_downloaded,
-        t->announce_left, compact, 200, t->announce_event,
+        t->announce_left, t->announce_uploaded, compact, 200, t->announce_event,
         announce_cancelled, t);
     pthread_mutex_lock(&t->announce_mutex);
     memcpy(t->announce_compact, compact, (size_t)n*6);
@@ -1638,8 +1738,15 @@ static void torrent_announce_totals(const torrent_t *t, int64_t *downloaded,
         done = 0;
     if (done > total)
         done = total;
-    *downloaded = done;
+    *downloaded = (int64_t)t->downloaded;
+    if (t->upload_only || t->upload_enabled || t->defer_completed) {
+        done = 0;
+        for (uint32_t i = 0; i < t->pm->num_pieces; ++i)
+            if (bf_has(t->pm->available_bf, i)) done += piece_len(t->pm, i);
+    }
     *left = total - done;
+    if (t->defer_completed && !t->install_committed && *left == 0 && total > 0)
+        *left = 1;
 }
 
 /* Kick off an announce. No-op if one is already in flight. Falls back to a
@@ -1650,11 +1757,14 @@ static void announce_start(torrent_t *t, int64_t downloaded, int64_t left,
     if (t->announce_active)
         return;
     t->announce_downloaded = downloaded;
+    t->announce_uploaded   = (int64_t)t->uploaded;
     t->announce_left       = left;
     if (event == TRACKER_EVENT_NONE && !t->tracker_started_event_sent)
         event = TRACKER_EVENT_STARTED;
     if (event == TRACKER_EVENT_STARTED)
         t->tracker_started_event_sent = 1;
+    if (event == TRACKER_EVENT_NONE && t->upload_only && left > 0)
+        event = TRACKER_EVENT_PAUSED;
     t->announce_event = event;
     if (t->async_ok) {
         t->announce_done  = 0;
@@ -1666,8 +1776,9 @@ static void announce_start(torrent_t *t, int64_t downloaded, int64_t left,
         log_msg("[torrent] announce thread spawn failed, running inline\n");
     }
     uint8_t compact[200*6];
-    uint32_t n = tracker_announce_with_event(
-        &t->mi, t->peer_id, t->listen_port, downloaded, left, compact, 200,
+    uint32_t n = tracker_announce_stats(
+        &t->mi, t->peer_id, t->listen_port, downloaded, left,
+        t->announce_uploaded, compact, 200,
         t->announce_event, announce_cancelled, t);
     announce_push_results(t, compact, n);
     log_msg("[torrent] announce (sync): %u peers\n", n);
@@ -1679,15 +1790,16 @@ struct stopped_announce {
     uint8_t peer_id[20];
     uint16_t listen_port;
     int64_t downloaded;
+    int64_t uploaded;
     int64_t left;
 };
 
 static void *stopped_announce_worker(void *arg) {
     struct stopped_announce *job = arg;
     uint8_t compact[6];
-    tracker_announce_url_ex_cancel_event(
+    tracker_announce_url_stats(
         job->url, job->info_hash, job->peer_id, job->listen_port,
-        job->downloaded, job->left, compact, 1, NULL, TRACKER_EVENT_STOPPED,
+        job->downloaded, job->left, job->uploaded, compact, 1, NULL, TRACKER_EVENT_STOPPED,
         NULL, NULL);
     free(job);
     return NULL;
@@ -1704,6 +1816,7 @@ static void announce_stopped_async(torrent_t *t) {
     memcpy(job->info_hash, t->mi.info_hash, 20);
     memcpy(job->peer_id, t->peer_id, 20);
     job->listen_port = t->listen_port;
+    job->uploaded = (int64_t)t->uploaded;
     torrent_announce_totals(t, &job->downloaded, &job->left);
     pthread_t thread;
     if (pthread_create(&thread, NULL, stopped_announce_worker, job) != 0) {
@@ -1792,6 +1905,8 @@ torrent_t *torrent_create_ex(const metainfo_t *mi,
     memcpy(&t->mi, mi, sizeof(*mi));
     t->listen_port = listen_port;
     t->startup_verifying = 1;
+    t->upload_enabled = options && options->upload_enabled;
+    t->defer_completed = options && options->defer_completed;
     t->request_pipeline_limit = options && options->request_pipeline_limit
                               ? options->request_pipeline_limit
                               : MAX_PIPELINE;
@@ -1809,8 +1924,7 @@ torrent_t *torrent_create_ex(const metainfo_t *mi,
         snprintf(t->telemetry_tag, sizeof(t->telemetry_tag), "-");
     reset_telemetry_window(t, now_ms());
 
-    /* Peer ID: "-PN0001-" + 12 random bytes */
-    memcpy(t->peer_id, "-PN0001-", 8);
+    pipensx_peer_prefix(t->peer_id);
     rand_bytes(t->peer_id + 8, 12);
 
     t->store = storage_open_ex(mi, outdir,
@@ -1824,6 +1938,10 @@ torrent_t *torrent_create_ex(const metainfo_t *mi,
     if (!t->pm) { storage_close(t->store); free(t); return NULL; }
     t->pm->hash_result_cb = cb_hash_result;
     t->pm->hash_result_user = t;
+    t->pm->verified_data_cb = cache_verified;
+    t->pm->verified_data_user = t;
+    if (t->upload_enabled && options->seed_cache_bytes)
+        torrent_set_seed_cache_limit(t, options->seed_cache_bytes);
     if (options) {
         t->pm->request_allowed = options->request_allowed;
         t->pm->request_allowed_user = options->request_allowed_user;
@@ -1862,7 +1980,7 @@ torrent_t *torrent_create_ex(const metainfo_t *mi,
 
     /* DHT: attach to the shared engine; the announce carries this
        torrent's TCP listen port even though the DHT UDP port is shared. */
-    t->dht = dht_attach(mi->info_hash, t->listen_port);
+    t->dht = mi->is_private ? NULL : dht_attach(mi->info_hash, t->listen_port);
 
     /* Shared μTP transport for the TCP→μTP dial fallback. */
     t->utp_fd = INVALID_SOCK;
@@ -1973,6 +2091,7 @@ void torrent_destroy(torrent_t *t) {
         t->listen_fd = INVALID_SOCK;
     }
     piece_mgr_destroy(t->pm);
+    seed_cache_destroy(t->seed_cache);
     t->pm = NULL;
     log_msg("[torrent] piece manager destroyed\n");
     storage_close(t->store);
@@ -2088,18 +2207,32 @@ int torrent_tick(torrent_t *t) {
     /* Apply finished off-thread piece hashes (write + mark done) before the
        completion check so the last piece completes in the same tick. */
     piece_mgr_drain_hash_results(t->pm);
+    if (t->upload_only && t->install_committed &&
+        !t->tracker_completed_event_sent) {
+        announce_collect(t);
+        if (!t->announce_active) {
+            int64_t downloaded, left;
+            torrent_announce_totals(t, &downloaded, &left);
+            announce_start(t, downloaded, left,
+                left == 0 ? TRACKER_EVENT_COMPLETED : TRACKER_EVENT_NONE);
+            t->tracker_completed_event_sent = 1;
+        }
+    }
 
-    if (t->pm->num_done == t->pm->num_pieces) {
-        if (!t->tracker_completed_event_sent) {
+    if (!t->upload_only && t->pm->num_done == t->pm->num_pieces) {
+        int result = check_completion(t);
+        if (result) return result;
+        if (!t->defer_completed && !t->tracker_completed_event_sent) {
             announce_collect(t);
             if (t->announce_active)
                 return 1;
             int64_t downloaded = 0, left = 0;
             torrent_announce_totals(t, &downloaded, &left);
-            announce_start(t, downloaded, 0, TRACKER_EVENT_COMPLETED);
+            announce_start(t, downloaded, left,
+                left == 0 ? TRACKER_EVENT_COMPLETED : TRACKER_EVENT_NONE);
             t->tracker_completed_event_sent = 1;
         }
-        return check_completion(t);
+        return result;
     }
 
     uint64_t now = now_ms();
@@ -2112,6 +2245,11 @@ int torrent_tick(torrent_t *t) {
         t->speed_bytes    = 0;
         sample_peer_rates(t, elapsed_ms, now);
         t->speed_time_ms  = now;
+        t->upload_bps = (t->uploaded - t->last_uploaded) * 1000 / (elapsed_ms + 1);
+        t->last_uploaded = t->uploaded;
+        t->available_pieces = 0;
+        for (uint32_t i = 0; i < t->pm->num_pieces; ++i)
+            if (bf_has(t->pm->available_bf, i)) ++t->available_pieces;
         if (t->dht) {
             int good = 0, dubious = 0;
             dht_shared_nodes(&good, &dubious);
@@ -2126,6 +2264,8 @@ int torrent_tick(torrent_t *t) {
         int inflight = 0;
         int utp_active = 0;
         int cooldown_peers = 0, penalized_peers = 0;
+        int upload_interested = 0, upload_slots = 0, upload_queued = 0;
+        uint64_t peer_upload_requests = 0, peer_upload_rejected = 0;
         for (int i = 0; i < MAX_ACTIVE_PEERS; i++) {
             peer_t *p = t->peers[i];
             if (!p || p->state != PS_ACTIVE)
@@ -2136,6 +2276,11 @@ int torrent_tick(torrent_t *t) {
             if (!p->am_choked)
                 unchoked++;
             inflight += p->pipeline_len;
+            upload_interested += !!p->peer_interested;
+            upload_slots += !p->peer_choked;
+            upload_queued += (int)p->upload_count;
+            peer_upload_requests += p->upload_requests;
+            peer_upload_rejected += p->upload_rejected;
             if (p->request_cooldown_until_ms > now) cooldown_peers++;
             if (p->timeout_strikes > 0) penalized_peers++;
         }
@@ -2145,10 +2290,17 @@ int torrent_tick(torrent_t *t) {
            cooldown/penalized counts mean timeout strikes are starving the
            swarm — both visible in a plain QR log grep. */
         log_msg("[torrent] health active=%d utp=%d unchoked=%d inflight=%d "
-                "expired=%u speed=%llu frozen=%d cooldown=%d penalized=%d\n",
+                "expired=%u speed=%llu frozen=%d cooldown=%d penalized=%d "
+                "upload_enabled=%d upload_interested=%d upload_slots=%d "
+                "upload_queued=%d peer_upload_requests=%llu peer_upload_rejected=%llu "
+                "uploaded=%llu available_pieces=%u\n",
                 active, utp_active, unchoked, inflight, t->expired_requests,
                 (unsigned long long)t->speed_bps, t->rate_freeze,
-                cooldown_peers, penalized_peers);
+                cooldown_peers, penalized_peers, t->upload_enabled,
+                upload_interested, upload_slots, upload_queued,
+                (unsigned long long)peer_upload_requests,
+                (unsigned long long)peer_upload_rejected,
+                (unsigned long long)t->uploaded, t->available_pieces);
         t->expired_requests = 0;
         t->last_health_ms = now;
     }
@@ -2298,7 +2450,7 @@ int torrent_tick(torrent_t *t) {
             handle_dial_failure(t, ip, port, mse_hs, can_utp, use_utp, now);
             continue;
         }
-        if (p->am_choked && p->pipeline_len > 0) {
+        if (p->am_choked && !p->supports_fast && p->pipeline_len > 0) {
             uint32_t released = (uint32_t)p->pipeline_len;
             clear_peer_requests(t, p);
             p->telemetry_released_requests += released;
@@ -2347,7 +2499,7 @@ int torrent_tick(torrent_t *t) {
         if (p->state != PS_ACTIVE) continue;
         /* Evict dead-weight peers that keep us choked and idle: they occupy a
            slot a reachable, productive peer could use. */
-        if (p->am_choked) {
+        if (!t->upload_only && p->am_choked) {
             uint64_t idle_ref = p->last_piece_ms ? p->last_piece_ms
                                                  : p->connect_time_ms;
             if (idle_ref <= now2 && now2 - idle_ref >= PEER_CHOKE_GIVEUP_MS) {
@@ -2411,14 +2563,46 @@ int torrent_tick(torrent_t *t) {
     /* Hedging runs before refill so old critical blocks get first choice.
        Gated during startup verification: unchecked pieces look empty to the
        picker but may already be valid on disk. */
-    if (!t->startup_verifying) {
+    upload_tick(t, now2);
+    if (!t->startup_verifying && !t->upload_only) {
         schedule_hedged_requests(t, now2);
         schedule_all_peers(t, now2);
+    }
+    if (!t->startup_verifying) {
         send_keepalives(t, now2);
         flush_pex(t, now2);
     }
 
-    return check_completion(t);
+    return t->upload_only ? 1 : check_completion(t);
+}
+
+void torrent_enter_upload_only(torrent_t *t, int committed) {
+    t->upload_only = 1;
+    if (committed) t->install_committed = 1;
+    t->speed_bps = 0;
+    t->pm->request_allowed = NULL;
+    t->pm->request_allowed_user = NULL;
+    t->available_pieces = 0;
+    for (uint32_t i = 0; i < t->pm->num_pieces; ++i)
+        if (bf_has(t->pm->available_bf, i)) ++t->available_pieces;
+    for (int i = 0; i < MAX_ACTIVE_PEERS; ++i) {
+        peer_t *p = t->peers[i];
+        if (!p) continue;
+        while (p->pipeline_len) {
+            block_req_t req = p->pipeline[p->pipeline_len - 1];
+            clear_request(t, &req);
+            if (!peer_cancel_block(p, (uint32_t)req.index, (uint32_t)req.offset,
+                                    (uint32_t)req.length)) {
+                clear_peer_requests(t, p);
+                break;
+            }
+        }
+        p->upload_only = 1;
+        if (p->state == PS_ACTIVE) {
+            peer_set_interested(p, 0);
+            if (p->supports_ext) peer_send_ext_handshake(p, t->listen_port);
+        }
+    }
 }
 
 const char *torrent_last_error(const torrent_t *t) {
@@ -2492,6 +2676,11 @@ void torrent_stat(const torrent_t *t, torrent_stat_t *s) {
     s->dht_good    = t->dht_good;
     s->dht_dubious = t->dht_dubious;
     s->downloaded = t->downloaded;
+    s->uploaded = t->uploaded;
+    s->upload_bps = t->upload_bps;
+    if (t->seed_cache)
+        s->seed_cache_bytes = (uint64_t)t->seed_cache->slots * t->seed_cache->piece_length;
+    s->available_pieces = t->available_pieces;
     s->total_bytes = (uint64_t)t->mi.total_length;
     s->completed_bytes = t->pm->completed_bytes;
     s->skipped_bytes = t->skipped_bytes;

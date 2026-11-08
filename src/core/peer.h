@@ -31,6 +31,7 @@
 #define MSG_PIECE        7
 #define MSG_CANCEL       8
 #define MSG_PORT         9
+#define MSG_REJECT_REQUEST 16
 #define MSG_EXTENDED    20
 
 /* BEP10 extension IDs (local mapping) */
@@ -84,8 +85,18 @@ typedef struct peer {
     uint8_t *rbuf;
     uint32_t rbuf_head;
     uint32_t rbuf_len;
-    uint8_t  sbuf[PEER_BUF_SIZE];
+    uint8_t  sbuf[64 * 1024];
     uint32_t sbuf_len;
+    uint32_t upload_start, upload_end;
+    block_req_t uploads[64];
+    uint32_t upload_count;
+    uint32_t missing_uploads;
+    uint64_t uploaded;
+    uint64_t upload_requests, upload_rejected;
+    uint64_t *uploaded_total;
+    int supports_fast;
+    int private_torrent;
+    int upload_only;
 
     /* BT state */
     int      am_choked;
@@ -165,6 +176,11 @@ typedef struct {
     const uint8_t *our_bf;    /* our have-bitfield */
     uint16_t       listen_port;
     int            use_mse;   /* attempt MSE/PE on outgoing connections */
+    uint32_t       piece_length;
+    uint64_t       total_length;
+    int            private_torrent;
+    int            upload_only;
+    uint64_t      *uploaded_total;
 } peer_ctx_t;
 
 /* Allocate/free a peer slot. peer_create opens a TCP peer around an already
@@ -242,6 +258,11 @@ int peer_send_bitfield(peer_t *p, const uint8_t *bf, uint32_t bf_bytes);
 
 /* Send interested */
 int peer_send_interested(peer_t *p);
+int peer_set_interested(peer_t *p, int interested);
+int peer_set_choked(peer_t *p, int choked);
+int peer_upload(peer_t *p, const peer_ctx_t *ctx,
+                int (*read_block)(void *, uint32_t, uint32_t, uint8_t *, uint32_t),
+                void *user, uint32_t *budget);
 
 /* Send HAVE for a newly verified piece */
 int peer_send_have(peer_t *p, uint32_t index);

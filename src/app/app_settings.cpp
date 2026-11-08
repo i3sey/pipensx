@@ -158,6 +158,8 @@ bool parseSettings(const std::string& text, AppSettingsData& values,
         !readString(root, "web_server_pin", values.webServerPin, error) ||
         !readBool(root, "torrenting_enabled", values.torrentingEnabled,
                   error) ||
+        !readBool(root, "live_seeding_enabled", values.liveSeedingEnabled, error) ||
+        !readBool(root, "seeding_notice_ack", values.seedingNoticeAcknowledged, error) ||
         !readString(root, "torbox_api_key", values.torboxApiKey, error) ||
         !readString(root, "realdebrid_api_key", values.realdebridApiKey,
                      error) ||
@@ -290,6 +292,8 @@ std::string serializeSettings(const AppSettingsData& values) {
     root["web_server_pin"] = values.webServerPin;
     root["max_active_downloads"] = values.maxActiveDownloads;
     root["torrenting_enabled"] = values.torrentingEnabled;
+    root["live_seeding_enabled"] = values.liveSeedingEnabled;
+    root["seeding_notice_ack"] = values.seedingNoticeAcknowledged;
     root["torbox_api_key"] = values.torboxApiKey;
     root["torrserver_url"] = values.torrserverUrl;
     root["realdebrid_api_key"] = values.realdebridApiKey;
@@ -447,6 +451,8 @@ bool AppSettingsData::operator==(const AppSettingsData& other) const {
            webServerPin == other.webServerPin &&
            maxActiveDownloads == other.maxActiveDownloads &&
            torrentingEnabled == other.torrentingEnabled &&
+           liveSeedingEnabled == other.liveSeedingEnabled &&
+           seedingNoticeAcknowledged == other.seedingNoticeAcknowledged &&
            torboxApiKey == other.torboxApiKey &&
            torrserverUrl == other.torrserverUrl &&
            realdebridApiKey == other.realdebridApiKey &&

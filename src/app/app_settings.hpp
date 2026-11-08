@@ -100,6 +100,8 @@ struct AppSettingsData {
     // the address are stored in the clear, like webServerPin — the SD card
     // offers nothing better to hide them behind.
     bool torrentingEnabled = false;
+    bool liveSeedingEnabled = true;
+    bool seedingNoticeAcknowledged = false;
     std::string torboxApiKey;
     // Base URL of the TorrServer instance, e.g. "http://192.168.1.10:8090".
     std::string torrserverUrl;

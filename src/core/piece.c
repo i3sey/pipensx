@@ -214,6 +214,9 @@ static void hash_apply(piece_mgr_t *pm, const piece_hash_job_t *job) {
             status = -1;
         } else {
             mark_piece_done(pm, job->idx, job->plen);
+            if (pm->verified_data_cb)
+                pm->verified_data_cb(pm->verified_data_user, job->idx,
+                                     job->buf, job->plen);
             piece_buf_put(pm, job->buf);
             status = 2;
         }
@@ -519,6 +522,9 @@ int piece_mgr_got_block(piece_mgr_t *pm, uint32_t idx, uint32_t offset,
     }
 
     mark_piece_done(pm, idx, (uint32_t)plen);
+    if (pm->verified_data_cb)
+        pm->verified_data_cb(pm->verified_data_user, idx, sl->buf,
+                             (uint32_t)plen);
 
     /* Release buffer — piece is written */
     piece_buf_put(pm, sl->buf);

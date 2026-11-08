@@ -1,3 +1,4 @@
+#include "../core/client_identity.h"
 #include "magnet_resolver.hpp"
 #include "torrent_metainfo_fetch.hpp"
 
@@ -654,9 +655,10 @@ bool negotiateMetadata(PeerWire& wire, uint8_t& peerExtension,
                        size_t& metadataSize,
                        std::vector<uint8_t>* extra = nullptr,
                        const ResolveStop* stop = nullptr) {
-    static const char handshake[] = "d1:md11:ut_metadatai1eee";
+    static const std::string handshake = "d1:md11:ut_metadatai1ee1:v" +
+        std::to_string(sizeof(PIPENSX_CLIENT_NAME) - 1) + ":" PIPENSX_CLIENT_NAME "e";
     std::vector<uint8_t> request{20, 0};
-    request.insert(request.end(), handshake, handshake + sizeof(handshake) - 1);
+    request.insert(request.end(), handshake.begin(), handshake.end());
     if (!sendFrame(wire, request, stop))
         return false;
 
@@ -863,10 +865,10 @@ bool fetchMetadataFromPeer(const uint8_t* compact,
 // Advertise both ut_metadata and ut_pex so the peer will push its swarm view
 // to us on our advertised ut_pex id (kLocalUtPexId). BEP10 handshake.
 bool sendPexHandshake(PeerWire& wire, const ResolveStop* stop = nullptr) {
-    static const char handshake[] =
-        "d1:md11:ut_metadatai1e6:ut_pexi2eee";
+    static const std::string handshake = "d1:md11:ut_metadatai1e6:ut_pexi2ee1:v" +
+        std::to_string(sizeof(PIPENSX_CLIENT_NAME) - 1) + ":" PIPENSX_CLIENT_NAME "e";
     std::vector<uint8_t> request{20, 0};
-    request.insert(request.end(), handshake, handshake + sizeof(handshake) - 1);
+    request.insert(request.end(), handshake.begin(), handshake.end());
     return sendFrame(wire, request, stop);
 }
 
@@ -1146,7 +1148,7 @@ bool MagnetResolver::resolveToFile(const std::string& uri,
     ResolveStop raceStop{&cancelled, &stopWorkers};
 
     uint8_t peerId[20];
-    std::memcpy(peerId, "-PN0001-", 8);
+    pipensx_peer_prefix(peerId);
     rand_bytes(peerId + 8, 12);
 
     if (progress)

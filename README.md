@@ -54,6 +54,12 @@ includes its cover URLs without a separate artwork update.
 
 ## Quick start
 
+Development uses Gitea at `git@192.168.1.146:i3sey/pipensx.git` as the primary
+repository. Gitea mirrors branches and tags to
+[GitLab](https://gitlab.com/pipensx-group/pipensx) on push and every eight hours.
+GitLab hosts releases and the GitLab CI pipeline. Push development changes to
+Gitea; see [BUILD.md](BUILD.md#development-remotes) for remote setup.
+
 Clone the pinned submodules:
 
 ```bash

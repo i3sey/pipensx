@@ -23,6 +23,10 @@ struct DownloadRowPaint {
     uint64_t wantedTotalBytes = 0;
     uint64_t wantedCompletedBytes = 0;
     uint64_t speedBytesPerSecond = 0;
+    uint64_t uploadedBytes = 0;
+    uint64_t uploadSpeedBytesPerSecond = 0;
+    uint64_t seedCacheBytes = 0;
+    bool seeding = false;
     uint32_t peers = 0;
     uint32_t piecesDone = 0;
     uint32_t piecesTotal = 0;
@@ -50,6 +54,10 @@ struct DownloadRowPaint {
         paint.wantedTotalBytes = task.wantedTotalBytes;
         paint.wantedCompletedBytes = task.wantedCompletedBytes;
         paint.speedBytesPerSecond = task.speedBytesPerSecond;
+        paint.uploadedBytes = task.uploadedBytes;
+        paint.uploadSpeedBytesPerSecond = task.uploadSpeedBytesPerSecond;
+        paint.seedCacheBytes = task.seedCacheBytes;
+        paint.seeding = task.seeding;
         paint.peers = task.peers;
         paint.piecesDone = task.piecesDone;
         paint.piecesTotal = task.piecesTotal;
@@ -75,6 +83,9 @@ struct DownloadRowPaint {
                wantedTotalBytes == other.wantedTotalBytes &&
                wantedCompletedBytes == other.wantedCompletedBytes &&
                speedBytesPerSecond == other.speedBytesPerSecond &&
+               uploadedBytes == other.uploadedBytes &&
+               uploadSpeedBytesPerSecond == other.uploadSpeedBytesPerSecond &&
+               seedCacheBytes == other.seedCacheBytes && seeding == other.seeding &&
                peers == other.peers && piecesDone == other.piecesDone &&
                piecesTotal == other.piecesTotal &&
                packageCount == other.packageCount &&

@@ -1,4 +1,6 @@
 #include "../src/core/peer.h"
+#include "../src/core/client_identity.h"
+#include "../src/core/bencode.h"
 #include "../src/core/net.h"
 #include "../src/core/util.h"
 #include "utp.h"
@@ -769,7 +771,108 @@ static void test_utp_loopback_transfers_ordered_stream(void) {
     puts("utp loopback ok");
 }
 
+static int read_upload_pattern(void *user, uint32_t index, uint32_t offset,
+                                uint8_t *data, uint32_t length) {
+    assert(index == 0 && offset == 0);
+    memset(data, *(uint8_t *)user, length);
+    return 1;
+}
+
+static int inject_request(peer_t *peer, peer_ctx_t *ctx, uint8_t type,
+                            uint32_t index, uint32_t offset, uint32_t length) {
+    uint8_t frame[17] = {0, 0, 0, 13};
+    frame[4] = type;
+    uint32_t words[] = {index, offset, length};
+    for (unsigned i = 0; i < 3; ++i)
+        for (unsigned j = 0; j < 4; ++j)
+            frame[5 + 4 * i + j] = (uint8_t)(words[i] >> (24 - 8 * j));
+    assert(peer_rbuf_append(peer, frame, sizeof(frame)) == 0);
+    return peer_process(peer, ctx, NULL, NULL, NULL, NULL);
+}
+
+static void test_upload_cancel_eviction_and_backpressure(int encrypted) {
+    int fds[2];
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
+    assert(net_set_nonblock(fds[0]) && net_set_nonblock(fds[1]));
+    int small = 1024;
+    assert(setsockopt(fds[0], SOL_SOCKET, SO_SNDBUF, &small, sizeof(small)) == 0);
+    uint8_t bf = 0x80, pattern = 67;
+    peer_ctx_t ctx = {0};
+    ctx.num_pieces = 1; ctx.bf_bytes = 1; ctx.our_bf = &bf;
+    ctx.piece_length = 16384; ctx.total_length = 16384;
+    peer_t peer = {0};
+    peer.fd = fds[0]; peer.state = PS_ACTIVE; peer.supports_fast = 1;
+    uint64_t total = 0;
+    peer.uploaded_total = &total;
+    assert(inject_request(&peer, &ctx, MSG_REQUEST, 0, 0, 16384) == 0);
+    assert(peer.upload_count == 1);
+    uint32_t budget = 8192;
+    assert(peer_upload(&peer, &ctx, read_upload_pattern, &pattern, &budget));
+    assert(peer.upload_count == 1 && !peer.uploaded);
+    assert(inject_request(&peer, &ctx, MSG_CANCEL, 0, 0, 16384) == 0);
+    assert(!peer.upload_count);
+    uint8_t reject[17];
+    assert(recv(fds[1], reject, sizeof(reject), 0) == sizeof(reject));
+    assert(reject[4] == MSG_REJECT_REQUEST);
+
+    assert(inject_request(&peer, &ctx, MSG_REQUEST, 0, 0, 16384) == 0);
+    bf = 0;
+    budget = 16384;
+    assert(peer_upload(&peer, &ctx, read_upload_pattern, &pattern, &budget));
+    assert(recv(fds[1], reject, sizeof(reject), 0) == sizeof(reject));
+    assert(reject[4] == MSG_REJECT_REQUEST && !peer.uploaded);
+    bf = 0x80;
+    const uint8_t key[] = "upload-backpressure";
+    rc4_t receiver;
+    if (encrypted) {
+        peer.mse_active = 1;
+        rc4_init(&peer.mse.send_rc4, key, sizeof(key));
+        rc4_init(&receiver, key, sizeof(key));
+    }
+    assert(inject_request(&peer, &ctx, MSG_REQUEST, 0, 0, 16384) == 0);
+    assert(peer_upload(&peer, &ctx, read_upload_pattern, &pattern, &budget));
+    assert(peer.uploaded < 16384 && peer.sbuf_len);
+    pattern = 99;
+    assert(peer_send_have(&peer, 0));
+    uint8_t wire[16384 + 13 + 9];
+    size_t used = 0;
+    for (unsigned i = 0; i < 1000 && used < sizeof(wire); ++i) {
+        ssize_t n = recv(fds[1], wire + used, sizeof(wire) - used, 0);
+        if (n > 0) used += (size_t)n;
+        assert(peer_flush(&peer));
+    }
+    assert(used == sizeof(wire));
+    if (encrypted) rc4_crypt(&receiver, wire, wire, used);
+    assert(wire[4] == MSG_PIECE);
+    for (unsigned i = 13; i < 13 + 16384; ++i) assert(wire[i] == 67);
+    assert(wire[13 + 16384 + 4] == MSG_HAVE);
+    assert(peer.uploaded == 16384 && total == 16384 && !peer.sbuf_len);
+    assert(peer.upload_requests == 3 && peer.upload_rejected == 2);
+    assert(inject_request(&peer, &ctx, MSG_REQUEST, 0, 16380, 8) == -1);
+    peer_fini(&peer);
+    close(fds[0]); close(fds[1]);
+}
+
 int main(void) {
+    for (int seed = 0; seed < 2; ++seed) {
+        int fds[2];
+        assert(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
+        peer_t peer = {0};
+        peer.fd = fds[0]; peer.upload_only = seed; peer.private_torrent = seed;
+        assert(peer_send_ext_handshake(&peer, 51413));
+        uint8_t frame[256];
+        ssize_t n = recv(fds[1], frame, sizeof(frame), 0);
+        assert(n > 6 && frame[4] == MSG_EXTENDED && frame[5] == 0);
+        be_node_t v, upload;
+        assert(be_dict_get((const char*)frame + 6, (const char*)frame + n, "v", 1, &v));
+        assert(v.type == BE_STR && v.slen == strlen(PIPENSX_CLIENT_NAME));
+        assert(!memcmp(v.sval, PIPENSX_CLIENT_NAME, v.slen));
+        assert(be_dict_get((const char*)frame + 6, (const char*)frame + n, "upload_only", 11, &upload));
+        assert(upload.ival == seed);
+        close(fds[0]); close(fds[1]);
+    }
+    test_upload_cancel_eviction_and_backpressure(0);
+    test_upload_cancel_eviction_and_backpressure(1);
     test_expiry_compacts_pipeline();
     test_cancel_sends_message_and_removes_request();
     test_partial_send_queues_tail_and_flush_completes_frame();

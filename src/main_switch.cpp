@@ -768,6 +768,7 @@ int main(int argc, char** argv) {
         manager.setAlldebridApiKey(settings.get().alldebridApiKey);
         manager.setActiveDebridProvider(settings.get().debridProvider);
         manager.setTorrentingEnabled(settings.get().torrentingEnabled);
+        manager.setLiveSeedingEnabled(settings.get().liveSeedingEnabled);
         metadata.setImageNetwork(
             manager.hasActiveTransfer()
                 ? GameMetadataService::ImageNetwork::Throttled
@@ -1185,6 +1186,7 @@ int main(int argc, char** argv) {
         pipensx::SwitchDeployPhase lastDeployPhase =
             pipensx::SwitchDeployPhase::Idle;
         bool deployOfferDialogOpen = false;
+        bool seedingNoticeShown = false;
         // Download/install lifecycle notifications (#33): the main loop is the
         // only place that runs regardless of which screen is focused, so
         // terminal status transitions are surfaced here as toasts instead of
@@ -1353,6 +1355,23 @@ int main(int argc, char** argv) {
                 lastDownloadScanMs = frameNowMs;
                 std::unordered_set<std::string> seen;
                 for (const pipensx::DownloadTask& task : manager.snapshotUi()) {
+                    if (!seedingNoticeShown && settings.get().firstRunCompleted &&
+                        !settings.get().seedingNoticeAcknowledged &&
+                        settings.get().liveSeedingEnabled &&
+                        task.source == pipensx::TaskSource::Torrent &&
+                        (task.status == pipensx::DownloadStatus::Downloading ||
+                         task.status == pipensx::DownloadStatus::Installing || task.seeding)) {
+                        seedingNoticeShown = true;
+                        auto* notice = new brls::Dialog(tr("pipensx/seeding/notice"));
+                        notice->addButton(tr("pipensx/seeding/acknowledge"), [&settings] {
+                            auto values = settings.get();
+                            values.seedingNoticeAcknowledged = true;
+                            std::string error;
+                            if (!settings.update(values, error))
+                                brls::Application::notify(error);
+                        });
+                        notice->open();
+                    }
                     seen.insert(task.id);
                     auto previous = lastTaskStatus.find(task.id);
                     if (previous == lastTaskStatus.end()) {

@@ -1,3 +1,4 @@
+#include "../core/client_identity.h"
 #include "torrent_metainfo_fetch.hpp"
 
 #include "curl_https.hpp"
@@ -117,7 +118,7 @@ bool defaultHttpGet(const std::string& url, std::vector<uint8_t>& body,
         return false;
     }
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "pipensx/0.4");
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, PIPENSX_USER_AGENT);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     // Cache metadata is small. Bound a stalled request so the existing
     // timeout retry can recover without a 30-second silent preparation stage.

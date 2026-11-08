@@ -60,6 +60,9 @@ int metainfo_parse(const uint8_t *data, size_t len, metainfo_t *mi) {
     sha1((const uint8_t*)info_node.buf, info_node.raw_len, mi->info_hash);
 
     be_node_t v;
+    if (be_dict_get(info_node.buf, info_node.buf + info_node.raw_len,
+                     "private", 7, &v) && v.type == BE_INT)
+        mi->is_private = v.ival == 1;
     /* name */
     if (be_dict_get(info_node.buf, info_node.buf + info_node.raw_len, "name", 4, &v) && v.type == BE_STR)
         strncpy_safe(mi->name, MAX_NAME_LEN, v.sval, v.slen);

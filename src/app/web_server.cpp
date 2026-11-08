@@ -503,6 +503,10 @@ std::string WebServer::buildStateJson() {
         j["wantedCompletedBytes"] = wanted.first;
         j["fetchProgress"] = t.fetchProgress;
         j["speedBps"] = t.speedBytesPerSecond;
+        j["uploadedBytes"] = t.uploadedBytes;
+        j["uploadSpeedBps"] = t.uploadSpeedBytesPerSecond;
+        j["seedCacheBytes"] = t.seedCacheBytes;
+        j["seeding"] = t.seeding;
         j["peers"] = t.peers;
         j["dhtGood"] = t.dhtGood;
         j["dhtDubious"] = t.dhtDubious;

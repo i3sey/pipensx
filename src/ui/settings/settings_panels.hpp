@@ -642,6 +642,24 @@ public:
             });
         content_->addView(showCompleted_);
 
+        liveSeeding_ = new brls::BooleanCell();
+        liveSeeding_->init(tr("pipensx/seeding/setting"),
+            settings_->get().liveSeedingEnabled, [this](bool enabled) {
+                auto values = settings_->get();
+                const bool previous = values.liveSeedingEnabled;
+                values.liveSeedingEnabled = enabled;
+                if (!persistSettings(settings_, values, "live_seeding")) {
+                    liveSeeding_->setOn(previous, false);
+                    liveSeeding_->setDetailTextColor(theme::textSecondary());
+                    return;
+                }
+                liveSeeding_->setOn(enabled, false);
+                liveSeeding_->setDetailTextColor(theme::textSecondary());
+                if (manager_) manager_->setLiveSeedingEnabled(enabled);
+            });
+        liveSeeding_->setDetailTextColor(theme::textSecondary());
+        content_->addView(liveSeeding_);
+
         addSection(content_, tr("pipensx/settings/section_install"));
         installLocation_ = new brls::SelectorCell();
         installLocation_->init(tr("pipensx/settings/install_location"),
@@ -725,6 +743,8 @@ public:
         maxActiveDownloads_->setSelection(
             static_cast<int>(values.maxActiveDownloads) - 1, true);
         showCompleted_->setOn(values.showCompletedDownloads, false);
+        liveSeeding_->setOn(values.liveSeedingEnabled, false);
+        liveSeeding_->setDetailTextColor(theme::textSecondary());
         screenSaver_->setOn(values.screenSaverEnabled, false);
         keepScreenOn_->setOn(values.keepScreenOnDuringTransfers, false);
         screenOnDuration_->setSelection(screenOnIndex(values.screenOnMinutes), true);
@@ -750,6 +770,7 @@ private:
     brls::SelectorCell* streamSelection_ = nullptr;
     brls::SelectorCell* maxActiveDownloads_ = nullptr;
     brls::BooleanCell* showCompleted_ = nullptr;
+    brls::BooleanCell* liveSeeding_ = nullptr;
     brls::BooleanCell* screenSaver_ = nullptr;
     brls::BooleanCell* keepScreenOn_ = nullptr;
     brls::SelectorCell* screenOnDuration_ = nullptr;

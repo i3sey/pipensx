@@ -1,3 +1,4 @@
+#include "../core/client_identity.h"
 #include "realdebrid_client.hpp"
 #include "curl_https.hpp"
 
@@ -43,7 +44,7 @@ bool curlTransport(const RdHttpRequest& request,
     headers = curl_slist_append(headers, auth.c_str());
     curl_easy_setopt(curl, CURLOPT_URL, request.url.c_str());
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "pipensx/0.4");
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, PIPENSX_USER_AGENT);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curlPinHttpsOnly(curl);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);

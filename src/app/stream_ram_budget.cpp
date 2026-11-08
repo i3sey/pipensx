@@ -137,6 +137,10 @@ StreamRamBudget calculateStreamRamBudget(uint64_t availableBytes,
     budget.valid = true;
     budget.maxPieceBufferBytes = pieceBufPieces * pieceLengthBytes;
     budget.peakBytes = bufferedBytes + budget.maxPieceBufferBytes;
+    const uint64_t engineReserve = 64 * MiB;
+    if (usableBytes > budget.peakBytes + engineReserve)
+        budget.seedCacheBytes = alignDown(
+            usableBytes - budget.peakBytes - engineReserve, pieceLengthBytes);
     budget.maxQueuedBytes = static_cast<size_t>(queuedBytes);
     budget.maxBufferedBytes = static_cast<size_t>(bufferedBytes);
     budget.requestAheadBytes = bufferedBytes > queuedBytes

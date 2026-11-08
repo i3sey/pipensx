@@ -23,8 +23,27 @@ set(BRLS_UNITY_BUILD OFF CACHE BOOL "" FORCE)
 include(${BOREALIS_LIBRARY}/cmake/commonOption.cmake)
 include(${BOREALIS_LIBRARY}/cmake/toolchain.cmake)
 
-set(PIPENSX_VERSION "1.0.0" CACHE STRING "pipensx release version")
-project(pipensx VERSION ${PIPENSX_VERSION} LANGUAGES C CXX ASM)
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(PIPENSX_VERSION_ARGUMENT)
+if (DEFINED PIPENSX_VERSION AND NOT PIPENSX_VERSION STREQUAL "")
+    list(APPEND PIPENSX_VERSION_ARGUMENT --version "${PIPENSX_VERSION}")
+endif ()
+execute_process(COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/version.py
+    ${PIPENSX_VERSION_ARGUMENT}
+    OUTPUT_VARIABLE PIPENSX_DEFAULT_VERSION OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE PIPENSX_VERSION_RESULT)
+if (NOT PIPENSX_VERSION_RESULT EQUAL 0)
+    message(FATAL_ERROR "Cannot resolve pipensx version")
+endif ()
+set(PIPENSX_VERSION "${PIPENSX_DEFAULT_VERSION}" CACHE STRING "pipensx release version" FORCE)
+execute_process(COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/version.py
+    --version "${PIPENSX_VERSION}" --numeric
+    OUTPUT_VARIABLE PIPENSX_NUMERIC_VERSION OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE PIPENSX_VERSION_RESULT)
+if (NOT PIPENSX_VERSION_RESULT EQUAL 0)
+    message(FATAL_ERROR "Invalid pipensx version")
+endif ()
+project(pipensx VERSION ${PIPENSX_NUMERIC_VERSION} LANGUAGES C CXX ASM)
 
 # devkitA64 defaults Release to "-g -O2": the debug info balloons the ELF to
 # ~90 MB and slows every compile and link, while elf2nro strips it from the
@@ -129,6 +148,7 @@ set(CORE_SOURCES
     src/core/net.c
     src/core/peer.c
     src/core/piece.c
+    src/core/seed_cache.c
     src/core/tracker.c
     src/core/dht.c
     src/core/peer_handoff.c
@@ -255,7 +275,7 @@ set_target_properties(pipensx_daemon PROPERTIES
 target_include_directories(pipensx_daemon PRIVATE src)
 target_compile_definitions(pipensx_daemon PRIVATE
     __SWITCH__
-    PIPENSX_VERSION="${PROJECT_VERSION}"
+    PIPENSX_VERSION="${PIPENSX_VERSION}"
     PIPENSX_DAEMON_HEAP_MB=${PIPENSX_DAEMON_HEAP_MB}
 )
 target_compile_options(pipensx_daemon PRIVATE
@@ -309,7 +329,7 @@ target_include_directories(pipensx PRIVATE
 target_compile_definitions(pipensx PRIVATE
     __SWITCH__
     USE_MBEDTLS
-    PIPENSX_VERSION="${PROJECT_VERSION}"
+    PIPENSX_VERSION="${PIPENSX_VERSION}"
 )
 target_compile_options(pipensx PRIVATE
     -Wall

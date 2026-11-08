@@ -1,4 +1,11 @@
 {
+  "seeding": {
+    "notice": "Compartilhar ajuda outras pessoas a baixar jogos e mantém os torrents disponíveis. O pipensx compartilha partes verificadas durante o download e a instalação, e após a instalação o que resta na RAM até você sair ou iniciar outra transferência. Isso usa sua conexão e pode afetar a velocidade do download. Você pode desativar em Configurações → Downloads.",
+    "acknowledge": "Entendi",
+    "setting": "Compartilhar partes de torrents",
+    "status": "Compartilhando",
+    "stats": "↑ {} · Enviado {}"
+  },
   "app": {
     "title": "pipensx",
     "exit": "Sair",

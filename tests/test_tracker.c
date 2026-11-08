@@ -32,27 +32,28 @@ static void test_http_started_event_only_when_requested(void) {
     char url[1024];
     assert(http_build_announce_url(url, sizeof(url),
                                    "http://tracker.example/announce",
-                                   info_hash, peer_id, 51413, 123, 456,
+                                   info_hash, peer_id, 51413, 123, 456, 789,
                                    TRACKER_EVENT_STARTED));
     assert(strstr(url, "&event=started") != NULL);
+    assert(strstr(url, "&uploaded=789&downloaded=123&left=456") != NULL);
     assert(strstr(url, "event=completed") == NULL);
 
     assert(http_build_announce_url(url, sizeof(url),
                                    "http://tracker.example/announce",
-                                   info_hash, peer_id, 51413, 123, 456,
+                                   info_hash, peer_id, 51413, 123, 456, 789,
                                    TRACKER_EVENT_NONE));
     assert(strstr(url, "event=") == NULL);
     assert(strstr(url, "&numwant=200") != NULL);
 
     assert(http_build_announce_url(url, sizeof(url),
                                    "http://tracker.example/announce",
-                                   info_hash, peer_id, 51413, 123, 456,
+                                   info_hash, peer_id, 51413, 123, 456, 789,
                                    TRACKER_EVENT_COMPLETED));
     assert(strstr(url, "&event=completed") != NULL);
 
     assert(http_build_announce_url(url, sizeof(url),
                                    "http://tracker.example/announce",
-                                   info_hash, peer_id, 51413, 123, 456,
+                                   info_hash, peer_id, 51413, 123, 456, 789,
                                    TRACKER_EVENT_STOPPED));
     assert(strstr(url, "&event=stopped") != NULL);
 }
@@ -65,24 +66,25 @@ static void test_udp_started_event_only_when_requested(void) {
     memset(peer_id, 0x44, sizeof(peer_id));
 
     udp_build_announce_packet(ann, 0x0102030405060708ULL, 0x0a0b0c0d,
-                              info_hash, peer_id, 51413, 123, 456,
+                              info_hash, peer_id, 51413, 123, 456, 789,
                               TRACKER_EVENT_STARTED);
     assert(rd32be(ann + 80) == TRACKER_EVENT_STARTED);
     assert(rd64be(ann + 56) == 123);
     assert(rd64be(ann + 64) == 456);
+    assert(rd64be(ann + 72) == 789);
 
     udp_build_announce_packet(ann, 0x0102030405060708ULL, 0x0a0b0c0d,
-                              info_hash, peer_id, 51413, 123, 456,
+                              info_hash, peer_id, 51413, 123, 456, 789,
                               TRACKER_EVENT_NONE);
     assert(rd32be(ann + 80) == TRACKER_EVENT_NONE);
 
     udp_build_announce_packet(ann, 0x0102030405060708ULL, 0x0a0b0c0d,
-                              info_hash, peer_id, 51413, 123, 456,
+                              info_hash, peer_id, 51413, 123, 456, 789,
                               TRACKER_EVENT_COMPLETED);
     assert(rd32be(ann + 80) == TRACKER_EVENT_COMPLETED);
 
     udp_build_announce_packet(ann, 0x0102030405060708ULL, 0x0a0b0c0d,
-                              info_hash, peer_id, 51413, 123, 456,
+                              info_hash, peer_id, 51413, 123, 456, 789,
                               TRACKER_EVENT_STOPPED);
     assert(rd32be(ann + 80) == TRACKER_EVENT_STOPPED);
 }
