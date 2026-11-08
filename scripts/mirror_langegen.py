@@ -117,7 +117,11 @@ def publish(output, manifest):
         path = output / f"{file}.zst"
         existing = download(f"{REGISTRY}/{entry['sha256']}/{path.name}", missing_ok=True)
         if existing is not None:
-            if existing != path.read_bytes():
+            restored = subprocess.run(
+                ["zstd", "-q", "-d", "-c"], input=existing,
+                capture_output=True, check=True).stdout
+            if (len(restored) != entry["bytes"] or
+                    hashlib.sha256(restored).hexdigest() != entry["sha256"]):
                 raise ValueError(f"Immutable snapshot differs: {file}")
             continue
         upload(path, entry["sha256"])

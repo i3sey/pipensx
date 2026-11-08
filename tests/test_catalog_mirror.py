@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 import importlib.util
+import hashlib
 import json
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 
 
 spec = importlib.util.spec_from_file_location(
@@ -55,6 +57,25 @@ class MirrorTests(unittest.TestCase):
         with patch.object(mirror, "download", return_value=json.dumps(manifest).encode()), \
              patch.object(mirror, "upload") as upload:
             mirror.publish(Path("unused"), manifest)
+            upload.assert_not_called()
+
+    def test_reuses_snapshot_with_different_compressed_bytes(self):
+        data = b"verified upstream bytes"
+        manifest = {"files": {"RU_catalog.json": {
+            "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}}}
+        with patch.object(mirror, "download", side_effect=[b"{}", b"older zstd encoding"]), \
+             patch.object(mirror.subprocess, "run", return_value=SimpleNamespace(stdout=data)), \
+             patch.object(mirror, "upload") as upload:
+            mirror.publish(Path("unused"), manifest)
+            upload.assert_called_once_with(Path("unused/manifest.json"), "latest")
+
+    def test_rejects_corrupted_existing_snapshot(self):
+        manifest = {"files": {"RU_catalog.json": {"sha256": "a" * 64, "bytes": 10}}}
+        with patch.object(mirror, "download", side_effect=[b"{}", b"bad snapshot"]), \
+             patch.object(mirror.subprocess, "run", return_value=SimpleNamespace(stdout=b"tampered")), \
+             patch.object(mirror, "upload") as upload:
+            with self.assertRaises(ValueError):
+                mirror.publish(Path("unused"), manifest)
             upload.assert_not_called()
 
 
