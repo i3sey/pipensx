@@ -179,6 +179,7 @@ CatalogPresentation resolveCatalogPresentation(
                                                        : entry.performance;
     result.multiplayer = entry.multiplayer;
     result.packageType = entry.packageType;
+    result.imageFormat = entry.imageFormat;
     result.version = entry.version;
     result.languagesInterface = entry.languagesInterface;
     result.languagesVoice = entry.languagesVoice;

@@ -70,6 +70,7 @@ struct CatalogEntry {
     std::string multiplayer;
     std::string interfaceLang;
     std::string voiceLang;
+    std::string imageFormat;
     /* Structured pipensx-catalog v2 fields. Absent (empty/zero) in entries
        parsed from older snapshots; the detail card falls back to the
        free-text fields above when these are missing. */

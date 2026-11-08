@@ -23,6 +23,7 @@ extern "C" {
 #include <cstdio>
 #include <cstring>
 #include <curl/curl.h>
+#include <borealis/extern/nlohmann/json.hpp>
 #include <fstream>
 #include <mutex>
 #include <netinet/in.h>
@@ -2839,7 +2840,7 @@ void testCatalogV2FieldsParsing() {
            "https://rutracker.org/forum/viewtopic.php?t=6892780");
 }
 
-void testCatalogPackageTypeTitleCorrection() {
+void testCatalogStructuredPackageTypePriority() {
     const char* json =
         "[{"
         "\"title\":\"[Nintendo Switch] Grand Theft Auto V ( порт GTA 5, репак ) [RePack][NSZ][RUS/Multi12]\","
@@ -2853,7 +2854,50 @@ void testCatalogPackageTypeTitleCorrection() {
     std::string error;
     assert(CatalogService::parseJson(json, entries, error));
     assert(entries.size() == 1);
-    assert(entries[0].packageType == "nsz");
+    assert(entries[0].packageType == "nro");
+}
+
+void testCatalogImageFormat() {
+    struct Case { const char* title; const char* image; const char* type; const char* expected; };
+    for (const auto& test : std::vector<Case>{
+        {"Game", "NSP", "", "nsp"},
+        {"Game", "nSz (RePack, installed size 40 GB)", "", "nsz"},
+        {"Game", "XCI", "", "xci"},
+        {"Game", "NRO", "", "nro"},
+        {"Game", "XCZ", "", "xcz"},
+        {"Game [NSP]", "NSZ", "NRO", "nro"},
+        {"Game [NSP]", "NSZ", "custom", "custom"},
+        {"Game [NSP]", "NSP / NSZ", "", ""},
+        {"Game [NSP]", "RePack", "", ""},
+        {"Game [NSP]", "Unknown", "", ""},
+        {"Game [NSP]", "NSP / ZIP", "", ""},
+        {"Game [NSP]", "NSP-like", "", ""},
+        {"Game [NSP]", "compressed, installed 40 GB", "", ""},
+        {"Game [NSP]", "", "", "nsp"},
+        {"Game [NSZ]", "", "", "nsz"},
+        {"Game [XCI]", "", "", "xci"},
+        {"Game [NRO]", "", "", "nro"},
+        {"Game.nsz", "", "", "nsz"},
+        {"NSP simulator", "", "", ""},
+        {"Game [NSP/NSZ]", "", "", ""},
+        {"Game", "", "", ""},
+    }) {
+        nlohmann::json item = {
+            {"title", test.title}, {"image_format", test.image},
+            {"package_type", test.type}, {"size_bytes", 123},
+            {"magnet", "magnet:?xt=urn:btih:8B8016FD97F08E2CC46E3B104B72EC758173C3C9&tr=http%3A%2F%2Fbt.t-ru.org%2Fann%3Fmagnet"}
+        };
+        std::vector<CatalogEntry> entries;
+        std::string error;
+        assert(CatalogService::parseJson(nlohmann::json::array({item}).dump(), entries, error));
+        assert(entries.size() == 1);
+        assert(entries[0].imageFormat == test.image);
+        assert(entries[0].packageType == test.expected);
+        assert(entries[0].size == 123);
+        const auto presentation = resolveCatalogPresentation(entries[0], nullptr);
+        assert(presentation.imageFormat == test.image);
+        assert(presentation.packageType == test.expected);
+    }
 }
 
 // Older dumps may encode unix times as decimal strings; they still parse.
@@ -3655,7 +3699,8 @@ int main() {
     testCatalogMultiTitles();
     testCatalogUpdateVersionParsing();
     testCatalogV2FieldsParsing();
-    testCatalogPackageTypeTitleCorrection();
+    testCatalogStructuredPackageTypePriority();
+    testCatalogImageFormat();
     testCatalogDateStringTolerance();
     testCatalogV2PresentationResolution();
     testCatalogParsing();

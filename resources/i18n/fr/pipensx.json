@@ -220,6 +220,7 @@
     "fact_players": "Joueurs",
     "fact_multiplayer": "Multijoueur",
     "fact_package": "Paquet",
+    "fact_image_format": "Format de la distribution",
     "fact_version": "Version",
     "fact_languages": "Langues",
     "fact_interface_lang": "Langue de l'interface",

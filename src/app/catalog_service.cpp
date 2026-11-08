@@ -47,6 +47,41 @@ std::string lowerAscii(std::string value) {
     return value;
 }
 
+std::string inferPackageType(const std::string& text, bool title) {
+    const std::string lower = lowerAscii(text);
+    std::string format;
+    const size_t first = lower.find_first_not_of(" \t\r\n[.");
+    bool startsWithFormat = false;
+    bool hasTitleMarker = false;
+    for (size_t i = 0; i < lower.size();) {
+        if (!std::isalnum(static_cast<unsigned char>(lower[i])) &&
+            static_cast<unsigned char>(lower[i]) < 128) {
+            ++i;
+            continue;
+        }
+        const size_t start = i++;
+        while (i < lower.size() &&
+               (std::isalnum(static_cast<unsigned char>(lower[i])) ||
+                static_cast<unsigned char>(lower[i]) >= 128)) ++i;
+        const std::string token = lower.substr(start, i - start);
+        if (token != "nsp" && token != "nsz" && token != "xci" &&
+            token != "xcz" && token != "nro" && token != "zip" &&
+            token != "7z") continue;
+        if (!format.empty() && format != token) return {};
+        format = token;
+        if (start == first && (i == lower.size() || lower[i] != '-'))
+            startsWithFormat = true;
+        if (start > 0 && (lower[start - 1] == '[' ||
+                          lower[start - 1] == '.' ||
+                          lower[start - 1] == '/'))
+            hasTitleMarker = true;
+    }
+    if (!title && !startsWithFormat) return {};
+    if (title && !hasTitleMarker) return {};
+    if (format == "zip" || format == "7z") return {};
+    return format;
+}
+
 int base64Value(char c) {
     if (c >= 'A' && c <= 'Z') return c - 'A';
     if (c >= 'a' && c <= 'z') return c - 'a' + 26;
@@ -669,29 +704,15 @@ bool CatalogService::parseJson(const std::string& json,
         entry.multiplayer = readString(item, "multiplayer", 128);
         entry.interfaceLang = readString(item, "interface_lang", 256);
         entry.voiceLang = readString(item, "voice_lang", 256);
+        entry.imageFormat = readString(item, "image_format", 4096);
         // Structured pipensx-catalog v2 fields. Older snapshots carry only
         // the free-text fields above; missing v2 keys stay empty/zero and
         // the detail card falls back.
-        entry.packageType = readString(item, "package_type", 16);
-        if (entry.packageType.empty() || entry.packageType == "nro") {
-            std::string titleLower = entry.title;
-            std::transform(titleLower.begin(), titleLower.end(),
-                           titleLower.begin(), [](unsigned char c) {
-                               return static_cast<char>(std::tolower(c));
-                           });
-            if (titleLower.find("[nro") == std::string::npos &&
-                titleLower.find(".nro") == std::string::npos) {
-                if (titleLower.find("[nsz") != std::string::npos ||
-                    titleLower.find(".nsz") != std::string::npos)
-                    entry.packageType = "nsz";
-                else if (titleLower.find("[nsp") != std::string::npos ||
-                         titleLower.find(".nsp") != std::string::npos)
-                    entry.packageType = "nsp";
-                else if (titleLower.find("[xci") != std::string::npos ||
-                         titleLower.find(".xci") != std::string::npos)
-                    entry.packageType = "xci";
-            }
-        }
+        entry.packageType = lowerAscii(readString(item, "package_type", 16));
+        if (entry.packageType.empty())
+            entry.packageType = inferPackageType(
+                entry.imageFormat.empty() ? entry.title : entry.imageFormat,
+                entry.imageFormat.empty());
         if (item.contains("update_version") && item["update_version"].is_number_integer()) {
             const auto& value = item["update_version"];
             if (value.is_number_unsigned()) {

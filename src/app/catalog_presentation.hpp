@@ -32,6 +32,7 @@ struct CatalogPresentation {
        resolveCatalogPresentation. Empty/zero when the snapshot predates
        them; the detail card falls back to the free-text rows above. */
     std::string packageType;
+    std::string imageFormat;
     std::string version;
     std::vector<std::string> languagesInterface;
     std::vector<std::string> languagesVoice;

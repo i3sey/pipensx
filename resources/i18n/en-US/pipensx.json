@@ -220,6 +220,7 @@
     "fact_players": "Players",
     "fact_multiplayer": "Multiplayer",
     "fact_package": "Package",
+    "fact_image_format": "Release format",
     "fact_version": "Version",
     "fact_languages": "Languages",
     "fact_interface_lang": "Interface language",

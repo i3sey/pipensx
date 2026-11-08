@@ -485,8 +485,12 @@ private:
         addFactRow(table, tr("pipensx/detail/fact_size"),
                    entry_.size ? formatBytes(entry_.size)
                                : tr("pipensx/common/unknown"));
-        addFactRow(table, tr("pipensx/detail/fact_package"),
-                   packageFact());
+        if (catalogLower(presentation_.imageFormat) !=
+            catalogLower(packageFact()))
+            addFactRow(table, tr("pipensx/detail/fact_package"),
+                       packageFact());
+        addFactRow(table, tr("pipensx/detail/fact_image_format"),
+                   presentation_.imageFormat);
         addFactRow(table, tr("pipensx/detail/fact_version"),
                    presentation_.version);
         addFactRow(table, tr("pipensx/detail/fact_title_id"), titleId_);
@@ -557,7 +561,7 @@ private:
         row->setMarginTop(8);
         auto* key = new brls::Label();
         key->setFontSize(theme::kFontCaption);
-        key->setTextColor(theme::textTertiary());
+        key->setTextColor(theme::textSecondary());
         key->setWidth(205);
         key->setMarginRight(20);
         key->setSingleLine(false);
