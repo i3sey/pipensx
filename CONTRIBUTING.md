@@ -6,20 +6,25 @@ Read [README.md](README.md) for the application overview and
 ## Repository layout
 
 ```text
-src/core/       Platform-independent torrent engine (C99)
-src/app/        Application services and state (C++20)
+src/core/       Platform-independent torrent engine (C11)
+src/app/        Application services and state (C++17 on PC, C++20 on Switch)
 src/install/    Streaming NSP/NSZ parsers and install backends
 src/platform/   Platform integration and crash/performance support
 src/ui/         Borealis views and activities
 tests/          Unit, integration, and fixture tests
 scripts/        Build and deploy helpers
 tools/          Developer diagnostics
-docs/plans/     Archived implementation plans, not an active roadmap
+docs/           Feature docs and documentation map (docs/README.md)
+docs/archive/   Dated investigations and audits
+docs/plans/     Earlier plans, sysmodule measurements and implementation phases
 vendor/         Pinned source and Git submodule dependencies
 ```
 
 Keep Switch/Borealis behavior out of `src/core/`. Platform-specific code belongs
 under `src/platform/` or behind an install backend.
+
+For agent-assisted work, start with [AGENTS.md](AGENTS.md). Use the
+[documentation map](docs/README.md) to find the relevant feature or plan.
 
 ## Build and test
 

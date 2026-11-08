@@ -30,8 +30,10 @@ bug-reports/
 # Catalog dumps (tens of MB). Un-ignore when editing catalog parsers.
 resources/catalog/*.json
 
-# Historical notes, not source of truth
+# Historical notes and design experiments; open explicitly when needed
 docs/plans/
+docs/archive/
+docs/mockups/
 
 # Third-party trees. libnx-ext and borealis (minus nested extern) stay searchable.
 vendor/zstd/

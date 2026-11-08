@@ -113,12 +113,12 @@
 | Библиотека установленного и проверка версий, массовые обновления    | Предпросмотр изменений, компоненты, выбор версии и исключения                                  | [GameUpdateService](../src/app/game_update_service.hpp), [InstalledView](../src/ui/installed/installed_view.hpp) |
 | NRO, ZIP/7z, forwarders, deployment receipts, LayeredFS             | Полноценный менеджер приложений и проверяемое удаление                                         | [SwitchDeploy](../src/app/switch_deploy.hpp), [PortArchive](../src/app/port_archive.hpp)                         |
 | Web Companion, PIN, SSE, каталог, очередь, настройки                | Библиотека, InstallPlan, паритет с консолью, устойчивость к reconnect                          | [WebServer](../src/app/web_server.hpp), [веб-клиент](../resources/web/app.js)                                    |
-| QR-отчёты, диагностика, crash/ANR механизмы                         | Связь ошибки с конкретной сборкой и пользовательским сценарием                                 | [BugReport](../src/app/bug_report.hpp), [гайд фиксов](bugfix-guide-2026-09-28.md)                                |
+| QR-отчёты, диагностика, crash/ANR механизмы                         | Связь ошибки с конкретной сборкой и пользовательским сценарием                                 | [BugReport](../src/app/bug_report.hpp), [гайд фиксов](archive/bugfix-guide-2026-09-28.md)                                |
 | Автообновление NRO с SHA-256, staging и предыдущей версией          | Проверяемый откат, миграции и усиление доверия к релизам                                       | [UpdateService](../src/app/update_service.hpp)                                                                   |
 | PC tests, ASan/UBSan, fuzz smoke, Switch build и gitleaks           | Сценарии отказов, браузерные контракты и аппаратные release gates                              | [CI](../.github/workflows/ci.yml)                                                                                |
 
-Старый [план улучшений](improvement-roadmap.md) и
-[аудит производительности](performance-audit-status.md) полезны как история,
+Старый [план улучшений](archive/improvement-roadmap.md) и
+[аудит производительности](archive/performance-audit-status.md) полезны как история,
 но их статус необходимо сверять с исходниками. В частности, задачи «добавить
 приоритеты изображений», «добавить LRU», «вынести построение каталога в фон»
 и «добавить бюджет текстур по реальному кадру» уже нельзя ставить как новые.
@@ -2119,11 +2119,11 @@ features после этого выбираются по спросу, а не �
 - [README](../README.md), [BUILD](../BUILD.md), [AGENTS](../AGENTS.md).
 - Source/tests в текущем локальном HEAD; метаданные релиза и список открытых
   GitHub issues проверены 30 сентября 2026.
-- [Предыдущий роадмап](improvement-roadmap.md): история и исходные направления,
+- [Предыдущий роадмап](archive/improvement-roadmap.md): история и исходные направления,
   не автоматически актуальный статус реализации.
-- [Bugfix guide](bugfix-guide-2026-09-28.md): сведения о репортах/фиксах с датой;
+- [Bugfix guide](archive/bugfix-guide-2026-09-28.md): сведения о репортах/фиксах с датой;
   аппаратные результаты, которых нет в документе, не предполагаются.
-- [Performance audit](performance-audit-status.md): исторический static audit,
+- [Performance audit](archive/performance-audit-status.md): исторический static audit,
   часть отсутствовавших тогда механизмов уже есть в current source.
 - [Интерактивный макет](mockups/catalog-next/index.html) и
   [его архитектурная заметка](mockups/catalog-next/README.md): направление

@@ -1,0 +1,7 @@
+# Keep default rg searches focused on maintained project files.
+# For dependency/history work: rg --no-ignore PATTERN <explicit-path>
+/vendor/
+/resources/catalog/
+/docs/archive/
+/docs/plans/
+/docs/mockups/

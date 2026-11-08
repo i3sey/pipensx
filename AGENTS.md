@@ -1,108 +1,67 @@
 # pipensx
 
-Native Nintendo Switch-homebrew BitTorrent download manager and streaming
-package installer. C11/C++ with borealis UI and vendored libutp, zstd and dht.
+Native Nintendo Switch homebrew: BitTorrent downloads and streaming package
+installation. C11 core, C++ app services, Borealis UI.
 
-## Build and compatibility
+## Start here
 
-```sh
-make switch  # aarch64 NRO, CMake
-make test    # PC assert-based test suite, Makefile.pc
-make pc      # portable CLI, Makefile.pc
-```
+- Search `src/` and `tests/` for the task first. Read headers and nearby tests
+  before changing behavior. Use clangd when available.
+- [README.md](README.md): product behavior.
+  [BUILD.md](BUILD.md): dependencies and build options.
+  [docs/README.md](docs/README.md): feature docs, approved plans and historical notes.
+- Source and tests establish implemented behavior. Roadmaps and dated audits
+  describe proposals or snapshots; verify their claims against the code.
+- Load only the skill and feature docs relevant to the task.
 
-`CORE_SOURCES`, `APP_SERVICE_SOURCES`, and `UI_SOURCES` build in Switch
-`pipensx`. `Makefile.pc` also compiles `src/app/*.cpp` for unit tests.
-CMake uses C++20 but shared `src/core` and `src/app` code must compile as
-C++17. Verify every affected build; a Switch build alone is insufficient for
-platform-specific changes.
+## Code and checks
 
-## Tests and UI
+- `src/core/`: portable torrent engine; `src/app/`: services and persisted state;
+  `src/ui/`: Borealis; `src/install/` and `src/platform/`: platform boundaries.
+  Browser companion assets live in `resources/web/`; `site/` is the public site.
+- Switch uses C++20; shared core/app code must also compile as C11/C++17 on PC.
+  Source lists live in `CMakeLists.txt` and `Makefile.pc`; tests are registered
+  in `Makefile.pc`, not CMake. Objects and binaries belong in `build-pc/`.
+- Shared/core/app/install changes: `make -f Makefile.pc test`.
+  Switch changes: also `make switch`. CLI changes: also `make pc`.
+  Documentation-only changes: check links and `git diff --check`.
+- `test_manager` uses live DHT/tracker traffic and runs last. Wait for the state
+  required by the assertion; claim-time `Checking` does not prove a poll occurred.
+- Native locale changes: add keys to `en-US`, mirror `ru`, `pt-BR`, `fr`, and run
+  `python3 scripts/check_i18n.py`. Browser strings: also run
+  `python3 scripts/check_web_i18n.py`.
+- After source-list or compiler-flag changes, regenerate the clangd database:
+  `make -f Makefile.pc clean && bear -- make -f Makefile.pc test`.
 
-- Tests are `tests/test_*.c|cpp`, plain `assert`, registered in `Makefile.pc`,
-  not CMake.
-- `test_manager` uses live DHT and a tracker. Wait for the state an assertion
-  needs; claim-time `Checking` does not mean the torrent was polled.
-  `test_manager` runs last in the suite — it boots DHT against live routers, and
-  ordering it last keeps a bad network from hiding the other tests.
-- A task is not done until its checks pass: run `make -f Makefile.pc test` for
-  shared/core changes, and the affected build (`make switch` for Switch code,
-  `make pc` for the portable CLI) — never only the one you edited in.
-- Adding or changing locale strings must pass `scripts/check_i18n.py`. It
-  validates placeholder counts across all supported languages. Add new keys to
-  `en-US` first (the fallback), then mirror to `ru`, `pt-BR`, and `fr`.
+## Task-specific instructions
 
-When adding a debrid provider or changing persisted settings / download-state
-versioning, load the `debrid` skill from `.agents/skills/debrid/`.
+| Task | Read before working |
+| --- | --- |
+| libnx calls, PC shims, install backend, `src/install/`, `src/platform/`, `src/main_switch.cpp` | [.agents/skills/libnx/SKILL.md](.agents/skills/libnx/SKILL.md) |
+| Debrid providers or persisted settings/download-state versions | [.agents/skills/debrid/SKILL.md](.agents/skills/debrid/SKILL.md) |
+| QR bug report or Switch crash/update/download/install report | [.agents/skills/bug-report/SKILL.md](.agents/skills/bug-report/SKILL.md) |
+| Screenshots or controller input on a physical Switch | [.agents/skills/switch-visual-test/SKILL.md](.agents/skills/switch-visual-test/SKILL.md) |
+| GitHub issues, labels or PRs | [docs/agents/issue-tracker.md](docs/agents/issue-tracker.md) |
 
-## Switch code
+## Keep context small
 
-Before changing a libnx call, PC shim, install backend, or code under
-`src/install`, `src/platform`, or `src/main_switch.cpp`, load the `libnx` skill
-from `.agents/skills/libnx/`. It documents header-first API checks, the shared
-PC-build patterns, and required dual-build verification.
-
-When triaging a user bug report from a QR screenshot or photo, load the
-`bug-report` skill from `.agents/skills/bug-report/`. It covers
-`scripts/decode_report.py`, log grep patterns, and the triage output format.
-
-## Context budget — don't read
-
-- `pipensx.log` is a multi-thousand-line runtime log. Never read it whole;
-  grep it by tag (`[torrent]`, `[dht]`, `[status]`, ...) when you need it.
-- Do not open images, binaries, or build output: `resources/*.jpg|png`,
-  `pipensx.nro`, `build-switch/**`, anything under `bug-reports/`.
-- Do not read `resources/catalog/*.json` (tens of MB). Grep or sample if a
-  catalog-parser change needs a fixture.
-
-## Conventions
-
-- `docs/plans/` is historical. Source, tests, `README.md`, and `BUILD.md` are
-  authoritative.
-- Search `src/` and `tests/` first; do not search `vendor/` unless the task
-  names the relevant vendored component.
-- Use clangd for C/C++ navigation when available. Regenerate compile databases
-  after changing source lists or flags:
-```sh
- make -f Makefile.pc clean && bear -- make -f Makefile.pc test
- ```
- PC objects and test binaries go under `build-pc/` (never next to `src/` /
- `tests/` sources).
-- Branch from `main`; merge with `--ff-only`. CI requires `make test`, GitLab Secret Detection and SAST.
-
-## Agent skills
-
-### Physical Switch testing
-
-For visual checks or remote navigation on the user's Switch, read
-[switch-visual-test](.agents/skills/switch-visual-test/SKILL.md).
-It includes a Python client for sys-botbase screenshots and controller input.
-Agents need image perception to inspect captured screens. This skill is
-project-local and can be used by any harness that reads this file.
-
-### Issue tracker
-
-Issues live in GitHub Issues for this repo; use the `gh` CLI for all operations. See `docs/agents/issue-tracker.md`.
-
-### Triage labels
-
-The five canonical triage roles map to `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
-
-### Domain docs
-
-Single-context: one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+- Never read `pipensx.log` whole; filter by tag, error or task ID.
+- Do not load catalog dumps, binaries, build outputs or image collections as
+  text. Sample catalog fixtures only for parser work. Open individual screenshots
+  or bug-report images when the task requires them, following the relevant skill.
+- Search third-party trees only when needed for the named dependency/API.
+- `.ignore` keeps vendor trees, catalog dumps, historical notes and mockups out
+  of default ripgrep results. Use an explicit path with `rg --no-ignore` when
+  the task needs one of these trees. `.cursorignore` also filters agent indexing.
+- Preserve unrelated working-tree edits. Branch new work from `main`;
+  merge with `--ff-only`. See [CONTRIBUTING.md](CONTRIBUTING.md) for PR conventions.
 
 <!-- antislop:start -->
 ## antislop
-For UI, copy, people, mobile layout, or code comments work, read `antislop.md` (core) and then the skill for the task:
-- UI / visual: `.agents/skills/antislop-ui/SKILL.md`
-- Copy & text: `.agents/skills/antislop-copywriting/SKILL.md`
-- People: `.agents/skills/antislop-human/SKILL.md`
-- Mobile / responsive: `.agents/skills/antislop-layoutmobile/SKILL.md`
-- Code comments: `.agents/skills/antislop-code/SKILL.md`
-Before starting, follow the core's "Two Usage Modes" section in strict order: explicit session instruction first, then global preference, then ask. A session instruction always wins. For a resolved mode, say `antislop active: <mode> (session override).` or `antislop active: <mode> (global preference).` once before presenting findings or making edits, using the actual mode and source. Acknowledging the user's request without naming the source does not replace this notice.
-Only an explicit choice of antislop during or after selects a session mode. A request to review, audit, or avoid file edits does not select a mode; read the global preference in that case. Another skill's mode does not select antislop's mode.
-If the mode is unresolved, ask during/after and end the response; wait for the answer before any UI review, planning, or concept. For read-only tasks, put the active-mode notice only at the start of the final answer, never in progress messages. For editing tasks, announce before the first edit and omit it from the final answer.
-To update antislop later: download `antislop.md` again, or run `npx antislop-ai --update` if it was installed as skill folders.
-<!-- antislop:end -->
 
+For UI, copy, accessibility, responsive layout or code comments, read the
+[core](.agents/skills/antislop/SKILL.md) and follow its Two Usage Modes section.
+Then load only the relevant skill under `.agents/skills/`:
+`antislop-ui`, `antislop-copywriting`, `antislop-human`,
+`antislop-layoutmobile` or `antislop-code` (`SKILL.md` in each folder).
+<!-- antislop:end -->

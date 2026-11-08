@@ -5,13 +5,33 @@
 Clone with the pinned submodules, or initialize them in an existing checkout:
 
 ```bash
-git clone --recurse-submodules https://github.com/i3sey/pipensx.git
+git clone --recurse-submodules https://gitlab.com/pipensx-group/pipensx.git
 cd pipensx
 # Existing clone only:
 git submodule update --init --recursive
 ```
 
 Run `make` to list the supported top-level targets.
+
+### Development remotes
+
+Gitea is the primary repository. For development with access to the local Gitea
+server, configure a fresh GitLab clone as follows:
+
+```bash
+git remote rename origin gitlab
+git remote add origin git@192.168.1.146:i3sey/pipensx.git
+git fetch origin
+git branch --set-upstream-to=origin/main main
+git config remote.pushDefault origin
+git config push.default simple
+```
+
+Create development branches from `main` and push them with
+`git push -u origin <branch>`. Gitea pushes branches and tags to GitLab on each
+push and every eight hours. Make changes on Gitea so the next mirror update can
+copy them to GitLab. Repository mirroring does not copy issues or release assets.
+Keep access tokens out of remote URLs; use SSH or a Git credential helper.
 
 ## PC client and tests
 
@@ -119,5 +139,10 @@ v3 cache/artifact actions and the private `i3sey/borealis` dependency mirror,
 pinned to the same submodule commit. `SUBMODULE_READ_TOKEN` is a repository
 Actions secret with read-only repository access. When updating the borealis
 submodule, push its commit to that mirror before pushing pipensx. Other
-submodules still use their public upstreams. The GitHub release workflow remains
-in `.github/workflows/switch-release.yml`.
+submodules use the URLs in `.gitmodules`. Outside Gitea CI, borealis uses the
+GitLab mirror configured in `.gitmodules`.
+
+GitLab uses `.gitlab-ci.yml` for Secret Detection, SAST, and Pages on `main`.
+Tags and manual web/API pipelines also build the Switch application and publish
+releases with NRO and checksum assets through the GitLab Package Registry. The
+GitHub release workflow remains in `.github/workflows/switch-release.yml`.

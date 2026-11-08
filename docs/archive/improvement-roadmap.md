@@ -72,15 +72,15 @@ upload ratio и связанные функции исключены.**
 настройка с телефона, QR-отчёты, темы и несколько языков. Поддерживаются
 TorBox, Real-Debrid, TorrServer и AllDebrid в исследуемой базе.
 
-Основание: [README](../README.md), [UI](../src/ui/),
-[сервисы приложения](../src/app/). Home пока выключен по умолчанию
-(`showHomeTab = false` в [настройках](../src/app/app_settings.hpp)).
+Основание: [README](../../README.md), [UI](../../src/ui/),
+[сервисы приложения](../../src/app/). Home пока выключен по умолчанию
+(`showHomeTab = false` в [настройках](../../src/app/app_settings.hpp)).
 Проверка UI не должна предполагать, что пользователь вообще открывал Home.
 
 CI уже запускает PC-тесты, ASan/UBSan, fuzz smoke для bencode/metainfo,
 Switch-сборку и gitleaks. Проверка переводов вызывается из `Makefile.pc test`.
 Задача — расширить покрытие пользовательских сценариев, а не «добавить CI».
-См. [workflow](../.github/workflows/ci.yml), [Makefile.pc](../Makefile.pc).
+См. [workflow](../../.github/workflows/ci.yml), [Makefile.pc](../../Makefile.pc).
 
 ## 4. Надёжность и подтверждённые рассогласования
 
@@ -102,11 +102,11 @@ Switch-сборку и gitleaks. Проверка переводов вызыв�
 
 **P1 · Код · S.**
 
-В [MainView::refresh](../src/ui/downloads/downloads_view.hpp) решение о
+В [MainView::refresh](../../src/ui/downloads/downloads_view.hpp) решение о
 перерисовке не сравнивает `fetchProgress`. При этом
-[DownloadCell::setTask](../src/ui/downloads/download_cell.hpp) выводит этот
+[DownloadCell::setTask](../../src/ui/downloads/download_cell.hpp) выводит этот
 процент для `Fetching`, а `runDebridTask` обновляет поле через `onProgress`
-в [менеджере](../src/app/download_manager.cpp).
+в [менеджере](../../src/app/download_manager.cpp).
 Если меняется только `fetchProgress`, родитель выходит раньше обновления строки.
 Пользователь может принять подготовку на сервере за зависание.
 
@@ -122,10 +122,10 @@ Switch-сборку и gitleaks. Проверка переводов вызыв�
 
 **P1 · Код + Локально · M.**
 
-[Web taskCard](../resources/web/app.js) предлагает Verify для `Paused`, `Error`
-и `Completed`, но [DownloadManager::verify](../src/app/download_manager.cpp)
+[Web taskCard](../../resources/web/app.js) предлагает Verify для `Paused`, `Error`
+и `Completed`, но [DownloadManager::verify](../../src/app/download_manager.cpp)
 принимает только `Completed` и отказывает debrid-задачам. В Switch-меню и
-[DetailsActivity::updateButtons](../src/ui/downloads/details_activity.hpp)
+[DetailsActivity::updateButtons](../../src/ui/downloads/details_activity.hpp)
 проверяется завершённость, но не `TaskSource::Debrid`.
 Получается доступная кнопка, которая заведомо не может выполнить действие.
 
@@ -147,11 +147,11 @@ lease копирования. Отдавать результат в API и ис
 
 **P1 · Код + Репорт #85 · S–M.**
 
-В [Downloads](../src/ui/downloads/downloads_view.hpp) есть поштучное удаление,
+В [Downloads](../../src/ui/downloads/downloads_view.hpp) есть поштучное удаление,
 но нет массовой очистки истории. В
-[StoragePanel::clearCompleted](../src/ui/settings/settings_panels.hpp)
+[StoragePanel::clearCompleted](../../src/ui/settings/settings_panels.hpp)
 вызывается `clearCompleted(true, ...)`, то есть с удалением данных;
-[веб-кнопка](../resources/web/app.js) отправляет `deleteData: false`.
+[веб-кнопка](../../resources/web/app.js) отправляет `deleteData: false`.
 Таким образом, на Switch функция не исчезла целиком, но действие и его
 местоположение отличаются от ожидаемых.
 
@@ -170,9 +170,9 @@ lease копирования. Отдавать результат в API и ис
 
 **P1 · Код + Репорт #75 · L.**
 
-[WebAddQueue::runJob](../src/app/web_add_queue.cpp) прямо блокирует добавление
+[WebAddQueue::runJob](../../src/app/web_add_queue.cpp) прямо блокирует добавление
 при выключенном `torrentingEnabled` и сообщает об отсутствии собственного
-debrid-пути. Каталог и magnet из [WebServer](../src/app/web_server.cpp)
+debrid-пути. Каталог и magnet из [WebServer](../../src/app/web_server.cpp)
 попадают именно сюда. Поэтому выбор TorrServer/debrid в настройках не делает
 тот же релиз доступным для добавления с телефона.
 
@@ -192,7 +192,7 @@ debrid-пути. Каталог и magnet из [WebServer](../src/app/web_server
 
 В менеджере есть периодические checkpoint примерно раз в пять секунд,
 восстановление bitfield и отдельный учёт прогресса. В
-[test_manager](../tests/test_manager.cpp) уже проверяются сохранение и загрузка
+[test_manager](../../tests/test_manager.cpp) уже проверяются сохранение и загрузка
 состояния. Это не доказательство исправной работы всех фаз на устройстве.
 
 Разделить в интерфейсе «скачано», «установлено» и «проверяем сохранённые данные».
@@ -210,7 +210,7 @@ debrid-пути. Каталог и magnet из [WebServer](../src/app/web_server
 
 **P1 · Код + Репорты #76/#77 · M–L.**
 
-Сейчас [DetailsActivity](../src/ui/downloads/details_activity.hpp) показывает
+Сейчас [DetailsActivity](../../src/ui/downloads/details_activity.hpp) показывает
 строку `task.error`; QR-отчёт открывается через отдельные экраны.
 Добавить структурированный код ошибки, фазу, возможность повтора и действие:
 повторить, открыть источник, проверить сеть, освободить место, показать отчёт.
@@ -231,7 +231,7 @@ debrid-пути. Каталог и magnet из [WebServer](../src/app/web_server
 
 **P2 · Код + Предложение · S–M.**
 
-В [CatalogView](../src/ui/catalog/catalog_view.hpp) поиск представлен иконкой
+В [CatalogView](../../src/ui/catalog/catalog_view.hpp) поиск представлен иконкой
 с пустым текстом; `updateHeader()` меняет её цвет и показывает Reset, но не
 выводит сам запрос. Пользователь видит отфильтрованный каталог без текста,
 который его ограничивает.
@@ -250,9 +250,9 @@ debrid-пути. Каталог и magnet из [WebServer](../src/app/web_server
 
 **P2 · Предложение на основе существующих оценок · L.**
 
-В [install_space](../src/app/install_space.hpp) уже есть оценки с признаком
+В [install_space](../../src/app/install_space.hpp) уже есть оценки с признаком
 точности и раздельная проверка SD/NAND. Пакетная подготовка суммирует объёмы.
-Но фильтр каталога [fitsOnly](../src/app/catalog_presentation.cpp) сравнивает
+Но фильтр каталога [fitsOnly](../../src/app/catalog_presentation.cpp) сравнивает
 размер раздачи с текущим свободным местом; неизвестный размер не скрывает.
 Это приблизительная фильтрация, не гарантия, что установка поместится.
 
@@ -273,8 +273,8 @@ debrid-пути. Каталог и magnet из [WebServer](../src/app/web_server
 Smart Install и обработка портов/дополнений активно развиваются; последние
 коммиты уже исправляют выбор extras и сообщения о пропуске. Не начинать
 реализацию этой поддержки заново. Расширить существующие
-[выбор файлов](../src/ui/detail/torrent_selection.hpp) и
-[просмотр файлов задачи](../src/ui/downloads/task_files_activity.hpp).
+[выбор файлов](../../src/ui/detail/torrent_selection.hpp) и
+[просмотр файлов задачи](../../src/ui/downloads/task_files_activity.hpp).
 
 Добавить доступный после завершения итог: установленные пакеты, скопированные
 файлы и назначения, пропущенные файлы с причинами, предупреждения и оставшиеся
@@ -306,7 +306,7 @@ Toast остаётся быстрым уведомлением, журнал п�
 
 **P2 · Предложение + Репорты #63/#76/#77 · M.**
 
-В [first_run_view](../src/ui/first_run_view.hpp) уже есть выбор метода,
+В [first_run_view](../../src/ui/first_run_view.hpp) уже есть выбор метода,
 объяснения и схема соединения; в настройках — отдельные Source и Network.
 Улучшать этот поток, не добавлять параллельный мастер.
 
@@ -329,7 +329,7 @@ Toast остаётся быстрым уведомлением, журнал п�
 **P3 · Предложение · L.**
 
 Сейчас каталог опирается на релизы и info hash; title ID и установленность
-уже используются в [catalog_presentation](../src/app/catalog_presentation.hpp).
+уже используются в [catalog_presentation](../../src/app/catalog_presentation.hpp).
 Предложить режим группировки надёжно сопоставленных релизов по игре, сохранив
 возможность открыть каждый релиз отдельно. Показывать версию, состав,
 размер и известные ограничения перед выбором.
@@ -346,8 +346,8 @@ Toast остаётся быстрым уведомлением, журнал п�
 
 **P2 · Предложение · M–L.**
 
-[InstalledView](../src/ui/installed/installed_view.hpp) и
-[GameUpdateService](../src/app/game_update_service.cpp) уже умеют работать
+[InstalledView](../../src/ui/installed/installed_view.hpp) и
+[GameUpdateService](../../src/app/game_update_service.cpp) уже умеют работать
 с обновлениями. Следующий шаг — сводка перед массовым действием:
 «установлена версия → найдена версия», какие компоненты изменятся,
 куда они попадут, сколько потребуется места и что будет пропущено.
@@ -381,7 +381,7 @@ Toast остаётся быстрым уведомлением, журнал п�
 **P2 · Предложение; регрессии #81/#82 · M–L.**
 
 Уже есть кеширование каталога/обложек, виртуализация, бюджет загрузки текстур
-и [анализатор телеметрии](../tools/analyze_throughput_log.py).
+и [анализатор телеметрии](../../tools/analyze_throughput_log.py).
 Зафиксировать измерения: время до первого доступного каталога, задержку
 поиска, длинные кадры при прокрутке, пик памяти и throughput под UI-нагрузкой.
 Сравнивать холодный/тёплый кеш и несколько карт SD при одинаковых данных.
@@ -396,7 +396,7 @@ Toast остаётся быстрым уведомлением, журнал п�
 **P2 · Код + Предложение · M.**
 
 Switch содержит семь явных локалей и auto; Web Companion в
-[app.js](../resources/web/app.js) — словари en/ru и ряд строк напрямую в коде.
+[app.js](../../resources/web/app.js) — словари en/ru и ряд строк напрямую в коде.
 Например, статусы, `peers`, `Cancel` и сообщения части ошибок остаются
 английскими. Отдельно открыт [PR #84 с корейским](https://github.com/i3sey/pipensx/pull/84):
 не дублировать его работу.
@@ -419,7 +419,7 @@ R02/R03 показывают класс ошибок, который тесты 
 Вынести правила отображения/доступности в проверяемые общие функции и добавить
 тесты цепочки «состояние → экран/веб → команда → новое состояние».
 
-Для веба использовать существующий [локальный сервер](../tools/web_server_main.cpp)
+Для веба использовать существующий [локальный сервер](../../tools/web_server_main.cpp)
 и браузерные smoke-сценарии: авторизация, добавление, пауза, ошибка, очистка,
 переподключение, touch viewport. Для Switch — повторяемые проверки фокуса,
 диалогов и обновления списка; поведение устройства проверяется отдельно.
@@ -433,10 +433,10 @@ R02/R03 показывают класс ошибок, который тесты 
 
 **P2 · Код + Локально + Предложение · M.**
 
-`healthOf` в [app.js](../resources/web/app.js) при `Downloading`, нулевой
+`healthOf` в [app.js](../../resources/web/app.js) при `Downloading`, нулевой
 скорости и нуле peers возвращает «нет пиров», включая debrid-задачу.
-[buildStateJson](../src/app/web_server.cpp) не передаёт источник, хотя
-общая функция [torrentHealth](../src/app/download_manager.hpp) его различает.
+[buildStateJson](../../src/app/web_server.cpp) не передаёт источник, хотя
+общая функция [torrentHealth](../../src/app/download_manager.hpp) его различает.
 Передавать источник, фазу, health и capabilities из общей модели; показывать
 пользователю причину ожидания, которая имеет смысл для выбранного метода.
 
@@ -463,7 +463,7 @@ R02/R03 показывают класс ошибок, который тесты 
 ожидаемый и фактический результат, воспроизводимость, QR/log при наличии.
 В отчёте сохранять контекст последней ошибки, даже если она уже вытеснена
 из короткого хвоста логов: такая ситуация описана в разборе #81.
-QR-механизм уже есть в [bug_report](../src/app/bug_report.hpp).
+QR-механизм уже есть в [bug_report](../../src/app/bug_report.hpp).
 
 Вести матрицу «репорт → исправляющий commit → первый релиз с исправлением →
 проверка». Для релиза дать короткие известные ограничения и сценарии smoke,
