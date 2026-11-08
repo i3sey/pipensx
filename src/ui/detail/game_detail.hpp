@@ -213,7 +213,12 @@ public:
             brls::Application::giveFocus(focus);
         if (autoInstall_) {
             autoInstall_ = false;
-            startInstall(false);
+            // onContentAvailable runs inside pushActivity, before this page
+            // joins the stack. A cached torrent can open a picker immediately.
+            brls::sync([this, alive = alive_] {
+                if (alive->load())
+                    startInstall(false);
+            });
         }
     }
 

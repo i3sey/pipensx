@@ -43,20 +43,20 @@ public:
         setAxis(brls::Axis::ROW);
         setAlignItems(brls::AlignItems::CENTER);
         setPadding(12, 16, 12, 16);
-        setHeight(124);
+        setHeight(92);
 
         mark_ = new brls::Box();
         mark_->setWidth(4);
         mark_->setHeight(64);
         mark_->setCornerRadius(2);
-        mark_->setBackgroundColor(theme::error());
+        mark_->setBackgroundColor(theme::textPrimary());
         mark_->setMarginRight(12);
         mark_->setVisibility(brls::Visibility::GONE);
         addView(mark_);
 
         image_ = new AsyncRgbaImage();
-        image_->setWidth(96);
-        image_->setHeight(96);
+        image_->setWidth(68);
+        image_->setHeight(68);
         image_->setCornerRadius(theme::kRadiusSmall);
         image_->setMarginRight(16);
         image_->setScalingType(brls::ImageScalingType::FILL);
@@ -74,7 +74,7 @@ public:
         subtitle_->setAutoAnimate(false);
         subtitle_->setFontSize(15);
         subtitle_->setMarginTop(6);
-        subtitle_->setTextColor(theme::textTertiary());
+        subtitle_->setTextColor(theme::textSecondary());
         labels->addView(title_);
         labels->addView(subtitle_);
         addView(labels);
@@ -88,15 +88,15 @@ public:
         auto* mods = new brls::Label();
         mods->setText(tr("pipensx/installed/mods_suffix"));
         mods->setFontSize(theme::kFontSmall);
-        mods->setTextColor(theme::warning());
+        mods->setTextColor(theme::textPrimary());
         modsBadge_->addView(mods);
         addView(modsBadge_);
 
-        // Update-state chip (Q10 colours): right-aligned coloured label.
+        // Keep update availability readable in both console themes.
         chip_ = new brls::Label();
         chip_->setSingleLine(true);
         chip_->setAutoAnimate(false);
-        chip_->setFontSize(13);
+        chip_->setFontSize(theme::kFontSmall);
         chip_->setMarginLeft(12);
         chip_->setShrink(0.0f);
         addView(chip_);
@@ -109,7 +109,7 @@ public:
             return true;
         });
         addGestureRecognizer(new brls::TapGestureRecognizer(this));
-        updateActionHint(brls::BUTTON_A, tr("pipensx/installed/open_in_catalog"));
+        updateActionHint(brls::BUTTON_A, tr("pipensx/installed/actions"));
     }
 
     void setTitle(const InstalledTitle& title,
@@ -140,26 +140,24 @@ public:
             !ignored && state == GameUpdateState::UpdateAvailable;
         updateActionHint(brls::BUTTON_A,
                          available ? tr("pipensx/installed/update_action")
-                                   : tr("pipensx/installed/open_in_catalog"));
-        mark_->setVisibility(available ? brls::Visibility::VISIBLE
-                                       : brls::Visibility::GONE);
+                                   : tr("pipensx/installed/actions"));
         mark_->setVisibility(available ? brls::Visibility::VISIBLE
                                        : brls::Visibility::GONE);
         if (ignored) {
             chip_->setText(tr("pipensx/installed/update_chip_ignored"));
-            chip_->setTextColor(theme::textTertiary());
+            chip_->setTextColor(theme::textSecondary());
             chip_->setVisibility(brls::Visibility::VISIBLE);
             return;
         }
         switch (state) {
         case GameUpdateState::UpdateAvailable:
-            chip_->setText(tr("pipensx/common/install"));
-            chip_->setTextColor(theme::error());
+            chip_->setText(tr("pipensx/installed/update_chip_available"));
+            chip_->setTextColor(theme::textPrimary());
             chip_->setVisibility(brls::Visibility::VISIBLE);
             break;
         case GameUpdateState::CheckError:
             chip_->setText(tr("pipensx/installed/update_chip_error"));
-            chip_->setTextColor(theme::error());
+            chip_->setTextColor(theme::textPrimary());
             chip_->setVisibility(brls::Visibility::VISIBLE);
             break;
         case GameUpdateState::UpToDate:
@@ -444,7 +442,7 @@ public:
         recycler_ = new SmoothRecyclerFrame();
         recycler_->setGrow(1);
         recycler_->setPadding(4, 24, 20, 4);
-        recycler_->estimatedRowHeight = 124;
+        recycler_->estimatedRowHeight = 92;
         recycler_->registerCell("Installed", [] { return new InstalledCell(); });
         dataSource_ = new InstalledDataSource(metadata);
         recycler_->setDataSource(dataSource_);
@@ -452,135 +450,6 @@ public:
         recyclerHost_->setShrink(1);
         body->addView(recyclerHost_);
 
-        selectionPanel_ = new brls::Box(brls::Axis::COLUMN);
-        selectionPanel_->setWidth(300);
-        selectionPanel_->setShrink(0);
-        selectionPanel_->setMarginLeft(16);
-        selectionPanel_->setPadding(16);
-        selectionPanel_->setBackgroundColor(theme::panel());
-        selectionPanel_->setCornerRadius(theme::kRadiusLarge);
-        selectionPanel_->setAlignItems(brls::AlignItems::CENTER);
-        selectedImage_ = new AsyncRgbaImage();
-        selectedImage_->setWidth(112);
-        selectedImage_->setHeight(112);
-        selectedImage_->setCornerRadius(theme::kRadiusMedium);
-        selectedImage_->setScalingType(brls::ImageScalingType::FILL);
-        selectedImage_->setMarginBottom(10);
-        selectionPanel_->addView(selectedImage_);
-        selectedName_ = new brls::Label();
-        selectedName_->setWidth(268);
-        selectedName_->setFontSize(theme::kFontBody);
-        selectedName_->setSingleLine(false);
-        selectedName_->setHorizontalAlign(brls::HorizontalAlign::CENTER);
-        selectedName_->setMarginBottom(4);
-        selectionPanel_->addView(selectedName_);
-        selectedPublisher_ = new brls::Label();
-        selectedPublisher_->setWidth(268);
-        selectedPublisher_->setFontSize(theme::kFontSmall);
-        selectedPublisher_->setTextColor(theme::textTertiary());
-        selectedPublisher_->setSingleLine(true);
-        selectedPublisher_->setHorizontalAlign(brls::HorizontalAlign::CENTER);
-        selectedPublisher_->setMarginBottom(12);
-        selectionPanel_->addView(selectedPublisher_);
-
-        selectedDetails_ = new brls::Box(brls::Axis::COLUMN);
-        selectedDetails_->setWidth(268);
-        selectedDetails_->setMarginBottom(16);
-
-        auto makeRow = [](const std::string& keyText, brls::Label*& valLabel,
-                          NVGcolor valColor, float fontSize = 13.0f) {
-            auto* row = new brls::Box(brls::Axis::ROW);
-            row->setWidth(268);
-            row->setMarginBottom(6);
-            row->setAlignItems(brls::AlignItems::CENTER);
-            auto* key = new brls::Label();
-            key->setText(keyText);
-            key->setFontSize(13);
-            key->setTextColor(theme::textTertiary());
-            key->setGrow(1);
-            key->setShrink(1);
-            row->addView(key);
-            valLabel = new brls::Label();
-            valLabel->setFontSize(fontSize);
-            valLabel->setTextColor(valColor);
-            valLabel->setSingleLine(true);
-            row->addView(valLabel);
-            return row;
-        };
-
-        selectedDetails_->addView(makeRow(
-            tr("pipensx/detail/fact_installed_version"), selectedVersion_,
-            theme::textSecondary()));
-        selectedDetails_->addView(makeRow(
-            "Title ID", selectedTitleId_, theme::textTertiary(), 11.0f));
-        selectedDetails_->addView(makeRow(
-            tr("pipensx/detail/fact_install_state"), selectedStatus_,
-            theme::textSecondary()));
-        dlcRow_ = makeRow("DLC", selectedDlc_, theme::textSecondary());
-        dlcRow_->setVisibility(brls::Visibility::GONE);
-        selectedDetails_->addView(dlcRow_);
-        modsRow_ = makeRow(
-            tr("pipensx/detail/fact_mods"), selectedMods_, theme::warning());
-        modsRow_->setVisibility(brls::Visibility::GONE);
-        selectedDetails_->addView(modsRow_);
-
-        selectionPanel_->addView(selectedDetails_);
-
-        updateButton_ = new brls::Button();
-        updateButton_->setWidth(268);
-        updateButton_->setFontSize(theme::kFontSmall);
-        updateButton_->setStyle(&brls::BUTTONSTYLE_PRIMARY);
-        updateButton_->setText(tr("pipensx/installed/update_action"));
-        updateButton_->setMarginBottom(8);
-        updateButton_->setVisibility(brls::Visibility::GONE);
-        updateButton_->registerClickAction([this](brls::View*) {
-            if (!selectedTitle_.titleId.empty()) {
-                auto it = updates_->results().find(selectedTitle_.titleId);
-                const std::string foundVer = it != updates_->results().end()
-                    ? it->second.foundVersion : std::string();
-                installUpdate(selectedTitle_.titleId, foundVer);
-            }
-            return true;
-        });
-        selectionPanel_->addView(updateButton_);
-
-        catalogButton_ = new brls::Button();
-        catalogButton_->setWidth(268);
-        catalogButton_->setFontSize(theme::kFontSmall);
-        catalogButton_->setText(tr("pipensx/installed/open_in_catalog"));
-        catalogButton_->setMarginBottom(8);
-        catalogButton_->registerClickAction([this](brls::View*) {
-            if (!selectedTitle_.titleId.empty())
-                openInCatalog(selectedTitle_.titleId, selectedTitle_.version,
-                              selectedTitle_.name);
-            return true;
-        });
-        selectionPanel_->addView(catalogButton_);
-
-        ignoreUpdatesButton_ = new brls::Button();
-        ignoreUpdatesButton_->setWidth(268);
-        ignoreUpdatesButton_->setFontSize(theme::kFontSmall);
-        ignoreUpdatesButton_->setText(tr("pipensx/installed/ignore_updates"));
-        ignoreUpdatesButton_->setMarginBottom(8);
-        ignoreUpdatesButton_->registerClickAction([this](brls::View*) {
-            toggleIgnoreSelectedTitle();
-            return true;
-        });
-        selectionPanel_->addView(ignoreUpdatesButton_);
-
-        uninstallButton_ = new brls::Button();
-        uninstallButton_->setWidth(268);
-        uninstallButton_->setFontSize(theme::kFontSmall);
-        uninstallButton_->setTextColor(theme::error());
-        uninstallButton_->setText(tr("pipensx/installed/uninstall_action"));
-        uninstallButton_->registerClickAction([this](brls::View*) {
-            if (!selectedTitle_.titleId.empty())
-                confirmUninstall(selectedTitle_);
-            return true;
-        });
-        selectionPanel_->addView(uninstallButton_);
-
-        body->addView(selectionPanel_);
         addView(body);
         dataSource_->setSelectionChanged([this](const InstalledTitle& title) {
             selectTitle(title);
@@ -595,7 +464,7 @@ public:
                 it->second.state == GameUpdateState::UpdateAvailable) {
                 installUpdate(title.titleId, it->second.foundVersion);
             } else {
-                openInCatalog(title.titleId, title.version, title.name);
+                openRowMenu(title);
             }
         });
         reload();
@@ -617,6 +486,12 @@ public:
                            return true;
                        });
         setAncestorActionHidden(this, brls::BUTTON_X, true);
+        registerAction(tr("pipensx/installed/actions"), brls::BUTTON_Y,
+                       [this](brls::View*) {
+            if (!selectedTitle_.titleId.empty())
+                openRowMenu(selectedTitle_);
+            return true;
+        });
     }
 
     void willAppear(bool resetState) override {
@@ -649,83 +524,48 @@ public:
 private:
     void selectTitle(const InstalledTitle& title) {
         selectedTitle_ = title;
-        setTextIfChanged(selectedName_, title.name);
-        setTextIfChanged(selectedPublisher_, title.publisher);
-        selectedPublisher_->setVisibility(title.publisher.empty()
-            ? brls::Visibility::GONE : brls::Visibility::VISIBLE);
+    }
 
-        std::string versionText;
-        if (!title.version.empty()) {
-            versionText = "v" + InstalledCell::prettyVersion(title.version);
-            if (!title.displayVersion.empty())
-                versionText += " (" + title.displayVersion + ")";
-        }
-        setTextIfChanged(selectedVersion_, versionText.empty() ? "-" : versionText);
-        setTextIfChanged(selectedTitleId_, title.titleId);
-
+    void openRowMenu(InstalledTitle title) {
+        std::vector<std::string> labels;
+        auto actions = std::make_shared<std::vector<std::function<void()>>>();
+        auto add = [&](const std::string& label, std::function<void()> action) {
+            labels.push_back(label);
+            actions->push_back(std::move(action));
+        };
         const bool ignored = updates_->isIgnored(title.titleId);
-        auto it = updates_->results().find(title.titleId);
-        const GameUpdateState state = it != updates_->results().end()
-            ? it->second.state : GameUpdateState::NotChecked;
-
-        if (ignored) {
-            setTextIfChanged(selectedStatus_,
-                             tr("pipensx/installed/update_chip_ignored"));
-            selectedStatus_->setTextColor(theme::textTertiary());
-        } else {
-            switch (state) {
-            case GameUpdateState::UpdateAvailable:
-                setTextIfChanged(selectedStatus_,
-                                 tr("pipensx/installed/update_chip_available"));
-                selectedStatus_->setTextColor(theme::error());
-                break;
-            case GameUpdateState::UpToDate:
-                setTextIfChanged(selectedStatus_,
-                                 tr("pipensx/installed/update_chip_latest"));
-                selectedStatus_->setTextColor(theme::success());
-                break;
-            case GameUpdateState::CheckError:
-                setTextIfChanged(selectedStatus_,
-                                 tr("pipensx/installed/update_chip_error"));
-                selectedStatus_->setTextColor(theme::error());
-                break;
-            default:
-                setTextIfChanged(selectedStatus_,
-                                 tr("pipensx/installed/update_chip_not_checked"));
-                selectedStatus_->setTextColor(theme::textTertiary());
-                break;
-            }
+        auto result = updates_->results().find(title.titleId);
+        if (!ignored && result != updates_->results().end() &&
+            result->second.state == GameUpdateState::UpdateAvailable) {
+            add(tr("pipensx/installed/update_action"),
+                [this, title, version = result->second.foundVersion] {
+                    installUpdate(title.titleId, version);
+                });
         }
-
-        const bool hasUpdate =
-            !ignored && state == GameUpdateState::UpdateAvailable;
-        if (updateButton_)
-            updateButton_->setVisibility(hasUpdate ? brls::Visibility::VISIBLE
-                                                  : brls::Visibility::GONE);
-
-        if (ignoreUpdatesButton_)
-            ignoreUpdatesButton_->setText(
-                tr(ignored ? "pipensx/installed/unignore_updates"
-                           : "pipensx/installed/ignore_updates"));
-
-        const size_t dlcCount =
-            installed_ ? installed_->dlcCountForBase(title.titleId) : 0;
-        if (dlcCount > 0) {
-            setTextIfChanged(selectedDlc_, std::to_string(dlcCount));
-            dlcRow_->setVisibility(brls::Visibility::VISIBLE);
-        } else {
-            dlcRow_->setVisibility(brls::Visibility::GONE);
-        }
-
-        if (title.hasLayeredFsMods) {
-            setTextIfChanged(selectedMods_, tr("pipensx/installed/mods_suffix"));
-            modsRow_->setVisibility(brls::Visibility::VISIBLE);
-        } else {
-            modsRow_->setVisibility(brls::Visibility::GONE);
-        }
-
-        setArtworkUrl(selectedImage_, metadata_, title.iconPath,
-                      selectedIconPath_, selectedImageState_);
+        add(tr("pipensx/installed/open_in_catalog"), [this, title] {
+            openInCatalog(title.titleId, title.version, title.name);
+        });
+        add(tr(ignored ? "pipensx/installed/unignore_updates"
+                       : "pipensx/installed/ignore_updates"), [this, title] {
+            selectedTitle_ = title;
+            toggleIgnoreSelectedTitle();
+        });
+        add(tr("pipensx/installed/uninstall_action"), [this, title] {
+            confirmUninstall(title);
+        });
+        auto alive = alive_;
+        auto* menu = new brls::Dropdown(title.name, labels,
+            [actions, alive](int index) {
+                if (index < 0 || static_cast<size_t>(index) >= actions->size())
+                    return;
+                // Dropdown dismissal restores the row before another activity
+                // or a library refresh can replace it.
+                brls::sync([action = (*actions)[index], alive] {
+                    if (alive->load())
+                        action();
+                });
+            });
+        brls::Application::pushActivity(new brls::Activity(menu));
     }
 
     EmptyStateView* ensureEmptyState() {
@@ -1321,10 +1161,7 @@ private:
         brls::Application::getGlobalHintsUpdateEvent()->fire();
         const size_t count = dataSource_->titleCount();
         const bool empty = count == 0;
-        selectionPanel_->getParent()->setVisibility(empty ? brls::Visibility::GONE
-                                                         : brls::Visibility::VISIBLE);
-        selectionPanel_->setVisibility(empty ? brls::Visibility::GONE
-                                             : brls::Visibility::VISIBLE);
+        selectedTitle_ = {};
         const auto selectedId = dataSource_->titleIdAt(focusedIndex);
         for (const auto& title : installed_->titles())
             if (title.titleId == selectedId) {
@@ -1375,6 +1212,7 @@ private:
         const brls::IndexPath focusedIndex = pendingFocusedIndex_;
         pendingFocusedTitleId_.clear();
         pendingFocusedIndex_ = brls::IndexPath(0, 0);
+        dataSource_->setTitles(installed_->titles());
         reloadRecycler(focusedTitleId, focusedIndex,
                        viewContains(this,
                                     brls::Application::getCurrentFocus()));
@@ -1397,7 +1235,6 @@ private:
             }
         }
 
-        dataSource_->setTitles(installed_->titles());
         if (activityStackHasOverlay() && !ownsFocus) {
             pendingFocusedTitleId_ = std::move(focusedTitleId);
             pendingFocusedIndex_ = focusedIndex;
@@ -1405,6 +1242,7 @@ private:
             return;
         }
 
+        dataSource_->setTitles(installed_->titles());
         pendingReload_ = false;
         pendingFocusedTitleId_.clear();
         pendingFocusedIndex_ = brls::IndexPath(0, 0);
@@ -1456,26 +1294,7 @@ private:
     bool checkOnEntry_ = true;
     std::function<void(size_t)> onUpdateCount_;
     brls::Button* updatesButton_ = nullptr;
-    brls::Box* selectionPanel_ = nullptr;
-    AsyncRgbaImage* selectedImage_ = nullptr;
-    brls::Label* selectedName_ = nullptr;
-    brls::Label* selectedPublisher_ = nullptr;
-    brls::Box* selectedDetails_ = nullptr;
-    brls::Label* selectedVersion_ = nullptr;
-    brls::Label* selectedTitleId_ = nullptr;
-    brls::Label* selectedStatus_ = nullptr;
-    brls::Box* dlcRow_ = nullptr;
-    brls::Label* selectedDlc_ = nullptr;
-    brls::Box* modsRow_ = nullptr;
-    brls::Label* selectedMods_ = nullptr;
-    brls::Button* updateButton_ = nullptr;
-    brls::Button* catalogButton_ = nullptr;
-    brls::Button* ignoreUpdatesButton_ = nullptr;
-    brls::Button* uninstallButton_ = nullptr;
     InstalledTitle selectedTitle_;
-    std::string selectedIconPath_;
-    std::shared_ptr<ImageRequestState> selectedImageState_ =
-        std::make_shared<ImageRequestState>();
     brls::Label* status_ = nullptr;
     EmptyStateView* emptyState_ = nullptr;
     brls::RecyclerFrame* recycler_ = nullptr;

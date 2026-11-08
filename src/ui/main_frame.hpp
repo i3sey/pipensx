@@ -628,10 +628,23 @@ private:
         // a focused row keeps its screen frame. Borealis draws that highlight
         // on top of the new tab (Help and About have nothing that takes it).
         brls::View* outgoing = nullptr;
+        bool outgoingHadFocus = false;
         if (active_ != display) {
             outgoing = content_;
-            if (content_)
+            // Move focus while the outgoing tree is still attached: its
+            // disappearance handlers may rebuild or hide the focused row.
+            outgoingHadFocus = outgoing &&
+                viewContains(outgoing, brls::Application::getCurrentFocus());
+            if (outgoingHadFocus)
+                brls::Application::giveFocus(
+                    tabs_[static_cast<size_t>(display)].item);
+            if (content_) {
+                // Box::getDefaultFocus consults this cached child before its
+                // current children, including after a tab has been removed.
+                contentHost_->setLastFocusedView(nullptr);
                 contentHost_->removeView(content_, false);
+                content_->setParent(nullptr);
+            }
             content_ = view;
             contentHost_->addView(content_);
             active_ = display;
@@ -643,7 +656,7 @@ private:
         const bool stale =
             outgoing &&
             viewContains(outgoing, brls::Application::getCurrentFocus());
-        if (focusContent || stale) {
+        if (focusContent || outgoingHadFocus || stale) {
             brls::View* target = content_ ? content_->getDefaultFocus() : nullptr;
             // ScrollingFrame::getDefaultFocus() can return its content box
             // when that box is not focusable. giveFocus then does nothing
