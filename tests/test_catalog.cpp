@@ -3480,7 +3480,92 @@ void testCatalogDiffCacheProvenance() {
     }
 }
 
+static void testCollections() {
+    using namespace pipensx;
+    std::vector<CatalogCollectionItem> items;
+    assert(!parseCatalogCollection("{}", items));
+    assert(parseCatalogCollection(R"([
+        {"title_id":"0100AAAA00000000","metacritic":90},
+        {"title_id":"0100BBBB00000000","metacritic":null},
+        {"title_id":"0100CCCC00000000"},
+        {"title_id":"invalid","metacritic":99},
+        {"title_id":"0100DDDD00000000","metacritic":101},
+        {"title_id":"0100EEEE00000000","metacritic":"85"}
+    ])", items));
+    assert(items.size() == 5);
+    assert(items[0].metacritic == 90);
+    for (size_t i = 1; i < items.size(); ++i) assert(!items[i].metacritic);
+    std::vector<CatalogEntry> entries(4);
+    for (size_t i = 0; i < entries.size(); ++i) {
+        entries[i].infoHash = std::string(40, 'a' + i);
+        entries[i].title = "Localized " + std::to_string(i);
+    }
+    entries[0].titleId = "0100aaaa00000000";
+    entries[1].titleId = "0100BBBB00000000";
+    entries[2].titleId = "0100FFFF00000000";
+    entries[2].titles.push_back({"0100AAAA00000000", "", ""});
+    entries[3].titleId = "0100111100000000";
+    joinCatalogCollection(entries, "top_100", items);
+    joinCatalogCollection(entries, "top_100", items);
+    assert(entries[0].metacritic == 90 && entries[0].collections.size() == 1);
+    assert(!entries[1].metacritic && entries[1].collections.size() == 1);
+    assert(!entries[2].metacritic && entries[2].collections.size() == 1);
+    assert(entries[3].collections.empty());
+    entries[1].metacritic = 70;
+    entries.push_back(entries[0]);
+    CatalogBrowseRequest request;
+    request.catalog = std::make_shared<const std::vector<CatalogEntry>>(entries);
+    request.collection = "top_100";
+    request.sort = CatalogSortMode::Metacritic;
+    CatalogBrowseResult result;
+    assert(buildCatalogBrowse(request, result));
+    assert(result.count == 3 && result.indices[0] == 0);
+    assert(result.titles[0].find("Localized") != std::string::npos);
+    request.sortReversed = true;
+    assert(buildCatalogBrowse(request, result));
+    assert(result.indices[0] == 1 && result.indices[1] == 0 && result.indices[2] == 2);
+
+    char temporary[] = "/tmp/pipensx-collections-XXXXXX";
+    const char* directory = mkdtemp(temporary);
+    assert(directory);
+    const std::string root = directory;
+    bool offline = false;
+    CatalogService service(root, {}, [&](const std::string& url, std::string& body,
+            std::string& error, const std::string&, const std::atomic<bool>*,
+            const CatalogService::ProgressCallback&) {
+        if (url == "https://example.com/catalog.json") {
+            body = R"([{"title":"Название","title_id":"0100AAAA00000000","magnet":"magnet:?xt=urn:btih:1111111111111111111111111111111111111111&tr=http://bt.t-ru.org/ann?magnet"}])";
+            return true;
+        }
+        if (offline) { error = "offline"; return false; }
+        if (url.find("top_100.json") != std::string::npos) {
+            body = R"([{"title":"English source name","title_id":"0100AAAA00000000","metacritic":90}])";
+            return true;
+        }
+        body = "broken"; return true;
+    });
+    CatalogSnapshot snapshot;
+    std::string error;
+    assert(service.fetchLatest(snapshot, error, "https://example.com/catalog.json"));
+    assert(snapshot.entries.size() == 1 && snapshot.entries[0].metacritic == 90);
+    assert(snapshot.entries[0].title == "Название");
+    offline = true;
+    assert(service.fetchLatest(snapshot, error, "https://example.com/catalog.json"));
+    assert(snapshot.entries[0].metacritic == 90);
+    CatalogService restarted(root);
+    assert(restarted.prepareInitialSnapshot(snapshot, error));
+    assert(snapshot.entries[0].metacritic == 90);
+    assert(snapshot.entries[0].collections == std::vector<std::string>{"top_100"});
+    unlink((root + "/catalog/collections/top_100.json").c_str());
+    unlink((root + "/catalog/catalog.json").c_str());
+    unlink((root + "/catalog/catalog.json.sync").c_str());
+    rmdir((root + "/catalog/collections").c_str());
+    rmdir((root + "/catalog").c_str());
+    rmdir(root.c_str());
+}
+
 int main() {
+    testCollections();
     testMagnetParsing();
     testCatalogGenreCanonicalization();
     testCatalogDiffIncrementalSync();

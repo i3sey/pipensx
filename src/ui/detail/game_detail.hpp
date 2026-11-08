@@ -461,6 +461,13 @@ private:
                    presentation_.publisher);
         addFactRow(table, tr("pipensx/detail/fact_release"),
                    presentation_.releaseDate);
+        if (entry_.metacritic) {
+            char score[24];
+            std::snprintf(score, sizeof(score), "%g / 100", *entry_.metacritic);
+            addFactRow(table, "Metacritic", score);
+            addFactRow(table, tr("pipensx/detail/fact_score_source"),
+                       tr("pipensx/detail/score_source"));
+        }
         addFactRow(table, tr("pipensx/detail/fact_genre"), presentation_.genre);
         addFactRow(table, tr("pipensx/detail/fact_players"), playersFact_);
         addFactRow(table, tr("pipensx/detail/fact_multiplayer"),

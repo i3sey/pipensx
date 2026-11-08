@@ -259,7 +259,7 @@ public:
         filterPlayers_ = makeChip(tr("pipensx/catalog/filter_players"),
                                   [this] { openPlayerFilterMenu(); });
         filterGenres_ = makeChip(tr("pipensx/catalog/filter_genres"),
-                                 [this] { openGenreSheet(); });
+                                 [this] { openFilterSheet(); });
         filters->addView(filterFavorites_);
         filters->addView(filterFits_);
         filters->addView(filterPlayers_);
@@ -491,7 +491,7 @@ public:
     }
 
 private:
-    enum class SortMode { Latest, Popular, Alphabetical, Largest };
+    enum class SortMode { Latest, Popular, Alphabetical, Largest, Metacritic };
 
     static std::string lowerAscii(std::string value) {
         std::transform(value.begin(), value.end(), value.begin(),
@@ -595,6 +595,7 @@ private:
         job.request.sort = static_cast<CatalogSortMode>(sort_);
         job.request.sortReversed = sortReversed_;
         job.request.query = query_;
+        job.request.collection = collection_;
         job.request.favoritesOnly = favoritesOnly_ && favorites_;
         job.request.fitsOnly = fitsOnly_;
         job.request.playerFilter = playerFilter_;
@@ -838,7 +839,7 @@ private:
             : ui::playerFilterLabel(playerFilter_));
         styleChip(filterPlayers_, playerFilter_ != PlayerFilter::Any);
         filterGenres_->setText(genreFilterLabel());
-        styleChip(filterGenres_, !genreFilters_.empty());
+        styleChip(filterGenres_, !genreFilters_.empty() || !collection_.empty());
         count_->setText(countText_);
         updateFreshnessLabel();
     }
@@ -908,6 +909,7 @@ private:
         switch (mode) {
             case SortMode::Popular: return tr("pipensx/catalog/sort_popular");
             case SortMode::Alphabetical: return tr("pipensx/catalog/sort_alpha");
+            case SortMode::Metacritic: return tr("pipensx/catalog/sort_metacritic");
             case SortMode::Largest: return tr("pipensx/catalog/sort_size");
             case SortMode::Latest:
             default: return tr("pipensx/catalog/sort_latest");
@@ -925,13 +927,14 @@ private:
         fitsOnly_ = false;
         playerFilter_ = PlayerFilter::Any;
         genreFilters_.clear();
+        collection_.clear();
         rebuildEntries();
     }
 
     void openSortSheet() {
         const std::vector<SortMode> modes = {
             SortMode::Latest, SortMode::Popular, SortMode::Alphabetical,
-            SortMode::Largest};
+            SortMode::Largest, SortMode::Metacritic};
         std::vector<std::string> labels;
         int selected = 0;
         for (size_t i = 0; i < modes.size(); ++i) {
@@ -949,9 +952,51 @@ private:
         brls::Application::pushActivity(new brls::Activity(dropdown));
     }
 
+    void openFilterSheet() {
+        std::vector<std::string> labels = {tr("pipensx/catalog/filter_genres"),
+                                           tr("pipensx/catalog/collections_title")};
+        auto* menu = new brls::Dropdown(tr("pipensx/catalog/filter_title"), labels,
+            [](int) {}, 0, [this](int index) {
+                if (index == 0) openGenreSheet();
+                else if (index == 1) openCollectionSheet();
+            });
+        brls::Application::pushActivity(new brls::Activity(menu));
+    }
+
+    void openCollectionSheet() {
+        std::vector<std::string> names = {""};
+        std::vector<std::string> labels = {tr("pipensx/catalog/collections_all")};
+        for (const auto& name : catalogCollectionNames()) {
+            bool available = false;
+            for (const auto& entry : catalog_->entries())
+                if (std::find(entry.collections.begin(), entry.collections.end(), name)
+                    != entry.collections.end()) { available = true; break; }
+            if (available) {
+                names.push_back(name);
+                const std::string key = "pipensx/catalog/collection_" + name;
+                labels.push_back(tr(key.c_str()));
+            }
+        }
+        if (names.size() == 1) {
+            brls::Application::notify(tr("pipensx/catalog/collections_empty"));
+            return;
+        }
+        int selected = 0;
+        for (size_t i = 0; i < names.size(); ++i)
+            if (names[i] == collection_) selected = static_cast<int>(i);
+        auto* menu = new brls::Dropdown(tr("pipensx/catalog/collections_title"), labels,
+            [](int) {}, selected, [this, names](int index) {
+                if (index < 0 || static_cast<size_t>(index) >= names.size()) return;
+                collection_ = names[index];
+                rebuildEntries();
+            });
+        brls::Application::pushActivity(new brls::Activity(menu));
+    }
+
     std::string genreFilterLabel() const {
+        if (!collection_.empty()) return tr("pipensx/catalog/collections_title");
         if (genreFilters_.empty())
-            return tr("pipensx/catalog/filter_genres");
+            return tr("pipensx/catalog/filter_title");
         if (genreFilters_.size() == 1)
             return ui::catalogGenreLabel(*genreFilters_.begin());
         return tr("pipensx/catalog/filter_genres") + " · " +
@@ -1895,6 +1940,7 @@ private:
     std::unordered_set<std::string> selectedHashes_;
     std::string query_;
     std::string countText_;
+    std::string collection_;
     SortMode sort_ = SortMode::Popular;
     // Flips the active sort's natural direction (see naturalDescending).
     // Session-only, like the view filters: a relaunch comes back to the

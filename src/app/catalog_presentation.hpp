@@ -98,6 +98,7 @@ enum class CatalogSortMode {
     Popular,
     Alphabetical,
     Largest,
+    Metacritic,
 };
 
 struct CatalogBrowseResult;
@@ -114,6 +115,7 @@ struct CatalogBrowseRequest {
     CatalogSortMode sort = CatalogSortMode::Popular;
     bool sortReversed = false;
     std::string query;
+    std::string collection;
     bool favoritesOnly = false;
     bool fitsOnly = false;
     PlayerFilter playerFilter = PlayerFilter::Any;

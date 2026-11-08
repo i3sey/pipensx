@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -28,7 +29,19 @@ struct CatalogTitle {
     std::string version;
 };
 
+struct CatalogCollectionItem {
+    std::string titleId;
+    std::optional<double> metacritic;
+};
+
+// Stable source filenames also serve as cache and localization keys.
+const std::vector<std::string>& catalogCollectionNames();
+bool parseCatalogCollection(const std::string& body,
+                            std::vector<CatalogCollectionItem>& items);
+
 struct CatalogEntry {
+    std::vector<std::string> collections;
+    std::optional<double> metacritic;
     std::string infoHash;
     std::string title;
     std::string magnetUri;
@@ -101,6 +114,10 @@ struct CatalogEntry {
                health == CatalogHealth::TrackerNotRegistered;
     }
 };
+
+void joinCatalogCollection(std::vector<CatalogEntry>& entries,
+                           const std::string& name,
+                           const std::vector<CatalogCollectionItem>& items);
 
 // Fully indexed catalogue built by a refresh worker. Publishing this on the
 // UI thread only moves ready containers; it never scans the catalogue.
@@ -253,6 +270,8 @@ private:
                        const ProgressCallback& progress,
                        const std::function<bool(const std::string&, std::string&)>& validate,
                        bool allowMirror = true);
+    void attachCollections(std::vector<CatalogEntry>& entries, bool refresh,
+                           const std::atomic<bool>* cancelled = nullptr) const;
     HttpFetcher httpFetcher_;
     bool loadFileSnapshot(const std::string& path, const std::string& label,
                           CatalogSnapshot& snapshot,

@@ -854,15 +854,112 @@ bool CatalogService::loadFileSnapshot(const std::string& path,
     return true;
 }
 
+const std::vector<std::string>& catalogCollectionNames() {
+    static const std::vector<std::string> names = {
+        "top_100", "new_release", "action_adventure", "arcade", "horror",
+        "metroidvania", "party_multiplayer", "platformers", "puzzles", "racing",
+        "roguelike_roguelite", "rpg_jrpg", "shooters", "simulation_cozy",
+        "sports", "strategy_tactics", "visual_novels"};
+    return names;
+}
+
+bool parseCatalogCollection(const std::string& body,
+                            std::vector<CatalogCollectionItem>& items) {
+    items.clear();
+    if (body.size() > 2 * 1024 * 1024) return false;
+    auto json = nlohmann::json::parse(body, nullptr, false);
+    if (!json.is_array() || json.size() > 20000) return false;
+    for (const auto& row : json) {
+        if (!row.is_object() || !row.contains("title_id") ||
+            !row["title_id"].is_string()) continue;
+        std::string id = lowerAscii(row["title_id"].get<std::string>());
+        if (id.size() != 16 || id == "0000000000000000" ||
+            !std::all_of(id.begin(), id.end(), [](unsigned char c) {
+                return std::isxdigit(c);
+            })) continue;
+        CatalogCollectionItem item{id, std::nullopt};
+        if (row.contains("metacritic") && row["metacritic"].is_number()) {
+            double score = row["metacritic"].get<double>();
+            if (score > 0 && score <= 100) item.metacritic = score;
+        }
+        items.push_back(std::move(item));
+    }
+    return true;
+}
+
+void joinCatalogCollection(std::vector<CatalogEntry>& entries,
+                           const std::string& name,
+                           const std::vector<CatalogCollectionItem>& items) {
+    std::unordered_map<std::string, std::optional<double>> byId;
+    for (const auto& item : items) {
+        const auto inserted = byId.emplace(lowerAscii(item.titleId), item.metacritic);
+        // Conflicting duplicate scores have no defensible winner.
+        if (!inserted.second && inserted.first->second != item.metacritic)
+            inserted.first->second.reset();
+    }
+    for (auto& entry : entries) {
+        std::unordered_set<std::string> ids;
+        if (!entry.titleId.empty()) ids.insert(lowerAscii(entry.titleId));
+        for (const auto& title : entry.titles) ids.insert(lowerAscii(title.titleId));
+        bool matched = false;
+        for (const auto& id : ids) {
+            const auto found = byId.find(id);
+            if (found == byId.end()) continue;
+            matched = true;
+            // A score for one constituent must not rate an entire multi-game release.
+            if (ids.size() == 1 && found->second && !entry.metacritic)
+                entry.metacritic = found->second;
+        }
+        if (matched && std::find(entry.collections.begin(), entry.collections.end(),
+                                name) == entry.collections.end())
+            entry.collections.push_back(name);
+    }
+}
+
+void CatalogService::attachCollections(std::vector<CatalogEntry>& entries,
+                                       bool refresh,
+                                       const std::atomic<bool>* cancelled) const {
+    const std::string directory = catalogRoot_ + "/collections";
+    if (refresh) makeDirectories(directory);
+    for (const auto& name : catalogCollectionNames()) {
+        if (cancellationRequested(cancelled)) return;
+        const std::string path = directory + "/" + name + ".json";
+        std::string body, error;
+        std::vector<CatalogCollectionItem> items;
+        bool loaded = false;
+        if (refresh) {
+            const std::string url = std::string(kCatalogCollectionBaseUrl) + name + ".json";
+            if (httpFetcher_(url, body, error, url, cancelled, {}) &&
+                parseCatalogCollection(body, items)) {
+                loaded = true;
+                writeAtomic(path, body, error, cancelled);
+            } else {
+                log_msg("[catalog] collection %s unavailable: %s\n", name.c_str(), error.c_str());
+                // Avoid repeating connection timeouts for every file while offline.
+                if (!error.empty()) refresh = false;
+            }
+        }
+        if (!loaded) {
+            if (!readFile(path, body, error) || !parseCatalogCollection(body, items))
+                continue;
+        }
+        joinCatalogCollection(entries, name, items);
+    }
+}
+
 bool CatalogService::prepareInitialSnapshot(CatalogSnapshot& snapshot,
                                             std::string& error) const {
     std::string cacheError;
-    if (loadFileSnapshot(cachePath_, kCachedCatalogLabel, snapshot, cacheError))
+    if (loadFileSnapshot(cachePath_, kCachedCatalogLabel, snapshot, cacheError)) {
+        attachCollections(snapshot.entries, false);
         return true;
+    }
     if (!bundledPath_.empty() && access(bundledPath_.c_str(), R_OK) == 0) {
         if (loadFileSnapshot(bundledPath_, kBundledCatalogLabel, snapshot,
-                             error))
+                             error)) {
+            attachCollections(snapshot.entries, false);
             return true;
+        }
         if (!cacheError.empty())
             error = cacheError + " " + error;
         return false;
@@ -1474,6 +1571,7 @@ bool CatalogService::fetchLatest(CatalogSnapshot& snapshot,
         snapshot = {};
         return false;
     }
+    attachCollections(snapshot.entries, true, cancelled);
     buildIndex(snapshot.entries, snapshot.infoHashIndex);
     if (failIfCancelled(cancelled, error)) {
         snapshot = {};

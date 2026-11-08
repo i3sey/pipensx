@@ -618,6 +618,7 @@ bool buildCatalogBrowse(const CatalogBrowseRequest& request,
     result.indices.reserve(all.size());
 
     std::unordered_set<std::string> genres;
+    std::unordered_set<std::string> collectionHashes;
     for (size_t i = 0; i < all.size(); ++i) {
         if ((i & 127u) == 0 && isCancelled())
             return false;
@@ -650,6 +651,11 @@ bool buildCatalogBrowse(const CatalogBrowseRequest& request,
             continue;
         if (!catalogEntryMatchesSearch(entry, meta, needle))
             continue;
+        if (!request.collection.empty()) {
+            if (std::find(entry.collections.begin(), entry.collections.end(),
+                          request.collection) == entry.collections.end()) continue;
+            if (!collectionHashes.insert(hash).second) continue;
+        }
         result.indices.push_back(static_cast<int>(i));
     }
     result.genres.assign(genres.begin(), genres.end());
@@ -672,6 +678,14 @@ bool buildCatalogBrowse(const CatalogBrowseRequest& request,
         if (!stableSortCancelled(result.indices,
                 [&](int a, int b) { return keys[a] < keys[b]; }, cancelled))
             return false;
+    } else if (request.sort == CatalogSortMode::Metacritic) {
+        if (!stableSortCancelled(result.indices, [&](int a, int b) {
+                const auto left = entryAt(a).metacritic;
+                const auto right = entryAt(b).metacritic;
+                if (left.has_value() != right.has_value())
+                    return request.sortReversed ? !left.has_value() : left.has_value();
+                return left && right && *left > *right;
+            }, cancelled)) return false;
     } else if (request.sort == CatalogSortMode::Largest) {
         if (!stableSortCancelled(result.indices,
                 [&](int a, int b) {
