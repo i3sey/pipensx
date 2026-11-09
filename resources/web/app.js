@@ -1,2191 +1,965 @@
-/* pipensx web companion SPA — game-store edition. Vanilla JS, no build step.
-   Talks to the REST/SSE API served by src/app/web_server.cpp. */
 "use strict";
 
-const $ = (id) => document.getElementById(id);
-
-/* ================= icons (inline SVG sprite, no external assets) ================= */
-const ICON_PATHS = {
-  compass: '<circle cx="12" cy="12" r="9"/><path d="m16 8-3 5-5 3 3-5z"/>',
-  grid: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
-  library: '<path d="M4 4v16M9 4v16M14 4v16m4-15 4 14"/>',
-  heart: '<path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.8-8.6a5.5 5.5 0 0 0 0-7.8Z"/>',
-  download: '<path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/>',
-  box: '<path d="m12 3 9 5v9l-9 5-9-5V8Zm-9 5 9 5 9-5m-9 5v9M7 5.8l9 5"/>',
-  layers: '<path d="m12 3 10 6-10 6L2 9Zm-10 12 10 6 10-6M2 15l10 6 10-6"/>',
-  git: '<circle cx="6" cy="5" r="3"/><circle cx="6" cy="19" r="3"/><circle cx="18" cy="6" r="3"/><path d="M6 8v8m0-2c8 0 12-2 12-5"/>',
-  disk: '<rect x="3" y="5" width="18" height="14" rx="3"/><path d="M3 13h18m-5 3h1m-5 0h1"/>',
-  settings: '<path d="m10 3-1 3-3 1-3 3 2 2-2 2 3 3 3 1 1 3h4l1-3 3-1 3-3-2-2 2-2-3-3-3-1-1-3Z"/><circle cx="12" cy="12" r="3"/>',
-  search: '<circle cx="10.5" cy="10.5" r="7"/><path d="m16 16 5 5"/>',
-  bell: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9m-11 12h4"/>',
-  menu: '<path d="M4 6h16M4 12h16M4 18h16"/>',
-  shield: '<path d="m12 2 8 4v6c0 5-8 10-8 10S4 17 4 12V6Zm-4 10 3 3 5-6"/>',
-  check: '<path d="m5 12 4 4L19 6"/>',
-  plus: '<path d="M12 5v14M5 12h14"/>',
-  moon: '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/>',
-  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
-  close: '<path d="m6 6 12 12M6 18 18 6"/>',
-  pause: '<path d="M8 4v16M16 4v16"/>',
-  play: '<path d="m7 4 14 8-14 8Z"/>',
-  refresh: '<path d="M20 7v5h-5M4 17v-5h5m-4-5a8 8 0 0 1 14-2l1 2M4 17l1 2a8 8 0 0 0 14-2"/>',
-};
-const icon = (name) =>
-  `<svg viewBox="0 0 24 24" aria-hidden="true">${ICON_PATHS[name] || ICON_PATHS.box}</svg>`;
-function renderIcons(root = document) {
-  root.querySelectorAll("[data-icon]").forEach((el) => {
-    if (!el.dataset.iconDone) {
-      el.innerHTML = icon(el.dataset.icon);
-      el.dataset.iconDone = "1";
-    }
-  });
-}
-
-/* ================= custom dropdowns (web-styled selects) ================= */
-function getSelectedOption(select) {
-  if (select.selectedIndex >= 0 && select.options[select.selectedIndex]) {
-    return select.options[select.selectedIndex];
-  }
-  return [...select.options].find((o) => o.value === select.value) || select.options[0] || null;
-}
-
-function syncCustomSelect(select) {
-  if (!select) return;
-  const wrap = select._customSelectWrap;
-  if (!wrap) return;
-
-  const label = wrap.querySelector(".custom-select-label");
-  const menu = wrap.querySelector(".custom-select-menu");
-  if (!label || !menu) return;
-
-  const selected = getSelectedOption(select);
-  label.textContent = selected ? (selected.textContent || selected.label || selected.value) : "—";
-
-  menu.innerHTML = "";
-  [...select.options].forEach((opt, idx) => {
-    const item = document.createElement("div");
-    const isSelected = selected ? opt.value === selected.value : idx === 0;
-    item.className = "custom-select-option" + (isSelected ? " selected" : "");
-    item.setAttribute("role", "option");
-    item.setAttribute("aria-selected", isSelected ? "true" : "false");
-    item.dataset.value = opt.value;
-
-    const textSpan = document.createElement("span");
-    textSpan.className = "custom-select-option-text";
-    textSpan.textContent = opt.textContent || opt.label || opt.value;
-    item.appendChild(textSpan);
-
-    const checkSpan = document.createElement("span");
-    checkSpan.className = "custom-select-check";
-    checkSpan.setAttribute("aria-hidden", "true");
-    checkSpan.innerHTML = '<svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></svg>';
-    item.appendChild(checkSpan);
-
-    item.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const changed = select.value !== opt.value;
-      if (changed) {
-        select.value = opt.value;
-        select.dispatchEvent(new Event("input", { bubbles: true }));
-        select.dispatchEvent(new Event("change", { bubbles: true }));
-      } else {
-        syncCustomSelect(select);
-      }
-      closeCustomSelect(wrap);
-      const trig = wrap.querySelector(".custom-select-trigger");
-      if (trig) trig.focus();
-    });
-
-    menu.appendChild(item);
-  });
-}
-
-function closeCustomSelect(wrap) {
-  if (!wrap) return;
-  wrap.classList.remove("open", "open-up");
-  const trig = wrap.querySelector(".custom-select-trigger");
-  if (trig) trig.setAttribute("aria-expanded", "false");
-}
-
-function closeAllCustomSelects(exceptWrap = null) {
-  document.querySelectorAll(".custom-select.open").forEach((wrap) => {
-    if (wrap !== exceptWrap) closeCustomSelect(wrap);
-  });
-}
-
-function openCustomSelect(wrap) {
-  closeAllCustomSelects(wrap);
-  wrap.classList.add("open");
-  const trig = wrap.querySelector(".custom-select-trigger");
-  if (trig) trig.setAttribute("aria-expanded", "true");
-
-  const menu = wrap.querySelector(".custom-select-menu");
-  if (!menu || !trig) return;
-
-  const rect = trig.getBoundingClientRect();
-  const spaceBelow = window.innerHeight - rect.bottom;
-  const spaceAbove = rect.top;
-  if (spaceBelow < 220 && spaceAbove > spaceBelow) {
-    wrap.classList.add("open-up");
-  } else {
-    wrap.classList.remove("open-up");
-  }
-
-  const menuRect = menu.getBoundingClientRect();
-  if (menuRect.right > window.innerWidth - 8) {
-    menu.style.left = "auto";
-    menu.style.right = "0";
-  } else {
-    menu.style.left = "0";
-    menu.style.right = "auto";
-  }
-
-  const activeItem = menu.querySelector(".custom-select-option.selected");
-  if (activeItem) {
-    activeItem.scrollIntoView({ block: "nearest" });
-  }
-}
-
-function initCustomSelect(select) {
-  if (!select || select._customSelectWrap) {
-    syncCustomSelect(select);
-    return;
-  }
-
-  select.classList.add("custom-select-native");
-  select.setAttribute("tabindex", "-1");
-  select.setAttribute("aria-hidden", "true");
-
-  const wrap = document.createElement("div");
-  wrap.className = "custom-select";
-  if (select.id) wrap.dataset.selectId = select.id;
-  if (select.classList.contains("filter-chip")) wrap.classList.add("filter-chip-wrap");
-
-  const trigger = document.createElement("button");
-  trigger.type = "button";
-  trigger.className = "custom-select-trigger";
-  trigger.setAttribute("aria-haspopup", "listbox");
-  trigger.setAttribute("aria-expanded", "false");
-  if (select.getAttribute("aria-label")) {
-    trigger.setAttribute("aria-label", select.getAttribute("aria-label"));
-  }
-
-  const label = document.createElement("span");
-  label.className = "custom-select-label";
-
-  const arrow = document.createElement("span");
-  arrow.className = "custom-select-arrow";
-  arrow.setAttribute("aria-hidden", "true");
-  arrow.innerHTML = '<svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>';
-
-  trigger.appendChild(label);
-  trigger.appendChild(arrow);
-
-  const menu = document.createElement("div");
-  menu.className = "custom-select-menu";
-  menu.setAttribute("role", "listbox");
-  menu.setAttribute("tabindex", "-1");
-
-  wrap.appendChild(trigger);
-  wrap.appendChild(menu);
-
-  trigger.addEventListener("click", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (wrap.classList.contains("open")) {
-      closeCustomSelect(wrap);
-    } else {
-      openCustomSelect(wrap);
-    }
-  });
-
-  trigger.addEventListener("keydown", (e) => {
-    const isOpen = wrap.classList.contains("open");
-    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-      e.preventDefault();
-      if (!isOpen) {
-        openCustomSelect(wrap);
-      } else {
-        const options = [...menu.querySelectorAll(".custom-select-option")];
-        if (!options.length) return;
-        const focused = menu.querySelector(".custom-select-option.focused") ||
-          menu.querySelector(".custom-select-option.selected") || options[0];
-        let idx = options.indexOf(focused);
-        if (e.key === "ArrowDown") idx = (idx + 1) % options.length;
-        else idx = (idx - 1 + options.length) % options.length;
-        options.forEach((o, i) => o.classList.toggle("focused", i === idx));
-        options[idx].scrollIntoView({ block: "nearest" });
-      }
-    } else if (e.key === "Enter" || e.key === " ") {
-      if (isOpen) {
-        e.preventDefault();
-        const focused = menu.querySelector(".custom-select-option.focused") ||
-          menu.querySelector(".custom-select-option.selected");
-        if (focused) focused.click();
-      }
-    } else if (e.key === "Escape") {
-      if (isOpen) {
-        e.preventDefault();
-        e.stopPropagation();
-        closeCustomSelect(wrap);
-      }
-    }
-  });
-
-  const labelParent = select.closest("label");
-  if (labelParent) {
-    labelParent.addEventListener("click", (e) => {
-      if (e.target.closest(".custom-select")) return;
-      trigger.focus();
-    });
-  }
-
-  select.parentNode.insertBefore(wrap, select.nextSibling);
-  select._customSelectWrap = wrap;
-  select._customSelectSync = () => syncCustomSelect(select);
-
-  select.addEventListener("change", () => syncCustomSelect(select));
-  select.addEventListener("input", () => syncCustomSelect(select));
-
-  if (typeof MutationObserver !== "undefined") {
-    const observer = new MutationObserver(() => syncCustomSelect(select));
-    observer.observe(select, { childList: true, subtree: true, characterData: true });
-  }
-
-  syncCustomSelect(select);
-}
-
-function initAllCustomSelects() {
-  document.querySelectorAll("select").forEach(initCustomSelect);
-}
-
-function syncAllCustomSelects() {
-  document.querySelectorAll("select").forEach(syncCustomSelect);
-}
-
-if (typeof document !== "undefined") {
-  document.addEventListener("click", (e) => {
-    if (!e.target.closest(".custom-select")) {
-      closeAllCustomSelects();
-    }
-  });
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") {
-      closeAllCustomSelects();
-    }
-  });
-  try {
-    const proto = HTMLSelectElement.prototype;
-    const desc = Object.getOwnPropertyDescriptor(proto, "value");
-    if (desc && desc.set) {
-      Object.defineProperty(proto, "value", {
-        get: desc.get,
-        set(val) {
-          desc.set.call(this, val);
-          if (this._customSelectSync) this._customSelectSync();
-        },
-        configurable: true,
-        enumerable: true,
-      });
-    }
-  } catch (e) { /* ignore if not configurable */ }
-}
-
-/* ================= i18n ================= */
-const I18N = {
-  en: {
-    "control.pin": "Authorize panel", "control.pinHelp": "Enter the PIN set on the Switch in Settings → Web companion.",
-    "control.continue": "Continue", "control.cancel": "Cancel", "control.invalidPin": "Incorrect PIN. Try again.",
-    "control.updateHelp": "pipensx will close briefly to apply the uploaded update. Reopen it on the Switch if needed.",
-    "tabs.downloads": "Downloads", "tabs.catalog": "Catalog", "tabs.add": "Add", "tabs.logs": "Logs", "tabs.settings": "Settings",
-    "dash.speed": "Speed", "dash.queue": "Queue", "dash.remaining": "Remaining", "dash.storage": "SD storage",
-    "dash.traffic": "Download traffic", "speed.download": "Download", "speed.install": "Installation",
-    "downloads.search": "Search downloads…", "downloads.all": "All", "downloads.active": "Active",
-    "downloads.pauseAll": "Pause all", "downloads.resumeAll": "Resume all", "downloads.clearDone": "Clear entries",
-    "downloads.clearFiles": "Delete files",
-    "downloads.clearNone": "No completed entries.",
-    "downloads.clearEntriesAsk": "Remove {0} completed entries from the list? {1} in-use entries will be left. Downloaded files stay. Installed games and ports are not removed.",
-    "downloads.clearFilesAsk": "Delete downloaded files for {0} completed entries and free about {1}? {2} in-use entries will be left, including their files. Installed games and ports are not removed.",
-    "downloads.alerts": "Alerts", "downloads.enableNotify": "Enable notifications",
-    "downloads.empty": "No downloads yet.", "downloads.emptySub": "Add a magnet link or pick something from the catalog.",
-    "downloads.browse": "Browse catalog",
-    "sort.recent": "Recent", "sort.name": "Name", "sort.progress": "Progress", "sort.speed": "Speed", "sort.eta": "ETA",
-    "catalog.title": "Game catalog", "catalog.search": "Search 4000+ games…",
-    "catalog.allGenres": "All genres", "catalog.allYears": "All years",
-    "catalog.anySize": "Any size", "catalog.small": "< 4 GiB", "catalog.medium": "4–10 GiB", "catalog.large": "> 10 GiB",
-    "catalog.newest": "Newest", "catalog.biggest": "Biggest", "catalog.smallest": "Smallest",
-    "catalog.recentlyAdded": "Recently added", "catalog.reset": "Reset",
-    "add.magnet": "Magnet link", "add.magnetSub": "Paste a magnet URI — the Switch resolves it.",
-    "add.install": "Install", "add.download": "Download only", "add.addMagnet": "Add magnet",
-    "add.torrent": ".torrent file", "add.torrentSub": "Upload a .torrent — or drop it anywhere on this tab.",
-    "add.drop": "Drop .torrent here or click to choose", "add.upload": "Upload torrent",
-    "settings.appearance": "Appearance", "settings.theme": "Theme",
-    "settings.dark": "Dark", "settings.light": "Light", "settings.auto": "System",
-    "settings.language": "Language", "settings.downloads": "Downloads",
-    "settings.concurrent": "Concurrent downloads", "settings.stream": "Stream selection",
-    "settings.allFiles": "All files", "settings.packagesOnly": "Packages only",
-    "settings.location": "Install location", "settings.network": "Network",
-    "settings.catalog": "Catalog", "settings.catalogUrl": "Catalog source URL",
-    "settings.refresh": "Refresh catalog on launch", "settings.save": "Save settings",
-    "update.title": "pipensx update", "update.sub": "Upload a new pipensx.nro directly to the Switch. GitHub is not used for this update.",
-    "update.drop": "Choose the new pipensx.nro", "update.upload": "Upload update", "update.apply": "Apply on Switch",
-    "update.current": "Current version: {0}", "update.ready": "Update staged: {0}. Ready to apply.",
-    "update.none": "No uploaded update is staged.", "update.uploading": "Uploading and verifying…", "update.applying": "Applying update — the Switch will close pipensx.",
-    "logs.title": "Diagnostic log", "logs.sub": "Live tail of pipensx.log from the Switch.",
-    "logs.search": "Search log…", "logs.all": "All", "logs.install": "Install", "logs.errors": "Errors",
-    "logs.refresh": "Refresh", "logs.auto": "Auto refresh", "logs.copy": "Copy", "logs.download": "Download",
-    "logs.performance": "Performance", "logs.telemetry": "Detailed speed diagnostics",
-    "game.install": "Install", "game.download": "Download", "game.close": "Close",
-    "game.developer": "Developer", "game.publisher": "Publisher", "game.genre": "Genre",
-    "game.year": "Year", "game.size": "Size", "game.titleId": "Title ID",
-    "game.multiplayer": "Multiplayer", "game.performance": "Notes", "game.hash": "Info hash",
-    "game.peers": "Peers", "game.added": "Added",
-    "task.moveUp": "↑", "task.moveDown": "↓", "task.top": "Top",
-    "task.pause": "Pause", "task.resume": "Resume", "task.retry": "Retry",
-    "task.verify": "Verify", "task.remove": "Remove",
-    "action.leased": "Files are being copied to the SD card",
-    "action.committing": "The package is being committed and cannot be paused",
-    "action.not_pausable": "This download cannot be paused right now",
-    "action.not_resumable": "This download is not paused",
-    "action.not_completed": "Only a finished download can be verified",
-    "action.debrid": "A debrid download cannot be verified",
-    "action.not_queued": "Only a queued download can be moved",
-    "action.removing": "This download is already being removed",
-    "action.not_found": "This download is no longer in the list",
-    "msg.addedQueue": "Added to the Switch queue", "msg.resolving": "Resolving on the Switch…",
-    "msg.saved": "Settings saved",
-    "msg.clearedEntries": "Removed {0} entries. Left {1} because they are in use.",
-    "msg.clearedFiles": "Removed files for {0} entries. Left {1} because they are in use.",
-    "recovery.downloaded": "Downloaded",
-    "recovery.installed": "Installed",
-    "recovery.verifying": "Verifying saved data",
-    "recovery.verify": "Checking saved data again ({0}). Download stays at {1}.",
-    "recovery.reread": "The current package is read again ({0}). {1} package(s) stay installed.",
-    "recovery.refetch": "The current file is fetched again ({0}). Saved {1} stays.",
-    "recovery.recopy": "This copy starts again ({0}). Finished downloads stay.",
-    "recovery.pieces": "Continues from saved pieces, not from an exact byte.",
-    "recovery.byte": "Continues from the saved point in this file.",
-    "source.direct": "Direct",
-    "source.keyOk": "key set",
-    "source.noKey": "no key",
-  },
-  ru: {
-    "control.pin": "Доступ к панели", "control.pinHelp": "Введите PIN из настроек Switch: Настройки → Web companion.",
-    "control.continue": "Продолжить", "control.cancel": "Отмена", "control.invalidPin": "Неверный PIN. Попробуйте ещё раз.",
-    "control.updateHelp": "pipensx закроется для установки загруженного обновления. При необходимости откройте его снова на Switch.",
-    "tabs.downloads": "Загрузки", "tabs.catalog": "Каталог", "tabs.add": "Добавить", "tabs.logs": "Логи", "tabs.settings": "Настройки",
-    "dash.speed": "Скорость", "dash.queue": "Очередь", "dash.remaining": "Осталось", "dash.storage": "Память SD",
-    "speed.download": "Загрузка", "speed.install": "Установка",
-    "dash.traffic": "Трафик",
-    "downloads.search": "Поиск загрузок…", "downloads.all": "Все", "downloads.active": "Активные",
-    "downloads.pauseAll": "Пауза всем", "downloads.resumeAll": "Продолжить все", "downloads.clearDone": "Очистить записи",
-    "downloads.clearFiles": "Удалить файлы",
-    "downloads.clearNone": "Нет завершённых записей.",
-    "downloads.clearEntriesAsk": "Убрать {0} завершённых записей из списка? {1} занятых записей останутся. Скачанные файлы останутся. Установленные игры и порты не удаляются.",
-    "downloads.clearFilesAsk": "Удалить скачанные файлы у {0} завершённых записей и освободить около {1}? {2} занятых записей останутся вместе с файлами. Установленные игры и порты не удаляются.",
-    "downloads.alerts": "Оповещения", "downloads.enableNotify": "Включить уведомления",
-    "downloads.empty": "Пока нет загрузок.", "downloads.emptySub": "Добавьте magnet-ссылку или выберите игру из каталога.",
-    "downloads.browse": "Открыть каталог",
-    "sort.recent": "Новые", "sort.name": "Название", "sort.progress": "Прогресс", "sort.speed": "Скорость", "sort.eta": "Осталось",
-    "catalog.title": "Каталог игр", "catalog.search": "Поиск по 4000+ играм…",
-    "catalog.allGenres": "Все жанры", "catalog.allYears": "Все годы",
-    "catalog.anySize": "Любой размер", "catalog.small": "< 4 ГиБ", "catalog.medium": "4–10 ГиБ", "catalog.large": "> 10 ГиБ",
-    "catalog.newest": "Сначала новые", "catalog.biggest": "Сначала большие", "catalog.smallest": "Сначала маленькие",
-    "catalog.recentlyAdded": "Недавно добавлены", "catalog.reset": "Сброс",
-    "add.magnet": "Magnet-ссылка", "add.magnetSub": "Вставьте magnet-ссылку — Switch сам её разберёт.",
-    "add.install": "Установить", "add.download": "Только скачать", "add.addMagnet": "Добавить magnet",
-    "add.torrent": ".torrent файл", "add.torrentSub": "Загрузите .torrent — или перетащите его на эту вкладку.",
-    "add.drop": "Перетащите .torrent сюда или нажмите для выбора", "add.upload": "Загрузить torrent",
-    "settings.appearance": "Оформление", "settings.theme": "Тема",
-    "settings.dark": "Тёмная", "settings.light": "Светлая", "settings.auto": "Системная",
-    "settings.language": "Язык", "settings.downloads": "Загрузки",
-    "settings.concurrent": "Одновременных загрузок", "settings.stream": "Выбор файлов",
-    "settings.allFiles": "Все файлы", "settings.packagesOnly": "Только пакеты",
-    "settings.location": "Куда устанавливать", "settings.network": "Сеть",
-    "settings.catalog": "Каталог", "settings.catalogUrl": "URL источника каталога",
-    "settings.refresh": "Обновлять каталог при запуске", "settings.save": "Сохранить",
-    "update.title": "Обновление pipensx", "update.sub": "Загрузите новый pipensx.nro прямо на Switch. GitHub для обновления не используется.",
-    "update.drop": "Выбрать новый pipensx.nro", "update.upload": "Загрузить обновление", "update.apply": "Применить на Switch",
-    "update.current": "Текущая версия: {0}", "update.ready": "Обновление подготовлено: {0}. Можно применять.",
-    "update.none": "Загруженного обновления нет.", "update.uploading": "Загрузка и проверка…", "update.applying": "Обновление применяется — pipensx закроется на Switch.",
-    "logs.title": "Диагностический лог", "logs.sub": "Конец pipensx.log прямо со Switch.",
-    "logs.search": "Поиск в логе…", "logs.all": "Все", "logs.install": "Установка", "logs.errors": "Ошибки",
-    "logs.refresh": "Обновить", "logs.auto": "Автообновление", "logs.copy": "Копировать", "logs.download": "Скачать",
-    "logs.performance": "Производительность", "logs.telemetry": "Подробная диагностика скорости",
-    "game.install": "Установить", "game.download": "Скачать", "game.close": "Закрыть",
-    "game.developer": "Разработчик", "game.publisher": "Издатель", "game.genre": "Жанр",
-    "game.year": "Год", "game.size": "Размер", "game.titleId": "Title ID",
-    "game.multiplayer": "Мультиплеер", "game.performance": "Заметки", "game.hash": "Инфо-хеш",
-    "game.peers": "Пиры", "game.added": "Добавлена",
-    "task.moveUp": "↑", "task.moveDown": "↓", "task.top": "Вверх",
-    "task.pause": "Пауза", "task.resume": "Продолжить", "task.retry": "Повторить",
-    "task.verify": "Проверить", "task.remove": "Удалить",
-    "action.leased": "Файлы копируются на карту памяти",
-    "action.committing": "Пакет фиксируется, пауза недоступна",
-    "action.not_pausable": "Эту загрузку сейчас нельзя поставить на паузу",
-    "action.not_resumable": "Эта загрузка не на паузе",
-    "action.not_completed": "Проверить можно только завершённую загрузку",
-    "action.debrid": "Загрузку через debrid нельзя проверить",
-    "action.not_queued": "Перемещать можно только задачу в очереди",
-    "action.removing": "Эта загрузка уже удаляется",
-    "action.not_found": "Этой загрузки больше нет в списке",
-    "msg.addedQueue": "Добавлено в очередь Switch", "msg.resolving": "Распознаётся на Switch…",
-    "msg.saved": "Настройки сохранены",
-    "msg.clearedEntries": "Убрано записей: {0}. Пропущено занятых: {1}.",
-    "msg.clearedFiles": "Удалены файлы у {0} записей. Пропущено занятых: {1}.",
-    "recovery.downloaded": "Скачано",
-    "recovery.installed": "Установлено",
-    "recovery.verifying": "Проверяем сохранённые данные",
-    "recovery.verify": "Сохранённые данные проверяются снова ({0}). Скачано остаётся {1}.",
-    "recovery.reread": "Текущий пакет читается заново ({0}). Установленные пакеты остаются: {1}.",
-    "recovery.refetch": "Текущий файл скачивается заново ({0}). Сохранено {1}.",
-    "recovery.recopy": "Копирование начинается заново ({0}). Уже скачанное остаётся.",
-    "recovery.pieces": "Продолжение с сохранённых частей, не с точного байта.",
-    "recovery.byte": "Продолжение с сохранённого места в этом файле.",
-    "source.direct": "Напрямую",
-    "source.keyOk": "ключ задан",
-    "source.noKey": "нет ключа",
-  },
-};
-Object.assign(I18N, window.PIPENSX_I18N || {});
-const browserLanguage = (navigator.language || "en").toLowerCase();
+const $ = id => document.getElementById(id);
+const translations = window.PIPENSX_I18N;
+const languages = { en: "English", ru: "Русский", "pt-BR": "Português (Brasil)", fr: "Français", es: "Español", it: "Italiano", "zh-CN": "简体中文", ko: "한국어" };
+const browserLocale = navigator.language.toLowerCase();
 let lang = localStorage.getItem("pipensxLang") ||
-  (browserLanguage.startsWith("pt") ? "pt-BR" : browserLanguage.startsWith("zh") ? "zh-CN" : browserLanguage.split("-")[0]);
-const catalogLanguages = ["en", "ru", "pt-BR", "fr", "es", "zh-CN", "it", "ko"];
-if (!catalogLanguages.includes(lang)) lang = "en";
-let descriptionGeneration = 0;
-let clearUiReady = false;
-const t = (k) => (I18N[lang] && I18N[lang][k]) || I18N.en[k] || k;
-function applyI18n() {
+  (browserLocale.startsWith("pt") ? "pt-BR" : browserLocale.startsWith("zh") ? "zh-CN" : browserLocale.split("-")[0]);
+if (!languages[lang]) lang = "en";
+const t = (key, ...args) => (translations[lang]?.[key] || translations.en[key] || key)
+  .replace(/\{(\d+)\}/g, (_, i) => args[i] ?? "");
+const esc = value => String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+const bytes = value => {
+  let n = Number(value) || 0, i = 0;
+  while (n >= 1024 && i < 4) { n /= 1024; i++; }
+  return new Intl.NumberFormat(lang, { maximumFractionDigits: i ? 1 : 0 }).format(n) + " " +
+    (lang === "ru" ? ["Б", "КиБ", "МиБ", "ГиБ", "ТиБ"] : ["B", "KiB", "MiB", "GiB", "TiB"])[i];
+};
+const speed = value => bytes(value) + (lang === "ru" ? "/с" : "/s");
+const activeStates = new Set(["Checking", "Fetching", "Downloading", "Installing", "Committing", "Verifying", "Removing"]);
+const pages = ["downloads", "catalog", "library", "settings", "maintenance", "add"];
+let state = { tasks: [], jobs: [], summary: {}, storage: {}, source: {} };
+let stateLoaded = false, features = {}, online = null, restarting = false;
+let catalog = null, catalogBusy = false, catalogSection = "games", favoritesOnly = false;
+let catalogGeneration = null;
+let favorites = new Set(), selected = new Set(), filteredCatalog = [], shown = 0;
+let library = null, libraryBusy = false, settings = null, logText = "", logBusy = false;
+let updateStatus = null, updateBusy = false, toastTimer, pendingPin, navigating = false;
+let instanceId = null;
+let storageSnapshot = null, storageBusy = false;
+const busyTasks = new Set();
+const seenLibraryJobs = new Set();
+
+function translate(root = document) {
   document.documentElement.lang = lang;
-  document.querySelectorAll("[data-i18n]").forEach((el) => { el.textContent = t(el.dataset.i18n); });
-  document.querySelectorAll("[data-i18n-ph]").forEach((el) => { el.placeholder = t(el.dataset.i18nPh); });
-  if (clearUiReady) updateClearButtons();
-  $("lang-btn").textContent = lang.toUpperCase();
-  $("alerts-state").textContent = t(alertsOn() ? "common.on" : "common.off");
-  if (typeof library !== "undefined" && library) renderLibrary();
-  syncSearchPlaceholder();
-  syncAllCustomSelects();
+  root.querySelectorAll("[data-i18n]").forEach(el => { el.textContent = t(el.dataset.i18n); });
 }
-function syncSearchPlaceholder() {
-  const el = $("global-search");
-  if (!el) return;
-  const tab = (typeof currentTab === "function") ? currentTab() : "downloads";
-  let ph = t("downloads.search");
-  if (tab === "catalog") ph = t("catalog.search");
-  else if (tab === "library") ph = t("library.search");
-  else if (tab === "logs") ph = t("logs.search");
-  el.placeholder = ph;
-  el.setAttribute("aria-label", ph);
-}
-
-/* ================= theme ================= */
 function applyTheme() {
-  const pref = localStorage.getItem("pipensxTheme") || "dark";
-  const theme = pref === "auto"
+  const pref = localStorage.getItem("pipensxTheme") || "auto";
+  document.documentElement.dataset.theme = pref === "auto"
     ? (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark") : pref;
-  document.documentElement.dataset.theme = theme;
-  const tb = $("theme-btn");
-  if (tb) tb.innerHTML = icon(theme === "dark" ? "moon" : "sun");
-  const sel = $("set-theme");
-  if (sel) sel.value = pref;
+  $("browser-theme").value = pref;
 }
-$("theme-btn").addEventListener("click", () => {
-  const cur = localStorage.getItem("pipensxTheme") || "dark";
-  localStorage.setItem("pipensxTheme", cur === "dark" ? "light" : "dark");
-  applyTheme();
-});
-$("lang-btn").addEventListener("click", () => {
-  lang = catalogLanguages[(catalogLanguages.indexOf(lang) + 1) % catalogLanguages.length];
-  localStorage.setItem("pipensxLang", lang);
-  applyI18n();
-  renderDownloads();
-  if (catalog) { buildCatalogFilters(); applyCatalogFilter(); }
-  const sel = $("set-lang");
-  if (sel) sel.value = lang;
-});
-matchMedia("(prefers-color-scheme: light)").addEventListener?.("change", applyTheme);
-
-/* ---------- PIN ---------- */
-{
-  const params = new URLSearchParams(location.search);
-  const pin = params.get("pin");
-  if (pin) {
-    localStorage.setItem("pipensxPin", pin);
-    history.replaceState(null, "", location.pathname + location.hash);
-  }
+function toast(message, error = false) {
+  $("toast").textContent = message;
+  $("toast").classList.toggle("error", error);
+  $("toast").hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { $("toast").hidden = true; }, error ? 9000 : 4500);
 }
-const getPin = () => localStorage.getItem("pipensxPin") || "";
-
-// HTML dialogs work in browsers that disable window.prompt/window.confirm.
-function controlDialog(title, message, pinMode = false, actionText = "") {
+function errorText(error) {
+  if (error instanceof TypeError) return t("web.networkError");
+  return error.message || t("web.failed");
+}
+async function busy(button, action, status) {
+  if (button?.disabled) return;
+  if (button) button.disabled = true;
+  try { return await action(); }
+  catch (error) {
+    if (status) { status.textContent = errorText(error); status.classList.add("error"); }
+    toast(errorText(error), true);
+  } finally { if (button?.isConnected) button.disabled = false; }
+}
+function ask(title, message, pinMode = false, action = t("control.continue")) {
   const dialog = $("control-dialog");
-  const form = $("control-form");
-  const input = $("control-pin");
-  const previousFocus = document.activeElement;
   $("control-title").textContent = title;
   $("control-message").textContent = message;
   $("control-pin-field").hidden = !pinMode;
-  input.value = "";
-  input.required = pinMode;
-  $("control-cancel").textContent = t("control.cancel");
-  $("control-submit").textContent = pinMode ? t("control.continue") : (actionText || t("update.apply"));
-  return new Promise((resolve) => {
-    const finish = (value) => {
-      form.removeEventListener("submit", submit);
-      $("control-submit").removeEventListener("click", submit);
-      dialog.removeEventListener("keydown", keydown);
-      $("control-cancel").removeEventListener("click", cancel);
-      dialog.hidden = true;
-      input.value = "";
-      if (previousFocus?.isConnected) previousFocus.focus();
-      resolve(value);
+  $("control-pin").required = pinMode;
+  $("control-pin").value = "";
+  $("control-submit").textContent = action;
+  return new Promise(resolve => {
+    let result = false;
+    const finish = () => {
+      $("control-form").onsubmit = null;
+      $("control-cancel").onclick = null;
+      dialog.removeEventListener("close", finish);
+      resolve(result);
     };
-    const submit = (event) => {
+    $("control-form").onsubmit = event => {
       event.preventDefault();
-      if (pinMode && !input.value.trim()) return;
-      finish(pinMode ? input.value.trim() : true);
+      result = pinMode ? $("control-pin").value : true;
+      dialog.close();
     };
-    const cancel = (event) => { event.preventDefault(); finish(false); };
-    const keydown = (event) => {
-      if (event.key === "Escape") return cancel(event);
-      if (event.key === "Enter" && event.target === input) return submit(event);
-      if (event.key === "Tab") {
-        const first = pinMode ? input : $("control-cancel");
-        const last = $("control-submit");
-        if (event.shiftKey && document.activeElement === first) {
-          event.preventDefault(); last.focus();
-        } else if (!event.shiftKey && document.activeElement === last) {
-          event.preventDefault(); first.focus();
-        }
-      }
-    };
-    form.addEventListener("submit", submit);
-    $("control-submit").addEventListener("click", submit);
-    dialog.addEventListener("keydown", keydown);
-    $("control-cancel").addEventListener("click", cancel);
-    dialog.hidden = false;
-    (pinMode ? input : $("control-submit")).focus();
+    $("control-cancel").onclick = () => dialog.close();
+    dialog.addEventListener("close", finish);
+    dialog.showModal();
+    if (pinMode) $("control-pin").focus();
   });
 }
-
-let pendingPin = null;
 function requestPin() {
-  // Settings and update status can both return 401 at the same time.
-  if (!pendingPin) {
-    pendingPin = controlDialog(t("control.pin"), t("control.pinHelp"), true)
-      .then((pin) => {
-        if (pin) localStorage.setItem("pipensxPin", pin);
-        return pin;
-      }).finally(() => { pendingPin = null; });
-  }
+  if (!pendingPin) pendingPin = ask(t("control.pin"), t("control.pinHelp"), true)
+    .then(pin => {
+      if (pin) localStorage.setItem("pipensxPin", pin);
+      return pin;
+    }).finally(() => { pendingPin = null; });
   return pendingPin;
 }
+async function api(path, options = {}, retry = true) {
+  const headers = new Headers(options.headers);
+  const pin = localStorage.getItem("pipensxPin") || "";
+  if (pin) headers.set("X-Pipensx-Pin", pin);
+  let response;
+  try { response = await fetch(path, { cache: "no-store", ...options, headers }); }
+  catch (error) { setConnection(false); throw error; }
+  setConnection(true);
+  if (response.status === 401 && retry) {
+    const saved = localStorage.getItem("pipensxPin");
+    if ((saved && saved !== pin) || await requestPin()) return api(path, options, false);
+  }
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    const reason = data.error || "";
+    const localized = translations[lang]?.["action." + reason];
+    throw new Error(response.status === 401 ? t("control.invalidPin") :
+      localized || (reason ? t("web.serverError", reason) : t("web.httpError", response.status)));
+  }
+  if (response.status === 204) return null;
+  return options.raw ? response.text() : response.json();
+}
+const post = (path, body = {}) => api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+function modal(title, body, actions = "") {
+  const dialog = $("modal");
+  dialog.innerHTML = '<div class="dialog-body"><div class="dialog-heading"><h2 id="modal-title">' + esc(title) +
+    '</h2><button data-close>' + esc(t("game.close")) + '</button></div>' + body +
+    (actions ? '<div class="dialog-actions">' + actions + "</div>" : "") + "</div>";
+  dialog.querySelector("[data-close]").onclick = () => dialog.close();
+  if (!dialog.open) dialog.showModal();
+}
+$("modal").addEventListener("click", event => { if (event.target === $("modal")) $("modal").close(); });
 
-async function api(path, options = {}, retryPin = true) {
-  options.headers = Object.assign({}, options.headers);
-  const sentPin = getPin();
-  if (sentPin) options.headers["X-Pipensx-Pin"] = sentPin;
-  let resp;
+function closeMenu() {
+  $("sidebar").classList.remove("open");
+  $("menu-button").setAttribute("aria-expanded", "false");
+  $("scrim").hidden = true;
+  $("sidebar").inert = matchMedia("(max-width: 740px)").matches;
+}
+$("menu-button").onclick = () => {
+  const open = !$("sidebar").classList.contains("open");
+  $("sidebar").classList.toggle("open", open);
+  $("sidebar").inert = !open;
+  $("menu-button").setAttribute("aria-expanded", String(open));
+  $("scrim").hidden = !open;
+  if (open) $("sidebar").querySelector("a").focus();
+};
+$("scrim").onclick = closeMenu;
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape" && $("sidebar").classList.contains("open")) { closeMenu(); $("menu-button").focus(); }
+});
+matchMedia("(max-width: 740px)").addEventListener("change", closeMenu);
+function page() {
+  const value = location.hash.slice(1);
+  return pages.includes(value) ? value : null;
+}
+function showPage() {
+  if (!page()) return;
+  const current = page();
+  for (const name of pages) $("view-" + name).hidden = current !== name;
+  document.querySelectorAll("[data-page]").forEach(link => {
+    if (link.dataset.page === current) link.setAttribute("aria-current", "page");
+    else link.removeAttribute("aria-current");
+  });
+  closeMenu();
+  document.title = (current === "maintenance" ? t("web.maintenance") : current === "add" ? t("web.add") : t("tabs." + current)) + " · pipensx";
+  if (navigating) { window.scrollTo(0, 0); $("main").focus({ preventScroll: true }); }
+  navigating = true;
+  if (current === "downloads") renderDownloads();
+  if (current === "catalog") loadCatalog();
+  if (current === "library") loadLibrary();
+  if (current === "settings" && !settings) loadSettings();
+  if (current === "maintenance") { loadUpdate(); loadLogs(); loadMaintenance(); }
+}
+window.addEventListener("hashchange", showPage);
+function setConnection(connected) {
+  online = connected;
+  $("connection").dataset.online = String(connected);
+  $("connection").textContent = t(connected ? "web.online" : "web.offline");
+  $("connection-banner").hidden = connected && !restarting;
+  $("connection-banner").textContent = t(restarting ? "web.restarting" : "web.disconnected");
+}
+function renderDevice() {
+  $("device-version").textContent = state.version ? "v" + state.version : "";
+  $("storage-summary").textContent = state.storage?.available ? t("web.freeSpace", bytes(state.storage.freeBytes)) : "";
+  const providers = { torbox: "TorBox", realdebrid: "Real-Debrid", alldebrid: "AllDebrid", torrserver: "TorrServer" };
+  $("source-name").textContent = state.source?.direct ? "BitTorrent" : providers[state.source?.provider] || "";
+}
+function acceptState(next) {
+  state = next;
+  stateLoaded = true;
+  renderDevice();
+  if (!page() && location.hash !== "#main") {
+    history.replaceState(null, "", state.tasks.length || state.jobs.length ? "#downloads" : "#catalog");
+    showPage();
+  }
+  if (page() === "downloads") renderDownloads();
+  if (page() === "catalog" && catalog && catalogGeneration !== state.catalogGeneration) loadCatalog(true);
+  const count = state.tasks.filter(task => activeStates.has(task.status)).length;
+  $("dl-count").hidden = !count;
+  $("dl-count").textContent = count;
+}
+async function reloadTasks() { acceptState(await api("/api/tasks")); }
+const events = new EventSource("/api/events");
+events.addEventListener("state", event => {
+  try { acceptState(JSON.parse(event.data)); setConnection(true); }
+  catch (error) { toast(errorText(error), true); }
+});
+events.onerror = () => setConnection(false);
+
+function progress(task) {
+  if ((task.status === "Installing" || task.status === "Committing") && task.installTotalBytes)
+    return Math.min(100, task.installedBytes / task.installTotalBytes * 100);
+  if (task.status === "Fetching") return Math.min(100, (task.fetchProgress || 0) * 100);
+  const total = task.wantedTotalBytes || task.totalBytes;
+  return total ? Math.min(100, (task.wantedTotalBytes ? task.wantedCompletedBytes : task.completedBytes) / total * 100) : 0;
+}
+function taskMarkup(task) {
+  const done = task.wantedTotalBytes ? task.wantedCompletedBytes : task.completedBytes;
+  const total = task.wantedTotalBytes || task.totalBytes;
+  const details = [bytes(done) + " / " + bytes(total)];
+  if (activeStates.has(task.status)) details.push(t("speed.download") + ": " + speed(task.speedBps));
+  if (task.status === "Installing" || task.status === "Committing") details.push(t("speed.install") + ": " + speed(task.installSpeedBps));
+  if (task.seeding) details.push(t("web.seeding") + ": " + speed(task.uploadSpeedBps));
+  if (task.etaSeconds) details.push(t("sort.eta") + ": " + Math.ceil(task.etaSeconds / 60) + " " + t("web.minutes"));
+  const button = (command, key, cls = "") => '<button data-task="' + esc(task.id) + '" data-command="' + command + '" class="' + cls + '"' +
+    (busyTasks.has(task.id) ? " disabled" : "") + ">" + esc(t(key)) + "</button>";
+  const actions = [];
+  for (const [command, key] of [["pause", "task.pause"], ["resume", task.status === "Error" ? "task.retry" : "task.resume"]])
+    if (task.capabilities?.[command]?.allowed) actions.push(button(command, key));
+  actions.push(button("details", "web.details"));
+  return '<article class="task" data-state="' + esc(task.status) + '"><div class="task-heading"><button class="task-title" data-task="' + esc(task.id) +
+    '" data-command="details">' + esc(task.name || task.id) + '</button><span class="task-state">' + esc(t("status." + task.status)) +
+    '</span></div><progress max="100" value="' + progress(task) + '" aria-label="' + esc(t("sort.progress")) + '"></progress><div class="task-meta">' +
+    details.map(value => "<span>" + esc(value) + "</span>").join("") + "</div>" +
+    (task.currentPackage ? '<p class="muted">' + esc(task.currentPackage) + "</p>" : "") +
+    (task.error ? '<p class="task-error">' + esc(task.error) + "</p>" : "") +
+    '<div class="task-actions">' + actions.join("") + "</div></article>";
+}
+function renderDownloads() {
+  if (!stateLoaded) return;
+  const query = $("downloads-search").value.trim().toLowerCase(), filter = $("task-filter").value;
+  const list = state.tasks.filter(task => (task.name || task.id).toLowerCase().includes(query) &&
+    (filter === "all" || (filter === "active" ? activeStates.has(task.status) : task.status === filter)));
+  const sort = $("task-sort").value;
+  if (sort === "name") list.sort((a, b) => (a.name || "").localeCompare(b.name || "", lang));
+  if (sort === "speed") list.sort((a, b) => b.speedBps - a.speedBps);
+  if (sort === "progress") list.sort((a, b) => progress(b) - progress(a));
+  // Keep focused controls in place while SSE updates the rest of the queue.
+  const focus = document.activeElement;
+  const focusTask = focus?.dataset.task, focusCommand = focus?.dataset.command;
+  $("tasks").innerHTML = list.map(taskMarkup).join("");
+  if (focusTask) Array.from($("tasks").querySelectorAll("[data-task]")).find(el =>
+    el.dataset.task === focusTask && el.dataset.command === focusCommand)?.focus({ preventScroll: true });
+  const jobs = (state.jobs || []).filter(job => !(job.state === "done" && state.tasks.some(task => task.id === job.taskId)) && job.state !== "cancelled");
+  $("jobs").innerHTML = jobs.map(job => '<article class="job"><strong>' + esc(job.title) + '</strong><p>' +
+    esc(t("web.job." + job.state)) + (job.error ? ": " + esc(job.error) : "") + "</p>" +
+    (["queued", "resolving", "importing"].includes(job.state) ? '<button data-cancel-job="' + esc(job.jobId) + '">' + esc(t("control.cancel")) + "</button>" : "") + "</article>").join("");
+  $("downloads-status").hidden = list.length > 0 || jobs.length > 0;
+  $("downloads-status").textContent = state.tasks.length ? t("web.noResults") : t("downloads.emptySub");
+  const summary = state.summary || {};
+  $("queue-summary").innerHTML = [
+    ["speed.download", speed(summary.downloadSpeedBps)], ["speed.install", speed(summary.installSpeedBps)],
+    ["dash.remaining", bytes(summary.remainingBytes)], ["dash.queue", state.tasks.length]
+  ].map(([key, value]) => "<div><span>" + esc(t(key)) + "</span><strong>" + esc(value) + "</strong></div>").join("");
+  $("bulk-pause").disabled = !state.tasks.some(task => task.capabilities?.pause?.allowed);
+  $("bulk-resume").disabled = !state.tasks.some(task => task.capabilities?.resume?.allowed);
+  const clearable = state.tasks.some(task => ["Completed", "Installed"].includes(task.status) && task.capabilities?.remove?.allowed);
+  $("bulk-clear").disabled = $("bulk-clear-files").disabled = !clearable;
+}
+async function taskCommand(id, command, body = {}) {
+  busyTasks.add(id);
+  try { await post("/api/tasks/" + encodeURIComponent(id) + "/" + command, body); await reloadTasks(); }
+  finally { busyTasks.delete(id); renderDownloads(); }
+}
+async function openTask(id) {
+  const task = state.tasks.find(item => item.id === id);
+  if (!task) return;
+  const action = (command, key, cls = "") => '<button data-task="' + esc(id) + '" data-command="' + command + '" class="' + cls + '">' + esc(t(key)) + "</button>";
+  const actions = [];
+  if (features.ports && ["port", "download"].includes(task.mode)) actions.push(action("port-files", "port.files"));
+  if (task.capabilities?.verify?.allowed) actions.push(action("verify", "task.verify"));
+  if (task.capabilities?.move?.allowed) actions.push(action("move-up", "web.moveUp"), action("move-down", "web.moveDown"), action("move-front", "task.top"));
+  if (task.capabilities?.remove?.allowed) actions.push(action("remove", "task.remove", "danger"));
+  modal(task.name || id, '<p>' + esc(t("status." + task.status)) + "</p>" +
+    (task.error ? '<p class="error">' + esc(task.error) + "</p>" : "") +
+    '<div class="task-meta"><span>' + esc(t("game.peers")) + ": " + (task.peers || 0) +
+    "</span><span>DHT: " + (task.dhtGood || 0) + "</span><span>" + esc(t("speed.install")) + ": " +
+    (task.packagesInstalled || 0) + " / " + (task.packageCount || 0) + '</span></div><h3 class="file-heading">' +
+    esc(t("web.files")) + '</h3><div id="task-files" role="status">' + esc(t("web.loading")) + "</div>", actions.join(""));
   try {
-    resp = await fetch(path, options);
-  } catch (e) {
-    setConn(false);
-    throw e;
-  }
-  if (resp.ok) setConn(true);
-  if (resp.status === 401 && retryPin) {
-    const pin = getPin() && getPin() !== sentPin ? getPin() : await requestPin();
-    if (pin) {
-      const retry = await api(path, options, false);
-      if (retry.status === 401) toast(t("control.invalidPin"), true);
-      return retry;
-    }
-  }
-  return resp;
+    const data = await api("/api/tasks/" + encodeURIComponent(id) + "/files");
+    if (!$("task-files") || !$("modal").open) return;
+    $("task-files").innerHTML = '<p class="muted">' + esc(data.rootPath) + "</p>" +
+      (!data.complete ? "<p>" + esc(t("web.incompleteFiles")) + "</p>" : "") +
+      (data.files.length ? '<ul class="file-list">' + data.files.map(file => "<li><strong>" + esc(file.path) +
+        "</strong><small>" + esc(bytes(file.size)) + " · " + esc(t("web.file." + file.state)) + " · " +
+        esc(t("web.action." + file.action)) + "</small>" +
+        (file.destination || file.localPath ? "<small>" + esc(file.destination || file.localPath) + "</small>" : "") + "</li>").join("") + "</ul>" : "<p>" + esc(t("web.noResults")) + "</p>");
+  } catch (error) { if ($("task-files")) $("task-files").textContent = errorText(error); }
 }
-async function postJson(path, body) {
-  return api(path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+async function removeTask(id) {
+  const task = state.tasks.find(item => item.id === id);
+  modal(t("task.remove"), "<p>" + esc(task?.name || id) + '</p><label><input id="remove-data" type="checkbox"><span>' + esc(t("remove.data")) + "</span></label>",
+    '<button id="remove-confirm" class="danger">' + esc(t("task.remove")) + "</button>");
+  $("remove-confirm").onclick = event => busy(event.currentTarget, async () => {
+    await taskCommand(id, "remove", { deleteData: $("remove-data").checked });
+    $("modal").close();
   });
 }
-
-/* ---------- helpers ---------- */
-function fmtBytes(n) {
-  if (n === null || n === undefined) return "?";
-  const units = lang === "ru" ? ["Б", "КиБ", "МиБ", "ГиБ", "ТиБ"] : ["B", "KiB", "MiB", "GiB", "TiB"];
-  let i = 0, v = Number(n);
-  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
-  return (v >= 100 || i === 0 ? Math.round(v) : v.toFixed(1)) + " " + units[i];
-}
-function fmtSpeed(bps) { return bps > 0 ? fmtBytes(bps) + "/s" : "—"; }
-function tf(k, ...args) {
-  let value = t(k);
-  args.forEach((arg, index) => { value = value.replace(`{${index}}`, arg); });
-  return value;
-}
-function fmtEta(seconds) {
-  if (!seconds) return "";
-  const s = Number(seconds);
-  const m = lang === "ru" ? "м " : "m ", h = lang === "ru" ? "ч " : "h ",
-        d = lang === "ru" ? "д " : "d ", sec = lang === "ru" ? "с" : "s";
-  if (s < 60) return s + sec;
-  const minutes = Math.floor(s / 60);
-  if (minutes < 60) return minutes + m + (s % 60) + sec;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return hours + h + (minutes % 60) + m;
-  return Math.floor(hours / 24) + d + (hours % 24) + h;
-}
-function esc(s) {
-  return String(s ?? "").replace(/[&<>"']/g,
-    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-}
-function fmtDate(ts) {
-  if (!ts) return "";
-  try { return new Date(Number(ts) * 1000).toLocaleDateString(lang === "en" ? "en-US" : lang); }
-  catch { return ""; }
-}
-
-let toastTimer = null;
-function toast(message, isError = false) {
-  const el = $("toast");
-  el.textContent = message;
-  el.classList.toggle("err", isError);
-  el.hidden = false;
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { el.hidden = true; }, 3500);
-}
-function closeModal() { const m = $("modal"); if (m.open) m.close(); }
-function openModal(html) {
-  const modal = $("modal");
-  modal.innerHTML = html;
-  modal.classList.toggle("port-dialog", html.includes('class="modal-body port-editor"'));
-  renderIcons(modal);
-  if (!modal.open) modal.showModal();
-  modal.onclick = (e) => { if (e.target === modal) closeModal(); };
-}
-
-/* ---------- tabs ---------- */
-const tabs = ["downloads", "catalog", "library", "add", "logs", "settings"];
-function currentTab() {
-  const h = location.hash.replace("#", "");
-  return tabs.includes(h) ? h : "downloads";
-}
-function showTab() {
-  const active = currentTab();
-  for (const tt of tabs) {
-    $("view-" + tt).hidden = tt !== active;
-    const nav = document.querySelector(`.nav-item[data-page="${tt}"]`);
-    if (nav) nav.classList.toggle("active", tt === active);
-  }
-  closeDrawer();
-  window.scrollTo(0, 0);
-  syncSearchPlaceholder();
-  if (active === "downloads") renderDownloads();
-  if (active === "catalog") loadCatalog();
-  if (active === "library") loadLibrary();
-  if (active === "logs") startLogView();
-  else stopLogView();
-  if (active === "settings") loadSettings();
-}
-function closeDrawer() {
-  const sb = $("sidebar");
-  if (sb) sb.classList.remove("open");
-  const scrim = $("scrim");
-  if (scrim) scrim.hidden = true;
-}
-window.addEventListener("hashchange", showTab);
-$("empty-browse")?.addEventListener("click", () => { location.hash = "#catalog"; });
-
-/* ---------- live state (SSE) ---------- */
-let state = { tasks: [], jobs: [], storage: null, summary: null, version: "" };
-clearUiReady = true;
-let lastStatuses = new Map();
-let events = null;
-const speedHist = []; // last N aggregate download speeds for the chart
-const SPEED_HIST_N = 60;
-
-/* Right-panel link state. SSE drives it, but any successful REST call
-   also proves the console is reachable (SSE alone can stall while the
-   REST API answers fine). */
-function setConn(online) {
-  const ac = $("activity-conn");
-  if (ac) ac.textContent = online ? "online" : "offline";
-  const head = document.querySelector(".activity-heading");
-  if (head) head.classList.toggle("offline", !online);
-  const dot = document.querySelector(".activity-status .status-dot");
-  if (dot) dot.classList.toggle("offline", !online);
-}
-
-function connectEvents() {
-  if (events) events.close();
-  events = new EventSource("/api/events");
-  events.addEventListener("state", (e) => {
-    setConn(true);
-    state = JSON.parse(e.data);
-    if (state.version) {
-      const dv = $("device-ver");
-      if (dv) dv.textContent = "v" + state.version;
-      const sv = $("sb-ver");
-      if (sv) sv.textContent = "v" + state.version;
-      if ($("foot-ver")) $("foot-ver").textContent = "pipensx v" + state.version;
-    }
-    notifyTransitions();
-    renderDownloads();
+document.addEventListener("click", event => {
+  const button = event.target.closest("[data-command]");
+  if (button) busy(button, async () => {
+    const id = button.dataset.task, command = button.dataset.command;
+    if (command === "details") return openTask(id);
+    if (command === "port-files") return openPortEditor(id);
+    if (command === "remove") return removeTask(id);
+    await taskCommand(id, command);
+    if ($("modal").open) await openTask(id);
   });
-  events.onerror = () => {
-    setConn(false);
+  const job = event.target.closest("[data-cancel-job]");
+  if (job) busy(job, async () => { await post("/api/jobs/" + encodeURIComponent(job.dataset.cancelJob) + "/cancel"); await reloadTasks(); });
+});
+for (const name of ["pause", "resume"]) $("bulk-" + name).onclick = event => busy(event.currentTarget, async () => {
+  await post("/api/queue/" + name + "-all"); await reloadTasks();
+});
+for (const [id, deleteData] of [["bulk-clear", false], ["bulk-clear-files", true]]) $(id).onclick = event => busy(event.currentTarget, async () => {
+  const completed = state.tasks.filter(task => ["Completed", "Installed"].includes(task.status));
+  const clearable = completed.filter(task => task.capabilities?.remove?.allowed);
+  const skipped = completed.length - clearable.length;
+  const message = deleteData ? t("downloads.clearFilesAsk", clearable.length,
+    bytes(clearable.reduce((sum, task) => sum + (task.completedBytes || 0), 0)), skipped) : t("downloads.clearEntriesAsk", clearable.length, skipped);
+  if (!await ask(t(deleteData ? "downloads.clearFiles" : "downloads.clearDone"), message)) return;
+  const result = await post("/api/queue/clear-completed", { deleteData });
+  toast(t(deleteData ? "msg.clearedFiles" : "msg.clearedEntries", result.cleared, result.skippedBusy));
+  await reloadTasks();
+});
+$("downloads-refresh").onclick = event => busy(event.currentTarget, reloadTasks, $("downloads-status"));
+for (const id of ["downloads-search", "task-filter", "task-sort"]) $(id).addEventListener(id.endsWith("search") ? "input" : "change", renderDownloads);
+
+async function loadCatalog(force = false) {
+  if (catalogBusy) return;
+  if (catalog && !force) { renderCatalog(); return; }
+  catalogBusy = true;
+  $("catalog-status").hidden = false;
+  $("catalog-status").textContent = t("web.loading");
+  try {
+    catalog = (await api("/api/catalog")).filter(entry => entry.section !== "autorun");
+    catalogGeneration = state.catalogGeneration;
+    if (features.favorites) favorites = new Set((await api("/api/favorites")).hashes);
+    for (const [id, field, empty] of [["flt-genre", "genre", "catalog.allGenres"], ["flt-year", "year", "catalog.allYears"]]) {
+      const previous = $(id).value;
+      const values = [...new Set(catalog.map(entry => String(entry[field] || "")).filter(Boolean))].sort((a, b) => a.localeCompare(b, lang));
+      if (field === "year") values.reverse();
+      $(id).innerHTML = '<option value="">' + esc(t(empty)) + "</option>" + values.map(value => '<option value="' + esc(value) + '">' + esc(value) + "</option>").join("");
+      if (values.includes(previous)) $(id).value = previous;
+    }
+    renderCatalog();
+  } catch (error) {
+    $("catalog-status").hidden = false;
+    $("catalog-status").textContent = errorText(error);
+  } finally { catalogBusy = false; }
+}
+function renderCatalog() {
+  if (!catalog) return;
+  const query = $("catalog-search").value.trim().toLowerCase(), genre = $("flt-genre").value, year = $("flt-year").value, size = $("flt-size").value;
+  const section = catalog.filter(entry => favoritesOnly ? favorites.has(entry.infoHash) : entry.section === catalogSection);
+  filteredCatalog = section.filter(entry => [entry.title, entry.developer, entry.publisher].some(value => String(value || "").toLowerCase().includes(query)) &&
+    (!genre || entry.genre === genre) && (!year || String(entry.year) === year) &&
+    (!size || (size === "small" ? entry.size < 4 * 1024 ** 3 : size === "medium" ? entry.size >= 4 * 1024 ** 3 && entry.size <= 10 * 1024 ** 3 : entry.size > 10 * 1024 ** 3)));
+  const sort = $("flt-sort").value;
+  filteredCatalog.sort((a, b) => sort === "recent" ? (b.publishedAt || 0) - (a.publishedAt || 0) : sort === "year" ? Number(b.year || 0) - Number(a.year || 0) :
+    sort === "size" ? a.size - b.size : (a.title || "").localeCompare(b.title || "", lang));
+  $("catalog-count").textContent = t("catalog.count", filteredCatalog.length, section.length);
+  $("catalog-status").hidden = filteredCatalog.length > 0;
+  $("catalog-status").textContent = t("web.noResults");
+  $("catalog-grid").innerHTML = "";
+  shown = 0;
+  appendCatalog();
+  renderSelection();
+}
+function appendCatalog() {
+  const selectionMode = $("catalog-select-mode").checked;
+  const chunk = filteredCatalog.slice(shown, shown + 48);
+  shown += chunk.length;
+  $("catalog-grid").insertAdjacentHTML("beforeend", chunk.map(entry =>
+    '<article class="game" data-hash="' + esc(entry.infoHash) + '" data-selected="' + selected.has(entry.infoHash) + '"><button class="game-open" data-game="' +
+    esc(entry.infoHash) + '"><span class="game-cover">' + (safeImage(entry.posterUrl) ? '<img src="' + esc(entry.posterUrl) +
+    '" alt="" width="180" height="240" loading="lazy">' : '<span>' + esc(t("web.noCover")) + "</span>") +
+    '</span><span class="game-name">' + esc(entry.title) + '</span><span class="game-meta">' +
+    esc([entry.year, entry.size ? bytes(entry.size) : ""].filter(Boolean).join(" · ")) + "</span></button>" +
+    (selectionMode ? '<label class="game-select"><input type="checkbox" data-select="' + esc(entry.infoHash) + '" aria-label="' +
+      esc(t("web.selectTitle", entry.title)) + '"' + (selected.has(entry.infoHash) ? " checked" : "") + "></label>" : "") + "</article>").join(""));
+  $("catalog-more").hidden = shown >= filteredCatalog.length;
+}
+function safeImage(url) {
+  try { return ["http:", "https:"].includes(new URL(url, location.href).protocol) && Boolean(url); }
+  catch { return false; }
+}
+document.addEventListener("error", event => {
+  if (event.target instanceof HTMLImageElement) event.target.hidden = true;
+}, true);
+$("catalog-grid").onclick = event => {
+  const button = event.target.closest("[data-game]");
+  if (!button) return;
+  if ($("catalog-select-mode").checked) {
+    toggleSelection(button.dataset.game);
+    renderCatalog();
+  } else openGame(button.dataset.game);
+};
+$("catalog-grid").onchange = event => {
+  const input = event.target.closest("[data-select]");
+  if (input) {
+    toggleSelection(input.dataset.select);
+    input.closest(".game").dataset.selected = String(input.checked);
+  }
+};
+function toggleSelection(hash) {
+  if (selected.has(hash)) selected.delete(hash); else selected.add(hash);
+  renderSelection();
+}
+function renderSelection() {
+  $("catalog-batch").hidden = selected.size === 0;
+  $("selected-count").textContent = t("web.selected", selected.size);
+}
+for (const section of ["games", "ports", "favorites"]) $("catalog-" + section).onclick = () => {
+  favoritesOnly = section === "favorites";
+  if (!favoritesOnly) catalogSection = section;
+  for (const name of ["games", "ports", "favorites"]) $("catalog-" + name).setAttribute("aria-pressed", String(name === section));
+  renderCatalog();
+};
+for (const id of ["catalog-search", "flt-genre", "flt-year", "flt-size", "flt-sort"]) $(id).addEventListener(id.endsWith("search") ? "input" : "change", renderCatalog);
+$("catalog-select-mode").onchange = () => { if (!$("catalog-select-mode").checked) selected.clear(); renderCatalog(); };
+$("catalog-more").onclick = appendCatalog;
+$("catalog-refresh").onclick = event => busy(event.currentTarget, () => loadCatalog(true));
+$("catalog-fetch").onclick = event => busy(event.currentTarget, async () => {
+  const job = await post("/api/catalog/refresh");
+  $("catalog-status").hidden = false;
+  $("catalog-status").textContent = t("web.loading");
+  await new Promise((resolve, reject) => {
+    const poll = async () => {
+      try {
+        const data = await api("/api/library");
+        const current = (data.jobs || []).find(item => item.jobId === job.jobId);
+        if (current?.state === "error") throw new Error(current.error || t("web.failed"));
+        if (current?.state === "done") { await loadCatalog(true); resolve(); }
+        else setTimeout(poll, 2000);
+      } catch (error) { reject(error); }
+    };
+    setTimeout(poll, 1000);
+  });
+}, $("catalog-status"));
+$("flt-reset").onclick = () => {
+  for (const id of ["catalog-search", "flt-genre", "flt-year", "flt-size"]) $(id).value = "";
+  $("flt-sort").value = "title"; renderCatalog();
+};
+$("batch-clear").onclick = () => { selected.clear(); $("catalog-select-mode").checked = false; renderCatalog(); };
+async function addCatalog(hash, mode) { return post("/api/add/catalog", { infoHash: hash, mode }); }
+for (const mode of ["install", "download"]) $("batch-" + mode).onclick = event => busy(event.currentTarget, async () => {
+  if (!await ask(t("game." + mode), t("web.batchAsk", selected.size))) return;
+  const failed = [];
+  for (const hash of [...selected]) {
+    try { await addCatalog(hash, mode); selected.delete(hash); }
+    catch (error) { failed.push((catalog.find(entry => entry.infoHash === hash)?.title || hash) + ": " + errorText(error)); }
+  }
+  renderCatalog();
+  if (failed.length) modal(t("web.failed"), "<ul>" + failed.map(message => "<li>" + esc(message) + "</li>").join("") + "</ul>");
+  else { toast(t("msg.addedQueue")); location.hash = "#downloads"; }
+});
+function openGame(hash) {
+  const entry = catalog?.find(item => item.infoHash === hash);
+  if (!entry) return;
+  const facts = [["game.developer", entry.developer], ["game.publisher", entry.publisher], ["game.genre", entry.genre], ["game.year", entry.year],
+    ["game.size", entry.size ? bytes(entry.size) : ""], ["game.titleId", entry.titleId], ["game.performance", entry.performance]];
+  const screenshots = (entry.screenshots || []).filter(safeImage);
+  modal(entry.title,
+    '<div class="game-detail-top">' + (safeImage(entry.posterUrl) ? '<img class="detail-cover" src="' + esc(entry.posterUrl) + '" alt="" width="150" height="200">' : "") +
+    '<dl class="facts">' + facts.filter(([, value]) => value).map(([key, value]) => "<dt>" + esc(t(key)) + "</dt><dd>" + esc(value) + "</dd>").join("") +
+    '</dl></div><p class="description" id="game-description"></p>' +
+    (screenshots.length ? '<div class="shots">' + screenshots.map((url, index) => '<button data-shot="' + index + '" aria-label="' + esc(t("web.screenshot", index + 1)) +
+      '"><img src="' + esc(url) + '" width="640" height="360" alt="" loading="lazy"></button>').join("") + "</div>" : "") +
+    '<details><summary>' + esc(t("web.details")) + "</summary><p>" + esc(hash) + "</p></details>",
+    (features.favorites ? '<button id="game-favorite" aria-pressed="' + favorites.has(hash) + '">' + esc(t(favorites.has(hash) ? "web.unfavorite" : "web.favorite")) + "</button>" : "") +
+    '<button id="game-files">' + esc(t("web.files")) + '</button><button id="game-download">' + esc(t("game.download")) + '</button><button class="primary" id="game-install">' + esc(t("game.install")) + "</button>");
+  $("game-description").textContent = entry.description || "";
+  const descriptionElement = $("game-description");
+  api("/api/catalog/description?hash=" + encodeURIComponent(hash) + "&lang=" + encodeURIComponent(lang))
+    .then(data => { if (descriptionElement.isConnected) descriptionElement.textContent = data.description; })
+    .catch(() => {});
+  for (const mode of ["download", "install"]) $("game-" + mode).onclick = event => busy(event.currentTarget, async () => {
+    await addCatalog(hash, mode); $("modal").close(); toast(t("msg.addedQueue")); location.hash = "#downloads";
+  });
+  $("game-files").onclick = event => busy(event.currentTarget, async () => {
+    openFileChooser(await post("/api/preview/catalog", { infoHash: hash }), true);
+  });
+  if ($("game-favorite")) $("game-favorite").onclick = event => {
+    const button = event.currentTarget;
+    busy(button, async () => {
+    favorites = new Set((await post("/api/favorites", { infoHash: hash })).hashes);
+    button.textContent = t(favorites.has(hash) ? "web.unfavorite" : "web.favorite");
+    button.setAttribute("aria-pressed", String(favorites.has(hash)));
+    renderCatalog();
+    });
   };
-}
-connectEvents();
-
-/* ---------- diagnostic log ---------- */
-let logText = "";
-let logTimer = null;
-let logLoading = false;
-
-function filteredLogText() {
-  const mode = $("log-filter")?.value || "all";
-  const query = ($("log-search")?.value || "").trim().toLowerCase();
-  const lines = logText.split("\n");
-  return lines.filter((line) => {
-    const lower = line.toLowerCase();
-    let matchesMode = true;
-    if (mode === "realdebrid")
-      matchesMode = lower.includes("[realdebrid]") || lower.includes("[debrid]") || lower.includes("real-debrid");
-    else if (mode === "install")
-      matchesMode = lower.includes("[install]") || lower.includes("package") || lower.includes("nsp") || lower.includes("nsz");
-    else if (mode === "errors")
-      matchesMode = lower.includes("error") || lower.includes("failed") || lower.includes("rejected") || lower.includes("[diagnostic]");
-    else if (mode === "performance")
-      matchesMode = lower.includes("[telemetry]") || lower.includes("[debrid-intent]");
-    return matchesMode && (!query || lower.includes(query));
-  }).join("\n");
+  $("modal").querySelectorAll("[data-shot]").forEach(button => button.onclick = () => {
+    modal(entry.title, '<img class="screenshot" src="' + esc(screenshots[Number(button.dataset.shot)]) +
+      '" alt="' + esc(t("web.screenshot", Number(button.dataset.shot) + 1)) + '" width="1280" height="720">',
+      '<button id="shot-back">' + esc(t("port.back")) + "</button>");
+    $("shot-back").onclick = () => openGame(hash);
+  });
 }
 
-function renderLog() {
-  const output = $("log-output");
-  if (!output) return;
-  const nearBottom = output.scrollHeight - output.scrollTop - output.clientHeight < 80;
-  output.textContent = filteredLogText();
-  if (nearBottom) output.scrollTop = output.scrollHeight;
+function renderLibrary() {
+  if (!library) return;
+  const query = $("library-search").value.trim().toLowerCase(), filter = $("library-filter").value;
+  const rows = library.titles.filter(row => (row.name + " " + row.titleId).toLowerCase().includes(query) &&
+    (filter === "all" || (filter === "ports" ? row.isPort : row.updateState === "update_available")));
+  const busyIds = new Set((library.jobs || []).filter(job => ["queued", "working"].includes(job.state)).map(job => job.titleId));
+  $("library-status").textContent = t("library.count", rows.length, library.titles.length);
+  $("library-list").innerHTML = rows.length ? rows.map(row => '<article class="task"><div class="task-heading"><h2>' + esc(row.name || row.titleId) +
+    '</h2><span class="task-state">' + esc(t(row.isPort ? "catalog.ports" : "catalog.games")) + '</span></div><p class="muted">' +
+    esc(row.titleId) + " · " + esc(row.displayVersion || row.version || t("library.unknown")) +
+    '</p><p>' + esc(t("library." + row.updateState)) + (row.latestVersion ? " · " + esc(row.latestVersion) : "") + '</p><p class="muted">' +
+    esc(t("library.dlc", row.dlcCount || 0)) + (row.hasLayeredFsMods ? " · " + esc(t("library.mods")) : "") + '</p><div class="task-actions">' +
+    (row.updateState === "update_available" && row.updateHash ? '<button data-library="' + esc(row.titleId) + '" data-library-action="update"' +
+      (busyIds.has(row.titleId) ? " disabled" : "") + ">" + esc(t("library.update")) + "</button>" : "") +
+    '<button class="danger" data-library="' + esc(row.titleId) + '" data-library-action="uninstall"' + (busyIds.has(row.titleId) ? " disabled" : "") + ">" + esc(t("library.uninstall")) + "</button></div></article>").join("") :
+    '<p class="empty">' + esc(t("library.empty")) + "</p>";
+  $("library-jobs").innerHTML = (library.jobs || []).slice(-5).map(job => '<p class="' + (job.state === "error" ? "error" : "muted") + '">' +
+    esc(t("library." + job.action)) + " · " + esc(t("library.job." + job.state)) + (job.error ? ": " + esc(job.error) : "") + "</p>").join("");
+  $("library-update-all").disabled = !library.titles.some(row => row.updateState === "update_available" && row.updateHash && !row.hasLayeredFsMods);
 }
-
-async function loadLogs() {
-  if (logLoading) return;
-  logLoading = true;
-  const status = $("log-status");
+async function loadLibrary() {
+  if (libraryBusy) return;
+  libraryBusy = true;
+  if (!library) $("library-status").textContent = t("library.loading");
   try {
-    const resp = await api("/api/logs", { cache: "no-store" });
-    if (!resp.ok) {
-      if (resp.status !== 401) {
-        const body = await resp.json().catch(() => ({}));
-        if (status) status.textContent = body.error || `HTTP ${resp.status}`;
-      }
+    library = await api("/api/library");
+    renderLibrary();
+    for (const job of library.jobs || []) if (["done", "error"].includes(job.state) && !seenLibraryJobs.has(job.jobId)) {
+      seenLibraryJobs.add(job.jobId);
+      toast(t("library.job." + job.state) + (job.error ? ": " + job.error : ""), job.state === "error");
+    }
+  } catch (error) { $("library-status").textContent = errorText(error); }
+  finally { libraryBusy = false; }
+}
+$("library-list").onclick = event => {
+  const button = event.target.closest("[data-library]");
+  if (!button) return;
+  busy(button, async () => {
+    const row = library.titles.find(item => item.titleId === button.dataset.library);
+    const action = button.dataset.libraryAction;
+    let message = action === "uninstall" ? t("library.uninstallAsk", row.name, row.titleId) :
+      t("library.updateAsk", row.name, row.displayVersion || row.version, row.latestVersion || t("library.unknown"));
+    if (action === "uninstall" && row.isPort) message += "\n\n" + t("web.portRemoval", row.deployedFiles, bytes(row.deployedBytes)) +
+      ((row.wholeFolders || []).length ? "\n" + row.wholeFolders.join("\n") : "");
+    if (action === "update" && row.hasLayeredFsMods) message += "\n\n" + t("library.modsWarning");
+    if (!await ask(t("library." + action), message)) return;
+    await post("/api/library/" + encodeURIComponent(row.titleId) + "/" + action, { confirm: true, acknowledgeMods: true });
+    if (action === "update") toast(t("library.updateQueued"));
+    await loadLibrary();
+  });
+};
+$("library-refresh").onclick = event => busy(event.currentTarget, async () => { await post("/api/library/refresh"); await loadLibrary(); });
+$("library-update-all").onclick = event => busy(event.currentTarget, async () => {
+  const rows = library.titles.filter(row => row.updateState === "update_available" && row.updateHash && !row.hasLayeredFsMods);
+  if (!await ask(t("library.updateAll"), t("library.updateAllAsk", rows.length))) return;
+  let count = 0;
+  for (const row of rows) { await post("/api/library/" + encodeURIComponent(row.titleId) + "/update", {}); count++; }
+  toast(t("library.queuedCount", count)); location.hash = "#downloads";
+});
+$("library-search").oninput = renderLibrary;
+$("library-filter").onchange = renderLibrary;
+
+for (const kind of ["magnet", "torrent"]) $(kind + "-form").onsubmit = event => {
+  event.preventDefault();
+  busy(event.submitter, async () => {
+    $("add-status").textContent = t("msg.resolving");
+    if (kind === "magnet") await post("/api/add/magnet", { magnet: $("magnet-input").value.trim(), mode: $("magnet-mode").value });
+    else {
+      const file = $("torrent-file").files[0];
+      if (!file || !/\.torrent$/i.test(file.name)) throw new Error(t("web.invalidTorrent"));
+      const preview = await api("/api/preview/torrent", { method: "POST", headers: { "Content-Type": "application/x-bittorrent" }, body: file });
+      openFileChooser(preview, $("torrent-mode").value === "install");
+      $("add-status").textContent = "";
       return;
     }
-    logText = await resp.text();
-    if (status) status.textContent = `${fmtBytes(new Blob([logText]).size)} · ${new Date().toLocaleTimeString()}`;
-    renderLog();
-  } catch (e) {
-    if (status) status.textContent = "offline";
-  } finally {
-    logLoading = false;
-    loadInstallBenchmark();
-  }
-}
-
-async function loadInstallBenchmark() {
-  const card = $("log-benchmark");
-  if (!card) return;
-  try {
-    const response = await api("/api/benchmark", { cache: "no-store" });
-    if (!response.ok) return;
-    const result = await response.json();
-    card.hidden = result.phase === "idle";
-    if (card.hidden) return;
-    const labels = lang === "pt-BR"
-      ? ["Benchmark de instalação", "Bloco", "Repetições", "Tempo mediano", "Configuração escolhida", "Gravação média", "Teste com arquivos locais. Não inclui download nem registro final do jogo."]
-      : ["Installation benchmark", "Batch", "Repetitions", "Median time", "Selected configuration", "Average write rate", "Test uses local files. Internet download and final game registration are excluded."];
-    const rows = [262144, 1048576, 4194304].map(bytes => {
-      const samples = (result.samples || []).filter(sample => sample.batchBytes === bytes);
-      const times = samples
-        .map(sample => sample.durationUs / 1e6).sort((a, b) => a - b);
-      const median = times.length === 3 ? `${times[1].toFixed(2)} s` : "—";
-      const rate = times.length === 3 ? fmtSpeed(samples[0].installedBytes / times[1]) : "—";
-      return `<tr><td>${fmtBytes(bytes)}</td><td>${times.length}/3</td><td>${median}</td><td>${rate}</td></tr>`;
-    }).join("");
-    const phase = lang === "pt-BR" ? ({ warming: "Aquecimento", measuring: "Medindo", completed: "Concluído", cancelled: "Cancelado", error: "Erro" }[result.phase] || result.phase) : result.phase;
-    card.innerHTML = `<h2>${esc(labels[0])}</h2>
-      <p>${esc(phase)} · ${Math.min(9, result.pass || 0)}/9</p>
-      <p>${esc(labels[6])}</p>
-      <table class="facts"><tr><th>${esc(labels[1])}</th><th>${esc(labels[2])}</th><th>${esc(labels[3])}</th><th>${esc(labels[5])}</th></tr>${rows}</table>
-      ${result.phase === "completed" ? `<p>${esc(labels[4])}: ${fmtBytes(result.chosenBatchBytes)}</p>` : ""}
-      ${result.error ? `<p>${esc(result.error)}</p>` : ""}`;
-  } catch (_) { }
-}
-
-function startLogView() {
-  loadLogs();
-  loadLogTelemetry();
-  stopLogView();
-  if ($("log-auto")?.checked)
-    logTimer = setInterval(() => { if (currentTab() === "logs") loadLogs(); }, 3000);
-}
-
-function stopLogView() {
-  if (logTimer) clearInterval(logTimer);
-  logTimer = null;
-}
-
-async function loadLogTelemetry() {
-  const control = $("log-telemetry");
-  if (!control || control.disabled) return;
-  try {
-    const resp = await api("/api/settings", { cache: "no-store" });
-    if (resp.ok && !control.disabled) control.checked = !!(await resp.json()).extendedTelemetry;
-  } catch (_) { /* Offline state is already shown by the log view. */ }
-}
-
-$("log-telemetry")?.addEventListener("change", async (event) => {
-  const control = event.target;
-  const enabled = control.checked;
-  control.disabled = true;
-  try {
-    const resp = await api("/api/settings", {
-      method: "PATCH", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ extendedTelemetry: enabled }),
-    });
-    const body = await resp.json().catch(() => ({}));
-    if (!resp.ok) { control.checked = !enabled; return toast(body.error || "save failed", true); }
-    control.checked = !!body.extendedTelemetry;
-    loadLogs();
-  } catch (error) {
-    control.checked = !enabled;
-    toast(error.message || "offline", true);
-  } finally { control.disabled = false; }
-});
-
-$("log-search")?.addEventListener("input", renderLog);
-$("log-filter")?.addEventListener("change", renderLog);
-$("log-refresh")?.addEventListener("click", loadLogs);
-$("log-auto")?.addEventListener("change", () => {
-  if (currentTab() === "logs") startLogView();
-});
-$("log-copy")?.addEventListener("click", async () => {
-  const text = filteredLogText();
-  try {
-    await navigator.clipboard.writeText(text);
-    toast(t("log.copied"));
-  } catch {
-    toast(t("log.copyFailed"), true);
-  }
-});
-$("log-download")?.addEventListener("click", () => {
-  const blob = new Blob([filteredLogText()], { type: "text/plain;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `pipensx-log-${new Date().toISOString().replace(/[:.]/g, "-")}.txt`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 0);
-});
-
-let hiddenSince = null;
-document.addEventListener("visibilitychange", () => {
-  if (document.hidden) {
-    hiddenSince = Date.now();
-    setTimeout(() => {
-      if (document.hidden && hiddenSince && Date.now() - hiddenSince > 290000) {
-        events?.close();
-        events = null;
-      }
-    }, 300000);
-  } else {
-    hiddenSince = null;
-    if (!events) connectEvents();
-  }
-});
-
-/* ---------- alerts ---------- */
-function notifySupported() {
-  return "Notification" in window && Notification.permission !== "denied";
-}
-function alertsOn() { return localStorage.getItem("pipensxAlerts") !== "off"; }
-function refreshNotifyRow() {
-  $("alerts-state").textContent = t(alertsOn() ? "common.on" : "common.off");
-  $("notify-btn").hidden = !notifySupported() || Notification.permission !== "default";
-}
-$("alerts-btn").addEventListener("click", () => {
-  localStorage.setItem("pipensxAlerts", alertsOn() ? "off" : "on");
-  if (alertsOn()) { unlockAudio(); beep(); }
-  refreshNotifyRow();
-  applyI18n();
-});
-$("notify-btn").addEventListener("click", async () => {
-  await Notification.requestPermission();
-  refreshNotifyRow();
-});
-
-let audioCtx = null;
-function unlockAudio() {
-  if (!audioCtx) {
-    const Ctx = window.AudioContext || window.webkitAudioContext;
-    if (!Ctx) return;
-    audioCtx = new Ctx();
-  }
-  if (audioCtx.state === "suspended") audioCtx.resume();
-}
-document.addEventListener("pointerdown", unlockAudio, { once: true });
-function beep(isError = false) {
-  if (!audioCtx || audioCtx.state !== "running") return;
-  const seq = isError ? [[220, 0, 0.12], [180, 0.16, 0.14]]
-                      : [[660, 0, 0.09], [880, 0.11, 0.12]];
-  for (const [freq, at, dur] of seq) {
-    const osc = audioCtx.createOscillator();
-    const gain = audioCtx.createGain();
-    osc.type = "sine";
-    osc.frequency.value = freq;
-    const t0 = audioCtx.currentTime + at;
-    gain.gain.setValueAtTime(0.0001, t0);
-    gain.gain.exponentialRampToValueAtTime(0.12, t0 + 0.015);
-    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-    osc.connect(gain).connect(audioCtx.destination);
-    osc.start(t0);
-    osc.stop(t0 + dur + 0.02);
-  }
-}
-let flashTimer = null, badgedIcon = null;
-function setFavicon(href) {
-  const link = document.querySelector('link[rel="icon"]');
-  if (link) link.href = href;
-}
-function buildBadgedIcon(done) {
-  const img = new Image();
-  img.src = "/icon-192.png";
-  img.onload = () => {
-    const c = document.createElement("canvas");
-    c.width = c.height = 64;
-    const g = c.getContext("2d");
-    g.drawImage(img, 0, 0, 64, 64);
-    g.beginPath(); g.arc(48, 16, 14, 0, Math.PI * 2);
-    g.fillStyle = "#ff5d5d"; g.fill();
-    badgedIcon = c.toDataURL("image/png");
-    done(badgedIcon);
-  };
-}
-function startFlash(message) {
-  stopFlash();
-  const base = "pipensx";
-  let tick = false;
-  document.title = message;
-  flashTimer = setInterval(() => { tick = !tick; document.title = tick ? base : message; }, 1200);
-  if (badgedIcon) setFavicon(badgedIcon);
-  else buildBadgedIcon(setFavicon);
-}
-function stopFlash() {
-  if (flashTimer) clearInterval(flashTimer);
-  flashTimer = null;
-  document.title = "pipensx";
-  setFavicon("/icon-192.png");
-}
-document.addEventListener("visibilitychange", () => { if (!document.hidden) stopFlash(); });
-window.addEventListener("focus", stopFlash);
-function fireAlert(title, body, isError) {
-  if (notifySupported() && Notification.permission === "granted") {
-    new Notification(title, { body, icon: "/icon-192.png" });
-    return;
-  }
-  if (!alertsOn()) return;
-  beep(isError);
-  if (navigator.vibrate) navigator.vibrate(isError ? [180, 90, 180] : [120]);
-  startFlash((isError ? "✕ " : "✓ ") + body);
-}
-function notifyTransitions() {
-  const interesting = { Installed: "installed", Completed: "downloaded", Error: "failed" };
-  for (const tt of state.tasks) {
-    const prev = lastStatuses.get(tt.id);
-    if (prev && prev !== tt.status && interesting[tt.status]) {
-      const what = tt.status === "Error" ? (tt.error || "failed") : interesting[tt.status];
-      fireAlert("pipensx: " + tt.name, tt.name + " — " + what, tt.status === "Error");
-    }
-    lastStatuses.set(tt.id, tt.status);
-  }
-}
-
-/* ================= DOWNLOADS ================= */
-const activeSet = new Set(["Downloading", "Installing", "Committing", "Checking", "Verifying", "Fetching"]);
-function healthOf(tt) {
-  if (tt.status !== "Downloading") return null;
-  if ((tt.peers || 0) === 0 && !(tt.speedBps > 0)) return { cls: "poor", label: t("peer.none") };
-  if (!(tt.speedBps > 0)) return { cls: "slow", label: t("peer.stalled") };
-  if ((tt.speedBps || 0) < 512 * 1024) return { cls: "slow", label: t("peer.slow") };
-  return { cls: "excellent", label: "● " + fmtSpeed(tt.speedBps) };
-}
-
-function recoveryText(tt) {
-  const r = tt.recovery;
-  if (!r) return "";
-  const quiet = ["Downloading", "Installing", "Committing", "Fetching"].includes(tt.status);
-  const fill = (key, ...args) => args.reduce((s, a, i) => s.replace("{" + i + "}", a), t(key));
-  let notice = "";
-  if ((!quiet || r.verifyingSaved) && r.work === "verify" && r.reworkBytes > 0)
-    notice = fill("recovery.verify", fmtBytes(r.reworkBytes), fmtBytes(r.savedBytes));
-  else if (!quiet && r.work === "reread" && r.reworkBytes > 0)
-    notice = fill("recovery.reread", fmtBytes(r.reworkBytes), String(r.packagesInstalled));
-  else if (!quiet && r.work === "refetch" && r.reworkBytes > 0)
-    notice = fill("recovery.refetch", fmtBytes(r.reworkBytes), fmtBytes(r.savedBytes));
-  else if (!quiet && r.work === "recopy" && r.reworkBytes > 0)
-    notice = fill("recovery.recopy", fmtBytes(r.reworkBytes));
-  else if (!quiet && r.work === "pieces")
-    notice = t("recovery.pieces");
-  else if (!quiet && r.byteExact)
-    notice = t("recovery.byte");
-  else if (r.verifyingSaved)
-    notice = t("recovery.verifying");
-  if (!notice && !r.showInstalled && !r.verifyingSaved) return "";
-  const parts = [];
-  if (r.showDownloaded) parts.push(`${t("recovery.downloaded")} ${fmtBytes(r.downloadedBytes)} / ${fmtBytes(r.downloadTotalBytes)}`);
-  if (r.showInstalled) parts.push(`${t("recovery.installed")} ${r.packagesInstalled} / ${r.packageCount}`);
-  if (notice) parts.push(notice);
-  return parts.join(" · ");
-}
-
-function taskCard(tt, queueIdx) {
-  const wantedTotal = tt.wantedTotalBytes || 0;
-  const wantedDone = wantedTotal ? Math.min(tt.wantedCompletedBytes || 0, wantedTotal) : 0;
-  const downloadPct = wantedTotal
-    ? Math.min(100, 100 * wantedDone / wantedTotal)
-    : (tt.totalBytes ? Math.min(100, 100 * tt.completedBytes / tt.totalBytes) : 0);
-  const installPct = tt.installTotalBytes ? Math.min(100, 100 * tt.installedBytes / tt.installTotalBytes) : null;
-  const fetchPct = tt.fetchProgress != null ? Math.min(100, 100 * tt.fetchProgress) : null;
-  const pct = tt.status === "Fetching" && fetchPct !== null ? fetchPct
-    : (tt.status === "Installing" || tt.status === "Committing") && installPct !== null ? installPct : downloadPct;
-  const barClass = tt.status === "Error" ? "err"
-    : (tt.status === "Installed" || tt.status === "Completed") ? "ok" : "";
-
-  const meta = [];
-  if (tt.status === "Downloading" || tt.status === "Installing")
-    meta.push(`${t("speed.download")}: ${fmtSpeed(tt.speedBps)}`);
-  if (tt.status === "Installing" || tt.status === "Committing")
-    meta.push(`${t("speed.install")}: ${fmtSpeed(tt.installSpeedBps)}`);
-  if (tt.status === "Fetching" && fetchPct !== null) meta.push(`fetch ${fetchPct.toFixed(0)}%`);
-  if (tt.status === "Installing" || tt.status === "Committing") {
-    if (tt.installTotalBytes) meta.push(`${fmtBytes(tt.installedBytes)} / ${fmtBytes(tt.installTotalBytes)}`);
-  } else if (wantedTotal) {
-    meta.push(`${fmtBytes(wantedDone)} / ${fmtBytes(wantedTotal)}`);
-  } else if (tt.totalBytes) {
-    meta.push(`${fmtBytes(tt.completedBytes)} / ${fmtBytes(tt.totalBytes)}`);
-  }
-  const eta = fmtEta(tt.etaSeconds);
-  if (eta) meta.push("ETA " + eta);
-  if (activeSet.has(tt.status)) meta.push(`${tt.peers || 0} peers`);
-  if (tt.mode === "install" && tt.packageCount) meta.push(`pkg ${tt.packagesInstalled}/${tt.packageCount}`);
-  const recoveryLine = recoveryText(tt);
-
-  const h = healthOf(tt);
-  const btn = (label, cmd, cls = "") =>
-    `<button class="btn ${cls}" data-task="${esc(tt.id)}" data-cmd="${cmd}">${esc(label)}</button>`;
-  const caps = tt.capabilities || {};
-  const allowed = (name) => !!(caps[name] && caps[name].allowed);
-  const actions = [];
-  if (tt.mode === "port") actions.push(btn(t("port.files"), "port-files"));
-  if (allowed("pause")) actions.push(btn(t("task.pause"), "pause"));
-  if (tt.status === "Paused" && allowed("resume")) actions.push(btn(t("task.resume"), "resume", "btn-primary"));
-  if (tt.status === "Error" && allowed("resume")) actions.push(btn(t("task.retry"), "retry", "btn-primary"));
-  if (allowed("move")) {
-    actions.push(`<button class="btn btn-sm" data-task="${esc(tt.id)}" data-cmd="move-up" title="move up">${t("task.moveUp")}</button>`);
-    actions.push(`<button class="btn btn-sm" data-task="${esc(tt.id)}" data-cmd="move-down" title="move down">${t("task.moveDown")}</button>`);
-    actions.push(btn(t("task.top"), "move-front"));
-  }
-  if (allowed("verify")) actions.push(btn(t("task.verify"), "verify"));
-  if (allowed("remove")) actions.push(btn(t("task.remove"), "remove", "btn-danger"));
-
-  return `<div class="card task" data-id="${esc(tt.id)}">
-    <div class="task-head">
-      <div class="task-name" title="${esc(tt.name || tt.id)}">${esc(tt.name || tt.id)}</div>
-      <span class="badge ${esc(tt.status.toLowerCase())}">${esc(t("status." + tt.status))}</span>
-    </div>
-    ${tt.status === "Queued" && queueIdx > 0 ? `<div class="task-sub"><span class="queue-pos">#${queueIdx} ${t("queue.position")}</span></div>` : ""}
-    <div class="bar"><div class="bar-fill ${barClass}" style="width:${pct}%"></div></div>
-    <div class="task-meta">${meta.map(esc).join('<span class="dot">·</span>')}${h ? `<span class="health ${h.cls}">${esc(h.label)}</span>` : ""}</div>
-    ${recoveryLine ? `<div class="task-sub">${esc(recoveryLine)}</div>` : ""}
-    ${tt.currentPackage ? `<div class="task-sub">${esc(tt.currentPackage)}</div>` : ""}
-    ${tt.error ? `<div class="task-error">${esc(tt.error)}</div>` : ""}
-    <div class="task-actions">${actions.join("")}</div>
-  </div>`;
-}
-
-function jobCard(j) {
-  const stageText = { findingPeers: "Finding peers", connecting: "Connecting",
-    fetchingMetadata: "Fetching metadata", validating: "Validating" }[j.stage] || j.stage;
-  const detail = j.state === "resolving"
-    ? stageText + (j.peerCount ? ` (peer ${j.peerIndex}/${j.peerCount})` : "")
-    : j.state === "error" ? (j.error || "failed") : j.state;
-  const cancellable = ["queued", "resolving"].includes(j.state);
-  return `<div class="card task">
-    <div class="task-head">
-      <div class="task-name">${esc(j.title || j.infoHash || j.jobId)}</div>
-      <span class="badge ${esc(j.state)}">${j.state === "resolving" ? "Resolving" : esc(j.state)}</span>
-    </div>
-    <div class="task-meta">${esc(detail)}</div>
-    ${cancellable ? `<div class="task-actions"><button class="btn" data-job="${esc(j.jobId)}">Cancel</button></div>` : ""}
-  </div>`;
-}
-
-function filteredTasks() {
-  const q = (($("global-search") && $("global-search").value || "").trim().toLowerCase());
-  const f = $("task-filter").value;
-  const sort = $("task-sort").value;
-  let list = state.tasks.slice();
-  if (q) list = list.filter((x) => (x.name || x.id).toLowerCase().includes(q));
-  if (f === "active") list = list.filter((x) => activeSet.has(x.status));
-  else if (f !== "all") list = list.filter((x) => x.status === f);
-  const prog = (x) => {
-    const wt = x.wantedTotalBytes || x.totalBytes || 0;
-    const wd = x.wantedTotalBytes ? (x.wantedCompletedBytes || 0) : (x.completedBytes || 0);
-    return wt ? wd / wt : 0;
-  };
-  if (sort === "name") list.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
-  else if (sort === "progress") list.sort((a, b) => prog(b) - prog(a));
-  else if (sort === "speed") list.sort((a, b) => (b.speedBps || 0) - (a.speedBps || 0));
-  else if (sort === "eta") list.sort((a, b) => (a.etaSeconds || 1e12) - (b.etaSeconds || 1e12));
-  return list;
-}
-
-function renderDownloads() {
-  const taskIds = new Set(state.tasks.map((x) => x.id));
-  const jobs = (state.jobs || []).filter((j) => !(j.state === "done" && taskIds.has(j.taskId)));
-  $("jobs").innerHTML = jobs.map(jobCard).join("");
-  const list = filteredTasks();
-  let qi = 0;
-  $("tasks").innerHTML = list.map((x) => taskCard(x, x.status === "Queued" ? ++qi : 0)).join("");
-  $("tasks-empty").hidden = state.tasks.length > 0 || jobs.length > 0;
-
-  updateClearButtons();
-  const activeCount = state.tasks.filter((x) => activeSet.has(x.status)).length;
-  const dlBadge = $("dl-count");
-  if (activeCount > 0) { dlBadge.hidden = false; dlBadge.textContent = activeCount; }
-  else dlBadge.hidden = true;
-
-  // Dashboard: prefer server summary, fall back to local aggregate.
-  const s = state.summary;
-  const dlSpeed = s ? s.downloadSpeedBps : state.tasks.reduce((a, x) => a + (x.speedBps || 0), 0);
-  const instSpeed = s ? s.installSpeedBps : state.tasks.reduce((a, x) => a + (x.installSpeedBps || 0), 0);
-  const peers = state.tasks.reduce((a, x) => a + (x.peers || 0), 0);
-  // Streaming installs consume the same bytes they download. Summing these
-  // rates double-counts that traffic and overstates network throughput.
-  $("stat-speed").textContent = fmtSpeed(dlSpeed);
-  $("stat-install-speed").textContent = `${t("speed.install")}: ${fmtSpeed(instSpeed)}`;
-  $("stat-peers").textContent = peers > 0 ? `${peers} peers · DHT` : (activeCount > 0 ? `${activeCount} active` : "idle");
-  const queued = s ? s.queued : state.tasks.filter((x) => x.status === "Queued").length;
-  const paused = s ? s.paused : state.tasks.filter((x) => x.status === "Paused").length;
-  const errors = s ? s.errors : state.tasks.filter((x) => x.status === "Error").length;
-  $("stat-queue").textContent = `${activeCount} / ${state.tasks.length}`;
-  $("stat-queue-sub").textContent =
-    tf("queue.summary", queued, paused, errors);
-  const remaining = s ? s.remainingBytes : 0;
-  $("stat-remaining").textContent = remaining > 0 ? fmtBytes(remaining) : (state.tasks.length ? "—" : "0 B");
-  const eta = s ? s.etaSeconds : 0;
-  $("stat-eta").textContent = eta ? "ETA " + fmtEta(eta) : "";
-
-  if (state.storage && state.storage.available) {
-    const used = state.storage.totalBytes - state.storage.freeBytes;
-    $("storage-fill").style.width = (100 * used / state.storage.totalBytes).toFixed(1) + "%";
-    $("stat-storage").textContent = fmtBytes(state.storage.freeBytes);
-    $("storage-text").textContent =
-      tf("storage.free", fmtBytes(state.storage.totalBytes));
-  } else {
-    $("stat-storage").textContent = "—";
-    $("storage-text").textContent = "—";
-  }
-
-  // Speed history chart.
-  speedHist.push(dlSpeed || 0);
-  if (speedHist.length > SPEED_HIST_N) speedHist.shift();
-  const showChart = speedHist.some((v) => v > 0);
-  $("chart-card").hidden = !showChart;
-  if (showChart) {
-    drawChart();
-    $("chart-legend").textContent = `peak ${fmtSpeed(Math.max(...speedHist))}`;
-  }
-  syncActivityPanel();
-  refreshNotifyRow();
-}
-
-/* Mirrors of live state for the sidebar/activity chrome (visual only). */
-function taskProgress(tt) {
-  const wantedTotal = tt.wantedTotalBytes || 0;
-  const wantedDone = wantedTotal ? Math.min(tt.wantedCompletedBytes || 0, wantedTotal) : 0;
-  if (wantedTotal) return Math.min(100, 100 * wantedDone / wantedTotal);
-  if (tt.fetchProgress != null && tt.status === "Fetching") return Math.min(100, 100 * tt.fetchProgress);
-  if (tt.installTotalBytes && (tt.status === "Installing" || tt.status === "Committing"))
-    return Math.min(100, 100 * tt.installedBytes / tt.installTotalBytes);
-  return tt.totalBytes ? Math.min(100, 100 * tt.completedBytes / tt.totalBytes) : 0;
-}
-function renderMiniQueue() {
-  const box = $("mini-queue");
-  if (!box) return;
-  const active = state.tasks.filter((x) => activeSet.has(x.status));
-  const rest = state.tasks.filter((x) => !activeSet.has(x.status));
-  const top = active.concat(rest).slice(0, 2);
-  if (!top.length) {
-    box.innerHTML = `<div class="mini-empty">${esc(t("downloads.empty"))}</div>`;
-    return;
-  }
-  box.innerHTML = top.map((x) => {
-    const pct = taskProgress(x);
-    return `<div class="mini-task"><div class="mini-task-top">` +
-      `<div class="mini-task-title" title="${esc(x.name || x.id)}">${esc(x.name || x.id)}` +
-      `<small>${esc(x.status)} · ${pct.toFixed(0)}%</small></div></div>` +
-      `<div class="progress-track"><span style="width:${pct}%"></span></div>` +
-      `<div class="progress-meta"><b>${esc(fmtSpeed(x.speedBps || x.installSpeedBps || 0))}</b>` +
-      `<span>${esc(String(x.peers || 0))} peers</span></div></div>`;
-  }).join("");
-}
-/* Sidebar source: current download method. Direct shows nothing else;
-   a debrid provider shows whether its key/URL is set. Rides the live
-   state frame, so no extra request and no PIN prompt. */
-const PROVIDER_NAMES = {
-  torbox: "TorBox", torrserver: "TorrServer",
-  realdebrid: "Real-Debrid", alldebrid: "AllDebrid",
+    $("add-status").textContent = t("msg.addedQueue");
+    $(kind + "-form").reset();
+    location.hash = "#downloads"; await reloadTasks();
+  }, $("add-status"));
 };
-function renderSource() {
-  const main = $("sb-source"), sub = $("sb-source-status");
-  if (!main) return;
-  const src = state.source;
-  if (!src) {
-    main.textContent = "—";
-    if (sub) { sub.textContent = ""; sub.classList.remove("warn"); }
-    return;
-  }
-  if (src.direct) {
-    main.textContent = t("source.direct");
-    if (sub) { sub.textContent = ""; sub.classList.remove("warn"); }
-    return;
-  }
-  main.textContent = PROVIDER_NAMES[src.provider] || src.provider || "—";
-  if (sub) {
-    sub.textContent = src.keyConfigured ? t("source.keyOk") : t("source.noKey");
-    sub.classList.toggle("warn", !src.keyConfigured);
-  }
-}
-function syncActivityPanel() {
-  try {
-    renderSource();
-    if (state.storage && state.storage.available) {
-      const used = state.storage.totalBytes - state.storage.freeBytes;
-      const pct = (100 * used / state.storage.totalBytes).toFixed(1) + "%";
-      const free = fmtBytes(state.storage.freeBytes);
-      const total = fmtBytes(state.storage.totalBytes);
-      const sbf = $("sb-storage-fill");
-      if (sbf) sbf.style.width = pct;
-      const sbFree = $("sb-storage-free");
-      if (sbFree) sbFree.textContent = free + " " + (lang === "ru" ? "свободно" : "free");
-      const sbText = $("sb-storage-text");
-      if (sbText) sbText.textContent = (lang === "ru" ? "занято " : "used ") + fmtBytes(used) + " · " + total;
-    }
-    const set = (id, src) => {
-      const el = $(id), from = $(src);
-      if (el && from) el.textContent = from.textContent;
-    };
-    set("act-speed", "stat-speed");
-    set("act-storage", "stat-storage");
-    const aq = $("act-queue"), sq = $("stat-queue");
-    if (aq && sq) aq.textContent = sq.textContent;
-    renderMiniQueue();
-  } catch (e) { /* chrome mirrors must never break the main render */ }
-}
-
-function limeColor() {
-  const v = getComputedStyle(document.documentElement).getPropertyValue("--lime").trim();
-  return /^#[0-9a-fA-F]{6}$/.test(v) ? v : "#00c3e3";
-}
-function limeAlpha(hex, a) {
-  const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
-  return `rgba(${r},${g},${b},${a})`;
-}
-
-function drawChart() {
-  const cv = $("speed-chart");
-  const dpr = window.devicePixelRatio || 1;
-  const w = cv.clientWidth || cv.parentElement.clientWidth - 36;
-  const h = 64;
-  cv.width = w * dpr; cv.height = h * dpr;
-  const g = cv.getContext("2d");
-  g.scale(dpr, dpr);
-  g.clearRect(0, 0, w, h);
-  const max = Math.max(...speedHist, 1);
-  const lime = limeColor();
-  const grad = g.createLinearGradient(0, 0, 0, h);
-  grad.addColorStop(0, limeAlpha(lime, .45));
-  grad.addColorStop(1, limeAlpha(lime, .03));
-  g.beginPath();
-  speedHist.forEach((v, i) => {
-    const x = (i / Math.max(1, SPEED_HIST_N - 1)) * w;
-    const y = h - 4 - (v / max) * (h - 10);
-    i === 0 ? g.moveTo(x, y) : g.lineTo(x, y);
-  });
-  g.strokeStyle = lime; g.lineWidth = 2; g.stroke();
-  g.lineTo(w, h); g.lineTo(0, h); g.closePath();
-  g.fillStyle = grad; g.fill();
-}
-
-let searchTimer = null;
-$("global-search").addEventListener("input", () => {
-  clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => {
-    if (currentTab() === "catalog") { if (catalog) applyCatalogFilter(); }
-    else renderDownloads();
-  }, 150);
-});
-["task-filter", "task-sort"].forEach((id) =>
-  $(id).addEventListener("input", renderDownloads));
-$("task-filter").addEventListener("change", renderDownloads);
-$("task-sort").addEventListener("change", renderDownloads);
-
-$("bulk-pause").addEventListener("click", async () => {
-  const r = await api("/api/queue/pause-all", { method: "POST",
-    headers: { "Content-Type": "application/json" }, body: "{}" });
-  if (!r.ok && r.status !== 401) toast("pause-all failed", true);
-});
-$("bulk-resume").addEventListener("click", async () => {
-  const r = await api("/api/queue/resume-all", { method: "POST",
-    headers: { "Content-Type": "application/json" }, body: "{}" });
-  if (!r.ok && r.status !== 401) toast("resume-all failed", true);
-});
-function fill(template, values) {
-  return String(template).replace(/\{(\d+)\}/g, (_, i) => values[Number(i)] ?? "");
-}
-function clearPlan() {
-  let clearable = 0, skipped = 0, bytes = 0;
-  for (const task of (state && state.tasks) || []) {
-    if (task.status !== "Completed" && task.status !== "Installed") continue;
-    const reason = task.capabilities && task.capabilities.remove &&
-      task.capabilities.remove.reason;
-    if (reason === "leased") skipped += 1;
-    else {
-      clearable += 1;
-      bytes += Number(task.completedBytes) || 0;
-    }
-  }
-  return { clearable, skipped, bytes };
-}
-function updateClearButtons() {
-  const entries = $("bulk-clear");
-  const files = $("bulk-clear-files");
-  if (!entries || !files) return;
-  const plan = clearPlan();
-  entries.textContent = t("downloads.clearDone") + " (" + plan.clearable + ")";
-  files.textContent = t("downloads.clearFiles") +
-    (plan.clearable ? " (" + fmtBytes(plan.bytes) + ")" : "");
-}
-function askClear(deleteData) {
-  const plan = clearPlan();
-  if (plan.clearable === 0) {
-    toast(plan.skipped === 0
-      ? t("downloads.clearNone")
-      : fill(t(deleteData ? "msg.clearedFiles" : "msg.clearedEntries"),
-             [0, plan.skipped]));
-    return;
-  }
-  const message = deleteData
-    ? fill(t("downloads.clearFilesAsk"),
-           [plan.clearable, fmtBytes(plan.bytes), plan.skipped])
-    : fill(t("downloads.clearEntriesAsk"), [plan.clearable, plan.skipped]);
-  openModal(`<div class="modal-body">
-      <h3>${esc(deleteData ? t("downloads.clearFiles") : t("downloads.clearDone"))}</h3>
-      <div class="modal-sub">${esc(message)}</div>
-    </div>
-    <div class="modal-actions">
-      <button class="btn" id="clr-cancel">${esc(t("game.close"))}</button>
-      <button class="btn btn-danger" id="clr-ok">${esc(deleteData ? t("downloads.clearFiles") : t("downloads.clearDone"))}</button>
-    </div>`);
-  $("clr-cancel").onclick = closeModal;
-  $("clr-ok").onclick = async () => {
-    closeModal();
-    const r = await postJson("/api/queue/clear-completed", { deleteData });
-    if (r.ok) {
-      const body = await r.json().catch(() => ({}));
-      toast(fill(t(deleteData ? "msg.clearedFiles" : "msg.clearedEntries"),
-                 [body.cleared || 0, body.skippedBusy || 0]));
-      await reloadTasks();
-    } else if (r.status !== 401) {
-      const body = await r.json().catch(() => ({}));
-      toast(body.error || "clear failed", true);
-    }
+function openFileChooser(data, install) {
+  let submitted = false;
+  modal(data.name, '<div class="file-list">' + data.files.map((file, index) =>
+    '<label class="port-file"><span>' + esc(file.path) + ' · ' + esc(bytes(file.size)) + '</span><select data-file-choice="' + index +
+    '"><option value="0">' + esc(t("web.action.skip")) + '</option><option value="1"' + (!install || !file.installable ? " selected" : "") + ">" +
+    esc(t("web.action.download")) + '</option>' + (file.installable ? '<option value="2"' + (install ? " selected" : "") + ">" + esc(t("web.action.install")) + "</option>" : "") +
+    "</select></label>").join("") + "</div>", '<button class="primary" id="file-choice-add">' + esc(t("web.add")) + "</button>");
+  const cleanup = () => {
+    $("modal").removeEventListener("close", cleanup);
+    if (!submitted) post("/api/preview/discard", { token: data.token }).catch(error => toast(errorText(error), true));
   };
+  $("modal").addEventListener("close", cleanup);
+  $("file-choice-add").onclick = event => busy(event.currentTarget, async () => {
+    const files = data.files.map((file, index) => ({ path: file.path,
+      action: Number($("modal").querySelector('[data-file-choice="' + index + '"]').value) }));
+    if (!files.some(file => file.action)) throw new Error(t("web.noFilesSelected"));
+    await post("/api/add/prepared", { token: data.token, files });
+    submitted = true; $("modal").close(); $("torrent-form").reset();
+    toast(t("msg.addedQueue")); location.hash = "#downloads"; await reloadTasks();
+  });
 }
-$("bulk-clear").addEventListener("click", () => askClear(false));
-$("bulk-clear-files").addEventListener("click", () => askClear(true));
+function fileDrop(zone, input, onChange) {
+  zone.addEventListener("dragover", event => { event.preventDefault(); zone.classList.add("dragging"); });
+  zone.addEventListener("dragleave", () => zone.classList.remove("dragging"));
+  zone.addEventListener("drop", event => {
+    event.preventDefault(); zone.classList.remove("dragging");
+    if (event.dataTransfer.files.length) { input.files = event.dataTransfer.files; input.dispatchEvent(new Event("change")); }
+  });
+  input.addEventListener("change", onChange);
+}
+fileDrop($("torrent-drop"), $("torrent-file"), () => {});
 
-function explainRejection(code) {
-  if (!code) return "";
-  const key = "action." + code;
-  return (I18N[lang] && I18N[lang][key]) || I18N.en[key] || code;
+const settingsGroups = [
+  ["web.console", [
+    ["language", "settings.language", "select", [["auto", "settings.auto"], ...Object.keys(languages).map(value => [value === "en" ? "en-US" : value, languages[value], true])]],
+    ["theme", "settings.theme", "select", [["auto", "settings.auto"], ["dark", "settings.dark"], ["light", "settings.light"]]],
+    ["confirmExit", "web.confirmExit", "checkbox"], ["warnOnActiveDownload", "web.warnExit", "checkbox"], ["screenSaverEnabled", "web.saver", "checkbox"]
+  ]],
+  ["settings.downloads", [
+    ["maxActiveDownloads", "settings.concurrent", "select", [1, 2, 3, 4].map(value => [value, String(value), true])],
+    ["streamSelection", "settings.stream", "select", [["allFiles", "settings.allFiles"], ["packagesOnly", "settings.packagesOnly"]]],
+    ["installLocation", "settings.location", "select", [["sdCard", "web.sd"], ["systemMemory", "web.nand"]]],
+    ["showCompletedDownloads", "web.showCompleted", "checkbox"], ["blankScreenDuringTransfers", "web.blankScreen", "checkbox"], ["sleepAfterDownloads", "web.sleep", "checkbox"]
+  ]],
+  ["web.source", [
+    ["torrentingEnabled", "web.direct", "checkbox"], ["liveSeedingEnabled", "web.seeding", "checkbox"],
+    ["debridProvider", "web.provider", "select", [["torbox", "TorBox", true], ["torrserver", "TorrServer", true], ["realdebrid", "Real-Debrid", true], ["alldebrid", "AllDebrid", true]]],
+    ["torboxApiKey", "TorBox API key", "password"], ["realdebridApiKey", "Real-Debrid API token", "password"], ["alldebridApiKey", "AllDebrid API key", "password"],
+    ["torrserverUrl", "TorrServer URL", "url"], ["keepUncachedDebrid", "web.keepUncached", "checkbox"]
+  ]],
+  ["settings.network", [["proxyUrl", "Proxy URL", "url"]]],
+  ["settings.catalog", [["catalogSourceUrl", "settings.catalogUrl", "url"], ["refreshCatalogOnLaunch", "settings.refresh", "checkbox"]]],
+  ["web.diagnostics", [["extendedTelemetry", "logs.telemetry", "checkbox"]]]
+];
+function renderSettings() {
+  if (!settings) return;
+  $("settings-fields").innerHTML = settingsGroups.map(([group, fields]) => '<section class="form-section"><h2 data-i18n="' + group + '">' + esc(t(group)) +
+    '</h2>' + (group === "web.console" ? '<p data-i18n="web.restartSettings">' + esc(t("web.restartSettings")) + "</p>" : "") + '<div class="fields">' + fields.map(([key, label, type, options]) => {
+      const name = key.includes("ApiKey") || key.endsWith("Url") && !translations.en[label] ? label : t(label);
+      const labelAttr = translations.en[label] ? ' data-i18n="' + label + '"' : "";
+      const id = "setting-" + key;
+      if (type === "checkbox") return '<label><input id="' + id + '" data-setting="' + key + '" type="checkbox"' + (settings[key] ? " checked" : "") + "><span" + labelAttr + ">" + esc(name) + "</span></label>";
+      const control = type === "select" ? '<select id="' + id + '" data-setting="' + key + '">' +
+        options.map(([value, text, literal]) => '<option value="' + esc(value) + '"' + (!literal ? ' data-i18n="' + text + '"' : "") + (String(settings[key]) === String(value) ? " selected" : "") + ">" + esc(literal ? text : t(text)) + "</option>").join("") + "</select>" :
+        '<input id="' + id + '" data-setting="' + key + '" type="' + type + '" value="' + (type === "password" ? "" : esc(settings[key])) + '" autocomplete="off">';
+      if (type === "password") {
+        const help = settings[key.replace("ApiKey", "Configured")] ? "web.keySaved" : "web.keyEmpty";
+        return '<div class="secret-field"><label for="' + id + '"><span>' + esc(name) + "</span>" + control +
+          '</label><small data-i18n="' + help + '">' + esc(t(help)) + '</small><label><input id="clear-' + key +
+          '" type="checkbox"><span data-i18n="web.clearKey">' + esc(t("web.clearKey")) + "</span></label></div>";
+      }
+      return '<label><span' + labelAttr + ">" + esc(name) + "</span>" + control + "</label>";
+    }).join("") + "</div></section>").join("");
+  $("settings-save").disabled = false;
 }
-async function reloadTasks() {
+async function loadSettings() {
+  $("settings-status").textContent = t("web.loading");
   try {
-    const resp = await api("/api/tasks");
-    if (!resp.ok) return;
-    state = Object.assign(state, await resp.json());
-    renderDownloads();
-  } catch (e) { /* the next SSE frame still replaces a stale card */ }
+    settings = await api("/api/settings"); renderSettings();
+    $("settings-status").textContent = "";
+  } catch (error) { $("settings-status").textContent = errorText(error); }
 }
-document.addEventListener("click", async (e) => {
-  const cmdBtn = e.target.closest("[data-cmd]");
-  if (cmdBtn) {
-    const id = cmdBtn.dataset.task;
-    const cmd = cmdBtn.dataset.cmd;
-    if (cmd === "port-files") return openPortEditor(id);
-    if (cmd === "remove") return confirmRemove(id);
-    const resp = await api(`/api/tasks/${id}/${cmd}`, { method: "POST" });
-    if (!resp.ok && resp.status !== 401) {
-      const body = await resp.json().catch(() => ({}));
-      toast(explainRejection(body.error) || `${cmd} failed`, true);
-    }
-    if (resp.status !== 401) await reloadTasks();
-    return;
-  }
-  const jobBtn = e.target.closest("[data-job]");
-  if (jobBtn) await api(`/api/jobs/${jobBtn.dataset.job}/cancel`, { method: "POST" });
+$("settings-reload").onclick = event => busy(event.currentTarget, loadSettings);
+$("settings-form").addEventListener("input", () => { $("settings-status").textContent = t("web.unsaved"); });
+$("settings-form").onsubmit = event => {
+  event.preventDefault();
+  busy(event.submitter, async () => {
+    const patch = {};
+    document.querySelectorAll("[data-setting]").forEach(input => {
+      const key = input.dataset.setting;
+      if (input.type === "password") { if ($("clear-" + key).checked) patch[key] = ""; else if (input.value) patch[key] = input.value; }
+      else patch[key] = input.type === "checkbox" ? input.checked : key === "maxActiveDownloads" ? Number(input.value) : input.value;
+    });
+    settings = await api("/api/settings", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
+    renderSettings(); $("settings-status").textContent = t("msg.saved"); toast(t("msg.saved"));
+    await reloadTasks();
+  }, $("settings-status"));
+};
+$("browser-language").innerHTML = Object.entries(languages).map(([value, name]) => '<option value="' + value + '">' + name + "</option>").join("");
+$("browser-language").value = lang;
+$("browser-language").onchange = () => {
+  lang = $("browser-language").value;
+  localStorage.setItem("pipensxLang", lang);
+  translate(); renderDevice(); if (online !== null) setConnection(online);
+  if (page() === "downloads") renderDownloads();
+  if (catalog) renderCatalog();
+  if (library) renderLibrary();
+  document.title = (page() === "maintenance" ? t("web.maintenance") : page() === "add" ? t("web.add") : t("tabs." + page())) + " · pipensx";
+};
+$("browser-theme").onchange = () => { localStorage.setItem("pipensxTheme", $("browser-theme").value); applyTheme(); };
+matchMedia("(prefers-color-scheme: light)").addEventListener("change", applyTheme);
+
+function renderStorage() {
+  if (!storageSnapshot || !Object.hasOwn(storageSnapshot, "images")) return;
+  const data = storageSnapshot;
+  const rows = [
+    ["images", "web.images", bytes(data.images), data.images],
+    ["torrents", "web.orphanTorrents", bytes(data.torrents), data.torrents],
+    ["downloads", "web.orphanDownloads", bytes(data.orphanDownloads), data.orphanDownloads],
+    ["temporary", "web.temporary", bytes(data.temporary), data.temporary],
+    ["system", "web.installGarbage", bytes(data.systemBytes) + " · " + (data.systemItems || 0), data.systemAvailable && data.systemItems],
+    ["tickets", "web.tickets", String(data.tickets || 0), data.ticketsAvailable && data.tickets]
+  ];
+  $("storage-details").innerHTML = rows.map(([action, key, size, enabled]) => '<div class="storage-row"><div><strong data-i18n="' + key + '">' + esc(t(key)) +
+    '</strong><p>' + esc(size) + '</p></div><button class="danger" data-storage="' + action + '"' + (!enabled || storageBusy ? " disabled" : "") + ">" + esc(t("web.clean")) + "</button></div>").join("") +
+    (data.systemError ? '<p class="error">' + esc(data.systemError) + "</p>" : "");
+}
+async function loadMaintenance() {
+  if (!features.maintenance || storageBusy) return;
+  try {
+    const data = await api("/api/maintenance");
+    storageSnapshot = data.storage; renderStorage();
+  } catch (error) { $("storage-status").textContent = errorText(error); }
+}
+async function storageAction(action) {
+  if (storageBusy) return;
+  storageBusy = true; $("storage-scan").disabled = true; renderStorage();
+  $("storage-status").textContent = t("web.loading");
+  try {
+    const job = await post("/api/maintenance/" + action, { confirm: true });
+    const started = Date.now();
+    await new Promise((resolve, reject) => {
+      const poll = async () => {
+        try {
+          const data = await api("/api/maintenance");
+          const current = data.jobs.find(item => item.jobId === job.jobId);
+          if (current?.state === "error") throw new Error(current.error || t("web.failed"));
+          if (current?.state === "done") { storageSnapshot = data.storage; resolve(); }
+          else if (Date.now() - started > 180000) throw new Error(t("web.jobTimeout"));
+          else setTimeout(poll, 1000);
+        } catch (error) { reject(error); }
+      };
+      setTimeout(poll, 500);
+    });
+    $("storage-status").textContent = t(action === "scan" ? "web.scanDone" : "web.cleaned");
+  } finally { storageBusy = false; $("storage-scan").disabled = false; renderStorage(); }
+}
+$("storage-scan").onclick = event => busy(event.currentTarget, () => storageAction("scan"), $("storage-status"));
+$("storage-details").onclick = event => {
+  const button = event.target.closest("[data-storage]");
+  if (!button) return;
+  busy(button, async () => {
+    const message = t("web.cleanAsk") + (button.dataset.storage === "tickets" ? "\n\n" + t("web.ticketHelp") : "");
+    if (await ask(t("web.clean"), message)) await storageAction(button.dataset.storage);
+  }, $("storage-status"));
+};
+function renderUpdate() {
+  if (!updateStatus) return;
+  const data = updateStatus;
+  $("update-status").textContent = t("update.current", data.currentVersion) + (data.targetPath ? " · " + data.targetPath : "") +
+    "\n" + (data.stagedReady ? t("update.ready", bytes(data.stagedBytes)) : t("update.none")) + (!data.canApply ? "\n" + t("web.cannotRestart") : "");
+  $("update-apply").hidden = $("update-discard").hidden = !data.stagedReady;
+  $("update-apply").disabled = !data.canApply || updateBusy || restarting;
+}
+async function loadUpdate() {
+  if (!features.update || updateBusy || restarting) return;
+  try { updateStatus = await api("/api/update"); renderUpdate(); }
+  catch (error) { $("update-status").textContent = errorText(error); }
+}
+fileDrop($("update-drop"), $("update-file"), () => {
+  const file = $("update-file").files[0];
+  $("update-file-info").textContent = file ? file.name + " · " + bytes(file.size) : "";
 });
+async function uploadNro(file) {
+  const header = new Uint8Array(await file.slice(0, 0x80).arrayBuffer());
+  if (!/\.nro$/i.test(file.name) || header.length < 0x80 || String.fromCharCode(...header.slice(0x10, 0x14)) !== "NRO0")
+    throw new Error(t("web.invalidNro"));
+  if (file.size > (updateStatus?.maxUploadBytes || 64 * 1024 * 1024)) throw new Error(t("web.largeNro"));
+  if (!localStorage.getItem("pipensxPin") && !await requestPin()) throw new Error(t("control.pinHelp"));
+  // Validate the PIN before sending a large body; api can retry only this small request.
+  await post("/api/auth/check");
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("POST", "/api/update/upload");
+    request.setRequestHeader("Content-Type", "application/octet-stream");
+    request.setRequestHeader("X-Pipensx-Pin", localStorage.getItem("pipensxPin"));
+    request.timeout = 180000;
+    request.upload.onprogress = event => {
+      if (event.lengthComputable) {
+        $("update-progress").value = event.loaded / event.total * 100;
+        $("update-status").textContent = t("update.uploading") + " " + Math.round(event.loaded / event.total * 100) + "%";
+      }
+    };
+    request.onload = () => {
+      let data;
+      try { data = JSON.parse(request.responseText); } catch { reject(new Error(t("web.failed"))); return; }
+      if (request.status >= 200 && request.status < 300) resolve(data);
+      else reject(new Error(data.error ? t("web.serverError", data.error) : t("web.httpError", request.status)));
+    };
+    request.onerror = request.ontimeout = () => reject(new Error(t("web.networkError")));
+    request.send(file);
+  });
+}
+$("update-form").onsubmit = event => {
+  event.preventDefault();
+  busy(event.submitter, async () => {
+    updateBusy = true; $("update-apply").disabled = true; $("update-discard").disabled = true;
+    $("update-progress").hidden = false; $("update-progress").value = 0;
+    try { updateStatus = await uploadNro($("update-file").files[0]); }
+    finally { updateBusy = false; $("update-discard").disabled = false; renderUpdate(); }
+  }, $("update-status"));
+};
+$("update-discard").onclick = event => busy(event.currentTarget, async () => {
+  updateStatus = await post("/api/update/discard"); renderUpdate(); $("update-progress").hidden = true;
+  $("update-form").reset(); $("update-file-info").textContent = "";
+});
+$("update-apply").onclick = event => busy(event.currentTarget, async () => {
+  if (!await ask(t("web.replaceRestart"), t("control.updateHelp"))) return;
+  const previousVersion = updateStatus.currentVersion;
+  const previousInstance = instanceId;
+  await post("/api/update/apply");
+  restarting = true; setConnection(false);
+  $("update-upload").disabled = $("update-discard").disabled = true;
+  const started = Date.now();
+  let disconnected = false;
+  const check = async () => {
+    try {
+      const response = await fetch("/api/info", { cache: "no-store", signal: AbortSignal.timeout(4000) });
+      if (!response.ok) throw new Error();
+      const info = await response.json();
+      if (disconnected || info.version !== previousVersion || (previousInstance && info.instanceId && info.instanceId !== previousInstance)) {
+        restarting = false; setConnection(true);
+        toast(t("web.reconnected", info.version));
+        location.reload();
+        return;
+      }
+    } catch { disconnected = true; }
+    if (Date.now() - started < 120000) setTimeout(check, 2000);
+    else { $("update-status").textContent = t("web.reopen"); $("connection-banner").textContent = t("web.reopen"); }
+  };
+  setTimeout(check, 500);
+});
+
+function filteredLog() {
+  const query = $("log-search").value.toLowerCase(), filter = $("log-filter").value;
+  return logText.split("\n").filter(line => (!query || line.toLowerCase().includes(query)) &&
+    (filter === "all" || (filter === "errors" ? /\berror\b|\bfail(?:ed|ure)?\b|fatal/i.test(line) : filter === "install" ?
+      /install|ncm|package|deploy/i.test(line) : /telemetry|performance|speed|benchmark/i.test(line)))).join("\n");
+}
+function renderLog() { $("log-output").textContent = filteredLog(); }
+async function loadLogs() {
+  if (logBusy) return;
+  logBusy = true; $("log-status").textContent = t("web.loading");
+  try { logText = await api("/api/logs", { raw: true }); renderLog(); $("log-status").textContent = new Date().toLocaleTimeString(lang); }
+  catch (error) { $("log-status").textContent = errorText(error); }
+  finally { logBusy = false; }
+}
+$("log-refresh").onclick = event => busy(event.currentTarget, loadLogs);
+$("log-search").oninput = renderLog; $("log-filter").onchange = renderLog;
+$("log-copy").onclick = event => busy(event.currentTarget, async () => {
+  const value = filteredLog();
+  if (navigator.clipboard && isSecureContext) await navigator.clipboard.writeText(value);
+  else {
+    const input = document.createElement("textarea"); input.value = value; document.body.append(input); input.select();
+    const copied = document.execCommand("copy"); input.remove();
+    if (!copied) throw new Error(t("log.copyFailed"));
+  }
+  toast(t("log.copied"));
+});
+$("log-download").onclick = () => {
+  const url = URL.createObjectURL(new Blob([filteredLog()], { type: "text/plain;charset=utf-8" }));
+  const link = document.createElement("a"); link.href = url; link.download = "pipensx.log"; link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
+setInterval(() => {
+  if (document.hidden || online === false) return;
+  if (page() === "maintenance" && $("log-auto").checked) loadLogs();
+  if (page() === "library") loadLibrary();
+}, 5000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) busy(null, reloadTasks); });
 
 let portEditor = null;
-async function portRequest(path, method = "GET", body) {
-  const response = await api(path, { method, cache: "no-store",
-    ...(body ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {}) });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error || t("port.failed"));
-  return data;
-}
+const portRequest = (path, method = "GET", body) => api(path, { method,
+  ...(body ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {}) });
 function capturePortRules() {
-  if (!portEditor) return;
   document.querySelectorAll("[data-port-row]").forEach(row => {
     const file = portEditor.data.files[Number(row.dataset.portRow)];
-    file.enabled = row.querySelector("input[type=checkbox]").checked;
-    const directory = row.querySelector("input[type=text]");
+    file.enabled = row.querySelector('input[type="checkbox"]').checked;
+    const directory = row.querySelector('input[type="text"]');
     if (directory) file.directory = directory.value.trim();
   });
 }
-function portRulesBody() {
-  capturePortRules();
-  return { files: portEditor.data.files.map(({source, enabled, directory}) => ({source, enabled, directory})) };
-}
 async function openPortEditor(id) {
-  try {
-    const data = await portRequest(`/api/ports/${encodeURIComponent(id)}`);
-    portEditor = { id, data, saved: data.manual };
-    renderPortEditor();
-  } catch (error) { toast(error.message, true); }
+  const data = await portRequest("/api/ports/" + encodeURIComponent(id));
+  portEditor = { id, data, saved: data.manual };
+  renderPortEditor();
 }
 function renderPortEditor() {
   const editor = portEditor, data = editor.data;
-  const disabled = data.editable ? "" : "disabled";
-  openModal(`<div class="modal-body port-editor">
-    <h3>${esc(t("port.files"))}</h3><p>${esc(t("port.help"))}</p>
-    <p class="port-plan-status" role="status">${esc(data.detail || t(data.reviewRequired ? "port.help" : "port.ready"))}</p>
-    ${data.active ? `<p>${esc(fmtBytes(data.bytesCopied))} / ${esc(fmtBytes(data.totalBytes))}<br>${esc(data.currentPath || "")}</p>` : ""}
-    <div class="port-file-list">${data.files.map((file, index) => `
-      <section class="port-file" data-port-row="${index}">
-        <label><input type="checkbox" ${file.enabled ? "checked" : ""} ${disabled || (file.selectable === false ? "disabled" : "")}>
-          <strong>${esc(file.source)}</strong> · ${esc(fmtBytes(file.size))}</label>
-        ${file.package ? `<p>${esc(t("port.package"))}</p>` : `
-          <label>${esc(t("port.destination"))}<input type="text" value="${esc(file.directory || "")}" placeholder="${esc(t("port.automatic"))}" ${disabled}></label>
-          <button class="btn btn-sm" data-port-browse="${index}" ${disabled}>${esc(t("port.browse"))}</button>`}
-        ${!file.available ? `<p>${esc(t("port.pending"))}</p>` : ""}
-        ${file.error ? `<p class="task-error">${esc(file.error)}</p>` : ""}
-        ${file.members.length ? `<details><summary>${esc(tf("port.members", file.members.length))}</summary>
-          <div class="port-members">${file.members.map(member => `<div><span>${esc(member.source)}</span><span>→ ${esc(member.destination || "—")}</span></div>`).join("")}</div>
-        </details>` : ""}
-      </section>`).join("")}</div>
-    </div><div class="modal-actions">
-      <button class="btn" id="port-close">${esc(t("game.close"))}</button>
-      <button class="btn" id="port-preview" ${disabled}>${esc(t("port.preview"))}</button>
-      <button class="btn" id="port-save" ${disabled}>${esc(t("port.save"))}</button>
-      <button class="btn btn-primary" id="port-start" ${!editor.saved || !data.canStart || data.active ? "disabled" : ""}>${esc(t("port.start"))}</button>
-    </div>`);
-  $("port-close").onclick = closeModal;
-  $("port-preview").onclick = () => updatePortEditor(false);
-  $("port-save").onclick = () => updatePortEditor(true);
-  document.querySelectorAll("[data-port-row] input").forEach(input => input.addEventListener("input", () => {
-    editor.saved = false; $("port-start").disabled = true;
-    input.closest("[data-port-row]").querySelector("details")?.remove();
-    document.querySelector(".port-plan-status").textContent = t("port.preview");
-  }));
-  document.querySelectorAll("[data-port-browse]").forEach(button => button.onclick = () => {
-    capturePortRules(); showPortFolders(Number(button.dataset.portBrowse), "/");
-  });
-  $("port-start").onclick = async () => {
-    $("port-start").disabled = true;
-    try {
-      await portRequest(`/api/ports/${encodeURIComponent(editor.id)}/start`, "POST", {});
-      closeModal(); toast(t("port.started")); await reloadTasks();
-    } catch (error) { toast(error.message, true); renderPortEditor(); }
-  };
-}
-async function updatePortEditor(save) {
-  const editor = portEditor;
-  try {
-    const data = await portRequest(`/api/ports/${encodeURIComponent(editor.id)}${save ? "" : "/preview"}`,
-      save ? "PATCH" : "POST", portRulesBody());
-    editor.data = data;
+  const disabled = data.editable ? "" : " disabled";
+  modal(t("port.files"), "<p>" + esc(t("port.help")) + '</p><p id="port-plan-status" role="status">' + esc(data.detail || t(data.reviewRequired ? "port.help" : "port.ready")) +
+    '</p><div class="port-file-list">' + data.files.map((file, index) => '<section class="port-file" data-port-row="' + index +
+    '"><label><input type="checkbox"' + (file.enabled ? " checked" : "") + (disabled || (file.selectable === false ? " disabled" : "")) +
+    "><span>" + esc(file.source) + " · " + esc(bytes(file.size)) + "</span></label>" +
+    (file.package ? "<p>" + esc(t("port.package")) + "</p>" : "<label><span>" + esc(t("port.destination")) +
+      '</span><input type="text" value="' + esc(file.directory || "") + '"' + disabled + '></label><button data-port-browse="' + index + '"' + disabled + ">" + esc(t("port.browse")) + "</button>") +
+    (!file.available ? "<p>" + esc(t("port.pending")) + "</p>" : "") +
+    (file.error ? '<p class="error">' + esc(file.error) + "</p>" : "") +
+    ((file.members || []).length ? "<details><summary>" + esc(t("port.members", file.members.length)) + '</summary><div class="port-members">' +
+      file.members.map(member => "<div><span>" + esc(member.source) + "</span><span>" + esc(member.destination) + "</span></div>").join("") + "</div></details>" : "") +
+    "</section>").join("") + "</div>",
+    '<button id="port-preview"' + disabled + ">" + esc(t("port.preview")) + '</button><button id="port-save"' + disabled + ">" + esc(t("port.save")) +
+    '</button><button id="port-start" class="primary"' + (!editor.saved || !data.canStart || data.active ? " disabled" : "") + ">" + esc(t("port.start")) + "</button>");
+  for (const [id, save] of [["port-preview", false], ["port-save", true]]) $(id).onclick = event => busy(event.currentTarget, async () => {
+    capturePortRules();
+    editor.data = await portRequest("/api/ports/" + encodeURIComponent(editor.id) + (save ? "" : "/preview"), save ? "PATCH" : "POST",
+      { files: editor.data.files.map(({ source, enabled, directory }) => ({ source, enabled, directory })) });
     if (save) { editor.saved = true; toast(t("port.saved")); }
     renderPortEditor();
-  } catch (error) { toast(error.message, true); }
+  });
+  $("modal").querySelectorAll("[data-port-row] input").forEach(input => input.oninput = () => {
+    editor.saved = false; $("port-start").disabled = true; input.closest("section").querySelector("details")?.remove();
+    $("port-plan-status").textContent = t("port.preview");
+  });
+  $("modal").querySelectorAll("[data-port-browse]").forEach(button => button.onclick = event => busy(event.currentTarget, async () => {
+    capturePortRules(); await showPortFolders(Number(button.dataset.portBrowse), "/");
+  }));
+  $("port-start").onclick = event => busy(event.currentTarget, async () => {
+    await portRequest("/api/ports/" + encodeURIComponent(editor.id) + "/start", "POST", {});
+    $("modal").close(); toast(t("port.started")); await reloadTasks();
+  });
 }
 async function showPortFolders(index, path) {
-  try {
-    const data = await portRequest(`/api/ports/folders?path=${encodeURIComponent(path)}`);
-    openModal(`<div class="modal-body port-editor"><h3>${esc(t("port.browse"))}</h3>
-      <p>${esc(path)}</p><div class="port-folders">
-      ${path !== "/" ? `<button class="btn" data-port-folder="${esc(path.slice(0, path.lastIndexOf("/")) || "/")}">..</button>` : ""}
-      ${data.folders.map(folder => `<button class="btn" data-port-folder="${esc(folder)}">${esc(folder.split("/").pop())}</button>`).join("")}
-      </div>${data.truncated ? `<p>${esc(t("port.folderLimit"))}</p>` : ""}</div>
-      <div class="modal-actions"><button class="btn" id="port-back">${esc(t("port.back"))}</button>
-      <button class="btn btn-primary" id="port-folder-select">${esc(t("port.useFolder"))}</button></div>`);
-    $("port-back").onclick = renderPortEditor;
-    $("port-folder-select").onclick = () => {
-      portEditor.data.files[index].directory = path;
-      portEditor.data.files[index].members = [];
-      portEditor.data.detail = t("port.preview");
-      portEditor.saved = false; renderPortEditor();
-    };
-    document.querySelectorAll("[data-port-folder]").forEach(button => button.onclick = () => showPortFolders(index, button.dataset.portFolder));
-  } catch (error) { toast(error.message, true); }
-}
-
-function confirmRemove(id) {
-  const found = state.tasks.find((x) => x.id === id);
-  openModal(`<div class="modal-body">
-      <h3>${t("task.remove")}?</h3>
-      <div class="modal-sub">${esc(found ? (found.name || id) : id)}</div>
-      <label class="modal-check"><input type="checkbox" id="rm-data"> ${t("remove.data")}</label>
-    </div>
-    <div class="modal-actions">
-      <button class="btn" id="rm-cancel">${t("game.close")}</button>
-      <button class="btn btn-danger" id="rm-ok">${t("task.remove")}</button>
-    </div>`);
-  $("rm-cancel").onclick = closeModal;
-  $("rm-ok").onclick = async () => {
-    const resp = await postJson(`/api/tasks/${id}/remove`, { deleteData: $("rm-data").checked });
-    closeModal();
-    if (!resp.ok && resp.status !== 401) {
-      const body = await resp.json().catch(() => ({}));
-      toast(explainRejection(body.error) || "remove failed", true);
-    }
-    if (resp.status !== 401) await reloadTasks();
+  const data = await portRequest("/api/ports/folders?path=" + encodeURIComponent(path));
+  const folders = path === "/" ? data.folders : [path.slice(0, path.lastIndexOf("/")) || "/", ...data.folders];
+  modal(t("port.browse"), "<p>" + esc(path) + '</p><div class="port-folders">' + folders.map(folder => '<button data-port-folder="' + esc(folder) + '">' +
+    esc(folder === "/" ? "/" : folder.split("/").pop()) + "</button>").join("") + "</div>" + (data.truncated ? "<p>" + esc(t("port.folderLimit")) + "</p>" : ""),
+    '<button id="port-back">' + esc(t("port.back")) + '</button><button id="port-folder-select" class="primary">' + esc(t("port.useFolder")) + "</button>");
+  $("port-back").onclick = renderPortEditor;
+  $("port-folder-select").onclick = () => {
+    portEditor.data.files[index].directory = path; portEditor.data.files[index].members = [];
+    portEditor.data.detail = t("port.preview"); portEditor.saved = false; renderPortEditor();
   };
+  $("modal").querySelectorAll("[data-port-folder]").forEach(button => button.onclick = event => busy(event.currentTarget,
+    () => showPortFolders(index, button.dataset.portFolder)));
 }
 
-/* ================= CATALOG ================= */
-let catalog = null, catalogFiltered = [], catalogShown = 0;
-let catalogSection = "games";
-const CATALOG_CHUNK = 48;
-
-async function loadCatalog() {
-  if (catalog) { renderCatalogCount(); return; }
-  const status = $("catalog-status");
-  status.hidden = false;
-  status.innerHTML = `<div class="skel"></div>`;
-  try {
-    const resp = await api("/api/catalog");
-    if (!resp.ok) throw new Error("HTTP " + resp.status);
-    catalog = await resp.json();
-    status.hidden = true;
-    buildCatalogFilters();
-    applyCatalogFilter();
-  } catch (err) {
-    catalog = null;
-    status.innerHTML = "";
-    status.hidden = false;
-    status.textContent = t("catalog.failed") + ": " + err.message;
-  }
+const queryPin = new URLSearchParams(location.search).get("pin");
+if (queryPin) { localStorage.setItem("pipensxPin", queryPin); history.replaceState(null, "", location.pathname + location.hash); }
+translate(); applyTheme(); closeMenu(); showPage();
+async function start() {
+  const info = await api("/api/info");
+  features = info.features || {};
+  instanceId = info.instanceId;
+  $("catalog-favorites").hidden = !features.favorites;
+  $("catalog-fetch").hidden = !features.catalogRefresh;
+  $("update-section").hidden = !features.update;
+  $("storage-section").hidden = !features.maintenance;
+  const libraryLink = document.querySelector('[data-page="library"]');
+  libraryLink.hidden = !features.library;
+  await reloadTasks();
+  if (page() === "catalog") await loadCatalog(true);
+  if (page() === "maintenance") await loadUpdate();
 }
-
-function uniqSorted(vals) {
-  return [...new Set(vals.filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b)));
-}
-function buildCatalogFilters() {
-  const section = catalog.filter(e => e.section === catalogSection);
-  const genres = uniqSorted(section.map((e) => (e.genre || "").split(/[,/;]/)[0].trim()));
-  const years = uniqSorted(section.map((e) => e.year)).reverse();
-  const gsel = $("flt-genre"), ysel = $("flt-year");
-  const gcur = gsel.value, ycur = ysel.value;
-  gsel.innerHTML = `<option value="">${esc(t("catalog.allGenres"))}</option>` +
-    genres.slice(0, 60).map((g) => `<option value="${esc(g)}">${esc(g)}</option>`).join("");
-  ysel.innerHTML = `<option value="">${esc(t("catalog.allYears"))}</option>` +
-    years.slice(0, 40).map((y) => `<option value="${esc(y)}">${esc(y)}</option>`).join("");
-  if ([...gsel.options].some((o) => o.value === gcur)) gsel.value = gcur;
-  if ([...ysel.options].some((o) => o.value === ycur)) ysel.value = ycur;
-  renderCatalogCount();
-  syncCustomSelect(gsel);
-  syncCustomSelect(ysel);
-}
-function renderCatalogCount() {
-  const total = catalog ? catalog.filter(e => e.section === catalogSection).length : 0;
-  const shown = catalogFiltered.length || total;
-  const text = total ? tf("catalog.count", shown, total) : "";
-  $("catalog-count").textContent = text;
-  const acc = $("activity-catalog-count");
-  if (acc) acc.textContent = total ? String(total) : "—";
-  const ct = $("catalog-time");
-  if (ct) ct.textContent = text || "—";
-}
-
-function applyCatalogFilter() {
-  const gs = $("global-search");
-  const q = ((gs && gs.value || "").trim().toLowerCase());
-  const genre = $("flt-genre").value;
-  const year = $("flt-year").value;
-  const size = $("flt-size").value;
-  const sort = $("flt-sort").value;
-  catalogFiltered = catalog.filter((e) => {
-    if (e.section !== catalogSection) return false;
-    if (q && !((e.title || "").toLowerCase().includes(q) ||
-               (e.developer || "").toLowerCase().includes(q) ||
-               (e.publisher || "").toLowerCase().includes(q))) return false;
-    if (genre && !(e.genre || "").toLowerCase().startsWith(genre.toLowerCase()) &&
-        !(e.genre || "").toLowerCase().includes(genre.toLowerCase())) return false;
-    if (year && String(e.year) !== year) return false;
-    if (size === "small" && !(e.size < 4 * 1024 ** 3)) return false;
-    if (size === "medium" && !(e.size >= 4 * 1024 ** 3 && e.size <= 10 * 1024 ** 3)) return false;
-    if (size === "large" && !(e.size > 10 * 1024 ** 3)) return false;
-    return true;
-  });
-  if (sort === "title") catalogFiltered.sort((a, b) => (a.title || "").localeCompare(b.title || ""));
-  else if (sort === "year-desc") catalogFiltered.sort((a, b) => String(b.year || "").localeCompare(String(a.year || "")));
-  else if (sort === "size-desc") catalogFiltered.sort((a, b) => (b.size || 0) - (a.size || 0));
-  else if (sort === "size-asc") catalogFiltered.sort((a, b) => (a.size || 0) - (b.size || 0));
-  else if (sort === "recent") catalogFiltered.sort((a, b) => (b.publishedAt || 0) - (a.publishedAt || 0));
-  catalogShown = 0;
-  $("catalog-grid").innerHTML = "";
-  renderCatalogCount();
-  appendCatalogChunk();
-}
-
-for (const id of ["catalog-games", "catalog-ports"]) $(id).addEventListener("click", () => {
-  catalogSection = $(id).dataset.section;
-  for (const buttonId of ["catalog-games", "catalog-ports"]) {
-    const active = $(buttonId).dataset.section === catalogSection;
-    $(buttonId).classList.toggle("btn-primary", active);
-    $(buttonId).setAttribute("aria-pressed", String(active));
-  }
-  if (catalog) { buildCatalogFilters(); applyCatalogFilter(); }
-});
-
-function healthChip(e) {
-  if (!e.health || e.health === "unknown") return "";
-  const bad = ["dead", "replaced", "notRegistered", "noPeers", "metadataTimeout"].includes(e.health);
-  return `<span class="game-health${bad ? " bad" : ""}">${e.health === "ok" ? "● healthy" : esc(e.health)}</span>`;
-}
-
-function appendCatalogChunk() {
-  if (!catalogFiltered) return;
-  const slice = catalogFiltered.slice(catalogShown, catalogShown + CATALOG_CHUNK);
-  catalogShown += slice.length;
-  const html = slice.map((e, i) => {
-    const idx = catalogShown - slice.length + i;
-    const sub = [e.year, e.size ? fmtBytes(e.size) : ""].filter(Boolean).join(" · ");
-    const genreTop = (e.genre || "").split(/[,/;]/)[0].trim();
-    return `<div class="game" data-idx="${idx}">
-      <div class="game-cover-wrap">
-        ${e.posterUrl
-          ? `<img class="game-cover" loading="lazy" src="${esc(e.posterUrl)}" alt="" onerror="this.remove()">`
-          : `<div class="game-cover-fallback">${icon("grid")}</div>`}
-        ${healthChip(e)}
-        ${e.size ? `<span class="game-size">${esc(fmtBytes(e.size))}</span>` : ""}
-      </div>
-      <div class="game-body">
-        ${genreTop ? `<div class="game-genre">${esc(genreTop)}</div>` : ""}
-        <div class="game-title">${esc(e.title)}</div>
-        <div class="game-sub">${esc(sub)}</div>
-      </div>
-    </div>`;
-  }).join("");
-  $("catalog-grid").insertAdjacentHTML("beforeend", html);
-}
-
-new IntersectionObserver((entries) => {
-  if (entries[0].isIntersecting) appendCatalogChunk();
-}).observe($("catalog-sentinel"));
-
-["flt-genre", "flt-year", "flt-size", "flt-sort"].forEach((id) =>
-  $(id).addEventListener("change", () => { if (catalog) applyCatalogFilter(); }));
-$("flt-reset").addEventListener("click", () => {
-  const gs = $("global-search");
-  if (gs) gs.value = "";
-  $("flt-genre").value = ""; $("flt-year").value = "";
-  $("flt-size").value = ""; $("flt-sort").value = "title";
-  syncAllCustomSelects();
-  if (catalog) applyCatalogFilter();
-});
-
-$("catalog-grid").addEventListener("click", (e) => {
-  const card = e.target.closest(".game");
-  if (!card) return;
-  const entry = catalogFiltered[Number(card.dataset.idx)];
-  if (entry) openGameModal(entry);
-});
-
-function compactDescription(text) {
-  return text.trim().replace(/[ \t\r\n]+/g, gap =>
-    (gap.match(/\r\n|\r|\n/g) || []).length > 1 ? "\n" : " ");
-}
-
-function shortDescription(text) {
-  const characters = Array.from(text);
-  let end = 0;
-  let lines = 1;
-  while (end < characters.length && end < 280) {
-    if (characters[end] === "\n" && ++lines > 4) break;
-    ++end;
-  }
-  if (end === characters.length) return text;
-  if (characters[end] !== " " && characters[end] !== "\n") {
-    let word = end - 1;
-    while (word >= 0 && characters[word] !== " " && characters[word] !== "\n") --word;
-    if (word >= 0 && end - word <= 48) end = word;
-  }
-  return characters.slice(0, end).join("").trimEnd() + "…";
-}
-
-function openGameModal(entry) {
-  const generation = ++descriptionGeneration;
-  const requestedLanguage = lang;
-  const chips = [
-    entry.year ? `<span class="chip">${esc(entry.year)}</span>` : "",
-    entry.genre ? `<span class="chip accent">${esc(entry.genre)}</span>` : "",
-    entry.size ? `<span class="chip">${esc(fmtBytes(entry.size))}</span>` : "",
-    entry.health === "ok" ? `<span class="chip ok">● healthy</span>`
-      : entry.health && entry.health !== "unknown" ? `<span class="chip warn">${esc(entry.health)}</span>` : "",
-    entry.peerCount ? `<span class="chip">${esc(entry.peerCount)} peers</span>` : "",
-  ].filter(Boolean).join("");
-  const rows = [
-    [t("game.developer"), entry.developer],
-    [t("game.publisher"), entry.publisher],
-    [t("game.genre"), entry.genre],
-    [t("game.year"), entry.year],
-    [t("game.size"), entry.size ? fmtBytes(entry.size) : ""],
-    [t("game.titleId"), entry.titleId],
-    [t("game.multiplayer"), entry.multiplayer],
-    [t("game.performance"), entry.performance],
-    [t("game.added"), entry.publishedAt ? fmtDate(entry.publishedAt) : ""],
-  ].filter(([, v]) => v).map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join("");
-  const shots = (entry.screenshots || []).map((u) =>
-    `<img loading="lazy" src="${esc(u)}" alt="" onerror="this.remove()">`).join("");
-  openModal(`
-    ${entry.posterUrl ? `<div class="modal-hero"><img src="${esc(entry.posterUrl)}" alt="" onerror="this.remove()"><div class="modal-hero-fade"></div></div>` : ""}
-    <div class="modal-body">
-      <div class="modal-title-row">
-        ${entry.posterUrl ? `<img class="modal-cover" src="${esc(entry.posterUrl)}" alt="" onerror="this.remove()">` : ""}
-        <div><h3>${esc(entry.title)}</h3><div class="modal-badges">${chips}</div></div>
-      </div>
-      <div class="modal-desc game-description" id="game-description"></div>
-      <button type="button" class="btn btn-ghost description-toggle" id="game-description-toggle"
-        aria-controls="game-description" aria-expanded="false" hidden>${t("game.showMore")}</button>
-      ${rows ? `<table class="facts">${rows}</table>` : ""}
-      ${entry.infoHash ? `<div class="hash">${t("game.hash")}: ${esc(entry.infoHash)}</div>` : ""}
-      ${shots ? `<div class="shots">${shots}</div>` : ""}
-    </div>
-    <div class="modal-actions">
-      <button class="btn" id="game-cancel">${t("game.close")}</button>
-      <button class="btn" id="game-download">${t("game.download")}</button>
-      <button class="btn btn-primary" id="game-install">${t("game.install")}</button>
-    </div>`);
-  let expanded = false;
-  let fullDescription = "";
-  const description = $("game-description");
-  const toggle = $("game-description-toggle");
-  const renderDescription = (text) => {
-    fullDescription = compactDescription(text);
-    const preview = shortDescription(fullDescription);
-    description.textContent = expanded ? fullDescription : preview;
-    toggle.hidden = preview === fullDescription;
-    toggle.textContent = t(expanded ? "game.showLess" : "game.showMore");
-    toggle.setAttribute("aria-expanded", String(expanded));
-  };
-  renderDescription(entry.description || "");
-  toggle.onclick = () => {
-    expanded = !expanded;
-    renderDescription(fullDescription);
-    if (!expanded) toggle.scrollIntoView({ block: "nearest" });
-  };
-  $("game-cancel").onclick = closeModal;
-  const start = (mode) => async () => {
-    closeModal();
-    const resp = await postJson("/api/add/catalog", { infoHash: entry.infoHash, mode });
-    const body = await resp.json().catch(() => ({}));
-    if (resp.ok) {
-      toast(t("msg.addedQueue"));
-      location.hash = "#downloads";
-    } else {
-      toast(body.error || "add failed", true);
-    }
-  };
-  $("game-install").onclick = start("install");
-  $("game-download").onclick = start("download");
-  fetch(`/api/catalog/description?hash=${encodeURIComponent(entry.infoHash)}&lang=${encodeURIComponent(requestedLanguage)}`, { cache: "no-store" })
-    .then(resp => resp.ok ? resp.json() : null)
-    .then(body => {
-      if (body && description.isConnected && $("modal").open &&
-          generation === descriptionGeneration && lang === requestedLanguage)
-        renderDescription(body.description || "");
-    }).catch(() => {}); // Original prose remains usable when an old NRO serves the page.
-}
-
-/* ---------- add tab ---------- */
-function checkedMode(groupId) {
-  return document.querySelector(`#${groupId} input:checked`).value;
-}
-$("magnet-btn").addEventListener("click", async () => {
-  const magnet = $("magnet-input").value.trim();
-  if (!magnet) return toast("magnet:?…", true);
-  $("magnet-btn").disabled = true;
-  try {
-    const resp = await postJson("/api/add/magnet", { magnet, mode: checkedMode("magnet-mode") });
-    const body = await resp.json().catch(() => ({}));
-    if (resp.ok) {
-      $("magnet-input").value = "";
-      toast(t("msg.resolving"));
-      location.hash = "#downloads";
-    } else {
-      toast(body.error || "add failed", true);
-    }
-  } finally {
-    $("magnet-btn").disabled = false;
-  }
-});
-
-async function uploadTorrentFile(file) {
-  if (!file) return toast("*.torrent", true);
-  $("torrent-btn").disabled = true;
-  try {
-    const resp = await api("/api/add/torrent?mode=" + checkedMode("torrent-mode"), {
-      method: "POST",
-      headers: { "Content-Type": "application/x-bittorrent" },
-      body: file,
-    });
-    const body = await resp.json().catch(() => ({}));
-    if (resp.ok) {
-      $("torrent-file").value = "";
-      $("drop-name").textContent = "";
-      toast(t("msg.addedQueue"));
-      location.hash = "#downloads";
-    } else {
-      toast(body.error || "upload failed", true);
-    }
-  } finally {
-    $("torrent-btn").disabled = false;
-  }
-}
-$("torrent-btn").addEventListener("click", () => uploadTorrentFile($("torrent-file").files[0]));
-$("torrent-file").addEventListener("change", () => {
-  $("drop-name").textContent = $("torrent-file").files[0]?.name || "";
-});
-const dz = $("dropzone");
-["dragenter", "dragover"].forEach((ev) => dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.add("over"); }));
-["dragleave", "drop"].forEach((ev) => dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.remove("over"); }));
-dz.addEventListener("drop", (e) => {
-  const f = e.dataTransfer.files?.[0];
-  if (f) { $("drop-name").textContent = f.name; uploadTorrentFile(f); }
-});
-// Drop anywhere on the Add view.
-$("view-add").addEventListener("dragover", (e) => e.preventDefault());
-$("view-add").addEventListener("drop", (e) => {
-  e.preventDefault();
-  const f = e.dataTransfer.files?.[0];
-  if (f && /\.torrent$/i.test(f.name)) uploadTorrentFile(f);
-});
-
-/* ---------- settings ---------- */
-let settingsLoaded = false;
-let updateMaxBytes = 64 * 1024 * 1024;
-
-async function loadUpdateStatus() {
-  const status = $("update-status");
-  try {
-    const resp = await api("/api/update", { cache: "no-store" });
-    const body = await resp.json().catch(() => ({}));
-    if (!resp.ok) {
-      if (resp.status !== 401) status.textContent = body.error || "update status unavailable";
-      return;
-    }
-    updateMaxBytes = Number(body.maxUploadBytes) || updateMaxBytes;
-    const current = tf("update.current", body.currentVersion || "?");
-    status.textContent = body.stagedReady
-      ? `${current} · ${tf("update.ready", fmtBytes(body.stagedBytes || 0))}`
-      : `${current} · ${t("update.none")}`;
-    $("update-apply").hidden = !body.stagedReady;
-  } catch (e) {
-    status.textContent = e.message || "update status unavailable";
-  }
-}
-
-$("update-file")?.addEventListener("change", () => {
-  $("update-file-name").textContent = $("update-file").files[0]?.name || "";
-});
-
-$("update-upload")?.addEventListener("click", async () => {
-  const file = $("update-file").files[0];
-  if (!file) return toast("pipensx.nro", true);
-  if (!/\.nro$/i.test(file.name)) return toast("Choose a .nro file", true);
-  if (file.size > updateMaxBytes) return toast("NRO is too large", true);
-  $("update-upload").disabled = true;
-  $("update-apply").hidden = true;
-  $("update-status").textContent = t("update.uploading");
-  try {
-    const resp = await api("/api/update/upload", {
-      method: "POST",
-      headers: { "Content-Type": "application/octet-stream" },
-      body: file,
-    });
-    const body = await resp.json().catch(() => ({}));
-    if (!resp.ok) return toast(body.error || "update upload failed", true);
-    toast(t("update.ready").replace("{0}", fmtBytes(body.stagedBytes || file.size)));
-    await loadUpdateStatus();
-  } finally {
-    $("update-upload").disabled = false;
-  }
-});
-
-$("update-apply")?.addEventListener("click", async () => {
-  if (!$("control-dialog").hidden) return;
-  if (!await controlDialog(t("update.apply"), t("control.updateHelp"))) return;
-  $("update-upload").disabled = true;
-  $("update-apply").disabled = true;
-  try {
-    const resp = await api("/api/update/apply", { method: "POST", body: "" });
-    const body = await resp.json().catch(() => ({}));
-    if (!resp.ok) {
-      toast(body.error || "update apply failed", true);
-      $("update-upload").disabled = false;
-      $("update-apply").disabled = false;
-      return;
-    }
-    $("update-status").textContent = t("update.applying");
-  } catch (e) {
-    toast(e.message || "update apply failed", true);
-    $("update-upload").disabled = false;
-    $("update-apply").disabled = false;
-  }
-});
-
-function syncAppearanceControls() {
-  $("set-theme").value = localStorage.getItem("pipensxTheme") || "dark";
-  $("set-lang").value = lang;
-  syncCustomSelect($("set-theme"));
-  syncCustomSelect($("set-lang"));
-}
-$("set-theme").addEventListener("change", () => {
-  localStorage.setItem("pipensxTheme", $("set-theme").value);
-  applyTheme();
-});
-$("set-lang").addEventListener("change", () => {
-  lang = $("set-lang").value;
-  localStorage.setItem("pipensxLang", lang);
-  applyI18n();
-  renderDownloads();
-  if (catalog) { buildCatalogFilters(); applyCatalogFilter(); }
-});
-
-async function loadSettings() {
-  syncAppearanceControls();
-  loadUpdateStatus();
-  const resp = await api("/api/settings");
-  if (!resp.ok) {
-    if (resp.status !== 401) {
-      const body = await resp.json().catch(() => ({}));
-      toast(body.error || "failed to load settings", true);
-    }
-    return;
-  }
-  const s = await resp.json();
-  if (s.language && s.language !== "auto") {
-    lang = s.language === "en-US" ? "en" : s.language;
-    localStorage.setItem("pipensxLang", lang);
-    syncAppearanceControls();
-    applyI18n();
-  }
-  $("set-max-active").value = String(s.maxActiveDownloads || 1);
-  $("set-stream").value = s.streamSelection || "allFiles";
-  $("set-install").value = s.installLocation || "sdCard";
-  $("set-debrid").value = s.debridProvider || "torbox";
-  $("set-torrserver").value = s.torrserverUrl || "";
-  $("set-proxy").value = s.proxyUrl || "";
-  $("set-catalog-url").value = s.catalogSourceUrl || "";
-  $("set-catalog-refresh").checked = !!s.refreshCatalogOnLaunch;
-  $("set-torbox").value = "";
-  $("set-realdebrid").value = "";
-  $("set-alldebrid").value = "";
-  $("set-torbox").placeholder = s.torboxConfigured ? "••••••••" : "";
-  $("set-realdebrid").placeholder = s.realdebridConfigured ? "••••••••" : "";
-  $("set-alldebrid").placeholder = s.alldebridConfigured ? "••••••••" : "";
-  settingsLoaded = true;
-  syncAllCustomSelects();
-}
-$("settings-save").addEventListener("click", async () => {
-  if (!settingsLoaded) return toast("…", true);
-  const patch = {
-    language: lang === "en" ? "en-US" : lang,
-    maxActiveDownloads: Number($("set-max-active").value),
-    streamSelection: $("set-stream").value,
-    installLocation: $("set-install").value,
-    debridProvider: $("set-debrid").value,
-    torrserverUrl: $("set-torrserver").value.trim(),
-    proxyUrl: $("set-proxy").value.trim(),
-    catalogSourceUrl: $("set-catalog-url").value.trim(),
-    refreshCatalogOnLaunch: $("set-catalog-refresh").checked,
-  };
-  const torbox = $("set-torbox").value;
-  const realdebrid = $("set-realdebrid").value;
-  const alldebrid = $("set-alldebrid").value;
-  if (torbox) patch.torboxApiKey = torbox;
-  if (realdebrid) patch.realdebridApiKey = realdebrid;
-  if (alldebrid) patch.alldebridApiKey = alldebrid;
-  $("settings-save").disabled = true;
-  try {
-    const resp = await api("/api/settings", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(patch),
-    });
-    const body = await resp.json().catch(() => ({}));
-    if (!resp.ok) return toast(body.error || "save failed", true);
-    toast(t("msg.saved"));
-    await loadSettings();
-  } finally {
-    $("settings-save").disabled = false;
-  }
-});
-
-/* ---------- installed library ---------- */
-let library = null, libraryLoading = false;
-const librarySeenJobs = new Set();
-function libraryVersion(value) {
-  if (!/^\d+$/.test(value || "")) return t("library.unknown");
-  return `v${value}`;
-}
-function renderLibrary() {
-  if (!library) return;
-  const query = $("library-search").value.trim().toLowerCase();
-  const updates = $("library-filter").value === "updates";
-  const rows = (library.titles || []).filter(row =>
-    (!query || `${row.name} ${row.titleId}`.toLowerCase().includes(query)) &&
-    (!updates || row.updateState === "update_available"));
-  const busy = new Set((library.jobs || []).filter(job => ["queued", "working"].includes(job.state)).map(job => job.titleId));
-  $("library-status").textContent = tf("library.count", rows.length, (library.titles || []).length);
-  $("library-list").innerHTML = rows.length ? rows.map(row => `
-    <article class="card library-game">
-      <div class="library-game-info"><h2>${esc(row.name || row.titleId)}</h2>
-        <p class="library-meta">${esc(row.titleId)} · ${esc(row.publisher || "")}</p>
-        <p>${esc(t("library.current"))}: ${esc(row.displayVersion || libraryVersion(row.version))}</p>
-        <p>${esc(t("library." + row.updateState))}${row.latestVersion ? ` · ${esc(libraryVersion(row.latestVersion))}` : ""}</p>
-        <p class="library-meta">${esc(tf("library.dlc", row.dlcCount || 0))}${row.hasLayeredFsMods ? ` · ${esc(t("library.mods"))}` : ""}</p>
-      </div><div class="library-actions">
-        ${row.updateState === "update_available" && row.updateHash ? `<button class="btn btn-primary" data-library="${esc(row.titleId)}" data-library-action="update" ${busy.has(row.titleId) ? "disabled" : ""}>${esc(t("library.update"))}</button>` : ""}
-        <button class="btn btn-danger" data-library="${esc(row.titleId)}" data-library-action="uninstall" ${busy.has(row.titleId) ? "disabled" : ""}>${esc(t("library.uninstall"))}</button>
-      </div></article>`).join("") : `<div class="empty">${esc(t("library.empty"))}</div>`;
-  $("library-jobs").innerHTML = (library.jobs || []).slice(-5).map(job =>
-    `<p class="library-job ${job.state === "error" ? "library-error" : ""}">${esc(t("library." + job.action))} · ${esc(t("library.job." + job.state))}${job.error ? `: ${esc(job.error)}` : ""}</p>`).join("");
-  $("library-update-all").disabled = !(library.titles || []).some(row => row.updateState === "update_available" && row.updateHash && !row.hasLayeredFsMods);
-}
-async function loadLibrary() {
-  if (libraryLoading) return;
-  libraryLoading = true;
-  if (!library) $("library-status").textContent = t("library.loading");
-  try {
-    const response = await api("/api/library", { cache: "no-store" });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "HTTP " + response.status);
-    library = data;
-    renderLibrary();
-    for (const job of data.jobs || []) if (["done", "error"].includes(job.state) && !librarySeenJobs.has(job.jobId)) {
-      librarySeenJobs.add(job.jobId);
-      toast(t("library.job." + job.state) + (job.error ? ": " + job.error : ""), job.state === "error");
-    }
-  } catch (error) { $("library-status").textContent = `${t("library.failed")}: ${error.message}`; }
-  finally { libraryLoading = false; }
-}
-async function libraryCommand(titleId, action, options = {}) {
-  const path = action === "refresh" ? "/api/library/refresh" : `/api/library/${encodeURIComponent(titleId)}/${action}`;
-  const response = await api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(options) });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error || "HTTP " + response.status);
-  return body;
-}
-$("library-search").addEventListener("input", renderLibrary);
-$("library-filter").addEventListener("change", renderLibrary);
-$("library-refresh").addEventListener("click", async () => {
-  $("library-refresh").disabled = true;
-  try { await libraryCommand("", "refresh"); await loadLibrary(); }
-  catch (error) { toast(error.message, true); }
-  finally { $("library-refresh").disabled = false; }
-});
-$("library-list").addEventListener("click", async event => {
-  const button = event.target.closest("[data-library-action]");
-  if (!button) return;
-  const row = library?.titles?.find(item => item.titleId === button.dataset.library);
-  if (!row) return;
-  const action = button.dataset.libraryAction;
-  const message = action === "uninstall" ? tf("library.uninstallAsk", row.name, row.titleId) :
-    tf("library.updateAsk", row.name, libraryVersion(row.version), libraryVersion(row.latestVersion)) +
-    (row.hasLayeredFsMods ? "\n\n" + t("library.modsWarning") : "");
-  if (!await controlDialog(t("library." + action), message, false, t("library." + action))) return;
-  button.disabled = true;
-  try {
-    await libraryCommand(row.titleId, action, { confirm: true, acknowledgeMods: row.hasLayeredFsMods });
-    toast(t(action === "update" ? "library.updateQueued" : "library.job.queued"));
-    await loadLibrary();
-  } catch (error) { toast(error.message, true); button.disabled = false; }
-});
-$("library-update-all").addEventListener("click", async () => {
-  const candidates = (library?.titles || []).filter(row => row.updateState === "update_available" && row.updateHash && !row.hasLayeredFsMods);
-  if (!candidates.length || !await controlDialog(t("library.updateAll"), tf("library.updateAllAsk", candidates.length), false, t("library.updateAll"))) return;
-  $("library-update-all").disabled = true;
-  let queued = 0;
-  for (const row of candidates) {
-    try { await libraryCommand(row.titleId, "update"); ++queued; }
-    catch (error) { toast(`${row.name}: ${error.message}`, true); break; }
-  }
-  toast(tf("library.queuedCount", queued));
-  await loadLibrary();
-});
-setInterval(() => { if (currentTab() === "library" && !document.hidden) loadLibrary(); }, 3000);
-
-/* ---------- boot ---------- */
-initAllCustomSelects();
-applyTheme();
-applyI18n();
-syncAppearanceControls();
-renderIcons();
-showTab();
-refreshNotifyRow();
-$("menu-button")?.addEventListener("click", () => {
-  const sb = $("sidebar");
-  if (!sb) return;
-  const open = !sb.classList.contains("open");
-  sb.classList.toggle("open", open);
-  const scrim = $("scrim");
-  if (scrim) scrim.hidden = !open;
-});
-$("scrim")?.addEventListener("click", closeDrawer);
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && $("sidebar")?.classList.contains("open")) closeDrawer();
-  if (e.key === "/" && !/^(INPUT|TEXTAREA|SELECT)$/.test((document.activeElement?.tagName || ""))) {
-    e.preventDefault();
-    $("global-search")?.focus();
-  }
-});
-api("/api/tasks").then((r) => r.json()).then((s) => {
-  state = Object.assign(state, s);
-  renderDownloads();
-}).catch(() => {});
-window.addEventListener("resize", () => {
-  if (window.innerWidth > 700) closeDrawer();
-  if (!$("chart-card").hidden) drawChart();
-});
+busy(null, start, $("downloads-status"));

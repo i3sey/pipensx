@@ -8,7 +8,9 @@
 #include "app/installed_title_service.hpp"
 #include "app/nro_relocation.h"
 #include "app/stream_ram_budget.hpp"
+#include "app/storage_manager.hpp"
 #include "app/switch_deploy.hpp"
+#include "install/system_cleanup.hpp"
 #include "app/update_service.hpp"
 #include "app/ui_thread_call.hpp"
 #include "app/web_server.hpp"
@@ -782,6 +784,68 @@ int main(int argc, char** argv) {
         startupStage("WebServer construction");
         WebServer webServer(manager, "romfs:/web", PIPENSX_VERSION);
         webServer.setPin(settings.get().webServerPin);
+        webServer.setMaintenanceHandler([&manager, &metadata](const std::string& action,
+                std::string& json, std::string& error) {
+            std::vector<std::string> ids, paths;
+            for (const auto& task : manager.snapshot()) {
+                ids.push_back(task.id);
+                paths.push_back(task.dataPath);
+            }
+            uint64_t recovered = 0;
+            bool ok = true;
+            if (action == "images") ok = metadata.clearImageCache(error);
+            else if (action == "torrents") ok = pipensx::clearOrphanTorrents(manager.torrentRoot(), ids, error, recovered);
+            else if (action == "downloads") ok = pipensx::clearOrphanDownloads(manager.downloadRoot(), paths, error, recovered);
+            else if (action == "temporary") {
+                if (manager.hasActiveTransfer()) { error = "A transfer is active."; return false; }
+                ok = pipensx::clearTemporaryFiles(manager.rootPath(), error, recovered);
+            } else if (action == "system" || action == "tickets") {
+                if (!manager.beginSystemCleanup(error)) return false;
+                pipensx::install::SystemCleanupSnapshot removed;
+                try {
+                    ok = pipensx::install::clearSystemInstallGarbage(manager.rootPath(), ids,
+                        action == "tickets" ? pipensx::install::SystemCleanupOptions::unusedTicketsOnly()
+                                            : pipensx::install::SystemCleanupOptions{}, removed, error);
+                } catch (const std::exception& e) { error = e.what(); ok = false; }
+                manager.endSystemCleanup();
+            } else if (action != "scan") { error = "Unknown maintenance action."; return false; }
+            if (!ok) return false;
+            const auto storage = pipensx::scanStorageBreakdown(manager.rootPath());
+            pipensx::install::SystemCleanupSnapshot system;
+            std::string systemError;
+            pipensx::install::scanSystemInstallGarbage(manager.rootPath(), ids, system, systemError);
+            json = nlohmann::json({{"downloads", storage.downloadsBytes},
+                {"images", storage.imageCacheBytes}, {"temporary", storage.temporaryBytes},
+                {"torrents", pipensx::orphanTorrentBytes(manager.torrentRoot(), ids)},
+                {"orphanDownloads", pipensx::orphanDownloadBytes(manager.downloadRoot(), paths)},
+                {"systemBytes", system.knownRecoverableBytes()}, {"systemItems", system.installLeftoverItems()},
+                {"tickets", system.unusedTicketCount}, {"systemAvailable", system.available},
+                {"ticketsAvailable", system.ticketsAvailable}, {"systemError", systemError}}).dump();
+            return true;
+        });
+        webServer.setUpdateContext(updater.targetPath(), envHasNextLoad(),
+                                  [&updater] { updater.discardStaged(); });
+        webServer.setFavoritesHandler([&favorites, &catalog](const std::string& hash,
+                bool toggle, std::string& json, std::string& error) {
+            bool ok = false;
+            if (!runOnUiThread([&] {
+                    if (toggle) {
+                        const auto* entry = catalog.findByInfoHash(hash);
+                        if (!entry && !favorites.contains(hash)) {
+                            error = "game not found";
+                            return;
+                        }
+                        favorites.toggle(hash, entry ? entry->title : "", error);
+                        if (!error.empty()) return;
+                    }
+                    nlohmann::json items = nlohmann::json::array();
+                    for (const auto& item : favorites.items()) items.push_back(item.infoHash);
+                    json = nlohmann::json({{"hashes", items},
+                        {"generation", favorites.generation()}}).dump();
+                    ok = true;
+                })) { error = "favorites timed out"; return false; }
+            return ok;
+        });
         webServer.setPortHandler([&deploy](const std::string& action, const std::string& taskId,
                                            const std::string& body, std::string& json, std::string& error) {
             return deploy.remotePortRequest(action, taskId, body, json, error);
@@ -947,7 +1011,7 @@ int main(int argc, char** argv) {
             diagnostic_error("game_updates", "load", "error=%s",
                              gameUpdatesError.c_str());
         webServer.setLibraryHandlers(
-            [&installed, &metadata, &catalog, &gameUpdates](std::string& json,
+            [&installed, &metadata, &catalog, &gameUpdates, &portUninstall](std::string& json,
                                                           std::string& error) {
                 if (!runOnUiThread([&] {
                     nlohmann::json rows = nlohmann::json::array();
@@ -993,7 +1057,14 @@ int main(int argc, char** argv) {
                             if (matchesId && (!bundle || candidate.publishedAt > bundle->publishedAt))
                                 bundle = &candidate;
                         }
+                        pipensx::PortUninstallPlan portPlan;
+                        const bool isPort = portUninstall.plan(title.titleId, {}, portPlan);
                         rows.push_back({{"titleId", title.titleId}, {"name", title.name},
+                            {"isPort", isPort},
+                            {"deployedFiles", portPlan.switchFiles.size() + portPlan.sdRootFiles.size()},
+                            {"deployedBytes", portPlan.switchBytes + portPlan.sdRootBytes},
+                            {"wholeFolders", portPlan.wholeFolders},
+                            {"hasDownloadData", portPlan.taskHasData},
                             {"publisher", title.publisher}, {"version", title.version},
                             {"displayVersion", title.displayVersion},
                             {"latestVersion", result.foundVersion},
@@ -1007,11 +1078,50 @@ int main(int argc, char** argv) {
                 })) { error = "installed library timed out"; return false; }
                 return true;
             },
-            [&installed, &manager](const std::string& action,
+            [&installed, &manager, &portUninstall, &catalog, &settings](const std::string& action,
                                    const std::string& titleId, std::string& error) {
+                if (action == "catalog-refresh") {
+                    if (!pipensx::tryBeginCatalogRefresh()) {
+                        error = "A catalog refresh is already running.";
+                        return false;
+                    }
+                    std::string url;
+                    if (!runOnUiThread([&] {
+                            url = pipensx::effectiveCatalogSourceUrl(settings.get().catalogSourceUrl,
+                                settings.get().language, brls::Application::getLocale());
+                        })) {
+                        pipensx::endCatalogRefresh();
+                        error = "catalog refresh timed out";
+                        return false;
+                    }
+                    pipensx::CatalogSnapshot snapshot;
+                    const bool fetched = catalog.fetchLatest(snapshot, error, url);
+                    bool adopted = false;
+                    pipensx::RetiredCatalogSnapshot retired;
+                    if (fetched) {
+                        adopted = runOnUiThread([&] {
+                            retired = catalog.adopt(std::move(snapshot), url);
+                            pipensx::recordCatalogRefreshSuccess(&settings, true, false, error);
+                        });
+                        if (!adopted) error = "catalog publication timed out";
+                    }
+                    pipensx::endCatalogRefresh();
+                    return fetched && adopted && error.empty();
+                }
                 if (action == "refresh") return installed.refresh(error);
                 if (action != "uninstall" || !installed.contains(titleId)) {
                     error = "Installed game not found."; return false;
+                }
+                pipensx::PortUninstallPlan portPlan;
+                if (portUninstall.plan(titleId, {}, portPlan)) {
+                    pipensx::PortUninstallReport report;
+                    const bool ok = portUninstall.uninstallPort(portPlan,
+                        [&installed, &titleId](std::string& uninstallError) {
+                            std::string refreshError;
+                            return installed.uninstall(titleId, uninstallError, refreshError);
+                        }, report);
+                    error = report.error;
+                    return ok;
                 }
                 if (!manager.beginSystemCleanup(error)) return false;
                 std::string refreshError;

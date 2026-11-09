@@ -9,6 +9,7 @@
 #include "app/task_files.hpp"
 #include "app/game_metadata_service.hpp"
 #include "install/install_backend.hpp"
+#include <borealis/extern/nlohmann/json.hpp>
 
 extern "C" {
 #include "core/dht.h"
@@ -247,6 +248,9 @@ int main() {
     AppSettings companionSettings(rootStr + "/settings.json");
     std::string settingsError;
     assert(companionSettings.load(settingsError));
+    auto companionValues = companionSettings.get();
+    companionValues.torrentingEnabled = true;
+    assert(companionSettings.update(companionValues, settingsError));
     server.setSettingsHandlers(
         [&companionSettings](std::string& json, std::string& error) {
             (void)error;
@@ -382,6 +386,51 @@ int main() {
         resp = request(port, "POST", "/api/update/apply", "", pinHeader);
         assert(resp.find("202 Accepted") != std::string::npos);
         assert(updateApplyCalls == 1);
+
+        server.setUpdateContext("sdmc:/switch/pipensx/pipensx.nro", false,
+            [&] { updateStagedBytes = 0; });
+        resp = request(port, "GET", "/api/update", "", pinHeader);
+        assert(responseBody(resp).find("\"canApply\":false") != std::string::npos);
+        assert(responseBody(resp).find("sdmc:/switch/pipensx/pipensx.nro") != std::string::npos);
+        assert(request(port, "POST", "/api/update/discard").find("401") != std::string::npos);
+        assert(request(port, "POST", "/api/update/discard", "", pinHeader).find("200 OK") != std::string::npos);
+        assert(updateStagedBytes == 0);
+
+        bool favorite = false;
+        server.setFavoritesHandler([&](const std::string& hash, bool toggle,
+                                      std::string& json, std::string&) {
+            if (toggle) { assert(hash == std::string(40, 'a')); favorite = !favorite; }
+            json = favorite ? "{\"hashes\":[\"" + std::string(40, 'a') + "\"]}" : "{\"hashes\":[]}";
+            return true;
+        });
+        assert(request(port, "GET", "/api/favorites").find("401") != std::string::npos);
+        assert(request(port, "POST", "/api/favorites", "{\"infoHash\":\"../bad\"}", pinHeader).find("400") != std::string::npos);
+        resp = request(port, "POST", "/api/favorites", "{\"infoHash\":\"" + std::string(40, 'A') + "\"}", pinHeader);
+        assert(resp.find("200 OK") != std::string::npos && favorite);
+        resp = request(port, "GET", "/api/favorites", "", pinHeader);
+        assert(responseBody(resp).find(std::string(40, 'a')) != std::string::npos);
+        assert(request(port, "GET", "/api/tasks/missing/files").find("401") != std::string::npos);
+        assert(request(port, "GET", "/api/tasks/missing/files", "", pinHeader).find("404") != std::string::npos);
+        std::atomic<int> scans{0};
+        server.setMaintenanceHandler([&](const std::string& action, std::string& json, std::string&) {
+            assert(action == "scan");
+            ++scans;
+            json = "{\"images\":123,\"systemAvailable\":false}";
+            return true;
+        });
+        assert(request(port, "GET", "/api/maintenance").find("401") != std::string::npos);
+        assert(request(port, "POST", "/api/maintenance/images", "{}", pinHeader).find("400") != std::string::npos);
+        assert(request(port, "POST", "/api/maintenance/scan", "{}", pinHeader).find("202") != std::string::npos);
+        const auto scanDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+        std::string scanStatus;
+        do {
+            scanStatus = responseBody(request(port, "GET", "/api/maintenance", "", pinHeader));
+            if (scanStatus.find("\"state\":\"done\"") != std::string::npos) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        } while (std::chrono::steady_clock::now() < scanDeadline);
+        assert(scans == 1 && scanStatus.find("\"images\":123") != std::string::npos);
+        assert(scanStatus.find("\"state\":\"done\"") != std::string::npos);
+        server.setMaintenanceHandler({});
 
         resp = request(port, "POST", "/api/queue/clear-completed",
                        "{\"deleteData\":false}", pinHeader);
@@ -970,6 +1019,38 @@ int main() {
         assert(downloadedPort.snapshot(preview.infoHash)->mode == TransferMode::PortInstall);
         assert(downloadedPort.snapshot(preview.infoHash)->status == DownloadStatus::Queued);
         downloadedPort.shutdown();
+    }
+    {
+        DownloadManager preparedManager(rootStr + "/prepared", false);
+        preparedManager.setTorrentingEnabled(true);
+        WebServer preparedServer(preparedManager, webRoot, "preview-test", fakeResolver);
+        preparedServer.setPin("1234");
+        assert(preparedServer.start(0));
+        const auto preparedPort = preparedServer.boundPort();
+        assert(request(preparedPort, "POST", "/api/preview/torrent", gTorrentBytes).find("401") != std::string::npos);
+        const auto previewResponse = request(preparedPort, "POST", "/api/preview/torrent", gTorrentBytes, pinHeader);
+        assert(previewResponse.find("200 OK") != std::string::npos);
+        const auto previewJson = nlohmann::json::parse(responseBody(previewResponse));
+        assert(previewJson["files"].size() == 1 && previewJson["files"][0]["installable"] == true);
+        auto preparedBody = nlohmann::json({{"token", previewJson["token"]},
+            {"files", {{{"path", "package.nsp"}, {"action", 1}}}}}).dump();
+        assert(request(preparedPort, "POST", "/api/add/prepared", preparedBody, pinHeader).find("202") != std::string::npos);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!preparedManager.hasTask(torrentHash) && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        const auto preparedTask = preparedManager.snapshot(torrentHash);
+        assert(preparedTask && preparedTask->mode == TransferMode::DownloadOnly);
+        assert(preparedTask->fileSelection == std::vector<uint8_t>({1}));
+        assert(request(preparedPort, "POST", "/api/add/prepared", preparedBody, pinHeader).find("409") != std::string::npos);
+        const auto inventoryResponse = request(preparedPort, "GET", "/api/tasks/" + torrentHash + "/files", "", pinHeader);
+        assert(inventoryResponse.find("200 OK") != std::string::npos);
+        assert(responseBody(inventoryResponse).find("package.nsp") != std::string::npos);
+        const auto secondPreview = nlohmann::json::parse(responseBody(request(preparedPort,
+            "POST", "/api/preview/torrent", gTorrentBytes, pinHeader)));
+        const auto discard = nlohmann::json({{"token", secondPreview["token"]}}).dump();
+        assert(request(preparedPort, "POST", "/api/preview/discard", discard, pinHeader).find("204") != std::string::npos);
+        preparedServer.shutdown();
+        preparedManager.shutdown();
     }
     manager.shutdown();
     log_close();

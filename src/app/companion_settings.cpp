@@ -18,6 +18,9 @@ const std::unordered_set<std::string> kAllowedKeys = {
     "catalogFilter",      "refreshCatalogOnLaunch",
     "extendedTelemetry",
     "language",
+    "torrentingEnabled", "liveSeedingEnabled", "keepUncachedDebrid",
+    "showCompletedDownloads", "blankScreenDuringTransfers", "sleepAfterDownloads",
+    "screenSaverEnabled", "confirmExit", "warnOnActiveDownload", "theme",
 };
 
 const char* streamSelectionJson(StreamSelection value) {
@@ -51,6 +54,16 @@ const char* debridProviderJson(DebridProviderKind value) {
 std::string companionSettingsJson(const AppSettingsData& values) {
     Json j;
     j["language"] = values.language;
+    j["theme"] = values.theme == AppTheme::System ? "auto" : values.theme == AppTheme::Light ? "light" : "dark";
+    j["torrentingEnabled"] = values.torrentingEnabled;
+    j["liveSeedingEnabled"] = values.liveSeedingEnabled;
+    j["keepUncachedDebrid"] = values.keepUncachedDebrid;
+    j["showCompletedDownloads"] = values.showCompletedDownloads;
+    j["blankScreenDuringTransfers"] = values.blankScreenDuringTransfers;
+    j["sleepAfterDownloads"] = values.sleepAfterDownloads;
+    j["screenSaverEnabled"] = values.screenSaverEnabled;
+    j["confirmExit"] = values.confirmExit;
+    j["warnOnActiveDownload"] = values.warnOnActiveDownload;
     j["maxActiveDownloads"] = values.maxActiveDownloads;
     j["streamSelection"] = streamSelectionJson(values.streamSelection);
     j["installLocation"] = installLocationJson(values.installLocation);
@@ -80,6 +93,37 @@ bool applyCompanionSettingsPatch(AppSettingsData& values,
             error = "unknown setting '" + it.key() + "'";
             return false;
         }
+    }
+
+    const std::pair<const char*, bool*> flags[] = {
+        {"torrentingEnabled", &values.torrentingEnabled},
+        {"liveSeedingEnabled", &values.liveSeedingEnabled},
+        {"keepUncachedDebrid", &values.keepUncachedDebrid},
+        {"showCompletedDownloads", &values.showCompletedDownloads},
+        {"blankScreenDuringTransfers", &values.blankScreenDuringTransfers},
+        {"sleepAfterDownloads", &values.sleepAfterDownloads},
+        {"screenSaverEnabled", &values.screenSaverEnabled},
+        {"confirmExit", &values.confirmExit},
+        {"warnOnActiveDownload", &values.warnOnActiveDownload},
+    };
+    for (const auto& flag : flags) {
+        if (!root.contains(flag.first)) continue;
+        if (!root[flag.first].is_boolean()) {
+            error = std::string(flag.first) + " must be true or false";
+            return false;
+        }
+        *flag.second = root[flag.first].get<bool>();
+    }
+    if (root.contains("theme")) {
+        if (!root["theme"].is_string()) {
+            error = "theme must be a string";
+            return false;
+        }
+        const auto theme = root["theme"].get<std::string>();
+        if (theme == "auto") values.theme = AppTheme::System;
+        else if (theme == "dark") values.theme = AppTheme::Dark;
+        else if (theme == "light") values.theme = AppTheme::Light;
+        else { error = "theme has an unknown value"; return false; }
     }
 
     if (root.contains("maxActiveDownloads")) {

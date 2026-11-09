@@ -13,6 +13,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <utility>
 
 namespace pipensx {
 
@@ -141,6 +142,7 @@ struct AddRequest {
     StreamSelection selection = StreamSelection::AllFiles;
     OneTapContext oneTap;
     std::optional<AutorunProfile> autorunProfile;
+    std::vector<std::pair<std::string, uint8_t>> fileChoices;
 };
 
 struct AddOutcome {

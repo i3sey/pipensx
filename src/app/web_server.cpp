@@ -6,6 +6,8 @@
 #include "add_release.hpp"
 #include "companion_settings.hpp"
 #include "task_actions.hpp"
+#include "task_files.hpp"
+#include "port_selection.hpp"
 
 extern "C" {
 #include "../core/util.h"
@@ -204,10 +206,14 @@ WebServer::WebServer(DownloadManager& manager, std::string staticRoot,
       http_(webHttpOptions()),
       staticRoot_(std::move(staticRoot)),
       version_(std::move(version)) {
+    instanceId_ = nowMs();
     http_.setTickCallback([this] { onTick(); });
 }
 
-WebServer::~WebServer() { shutdown(); }
+WebServer::~WebServer() {
+    shutdown();
+    for (const auto& item : preparedTorrents_) unlink(item.second.path.c_str());
+}
 
 bool WebServer::start(uint16_t port) {
     if (http_.running()) return true;
@@ -279,6 +285,7 @@ void WebServer::libraryWorkerMain() {
     for (;;) {
         LibraryJob job;
         LibraryAction action;
+        MaintenanceHandler maintenance;
         {
             std::unique_lock<std::mutex> lock(configMutex_);
             libraryCondition_.wait(lock, [this] {
@@ -291,12 +298,19 @@ void WebServer::libraryWorkerMain() {
             found->state = "working";
             job = *found;
             action = libraryAction_;
+            maintenance = maintenanceHandler_;
         }
-        std::string error;
+        std::string error, result;
         log_msg("[web_library] action=%s title=%s started\n", job.action.c_str(), job.titleId.c_str());
-        const bool ok = action && action(job.action, job.titleId, error);
+        bool ok = false;
+        try {
+            ok = job.action.compare(0, 8, "storage-") == 0
+                ? maintenance && maintenance(job.action.substr(8), result, error)
+                : action && action(job.action, job.titleId, error);
+        } catch (const std::exception& e) { error = e.what(); }
         {
             std::lock_guard<std::mutex> lock(configMutex_);
+            if (ok && !result.empty()) maintenanceJson_ = std::move(result);
             for (auto& item : libraryJobs_) if (item.id == job.id) {
                 item.state = ok ? "done" : "error";
                 item.error = error;
@@ -323,6 +337,7 @@ HttpResponse WebServer::handleLibrary(const HttpRequest& req) {
     {
         std::lock_guard<std::mutex> lock(configMutex_);
         for (const auto& job : libraryJobs_)
+            if (job.action.compare(0, 8, "storage-") != 0)
             response["jobs"].push_back({{"jobId", job.id}, {"action", job.action},
                 {"titleId", job.titleId}, {"state", job.state}, {"error", job.error}});
     }
@@ -333,13 +348,17 @@ HttpResponse WebServer::handleLibraryCommand(const HttpRequest& req,
     const std::string& requestedId, const std::string& action) {
     const Json body = req.body.empty() ? Json::object() : Json::parse(req.body, nullptr, false);
     if (body.is_discarded() || !body.is_object()) return jsonError(400, "invalid JSON body");
+    const bool storageAction = action == "storage-scan" || action == "storage-images" ||
+        action == "storage-torrents" || action == "storage-downloads" ||
+        action == "storage-temporary" || action == "storage-system" || action == "storage-tickets";
     uint64_t parsedId = 0;
-    if (action != "refresh" && (!InstalledTitleService::parseTitleId(requestedId, parsedId) || !parsedId))
+    if (!storageAction && action != "refresh" && action != "catalog-refresh" && (!InstalledTitleService::parseTitleId(requestedId, parsedId) || !parsedId))
         return jsonError(400, "invalid title id");
-    const std::string titleId = action == "refresh" ? "" : InstalledTitleService::formatTitleId(parsedId);
-    if (action == "uninstall" && (!body.contains("confirm") || !body["confirm"].is_boolean() ||
+    const std::string titleId = storageAction || action == "refresh" || action == "catalog-refresh" ? "" : InstalledTitleService::formatTitleId(parsedId);
+    if ((action == "uninstall" || (storageAction && action != "storage-scan")) &&
+        (!body.contains("confirm") || !body["confirm"].is_boolean() ||
                                   !body["confirm"].get<bool>()))
-        return jsonError(400, "uninstall confirmation required");
+        return jsonError(400, "confirmation required");
     if (action == "update") {
         LibraryGetter getter;
         { std::lock_guard<std::mutex> lock(configMutex_); getter = libraryGetter_; }
@@ -373,9 +392,10 @@ HttpResponse WebServer::handleLibraryCommand(const HttpRequest& req,
         if (jobId.empty()) return jsonError(409, error);
         return HttpResponse::text(202, dumpJson({{"jobId", jobId}}));
     }
-    if (action != "refresh" && action != "uninstall") return jsonError(404, "unknown library action");
+    if (!storageAction && action != "refresh" && action != "uninstall" && action != "catalog-refresh") return jsonError(404, "unknown library action");
     std::lock_guard<std::mutex> lock(configMutex_);
-    if (!libraryAction_ || libraryStopping_) return jsonError(503, "installed library unavailable");
+    if (!(storageAction ? bool(maintenanceHandler_) : bool(libraryAction_)) || libraryStopping_)
+        return jsonError(503, "service unavailable");
     for (const auto& job : libraryJobs_)
         if ((job.state == "queued" || job.state == "working") &&
             job.action == action && job.titleId == titleId)
@@ -485,6 +505,10 @@ static Json taskActionJson(const TaskAction& action) {
 std::string WebServer::buildStateJson() {
     Json state;
     state["version"] = version_;
+    {
+        std::lock_guard<std::mutex> lock(catalogMutex_);
+        state["catalogGeneration"] = catalogGeneration_;
+    }
     std::vector<DownloadTask> snapshot = manager_.snapshotUi();
     const std::string leasedId = manager_.externalDeployTaskId();
     Json tasks = Json::array();
@@ -663,6 +687,19 @@ HttpResponse WebServer::routeApi(const HttpRequest& req) {
     if (parts.empty()) return jsonError(404, "not found");
 
     if (req.method == "GET" || req.method == "HEAD") {
+        if (parts[0] == "maintenance" && parts.size() == 1) {
+            if (!sameOrigin(req)) return jsonError(403, "cross-origin");
+            if (!authorized(req)) return jsonError(401, "pin");
+            std::lock_guard<std::mutex> lock(configMutex_);
+            Json jobs = Json::array();
+            for (const auto& job : libraryJobs_) if (job.action.compare(0, 8, "storage-") == 0)
+                jobs.push_back({{"jobId", job.id}, {"state", job.state}, {"error", job.error}});
+            return HttpResponse::text(200, dumpJson({{"storage", Json::parse(maintenanceJson_)}, {"jobs", jobs}}));
+        }
+        if (parts[0] == "favorites" && parts.size() == 1)
+            return handleFavorites(req, false);
+        if (parts[0] == "tasks" && parts.size() == 3 && parts[2] == "files")
+            return handleTaskFiles(req, parts[1]);
         if (parts[0] == "ports" && parts.size() == 2) {
             if (parts[1] == "folders")
                 return handlePortRequest(req, "folders", "", Json{{"path", req.queryParam("path")}}.dump());
@@ -672,12 +709,20 @@ HttpResponse WebServer::routeApi(const HttpRequest& req) {
             Json j;
             j["name"] = "pipensx";
             j["version"] = version_;
+            j["instanceId"] = instanceId_;
             {
                 std::lock_guard<std::mutex> lock(configMutex_);
                 j["authRequired"] = true;  // mutations always require a PIN
             }
             j["maxTorrentBytes"] = kMaxTorrentUploadBytes;
             j["maxUpdateNroBytes"] = kMaxUpdateNroBytes;
+            {
+                std::lock_guard<std::mutex> lock(configMutex_);
+                j["features"] = {{"favorites", bool(favoritesHandler_)},
+                    {"library", bool(libraryGetter_)}, {"ports", bool(portHandler_)},
+                    {"update", bool(updateUploader_)}, {"catalogRefresh", bool(libraryAction_)},
+                    {"maintenance", bool(maintenanceHandler_)}};
+            }
             return HttpResponse::text(200, dumpJson(j));
         }
         if (parts[0] == "tasks" && parts.size() == 1)
@@ -750,6 +795,26 @@ HttpResponse WebServer::routeApi(const HttpRequest& req) {
     // PIN check (auth/check exists so the UI can validate a remembered PIN
     // explicitly).
     if (!authorized(req)) return jsonError(401, "pin");
+    if (req.method == "POST" && parts[0] == "favorites" && parts.size() == 1)
+        return handleFavorites(req, true);
+    if (req.method == "POST" && parts[0] == "maintenance" && parts.size() == 2)
+        return handleLibraryCommand(req, "", "storage-" + parts[1]);
+    if (req.method == "POST" && parts[0] == "catalog" && parts.size() == 2 && parts[1] == "refresh")
+        return handleLibraryCommand(req, "", "catalog-refresh");
+    if (req.method == "POST" && parts[0] == "preview" && parts.size() == 2 &&
+        (parts[1] == "catalog" || parts[1] == "torrent"))
+        return handleFilePreview(req, parts[1] == "catalog");
+    if (req.method == "POST" && parts[0] == "preview" && parts.size() == 2 && parts[1] == "discard") {
+        const auto body = Json::parse(req.body, nullptr, false);
+        if (!body.is_object() || !body.contains("token") || !body["token"].is_string())
+            return jsonError(400, "token required");
+        auto found = preparedTorrents_.find(body["token"].get<std::string>());
+        if (found != preparedTorrents_.end()) {
+            unlink(found->second.path.c_str());
+            preparedTorrents_.erase(found);
+        }
+        return HttpResponse::empty(204);
+    }
     if (req.method == "POST" && parts[0] == "ports" && parts.size() == 3 &&
         (parts[2] == "preview" || parts[2] == "start"))
         return handlePortRequest(req, parts[2], parts[1], req.body);
@@ -809,15 +874,106 @@ HttpResponse WebServer::routeApi(const HttpRequest& req) {
         return addQueue_.cancel(parts[1]) ? HttpResponse::empty(204)
                                           : jsonError(404, "unknown job");
     if (parts[0] == "add" && parts.size() == 2) {
+        if (parts[1] == "prepared") return handlePreparedAdd(req);
         if (parts[1] == "magnet") return handleAddMagnet(req);
         if (parts[1] == "catalog") return handleAddCatalog(req);
         if (parts[1] == "torrent") return handleAddTorrent(req);
     }
     if (parts[0] == "update" && parts.size() == 2) {
+        if (parts[1] == "discard") {
+            std::function<void()> discard;
+            { std::lock_guard<std::mutex> lock(configMutex_); discard = updateDiscard_; }
+            if (!discard) return jsonError(501, "update service unavailable");
+            discard();
+            return handleUpdateStatus(req);
+        }
         if (parts[1] == "upload") return handleUpdateUpload(req);
         if (parts[1] == "apply") return handleUpdateApply(req);
     }
     return jsonError(404, "not found");
+}
+
+HttpResponse WebServer::handleFilePreview(const HttpRequest& req, bool fromCatalog) {
+    const uint64_t now = nowMs();
+    for (auto it = preparedTorrents_.begin(); it != preparedTorrents_.end();) {
+        if (it->second.expiresAtMs < now) {
+            unlink(it->second.path.c_str());
+            it = preparedTorrents_.erase(it);
+        } else ++it;
+    }
+    if (preparedTorrents_.size() >= 4) return jsonError(409, "Too many file previews. Try again in a few minutes.");
+    const std::string token = std::to_string(gUploadSerial.fetch_add(1));
+    const std::string path = manager_.rootPath() + "/_web_preview_" + token + ".torrent";
+    std::string error;
+    if (fromCatalog) {
+        const auto body = Json::parse(req.body, nullptr, false);
+        if (!body.is_object() || !body.contains("infoHash") || !body["infoHash"].is_string())
+            return jsonError(400, "infoHash required");
+        CatalogEntry entry;
+        {
+            std::lock_guard<std::mutex> lock(catalogMutex_);
+            auto found = catalogIndex_.find(lowerAscii(body["infoHash"].get<std::string>()));
+            if (found == catalogIndex_.end()) return jsonError(404, "game not found");
+            entry = (*catalog_)[found->second];
+        }
+        if (entry.infoDict.empty()) return jsonError(409, "File metadata is not available for this release. Upload its .torrent file to choose files.");
+        if (!writeTorrentFromInfoDict(entry.magnetUri, entry.infoDict, path, error)) {
+            unlink(path.c_str());
+            return jsonError(400, error);
+        }
+    } else {
+        if (req.body.empty() || req.body.size() > kMaxTorrentUploadBytes)
+            return jsonError(400, "invalid torrent upload size");
+        FILE* file = fopen(path.c_str(), "wb");
+        if (!file) return jsonError(500, "cannot write temp file");
+        const size_t written = fwrite(req.body.data(), 1, req.body.size(), file);
+        const int closed = fclose(file);
+        if (written != req.body.size() || closed != 0) {
+            unlink(path.c_str());
+            return jsonError(500, "cannot write temp file");
+        }
+    }
+    TorrentPreview preview;
+    if (!DownloadManager::previewTorrent(path, preview, error)) {
+        unlink(path.c_str());
+        return jsonError(400, error);
+    }
+    preparedTorrents_[token] = {path, now + 10 * 60 * 1000};
+    Json files = Json::array();
+    for (size_t i = 0; i < preview.files.size(); ++i)
+        files.push_back({{"path", preview.files[i].path}, {"size", preview.files[i].length},
+            {"installable", isTorrentFileInstallable(preview, i)}});
+    return HttpResponse::text(200, dumpJson({{"token", token}, {"name", preview.name},
+        {"infoHash", preview.infoHash}, {"files", files}}));
+}
+
+HttpResponse WebServer::handlePreparedAdd(const HttpRequest& req) {
+    const auto body = Json::parse(req.body, nullptr, false);
+    if (!body.is_object() || !body.contains("token") || !body["token"].is_string() ||
+        !body.contains("files") || !body["files"].is_array())
+        return jsonError(400, "token and files required");
+    auto found = preparedTorrents_.find(body["token"].get<std::string>());
+    if (found == preparedTorrents_.end() || found->second.expiresAtMs < nowMs())
+        return jsonError(409, "File preview expired. Open the file list again.");
+    AddRequest request;
+    for (const auto& file : body["files"]) {
+        if (!file.is_object() || !file.contains("path") || !file["path"].is_string() ||
+            !file.contains("action") || !file["action"].is_number_unsigned() ||
+            file["action"].get<uint64_t>() > 2)
+            return jsonError(400, "invalid file action");
+        request.fileChoices.emplace_back(file["path"].get<std::string>(), file["action"].get<uint8_t>());
+    }
+    if (request.fileChoices.empty()) return jsonError(400, "No files selected.");
+    TorrentPreview preview;
+    std::string error;
+    if (!DownloadManager::previewTorrent(found->second.path, preview, error))
+        return jsonError(400, error);
+    const auto jobId = addQueue_.enqueue(preview.name, "", preview.infoHash, {},
+        TransferMode::StreamInstall, StreamSelection::AllFiles, error, AddInputKind::TorrentFile,
+        {}, false, found->second.path, std::move(request.fileChoices));
+    if (jobId.empty()) return jsonError(409, error);
+    preparedTorrents_.erase(found);
+    return HttpResponse::text(202, dumpJson({{"jobId", jobId}}));
 }
 
 HttpResponse WebServer::handleUpdateStatus(const HttpRequest& req) {
@@ -840,7 +996,73 @@ HttpResponse WebServer::handleUpdateStatus(const HttpRequest& req) {
     j["stagedBytes"] = stagedBytes;
     j["maxUploadBytes"] = kMaxUpdateNroBytes;
     j["source"] = "remoteUpload";
+    {
+        std::lock_guard<std::mutex> lock(configMutex_);
+        j["targetPath"] = updateTargetPath_;
+        j["canApply"] = updateCanApply_;
+    }
     return HttpResponse::text(200, dumpJson(j));
+}
+
+void WebServer::setUpdateContext(std::string targetPath, bool canApply,
+                                  std::function<void()> discard) {
+    std::lock_guard<std::mutex> lock(configMutex_);
+    updateTargetPath_ = std::move(targetPath);
+    updateCanApply_ = canApply;
+    updateDiscard_ = std::move(discard);
+}
+
+void WebServer::setFavoritesHandler(FavoritesHandler handler) {
+    std::lock_guard<std::mutex> lock(configMutex_);
+    favoritesHandler_ = std::move(handler);
+}
+
+void WebServer::setMaintenanceHandler(MaintenanceHandler handler) {
+    std::lock_guard<std::mutex> lock(configMutex_);
+    maintenanceHandler_ = std::move(handler);
+}
+
+HttpResponse WebServer::handleFavorites(const HttpRequest& req, bool toggle) {
+    if (!sameOrigin(req)) return jsonError(403, "cross-origin");
+    if (!authorized(req)) return jsonError(401, "pin");
+    FavoritesHandler handler;
+    { std::lock_guard<std::mutex> lock(configMutex_); handler = favoritesHandler_; }
+    if (!handler) return jsonError(501, "favorites unavailable");
+    std::string hash;
+    if (toggle) {
+        const auto body = Json::parse(req.body, nullptr, false);
+        if (!body.is_object() || !body.contains("infoHash") || !body["infoHash"].is_string())
+            return jsonError(400, "infoHash required");
+        hash = lowerAscii(body["infoHash"].get<std::string>());
+        if (hash.size() != 40 || hash.find_first_not_of("0123456789abcdef") != std::string::npos)
+            return jsonError(400, "invalid infoHash");
+    }
+    std::string json, error;
+    if (!handler(hash, toggle, json, error)) return jsonError(409, error);
+    return HttpResponse::text(200, std::move(json));
+}
+
+HttpResponse WebServer::handleTaskFiles(const HttpRequest& req, const std::string& id) {
+    if (!sameOrigin(req)) return jsonError(403, "cross-origin");
+    if (!authorized(req)) return jsonError(401, "pin");
+    const auto task = manager_.snapshot(id);
+    if (!task) return jsonError(404, "task not found");
+    TaskFileInventory inventory;
+    std::string error;
+    if (!buildTaskFileInventory(manager_.rootPath(), *task, inventory, error))
+        return jsonError(409, error);
+    annotateTaskFileDestinations(inventory);
+    Json files = Json::array();
+    const char* states[] = {"pending", "present", "installed", "skipped", "missing", "unsafe"};
+    const char* actions[] = {"skip", "download", "install"};
+    for (const auto& file : inventory.files) {
+        files.push_back({{"path", file.logicalPath}, {"size", file.size},
+            {"state", states[static_cast<size_t>(file.state)]},
+            {"action", actions[static_cast<size_t>(file.action)]},
+            {"destination", file.destinationExample}, {"localPath", file.localPath}});
+    }
+    return HttpResponse::text(200, dumpJson({{"taskId", id}, {"rootPath", inventory.rootPath},
+        {"complete", inventory.completeManifest}, {"files", files}}));
 }
 
 HttpResponse WebServer::handleUpdateUpload(const HttpRequest& req) {

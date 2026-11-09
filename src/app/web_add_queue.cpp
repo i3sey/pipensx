@@ -95,7 +95,9 @@ std::string WebAddQueue::enqueue(std::string title, std::string magnetUri,
                                  std::vector<uint8_t> infoDict,
                                  TransferMode mode, StreamSelection selection,
                                  std::string& error, AddInputKind input,
-                                 std::string titleId, bool updateOnly) {
+                                 std::string titleId, bool updateOnly,
+                                 std::string torrentPath,
+                                 std::vector<std::pair<std::string, uint8_t>> fileChoices) {
     std::string hash = lowerAscii(std::move(infoHashHex));
     if (!hash.empty() && manager_.hasTask(hash)) {
         error = "This torrent is already in the download manager.";
@@ -134,6 +136,8 @@ std::string WebAddQueue::enqueue(std::string title, std::string magnetUri,
     job.data.requestedMode = mode;
     job.data.updateOnly = updateOnly;
     job.data.selection = selection;
+    job.data.torrentPath = std::move(torrentPath);
+    job.data.fileChoices = std::move(fileChoices);
     job.cancelled = std::make_shared<std::atomic<bool>>(false);
     std::string jobId = job.data.jobId;
     log_msg("[debrid-intent] source=web phase=confirmed job=%s hash=%s mode=%d\n",
@@ -153,6 +157,7 @@ bool WebAddQueue::cancel(const std::string& jobId) {
     if (!job || isTerminal(job->data.state)) return false;
     job->cancelled->store(true);
     if (job->data.state == WebAddJobState::Queued) {
+        if (!job->data.torrentPath.empty()) unlink(job->data.torrentPath.c_str());
         job->data.state = WebAddJobState::Cancelled;
         job->data.finishedAtMs = nowMs();
     }
@@ -183,6 +188,9 @@ void WebAddQueue::shutdown() {
     }
     cv_.notify_all();
     if (worker_.joinable()) worker_.join();
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const Job& job : jobs_)
+        if (!job.data.torrentPath.empty()) unlink(job.data.torrentPath.c_str());
 }
 
 void WebAddQueue::workerMain() {
@@ -221,6 +229,7 @@ void WebAddQueue::runJob(const std::string& jobId) {
     }
 
     auto fail = [&](const std::string& message, WebAddJobState state) {
+        if (!data.torrentPath.empty()) unlink(data.torrentPath.c_str());
         std::lock_guard<std::mutex> lock(mutex_);
         Job* job = findLocked(jobId);
         if (!job) return;
@@ -265,6 +274,7 @@ void WebAddQueue::runJob(const std::string& jobId) {
     request.titleId = data.titleId;
     request.requestedMode = data.requestedMode;
     request.selection = data.selection;
+    request.fileChoices = data.fileChoices;
     if ((!source.direct || data.updateOnly) && lookup && data.input == AddInputKind::Catalog &&
         data.requestedMode == TransferMode::StreamInstall)
         request.oneTap = lookup(data.infoHashHex, data.titleId);
@@ -300,6 +310,12 @@ void WebAddQueue::runJob(const std::string& jobId) {
                 outcome.taskId.c_str());
     };
 
+    if (!data.torrentPath.empty()) {
+        const auto outcome = adder.addTorrentFile(request, data.torrentPath, *cancelled);
+        unlink(data.torrentPath.c_str());
+        finish(outcome);
+        return;
+    }
     if (!source.direct) {
         finish(adder.addViaDebrid(request, *cancelled, {}));
         return;

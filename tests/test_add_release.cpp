@@ -287,6 +287,24 @@ void testDirectAndProviders(const std::string& root) {
         assert(manager.torrentingEnabled());
     }
 
+    {
+        DownloadManager manager(root + "/explicit", false);
+        manager.setTorrentingEnabled(true);
+        ReleaseAdder adder(manager);
+        AddRequest request;
+        request.infoHashHex = hash;
+        request.fileChoices = {{"../other.nsp", 2}};
+        assert(!adder.importResolvedTorrent(request, torrentPath, {}).ok);
+        request.fileChoices = {{"game.nsp", 0}};
+        assert(!adder.importResolvedTorrent(request, torrentPath, {}).ok);
+        request.fileChoices = {{"game.nsp", 2}, {"game.nsp", 1}};
+        assert(!adder.importResolvedTorrent(request, torrentPath, {}).ok);
+        assert(manager.snapshot().empty());
+        request.fileChoices = {{"game.nsp", 1}};
+        const auto outcome = adder.importResolvedTorrent(request, torrentPath, {});
+        assert(outcome.ok && outcome.mode == TransferMode::DownloadOnly);
+        assert(manager.snapshot().at(0).fileSelection == std::vector<uint8_t>({1}));
+    }
     const DebridProviderKind kinds[] = {
         DebridProviderKind::TorBox, DebridProviderKind::TorrServer,
         DebridProviderKind::RealDebrid, DebridProviderKind::AllDebrid};

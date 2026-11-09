@@ -50,6 +50,8 @@ struct WebAddJob {
     std::string error;
     std::string taskId;  // filled once imported (== info hash)
     uint64_t finishedAtMs = 0;
+    std::string torrentPath;
+    std::vector<std::pair<std::string, uint8_t>> fileChoices;
 };
 
 const char* webAddJobStateName(WebAddJobState state);
@@ -82,7 +84,9 @@ public:
                         TransferMode mode, StreamSelection selection,
                         std::string& error,
                         AddInputKind input = AddInputKind::Magnet,
-                        std::string titleId = {}, bool updateOnly = false);
+                        std::string titleId = {}, bool updateOnly = false,
+                        std::string torrentPath = {},
+                        std::vector<std::pair<std::string, uint8_t>> fileChoices = {});
     bool cancel(const std::string& jobId);
     // Thread-safe copy; prunes terminal jobs older than ~2 minutes.
     std::vector<WebAddJob> snapshot();

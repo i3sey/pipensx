@@ -92,6 +92,20 @@ void testCompanionSettingsPatchWhitelist() {
     assert(json.find("realdebridApiKey") == std::string::npos);
     assert(json.find("alldebridApiKey") == std::string::npos);
     assert(json.find("\"torboxConfigured\":false") != std::string::npos);
+    assert(applyCompanionSettingsPatch(values,
+        "{\"torrentingEnabled\":true,\"liveSeedingEnabled\":false,"
+        "\"keepUncachedDebrid\":true,\"blankScreenDuringTransfers\":true,"
+        "\"sleepAfterDownloads\":true,\"theme\":\"light\"}", error));
+    assert(values.torrentingEnabled && !values.liveSeedingEnabled);
+    assert(values.keepUncachedDebrid && values.blankScreenDuringTransfers);
+    assert(values.sleepAfterDownloads && values.theme == pipensx::AppTheme::Light);
+    const std::string expanded = companionSettingsJson(values);
+    assert(expanded.find("\"sleepAfterDownloads\":true") != std::string::npos);
+    assert(expanded.find("\"theme\":\"light\"") != std::string::npos);
+    assert(!applyCompanionSettingsPatch(values, "{\"liveSeedingEnabled\":1}", error));
+    assert(!values.liveSeedingEnabled);
+    assert(!applyCompanionSettingsPatch(values, "{\"theme\":\"neon\"}", error));
+    assert(values.theme == pipensx::AppTheme::Light);
 }
 
 void testMissingFileUsesSafeDefaults() {

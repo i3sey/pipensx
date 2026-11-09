@@ -8,11 +8,53 @@
 #include "torrserver_provider.hpp"
 
 #include <atomic>
+#include <algorithm>
 #include <cctype>
 #include <utility>
 
 namespace pipensx {
 namespace {
+
+bool explicitFilePlan(const TorrentPreview& preview, const AddRequest& request,
+                      SettingsInstallPlan& plan, std::string& error) {
+    plan.mode = request.requestedMode;
+    plan.fileSelection.assign(preview.files.size(), 0);
+    std::vector<bool> matched(preview.files.size(), false);
+    bool any = false, extras = false;
+    for (const auto& choice : request.fileChoices) {
+        size_t index = preview.files.size();
+        for (size_t i = 0; i < preview.files.size(); ++i) {
+            const auto& path = preview.files[i].path;
+            if (path == choice.first || preview.name + "/" + path == choice.first ||
+                path == preview.name + "/" + choice.first) {
+                if (index != preview.files.size()) {
+                    error = "Ambiguous file selection.";
+                    return false;
+                }
+                index = i;
+            }
+        }
+        if (index == preview.files.size() || matched[index] || choice.second > 2) {
+            error = "Selected files do not match torrent contents.";
+            return false;
+        }
+        if (choice.second == 2 && !isTorrentFileInstallable(preview, index)) {
+            error = "This file cannot be installed.";
+            return false;
+        }
+        matched[index] = true;
+        plan.fileSelection[index] = choice.second;
+        any = any || choice.second != 0;
+        extras = extras || (choice.second == 2 && !preview.files[index].package);
+    }
+    if (!any) { error = "No files selected."; return false; }
+    if (extras) plan.mode = TransferMode::PortInstall;
+    else if (std::find(plan.fileSelection.begin(), plan.fileSelection.end(), 2) == plan.fileSelection.end())
+        plan.mode = TransferMode::DownloadOnly;
+    else plan.mode = TransferMode::StreamInstall;
+    plan.space = estimateInstallSpace(preview, plan.fileSelection, plan.mode);
+    return true;
+}
 
 std::atomic<uint64_t> gAddSerial{1};
 
@@ -324,7 +366,17 @@ AddOutcome ReleaseAdder::importDebridPlan(const AddRequest& request,
     TransferMode mode = TransferMode::DownloadOnly;
     std::vector<uint8_t> selection;
     uint32_t packageCount = 0;
-    if (request.input == AddInputKind::Catalog &&
+    if (!request.fileChoices.empty()) {
+        SettingsInstallPlan plan;
+        if (!explicitFilePlan(preview, request, plan, outcome.error)) {
+            std::string ignored;
+            provider.remove(debridId, ignored);
+            return outcome;
+        }
+        mode = plan.mode;
+        selection = std::move(plan.fileSelection);
+        packageCount = plan.space.packageFiles;
+    } else if (request.input == AddInputKind::Catalog &&
         request.requestedMode == TransferMode::StreamInstall) {
         const OneTapPlan plan = planCatalogOneTap(preview, request.oneTap);
         if (plan.outcome == OneTapOutcome::NeedsChooser) {
@@ -404,7 +456,13 @@ AddOutcome ReleaseAdder::importResolvedTorrent(
 
     std::string taskId;
     bool ok = false;
-    if (request.input == AddInputKind::Catalog &&
+    if (!request.fileChoices.empty()) {
+        SettingsInstallPlan plan;
+        if (!explicitFilePlan(preview, request, plan, outcome.error)) return outcome;
+        ok = manager_.importTorrentActions(torrentPath, plan.fileSelection,
+            taskId, error, initialPeers, plan.mode);
+        outcome.mode = plan.mode;
+    } else if (request.input == AddInputKind::Catalog &&
         request.requestedMode == TransferMode::StreamInstall) {
         const OneTapPlan plan = planCatalogOneTap(preview, request.oneTap);
         if (plan.outcome == OneTapOutcome::NeedsChooser) {

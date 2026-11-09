@@ -137,6 +137,13 @@ files. The web panel remains available for custom destination folders.
 
 ## Catalog and network behavior
 
+The [web companion](docs/REMOTE_LIBRARY.md) provides queue controls, file selection,
+catalog favorites and batch adding, installed-title management, console settings,
+storage cleanup, and diagnostics from a phone or computer on the same network.
+Maintenance can replace the running NRO with a local file, including an older or
+identical version. After applying it, reopen pipensx on the Switch; the browser
+reconnects when the application returns. AutoRun is hidden in the web UI.
+
 The application fetches a language-specific catalog over HTTPS from Langegen by
 default. It tries GitHub Raw, then the GitHub API, then a stored GitLab mirror
 snapshot with size and SHA-256 verification. See

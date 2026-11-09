@@ -88,6 +88,14 @@ public:
     using PortHandler = std::function<bool(const std::string& action,
         const std::string& taskId, const std::string& body, std::string& json, std::string& error)>;
     void setPortHandler(PortHandler handler);
+    using FavoritesHandler = std::function<bool(const std::string& hash,
+        bool toggle, std::string& json, std::string& error)>;
+    void setFavoritesHandler(FavoritesHandler handler);
+    void setUpdateContext(std::string targetPath, bool canApply,
+                          std::function<void()> discard);
+    using MaintenanceHandler = std::function<bool(const std::string& action,
+        std::string& json, std::string& error)>;
+    void setMaintenanceHandler(MaintenanceHandler handler);
 
     // UI-thread callers (startup + after every CatalogService::adopt()):
     // copies the entries so the server thread never touches CatalogService.
@@ -107,6 +115,8 @@ private:
     HttpResponse handleAddMagnet(const HttpRequest& req);
     HttpResponse handleAddCatalog(const HttpRequest& req);
     HttpResponse handleAddTorrent(const HttpRequest& req);
+    HttpResponse handleFilePreview(const HttpRequest& req, bool catalog);
+    HttpResponse handlePreparedAdd(const HttpRequest& req);
     HttpResponse handleCatalog(const HttpRequest& req);
     HttpResponse handleCatalogDescription(const HttpRequest& req);
     HttpResponse handleLogs(const HttpRequest& req);
@@ -116,6 +126,8 @@ private:
     HttpResponse handleUpdateStatus(const HttpRequest& req);
     HttpResponse handleUpdateUpload(const HttpRequest& req);
     HttpResponse handleUpdateApply(const HttpRequest& req);
+    HttpResponse handleTaskFiles(const HttpRequest& req, const std::string& id);
+    HttpResponse handleFavorites(const HttpRequest& req, bool toggle);
     HttpResponse handleLibrary(const HttpRequest& req);
     HttpResponse handleLibraryCommand(const HttpRequest& req,
                                       const std::string& titleId,
@@ -135,6 +147,7 @@ private:
     HttpServer http_;
     std::string staticRoot_;
     std::string version_;
+    uint64_t instanceId_ = 0;
 
     mutable std::mutex configMutex_;
     std::string pin_;
@@ -148,6 +161,12 @@ private:
     LibraryGetter libraryGetter_;
     LibraryAction libraryAction_;
     PortHandler portHandler_;
+    FavoritesHandler favoritesHandler_;
+    MaintenanceHandler maintenanceHandler_;
+    std::string maintenanceJson_ = "{}";
+    std::string updateTargetPath_;
+    bool updateCanApply_ = false;
+    std::function<void()> updateDiscard_;
     struct LibraryJob {
         std::string id, action, titleId, state = "queued", error;
     };
@@ -177,6 +196,11 @@ private:
     // frame every second.
     std::string lastStateJson_;
     uint64_t lastSseSentMs_ = 0;
+    struct PreparedTorrent {
+        std::string path;
+        uint64_t expiresAtMs;
+    };
+    std::map<std::string, PreparedTorrent> preparedTorrents_;
 };
 
 // gzip (RFC 1952) compression for Content-Encoding — note bug_report's
