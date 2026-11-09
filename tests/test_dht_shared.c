@@ -100,9 +100,9 @@ static void test_lifecycle(void) {
     assert(!dht_shared_running());
     dht_session_t *a = dht_attach(hash_a, 51413);
     if (!a) {
-        /* Another process owns UDP 51413 on this machine; the interesting
+        /* Another process owns the shared DHT port; the interesting
            assertions below would test that process, not us. */
-        puts("test_lifecycle skipped: UDP 51413 unavailable");
+        printf("test_lifecycle skipped: UDP %u unavailable\n", DHT_SHARED_PORT);
         return;
     }
     assert(dht_shared_running());
@@ -159,7 +159,7 @@ static void test_idle_grace(void) {
     dht_session_t *s = dht_attach(hash, 51413);
     if (!s) {
         dht_engine_set_idle_grace_ms(0);
-        puts("test_idle_grace skipped: UDP 51413 unavailable");
+        printf("test_idle_grace skipped: UDP %u unavailable\n", DHT_SHARED_PORT);
         return;
     }
     dht_detach(s);
@@ -188,7 +188,7 @@ static void test_explicit_engine_shutdown(void) {
     dht_session_t *s = dht_attach(hash, 51413);
     if (!s) {
         dht_engine_set_idle_grace_ms(0);
-        puts("test_explicit_engine_shutdown skipped: UDP 51413 unavailable");
+        printf("test_explicit_engine_shutdown skipped: UDP %u unavailable\n", DHT_SHARED_PORT);
         return;
     }
     assert(!dht_engine_shutdown()); /* live sessions are left intact */

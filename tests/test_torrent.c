@@ -791,7 +791,209 @@ static void test_sink_ring_retains_only_verified_pieces(void) {
     piece_mgr_destroy(t.pm); storage_close(t.store); rmdir(dir);
 }
 
+static void test_seeding_releases_utp_slots_held_by_seeds(void) {
+    torrent_t t = {0};
+    piece_mgr_t pm = {0};
+    pm.num_pieces = 10;
+    t.pm = &pm;
+    peer_ctx_t ctx = {0};
+    ctx.num_pieces = 10;
+    ctx.bf_bytes = 2;
+    struct sockaddr_in addr = {0};
+    addr.sin_family = AF_INET;
+    for (int i = 0; i < MAX_UTP_PEERS; ++i) {
+        addr.sin_addr.s_addr = htonl(0x08080800u + (uint32_t)i);
+        addr.sin_port = htons(6881);
+        peer_t *p = peer_create_utp(NULL, addr, &ctx);
+        assert(p);
+        p->state = PS_ACTIVE;
+        p->connect_time_ms = 1000;
+        p->bitfield[0] = 255;
+        p->bitfield[1] = 0xc0;
+        t.peers[i] = p;
+        ++t.num_peers;
+    }
+    t.peers[0]->peer_interested = 1;
+    t.peers[1]->bitfield[0] = 0x80;
+    t.peers[2]->bitfield[0] = 0x80;
+    t.peers[2]->remote_upload_only = 1;
+    t.peers[3]->connect_time_ms = 9999;
+    t.peers[4]->holepunch_enabled = t.peers[5]->holepunch_enabled = 1;
+    t.peers[4]->peer_ext_holepunch = t.peers[5]->peer_ext_holepunch = 7;
+    drop_seed_only_peers(&t, 10000);
+    assert(count_utp_peers(&t) == MAX_UTP_PEERS);
+    t.upload_only = 1;
+    drop_seed_only_peers(&t, 10000);
+    assert(t.num_peers == 4 && count_utp_peers(&t) == 4);
+    assert(t.peers[0] && t.peers[1] && t.peers[3]);
+    assert(!t.peers[2] && t.peers[4] && !t.peers[5]);
+    t.peers[0]->peer_interested = 0;
+    drop_seed_only_peers(&t, 20000);
+    assert(t.num_peers == 2 && t.peers[1] && t.peers[4]);
+    peer_destroy(t.peers[1]);
+    peer_destroy(t.peers[4]);
+}
+
+static void test_holepunch_promotes_coordinated_endpoint(void) {
+    torrent_t t = {0};
+    t.utp = (utp_context*)(uintptr_t)1;
+    peer_t introducer = {0};
+    introducer.holepunch_enabled = 1;
+    introducer.peer_ext_holepunch = 7;
+    uint32_t first = htonl(0x08080808u), target = htonl(0x09090909u), ip;
+    uint16_t port = htons(6881), got_port;
+    uint8_t no_mse, use_utp;
+    assert(queue_push(&t, first, port));
+    assert(queue_push(&t, target, port));
+    cb_holepunch(&t, &introducer, 1, target, port, 0);
+    assert(queue_pop(&t, &ip, &got_port, &no_mse, &use_utp));
+    assert(ip == target && got_port == port && use_utp && !no_mse);
+    assert(queue_pop(&t, &ip, &got_port, &no_mse, &use_utp) && ip == first);
+    blocklist_add(&t, target, port, now_ms());
+    remember_holepunch(&t, target, port, now_ms());
+    introducer.last_holepunch_ms = 0;
+    cb_holepunch(&t, &introducer, 1, target, port, 0);
+    assert(queue_pop(&t, &ip, &got_port, &no_mse, &use_utp) && ip == target && use_utp);
+    assert(!blocklist_blocked(&t, target, port, now_ms()));
+    introducer.last_holepunch_ms = 0;
+    cb_holepunch(&t, &introducer, 1, htonl(0x0a000001u), port, 0);
+    assert(!t.qsize);
+}
+
+static void test_holepunch_relays_only_connected_peers(void) {
+    torrent_t t = {0};
+    int a[2], b[2];
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, a) == 0);
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, b) == 0);
+    peer_t initiator = {0}, target = {0};
+    initiator.fd = a[0]; target.fd = b[0];
+    initiator.state = target.state = PS_ACTIVE;
+    initiator.holepunch_enabled = target.holepunch_enabled = 1;
+    initiator.peer_ext_holepunch = 7; target.peer_ext_holepunch = 9;
+    initiator.addr.sin_addr.s_addr = htonl(0x08080404u);
+    target.addr.sin_addr.s_addr = htonl(0x01010101u);
+    initiator.addr.sin_port = target.addr.sin_port = htons(6881);
+    t.peers[0] = &initiator; t.peers[1] = &target;
+    cb_holepunch(&t, &initiator, 0, target.addr.sin_addr.s_addr,
+                 target.addr.sin_port, 0);
+    uint8_t frame[18];
+    assert(recv(a[1], frame, 14, MSG_WAITALL) == 14);
+    assert(frame[5] == 7 && frame[6] == 1);
+    assert(!memcmp(frame + 8, &target.addr.sin_addr.s_addr, 4));
+    assert(recv(b[1], frame, 14, MSG_WAITALL) == 14);
+    assert(frame[5] == 9 && frame[6] == 1);
+    assert(!memcmp(frame + 8, &initiator.addr.sin_addr.s_addr, 4));
+    initiator.last_holepunch_ms = 0;
+    cb_holepunch(&t, &initiator, 0, htonl(0x09090909u), htons(9999), 0);
+    assert(recv(a[1], frame, sizeof(frame), MSG_WAITALL) == sizeof(frame));
+    assert(frame[5] == 7 && frame[6] == 2 && frame[17] == 2);
+    close(a[0]); close(a[1]); close(b[0]); close(b[1]);
+}
+
+static void test_accept_incoming_utp_on_advertised_port(void) {
+    torrent_t server = {0}, client = {0};
+    piece_mgr_t server_pm = {0}, client_pm = {0};
+    uint8_t available = 0x80, empty = 0;
+    server_pm.num_pieces = client_pm.num_pieces = 1;
+    server_pm.available_bf = &available; client_pm.available_bf = &empty;
+    server.pm = &server_pm; client.pm = &client_pm;
+    server.mi.num_pieces = client.mi.num_pieces = 1;
+    server.mi.piece_length = client.mi.piece_length = 16384;
+    server.mi.total_length = client.mi.total_length = 16384;
+    memset(server.mi.info_hash, 0xab, 20); memset(client.mi.info_hash, 0xab, 20);
+    memset(server.peer_id, 1, 20); memset(client.peer_id, 2, 20);
+    server.upload_only = 1;
+    server.listen_fd = net_tcp_listen(0, 4);
+    assert(server.listen_fd != INVALID_SOCK);
+    server.listen_port = net_local_port(server.listen_fd);
+    utp_setup(&server); utp_setup(&client);
+    assert(server.utp && client.utp);
+    assert(net_local_port(server.utp_fd) == server.listen_port);
+    struct sockaddr_in addr = {0};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = htons(server.listen_port);
+    peer_ctx_t ctx; fill_ctx(&client, &ctx); ctx.use_mse = 0;
+    struct UTPSocket *us = utp_create_socket(client.utp);
+    assert(us);
+    peer_t *outgoing = peer_create_utp(us, addr, &ctx);
+    assert(outgoing);
+    client.peers[0] = outgoing; client.num_peers = 1;
+    utp_set_userdata(us, outgoing);
+    assert(utp_connect(us, (struct sockaddr*)&addr, sizeof(addr)) == 0);
+    uint64_t deadline = now_ms() + 5000;
+    while (now_ms() < deadline) {
+        utp_drain_socket(&server); utp_drain_socket(&client);
+        utp_check_timeouts(server.utp); utp_check_timeouts(client.utp);
+        if (server.num_peers == 1 && server.peers[0]->state == PS_ACTIVE &&
+            outgoing->state == PS_ACTIVE && bf_has(outgoing->bitfield, 0) &&
+            server.peers[0]->peer_ext_holepunch && outgoing->peer_ext_holepunch) break;
+        usleep(1000);
+    }
+    assert(server.num_peers == 1 && server.peers[0]->incoming);
+    assert(server.peers[0]->transport == TRANSPORT_UTP);
+    assert(server.peers[0]->state == PS_ACTIVE && outgoing->state == PS_ACTIVE);
+    assert(bf_has(outgoing->bitfield, 0));
+    assert(server.peers[0]->peer_ext_holepunch == EXT_HOLEPUNCH_ID);
+    assert(outgoing->peer_ext_holepunch == EXT_HOLEPUNCH_ID);
+    peer_destroy(server.peers[0]); peer_destroy(outgoing);
+    utp_destroy(server.utp); utp_destroy(client.utp);
+    net_close(server.utp_fd); net_close(client.utp_fd); net_close(server.listen_fd);
+}
+
+static void test_pex_routes_holepunch_to_source(void) {
+    torrent_t t = {0};
+    int a[2], b[2];
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, a) == 0);
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, b) == 0);
+    peer_t other = {0}, source = {0};
+    other.fd = a[0]; source.fd = b[0];
+    other.state = source.state = PS_ACTIVE;
+    other.holepunch_enabled = source.holepunch_enabled = 1;
+    other.peer_ext_holepunch = source.peer_ext_holepunch = 7;
+    source.addr.sin_addr.s_addr = htonl(0x01010101u);
+    source.addr.sin_port = htons(6881);
+    t.utp = (utp_context*)(uintptr_t)1;
+    t.peers[0] = &other; t.peers[1] = &source;
+    const uint8_t endpoints[] = {8,8,4,4,0x1a,0xe1, 9,9,9,9,0x1a,0xe1};
+    const uint8_t flags[] = {0x0e, 0x0c};
+    t.upload_only = 1;
+    cb_pex(&t, &source, endpoints, flags, 2);
+    assert(t.pex_route_next == 1 && t.qsize == 1);
+    assert(holepunch_pending(&t, htonl(0x09090909u), htons(6881), now_ms()));
+    uint8_t frame[14];
+    assert(recv(b[1], frame, sizeof(frame), MSG_WAITALL) == sizeof(frame));
+    assert(frame[5] == 7 && frame[6] == 0);
+    assert(recv(a[1], frame, sizeof(frame), MSG_DONTWAIT) == -1);
+    t.mi.is_private = 1;
+    cb_pex(&t, &source, endpoints, flags, 2);
+    assert(t.pex_route_next == 1);
+    close(a[0]); close(a[1]); close(b[0]); close(b[1]);
+}
+
+static void test_utp_bind_failure_preserves_transport(void) {
+    int occupied = socket(AF_INET, SOCK_DGRAM, 0);
+    assert(occupied >= 0);
+    struct sockaddr_in addr = {0};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    assert(bind(occupied, (struct sockaddr*)&addr, sizeof(addr)) == 0);
+    torrent_t t = {0};
+    t.listen_port = net_local_port(occupied);
+    assert(t.listen_port);
+    utp_setup(&t);
+    assert(t.utp && t.utp_fd != INVALID_SOCK);
+    utp_destroy(t.utp);
+    net_close(t.utp_fd); net_close(occupied);
+}
+
 int main(void) {
+    test_pex_routes_holepunch_to_source();
+    test_utp_bind_failure_preserves_transport();
+    test_accept_incoming_utp_on_advertised_port();
+    test_holepunch_promotes_coordinated_endpoint();
+    test_holepunch_relays_only_connected_peers();
+    test_seeding_releases_utp_slots_held_by_seeds();
     test_sink_ring_retains_only_verified_pieces();
     test_ema_update();
     test_last_piece_age_marks_missing_sample();

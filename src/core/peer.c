@@ -148,6 +148,7 @@ static peer_t *peer_alloc(struct sockaddr_in addr, const peer_ctx_t *ctx) {
     p->mse_enabled     = ctx->use_mse;
     p->private_torrent = ctx->private_torrent;
     p->upload_only = ctx->upload_only;
+    p->holepunch_enabled = ctx->on_holepunch != NULL && !ctx->private_torrent;
     p->uploaded_total = ctx->uploaded_total;
     return p;
 }
@@ -179,6 +180,18 @@ static int peer_rbuf_ensure(peer_t *p) {
 
 void peer_destroy(peer_t *p) {
     if (!p) return;
+    if (p->state == PS_ACTIVE || p->upload_requests || p->uploaded) {
+        uint32_t ip = ntohl(p->addr.sin_addr.s_addr);
+        log_msg("[seed] peer_closed ip=%u.%u.%u.%u port=%u incoming=%d "
+                "transport=%d interested=%d choked=%d requests=%llu "
+                "rejected=%llu queued=%u uploaded=%llu\n",
+                ip >> 24, (ip >> 16) & 255, (ip >> 8) & 255, ip & 255,
+                (unsigned)ntohs(p->addr.sin_port), p->incoming, p->transport,
+                p->peer_interested, p->peer_choked,
+                (unsigned long long)p->upload_requests,
+                (unsigned long long)p->upload_rejected, p->upload_count,
+                (unsigned long long)p->uploaded);
+    }
     if (p->transport == TRANSPORT_UTP) {
         /* libutp owns the socket: detach our back-reference so no late callback
            touches this freed peer, then ask for a graceful close. The socket is
@@ -207,6 +220,8 @@ int peer_send_ext_handshake(peer_t *p, uint16_t listen_port) {
     buf[off++] = 'd';
     /* m dict */
     off += snprintf((char*)buf+off, sizeof(buf)-off, "1:md");
+    if (!p->private_torrent && p->holepunch_enabled)
+        off += snprintf((char*)buf+off, sizeof(buf)-off, "12:ut_holepunchi%de", EXT_HOLEPUNCH_ID);
     if (!p->private_torrent)
         off += snprintf((char*)buf+off, sizeof(buf)-off, "6:ut_pexi%de", EXT_PEX_ID);
     buf[off++] = 'e'; /* end m */
@@ -225,9 +240,19 @@ static void parse_ext_handshake(peer_t *p, const uint8_t *data, uint32_t len) {
     const char *d = (const char*)data;
     const char *end = d + len;
     if (d >= end || *d != 'd') return;
+    be_node_t upload_only;
+    if (be_dict_get(d, end, "upload_only", 11, &upload_only) &&
+        upload_only.type == BE_INT &&
+        (upload_only.ival == 0 || upload_only.ival == 1))
+        p->remote_upload_only = (int)upload_only.ival;
 
     be_node_t m_node;
     if (be_dict_get(d, end, "m", 1, &m_node) && m_node.type == BE_DICT) {
+        be_node_t holepunch;
+        if (be_dict_get(m_node.buf, m_node.buf + m_node.raw_len,
+                        "ut_holepunch", 12, &holepunch) &&
+            holepunch.type == BE_INT && holepunch.ival >= 0 && holepunch.ival <= 255)
+            p->peer_ext_holepunch = (uint8_t)holepunch.ival;
         be_node_t pex_id;
         if (be_dict_get(m_node.buf, m_node.buf + m_node.raw_len, "ut_pex", 6, &pex_id)
             && pex_id.type == BE_INT) {
@@ -237,7 +262,7 @@ static void parse_ext_handshake(peer_t *p, const uint8_t *data, uint32_t len) {
 }
 
 /* --- parse ut_pex --- */
-static void parse_pex(peer_t *p __attribute__((unused)), const uint8_t *data, uint32_t len,
+static void parse_pex(peer_t *p, const peer_ctx_t *ctx, const uint8_t *data, uint32_t len,
                       void (*on_peers)(void *ud, const uint8_t *compact, uint32_t cnt),
                       void *ud) {
     const char *d = (const char*)data;
@@ -245,6 +270,12 @@ static void parse_pex(peer_t *p __attribute__((unused)), const uint8_t *data, ui
     be_node_t added;
     if (be_dict_get(d, end, "added", 5, &added) && added.type == BE_STR) {
         uint32_t cnt = (uint32_t)(added.slen / 6);
+        be_node_t flags;
+        const uint8_t *flag_data = NULL;
+        if (be_dict_get(d, end, "added.f", 7, &flags) && flags.type == BE_STR &&
+            flags.slen == cnt) flag_data = (const uint8_t*)flags.sval;
+        if (cnt > 0 && ctx->on_pex)
+            ctx->on_pex(ctx->pex_user, p, (const uint8_t*)added.sval, flag_data, cnt);
         if (cnt > 0 && on_peers)
             on_peers(ud, (const uint8_t*)added.sval, cnt);
     }
@@ -322,6 +353,17 @@ static uint32_t read_u32(const uint8_t *b) {
 static void write_u32(uint8_t *b, uint32_t value) {
     b[0] = (uint8_t)(value >> 24); b[1] = (uint8_t)(value >> 16);
     b[2] = (uint8_t)(value >> 8); b[3] = (uint8_t)value;
+}
+
+int peer_send_holepunch(peer_t *p, uint8_t type, uint32_t ip,
+                        uint16_t port, uint32_t error) {
+    if (!p->holepunch_enabled || !p->peer_ext_holepunch ||
+        p->private_torrent || type > 2 || (type != 2 && error)) return 0;
+    uint8_t message[14] = {MSG_EXTENDED, p->peer_ext_holepunch, type, 0};
+    memcpy(message + 4, &ip, 4);
+    memcpy(message + 8, &port, 2);
+    if (type == 2) write_u32(message + 10, error);
+    return send_msg(p, message, type == 2 ? sizeof(message) : 10);
 }
 
 static int reject_upload(peer_t *p, uint32_t index, uint32_t offset, uint32_t length) {
@@ -574,6 +616,14 @@ static int process_message(peer_t *p, const peer_ctx_t *ctx,
             length > ctx->piece_length - offset ||
             (uint64_t)index * ctx->piece_length + offset + length > ctx->total_length)
             return -1;
+        if (id == MSG_REQUEST && !p->upload_requests) {
+            uint32_t ip = ntohl(p->addr.sin_addr.s_addr);
+            log_msg("[seed] first_request ip=%u.%u.%u.%u port=%u "
+                    "piece=%u offset=%u length=%u choked=%d available=%d\n",
+                    ip >> 24, (ip >> 16) & 255, (ip >> 8) & 255, ip & 255,
+                    (unsigned)ntohs(p->addr.sin_port), index, offset, length,
+                    p->peer_choked, ctx->our_bf && bf_has(ctx->our_bf, index));
+        }
         if (id == MSG_CANCEL) {
             for (uint32_t i = 0; i < p->upload_count; ++i) {
                 block_req_t *r = &p->uploads[i];
@@ -698,8 +748,19 @@ static int process_message(peer_t *p, const peer_ctx_t *ctx,
             uint8_t ext_id = payload[0];
             if (ext_id == EXT_HANDSHAKE_ID) {
                 parse_ext_handshake(p, payload+1, plen-1);
-            } else if (!p->private_torrent && p->peer_ext_pex && ext_id == p->peer_ext_pex) {
-                parse_pex(p, payload+1, plen-1, on_peers, ud);
+            } else if (!p->private_torrent && ext_id == EXT_PEX_ID) {
+                parse_pex(p, ctx, payload+1, plen-1, on_peers, ud);
+            } else if (!p->private_torrent && p->holepunch_enabled &&
+                       p->peer_ext_holepunch && ext_id == EXT_HOLEPUNCH_ID &&
+                       (plen == 9 || plen == 13) && payload[1] <= 2 && payload[2] == 0 &&
+                       ctx->on_holepunch) {
+                uint32_t ip, error = plen == 13 ? read_u32(payload + 9) : 0;
+                uint16_t port;
+                memcpy(&ip, payload + 3, 4);
+                memcpy(&port, payload + 7, 2);
+                if ((payload[1] == 2 && plen == 13) ||
+                    (payload[1] != 2 && error == 0))
+                    ctx->on_holepunch(ctx->holepunch_user, p, payload[1], ip, port, error);
             }
         }
         break;

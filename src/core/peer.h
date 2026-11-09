@@ -37,6 +37,7 @@
 /* BEP10 extension IDs (local mapping) */
 #define EXT_HANDSHAKE_ID  0
 #define EXT_PEX_ID        1   /* we assign this to ut_pex */
+#define EXT_HOLEPUNCH_ID  2
 
 typedef enum {
     PS_CONNECTING = 0,
@@ -97,6 +98,7 @@ typedef struct peer {
     int supports_fast;
     int private_torrent;
     int upload_only;
+    int remote_upload_only;
 
     /* BT state */
     int      am_choked;
@@ -120,6 +122,9 @@ typedef struct peer {
     /* BEP10 extensions */
     int      ext_handshake_sent;
     uint8_t  peer_ext_pex;    /* peer's ut_pex extension ID */
+    uint8_t  peer_ext_holepunch;
+    int      holepunch_enabled;
+    uint64_t last_holepunch_ms;
     int      supports_ext;    /* peer set extension bit */
 
     uint64_t connect_time_ms;
@@ -181,6 +186,12 @@ typedef struct {
     int            private_torrent;
     int            upload_only;
     uint64_t      *uploaded_total;
+    void (*on_holepunch)(void *user, peer_t *peer, uint8_t type,
+                        uint32_t ip, uint16_t port, uint32_t error);
+    void *holepunch_user;
+    void (*on_pex)(void *user, peer_t *source, const uint8_t *compact,
+                   const uint8_t *flags, uint32_t count);
+    void *pex_user;
 } peer_ctx_t;
 
 /* Allocate/free a peer slot. peer_create opens a TCP peer around an already
@@ -272,6 +283,8 @@ int peer_send_keepalive(peer_t *p);
 
 /* Send BEP10 extension handshake */
 int peer_send_ext_handshake(peer_t *p, uint16_t listen_port);
+int peer_send_holepunch(peer_t *p, uint8_t type, uint32_t ip,
+                        uint16_t port, uint32_t error);
 
 /* Send ut_pex (BEP11) with added peers list */
 int peer_send_pex(peer_t *p, const uint8_t *compact6, uint32_t cnt);

@@ -853,7 +853,172 @@ static void test_upload_cancel_eviction_and_backpressure(int encrypted) {
     close(fds[0]); close(fds[1]);
 }
 
+typedef struct {
+    uint32_t count;
+    uint8_t endpoint[6];
+} peer_exchange_capture_t;
+
+static void capture_peer_exchange(void *user, const uint8_t *compact,
+                                   uint32_t count) {
+    peer_exchange_capture_t *capture = user;
+    capture->count += count;
+    if (count) memcpy(capture->endpoint, compact, 6);
+}
+
+static void capture_pex_source(void *user, peer_t *source, const uint8_t *compact,
+                               const uint8_t *flags, uint32_t count) {
+    assert(source->peer_ext_pex == 7);
+    assert(count == 1 && flags && flags[0] == 0x0c);
+    capture_peer_exchange(user, compact, count);
+}
+
+typedef struct {
+    int count;
+    uint8_t type;
+    uint32_t ip, error;
+    uint16_t port;
+} holepunch_capture_t;
+
+static void capture_holepunch(void *user, peer_t *peer, uint8_t type,
+                              uint32_t ip, uint16_t port, uint32_t error) {
+    (void)peer;
+    holepunch_capture_t *capture = user;
+    ++capture->count;
+    capture->type = type;
+    capture->ip = ip;
+    capture->port = port;
+    capture->error = error;
+}
+
+static void test_holepunch_extension_wire(void) {
+    int fds[2];
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
+    assert(net_set_nonblock(fds[0]));
+    peer_t peer = {0};
+    peer.fd = fds[0];
+    peer.state = PS_ACTIVE;
+    peer.holepunch_enabled = 1;
+    peer.peer_ext_holepunch = 7;
+    uint32_t ip = htonl(0x08080404u);
+    uint16_t port = htons(6881);
+    assert(peer_send_holepunch(&peer, 0, ip, port, 0));
+    uint8_t frame[14];
+    assert(recv(fds[1], frame, sizeof(frame), MSG_WAITALL) == sizeof(frame));
+    assert(frame[3] == 10 && frame[4] == MSG_EXTENDED && frame[5] == 7);
+    assert(frame[6] == 0 && frame[7] == 0);
+    assert(!memcmp(frame + 8, &ip, 4) && !memcmp(frame + 12, &port, 2));
+    peer_ctx_t ctx = {0};
+    holepunch_capture_t capture = {0};
+    ctx.on_holepunch = capture_holepunch;
+    ctx.holepunch_user = &capture;
+    frame[5] = EXT_HOLEPUNCH_ID;
+    send_all(fds[1], frame, sizeof(frame));
+    assert(peer_recv(&peer, &ctx, NULL, NULL, NULL, NULL) == 0);
+    assert(capture.count == 1 && capture.type == 0 && capture.ip == ip &&
+           capture.port == port && !capture.error);
+    uint8_t padded[18] = {0};
+    memcpy(padded, frame, sizeof(frame));
+    padded[3] = 14;
+    send_all(fds[1], padded, sizeof(padded));
+    assert(peer_recv(&peer, &ctx, NULL, NULL, NULL, NULL) == 0);
+    assert(capture.count == 2);
+    frame[5] = peer.peer_ext_holepunch;
+    send_all(fds[1], frame, sizeof(frame));
+    assert(peer_recv(&peer, &ctx, NULL, NULL, NULL, NULL) == 0);
+    assert(capture.count == 2);
+    frame[5] = EXT_HOLEPUNCH_ID;
+    frame[7] = 1;
+    send_all(fds[1], frame, sizeof(frame));
+    assert(peer_recv(&peer, &ctx, NULL, NULL, NULL, NULL) == 0);
+    assert(capture.count == 2);
+    frame[7] = 0;
+    peer.private_torrent = 1;
+    send_all(fds[1], frame, sizeof(frame));
+    assert(peer_recv(&peer, &ctx, NULL, NULL, NULL, NULL) == 0);
+    assert(capture.count == 2);
+    assert(!peer_send_holepunch(&peer, 0, ip, port, 0));
+    peer_fini(&peer);
+    close(fds[0]); close(fds[1]);
+}
+
+static void test_peer_exchange_uses_receiver_extension_id(void) {
+    int fds[2];
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
+    assert(net_set_nonblock(fds[0]));
+    peer_t peer = {0};
+    peer.fd = fds[0];
+    peer.state = PS_ACTIVE;
+    peer.peer_ext_pex = 7;
+    peer_ctx_t ctx = {0};
+    peer_exchange_capture_t capture = {0};
+    uint8_t endpoint[] = {8, 8, 4, 4, 0x1a, 0xe1};
+    uint8_t frame[23] = {0};
+    frame[3] = 19;
+    frame[4] = MSG_EXTENDED;
+    frame[5] = EXT_PEX_ID;
+    memcpy(frame + 6, "d5:added6:", 10);
+    memcpy(frame + 16, endpoint, sizeof(endpoint));
+    frame[22] = 'e';
+    send_all(fds[1], frame, sizeof(frame));
+    assert(peer_recv(&peer, &ctx, NULL, NULL, capture_peer_exchange, &capture) == 0);
+    assert(capture.count == 1 && !memcmp(capture.endpoint, endpoint, 6));
+    frame[5] = peer.peer_ext_pex;
+    send_all(fds[1], frame, sizeof(frame));
+    assert(peer_recv(&peer, &ctx, NULL, NULL, capture_peer_exchange, &capture) == 0);
+    assert(capture.count == 1);
+    uint8_t flagged[36];
+    memcpy(flagged, frame, sizeof(frame));
+    flagged[3] = 31;
+    flagged[5] = EXT_PEX_ID;
+    memcpy(flagged + 22, "7:added.f1:", 11);
+    flagged[33] = 0x0c;
+    flagged[34] = 'e';
+    ctx.on_pex = capture_pex_source;
+    ctx.pex_user = &capture;
+    send_all(fds[1], flagged, 35);
+    assert(peer_recv(&peer, &ctx, NULL, NULL, NULL, NULL) == 0);
+    assert(capture.count == 2);
+    peer.private_torrent = 1;
+    frame[5] = EXT_PEX_ID;
+    send_all(fds[1], frame, sizeof(frame));
+    assert(peer_recv(&peer, &ctx, NULL, NULL, capture_peer_exchange, &capture) == 0);
+    assert(capture.count == 2);
+    peer_fini(&peer);
+    close(fds[0]); close(fds[1]);
+}
+
+static void test_remote_upload_only_updates(void) {
+    int fds[2];
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
+    assert(net_set_nonblock(fds[0]));
+    peer_t peer = {0};
+    peer.fd = fds[0];
+    peer.state = PS_ACTIVE;
+    peer_ctx_t ctx = {0};
+    const char *updates[] = {
+        "d11:upload_onlyi1ee", "d11:upload_only1:xe", "de",
+        "d11:upload_onlyi0ee"
+    };
+    const int expected[] = {1, 1, 1, 0};
+    for (unsigned i = 0; i < 4; ++i) {
+        uint8_t frame[64] = {0};
+        size_t length = strlen(updates[i]);
+        frame[3] = (uint8_t)(length + 2);
+        frame[4] = MSG_EXTENDED;
+        frame[5] = EXT_HANDSHAKE_ID;
+        memcpy(frame + 6, updates[i], length);
+        send_all(fds[1], frame, length + 6);
+        assert(peer_recv(&peer, &ctx, NULL, NULL, NULL, NULL) == 0);
+        assert(peer.remote_upload_only == expected[i]);
+    }
+    peer_fini(&peer);
+    close(fds[0]); close(fds[1]);
+}
+
 int main(void) {
+    test_holepunch_extension_wire();
+    test_peer_exchange_uses_receiver_extension_id();
+    test_remote_upload_only_updates();
     for (int seed = 0; seed < 2; ++seed) {
         int fds[2];
         assert(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);

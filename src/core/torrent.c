@@ -35,6 +35,9 @@
    how many μTP slots we occupy; TCP still retries SYN-hangs into μTP up to
    this many. */
 #define MAX_UTP_PEERS 8
+#define SEED_PEER_GRACE_MS 5000
+#define HOLEPUNCH_PENDING 32
+#define HOLEPUNCH_WINDOW_MS 20000
 /* Keep this many sockets mid-connect at once (PERF: dial in bursts instead of
    one peer per CONNECT_INTERVAL_MS) so the reachable TCP peers in a large
    announce are found in ~one pass rather than dribbled out over seconds. */
@@ -149,11 +152,7 @@ struct torrent {
     storage_t   *store;
     dht_session_t *dht;
 
-    /* Shared μTP transport (BEP-29). One libutp context multiplexes every μTP
-       peer over a single dedicated UDP socket (ephemeral port; distinct from
-       the shared DHT socket on DHT_SHARED_PORT). Outgoing-only: every datagram
-       on utp_fd is a μTP packet, fed straight to utp_process_udp with no
-       demux. */
+    /* μTP uses the advertised peer port; DHT has a separate shared socket. */
     utp_context *utp;
     socket_t     utp_fd;
     uint64_t     last_utp_ms;
@@ -182,6 +181,19 @@ struct torrent {
         uint64_t until_ms;
     } blocklist[PEER_BLOCKLIST_SIZE];
     uint32_t blocklist_next;
+    struct {
+        uint32_t ip;
+        uint16_t port;
+        uint64_t until_ms;
+    } holepunch_pending[HOLEPUNCH_PENDING];
+    uint32_t holepunch_next;
+    uint64_t last_holepunch_request_ms;
+    struct {
+        uint32_t ip, introducer_ip;
+        uint16_t port, introducer_port;
+        uint64_t until_ms;
+    } pex_routes[64];
+    unsigned pex_route_next;
 
     uint16_t listen_port;
 
@@ -803,6 +815,12 @@ static void clear_peer_requests(torrent_t *t, peer_t *p) {
 /* ---- peer_ctx helper ---- */
 static int peer_slot_taken(const torrent_t *t, uint32_t ip, uint16_t port);
 
+static void cb_holepunch(void *user, peer_t *peer, uint8_t type,
+                         uint32_t ip, uint16_t port, uint32_t error);
+static void cb_pex(void *user, peer_t *source, const uint8_t *compact,
+                   const uint8_t *flags, uint32_t count);
+static int count_utp_peers(const torrent_t *t);
+
 static void fill_ctx(torrent_t *t, peer_ctx_t *ctx) {
     ctx->info_hash   = t->mi.info_hash;
     ctx->peer_id     = t->peer_id;
@@ -816,6 +834,10 @@ static void fill_ctx(torrent_t *t, peer_ctx_t *ctx) {
     ctx->private_torrent = t->mi.is_private;
     ctx->upload_only = t->upload_only;
     ctx->uploaded_total = &t->uploaded;
+    ctx->on_holepunch = t->utp ? cb_holepunch : NULL;
+    ctx->holepunch_user = t;
+    ctx->on_pex = cb_pex;
+    ctx->pex_user = t;
 }
 
 /* Magnet → torrent live sockets. Compact IPs (PERF_PLAN 7.7) still reconnect;
@@ -993,6 +1015,59 @@ static void upload_tick(torrent_t *t, uint64_t now) {
     t->upload_cursor = (t->upload_cursor + 1) % MAX_ACTIVE_PEERS;
 }
 
+static int peer_has_all_pieces(const torrent_t *t, const peer_t *p) {
+    if (!t->pm->num_pieces || !p->bitfield) return 0;
+    uint32_t bytes = (t->pm->num_pieces + 7) / 8;
+    if (p->bf_bytes < bytes) return 0;
+    for (uint32_t i = 0; i < bytes; ++i) {
+        uint8_t mask = 255;
+        if (i + 1 == bytes && t->pm->num_pieces % 8)
+            mask = (uint8_t)(255u << (8 - t->pm->num_pieces % 8));
+        if ((p->bitfield[i] & mask) != mask) return 0;
+    }
+    return 1;
+}
+
+static void drop_seed_only_peers(torrent_t *t, uint64_t now) {
+    if (!t->upload_only) return;
+    peer_t *introducer = NULL;
+    unsigned best_routes = 0;
+    for (int i = 0; i < MAX_ACTIVE_PEERS; ++i) {
+        peer_t *p = t->peers[i];
+        unsigned routes = 0;
+        if (p)
+            for (unsigned j = 0; j < 64; ++j)
+                routes += t->pex_routes[j].until_ms > now &&
+                    t->pex_routes[j].introducer_ip == p->addr.sin_addr.s_addr &&
+                    t->pex_routes[j].introducer_port == p->addr.sin_port;
+        if (p && p->state == PS_ACTIVE && p->holepunch_enabled &&
+            p->peer_ext_holepunch &&
+            (!introducer || routes > best_routes || (routes == best_routes && (
+             (p->transport == TRANSPORT_UTP && introducer->transport != TRANSPORT_UTP) ||
+             (p->transport == introducer->transport &&
+              p->connect_time_ms < introducer->connect_time_ms))))) {
+            introducer = p;
+            best_routes = routes;
+        }
+    }
+    for (int i = 0; i < MAX_ACTIVE_PEERS; ++i) {
+        peer_t *p = t->peers[i];
+        if (!p || p == introducer || p->state != PS_ACTIVE || p->peer_interested ||
+            p->upload_count || p->upload_end ||
+            p->connect_time_ms > now ||
+            now - p->connect_time_ms < SEED_PEER_GRACE_MS)
+            continue;
+        if (!p->remote_upload_only && !peer_has_all_pieces(t, p)) continue;
+        log_msg("[seed] release seed-only peer transport=%d partial=%d\n",
+                p->transport, p->remote_upload_only);
+        blocklist_add(t, p->addr.sin_addr.s_addr, p->addr.sin_port, now);
+        clear_peer_requests(t, p);
+        peer_destroy(p);
+        t->peers[i] = NULL;
+        --t->num_peers;
+    }
+}
+
 static int peer_slot_taken(const torrent_t *t, uint32_t ip, uint16_t port) {
     for (int i = 0; i < MAX_ACTIVE_PEERS; i++) {
         const peer_t *p = t->peers[i];
@@ -1000,6 +1075,174 @@ static int peer_slot_taken(const torrent_t *t, uint32_t ip, uint16_t port) {
             return 1;
     }
     return 0;
+}
+
+static int holepunch_pending(const torrent_t *t, uint32_t ip, uint16_t port,
+                             uint64_t now) {
+    for (unsigned i = 0; i < HOLEPUNCH_PENDING; ++i)
+        if (t->holepunch_pending[i].ip == ip &&
+            t->holepunch_pending[i].port == port &&
+            t->holepunch_pending[i].until_ms > now) return 1;
+    return 0;
+}
+
+static void remember_holepunch(torrent_t *t, uint32_t ip, uint16_t port,
+                               uint64_t now) {
+    unsigned i = t->holepunch_next++ % HOLEPUNCH_PENDING;
+    t->holepunch_pending[i].ip = ip;
+    t->holepunch_pending[i].port = port;
+    t->holepunch_pending[i].until_ms = now + HOLEPUNCH_WINDOW_MS;
+}
+
+static int holepunch_public_endpoint(uint32_t ip, uint16_t port) {
+    uint32_t host = ntohl(ip);
+    uint8_t a = (uint8_t)(host >> 24), b = (uint8_t)(host >> 16);
+    return ntohs(port) >= 2 && a && a != 10 && a != 127 && a < 224 &&
+        !(a == 100 && b >= 64 && b <= 127) && !(a == 169 && b == 254) &&
+        !(a == 172 && b >= 16 && b <= 31) && !(a == 192 && b == 168);
+}
+
+static void cb_holepunch(void *user, peer_t *peer, uint8_t type,
+                         uint32_t ip, uint16_t port, uint32_t error) {
+    torrent_t *t = user;
+    if (!t || t->mi.is_private || !peer->holepunch_enabled ||
+        !peer->peer_ext_holepunch) return;
+    uint64_t now = now_ms();
+    if (peer->last_holepunch_ms && now - peer->last_holepunch_ms < 1000) return;
+    peer->last_holepunch_ms = now;
+    if (type == 2) {
+        log_msg("[holepunch] rendezvous error=%u\n", error);
+        return;
+    }
+    if (!holepunch_public_endpoint(ip, port)) {
+        if (type == 0) peer_send_holepunch(peer, 2, ip, port, 1);
+        return;
+    }
+    if (type == 0) {
+        peer_t *target = NULL;
+        for (int i = 0; i < MAX_ACTIVE_PEERS; ++i) {
+            peer_t *p = t->peers[i];
+            if (p && p->state == PS_ACTIVE && p->addr.sin_addr.s_addr == ip &&
+                p->addr.sin_port == port) { target = p; break; }
+        }
+        uint32_t failure = !target ? 2 : target == peer ? 1 :
+            !target->holepunch_enabled || !target->peer_ext_holepunch ? 3 : 0;
+        if (failure) {
+            peer_send_holepunch(peer, 2, ip, port, failure);
+            return;
+        }
+        if (!peer_send_holepunch(peer, 1, ip, port, 0)) peer->state = PS_DEAD;
+        if (!peer_send_holepunch(target, 1, peer->addr.sin_addr.s_addr,
+                                 peer->addr.sin_port, 0)) target->state = PS_DEAD;
+        return;
+    }
+    if (type != 1 || !t->utp) return;
+    int pending = holepunch_pending(t, ip, port, now);
+    if (blocklist_blocked(t, ip, port, now) && !pending) return;
+    if (pending)
+        for (unsigned i = 0; i < PEER_BLOCKLIST_SIZE; ++i)
+            if (t->blocklist[i].ip == ip && t->blocklist[i].port == port)
+                t->blocklist[i].until_ms = 0;
+    remember_holepunch(t, ip, port, now);
+    for (int i = 0; i < MAX_ACTIVE_PEERS; ++i) {
+        peer_t *p = t->peers[i];
+        if (p && p->addr.sin_addr.s_addr == ip && p->addr.sin_port == port) {
+            if (p->state == PS_CONNECTING && p->transport == TRANSPORT_TCP)
+                p->connect_time_ms = 0;
+            return;
+        }
+    }
+    int queued = 0;
+    for (int i = 0; i < t->qsize; ++i) {
+        int index = (t->qhead + i) % MAX_PEER_QUEUE;
+        if (t->queue[index].ip != ip || t->queue[index].port != port) continue;
+        struct peer_addr entry = t->queue[index];
+        entry.use_utp = 1;
+        entry.no_mse = 0;
+        for (int j = i; j > 0; --j)
+            t->queue[(t->qhead + j) % MAX_PEER_QUEUE] =
+                t->queue[(t->qhead + j - 1) % MAX_PEER_QUEUE];
+        t->queue[t->qhead] = entry;
+        queued = 1;
+        break;
+    }
+    if (!queued) queued = queue_insert(t, ip, port, 1, 0, 1);
+    log_msg("[holepunch] coordinated uTP queued=%d\n", queued);
+}
+
+static void request_holepunch(torrent_t *t, uint32_t ip, uint16_t port,
+                              uint64_t now);
+
+static void cb_pex(void *user, peer_t *source, const uint8_t *compact,
+                   const uint8_t *flags, uint32_t count) {
+    torrent_t *t = user;
+    if (t->mi.is_private || !flags) return;
+    unsigned candidates = 0;
+    uint32_t candidate_ip = 0;
+    uint16_t candidate_port = 0;
+    for (uint32_t i = 0; i < count; ++i) {
+        if ((flags[i] & 0x02) || !(flags[i] & 0x08)) continue;
+        uint32_t ip; uint16_t port;
+        memcpy(&ip, compact + 6 * i, 4);
+        memcpy(&port, compact + 6 * i + 4, 2);
+        if (!holepunch_public_endpoint(ip, port)) continue;
+        unsigned slot = t->pex_route_next++ % 64;
+        t->pex_routes[slot].ip = ip;
+        t->pex_routes[slot].port = port;
+        t->pex_routes[slot].introducer_ip = source->addr.sin_addr.s_addr;
+        t->pex_routes[slot].introducer_port = source->addr.sin_port;
+        t->pex_routes[slot].until_ms = now_ms() + 120000;
+        queue_insert(t, ip, port, 1, 0, 0);
+        if (!candidate_ip && !peer_slot_taken(t, ip, port) &&
+            !blocklist_blocked(t, ip, port, now_ms())) {
+            candidate_ip = ip;
+            candidate_port = port;
+        }
+        ++candidates;
+    }
+    log_msg("[pex] received=%u holepunch_downloaders=%u\n", count, candidates);
+    /* A seed may close this connection before a TCP timeout. Ask its PEX
+       source while it is still connected to both endpoints. */
+    if (t->upload_only && candidate_ip)
+        request_holepunch(t, candidate_ip, candidate_port, now_ms());
+}
+
+static void request_holepunch(torrent_t *t, uint32_t ip, uint16_t port,
+                              uint64_t now) {
+    if (!t->utp || t->mi.is_private || !holepunch_public_endpoint(ip, port) ||
+        holepunch_pending(t, ip, port, now) ||
+        (t->last_holepunch_request_ms && now - t->last_holepunch_request_ms < 1000))
+        return;
+    int sent = 0;
+    peer_t *preferred = NULL;
+    for (unsigned route = 0; route < 64 && !preferred; ++route) {
+        if (t->pex_routes[route].ip != ip || t->pex_routes[route].port != port ||
+            t->pex_routes[route].until_ms <= now) continue;
+        for (int i = 0; i < MAX_ACTIVE_PEERS; ++i) {
+            peer_t *p = t->peers[i];
+            if (p && p->state == PS_ACTIVE && p->peer_ext_holepunch &&
+                p->holepunch_enabled &&
+                p->addr.sin_addr.s_addr == t->pex_routes[route].introducer_ip &&
+                p->addr.sin_port == t->pex_routes[route].introducer_port) {
+                preferred = p;
+                break;
+            }
+        }
+    }
+    for (int i = 0; i < MAX_ACTIVE_PEERS && sent < 3; ++i) {
+        peer_t *p = t->peers[i];
+        if (!p || p->state != PS_ACTIVE || !p->peer_ext_holepunch ||
+            (preferred && p != preferred) ||
+            !p->holepunch_enabled ||
+            (p->addr.sin_addr.s_addr == ip && p->addr.sin_port == port)) continue;
+        if (peer_send_holepunch(p, 0, ip, port, 0)) ++sent;
+        else p->state = PS_DEAD;
+    }
+    if (sent) {
+        remember_holepunch(t, ip, port, now);
+        t->last_holepunch_request_ms = now;
+        log_msg("[holepunch] rendezvous requested introducers=%d\n", sent);
+    }
 }
 
 static int try_accept(torrent_t *t) {
@@ -1121,7 +1364,8 @@ static uint64 utp_cb_on_read(utp_callback_arguments *a) {
             utp_mark_dead(p);
         } else {
             peer_ctx_t ctx; fill_ctx(t, &ctx);
-            if (peer_process(p, &ctx, cb_block, cb_have, cb_peers, t) < 0)
+            if (peer_process(p, &ctx, cb_block, cb_have, cb_peers, t) < 0 ||
+                !peer_flush(p))
                 utp_mark_dead(p);
         }
     }
@@ -1141,6 +1385,7 @@ static uint64 utp_cb_on_state_change(utp_callback_arguments *a) {
     if (!p) return 0;
     switch (a->state) {
     case UTP_STATE_CONNECT: {
+        if (p->state != PS_CONNECTING) break;
         /* μTP three-way handshake done — mirror the TCP connect-complete path. */
         peer_ctx_t ctx; fill_ctx(t, &ctx);
         if (!peer_connected(p, &ctx))
@@ -1174,8 +1419,46 @@ static uint64 utp_cb_on_error(utp_callback_arguments *a) {
 }
 
 static uint64 utp_cb_on_firewall(utp_callback_arguments *a) {
-    (void)a;
-    return 1; /* outgoing-only: reject every inbound μTP connection */
+    torrent_t *t = (torrent_t*)utp_context_get_userdata(a->context);
+    if (!t || !a->address || a->address->sa_family != AF_INET ||
+        t->num_peers >= MAX_ACTIVE_PEERS) return 1;
+    const struct sockaddr_in *addr = (const struct sockaddr_in*)a->address;
+    uint64_t now = now_ms();
+    int pending = holepunch_pending(t, addr->sin_addr.s_addr, addr->sin_port, now);
+    if (blocklist_blocked(t, addr->sin_addr.s_addr, addr->sin_port, now) && !pending)
+        return 1;
+    if (!pending && !t->upload_only && count_utp_peers(t) >= MAX_UTP_PEERS)
+        return 1;
+    for (int i = 0; i < MAX_ACTIVE_PEERS; ++i)
+        if (t->peers[i] && t->peers[i]->state == PS_ACTIVE &&
+            t->peers[i]->addr.sin_addr.s_addr == addr->sin_addr.s_addr &&
+            t->peers[i]->addr.sin_port == addr->sin_port) return 1;
+    return 0;
+}
+
+static uint64 utp_cb_on_accept(utp_callback_arguments *a) {
+    torrent_t *t = (torrent_t*)utp_context_get_userdata(a->context);
+    struct sockaddr_in addr = {0};
+    socklen_t size = sizeof(addr);
+    if (!t || t->num_peers >= MAX_ACTIVE_PEERS ||
+        utp_getpeername(a->socket, (struct sockaddr*)&addr, &size) != 0 ||
+        addr.sin_family != AF_INET) { utp_close(a->socket); return 0; }
+    peer_ctx_t ctx; fill_ctx(t, &ctx);
+    ctx.use_mse = 0;
+    peer_t *p = peer_create_utp(a->socket, addr, &ctx);
+    if (!p) { utp_close(a->socket); return 0; }
+    p->incoming = 1;
+    utp_set_userdata(a->socket, p);
+    for (int i = 0; i < MAX_ACTIVE_PEERS; ++i) {
+        if (t->peers[i]) continue;
+        t->peers[i] = p;
+        ++t->num_peers;
+        if (!peer_connected(p, &ctx)) utp_mark_dead(p);
+        log_msg("[utp] incoming connection accepted\n");
+        return 0;
+    }
+    peer_destroy(p);
+    return 0;
 }
 
 static uint64 utp_cb_get_udp_mtu(utp_callback_arguments *a) {
@@ -1203,7 +1486,11 @@ static uint64 utp_cb_get_random(utp_callback_arguments *a) {
 /* Create the shared μTP context + its dedicated UDP socket. Best-effort: on
    failure μTP stays disabled (utp==NULL) and the client runs TCP-only. */
 static void utp_setup(torrent_t *t) {
-    t->utp_fd = net_udp_socket(0);
+    t->utp_fd = net_udp_socket(t->listen_port);
+    if (t->utp_fd == INVALID_SOCK && t->listen_port) {
+        log_msg("[utp] peer UDP port unavailable; using an ephemeral port for holepunch\n");
+        t->utp_fd = net_udp_socket(0);
+    }
     if (t->utp_fd == INVALID_SOCK) {
         log_msg("[utp] UDP socket create failed; μTP disabled\n");
         return;
@@ -1222,6 +1509,7 @@ static void utp_setup(torrent_t *t) {
     utp_set_callback(t->utp, UTP_ON_STATE_CHANGE,       utp_cb_on_state_change);
     utp_set_callback(t->utp, UTP_ON_ERROR,              utp_cb_on_error);
     utp_set_callback(t->utp, UTP_ON_FIREWALL,           utp_cb_on_firewall);
+    utp_set_callback(t->utp, UTP_ON_ACCEPT,             utp_cb_on_accept);
     utp_set_callback(t->utp, UTP_GET_UDP_MTU,           utp_cb_get_udp_mtu);
     utp_set_callback(t->utp, UTP_GET_MILLISECONDS,      utp_cb_get_milliseconds);
     utp_set_callback(t->utp, UTP_GET_MICROSECONDS,      utp_cb_get_microseconds);
@@ -1229,8 +1517,7 @@ static void utp_setup(torrent_t *t) {
     log_msg("[utp] context ready (fd=%d)\n", t->utp_fd);
 }
 
-/* Drain all pending datagrams on the μTP socket into libutp. Every datagram is
-   a μTP packet (outgoing-only socket), so no BitTorrent/DHT demux is needed. */
+/* The dedicated μTP socket does not carry DHT traffic. */
 static void utp_drain_socket(torrent_t *t) {
     if (!t->utp || t->utp_fd == INVALID_SOCK) return;
     uint8_t buf[2048];
@@ -1304,8 +1591,10 @@ static void handle_dial_failure(torrent_t *t, uint32_t ip, uint16_t port,
                                 uint64_t now) {
     if (mse_hs && queue_insert(t, ip, port, 1, /*no_mse*/1, use_utp))
         return;
-    if (can_utp && requeue_utp(t, ip, port))
-        return;
+    if (can_utp) {
+        request_holepunch(t, ip, port, now);
+        if (requeue_utp(t, ip, port)) return;
+    }
     blocklist_add(t, ip, port, now);
 }
 
@@ -1319,7 +1608,8 @@ static int try_connect(torrent_t *t) {
     int skipped_utp = 0;
     for (;;) {
         if (!queue_pop(t, &ip, &port, &no_mse, &use_utp)) return 0;
-        if (use_utp && count_utp_peers(t) >= MAX_UTP_PEERS) {
+        if (use_utp && count_utp_peers(t) >= MAX_UTP_PEERS &&
+            !(t->upload_only && holepunch_pending(t, ip, port, now_ms()))) {
             queue_insert(t, ip, port, /*front*/0, no_mse, 1);
             if (++skipped_utp >= MAX_UTP_PEERS)
                 return 0;
@@ -2265,6 +2555,7 @@ int torrent_tick(torrent_t *t) {
         int utp_active = 0;
         int cooldown_peers = 0, penalized_peers = 0;
         int upload_interested = 0, upload_slots = 0, upload_queued = 0;
+        int peer_seeders = 0, upload_candidates = 0, holepunch_peers = 0;
         uint64_t peer_upload_requests = 0, peer_upload_rejected = 0;
         for (int i = 0; i < MAX_ACTIVE_PEERS; i++) {
             peer_t *p = t->peers[i];
@@ -2278,7 +2569,20 @@ int torrent_tick(torrent_t *t) {
             inflight += p->pipeline_len;
             upload_interested += !!p->peer_interested;
             upload_slots += !p->peer_choked;
+            holepunch_peers += p->holepunch_enabled && p->peer_ext_holepunch;
             upload_queued += (int)p->upload_count;
+            int complete = 1, needs_available = 0;
+            for (uint32_t byte = 0; byte < p->bf_bytes; ++byte) {
+                uint8_t mask = 255;
+                if (byte + 1 == p->bf_bytes && t->pm->num_pieces % 8)
+                    mask = (uint8_t)(255u << (8 - t->pm->num_pieces % 8));
+                if ((p->bitfield[byte] & mask) != mask) complete = 0;
+                if (t->pm->available_bf[byte] & ~p->bitfield[byte] & mask)
+                    needs_available = 1;
+                if (!complete && needs_available) break;
+            }
+            peer_seeders += complete;
+            upload_candidates += needs_available;
             peer_upload_requests += p->upload_requests;
             peer_upload_rejected += p->upload_rejected;
             if (p->request_cooldown_until_ms > now) cooldown_peers++;
@@ -2293,14 +2597,16 @@ int torrent_tick(torrent_t *t) {
                 "expired=%u speed=%llu frozen=%d cooldown=%d penalized=%d "
                 "upload_enabled=%d upload_interested=%d upload_slots=%d "
                 "upload_queued=%d peer_upload_requests=%llu peer_upload_rejected=%llu "
-                "uploaded=%llu available_pieces=%u\n",
+                "uploaded=%llu available_pieces=%u peer_seeders=%d "
+                "upload_candidates=%d holepunch_peers=%d\n",
                 active, utp_active, unchoked, inflight, t->expired_requests,
                 (unsigned long long)t->speed_bps, t->rate_freeze,
                 cooldown_peers, penalized_peers, t->upload_enabled,
                 upload_interested, upload_slots, upload_queued,
                 (unsigned long long)peer_upload_requests,
                 (unsigned long long)peer_upload_rejected,
-                (unsigned long long)t->uploaded, t->available_pieces);
+                (unsigned long long)t->uploaded, t->available_pieces,
+                peer_seeders, upload_candidates, holepunch_peers);
         t->expired_requests = 0;
         t->last_health_ms = now;
     }
@@ -2364,6 +2670,7 @@ int torrent_tick(torrent_t *t) {
     /* Connect new peers — dial in a burst up to CONNECT_IN_FLIGHT sockets so a
        large announce is worked through in ~one pass instead of one peer per
        interval. Stops early when the queue drains or all slots are full. */
+    drop_seed_only_peers(t, now);
     if (now - t->last_connect_ms >= CONNECT_INTERVAL_MS) {
         int budget = CONNECT_IN_FLIGHT - count_connecting(t);
         for (int k = 0; k < budget; k++) {

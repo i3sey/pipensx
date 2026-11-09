@@ -48,10 +48,8 @@ extern "C" {
 namespace pipensx {
 namespace {
 
-// TCP listen port for runner slot 0; slot i listens on kBasePeerPort + i
-// (51413-51416), so N=1 keeps the classic port. The shared DHT engine's UDP
-// socket also lives on 51413 (different protocol, no clash) and the magnet
-// resolver no longer binds a port of its own.
+// Each runner uses kBasePeerPort + slot index for TCP and UDP (51413-51416).
+// Shared DHT uses UDP 51412 so it cannot take a runner's µTP port.
 constexpr uint16_t kBasePeerPort = 51413;
 
 uint8_t actionValue(FileAction action) {

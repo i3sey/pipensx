@@ -17,7 +17,7 @@
  */
 typedef struct dht_session dht_session_t;
 
-#define DHT_SHARED_PORT 51413
+#define DHT_SHARED_PORT 51412
 
 /*
  * announce_port: this attachment's TCP listen port, announced to the swarm
