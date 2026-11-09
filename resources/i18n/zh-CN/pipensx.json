@@ -392,6 +392,7 @@
     "card_progress": "进度",
     "card_speed": "速度",
     "card_network": "网络",
+    "hide_details": "收起详情",
     "status_line": "状态：{}",
     "progress_line": "{}%  ·  {} / {}",
     "eta_line": "剩余 {}",

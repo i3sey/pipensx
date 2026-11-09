@@ -392,6 +392,7 @@
     "card_progress": "Прогресс",
     "card_speed": "Скорость",
     "card_network": "Сеть",
+    "hide_details": "Скрыть подробности",
     "status_line": "Статус: {}",
     "progress_line": "{}%  ·  {} / {}",
     "eta_line": "Осталось {}",

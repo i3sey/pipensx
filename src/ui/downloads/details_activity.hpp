@@ -21,10 +21,6 @@
 
 namespace pipensx::ui {
 
-// UI_PLAN O8 — download details as eShop-style cards (Progress / Speed /
-// Network) with on-screen Pause/Verify/Remove buttons instead of blind X/Y
-// hotkeys. Big progress bar + ETA (S1), speed graph kept, network stats
-// grouped. All colors/fonts on O1 tokens.
 class DetailsActivity : public brls::Activity {
 public:
     DetailsActivity(std::string taskId, DownloadManager* manager,
@@ -118,6 +114,13 @@ public:
                                         &brls::BUTTONSTYLE_DEFAULT);
         removeButton_ = addActionButton(sidebar, tr("pipensx/common/remove"),
                                         &brls::BUTTONSTYLE_DEFAULT);
+        detailsButton_ = addActionButton(sidebar, tr("pipensx/common/details"),
+                                         &brls::BUTTONSTYLE_DEFAULT);
+        detailsButton_->registerClickAction([this](brls::View*) {
+            showDetails_ = !showDetails_;
+            refresh();
+            return true;
+        });
 
         auto* gap = new brls::Box();
         gap->setHeight(12);
@@ -635,9 +638,12 @@ private:
                                            percentOf(progress),
                                            formatBytes(doneBytes),
                                            formatBytes(totalBytes)));
-        setTextIfChanged(recovery_, task && !deploying
-                                        ? recoveryNoticeText(*task)
-                                        : std::string());
+        const std::string recoveryText = !deploying
+            ? (showDetails_ ? recoveryNoticeText(*task) : recoveryWorkText(*task))
+            : std::string();
+        setTextIfChanged(recovery_, recoveryText);
+        recovery_->setVisibility(!recoveryText.empty()
+            ? brls::Visibility::VISIBLE : brls::Visibility::GONE);
 
         const uint64_t now = now_ms();
         std::string eta;
@@ -678,11 +684,13 @@ private:
         setTextIfChanged(downloadSpeed_,
                           tr("pipensx/downloads/speed_download",
                              formatSpeed(task->speedBytesPerSecond)));
-        if (task->seeding || task->uploadedBytes || task->seedCacheBytes) {
+        if (task->seeding || task->uploadedBytes ||
+            (showDetails_ && task->seedCacheBytes)) {
             uploadStats_->setVisibility(brls::Visibility::VISIBLE);
             setTextIfChanged(uploadStats_, tr("pipensx/seeding/stats",
                 formatSpeed(task->uploadSpeedBytesPerSecond), formatBytes(task->uploadedBytes)) +
-                (task->seedCacheBytes ? " · RAM " + formatBytes(task->seedCacheBytes) : ""));
+                (showDetails_ && task->seedCacheBytes
+                    ? " · RAM " + formatBytes(task->seedCacheBytes) : ""));
             if (task->seeding)
                 setTextIfChanged(status_, tr("pipensx/seeding/status"));
         } else uploadStats_->setVisibility(brls::Visibility::GONE);
@@ -697,8 +705,17 @@ private:
             installSpeedItem_->setVisibility(brls::Visibility::GONE);
         }
         const bool direct = task->source == TaskSource::Torrent;
-        networkCard_->setVisibility(direct && !finished ? brls::Visibility::VISIBLE
-                                           : brls::Visibility::GONE);
+        networkCard_->setVisibility(showDetails_ && direct && !finished
+            ? brls::Visibility::VISIBLE : brls::Visibility::GONE);
+        const auto detailVisibility = showDetails_ ? brls::Visibility::VISIBLE
+                                                 : brls::Visibility::GONE;
+        screenMode_->setVisibility(detailVisibility);
+        currentPackage_->setVisibility(detailVisibility);
+        package_->setVisibility(showDetails_ || task->packageCount > 1
+            ? brls::Visibility::VISIBLE : brls::Visibility::GONE);
+        speedGraph_->setVisibility(detailVisibility);
+        setTextIfChanged(detailsButton_, tr(showDetails_
+            ? "pipensx/downloads/hide_details" : "pipensx/common/details"));
         if (direct) {
             setTextIfChanged(peers_, tr("pipensx/downloads/peers_line",
                                         task->peers, task->dhtGood,
@@ -849,6 +866,8 @@ private:
     brls::Button* pauseButton_;
     brls::Button* verifyButton_;
     brls::Button* removeButton_;
+    brls::Button* detailsButton_;
+    bool showDetails_ = false;
     brls::Box* speedCard_;
     ProgressBar* progressBar_;
     brls::Label* progress_;

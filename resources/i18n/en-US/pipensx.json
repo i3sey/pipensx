@@ -392,6 +392,7 @@
     "card_progress": "Progress",
     "card_speed": "Speed",
     "card_network": "Network",
+    "hide_details": "Hide details",
     "status_line": "Status: {}",
     "progress_line": "{}%  ·  {} / {}",
     "eta_line": "ETA {}",

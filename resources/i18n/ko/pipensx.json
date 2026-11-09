@@ -392,6 +392,7 @@
     "card_progress": "진행률",
     "card_speed": "속도",
     "card_network": "네트워크",
+    "hide_details": "세부 정보 숨기기",
     "status_line": "상태: {}",
     "progress_line": "{}%  ·  {} / {}",
     "eta_line": "남은 시간 {}",

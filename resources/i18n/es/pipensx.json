@@ -392,6 +392,7 @@
     "card_progress": "Progreso",
     "card_speed": "Velocidad",
     "card_network": "Red",
+    "hide_details": "Ocultar detalles",
     "status_line": "Status: {}",
     "progress_line": "{}%  ·  {} / {}",
     "eta_line": "Tiempo restante {}",
