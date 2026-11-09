@@ -15,6 +15,10 @@ public:
         setScrollingBehavior(brls::ScrollingBehavior::CENTERED);
     }
 
+    void revealFocusAfterLayout() {
+        updateScrollingOnNextFrame = true;
+    }
+
     void willAppear(bool resetState) override {
         brls::ScrollingFrame::willAppear(resetState);
         // Opening the page must not jump to a distant "Show more" action

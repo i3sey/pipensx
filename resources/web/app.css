@@ -450,6 +450,10 @@ dialog::backdrop { background: rgba(6,11,16,.72); backdrop-filter: blur(7px); }
 .chip.warn { color: var(--warn); border-color: rgba(255,180,84,.4); }
 .modal-desc { color: var(--text-2); font-size: 13px; margin: 10px 0;
   max-height: 150px; overflow-y: auto; white-space: pre-wrap; }
+.game-description { max-height: none; overflow: visible; overflow-wrap: anywhere; }
+.btn.description-toggle { min-height: 44px; margin-bottom: 10px;
+  color: var(--text-2); border-color: var(--text-2); transition: none; transform: none; }
+.description-toggle[hidden] { display: none; }
 .facts { width: 100%; border-collapse: collapse; font-size: 12px; margin: 10px 0; }
 .facts td { padding: 6px 4px; border-bottom: 1px solid var(--line); vertical-align: top; }
 .facts td:first-child { color: var(--text-3); font-weight: 700; width: 118px; }

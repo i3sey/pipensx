@@ -196,6 +196,7 @@
     "screenshot_unavailable": "Screenshot non disponibile",
     "view_download": "Vedi download",
     "show_more": "Mostra altro",
+    "show_less": "Mostra meno",
     "no_description": "Nessuna descrizione disponibile. L'installazione funziona comunque dal rilascio del catalogo.",
     "release_line": "Rilascio: {}",
     "last_attempt": "Ultimo tentativo: {}",

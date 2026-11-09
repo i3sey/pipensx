@@ -427,6 +427,10 @@ $(BUILD_DIR)/tests/test_ui_thread_call: tests/test_ui_thread_call.cpp src/app/ui
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $<
 
+$(BUILD_DIR)/tests/test_description_text: tests/test_description_text.cpp src/ui/common/description_text.hpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $<
+
 $(BUILD_DIR)/tests/test_update_service: tests/test_update_service.cpp src/app/update_service.cpp \
 		$(BUILD_DIR)/src/app/update_transaction.o src/core/sha256.c
 	@mkdir -p $(dir $@)

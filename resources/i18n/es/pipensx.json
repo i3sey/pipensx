@@ -196,6 +196,7 @@
     "screenshot_unavailable": "Captura no disponible",
     "view_download": "Ver descarga",
     "show_more": "Mostrar mais",
+    "show_less": "Mostrar menos",
     "no_description": "No hay descripción disponible. La instalación sigue funcionando desde el lanzamiento del catálogo.",
     "release_line": "Lanzamiento: {}",
     "last_attempt": "Último intento: {}",

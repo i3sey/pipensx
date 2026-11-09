@@ -1732,6 +1732,28 @@ $("catalog-grid").addEventListener("click", (e) => {
   if (entry) openGameModal(entry);
 });
 
+function compactDescription(text) {
+  return text.trim().replace(/[ \t\r\n]+/g, gap =>
+    (gap.match(/\r\n|\r|\n/g) || []).length > 1 ? "\n" : " ");
+}
+
+function shortDescription(text) {
+  const characters = Array.from(text);
+  let end = 0;
+  let lines = 1;
+  while (end < characters.length && end < 280) {
+    if (characters[end] === "\n" && ++lines > 4) break;
+    ++end;
+  }
+  if (end === characters.length) return text;
+  if (characters[end] !== " " && characters[end] !== "\n") {
+    let word = end - 1;
+    while (word >= 0 && characters[word] !== " " && characters[word] !== "\n") --word;
+    if (word >= 0 && end - word <= 48) end = word;
+  }
+  return characters.slice(0, end).join("").trimEnd() + "…";
+}
+
 function openGameModal(entry) {
   const generation = ++descriptionGeneration;
   const requestedLanguage = lang;
@@ -1763,7 +1785,9 @@ function openGameModal(entry) {
         ${entry.posterUrl ? `<img class="modal-cover" src="${esc(entry.posterUrl)}" alt="" onerror="this.remove()">` : ""}
         <div><h3>${esc(entry.title)}</h3><div class="modal-badges">${chips}</div></div>
       </div>
-      <div class="modal-desc" id="game-description">${esc(entry.description || "")}</div>
+      <div class="modal-desc game-description" id="game-description"></div>
+      <button type="button" class="btn btn-ghost description-toggle" id="game-description-toggle"
+        aria-controls="game-description" aria-expanded="false" hidden>${t("game.showMore")}</button>
       ${rows ? `<table class="facts">${rows}</table>` : ""}
       ${entry.infoHash ? `<div class="hash">${t("game.hash")}: ${esc(entry.infoHash)}</div>` : ""}
       ${shots ? `<div class="shots">${shots}</div>` : ""}
@@ -1773,6 +1797,24 @@ function openGameModal(entry) {
       <button class="btn" id="game-download">${t("game.download")}</button>
       <button class="btn btn-primary" id="game-install">${t("game.install")}</button>
     </div>`);
+  let expanded = false;
+  let fullDescription = "";
+  const description = $("game-description");
+  const toggle = $("game-description-toggle");
+  const renderDescription = (text) => {
+    fullDescription = compactDescription(text);
+    const preview = shortDescription(fullDescription);
+    description.textContent = expanded ? fullDescription : preview;
+    toggle.hidden = preview === fullDescription;
+    toggle.textContent = t(expanded ? "game.showLess" : "game.showMore");
+    toggle.setAttribute("aria-expanded", String(expanded));
+  };
+  renderDescription(entry.description || "");
+  toggle.onclick = () => {
+    expanded = !expanded;
+    renderDescription(fullDescription);
+    if (!expanded) toggle.scrollIntoView({ block: "nearest" });
+  };
   $("game-cancel").onclick = closeModal;
   const start = (mode) => async () => {
     closeModal();
@@ -1790,10 +1832,9 @@ function openGameModal(entry) {
   fetch(`/api/catalog/description?hash=${encodeURIComponent(entry.infoHash)}&lang=${encodeURIComponent(requestedLanguage)}`, { cache: "no-store" })
     .then(resp => resp.ok ? resp.json() : null)
     .then(body => {
-      const description = $("game-description");
-      if (body && description && $("modal").open &&
+      if (body && description.isConnected && $("modal").open &&
           generation === descriptionGeneration && lang === requestedLanguage)
-        description.textContent = body.description || "";
+        renderDescription(body.description || "");
     }).catch(() => {}); // Original prose remains usable when an old NRO serves the page.
 }
 

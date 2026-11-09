@@ -196,6 +196,7 @@
     "screenshot_unavailable": "스크린샷을 불러올 수 없습니다",
     "view_download": "다운로드 보기",
     "show_more": "더 보기",
+    "show_less": "접기",
     "no_description": "설명이 없습니다. 카탈로그 릴리스에서 바로 설치할 수 있습니다.",
     "release_line": "릴리스: {}",
     "last_attempt": "마지막 시도: {}",

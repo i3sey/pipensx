@@ -196,6 +196,7 @@
     "screenshot_unavailable": "截图不可用",
     "view_download": "查看下载",
     "show_more": "显示更多",
+    "show_less": "收起",
     "no_description": "暂无描述。仍可从目录版本安装。",
     "release_line": "版本：{}",
     "last_attempt": "上次尝试：{}",

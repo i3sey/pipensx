@@ -225,12 +225,6 @@ inline std::string joinLanguageCodes(const std::vector<std::string>& codes) {
     return out;
 }
 
-inline std::string shortDescription(const std::string& value) {
-    if (value.size() <= 900)
-        return value;
-    return value.substr(0, 900) + "...";
-}
-
 inline std::string formatEpochDateUtc(int64_t epochSec) {
     if (epochSec <= 0)
         return {};

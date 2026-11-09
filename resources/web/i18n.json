@@ -222,7 +222,9 @@
     "port.folderLimit": "Showing up to 512 folders.",
     "port.back": "Back",
     "port.useFolder": "Use this folder",
-    "port.failed": "Could not load port files"
+    "port.failed": "Could not load port files",
+    "game.showMore": "Show more",
+    "game.showLess": "Show less"
   },
   "ru": {
     "control.pin": "Доступ к панели",
@@ -447,7 +449,9 @@
     "port.folderLimit": "Показано до 512 папок.",
     "port.back": "Назад",
     "port.useFolder": "Выбрать эту папку",
-    "port.failed": "Не удалось загрузить файлы порта"
+    "port.failed": "Не удалось загрузить файлы порта",
+    "game.showMore": "Показать больше",
+    "game.showLess": "Свернуть"
   },
   "pt-BR": {
     "control.continue": "Continuar",
@@ -672,7 +676,9 @@
     "port.folderLimit": "Exibindo até 512 pastas.",
     "port.back": "Voltar",
     "port.useFolder": "Usar esta pasta",
-    "port.failed": "Não foi possível carregar os arquivos do port"
+    "port.failed": "Não foi possível carregar os arquivos do port",
+    "game.showMore": "Mostrar mais",
+    "game.showLess": "Mostrar menos"
   },
   "fr": {
     "control.continue": "Continuer",
@@ -897,7 +903,9 @@
     "port.folderLimit": "Affichage de 512 dossiers au maximum.",
     "port.back": "Retour",
     "port.useFolder": "Utiliser ce dossier",
-    "port.failed": "Impossible de charger les fichiers du port"
+    "port.failed": "Impossible de charger les fichiers du port",
+    "game.showMore": "Afficher plus",
+    "game.showLess": "Afficher moins"
   },
   "es": {
     "control.continue": "Continuar",
@@ -1122,7 +1130,9 @@
     "port.folderLimit": "Se muestran hasta 512 carpetas.",
     "port.back": "Volver",
     "port.useFolder": "Usar esta carpeta",
-    "port.failed": "No se pudieron cargar los archivos del port"
+    "port.failed": "No se pudieron cargar los archivos del port",
+    "game.showMore": "Mostrar más",
+    "game.showLess": "Mostrar menos"
   },
   "it": {
     "control.continue": "Continua",
@@ -1347,7 +1357,9 @@
     "port.folderLimit": "Visualizzazione di un massimo di 512 cartelle.",
     "port.back": "Indietro",
     "port.useFolder": "Usa questa cartella",
-    "port.failed": "Impossibile caricare i file del port"
+    "port.failed": "Impossibile caricare i file del port",
+    "game.showMore": "Mostra altro",
+    "game.showLess": "Mostra meno"
   },
   "zh-CN": {
     "control.continue": "继续",
@@ -1572,7 +1584,9 @@
     "port.folderLimit": "最多显示 512 个文件夹。",
     "port.back": "返回",
     "port.useFolder": "使用此文件夹",
-    "port.failed": "无法加载移植游戏文件"
+    "port.failed": "无法加载移植游戏文件",
+    "game.showMore": "显示更多",
+    "game.showLess": "收起"
   },
   "ko": {
     "control.continue": "계속",
@@ -1797,6 +1811,8 @@
     "port.folderLimit": "최대 512개 폴더를 표시합니다.",
     "port.back": "뒤로",
     "port.useFolder": "이 폴더 사용",
-    "port.failed": "포트 파일을 불러올 수 없습니다"
+    "port.failed": "포트 파일을 불러올 수 없습니다",
+    "game.showMore": "더 보기",
+    "game.showLess": "접기"
   }
 }

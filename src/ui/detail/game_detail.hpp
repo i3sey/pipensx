@@ -625,7 +625,6 @@ private:
         table->addView(row);
     }
 
-    // S5: reversible "Show more" instead of a hard cut.
     void buildDescription(brls::Box* right) {
         std::string text = presentation_.description;
         if (text.empty() && entry_.autorun && !entry_.autorun->notes.empty()) {
@@ -644,8 +643,9 @@ private:
         desc->setFontSize(theme::kFontSmall);
         desc->setSingleLine(false);
         desc->setMarginTop(24);
-        bool truncated = text.size() > 900;
-        desc->setText(truncated ? shortDescription(text) : text);
+        const std::string preview = shortDescription(text);
+        const bool truncated = preview != text;
+        desc->setText(preview);
         right->addView(desc);
         if (truncated) {
             auto* more = new brls::Button();
@@ -654,12 +654,18 @@ private:
             more->setTextColor(theme::accent());
             more->setMarginTop(4);
             more->setText(tr("pipensx/detail/show_more"));
-            more->registerClickAction([this, desc, more,
+            more->registerClickAction([desc, more, right, preview,
+                                       expanded = std::make_shared<bool>(false),
                                        text = std::move(text)](brls::View*) {
-                desc->setText(text);
-                more->setVisibility(brls::Visibility::GONE);
-                if (primary_)
-                    brls::Application::giveFocus(primary_);
+                *expanded = !*expanded;
+                desc->setText(*expanded ? text : preview);
+                more->setText(tr(*expanded ? "pipensx/detail/show_less"
+                                          : "pipensx/detail/show_more"));
+                brls::Application::giveFocus(more);
+                if (!*expanded) {
+                    if (auto* scroll = dynamic_cast<StickScrollingFrame*>(right->getParent()))
+                        scroll->revealFocusAfterLayout();
+                }
                 return true;
             });
             right->addView(more);

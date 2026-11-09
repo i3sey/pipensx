@@ -196,6 +196,7 @@
     "screenshot_unavailable": "Screenshot unavailable",
     "view_download": "View download",
     "show_more": "Show more",
+    "show_less": "Show less",
     "no_description": "No description available. Install still works from the catalog release.",
     "release_line": "Release: {}",
     "last_attempt": "Last attempt: {}",

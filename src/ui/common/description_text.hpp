@@ -34,4 +34,29 @@ inline std::string compactDescription(const std::string& text) {
     return out;
 }
 
+inline std::string shortDescription(const std::string& text) {
+    size_t end = 0;
+    size_t characters = 0;
+    size_t lines = 1;
+    while (end < text.size() && characters < 280) {
+        if (text[end] == '\n' && ++lines > 4)
+            break;
+        ++end;
+        while (end < text.size() &&
+               (static_cast<unsigned char>(text[end]) & 0xc0) == 0x80)
+            ++end;
+        ++characters;
+    }
+    if (end == text.size())
+        return text;
+    if (text[end] != ' ' && text[end] != '\n') {
+        const size_t word = text.find_last_of(" \n", end - 1);
+        if (word != std::string::npos && end - word <= 48)
+            end = word;
+    }
+    while (end > 0 && (text[end - 1] == ' ' || text[end - 1] == '\n'))
+        --end;
+    return text.substr(0, end) + "…";
+}
+
 } // namespace pipensx::ui

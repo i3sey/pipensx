@@ -196,6 +196,7 @@
     "screenshot_unavailable": "Скриншот недоступен",
     "view_download": "К загрузке",
     "show_more": "Ещё",
+    "show_less": "Свернуть",
     "no_description": "Описания нет. Установка из релиза каталога всё равно работает.",
     "release_line": "Релиз: {}",
     "last_attempt": "Прошлая попытка: {}",
