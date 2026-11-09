@@ -324,6 +324,12 @@
     "notice_dialog_body": "Il ne s'agit pas d'un jeu Switch standard, mais d'un portage ou d'une archive. Les fichiers sont enregistrés dans le dossier de téléchargement. Pour le lancer, extrayez-les à la racine de la carte SD ou utilisez DBI."
   },
   "downloads": {
+    "screen_mode_on": "Éteindre l’écran : Oui",
+    "screen_mode_off": "Éteindre l’écran : Non",
+    "screen_mode_hint": "Pendant les téléchargements et l’installation. Touchez l’écran ou utilisez une manette pour le rallumer.",
+    "screen_indicator_off": "L’écran s’éteint pendant les téléchargements",
+    "screen_indicator_on": "L’écran reste allumé pendant les téléchargements",
+    "screen_mode_idle": "Écran : réglages de veille habituels",
     "import": "Importer un torrent",
     "import_action": "Importer un .torrent",
     "empty_cell": "Aucun téléchargement. Appuyez sur X pour ajouter un fichier .torrent.",
@@ -681,6 +687,9 @@
     "can_free": "Vous pouvez libérer : {}"
   },
   "settings": {
+    "sleep_after_downloads": "Mettre en veille après les téléchargements",
+    "sleep_after_downloads_note": "Une fois toute la file et l’installation terminées, la console se met en veille. Le partage s’arrête jusqu’au réveil. Désactivé : le partage continue avec les réglages de veille habituels.",
+    "sleep_failed": "Impossible de mettre la console en veille. Le mode application exige le firmware 10.0.0+ ; le mode applet exige 15.0.0+.",
     "keep_uncached_debrid": "Conserver les torrents dans le debrid",
     "keep_uncached_debrid_hint": "Si les métadonnées tardent, le torrent reste chez le fournisseur pour la mise en cache. Ajoutez-le à nouveau plus tard pour le télécharger. Annuler le supprime.",
     "section_catalog": "Catalogue",

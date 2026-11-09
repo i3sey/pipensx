@@ -160,6 +160,21 @@ serialized. Existing files are verified before a task starts or resumes.
 Interrupted package streams resume from their last persisted safe point;
 packages committed before the interruption remain installed and are skipped.
 
+On **Downloads**, **Blank screen** controls the display only while downloads or
+installation are active. Both modes prevent automatic sleep during that work.
+When enabled, the screen turns off three seconds after the button is pressed.
+Touch, a controller button, or a stick wakes it; the wake input is absorbed until
+release, followed by a 300 ms guard. The screen turns off again after seven
+seconds of inactivity. The selection survives restarts and leaves normal idle
+settings in control when no download or installation is active.
+
+**Settings → Downloads → Sleep after downloads finish** is off by default, so
+completed torrents can keep seeding. Enable it to request system sleep after the
+whole queue, including installation, finishes successfully. Paused, failed, or
+deleted tasks do not trigger sleep. Application mode requires firmware 10.0.0 or
+later; applet mode requires 15.0.0 or later. If sleep is unavailable or the request
+fails, pipensx reports the failure and keeps running.
+
 In **Settings → Source**, enable **Keep uncached torrents in debrid**
 to leave pending magnets in your provider account when metadata resolution
 times out. Add the release again later to download it. Cloud caching and any

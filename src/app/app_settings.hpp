@@ -57,14 +57,13 @@ struct AppSettingsData {
     StreamSelection streamSelection = StreamSelection::AllFiles;
     InstallLocation installLocation = InstallLocation::SdCard;
     bool showCompletedDownloads = true;
-    // OLED burn-in / screen-off guard (B5). On = after five idle minutes a
-    // warning covers the UI, then the panel is switched off through lbl
-    // while transfers keep running; any button or touch wakes, not Power.
-    // Off = never cover, never touch the backlight. Additive key, so files
-    // written before it exist keep the default on load.
+    // Normal idle saver after five minutes; active transfers use the separate
+    // blankScreenDuringTransfers selection even when this saver is disabled.
     bool screenSaverEnabled = true;
-    // Keep the panel on while a transfer/install is active. Zero means until
-    // all transfers finish; timed values count inactivity, reset by real input.
+    bool blankScreenDuringTransfers = false;
+    bool sleepAfterDownloads = false;
+    // Legacy display fields retained for settings compatibility. Transfers
+    // now use blankScreenDuringTransfers instead of these idle durations.
     bool keepScreenOnDuringTransfers = true;
     uint32_t screenOnMinutes = 0;
     bool extendedTelemetry = false;

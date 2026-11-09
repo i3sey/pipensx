@@ -54,6 +54,11 @@ enum class DownloadStatus {
     Removing,
 };
 
+struct DownloadPowerTask {
+    std::string id;
+    DownloadStatus status;
+};
+
 enum class TaskSource { Torrent, Debrid };
 
 // #94: torrents stored without a single tracker (the HTTPS-cache metadata
@@ -504,6 +509,7 @@ public:
     }
 
     bool hasActiveTransfer() const;
+    std::vector<DownloadPowerTask> powerSnapshot() const;
     // Cheap status probe for consumers that need to shed optional memory
     // specifically while NCM/package commit work is active.
     bool hasActiveInstallation() const;

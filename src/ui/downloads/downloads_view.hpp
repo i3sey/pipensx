@@ -86,6 +86,35 @@ public:
         toolbar->addView(actions);
         addView(toolbar);
 
+        auto* screenControls = new brls::Box(brls::Axis::ROW);
+        screenControls->setPadding(0, 32, 12, 32);
+        screenControls->setAlignItems(brls::AlignItems::CENTER);
+        screenButton_ = new brls::Button();
+        screenButton_->setFontSize(theme::kFontSmall);
+        screenButton_->setHeight(52);
+        screenButton_->setMarginRight(16);
+        screenButton_->registerClickAction([this](brls::View*) {
+            if (!settings_ || !(manager_->hasActiveTransfer() ||
+                               (deploy_ && deploy_->snapshot().active())))
+                return true;
+            auto values = settings_->get();
+            values.blankScreenDuringTransfers = !values.blankScreenDuringTransfers;
+            std::string error;
+            if (!settings_->update(values, error))
+                brls::Application::notify(error);
+            refresh();
+            return true;
+        });
+        screenControls->addView(screenButton_);
+        auto* screenHint = new brls::Label();
+        screenHint->setText(tr("pipensx/downloads/screen_mode_hint"));
+        screenHint->setFontSize(theme::kFontCaption);
+        screenHint->setTextColor(theme::textSecondary());
+        screenHint->setGrow(1);
+        screenHint->setSingleLine(false);
+        screenControls->addView(screenHint);
+        addView(screenControls);
+
         filters_ = new brls::Box(brls::Axis::ROW);
         auto* filters = filters_;
         filters->setPadding(0, 32, 12, 32);
@@ -163,7 +192,7 @@ public:
 
     void openDetails(const std::string& taskId) {
         brls::Application::pushActivity(
-            new DetailsActivity(taskId, manager_, deploy_));
+            new DetailsActivity(taskId, manager_, deploy_, settings_));
     }
 
     void openFilePicker() {
@@ -594,6 +623,14 @@ private:
                 (unsigned long long)durationUs, structural ? 1 : 0,
                 reload ? 1 : 0);
         };
+        const bool blank = settings_ && settings_->get().blankScreenDuringTransfers;
+        setTextIfChanged(screenButton_, tr(blank
+            ? "pipensx/downloads/screen_mode_on" : "pipensx/downloads/screen_mode_off"));
+        screenButton_->setStyle(blank ? &brls::BUTTONSTYLE_PRIMARY
+                                       : &brls::BUTTONSTYLE_DEFAULT);
+        screenButton_->setState(manager_->hasActiveTransfer() ||
+            (deploy_ && deploy_->snapshot().active())
+                ? brls::ButtonState::ENABLED : brls::ButtonState::DISABLED);
         auto next = manager_->snapshotUi();
         const SwitchDeploySnapshot deployState = deploy_ ? deploy_->snapshot()
                                                          : SwitchDeploySnapshot{};
@@ -765,6 +802,7 @@ private:
     std::shared_ptr<std::atomic<bool>> alive_ =
         std::make_shared<std::atomic<bool>>(true);
     bool clearInFlight_ = false;
+    brls::Button* screenButton_ = nullptr;
     brls::Button* addButton_ = nullptr;
     brls::Box* filters_ = nullptr;
     int selectedFilter_ = 0;

@@ -324,6 +324,12 @@
     "notice_dialog_body": "This is not a standard Switch game, but a port or archive. Files have been saved to the downloads folder. To run it, extract them to the root of the SD card or use DBI."
   },
   "downloads": {
+    "screen_mode_on": "Blank screen: On",
+    "screen_mode_off": "Blank screen: Off",
+    "screen_mode_hint": "Only during downloads and installation. Touch or use a controller to wake.",
+    "screen_indicator_off": "Screen turns off during downloads",
+    "screen_indicator_on": "Screen stays on during downloads",
+    "screen_mode_idle": "Screen: normal idle settings",
     "import": "Import torrent",
     "import_action": "Import .torrent",
     "empty_cell": "No downloads yet. Press X to add a .torrent file.",
@@ -681,6 +687,9 @@
     "can_free": "You can free: {}"
   },
   "settings": {
+    "sleep_after_downloads": "Sleep after downloads finish",
+    "sleep_after_downloads_note": "After the whole queue and installation finish, put the console to sleep. Seeding stops until wake. Off: keep seeding with normal idle settings.",
+    "sleep_failed": "Could not put the console to sleep. Application mode requires firmware 10.0.0+, applet mode requires 15.0.0+.",
     "keep_uncached_debrid": "Keep uncached torrents in debrid",
     "keep_uncached_debrid_hint": "If metadata takes too long, keep the torrent in your provider account for caching. Add it again later to download. Cancelling still removes it.",
     "section_catalog": "Catalog",

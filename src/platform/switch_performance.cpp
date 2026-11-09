@@ -17,6 +17,27 @@ void logFailure(const char* operation, Result result) {
 
 } // namespace
 
+bool switchSystemSleepSupported() {
+    const auto type = appletGetAppletType();
+    return ((type == AppletType_Application || type == AppletType_SystemApplication) &&
+            hosversionAtLeast(10, 0, 0)) ||
+           ((type == AppletType_LibraryApplet || type == AppletType_OverlayApplet) &&
+            hosversionAtLeast(15, 0, 0)) || type == AppletType_SystemApplet;
+}
+
+bool switchRequestSystemSleep() {
+    if (!switchSystemSleepSupported()) return false;
+    const auto type = appletGetAppletType();
+    const Result result = type == AppletType_Application ||
+                          type == AppletType_SystemApplication
+        ? appletRequestToSleep() : appletStartSleepSequence(true);
+    if (R_FAILED(result)) {
+        logFailure("request system sleep", result);
+        return false;
+    }
+    return true;
+}
+
 SwitchPerformanceController::~SwitchPerformanceController() {
     deactivate();
 }

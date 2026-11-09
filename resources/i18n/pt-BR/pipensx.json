@@ -324,6 +324,12 @@
     "notice_dialog_body": "Este não é um jogo padrão do Switch, mas um port ou arquivo. Os arquivos foram salvos na pasta de downloads. Para executá-lo, extraia-os para a raiz do cartão SD ou use o DBI."
   },
   "downloads": {
+    "screen_mode_on": "Apagar tela: Sim",
+    "screen_mode_off": "Apagar tela: Não",
+    "screen_mode_hint": "Apenas durante downloads e instalação. Toque ou use o controle para acender a tela.",
+    "screen_indicator_off": "A tela apaga durante downloads",
+    "screen_indicator_on": "A tela fica acesa durante downloads",
+    "screen_mode_idle": "Tela: configurações normais de espera",
     "import": "Importar torrent",
     "import_action": "Importar .torrent",
     "empty_cell": "Nenhum download ainda. Pressione X para adicionar um arquivo .torrent.",
@@ -681,6 +687,9 @@
     "can_free": "Pode liberar: {}"
   },
   "settings": {
+    "sleep_after_downloads": "Suspender ao concluir downloads",
+    "sleep_after_downloads_note": "Após concluir toda a fila e a instalação, o console entra em suspensão. O envio para até despertar. Desativado: o envio continua com as configurações normais de espera.",
+    "sleep_failed": "Não foi possível suspender o console. O modo aplicativo exige firmware 10.0.0+; o modo applet exige 15.0.0+.",
     "keep_uncached_debrid": "Manter torrents sem cache no debrid",
     "keep_uncached_debrid_hint": "Se os metadados demorarem, mantenha o torrent na conta do provedor para cache. Adicione-o novamente mais tarde para baixar. Cancelar ainda o remove.",
     "section_catalog": "Catálogo",

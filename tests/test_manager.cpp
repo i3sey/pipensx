@@ -628,6 +628,7 @@ int main() {
     {
         DownloadManager manager(appRoot, false);
         assert(!manager.hasActiveTransfer());
+        assert(manager.powerSnapshot().empty());
         pipensx::TorrentPreview preview;
         assert(DownloadManager::previewTorrent(source, preview, error));
         assert(preview.name == "package.nsp");
@@ -641,6 +642,9 @@ int main() {
         auto tasks = manager.snapshot();
         assert(tasks.size() == 1);
         assert(tasks[0].status == DownloadStatus::Queued);
+        const auto power = manager.powerSnapshot();
+        assert(power.size() == 1 && power[0].id == tasks[0].id);
+        assert(power[0].status == DownloadStatus::Queued);
         assert(tasks[0].mode == TransferMode::StreamInstall);
         assert(tasks[0].packageCount == 1);
         pipensx::TaskFileManifest manifest;
@@ -654,6 +658,7 @@ int main() {
         assert(manager.hasActiveTransfer());
         assert(manager.pause(tasks[0].id));
         assert(manager.snapshot()[0].status == DownloadStatus::Paused);
+        assert(manager.powerSnapshot()[0].status == DownloadStatus::Paused);
         assert(!manager.hasActiveTransfer());
         assert(manager.resume(tasks[0].id));
         assert(manager.snapshot()[0].status == DownloadStatus::Queued);

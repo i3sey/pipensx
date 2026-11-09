@@ -85,7 +85,7 @@ bool readUnsigned(const Json& root, const char* key, uint64_t& value,
 // Schema version written by this build. Bumped when a stored value has to be
 // reinterpreted rather than merely added: parseSettings migrates anything
 // older forward, so a bump is always paired with a rule below.
-constexpr int kSettingsVersion = 4;
+constexpr int kSettingsVersion = 5;
 
 const char* themeName(AppTheme theme) {
     switch (theme) {
@@ -137,6 +137,10 @@ bool parseSettings(const std::string& text, AppSettingsData& values,
         !readString(root, "install_location", install, error) ||
         !readBool(root, "show_completed_downloads",
                   values.showCompletedDownloads, error) ||
+        !readBool(root, "blank_screen_during_transfers",
+                  values.blankScreenDuringTransfers, error) ||
+        !readBool(root, "sleep_after_downloads",
+                  values.sleepAfterDownloads, error) ||
         !readBool(root, "screen_saver_enabled",
                   values.screenSaverEnabled, error) ||
         !readBool(root, "keep_screen_on_during_transfers",
@@ -167,6 +171,12 @@ bool parseSettings(const std::string& text, AppSettingsData& values,
         !readString(root, "alldebrid_api_key", values.alldebridApiKey,
                      error)) {
         return false;
+    }
+    // v4 -> v5: transfer blanking is now an explicit Downloads button.
+    // Old idle durations must not silently opt users into that persistent mode.
+    if (fileVersion < 5) {
+        values.blankScreenDuringTransfers = false;
+        values.sleepAfterDownloads = false;
     }
     if (!isSupportedScreenOnMinutes(screenOnMinutes)) {
         error = "Setting 'screen_on_minutes' must be 0, 15, 20, 30 or 60.";
@@ -279,6 +289,8 @@ std::string serializeSettings(const AppSettingsData& values) {
     root["stream_selection"] = streamSelectionName(values.streamSelection);
     root["install_location"] = installLocationName(values.installLocation);
     root["show_completed_downloads"] = values.showCompletedDownloads;
+    root["blank_screen_during_transfers"] = values.blankScreenDuringTransfers;
+    root["sleep_after_downloads"] = values.sleepAfterDownloads;
     root["screen_saver_enabled"] = values.screenSaverEnabled;
     root["keep_screen_on_during_transfers"] = values.keepScreenOnDuringTransfers;
     root["screen_on_minutes"] = values.screenOnMinutes;
@@ -439,6 +451,8 @@ bool AppSettingsData::operator==(const AppSettingsData& other) const {
            streamSelection == other.streamSelection &&
            installLocation == other.installLocation &&
            showCompletedDownloads == other.showCompletedDownloads &&
+           blankScreenDuringTransfers == other.blankScreenDuringTransfers &&
+           sleepAfterDownloads == other.sleepAfterDownloads &&
            screenSaverEnabled == other.screenSaverEnabled &&
            keepScreenOnDuringTransfers == other.keepScreenOnDuringTransfers &&
            screenOnMinutes == other.screenOnMinutes &&

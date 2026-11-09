@@ -4,6 +4,9 @@
 
 namespace pipensx {
 
+bool switchSystemSleepSupported();
+bool switchRequestSystemSleep();
+
 class SwitchPerformanceController {
 public:
     SwitchPerformanceController() = default;

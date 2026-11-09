@@ -65,6 +65,7 @@ extern "C" {
 #include "ui/settings/settings_view.hpp"
 #include "ui/theme.hpp"
 #include "app/display_policy.hpp"
+#include "app/download_power_policy.hpp"
 #include "app/autorun_service.hpp"
 #include "ui/detail/autorun_post_install_dialog.hpp"
 
@@ -1115,6 +1116,22 @@ int main(int argc, char** argv) {
         bool backlightOff = false;
         uint64_t saverShownMs = 0;
         bool screenOffAttempted = false;
+        bool saverInputBlocked = false;
+        pipensx::TransferScreenTimer transferScreenTimer;
+        pipensx::WakeInputGuard wakeInputGuard;
+        pipensx::QueueSleepPolicy queueSleepPolicy;
+        bool queueSleepRequested = false;
+        struct ResumeSignal {
+            AppletHookCookie cookie{};
+            bool resumed = false;
+            ResumeSignal() {
+                appletHook(&cookie, [](AppletHookType type, void* context) {
+                    if (type == AppletHookType_OnResume)
+                        static_cast<ResumeSignal*>(context)->resumed = true;
+                }, this);
+            }
+            ~ResumeSignal() { appletUnhook(&cookie); }
+        } resumeSignal;
         // Watchdog against hanging the system (B5): the UI thread pets
         // `uiHeartbeat` every frame; this thread logs a stall as a
         // [diagnostic] level=error ANR record (F2) — the last UI stage plus
@@ -1292,6 +1309,10 @@ int main(int argc, char** argv) {
                     configureImageCache(installActive);
                 }
                 performance.setActive(activeTransfer);
+                queueSleepRequested = queueSleepPolicy.update(
+                    manager.powerSnapshot(), settings.get().sleepAfterDownloads,
+                    activeTransfer);
+
                 metadata.setImageNetwork(
                     activeTransfer
                         ? GameMetadataService::ImageNetwork::Throttled
@@ -1542,21 +1563,6 @@ int main(int argc, char** argv) {
                 }
             }
 
-            // Display policy: keep an active transfer's panel illuminated for
-            // the configured idle time, or until all transfers finish. When
-            // protection expires, cover with a warning then turn off via lbl.
-            // Automatic sleep remains protected during transfers because the
-            // console never auto-sleeps mid-transfer
-            // (SwitchPerformanceController) and the app never suspends
-            // (borealis NoSuspend). Any controller button or touch dismisses
-            // the saver and switches the panel back on. Power is not in the
-            // pad map (Horizon sleep, not our wake). The wake press only
-            // resets the idle clock here and is absorbed by the covering
-            // activity, so it can never reach the download queue. Open state
-            // is derived from the activity stack so a dismiss cannot desync a
-            // bool and stack another saver on the next idle period. When the
-            // toggle is off, an already-open saver is popped and the panel
-            // restored instead of pushing a new one.
             brls::ControllerState pad {};
             std::vector<brls::RawTouchState> touches;
             auto* input = brls::Application::getPlatform()->getInputManager();
@@ -1564,67 +1570,108 @@ int main(int argc, char** argv) {
             input->updateTouchStates(&touches);
             bool touched = false;
             for (const auto& touch : touches) {
-                if (touch.pressed) {
-                    touched = true;
-                    break;
-                }
+                if (touch.pressed) { touched = true; break; }
             }
-            const bool saverOpen = pipensx::ui::burnInSaverIsTop();
-            const bool saverEnabled = settings.get().screenSaverEnabled;
+            const bool hasInput = pipensx::ui::controllerHasButtonDown(pad) || touched;
+            bool saverOpen = pipensx::ui::burnInSaverIsTop();
             const uint64_t displayNowMs = now_ms();
             if (displayNowMs < lastInputMs) lastInputMs = displayNowMs;
+            const bool transferDisplayActive = manager.hasActiveTransfer() ||
+                                               deployState.active();
+            const bool transferWantsDark = transferScreenTimer.update(
+                transferDisplayActive, settings.get().blankScreenDuringTransfers,
+                hasInput || resumeSignal.resumed || wakeInputGuard.blocking(),
+                displayNowMs);
+            const bool resumed = resumeSignal.resumed;
+            resumeSignal.resumed = false;
+            if (hasInput || resumed) lastInputMs = displayNowMs;
+            if (saverOpen && ((hasInput && !wakeInputGuard.blocking()) || resumed)) {
+                wakeInputGuard.begin(displayNowMs);
+                backlightGuard.turnOn();
+                backlightOff = backlightGuard.isOff();
+                log_msg("[saver] wake: absorbing input until release\n");
+            }
+            const bool waking = wakeInputGuard.blocking();
+            const bool stillBlocking = wakeInputGuard.update(hasInput, displayNowMs);
             const bool keepScreenOn = pipensx::shouldKeepTransferScreenOn(
-                settings.get(), activeTransfer, displayNowMs - lastInputMs);
+                settings.get(), transferDisplayActive, displayNowMs - lastInputMs);
             if (keepScreenOn) performance.keepDisplayOn(displayNowMs);
-            if (pipensx::ui::controllerHasButtonDown(pad) || touched) {
-                lastInputMs = now_ms();
-                if (saverOpen) {
-                    brls::Application::popActivity(
-                        brls::TransitionAnimation::NONE);
-                    log_msg("[saver] dismissed by input\n");
+
+            // Keep the cover in place through touch END and controller release.
+            // Borealis input blocks alone do not intercept touch recognizers.
+            if (saverOpen && !stillBlocking &&
+                (waking || (transferDisplayActive && keepScreenOn) ||
+                 (!transferDisplayActive && !settings.get().screenSaverEnabled &&
+                  !backlightOff))) {
+                backlightGuard.turnOn();
+                backlightOff = backlightGuard.isOff();
+                if (!backlightOff) {
+                    brls::Application::popActivity(brls::TransitionAnimation::NONE);
+                    saverOpen = false;
+                    screenOffAttempted = false;
+                    lastInputMs = displayNowMs;
+                } else {
+                    wakeInputGuard.begin(displayNowMs);
                 }
-                if (backlightOff) {
-                    backlightGuard.turnOn();
-                    backlightOff = false;
-                    log_msg("[saver] backlight on\n");
-                }
+            }
+            if (!saverOpen && saverInputBlocked) {
+                brls::Application::unblockInputs();
+                saverInputBlocked = false;
+                backlightGuard.turnOn();
+                backlightOff = backlightGuard.isOff();
+            }
+            const bool idleWantsDark = pipensx::shouldOpenScreenSaver(
+                settings.get(), transferDisplayActive, displayNowMs - lastInputMs);
+            if (!saverOpen && !stillBlocking && (transferWantsDark || idleWantsDark)) {
+                brls::Application::pushActivity(new pipensx::ui::BurnInSaverActivity(),
+                                                brls::TransitionAnimation::NONE);
+                brls::Application::blockInputs(true);
+                saverInputBlocked = true;
+                saverOpen = true;
+                saverShownMs = displayNowMs;
                 screenOffAttempted = false;
-            } else if (!saverEnabled || keepScreenOn) {
-                if (saverOpen) {
-                    brls::Application::popActivity(
-                        brls::TransitionAnimation::NONE);
-                    log_msg("[saver] dismissed: display protection or saver disabled\n");
-                }
-                if (backlightOff) {
-                    backlightGuard.turnOn();
-                    backlightOff = false;
-                    log_msg("[saver] backlight on\n");
-                }
-                screenOffAttempted = false;
-            } else if (!saverOpen && pipensx::shouldOpenScreenSaver(
-                           settings.get(), activeTransfer, displayNowMs - lastInputMs)) {
-                brls::Application::pushActivity(
-                    new pipensx::ui::BurnInSaverActivity(),
-                    brls::TransitionAnimation::NONE);
-                saverShownMs = now_ms();
-                screenOffAttempted = false;
-                log_msg("[saver] idle %llums, warning (transfers keep "
-                        "running)\n",
-                        (unsigned long long)(displayNowMs - lastInputMs));
-            } else if (saverOpen && !backlightOff && !screenOffAttempted &&
-                       now_ms() - saverShownMs >=
-                           pipensx::ui::kScreenOffWarnMs) {
+            }
+            if (saverOpen && !stillBlocking && !waking && !backlightOff &&
+                !screenOffAttempted &&
+                (transferWantsDark || displayNowMs - saverShownMs >=
+                                     pipensx::ui::kScreenOffWarnMs)) {
                 screenOffAttempted = true;
-                // Check protection again immediately before blanking the
-                // panel, rather than relying only on transfer-start setup.
                 if (performance.ensureAwake() && backlightGuard.turnOff()) {
                     if (auto* saver = pipensx::ui::burnInSaverTop())
                         saver->setPanelOff(true);
                     backlightOff = true;
                     log_msg("[saver] screen off (transfers keep running)\n");
                 } else {
-                    log_msg("[saver] sleep protection or backlight off failed, "
-                            "keeping warning\n");
+                    log_msg("[saver] screen off failed; keeping warning\n");
+                }
+            }
+            if (queueSleepRequested) {
+                queueSleepRequested = false;
+                // Recheck after UI callbacks: a new task may have been added.
+                if (settings.get().sleepAfterDownloads &&
+                    !manager.hasActiveTransfer() && !deploy.snapshot().active() &&
+                    !webServer.benchmarkActive()) {
+                    performance.setActive(false);
+                    std::string saveError;
+                    const bool saved = manager.save(saveError);
+                    if (!saved)
+                        diagnostic_error("power", "save_before_sleep", "error=%s",
+                                         saveError.c_str());
+                    const auto finalTasks = manager.powerSnapshot();
+                    const bool queueDone = !finalTasks.empty() && std::all_of(
+                        finalTasks.begin(), finalTasks.end(), [](const auto& task) {
+                            return task.status == pipensx::DownloadStatus::Completed ||
+                                   task.status == pipensx::DownloadStatus::Installed;
+                        });
+                    if (saved && (!queueDone || deploy.snapshot().active() ||
+                                  webServer.benchmarkActive())) continue;
+                    if (!saved || !pipensx::switchRequestSystemSleep()) {
+                        brls::Application::notify(saved
+                            ? tr("pipensx/settings/sleep_failed") : saveError);
+                        if (saverOpen) wakeInputGuard.begin(displayNowMs);
+                        backlightGuard.turnOn();
+                        backlightOff = backlightGuard.isOff();
+                    }
                 }
             }
             uiHeartbeat.store(now_ms(), std::memory_order_relaxed);
@@ -1673,6 +1720,7 @@ int main(int argc, char** argv) {
         manager.shutdown();
         if (!dht_engine_shutdown())
             diagnostic_error("dht", "shutdown", "sessions remain after manager stop");
+        if (saverInputBlocked) brls::Application::unblockInputs();
         performance.setActive(false);
     } catch (const std::exception& error) {
         log_msg("[crash] exception at stage '%s': %s\n",

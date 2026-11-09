@@ -979,12 +979,12 @@ private:
                 const std::string taskId = task->id;
                 openPortNoticeDialog([this, taskId] {
                     brls::Application::pushActivity(
-                        new DetailsActivity(taskId, manager_, deploy_));
+                        new DetailsActivity(taskId, manager_, deploy_, settings_));
                 });
             } else
                 // O5: tapping the live status button opens the download details.
                 brls::Application::pushActivity(
-                    new DetailsActivity(task->id, manager_, deploy_));
+                    new DetailsActivity(task->id, manager_, deploy_, settings_));
             return;
         }
         if (entry_.isAutorun()) {

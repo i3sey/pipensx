@@ -8,6 +8,8 @@
 #include <borealis.hpp>
 
 #include "app/download_manager.hpp"
+#include "app/app_settings.hpp"
+#include "app/download_power_policy.hpp"
 #include "app/task_files.hpp"
 #include "ui/common/progress_bar.hpp"
 #include "ui/common/speed_graph.hpp"
@@ -26,8 +28,8 @@ namespace pipensx::ui {
 class DetailsActivity : public brls::Activity {
 public:
     DetailsActivity(std::string taskId, DownloadManager* manager,
-                    SwitchDeployService* deploy = nullptr)
-        : taskId_(std::move(taskId)), manager_(manager), deploy_(deploy),
+                    SwitchDeployService* deploy = nullptr, AppSettings* settings = nullptr)
+        : taskId_(std::move(taskId)), manager_(manager), deploy_(deploy), settings_(settings),
           alive_(std::make_shared<std::atomic<bool>>(true)) {
         auto* root = new brls::Box(brls::Axis::ROW);
         root->setPadding(24, 32, 24, 32);
@@ -40,6 +42,10 @@ public:
         status_->setFontSize(theme::kFontHeading);
         status_->setMarginBottom(12);
         left->addView(status_);
+
+        screenMode_ = addLine(left, theme::kFontCaption);
+        screenMode_->setTextColor(theme::textSecondary());
+        screenMode_->setMarginBottom(12);
 
         auto* progressCard = addCard(left, tr("pipensx/downloads/card_progress"));
         progressBar_ = new ProgressBar();
@@ -542,6 +548,13 @@ private:
             deploy_ ? deploy_->snapshot() : SwitchDeploySnapshot{};
         const bool deploying =
             deployState.active() && deployState.taskId == taskId_;
+        const bool screenModeActive = downloadPowerActive(task->status) ||
+            deploying;
+        setTextIfChanged(screenMode_, tr(!screenModeActive
+            ? "pipensx/downloads/screen_mode_idle"
+            : settings_ && settings_->get().blankScreenDuringTransfers
+                ? "pipensx/downloads/screen_indicator_off"
+                : "pipensx/downloads/screen_indicator_on"));
         if (deploying) {
             const char* phaseKey =
                 deployState.phase == SwitchDeployPhase::Preparing
@@ -827,6 +840,8 @@ private:
     std::string taskId_;
     DownloadManager* manager_;
     SwitchDeployService* deploy_;
+    AppSettings* settings_;
+    brls::Label* screenMode_ = nullptr;
     std::shared_ptr<std::atomic<bool>> alive_;
     std::string frameTitle_;
     brls::AppletFrame* frame_;

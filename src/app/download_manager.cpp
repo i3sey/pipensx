@@ -1938,6 +1938,15 @@ bool DownloadManager::hasActiveTransfer() const {
     return false;
 }
 
+std::vector<DownloadPowerTask> DownloadManager::powerSnapshot() const {
+    std::unique_lock<std::mutex> lock(mutex_);
+    std::vector<DownloadPowerTask> result;
+    result.reserve(tasks_.size());
+    for (const auto& task : tasks_)
+        result.push_back({task.id, task.status});
+    return result;
+}
+
 bool DownloadManager::hasActiveInstallation() const {
     std::unique_lock<std::mutex> lock(mutex_);
     for (const DownloadTask& task : tasks_) {

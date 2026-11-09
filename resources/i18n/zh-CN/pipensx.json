@@ -324,6 +324,12 @@
     "notice_dialog_body": "这不是标准的 Switch 游戏，而是移植版或压缩包。文件已保存至下载目录。若要运行，请将其解压到 SD 卡根目录或使用 DBI。"
   },
   "downloads": {
+    "screen_mode_on": "下载时熄屏：开",
+    "screen_mode_off": "下载时熄屏：关",
+    "screen_mode_hint": "仅在下载和安装期间生效。触摸屏幕或操作手柄即可唤醒。",
+    "screen_indicator_off": "下载期间自动熄屏",
+    "screen_indicator_on": "下载期间屏幕保持点亮",
+    "screen_mode_idle": "屏幕：使用正常待机设置",
     "import": "导入种子",
     "import_action": "导入 .torrent",
     "empty_cell": "暂无下载。按 X 添加 .torrent 文件。",
@@ -681,6 +687,9 @@
     "can_free": "可释放：{}"
   },
   "settings": {
+    "sleep_after_downloads": "下载完成后进入休眠",
+    "sleep_after_downloads_note": "全部队列和安装完成后，主机进入休眠，做种暂停至唤醒。关闭时，按正常待机设置继续做种。",
+    "sleep_failed": "无法让主机进入休眠。应用模式需要系统版本 10.0.0 或更新，Applet 模式需要 15.0.0 或更新。",
     "keep_uncached_debrid": "在 debrid 中保留未缓存的种子",
     "keep_uncached_debrid_hint": "获取元数据超时后，将种子保留在服务商账户中以供缓存。稍后重新添加即可下载。取消操作仍会删除种子。",
     "section_catalog": "目录",

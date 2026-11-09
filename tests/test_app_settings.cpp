@@ -1,6 +1,7 @@
 #include "app/app_settings.hpp"
 #include "app/catalog_urls.hpp"
 #include "app/display_policy.hpp"
+#include "app/download_power_policy.hpp"
 #include "app/companion_settings.hpp"
 #include "app/download_manager.hpp"  // clampMaxActiveDownloads
 
@@ -578,6 +579,9 @@ void testDisplaySettingsMigrationAndRestart() {
     assert(!settings.get().torrentingEnabled);
     assert(settings.get().maxActiveDownloads == 3);
     AppSettingsData chosen = settings.get();
+    assert(!chosen.blankScreenDuringTransfers && !chosen.sleepAfterDownloads);
+    chosen.blankScreenDuringTransfers = true;
+    chosen.sleepAfterDownloads = true;
     chosen.theme = pipensx::AppTheme::System;
     chosen.keepScreenOnDuringTransfers = false;
     chosen.screenOnMinutes = 15;
@@ -600,6 +604,8 @@ void testInvalidDisplaySettingsDoNotReplaceCurrentValues() {
              "\"screen_on_minutes\":16", "\"screen_on_minutes\":-1",
              "\"screen_on_minutes\":4294967316", "\"screen_on_minutes\":\"20\"",
              "\"theme\":\"purple\"", "\"theme\":true",
+             "\"blank_screen_during_transfers\":1",
+             "\"sleep_after_downloads\":\"true\"",
              "\"keep_screen_on_during_transfers\":\"false\""}) {
         cleanup();
         { std::ofstream bad(SettingsPath); bad << "{\"version\":4," << fields << "}"; }
@@ -631,28 +637,90 @@ void testTransferScreenPolicy() {
     const uint64_t day = 24ULL * 60 * 60000;
     assert(pipensx::shouldKeepTransferScreenOn(values, true, day));
     assert(!pipensx::shouldOpenScreenSaver(values, true, day));
-    // Finishing/pausing releases the protection even if an unlimited mode was
-    // selected; the normal idle saver becomes eligible again.
     assert(!pipensx::shouldKeepTransferScreenOn(values, false, day));
-    assert(pipensx::shouldOpenScreenSaver(values, false, day));
     assert(!pipensx::shouldOpenScreenSaver(values, false, 5 * 60000 - 1));
     assert(pipensx::shouldOpenScreenSaver(values, false, 5 * 60000));
-    for (uint32_t minutes : {15u, 20u, 30u, 60u}) {
-        values.screenOnMinutes = minutes;
-        const uint64_t expires = static_cast<uint64_t>(minutes) * 60000;
-        assert(pipensx::shouldKeepTransferScreenOn(values, true, expires - 1));
-        assert(!pipensx::shouldOpenScreenSaver(values, true, expires - 1));
-        assert(!pipensx::shouldKeepTransferScreenOn(values, true, expires));
-        assert(pipensx::shouldOpenScreenSaver(values, true, expires));
-        // Real interaction resets the main loop's idle counter.
-        assert(pipensx::shouldKeepTransferScreenOn(values, true, 0));
-    }
-    values.keepScreenOnDuringTransfers = false;
+    values.blankScreenDuringTransfers = true;
     assert(!pipensx::shouldKeepTransferScreenOn(values, true, 0));
-    assert(pipensx::shouldOpenScreenSaver(values, true, 5 * 60000));
-    values.screenSaverEnabled = false;
     assert(!pipensx::shouldOpenScreenSaver(values, true, day));
+    // The download button must not alter normal idle behavior after completion.
+    assert(pipensx::shouldOpenScreenSaver(values, false, day));
+    values.screenSaverEnabled = false;
     assert(!pipensx::shouldOpenScreenSaver(values, false, day));
+
+    pipensx::TransferScreenTimer timer;
+    assert(!timer.update(true, false, false, 100));
+    assert(!timer.update(true, true, true, 200)); // click turns it on
+    assert(!timer.update(true, true, true, 220)); // held activation button
+    assert(!timer.update(true, true, false, 250));
+    assert(!timer.update(true, true, false, 3199));
+    assert(timer.update(true, true, false, 3200));
+    assert(!timer.update(true, true, true, 4000)); // wake
+    assert(!timer.update(true, true, true, 5000)); // keep holding
+    assert(!timer.update(true, true, false, 11999));
+    assert(timer.update(true, true, false, 12000));
+    assert(!timer.update(false, true, false, 12001)); // pause/finish
+    assert(!timer.update(false, true, false, day));
+    assert(!timer.update(true, true, false, day + 1)); // new work
+    assert(!timer.update(true, true, false, day + 7000));
+    assert(timer.update(true, true, false, day + 7001));
+    assert(!timer.update(true, false, false, day + 7002));
+    pipensx::TransferScreenTimer restarted;
+    assert(!restarted.update(true, true, false, 100));
+    assert(!restarted.update(true, true, false, 7099));
+    assert(restarted.update(true, true, false, 7100));
+    assert(!restarted.update(true, true, false, 10)); // clock moved backwards
+
+    pipensx::WakeInputGuard wake;
+    wake.begin(100);
+    assert(wake.update(true, 2000));
+    assert(wake.update(false, 2299));
+    assert(wake.update(true, 2300)); // another wake input extends quarantine
+    assert(wake.update(false, 2599));
+    assert(!wake.update(false, 2600));
+    assert(!wake.blocking());
+}
+
+void testQueueSleepPolicy() {
+    using pipensx::DownloadPowerTask;
+    using S = pipensx::DownloadStatus;
+    pipensx::QueueSleepPolicy policy;
+    assert(!policy.update({{"old", S::Completed}}, true, false));
+    assert(!policy.update({}, true, false));
+    std::vector<DownloadPowerTask> tasks{{"a", S::Downloading}, {"b", S::Queued}};
+    assert(!policy.update(tasks, true, true));
+    tasks[0].status = S::Completed;
+    tasks[1].status = S::Installing;
+    assert(!policy.update(tasks, true, true));
+    tasks[1].status = S::Committing;
+    assert(!policy.update(tasks, true, true));
+    tasks[1].status = S::Installed;
+    assert(!policy.update(tasks, true, true)); // deploy/benchmark still running
+    assert(policy.update(tasks, true, false));
+    assert(!policy.update(tasks, true, false)); // no sleep loop after wake
+
+    tasks = {{"a", S::Downloading}};
+    assert(!policy.update(tasks, true, true));
+    tasks[0].status = S::Paused;
+    assert(!policy.update(tasks, true, false));
+    tasks[0].status = S::Error;
+    assert(!policy.update(tasks, true, false));
+    tasks[0].status = S::Downloading;
+    assert(!policy.update(tasks, true, true));
+    tasks[0].status = S::Completed;
+    assert(policy.update(tasks, true, false));
+
+    tasks = {{"removed", S::Downloading}, {"old", S::Completed}};
+    assert(!policy.update(tasks, true, true));
+    tasks.erase(tasks.begin());
+    assert(!policy.update(tasks, true, false)); // deleting is not finishing
+    tasks = {{"a", S::Downloading}};
+    assert(!policy.update(tasks, false, true));
+    tasks[0].status = S::Completed;
+    assert(!policy.update(tasks, false, false)); // default keeps seeding
+    assert(!policy.update(tasks, true, false)); // enabling on an idle queue
+    assert(policy.update({{"tiny", S::Completed}}, true, false));
+    assert(!policy.update({{"tiny", S::Completed}}, true, false));
 }
 
 int main() {
@@ -673,6 +741,7 @@ int main() {
     testDisplaySettingsMigrationAndRestart();
     testInvalidDisplaySettingsDoNotReplaceCurrentValues();
     testTransferScreenPolicy();
+    testQueueSleepPolicy();
     testCompanionSettingsPatchWhitelist();
     testMissingFileUsesSafeDefaults();
     testUpdatePersistsEveryPublicSetting();

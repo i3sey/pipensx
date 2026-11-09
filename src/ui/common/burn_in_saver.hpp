@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cmath>
 
 #include <borealis.hpp>
 
@@ -126,6 +127,8 @@ inline bool controllerHasButtonDown(const brls::ControllerState& state) {
         if (state.buttons[i])
             return true;
     }
+    for (int i = 0; i < brls::_AXES_MAX; ++i)
+        if (std::fabs(state.axes[i]) > 0.2f) return true;
     return false;
 }
 

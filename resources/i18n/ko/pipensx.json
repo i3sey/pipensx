@@ -324,6 +324,12 @@
     "notice_dialog_body": "이것은 표준 Switch 게임이 아닌 포트/압축 파일입니다. 파일은 다운로드 폴더에 저장되었습니다. 실행하려면 SD 카드의 루트에 압축을 풀거나 DBI를 사용하세요."
   },
   "downloads": {
+    "screen_mode_on": "화면 끄기: 켬",
+    "screen_mode_off": "화면 끄기: 끔",
+    "screen_mode_hint": "다운로드 및 설치 중에만 적용됩니다. 화면을 터치하거나 컨트롤러를 사용하면 켜집니다.",
+    "screen_indicator_off": "다운로드 중 화면이 꺼집니다",
+    "screen_indicator_on": "다운로드 중 화면이 켜져 있습니다",
+    "screen_mode_idle": "화면: 일반 대기 설정",
     "import": "토렌트 가져오기",
     "import_action": ".torrent 가져오기",
     "empty_cell": "아직 다운로드가 없습니다. X 버튼으로 .torrent 파일을 추가하세요.",
@@ -681,6 +687,9 @@
     "can_free": "확보 가능: {}"
   },
   "settings": {
+    "sleep_after_downloads": "다운로드 완료 후 슬립 모드",
+    "sleep_after_downloads_note": "대기열과 설치가 모두 완료되면 본체가 슬립 모드로 전환됩니다. 깨어날 때까지 배포가 중단됩니다. 끄면 일반 대기 설정에 따라 배포를 계속합니다.",
+    "sleep_failed": "슬립 모드로 전환하지 못했습니다. 애플리케이션 모드는 펌웨어 10.0.0 이상, 애플릿 모드는 15.0.0 이상이 필요합니다.",
     "keep_uncached_debrid": "캐시되지 않은 토렌트를 debrid에 유지",
     "keep_uncached_debrid_hint": "메타데이터 확인이 오래 걸리면 캐시할 수 있도록 제공자 계정에 토렌트를 유지합니다. 나중에 다시 추가하여 다운로드하세요. 취소하면 삭제됩니다.",
     "section_catalog": "카탈로그",

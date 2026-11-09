@@ -686,41 +686,18 @@ public:
         content_->addView(installLocation_);
 
         addSection(content_, tr("pipensx/settings/section_display"));
-        keepScreenOn_ = new brls::BooleanCell();
-        keepScreenOn_->init(tr("pipensx/settings/keep_screen_on"),
-            settings_->get().keepScreenOnDuringTransfers,
+        sleepAfterDownloads_ = new brls::BooleanCell();
+        sleepAfterDownloads_->init(tr("pipensx/settings/sleep_after_downloads"),
+            settings_->get().sleepAfterDownloads,
             [this](bool enabled) {
                 AppSettingsData values = settings_->get();
-                const bool previous = values.keepScreenOnDuringTransfers;
-                values.keepScreenOnDuringTransfers = enabled;
-                if (!persistSettings(settings_, values, "keep_screen_on")) {
-                    keepScreenOn_->setOn(previous, false);
-                    return;
-                }
-                screenOnDuration_->setVisibility(enabled
-                    ? brls::Visibility::VISIBLE : brls::Visibility::GONE);
+                const bool previous = values.sleepAfterDownloads;
+                values.sleepAfterDownloads = enabled;
+                if (!persistSettings(settings_, values, "sleep_after_downloads"))
+                    sleepAfterDownloads_->setOn(previous, false);
             });
-        content_->addView(keepScreenOn_);
-        addNote(content_, tr("pipensx/settings/keep_screen_on_note"));
-        screenOnDuration_ = new brls::SelectorCell();
-        screenOnDuration_->init(tr("pipensx/settings/screen_on_duration"),
-            {tr("pipensx/settings/screen_on_until_done"),
-             tr("pipensx/settings/screen_on_15"),
-             tr("pipensx/settings/screen_on_20"),
-             tr("pipensx/settings/screen_on_30"),
-             tr("pipensx/settings/screen_on_60")},
-            screenOnIndex(settings_->get().screenOnMinutes),
-            [this](int selected) {
-                AppSettingsData values = settings_->get();
-                const uint32_t previous = values.screenOnMinutes;
-                values.screenOnMinutes = kScreenOnMinutes[selected];
-                if (!persistSettings(settings_, values, "screen_on_duration"))
-                    screenOnDuration_->setSelection(screenOnIndex(previous), true);
-            });
-        screenOnDuration_->setVisibility(settings_->get().keepScreenOnDuringTransfers
-            ? brls::Visibility::VISIBLE : brls::Visibility::GONE);
-        content_->addView(screenOnDuration_);
-        addNote(content_, tr("pipensx/settings/screen_on_duration_note"));
+        content_->addView(sleepAfterDownloads_);
+        addNote(content_, tr("pipensx/settings/sleep_after_downloads_note"));
         screenSaver_ = new brls::BooleanCell();
         screenSaver_->init(tr("pipensx/settings/screen_saver"),
             settings_->get().screenSaverEnabled,
@@ -746,10 +723,7 @@ public:
         liveSeeding_->setOn(values.liveSeedingEnabled, false);
         liveSeeding_->setDetailTextColor(theme::textSecondary());
         screenSaver_->setOn(values.screenSaverEnabled, false);
-        keepScreenOn_->setOn(values.keepScreenOnDuringTransfers, false);
-        screenOnDuration_->setSelection(screenOnIndex(values.screenOnMinutes), true);
-        screenOnDuration_->setVisibility(values.keepScreenOnDuringTransfers
-            ? brls::Visibility::VISIBLE : brls::Visibility::GONE);
+        sleepAfterDownloads_->setOn(values.sleepAfterDownloads, false);
         installLocation_->setSelection(
             values.installLocation == InstallLocation::SystemMemory ? 1 : 0,
             true);
@@ -759,12 +733,6 @@ public:
     }
 
 private:
-    static int screenOnIndex(uint32_t minutes) {
-        for (size_t i = 0; i < std::size(kScreenOnMinutes); ++i)
-            if (kScreenOnMinutes[i] == minutes) return static_cast<int>(i);
-        return 0;
-    }
-
     AppSettings* settings_;
     DownloadManager* manager_;
     brls::SelectorCell* streamSelection_ = nullptr;
@@ -772,8 +740,7 @@ private:
     brls::BooleanCell* showCompleted_ = nullptr;
     brls::BooleanCell* liveSeeding_ = nullptr;
     brls::BooleanCell* screenSaver_ = nullptr;
-    brls::BooleanCell* keepScreenOn_ = nullptr;
-    brls::SelectorCell* screenOnDuration_ = nullptr;
+    brls::BooleanCell* sleepAfterDownloads_ = nullptr;
     brls::SelectorCell* installLocation_ = nullptr;
 };
 
