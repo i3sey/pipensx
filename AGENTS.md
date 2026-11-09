@@ -31,6 +31,16 @@ installation. C11 core, C++ app services, Borealis UI.
 - Shared/core/app/install changes: `make -f Makefile.pc test`.
   Switch changes: also `make switch`. CLI changes: also `make pc`.
   Documentation-only changes: check links and `git diff --check`.
+- On this workstation, devkitPro is installed in the local Docker image
+  `devkitpro/devkita64:zstd`, at `/opt/devkitpro` inside the container; it is
+  not installed on the host. Build from the repository root with:
+  ```sh
+  docker run --rm --pull=never --user "$(id -u):$(id -g)" \
+    -e DEVKITPRO=/opt/devkitpro -v "$PWD:$PWD" -w "$PWD" \
+    devkitpro/devkita64:zstd make switch
+  ```
+  Then upload and launch from the host using `switch_bot.py` (see the
+  `switch-visual-test` skill). `make bot-run` on the host attempts a host build.
 - `test_manager` uses live DHT/tracker traffic and runs last. Wait for the state
   required by the assertion; claim-time `Checking` does not prove a poll occurred.
 - Native locale changes: add keys to `en-US`, mirror `ru`, `pt-BR`, `fr`, and run
