@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -379,7 +380,7 @@ inline std::string downloadStatusLabel(const DownloadTask& task) {
     return downloadStatusLabel(task.status);
 }
 
-inline std::string recoveryNoticeText(const DownloadTask& task) {
+inline std::string recoveryWorkText(const DownloadTask& task) {
     const RecoveryAccount account = recoveryAccountOf(task);
     switch (recoveryNotice(account, recoveryTransferQuiet(task.status))) {
         case RecoveryNotice::Verifying:
@@ -389,7 +390,9 @@ inline std::string recoveryNoticeText(const DownloadTask& task) {
                       formatBytes(account.reworkBytes),
                       formatBytes(account.savedBytes));
         case RecoveryNotice::RereadPackage:
-            return tr("pipensx/downloads/recovery_reread",
+            return tr(recoveryTransferQuiet(task.status)
+                          ? "pipensx/downloads/package_processing"
+                          : "pipensx/downloads/recovery_reread",
                       formatBytes(account.reworkBytes),
                       account.packagesInstalled);
         case RecoveryNotice::RefetchFile:
@@ -407,6 +410,24 @@ inline std::string recoveryNoticeText(const DownloadTask& task) {
             break;
     }
     return {};
+}
+
+inline std::string recoveryNoticeText(const DownloadTask& task) {
+    std::string text = recoveryWorkText(task);
+    if ((task.status == DownloadStatus::Installing ||
+         task.status == DownloadStatus::Committing) &&
+        task.currentPackage.size() >= 4) {
+        std::string extension = task.currentPackage.substr(
+            task.currentPackage.size() - 4);
+        std::transform(extension.begin(), extension.end(), extension.begin(),
+                       [](unsigned char c) { return std::tolower(c); });
+        if (extension == ".nsz") {
+            if (!text.empty())
+                text += "\n";
+            text += tr("pipensx/downloads/nsz_unpack_hint");
+        }
+    }
+    return text;
 }
 
 inline std::string recoveryAxesText(const DownloadTask& task) {

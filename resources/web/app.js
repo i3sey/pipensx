@@ -213,6 +213,17 @@ function progress(task) {
   const total = task.wantedTotalBytes || task.totalBytes;
   return total ? Math.min(100, (task.wantedTotalBytes ? task.wantedCompletedBytes : task.completedBytes) / total * 100) : 0;
 }
+function packageNotice(task) {
+  const installing = task.status === "Installing" || task.status === "Committing";
+  const recovery = task.recovery;
+  const notices = [];
+  if (recovery?.work === "reread" && recovery.reworkBytes > 0)
+    notices.push(t(installing ? "package.processing" : "recovery.reread",
+      bytes(recovery.reworkBytes), recovery.packagesInstalled));
+  if (installing && /\.nsz$/i.test(task.currentPackage || ""))
+    notices.push(t("package.nszHint"));
+  return notices;
+}
 function taskMarkup(task) {
   const done = task.wantedTotalBytes ? task.wantedCompletedBytes : task.completedBytes;
   const total = task.wantedTotalBytes || task.totalBytes;
@@ -232,6 +243,7 @@ function taskMarkup(task) {
     '</span></div><progress max="100" value="' + progress(task) + '" aria-label="' + esc(t("sort.progress")) + '"></progress><div class="task-meta">' +
     details.map(value => "<span>" + esc(value) + "</span>").join("") + "</div>" +
     (task.currentPackage ? '<p class="muted">' + esc(task.currentPackage) + "</p>" : "") +
+    packageNotice(task).map(notice => '<p class="muted">' + esc(notice) + "</p>").join("") +
     (task.error ? '<p class="task-error">' + esc(task.error) + "</p>" : "") +
     '<div class="task-actions">' + actions.join("") + "</div></article>";
 }

@@ -139,7 +139,7 @@
     "recovery.installed": "Installed",
     "recovery.verifying": "Verifying saved data",
     "recovery.verify": "Checking saved data again ({0}). Download stays at {1}.",
-    "recovery.reread": "The current package is read again ({0}). {1} package(s) stay installed.",
+    "recovery.reread": "On resume, only the unfinished package restarts ({0} processed). Packages kept installed: {1}.",
     "recovery.refetch": "The current file is fetched again ({0}). Saved {1} stays.",
     "recovery.recopy": "This copy starts again ({0}). Finished downloads stay.",
     "recovery.pieces": "Continues from saved pieces, not from an exact byte.",
@@ -323,7 +323,9 @@
     "web.ticketHelp": "Tickets may still be needed for archived eShop purchases. Remove them only if you no longer need them.",
     "web.scanDone": "Storage scan complete.",
     "web.cleaned": "Cleanup complete. The figures have been refreshed.",
-    "web.jobTimeout": "The operation is still running. Refresh its status later."
+    "web.jobTimeout": "The operation is still running. Refresh its status later.",
+    "package.processing": "Current package: {0} processed. Packages already installed: {1}.",
+    "package.nszHint": "NSZ is unpacked during installation. Unpacked data can be larger than the download."
   },
   "ru": {
     "control.pin": "Доступ к панели",
@@ -465,7 +467,7 @@
     "recovery.installed": "Установлено",
     "recovery.verifying": "Проверяем сохранённые данные",
     "recovery.verify": "Сохранённые данные проверяются снова ({0}). Скачано остаётся {1}.",
-    "recovery.reread": "Текущий пакет читается заново ({0}). Установленные пакеты остаются: {1}.",
+    "recovery.reread": "При возобновлении начнётся заново только незавершённый пакет (обработано {0}). Уже установлено пакетов: {1}.",
     "recovery.refetch": "Текущий файл скачивается заново ({0}). Сохранено {1}.",
     "recovery.recopy": "Копирование начинается заново ({0}). Уже скачанное остаётся.",
     "recovery.pieces": "Продолжение с сохранённых частей, не с точного байта.",
@@ -649,7 +651,9 @@
     "web.ticketHelp": "Tickets могут понадобиться для архивированных покупок eShop. Удаляйте их, только если они больше не нужны.",
     "web.scanDone": "Проверка памяти завершена.",
     "web.cleaned": "Очистка завершена. Данные обновлены.",
-    "web.jobTimeout": "Операция ещё выполняется. Обновите состояние позже."
+    "web.jobTimeout": "Операция ещё выполняется. Обновите состояние позже.",
+    "package.processing": "Текущий пакет: обработано {0}. Уже установлено пакетов: {1}.",
+    "package.nszHint": "NSZ распаковывается при установке. Распакованный объём может быть больше скачанного."
   },
   "pt-BR": {
     "control.continue": "Continuar",
@@ -817,7 +821,7 @@
     "msg.saved": "Configurações salvas",
     "msg.clearedFiles": "Arquivos removidos para entradas {0}.  Esquerda {1} porque estão em uso.",
     "recovery.verify": "Verificando novamente os dados salvos ({0}). Download fica em{1}.",
-    "recovery.reread": "O pacote atual é lido novamente ({0}). {1} pacote( s) permanecer instalado.",
+    "recovery.reread": "Ao retomar, apenas o pacote incompleto recomeça ({0} processados). Pacotes mantidos instalados: {1}.",
     "recovery.refetch": "O arquivo atual é obtido novamente ({0}).  Gravado{1}Fica.",
     "recovery.recopy": "Esta cópia começa novamente ({0}).  Os downloads terminados ficam.",
     "catalog.count": "Mostrando {0} de {1}",
@@ -975,7 +979,9 @@
     "web.ticketHelp": "Os tickets podem ser necessários para compras arquivadas da eShop. Remova-os apenas se não precisar mais deles.",
     "web.scanDone": "Análise concluída.",
     "web.cleaned": "Limpeza concluída. Os valores foram atualizados.",
-    "web.jobTimeout": "A operação ainda está em andamento. Atualize o status mais tarde."
+    "web.jobTimeout": "A operação ainda está em andamento. Atualize o status mais tarde.",
+    "package.processing": "Pacote atual: {0} processados. Pacotes já instalados: {1}.",
+    "package.nszHint": "O NSZ é descompactado durante a instalação. Os dados descompactados podem ser maiores que o download."
   },
   "fr": {
     "control.continue": "Continuer",
@@ -1143,7 +1149,7 @@
     "msg.saved": "Paramètres enregistrés",
     "msg.clearedFiles": "Supprimé les fichiers pour les entrées {0}. A gauche {1} parce qu'ils sont utilisés.",
     "recovery.verify": "Vérification des données enregistrées à nouveau ({0}).  Télécharger reste à {1}.",
-    "recovery.reread": "Le paquet actuel est relire ({0}). {1} paquet(s) reste installé.",
+    "recovery.reread": "À la reprise, seul le paquet inachevé recommence ({0} traités). Paquets conservés installés : {1}.",
     "recovery.refetch": "Le fichier actuel est récupéré à nouveau ({0}).  Enregistrer {1} reste.",
     "recovery.recopy": "Cette copie recommence ({0}). Les téléchargements terminés restent.",
     "catalog.count": "Affichage {0} de {1}",
@@ -1301,7 +1307,9 @@
     "web.ticketHelp": "Les tickets peuvent servir pour les achats eShop archivés. Supprimez-les uniquement si vous n’en avez plus besoin.",
     "web.scanDone": "Analyse terminée.",
     "web.cleaned": "Nettoyage terminé. Les chiffres ont été actualisés.",
-    "web.jobTimeout": "L’opération est toujours en cours. Actualisez son état plus tard."
+    "web.jobTimeout": "L’opération est toujours en cours. Actualisez son état plus tard.",
+    "package.processing": "Paquet en cours : {0} traités. Paquets déjà installés : {1}.",
+    "package.nszHint": "Le NSZ est décompressé pendant l’installation. Les données décompressées peuvent dépasser le volume téléchargé."
   },
   "es": {
     "control.continue": "Continuar",
@@ -1469,7 +1477,7 @@
     "msg.saved": "Ajustes guardados",
     "msg.clearedFiles": "Archivos eliminados para{0}entradas. Izquierda{1}porque están en uso.",
     "recovery.verify": "Revisar datos guardados de nuevo ({0}). Descarga estancias a {1}.",
-    "recovery.reread": "El paquete actual se lee de nuevo ({0}). {1} paquete(s) permanecer instalado.",
+    "recovery.reread": "Al reanudar, solo se reinicia el paquete incompleto ({0} procesados). Paquetes que siguen instalados: {1}.",
     "recovery.refetch": "El archivo actual se recoge de nuevo ({0}). Guardado{1}se queda.",
     "recovery.recopy": "Esta copia comienza de nuevo ({0}). Las descargas terminadas se quedan.",
     "catalog.count": "Mostrando {0} de {1}",
@@ -1627,7 +1635,9 @@
     "web.ticketHelp": "Los tickets pueden ser necesarios para compras archivadas de eShop. Elimínalos solo si ya no los necesitas.",
     "web.scanDone": "Análisis completado.",
     "web.cleaned": "Limpieza completada. Se actualizaron las cifras.",
-    "web.jobTimeout": "La operación sigue en curso. Actualiza su estado más tarde."
+    "web.jobTimeout": "La operación sigue en curso. Actualiza su estado más tarde.",
+    "package.processing": "Paquete actual: {0} procesados. Paquetes ya instalados: {1}.",
+    "package.nszHint": "NSZ se descomprime durante la instalación. Los datos descomprimidos pueden superar el tamaño de la descarga."
   },
   "it": {
     "control.continue": "Continua",
@@ -1795,7 +1805,7 @@
     "msg.saved": "Impostazioni salvate",
     "msg.clearedFiles": "File rimossi per le voci {0}. Sinistra {1} perché sono in uso.",
     "recovery.verify": "Controllare nuovamente i dati salvati ({0}). Scarica soggiorni al {1}.",
-    "recovery.reread": "Il pacchetto corrente viene riletto ({0}). {1} pacchetto(i) rimanere installato.",
+    "recovery.reread": "Alla ripresa ricomincia solo il pacchetto incompleto ({0} elaborati). Pacchetti che restano installati: {1}.",
     "recovery.refetch": "Il file corrente viene recuperato di nuovo ({0}). Salvataggio {1} rimane.",
     "recovery.recopy": "Questa copia ricomincia ({0}). I download finiti rimangono.",
     "catalog.count": "Mostrare {0} di {1}",
@@ -1953,7 +1963,9 @@
     "web.ticketHelp": "I ticket possono servire per acquisti eShop archiviati. Rimuovili solo se non servono più.",
     "web.scanDone": "Analisi completata.",
     "web.cleaned": "Pulizia completata. I dati sono stati aggiornati.",
-    "web.jobTimeout": "L’operazione è ancora in corso. Aggiorna lo stato più tardi."
+    "web.jobTimeout": "L’operazione è ancora in corso. Aggiorna lo stato più tardi.",
+    "package.processing": "Pacchetto attuale: {0} elaborati. Pacchetti già installati: {1}.",
+    "package.nszHint": "NSZ viene decompresso durante l’installazione. I dati decompressi possono superare la dimensione del download."
   },
   "zh-CN": {
     "control.continue": "继续",
@@ -2121,7 +2133,7 @@
     "msg.saved": "已保存的设置",
     "msg.clearedFiles": "已删除{0} 条目的文件 。 左{1},因为它们在使用中。",
     "recovery.verify": "再次检查保存的数据 ({0}) 。 下载停留在 {1} 。",
-    "recovery.reread": "当前软件包再次被读取 ({0}). {1} 软件包被安装 。",
+    "recovery.reread": "恢复时仅重新处理未完成的包（已处理 {0}）。保留已安装的包：{1}。",
     "recovery.refetch": "当前文件再次被获取 ({0}) 。 已保存{1} 留下来 。",
     "recovery.recopy": "此副本再次启动 ({0} ) 。 完成的下载停留 。",
     "catalog.count": "显示{0} of{1}",
@@ -2279,7 +2291,9 @@
     "web.ticketHelp": "已归档的 eShop 购买内容可能仍需要这些票据。仅在不再需要时删除。",
     "web.scanDone": "存储扫描完成。",
     "web.cleaned": "清理完成，数据已刷新。",
-    "web.jobTimeout": "操作仍在进行，请稍后刷新状态。"
+    "web.jobTimeout": "操作仍在进行，请稍后刷新状态。",
+    "package.processing": "当前包：已处理 {0}。已安装的包：{1}。",
+    "package.nszHint": "NSZ 在安装时解压。解压后的数据量可能大于下载量。"
   },
   "ko": {
     "control.continue": "계속",
@@ -2447,7 +2461,7 @@
     "msg.saved": "설정을 저장했습니다.",
     "msg.clearedFiles": "{0} 항목에 대한 제거 된 파일. 왼쪽 {1} 사용 중입니다.",
     "recovery.verify": "저장된 데이터를 다시 확인 ({0}). {1}에서 숙박을 다운로드하십시오.",
-    "recovery.reread": "현재 패키지는 다시 읽습니다 ({0}). {1} 패키지(s)가 설치되어 있습니다.",
+    "recovery.reread": "재개하면 미완료 패키지만 처음부터 처리합니다 ({0} 처리됨). 설치된 상태로 유지되는 패키지: {1}개.",
     "recovery.refetch": "현재 파일은 다시 fetched ({0}). 저장 {1} 숙박.",
     "recovery.recopy": "이 복사는 다시 시작합니다 ({0}). 다운로드 종료.",
     "catalog.count": "{0} 의 {1}",
@@ -2605,6 +2619,8 @@
     "web.ticketHelp": "보관된 eShop 구매에 티켓이 필요할 수 있습니다. 더 이상 필요하지 않을 때만 삭제하세요.",
     "web.scanDone": "저장 공간 검사가 완료되었습니다.",
     "web.cleaned": "정리가 완료되었습니다. 수치가 갱신되었습니다.",
-    "web.jobTimeout": "작업이 진행 중입니다. 나중에 상태를 새로 고치세요."
+    "web.jobTimeout": "작업이 진행 중입니다. 나중에 상태를 새로 고치세요.",
+    "package.processing": "현재 패키지: {0} 처리됨. 이미 설치된 패키지: {1}개.",
+    "package.nszHint": "NSZ는 설치 중에 압축을 해제합니다. 압축 해제된 데이터는 다운로드한 용량보다 클 수 있습니다."
   }
 }

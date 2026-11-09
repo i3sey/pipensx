@@ -111,6 +111,41 @@ const server = http.createServer((request, response) => {
   await page.goto(base + "/?pin=1234");
   await page.waitForSelector(".task");
   assert.equal(await page.locator("h1:visible").textContent(), "Downloads");
+  const downloadTask = { ...state.tasks[0] };
+  Object.assign(state.tasks[0], {
+    status: "Installing", mode: "stream", currentPackage: "update.NSZ",
+    recovery: { work: "reread", reworkBytes: 8 * 1024 ** 3, packagesInstalled: 1 }
+  });
+  await page.evaluate(() => reloadTasks());
+  assert.match(await page.locator(".task").textContent(), /8 GiB processed.*already installed: 1/);
+  assert.match(await page.locator(".task").textContent(), /NSZ is unpacked/);
+  assert.doesNotMatch(await page.locator(".task").textContent(), /restarts|read again/);
+  for (const locale of ["en", "ru", "pt-BR", "fr", "es", "it", "zh-CN", "ko"]) {
+    await page.evaluate(locale => { lang = locale; renderDownloads(); }, locale);
+    for (const width of [320, 1440]) {
+      await page.setViewportSize({ width, height: 900 });
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false,
+        "NSZ notice overflows in " + locale + " at " + width);
+    }
+  }
+  await page.evaluate(() => { lang = "en"; renderDownloads(); });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.locator('[data-command="pause"]').click();
+  await page.waitForFunction(() => document.querySelector(".task-state")?.textContent === "Paused");
+  assert.match(await page.locator(".task").textContent(), /only the unfinished package restarts.*kept installed: 1/);
+  assert.doesNotMatch(await page.locator(".task").textContent(), /NSZ is unpacked/);
+  state.tasks[0].status = "Committing";
+  state.tasks[0].currentPackage = "update.nsp";
+  await page.evaluate(() => reloadTasks());
+  assert.match(await page.locator(".task").textContent(), /8 GiB processed/);
+  assert.doesNotMatch(await page.locator(".task").textContent(), /NSZ is unpacked|restarts/);
+  state.tasks[0].currentPackage = "update.nsz";
+  state.tasks[0].recovery.work = "package";
+  await page.evaluate(() => reloadTasks());
+  assert.match(await page.locator(".task").textContent(), /NSZ is unpacked/);
+  assert.doesNotMatch(await page.locator(".task").textContent(), /restarts/);
+  state.tasks[0] = downloadTask;
+  await page.evaluate(() => reloadTasks());
   await page.locator('[data-command="pause"]').click();
   await page.waitForFunction(() => document.querySelector(".task-state")?.textContent === "Paused");
   await page.locator('[data-command="resume"]').click();
