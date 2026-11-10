@@ -1027,5 +1027,11 @@
     "sysclk_failed": "Applicazione profilo sys-clk non riuscita: {}",
     "action_create_forwarder": "Crea scorciatoia nel Menu Home",
     "queued": "In coda. Il gioco AutoRun verrà configurato al termine del download."
+  },
+  "release_chips": {
+    "peers": "Peer: {}",
+    "peers_unknown": "Peer: dati assenti",
+    "few_peers": "Pochi peer",
+    "available": "Peer disponibili"
   }
 }

@@ -97,6 +97,9 @@ inline const Token kTokens[] = {
     // Screen-off cover after the idle warning: pure black so OLED chrome is
     // not left on the same pixels while the panel is still driven.
     {"pipensx/burn_in_backdrop", nvgRGB(0, 0, 0), nvgRGB(0, 0, 0)},
+    {"pipensx/chip_success", nvgRGB(20, 100, 48), nvgRGB(120, 230, 150)},
+    {"pipensx/chip_warning", nvgRGB(125, 65, 8), nvgRGB(255, 190, 110)},
+    {"pipensx/chip_error", nvgRGB(165, 28, 42), nvgRGB(255, 155, 165)},
 };
 
 // Indices into kTokens — keep in the same order as the table above.
@@ -108,6 +111,7 @@ enum class Tok : size_t {
     GraphBg, GraphGrid,
     QrPaper, QrInk,
     BurnInBackdrop,
+    ChipSuccess, ChipWarning, ChipError,
 };
 
 // Call once after brls::Application::init() and before any view is

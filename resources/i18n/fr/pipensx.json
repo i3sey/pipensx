@@ -1027,5 +1027,11 @@
     "sysclk_failed": "Échec de l'application du profil sys-clk : {}",
     "action_create_forwarder": "Créer un raccourci Menu Home",
     "queued": "Ajouté à la file d'attente. Le jeu AutoRun sera déployé à la fin du téléchargement."
+  },
+  "release_chips": {
+    "peers": "Pairs : {}",
+    "peers_unknown": "Pairs : inconnus",
+    "few_peers": "Peu de pairs",
+    "available": "Pairs disponibles"
   }
 }

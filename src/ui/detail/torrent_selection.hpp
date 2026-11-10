@@ -21,6 +21,7 @@
 #include "ui/catalog/catalog_helpers.hpp"
 #include "ui/common/action_icon.hpp"
 #include "ui/common/storage_meter.hpp"
+#include "ui/common/release_chips.hpp"
 #include "ui/common/ui_helpers.hpp"
 #include "ui/i18n.hpp"
 #include "ui/theme.hpp"
@@ -554,7 +555,8 @@ public:
                              std::vector<uint8_t> initialPeers = {},
                              DebridImport debridImport = {},
                              std::function<void()> abandon = {},
-                             SwitchDeployService* deploy = nullptr)
+                             SwitchDeployService* deploy = nullptr,
+                             const CatalogEntry& release = {})
         : manager_(manager), deploy_(deploy), path_(std::move(path)),
           preview_(std::move(preview)), preferred_(preferred),
           initialSelection_(initialSelection),
@@ -571,6 +573,18 @@ public:
         title_->setFontSize(26);
         title_->setText(tr("pipensx/torrent/title"));
         content->addView(title_);
+
+        std::string format;
+        for (const auto& file : preview_.files) {
+            const char* kind = file.compressed ? "NSZ" : file.package ? "NSP"
+                                                   : file.cartridge ? "XCI" : "";
+            if (*kind && format.find(kind) == std::string::npos) {
+                if (!format.empty()) format += " / ";
+                format += kind;
+            }
+        }
+        content->addView(new ReleaseChips(release, preview_.totalBytes,
+            format.empty() ? release.imageFormat : format));
 
         // Counts on the left, icon key on the right. Sharing one row with the
         // summary keeps the key free: the list is the scarce space on this

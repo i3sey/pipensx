@@ -100,6 +100,7 @@ struct CatalogEntry {
     uint32_t forumId = 0;
     uint32_t trackerId = 0;
     uint32_t peerCount = 0;
+    bool hasPeerCount = false;
     CatalogHealth health = CatalogHealth::Unknown;
     bool metadataOk = false;
     std::string type;

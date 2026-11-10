@@ -1027,5 +1027,11 @@
     "sysclk_failed": "Не удалось применить профиль sys-clk: {}",
     "action_create_forwarder": "Создать ярлык в меню Switch",
     "queued": "Добавлено. PC-игра будет настроена в среде AutoRun после загрузки."
+  },
+  "release_chips": {
+    "peers": "Пиры: {}",
+    "peers_unknown": "Пиры: нет данных",
+    "few_peers": "Мало пиров",
+    "available": "Есть пиры"
   }
 }

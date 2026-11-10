@@ -1027,5 +1027,11 @@
     "sysclk_failed": "应用 sys-clk 超频配置失败：{}",
     "action_create_forwarder": "在主界面创建快捷方式",
     "queued": "已加入队列。下载完成后将在 AutoRun 环境中部署游戏。"
+  },
+  "release_chips": {
+    "peers": "节点：{}",
+    "peers_unknown": "节点：未知",
+    "few_peers": "节点较少",
+    "available": "有可用节点"
   }
 }

@@ -1027,5 +1027,11 @@
     "sysclk_failed": "Failed to apply sys-clk profile: {}",
     "action_create_forwarder": "Create Home Menu shortcut",
     "queued": "Queued. AutoRun game will be deployed upon download completion."
+  },
+  "release_chips": {
+    "peers": "Peers: {}",
+    "peers_unknown": "Peers: unknown",
+    "few_peers": "Few peers",
+    "available": "Peers available"
   }
 }

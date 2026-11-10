@@ -176,6 +176,8 @@ void testCatalogV2HealthParsing() {
     assert(entries[0].catalogGeneratedAt == 2000);
     assert(entries[0].lastCheckedAt == 3000);
     assert(entries[0].peerCount == 12);
+    assert(entries[0].hasPeerCount);
+    assert(!entries[1].hasPeerCount);
     assert(entries[0].metadataOk);
     assert(entries[0].screenshots.size() == 2);
     assert(entries[0].screenshots[1] == "https://example/s2.jpg");
@@ -183,6 +185,20 @@ void testCatalogV2HealthParsing() {
     assert(entries[1].health == CatalogHealth::TrackerNotRegistered);
     assert(entries[1].healthReason == "Torrent not registered");
     assert(entries[1].isHiddenByDefault());
+
+    for (const std::string value : {"0", "2", "4294967295", "null",
+                                    "-1", "1.5", "\"12\"", "4294967296"}) {
+        std::string sample =
+            "[{\"title\":\"Peer count\",\"magnetURI\":\"magnet:?xt=urn:btih:"
+            "1111111111111111111111111111111111111111&tr="
+            "http://bt.t-ru.org/ann?magnet\",\"peer_count\":" +
+            value + "}]";
+        assert(CatalogService::parseJson(sample, entries, error));
+        assert(entries.size() == 1);
+        bool known = value == "0" || value == "2" || value == "4294967295";
+        assert(entries[0].hasPeerCount == known);
+        assert(entries[0].peerCount == (known ? std::stoull(value) : 0));
+    }
 }
 
 /* Base64 of the info dictionary used by testTorrentConstruction; its SHA-1

@@ -34,6 +34,7 @@
 #include "ui/common/async_image.hpp"
 #include "ui/common/busy_pulse.hpp"
 #include "ui/common/storage_meter.hpp"
+#include "ui/common/release_chips.hpp"
 #include "ui/common/detail_frame.hpp"
 #include "ui/common/description_text.hpp"
 #include "ui/common/detail_title.hpp"
@@ -486,6 +487,8 @@ private:
 
     // S4: facts as label/value rows instead of one glued string.
     void buildFactsTable(brls::Box* right) {
+        right->addView(new ReleaseChips(entry_, entry_.size,
+                                       presentation_.imageFormat));
         auto* table = new brls::Box(brls::Axis::COLUMN);
         table->setMarginTop(8);
         addFactRow(table, tr("pipensx/detail/fact_install_state"),
@@ -526,15 +529,10 @@ private:
         }
         addFactRow(table, tr("pipensx/detail/fact_performance"),
                    presentation_.performance);
-        addFactRow(table, tr("pipensx/detail/fact_size"),
-                   entry_.size ? formatBytes(entry_.size)
-                               : tr("pipensx/common/unknown"));
         if (catalogLower(presentation_.imageFormat) !=
             catalogLower(packageFact()))
             addFactRow(table, tr("pipensx/detail/fact_package"),
                        packageFact());
-        addFactRow(table, tr("pipensx/detail/fact_image_format"),
-                   presentation_.imageFormat);
         addFactRow(table, tr("pipensx/detail/fact_version"),
                    presentation_.version);
         addFactRow(table, tr("pipensx/detail/fact_title_id"), titleId_);
@@ -1394,7 +1392,7 @@ private:
                         TransferMode::StreamInstall, selection, {}, import,
                         [providerKind, key, debridId] {
                             removeDebridTransferAsync(providerKind, key, debridId);
-                        }, deploy_));
+                        }, deploy_, entry));
                     log_msg("[DEBUG-debrid-picker] push complete id=%s\n",
                             debridId.c_str());
                     return;
@@ -1458,7 +1456,7 @@ private:
                         import,
                         [providerKind, key, debridId] {
                             removeDebridTransferAsync(providerKind, key, debridId);
-                        }, deploy_));
+                        }, deploy_, entry));
                     return;
                 }
                 import.fileSelection = plan.fileSelection;
@@ -1482,13 +1480,13 @@ private:
                 if (!cardOneTapUsesPortInstall(layoutPreview) &&
                     !entry.isAutorun() && torrentHasInstallableExtras(layoutPreview)) {
                     showExtrasChoice(std::move(queueResolved),
-                        [this, import, layoutPreview, providerKind, key, debridId]() mutable {
+                        [this, import, layoutPreview, providerKind, key, debridId, entry]() mutable {
                             brls::Application::pushActivity(new TorrentSelectionActivity(
                                 manager_, "", std::move(layoutPreview), TransferMode::StreamInstall,
                                 settings_->get().streamSelection, {}, import,
                                 [providerKind, key, debridId] {
                                     removeDebridTransferAsync(providerKind, key, debridId);
-                                }));
+                                }, deploy_, entry));
                         }, [providerKind, key, debridId] {
                             removeDebridTransferAsync(providerKind, key, debridId);
                         });
@@ -1669,7 +1667,7 @@ private:
             ? settings_->get().streamSelection : StreamSelection::AllFiles;
         brls::Application::pushActivity(new TorrentSelectionActivity(
             manager_, path, std::move(preview), preferred,
-            selection, std::move(initialPeers), {}, {}, deploy_));
+            selection, std::move(initialPeers), {}, {}, deploy_, entry_));
     }
 
     OneTapContext oneTapContext() const {

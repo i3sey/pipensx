@@ -1027,5 +1027,11 @@
     "sysclk_failed": "Falha ao aplicar o perfil sys-clk: {}",
     "action_create_forwarder": "Criar atalho no Menu Home",
     "queued": "Na fila. O jogo AutoRun será configurado após o término do download."
+  },
+  "release_chips": {
+    "peers": "Pares: {}",
+    "peers_unknown": "Pares: sem dados",
+    "few_peers": "Poucos pares",
+    "available": "Pares disponíveis"
   }
 }

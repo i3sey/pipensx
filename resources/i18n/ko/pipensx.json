@@ -1027,5 +1027,11 @@
     "sysclk_failed": "sys-clk 프로필 적용 실패: {}",
     "action_create_forwarder": "홈 메뉴 바로가기 생성",
     "queued": "대기열에 추가되었습니다. 다운로드가 완료되면 AutoRun 게임이 배포됩니다."
+  },
+  "release_chips": {
+    "peers": "피어: {}",
+    "peers_unknown": "피어: 정보 없음",
+    "few_peers": "피어가 적음",
+    "available": "피어 있음"
   }
 }

@@ -431,6 +431,10 @@ $(BUILD_DIR)/tests/test_description_text: tests/test_description_text.cpp src/ui
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $<
 
+$(BUILD_DIR)/tests/test_release_status: tests/test_release_status.cpp src/ui/common/release_status.hpp src/app/catalog_service.hpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $<
+
 $(BUILD_DIR)/tests/test_update_service: tests/test_update_service.cpp src/app/update_service.cpp \
 		$(BUILD_DIR)/src/app/update_transaction.o src/core/sha256.c
 	@mkdir -p $(dir $@)

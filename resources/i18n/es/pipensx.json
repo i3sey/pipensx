@@ -1027,5 +1027,11 @@
     "sysclk_failed": "Error al aplicar el perfil sys-clk: {}",
     "action_create_forwarder": "Crear acceso directo en el Menú Home",
     "queued": "En cola. El juego AutoRun se configurará una vez finalizada la descarga."
+  },
+  "release_chips": {
+    "peers": "Pares: {}",
+    "peers_unknown": "Pares: sin datos",
+    "few_peers": "Pocos pares",
+    "available": "Pares disponibles"
   }
 }

@@ -786,8 +786,11 @@ bool CatalogService::parseJson(const std::string& json,
         entry.forumId = static_cast<uint32_t>(readUnsigned(item, "forum_id"));
         entry.trackerId =
             static_cast<uint32_t>(readUnsigned(item, "tracker_id"));
-        entry.peerCount =
-            static_cast<uint32_t>(readUnsigned(item, "peer_count"));
+        entry.hasPeerCount = item.contains("peer_count") &&
+                             item["peer_count"].is_number_unsigned() &&
+                             item["peer_count"].get<uint64_t>() <= UINT32_MAX;
+        if (entry.hasPeerCount)
+            entry.peerCount = static_cast<uint32_t>(readUnsigned(item, "peer_count"));
         entry.publishedAt = readFlexibleSigned(item, "published_date");
         entry.sourceUpdatedAt = readFlexibleSigned(item, "source_updated_at");
         entry.catalogGeneratedAt =
