@@ -13,20 +13,23 @@ namespace pipensx::ui {
 class StatusChip : public brls::Box {
 public:
     explicit StatusChip(const std::string& text,
-                        ChipTone tone = ChipTone::Neutral)
+                        ChipTone tone = ChipTone::Neutral,
+                        bool compact = false)
         : brls::Box(brls::Axis::ROW) {
         setFocusable(false);
         setAlignItems(brls::AlignItems::CENTER);
-        setPadding(8, 12, 8, 12);
-        setMarginRight(8);
-        setMarginBottom(8);
+        setPadding(compact ? 2 : 8, compact ? 4 : 12,
+                   compact ? 2 : 8, compact ? 4 : 12);
+        setMarginRight(compact ? 4 : 8);
+        setMarginBottom(compact ? 4 : 8);
         setMaxWidthPercentage(100);
         setShrink(0);
         setBackgroundColor(theme::surface());
         setCornerRadius(theme::kRadiusSmall);
         auto* label = new brls::Label();
         label->setFontSize(theme::kFontCaption);
-        label->setSingleLine(false);
+        label->setSingleLine(compact);
+        label->setAutoAnimate(false);
         label->setShrink(1);
         label->setMinWidth(0);
         label->setText(text);

@@ -3,6 +3,7 @@
 #include "catalog_descriptions.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <initializer_list>
 #include <limits>
@@ -601,36 +602,227 @@ bool catalogEntryMatchesGenreFilter(
     return false;
 }
 
+namespace {
+
+using SearchWord = std::u32string;
+
+std::string searchTitle(const std::string& title) {
+    std::string result;
+    unsigned depth = 0;
+    for (char c : title) {
+        if (c == '[') { ++depth; result += ' '; }
+        else if (c == ']' && depth) --depth;
+        else if (!depth) result += c;
+    }
+    return result;
+}
+
+std::vector<SearchWord> searchWords(const std::string& folded) {
+    std::vector<SearchWord> words;
+    SearchWord word;
+    for (size_t i = 0; i < folded.size();) {
+        const unsigned char c = folded[i++];
+        char32_t cp = c;
+        unsigned extra = c >= 0xf0 ? 3 : c >= 0xe0 ? 2 : c >= 0xc0 ? 1 : 0;
+        if (extra && i + extra <= folded.size()) {
+            cp = c & ((1u << (6 - extra)) - 1);
+            while (extra--) cp = (cp << 6) | (folded[i++] & 63);
+        }
+        if ((cp >= U'a' && cp <= U'z') || (cp >= U'0' && cp <= U'9') ||
+            (cp >= U'а' && cp <= U'я') || cp == U'ё') {
+            word += cp;
+        } else if (!word.empty()) {
+            words.push_back(std::move(word));
+            word.clear();
+        }
+    }
+    if (!word.empty()) words.push_back(std::move(word));
+    return words;
+}
+
+int wordDistance(const SearchWord& a, const SearchWord& b, int limit) {
+    if (a.size() > 32 || b.size() > 32 ||
+        std::abs(static_cast<int>(a.size()) - static_cast<int>(b.size())) > limit)
+        return limit + 1;
+    std::array<int, 33> prev{}, older{}, next{};
+    for (size_t j = 0; j <= b.size(); ++j) prev[j] = static_cast<int>(j);
+    for (size_t i = 1; i <= a.size(); ++i) {
+        next.fill(limit + 1);
+        next[0] = static_cast<int>(i);
+        int best = limit + 1;
+        const size_t start = i > static_cast<size_t>(limit) ? i - limit : 1;
+        const size_t end = std::min(b.size(), i + limit);
+        for (size_t j = start; j <= end; ++j) {
+            next[j] = std::min({prev[j] + 1, next[j - 1] + 1,
+                               prev[j - 1] + (a[i - 1] != b[j - 1])});
+            if (i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1])
+                next[j] = std::min(next[j], older[j - 2] + 1);
+            best = std::min(best, next[j]);
+        }
+        if (best > limit) return limit + 1;
+        older = prev;
+        prev = next;
+    }
+    return prev[b.size()];
+}
+
+int titleSearchRank(const std::string& title, const std::string& needle,
+                    const std::vector<SearchWord>& query) {
+    const std::string folded = catalogFoldForSearch(title);
+    if (folded == needle) return 0;
+    if (folded.compare(0, needle.size(), needle) == 0) return 10;
+    if (folded.find(needle) != std::string::npos) return 20;
+    if (query.empty() || query.size() > 8 || needle.size() > 128) return -1;
+    // Release tags are searchable literally, but never generate fuzzy aliases.
+    const auto words = searchWords(searchTitle(folded));
+    if (query.size() == 1 && query[0].size() >= 3 && query[0].size() <= 12) {
+        SearchWord initials;
+        for (const auto& word : words) initials += word[0];
+        if (initials.find(query[0]) != SearchWord::npos) return 25;
+        static const std::pair<const char*, const char*> aliases[] = {
+            {"botw", "breath of the wild"}, {"totk", "tears of the kingdom"},
+            {"smo", "super mario odyssey"}, {"mk8", "mario kart 8"},
+            {"mk8d", "mario kart 8 deluxe"}, {"acnh", "animal crossing new horizons"},
+            {"ssbu", "super smash bros ultimate"}, {"mhr", "monster hunter rise"},
+            {"fe3h", "fire emblem three houses"}, {"xc3", "xenoblade chronicles 3"},
+        };
+        for (const auto& alias : aliases) {
+            if (needle != alias.first) continue;
+            const auto target = searchWords(alias.second);
+            if (std::search(words.begin(), words.end(), target.begin(), target.end()) != words.end())
+                return 25;
+            return -1;
+        }
+    }
+    int edits = 0;
+    for (const auto& part : query) {
+        const int limit = part.size() >= 7 ? 2 : part.size() >= 4 ? 1 : 0;
+        int best = limit + 1;
+        for (const auto& word : words) {
+            if (word.compare(0, part.size(), part) == 0) { best = 0; break; }
+            if (limit) best = std::min(best, wordDistance(part, word, limit));
+        }
+        if (best > limit) return -1;
+        edits += best;
+    }
+    return edits ? 40 + edits : 20;
+}
+
+int entrySearchRank(const CatalogEntry& entry, const GameMetadata* metadata,
+                    const std::string& needle, const std::vector<SearchWord>& query) {
+    int rank = titleSearchRank(entry.title, needle, query);
+    if (metadata && !metadata->name.empty()) {
+        const int other = titleSearchRank(metadata->name, needle, query);
+        if (other >= 0 && (rank < 0 || other < rank)) rank = other;
+    }
+    if (rank >= 0 && rank <= 20) return rank;
+    bool literal = catalogFoldedContains(entry.titleId, needle) ||
+                   catalogFoldedContains(entry.genre, needle);
+    for (const auto& title : entry.titles)
+        literal = literal || catalogFoldedContains(title.titleId, needle);
+    if (metadata) {
+        for (const auto& category : metadata->categories)
+            literal = literal || catalogFoldedContains(category, needle);
+    }
+    for (const auto& genre : catalogEntryGenres(entry, metadata))
+        literal = literal || catalogFoldedContains(genre, needle);
+    return literal ? 30 : rank;
+}
+
+using ReleaseFacts = std::array<std::string, 6>;
+
+std::string languageFact(const std::vector<std::string>& languages,
+                         const std::string& legacy) {
+    std::vector<std::string> values;
+    for (const auto& lang : languages) {
+        if (!lang.empty()) values.push_back(upperAscii(lang));
+    }
+    if (values.empty()) {
+        for (const auto& word : searchWords(catalogFoldForSearch(legacy))) {
+            if (word == U"ru" || word == U"rus" || word == U"russian" || word == U"русский")
+                values.push_back("RU");
+            else if (word == U"en" || word == U"eng" || word == U"english" || word == U"английский")
+                values.push_back("EN");
+        }
+    }
+    std::sort(values.begin(), values.end());
+    values.erase(std::unique(values.begin(), values.end()), values.end());
+    std::string result;
+    for (const auto& value : values) {
+        if (!result.empty()) result += "/";
+        result += value;
+    }
+    return result;
+}
+
+ReleaseFacts releaseFacts(const CatalogEntry& entry, const CatalogBrowseRequest& request) {
+    ReleaseFacts facts;
+    facts[0] = upperAscii(entry.imageFormat);
+    const auto words = searchWords(catalogFoldForSearch(entry.title));
+    if (facts[0].empty()) {
+        for (const auto& word : words) {
+            if (word == U"nsp") facts[0] = "NSP";
+            else if (word == U"nsz") facts[0] = "NSZ";
+            else if (word == U"xci") facts[0] = "XCI";
+        }
+    }
+    std::string version = entry.version;
+    std::string update = entry.updateVersion;
+    if (entry.titles.size() == 1) {
+        if (version.empty()) version = entry.titles[0].version;
+        if (update.empty()) update = entry.titles[0].updateVersion;
+    }
+    if (!version.empty()) facts[1] = version[0] == 'v' ? version : "v" + version;
+    if ((!update.empty() && update != "0") || entry.packageType == "update")
+        facts[2] = request.diffUpdateLabel + (update.empty() ? "" : " " + update);
+    const std::string title = catalogFoldForSearch(entry.title);
+    bool includesDlc = entry.packageType == "dlc" ||
+        title.find("+dlc") != std::string::npos || title.find("+ dlc") != std::string::npos;
+    for (size_t i = 1; i < words.size(); ++i) {
+        if (words[i] == U"dlc" && words[i - 1][0] >= U'1' && words[i - 1][0] <= U'9' &&
+            std::all_of(words[i - 1].begin(), words[i - 1].end(),
+                        [](char32_t c) { return c >= U'0' && c <= U'9'; }))
+            includesDlc = true;
+    }
+    if (includesDlc) facts[3] = "+DLC";
+    const std::string text = languageFact(entry.languagesInterface, entry.interfaceLang);
+    const std::string voice = languageFact(entry.languagesVoice, entry.voiceLang);
+    if (!text.empty()) facts[4] = request.diffTextLabel + " " + text;
+    if (!voice.empty()) facts[5] = request.diffVoiceLabel + " " + voice;
+    return facts;
+}
+
+std::string releaseGroup(const CatalogEntry& entry, const GameMetadata* metadata) {
+    // A multi-game bundle is not an alternative release of its first game.
+    if (entry.titles.size() > 1) return {};
+    std::string id = entry.titleId;
+    if (id.empty() && entry.titles.size() == 1) id = entry.titles[0].titleId;
+    if (id.empty() && metadata) id = metadata->titleId;
+    if (!id.empty()) return "id:" + upperAscii(id);
+    const auto& name = metadata && !metadata->name.empty() ? metadata->name : entry.title;
+    const std::string folded = catalogFoldForSearch(searchTitle(name));
+    std::string key;
+    for (const auto& word : searchWords(folded)) {
+        // Preserve UTF-8 and sequel numbers while ignoring punctuation and tags.
+        for (char32_t cp : word) key += std::to_string(static_cast<uint32_t>(cp)) + ",";
+        key += ";";
+    }
+    return key.empty() ? std::string() : "name:" + key;
+}
+
+} // namespace
+
+int catalogEntrySearchRank(const CatalogEntry& entry,
+                           const GameMetadata* metadata,
+                           const std::string& needleFolded) {
+    if (needleFolded.empty()) return 0;
+    return entrySearchRank(entry, metadata, needleFolded, searchWords(needleFolded));
+}
+
 bool catalogEntryMatchesSearch(const CatalogEntry& entry,
                                const GameMetadata* metadata,
                                const std::string& needleFolded) {
-    if (needleFolded.empty())
-        return true;
-    if (catalogFoldedContains(entry.title, needleFolded))
-        return true;
-    if (catalogFoldedContains(entry.titleId, needleFolded))
-        return true;
-    for (const auto& title : entry.titles)
-        if (catalogFoldedContains(title.titleId, needleFolded))
-            return true;
-    if (!entry.genre.empty() &&
-        catalogFoldedContains(entry.genre, needleFolded))
-        return true;
-    if (metadata) {
-        if (!metadata->name.empty() &&
-            catalogFoldedContains(metadata->name, needleFolded))
-            return true;
-        for (const std::string& category : metadata->categories) {
-            if (catalogFoldedContains(category, needleFolded))
-                return true;
-        }
-    }
-    const std::vector<std::string> genres = catalogEntryGenres(entry, metadata);
-    for (const std::string& g : genres) {
-        if (catalogFoldedContains(g, needleFolded))
-            return true;
-    }
-    return false;
+    return catalogEntrySearchRank(entry, metadata, needleFolded) >= 0;
 }
 
 bool buildCatalogBrowse(const CatalogBrowseRequest& request,
@@ -648,6 +840,8 @@ bool buildCatalogBrowse(const CatalogBrowseRequest& request,
     result.selectedHashes = request.selectedHashes;
     const auto& all = *result.catalog;
     const std::string needle = catalogFoldForSearch(request.query);
+    const auto queryWords = searchWords(needle);
+    std::vector<int> searchRanks(all.size(), 0);
     result.indices.reserve(all.size());
 
     std::unordered_set<std::string> genres;
@@ -682,7 +876,8 @@ bool buildCatalogBrowse(const CatalogBrowseRequest& request,
         if (!request.genreFilters.empty() &&
             !catalogEntryMatchesGenreFilter(entry, meta, request.genreFilters))
             continue;
-        if (!catalogEntryMatchesSearch(entry, meta, needle))
+        searchRanks[i] = needle.empty() ? 0 : entrySearchRank(entry, meta, needle, queryWords);
+        if (searchRanks[i] < 0)
             continue;
         if (!request.collection.empty()) {
             if (std::find(entry.collections.begin(), entry.collections.end(),
@@ -805,7 +1000,36 @@ bool buildCatalogBrowse(const CatalogBrowseRequest& request,
     if (isCancelled())
         return false;
 
+    if (!needle.empty() && !stableSortCancelled(result.indices,
+            [&](int a, int b) { return searchRanks[a] < searchRanks[b]; }, cancelled))
+        return false;
+
     const size_t count = result.indices.size();
+    result.diffChips.resize(count);
+    if (!needle.empty()) {
+        std::unordered_map<std::string, std::vector<size_t>> groups;
+        std::vector<ReleaseFacts> facts(count);
+        for (size_t row = 0; row < count; ++row) {
+            if ((row & 127u) == 0 && isCancelled()) return false;
+            const auto& entry = entryAt(result.indices[row]);
+            const auto key = releaseGroup(entry, result.metadata->findByInfoHash(entry.infoHash));
+            if (!key.empty()) groups[key].push_back(row);
+            facts[row] = releaseFacts(entry, request);
+        }
+        for (const auto& group : groups) {
+            if (isCancelled()) return false;
+            if (group.second.size() < 2) continue;
+            for (size_t field = 0; field < ReleaseFacts{}.size(); ++field) {
+                const auto& first = facts[group.second.front()][field];
+                const bool differs = std::any_of(group.second.begin(), group.second.end(),
+                    [&](size_t row) { return facts[row][field] != first; });
+                if (!differs) continue;
+                for (size_t row : group.second) {
+                    if (!facts[row][field].empty()) result.diffChips[row].push_back(facts[row][field]);
+                }
+            }
+        }
+    }
     result.titles.reserve(count);
     result.iconUrls.reserve(count);
     result.iconPreserveAspect.reserve(count);

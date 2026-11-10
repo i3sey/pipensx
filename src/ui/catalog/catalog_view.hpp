@@ -106,6 +106,7 @@ private:
         const std::string badge =
             row < result_->badges.size() ? result_->badges[row] : std::string();
         info.subIsBadge = !badge.empty();
+        if (row < result_->diffChips.size()) info.diffChips = result_->diffChips[row];
         const uint64_t size = entry ? entry->size : 0;
         info.sub = info.subIsBadge
             ? badge
@@ -604,6 +605,9 @@ private:
         job.request.freeBytes = storage_.freeBytes;
         job.request.freeSpaceAvailable = storage_.available;
         job.request.installedBadge = tr("pipensx/catalog/badge_installed");
+        job.request.diffUpdateLabel = tr("pipensx/catalog/diff_update");
+        job.request.diffTextLabel = tr("pipensx/catalog/diff_text");
+        job.request.diffVoiceLabel = tr("pipensx/catalog/diff_voice");
         if (installed_)
             job.request.installedTitleIds = installed_->titleIds();
         favoriteHashes_.clear();

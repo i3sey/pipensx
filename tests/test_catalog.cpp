@@ -1574,6 +1574,58 @@ void testCatalogEntryMatchesSearch() {
                                       catalogFoldForSearch("puzzle")));
 }
 
+void testCatalogFuzzySearch() {
+    CatalogEntry entry;
+    entry.title = "[Nintendo Switch] The Witcher 3 [NSZ][RUS]";
+    auto matches = [&](const std::string& query) {
+        return catalogEntryMatchesSearch(entry, nullptr, catalogFoldForSearch(query));
+    };
+    assert(matches("witcehr"));
+    assert(matches("witchre"));
+    assert(matches("wicher"));
+    assert(matches("wittcher"));
+    assert(matches("wxtchxr"));
+    assert(!matches("wxtxhxr"));
+    assert(matches("witcher 3"));
+    assert(!matches("witcher 4"));
+    assert(!matches("wt"));
+    assert(!matches("abcdefg"));
+    assert(!matches(std::string(129, 'x')));
+    entry.title = "The Legend of Zelda: Breath of the Wild [NSP]";
+    assert(matches("zlda"));
+    assert(matches("zelad"));
+    assert(matches("zelda wild"));
+    assert(matches("BOTW"));
+    assert(!matches("totk"));
+    assert(!matches("nps"));
+    entry.title = "Ведьмак 3 [NSZ]";
+    assert(matches("ВЕДМАК"));
+    assert(matches("ведьмка"));
+    assert(!matches("ведмак 4"));
+    entry.title = "Another Game";
+    entry.titleId = "0100000000010000";
+    assert(!matches("0100000000010001"));
+    GameMetadata metadata;
+    metadata.name = "The Legend of Zelda: Tears of the Kingdom";
+    assert(catalogEntryMatchesSearch(entry, &metadata, "totk"));
+    assert(catalogEntryMatchesSearch(entry, &metadata, "zlda"));
+    const std::pair<const char*, const char*> aliases[] = {
+        {"smo", "Super Mario Odyssey"}, {"mk8", "Mario Kart 8 Deluxe"},
+        {"mk8d", "Mario Kart 8 Deluxe"}, {"acnh", "Animal Crossing: New Horizons"},
+        {"ssbu", "Super Smash Bros. Ultimate"}, {"mhr", "Monster Hunter Rise"},
+        {"fe3h", "Fire Emblem: Three Houses"}, {"xc3", "Xenoblade Chronicles 3"},
+        {"tfog", "The Forgotten Old Garden"},
+    };
+    for (const auto& alias : aliases) {
+        entry.title = alias.second;
+        assert(matches(alias.first));
+    }
+    entry.title = "Xenoblade Chronicles 2";
+    assert(!matches("xc3"));
+    entry.title = "Both Worlds [NSP]";
+    assert(!matches("botw"));
+}
+
 // B7 goal 1: the freshness badge decision. Only a successful network refresh
 // stamps wallSec; a cache/bundle snapshot dates the data when this console
 // never fetched, instead of the bare "never" badge.
@@ -3263,6 +3315,112 @@ CatalogBrowseResult browse(CatalogBrowseRequest request) {
     return result;
 }
 
+void testCatalogSearchRankingAndDiffChips() {
+    std::vector<CatalogEntry> entries(5);
+    const char* names[] = {"The Witcher 3 [NSZ]", "Witcher 3 [NSP]", "Witcher 3",
+                           "Witcehr 3 [NSP]", "Witcher 30 [XCI]"};
+    for (size_t i = 0; i < entries.size(); ++i) {
+        entries[i].title = names[i];
+        entries[i].infoHash = std::to_string(i);
+        entries[i].titleId = i < 3 ? "0100000000001000" : "010000000000" + std::to_string(1000 + i);
+        entries[i].publishedAt = i;
+        entries[i].size = i + 1;
+    }
+    entries[0].version = "1.3.2";
+    entries[0].updateVersion = "65536";
+    entries[0].title += " [+DLC]";
+    entries[0].languagesInterface = {"ru", "en", "ru"};
+    entries[0].languagesVoice = {"ru"};
+    entries[1].version = "1.0.0";
+    entries[1].languagesInterface = {"en"};
+    entries[1].languagesVoice = {"en"};
+    CatalogBrowseRequest request;
+    request.query = "Witcher 3";
+    request.catalog = std::make_shared<const std::vector<CatalogEntry>>(entries);
+    request.taskBadges["0"] = "Downloading";
+    request.installedTitleIds.insert("0100000000001000");
+    request.installedBadge = "Installed";
+    for (auto sort : {CatalogSortMode::Latest, CatalogSortMode::Popular,
+                      CatalogSortMode::Alphabetical, CatalogSortMode::Largest,
+                      CatalogSortMode::Metacritic}) {
+        request.sort = sort;
+        for (bool reversed : {false, true}) {
+            request.sortReversed = reversed;
+            const auto result = browse(request);
+            assert(result.indices.front() == 2);
+            assert(result.indices.back() == 3);
+            for (size_t row = 0; row < result.count; ++row) {
+                const int index = result.indices[row];
+                const auto& chips = result.diffChips[row];
+                if (index == 0) {
+                    assert(chips == (std::vector<std::string>{
+                        "NSZ", "v1.3.2", "+Update 65536", "+DLC", "Text EN/RU", "Voice RU"}));
+                    assert(result.badges[row] == "Downloading");
+                } else if (index == 1) {
+                    assert(chips == (std::vector<std::string>{"NSP", "v1.0.0", "Text EN", "Voice EN"}));
+                    assert(result.badges[row] == "Installed");
+                } else assert(chips.empty());
+            }
+        }
+    }
+    request.query.clear();
+    for (const auto& chips : browse(request).diffChips) assert(chips.empty());
+    entries.resize(2);
+    entries[0].title = "[Nintendo Switch] Shared Game [NSP]";
+    entries[1].title = "Shared Game [NSZ][No DLC]";
+    for (auto& entry : entries) {
+        entry.titleId.clear();
+        entry.version.clear();
+        entry.updateVersion.clear();
+        entry.languagesInterface.clear();
+        entry.languagesVoice.clear();
+    }
+    request.query = "shared";
+    request.catalog = std::make_shared<const std::vector<CatalogEntry>>(entries);
+    auto result = browse(request);
+    assert(result.count == 2);
+    assert(result.diffChips[0].size() == 1 && result.diffChips[1].size() == 1);
+    entries[0].title += " [2 DLC]";
+    request.catalog = std::make_shared<const std::vector<CatalogEntry>>(entries);
+    result = browse(request);
+    for (size_t row = 0; row < result.count; ++row) {
+        const auto& chips = result.diffChips[row];
+        if (result.indices[row] == 0)
+            assert(chips == (std::vector<std::string>{"NSP", "+DLC"}));
+        else assert(chips == (std::vector<std::string>{"NSZ"}));
+    }
+    entries[1].title = "Shared Game 2 [NSZ]";
+    request.catalog = std::make_shared<const std::vector<CatalogEntry>>(entries);
+    for (const auto& chips : browse(request).diffChips) assert(chips.empty());
+    entries[1].title = "Shared Game [NSZ]";
+    entries[1].titles = {{"0100000000001000", "", ""}, {"0100000000002000", "", ""}};
+    request.catalog = std::make_shared<const std::vector<CatalogEntry>>(entries);
+    for (const auto& chips : browse(request).diffChips) assert(chips.empty());
+}
+
+void runCatalogSearchBenchmarkIfRequested() {
+    const char* path = std::getenv("PIPENSX_SEARCH_BENCHMARK_CATALOG");
+    if (!path || !*path) return;
+    std::ifstream input(path);
+    assert(input);
+    const std::string json((std::istreambuf_iterator<char>(input)), {});
+    std::vector<CatalogEntry> entries;
+    std::string error;
+    assert(CatalogService::parseJson(json, entries, error));
+    CatalogBrowseRequest request;
+    request.catalog = std::make_shared<const std::vector<CatalogEntry>>(std::move(entries));
+    std::printf("search benchmark: %zu entries (host CPU)\n", request.catalog->size());
+    for (const char* query : {"", "zelda", "zlda", "witcehr", "botw", "xc3", "несуществующая"}) {
+        request.query = query;
+        const auto start = std::chrono::steady_clock::now();
+        size_t count = 0;
+        for (int repeat = 0; repeat < 5; ++repeat) count = browse(request).count;
+        const auto elapsed = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - start).count() / 5;
+        std::printf("search '%s': %.2f ms, %zu rows\n", query, elapsed, count);
+    }
+}
+
 void testCatalogBrowseBuilder() {
     CatalogBrowseRequest request;
     request.generation = 12;
@@ -3747,6 +3905,9 @@ static void testCollections() {
 }
 
 int main() {
+    testCatalogFuzzySearch();
+    testCatalogSearchRankingAndDiffChips();
+    runCatalogSearchBenchmarkIfRequested();
     testCollections();
     testMagnetParsing();
     testCatalogGenreCanonicalization();

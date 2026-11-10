@@ -129,6 +129,9 @@ struct CatalogBrowseRequest {
     std::unordered_set<std::string> selectedHashes;
     std::unordered_set<std::string> installedTitleIds;
     std::string installedBadge;
+    std::string diffUpdateLabel = "+Update";
+    std::string diffTextLabel = "Text";
+    std::string diffVoiceLabel = "Voice";
     uint64_t freeBytes = 0;
     bool freeSpaceAvailable = false;
 };
@@ -149,6 +152,7 @@ struct CatalogBrowseResult {
     // installed marker). Keeping it separate lets task changes be patched
     // without rebuilding/filtering/sorting the catalogue.
     std::vector<std::string> baseBadges;
+    std::vector<std::vector<std::string>> diffChips;
     std::vector<uint8_t> favorite;
     std::vector<uint8_t> selected;
     std::vector<uint8_t> selectable;
@@ -308,6 +312,11 @@ bool catalogFoldedContains(const std::string& haystack,
 bool catalogEntryMatchesSearch(const CatalogEntry& entry,
                                const GameMetadata* metadata,
                                const std::string& needleFolded);
+
+// Lower is better; -1 means no match. Title IDs and genres stay literal.
+int catalogEntrySearchRank(const CatalogEntry& entry,
+                           const GameMetadata* metadata,
+                           const std::string& needleFolded);
 
 // Honest freshness badge decision (B7 goal 1), pure so unit tests cover it.
 // Only a successful network refresh stamps wallSec; a cache/bundle snapshot

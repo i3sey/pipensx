@@ -10,6 +10,7 @@
 
 #include "app/game_metadata_service.hpp"
 #include "ui/common/async_image.hpp"
+#include "ui/common/release_chips.hpp"
 #include "ui/i18n.hpp"
 #include "ui/common/ui_helpers.hpp"
 #include "ui/theme.hpp"
@@ -54,6 +55,7 @@ struct GridCardInfo {
     std::string infoHash;
     std::string title;
     std::string sub;
+    std::vector<std::string> diffChips;
     bool subIsBadge = false;
     std::string iconUrl;
     bool iconPreserveAspect = false;
@@ -69,6 +71,7 @@ inline bool sameGridCardInfo(const GridCardInfo& left,
     return left.entryIndex == right.entryIndex &&
            left.infoHash == right.infoHash && left.title == right.title &&
            left.sub == right.sub && left.subIsBadge == right.subIsBadge &&
+           left.diffChips == right.diffChips &&
            left.iconUrl == right.iconUrl &&
            left.iconPreserveAspect == right.iconPreserveAspect &&
            left.selectionMode == right.selectionMode &&
@@ -137,12 +140,10 @@ public:
         markBox_->setVisibility(brls::Visibility::GONE);
         cover_->addView(markBox_);
 
-        // Wishlist star, bottom-left of the cover: the selection chip owns the
-        // top-left corner, so this is the one corner that never collides.
         favoriteBox_ = new brls::Box();
         favoriteBox_->setPositionType(brls::PositionType::ABSOLUTE);
-        favoriteBox_->setPositionBottom(theme::kSpacingUnit);
-        favoriteBox_->setPositionLeft(theme::kSpacingUnit);
+        favoriteBox_->setPositionTop(theme::kSpacingUnit);
+        favoriteBox_->setPositionRight(theme::kSpacingUnit);
         favoriteBox_->setWidth(28);
         favoriteBox_->setHeight(28);
         favoriteBox_->setCornerRadius(theme::kRadiusSmall);
@@ -156,6 +157,17 @@ public:
         favoriteBox_->addView(favorite_);
         favoriteBox_->setVisibility(brls::Visibility::GONE);
         cover_->addView(favoriteBox_);
+
+        diffChips_ = new brls::Box(brls::Axis::ROW);
+        diffChips_->setPositionType(brls::PositionType::ABSOLUTE);
+        diffChips_->setPositionBottom(0);
+        diffChips_->setPositionLeft(0);
+        diffChips_->setWidth(grid::kCoverWidth);
+        diffChips_->setPadding(4, 0, 0, 4);
+        diffChips_->setBackgroundColor(theme::overlay());
+        YGNodeStyleSetFlexWrap(diffChips_->getYGNode(), YGWrapWrap);
+        diffChips_->setVisibility(brls::Visibility::GONE);
+        cover_->addView(diffChips_);
 
         addView(cover_);
 
@@ -214,6 +226,16 @@ public:
             placeholder_->setText(placeholder);
         if (sub_->getFullText() != info.sub)
             sub_->setText(info.sub);
+        if (!hasCard_ || painted_.diffChips != info.diffChips) {
+            diffChips_->clearViews();
+            for (const auto& text : info.diffChips) {
+                auto* chip = new StatusChip(text, ChipTone::Neutral, true);
+                chip->setMaxWidth(grid::kCoverWidth - 12);
+                diffChips_->addView(chip);
+            }
+            diffChips_->setVisibility(info.diffChips.empty()
+                ? brls::Visibility::GONE : brls::Visibility::VISIBLE);
+        }
         if (!hasCard_ || painted_.subIsBadge != info.subIsBadge)
             sub_->setTextColor(info.subIsBadge ? theme::accent()
                                                : theme::textSecondary());
@@ -323,6 +345,7 @@ private:
     brls::Label* favorite_;
     brls::Label* name_;
     brls::Label* sub_;
+    brls::Box* diffChips_;
     std::string currentIconUrl_;
     std::shared_ptr<ImageRequestState> imageState_ =
         std::make_shared<ImageRequestState>();
