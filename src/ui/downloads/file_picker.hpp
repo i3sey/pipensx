@@ -86,6 +86,7 @@ public:
         : manager_(manager), settings_(settings), currentPath_("sdmc:/"),
           alive_(std::make_shared<std::atomic<bool>>(true)) {
         recycler_ = new SmoothRecyclerFrame();
+        recycler_->setGrow(1);
         recycler_->setPadding(8, 32, 8, 32);
         recycler_->estimatedRowHeight = 64;
         recycler_->registerCell("File", [] { return new FileCell(); });
