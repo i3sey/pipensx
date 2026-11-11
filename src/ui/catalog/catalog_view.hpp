@@ -750,9 +750,11 @@ private:
                   });
         publishedBrowse_ = result;
         dataSource_->setEntries(result, metadata_);
-        dataSource_->setMessage(query_.empty()
-            ? tr("pipensx/catalog/empty_inline")
-            : tr("pipensx/catalog/nothing_found_inline"));
+        const bool catalogEmpty = result->catalog->empty();
+        const bool filteredEmpty = !catalogEmpty && filtersDirty();
+        dataSource_->setMessage(filteredEmpty
+            ? tr("pipensx/catalog/filtered_empty_title")
+            : tr("pipensx/catalog/empty_inline"));
         if (structureChanged) {
             recycler_->reloadData();
             if (!ownsFocus && !preserveViewport)
@@ -765,32 +767,28 @@ private:
         // Cache is still loading (startup holds the refresh lease). Don't flash
         // "catalog empty, tap to update" over a snapshot that's about to appear.
         const bool waitingForCatalog =
-            empty && query_.empty() &&
+            empty && catalogEmpty &&
             (refreshInFlight_ || catalogRefreshInFlight());
         if (empty && !waitingForCatalog) {
-            if (query_.empty()) {
-                if (section_ == CatalogSection::Ports && openGames_ &&
-                    hasRegularEntries) {
-                    ensureEmptyState()->setContent(
-                        tr("pipensx/catalog/empty_ports_title"),
-                        tr("pipensx/catalog/empty_ports_body"),
-                        tr("pipensx/catalog/empty_ports_action"),
-                        [this] { openGames_(); });
-                } else {
-                    ensureEmptyState()->setContent(
-                        tr("pipensx/catalog/empty_title"),
-                        tr("pipensx/catalog/empty_body"),
-                        tr("pipensx/catalog/empty_action"),
-                        [this] { refreshCatalog(); });
-                }
+            if (filteredEmpty) {
+                ensureEmptyState()->setContent(
+                    tr("pipensx/catalog/filtered_empty_title"),
+                    tr("pipensx/catalog/filtered_empty_body"),
+                    tr("pipensx/catalog/filtered_empty_action"),
+                    [this] { resetFilters(); });
+            } else if (section_ == CatalogSection::Ports && openGames_ &&
+                       hasRegularEntries) {
+                ensureEmptyState()->setContent(
+                    tr("pipensx/catalog/empty_ports_title"),
+                    tr("pipensx/catalog/empty_ports_body"),
+                    tr("pipensx/catalog/empty_ports_action"),
+                    [this] { openGames_(); });
             } else {
                 ensureEmptyState()->setContent(
-                    tr("pipensx/catalog/no_match_title"),
-                    tr("pipensx/catalog/no_match_body"),
-                    tr("pipensx/catalog/no_match_action"), [this] {
-                        query_.clear();
-                        rebuildEntries();
-                    });
+                    tr("pipensx/catalog/empty_title"),
+                    tr("pipensx/catalog/empty_body"),
+                    tr("pipensx/catalog/empty_action"),
+                    [this] { refreshCatalog(); });
             }
         }
         if (empty && !waitingForCatalog)
@@ -922,7 +920,8 @@ private:
 
     bool filtersDirty() const {
         return !query_.empty() || favoritesOnly_ || fitsOnly_ ||
-               playerFilter_ != PlayerFilter::Any || !genreFilters_.empty();
+               playerFilter_ != PlayerFilter::Any || !genreFilters_.empty() ||
+               !collection_.empty();
     }
 
     void resetFilters() {
