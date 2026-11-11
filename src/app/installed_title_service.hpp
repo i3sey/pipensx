@@ -113,9 +113,7 @@ inline std::string installedPatchVersionString(
                                         : std::to_string(patch->second);
 }
 
-// Nintendo title version as eShop x.y.z: (major<<16)|(minor<<8)|micro.
-// Empty or non-decimal input yields an empty string so the caller can hide
-// the row. "0" is a real version (base game, no patch) and formats as 0.0.0.
+// Content-meta revisions are decimal counters, not display versions.
 inline bool parseTitleVersionDecimal(const std::string& text, uint64_t& out) {
     if (text.empty())
         return false;
@@ -136,11 +134,7 @@ inline std::string formatTitleVersion(const std::string& decimal) {
     uint64_t value = 0;
     if (!parseTitleVersionDecimal(decimal, value))
         return {};
-    const unsigned major = static_cast<unsigned>(value >> 16);
-    const unsigned minor = static_cast<unsigned>((value >> 8) & 0xff);
-    const unsigned micro = static_cast<unsigned>(value & 0xff);
-    return std::to_string(major) + "." + std::to_string(minor) + "." +
-           std::to_string(micro);
+    return "v" + std::to_string(value);
 }
 
 inline bool titleVersionIsNewer(const std::string& latest,
@@ -188,18 +182,15 @@ inline std::string nacpDisplayVersionString(const char* field, size_t size) {
     return std::string(field, length);
 }
 
-// "v5.0.0 (1.26.30)" style label for a pre-update dialog: the eShop x.y.z
-// form of the decimal patch version plus the NACP display_version in
-// parens. Either half may be missing: unknown decimal yields just the
-// display string, unknown display yields just the x.y.z form, both unknown
-// yields an empty string so the caller can hide the row.
+// Prefer the NACP display version; retain the content-meta revision for
+// identifying the installed patch, e.g. "3.0.5 (v1376256)".
 inline std::string formatInstalledVersionLabel(
     const std::string& decimalVersion, const std::string& displayVersion) {
-    const std::string xyz = formatTitleVersion(decimalVersion);
-    if (!xyz.empty() && !displayVersion.empty())
-        return xyz + " (" + displayVersion + ")";
-    if (!xyz.empty())
-        return xyz;
+    const std::string revision = formatTitleVersion(decimalVersion);
+    if (!revision.empty() && !displayVersion.empty())
+        return displayVersion + " (" + revision + ")";
+    if (!revision.empty())
+        return revision;
     return displayVersion;
 }
 

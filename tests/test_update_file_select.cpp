@@ -615,7 +615,7 @@ void testUtf8TruncateBoundary() {
 
 // --- B6 update guard: BOTW/Broforce mocks ---
 // BOTW scene shape: base …000 installed at patch 0, update …800 at
-// 1114112 (17.0.0), LayeredFS mods present. The preflight must state the
+// revision 1114112, LayeredFS mods present. The preflight must state the
 // installed→target transition and raise the mods warning.
 void testPreflightBotwWithMods() {
     pipensx::InstalledTitle installed;
@@ -626,15 +626,15 @@ void testPreflightBotwWithMods() {
     const pipensx::UpdatePreflight pre =
         pipensx::describeUpdatePreflight(installed, "1114112", true);
     assert(pre.titleInstalled);
-    assert(pre.installedXyz == "0.0.0");
-    assert(pre.targetXyz == "17.0.0");
+    assert(pre.installedXyz == "v0");
+    assert(pre.targetXyz == "v1114112");
     assert(pre.displayVersion == "1.0.0");
     assert(pre.hasMods);
     assert(pre.versionKnown());
     assert(pre.warnMods());
 }
 
-// Broforce shape: patched title (2.0.0) updated to 3.0.0, no mods. The
+// Broforce shape: patch revision 131072 updated to 196608, no mods. The
 // preflight states the transition without a mods warning; the HOS
 // requirement (when the CNMT stamps one) classifies as NeedsNewHos.
 void testPreflightBroforceWithoutMods() {
@@ -645,8 +645,8 @@ void testPreflightBroforceWithoutMods() {
     installed.hasLayeredFsMods = false;
     const pipensx::UpdatePreflight pre =
         pipensx::describeUpdatePreflight(installed, "196608", true);
-    assert(pre.installedXyz == "2.0.0");
-    assert(pre.targetXyz == "3.0.0");
+    assert(pre.installedXyz == "v131072");
+    assert(pre.targetXyz == "v196608");
     assert(pre.versionKnown());
     assert(!pre.warnMods());
 }
@@ -758,8 +758,15 @@ void testFormatFailureHint() {
 void testInstalledVersionLabel() {
     using pipensx::formatInstalledVersionLabel;
     assert(formatInstalledVersionLabel("65536", "1.0.1") ==
-           "1.0.0 (1.0.1)");
-    assert(formatInstalledVersionLabel("65536", "") == "1.0.0");
+           "1.0.1 (v65536)");
+    assert(formatInstalledVersionLabel("1376256", "3.0.5") ==
+           "3.0.5 (v1376256)");
+    assert(formatInstalledVersionLabel("393216", "1.2.1") ==
+           "1.2.1 (v393216)");
+    assert(formatInstalledVersionLabel("327680", "1.0.6") ==
+           "1.0.6 (v327680)");
+    assert(formatInstalledVersionLabel("0", "1.0.0") == "1.0.0 (v0)");
+    assert(formatInstalledVersionLabel("65536", "") == "v65536");
     assert(formatInstalledVersionLabel("", "1.0.1") == "1.0.1");
     assert(formatInstalledVersionLabel("", "").empty());
     assert(formatInstalledVersionLabel("junk", "").empty());

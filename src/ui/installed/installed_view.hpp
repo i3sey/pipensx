@@ -184,34 +184,18 @@ public:
     }
 
 private:
-    // "Publisher · vX → vY": the version transition is the one fact this line
-    // exists for when an update is available, so it must never be pushed off
-    // the end. The 16-hex title ID was dropped — nothing on screen can act on
-    // it, and on long publishers it was the first thing to get clipped.
-    // B3: raw decimal title versions ("v327680") read as garbage — show
-    // the eShop x.y.z form ("v5.0.0"), keeping the raw text when it is
-    // not a decimal version.
-    // B6: append the NACP display_version in parens ("v5.0.0 (1.26.30)")
-    // so the row states what an update would replace. LayeredFS mods
-    // have a separate badge instead of competing with the version text.
-public:
-    static std::string prettyVersion(const std::string& decimal) {
-        const std::string formatted = formatTitleVersion(decimal);
-        return formatted.empty() ? decimal : formatted;
-    }
-private:
     void updateSubtitle() {
         std::string subtitle;
         if (!publisher_.empty())
             subtitle = publisher_ + " · ";
-        if (!version_.empty()) {
-            subtitle += "v" + prettyVersion(version_);
-            if (!displayVersion_.empty())
-                subtitle += " (" + displayVersion_ + ")";
+        const std::string installedVersion =
+            formatInstalledVersionLabel(version_, displayVersion_);
+        if (!installedVersion.empty()) {
+            subtitle += installedVersion;
             if (!ignored_ &&
                 currentState_ == GameUpdateState::UpdateAvailable &&
-                !currentFoundVersion_.empty())
-                subtitle += " → v" + prettyVersion(currentFoundVersion_);
+                !formatTitleVersion(currentFoundVersion_).empty())
+                subtitle += " → " + formatTitleVersion(currentFoundVersion_);
         }
         subtitle_->setText(subtitle);
     }

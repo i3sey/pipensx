@@ -40,10 +40,17 @@ int main() {
     using pipensx::nacpReadLanguage;
     using pipensx::titleVersionIsNewer;
 
-    assert(formatTitleVersion("0") == "0.0.0");
-    assert(formatTitleVersion("65536") == "1.0.0");
-    assert(formatTitleVersion("131072") == "2.0.0");
-    assert(formatTitleVersion("262400") == "4.1.0");
+    assert(formatTitleVersion("0") == "v0");
+    assert(formatTitleVersion("65536") == "v65536");
+    assert(formatTitleVersion("131072") == "v131072");
+    assert(formatTitleVersion("262400") == "v262400");
+    assert(formatTitleVersion("1376256") == "v1376256");
+    assert(formatTitleVersion("1507328") == "v1507328");
+    assert(formatTitleVersion("1114112") == "v1114112");
+    assert(formatTitleVersion("00065536") == "v65536");
+    assert(formatTitleVersion("18446744073709551615") ==
+           "v18446744073709551615");
+    assert(formatTitleVersion("18446744073709551616").empty());
     assert(formatTitleVersion("").empty());
     assert(formatTitleVersion("junk").empty());
     assert(formatTitleVersion("1.0.0").empty());

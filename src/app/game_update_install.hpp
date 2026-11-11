@@ -179,11 +179,7 @@ std::string updateMagnetFor(const std::string& infoHash,
 // B6 update guard: state what is installed before replacing it, and explain
 // a post-update launch failure instead of leaving a silent break.
 // ---------------------------------------------------------------------------
-// Snapshot of the pre-update facts the Installed/Updates UI shows before an
-// update replaces the installed title: the eShop x.y.z form of the installed
-// and target patch versions ("" when the decimal is unknown), the NACP
-// display_version ("1.26.30", "" when unknown) and whether LayeredFS
-// mods are installed for the title.
+// Patch revisions use v<decimal>; the NACP display version is independent.
 struct UpdatePreflight {
     bool titleInstalled = false;
     std::string installedXyz;
