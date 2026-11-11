@@ -187,6 +187,7 @@
     "unchecked": "Non vérifié"
   },
   "detail": {
+    "release_download_size": "Téléchargement (version complète)",
     "topic_action": "Sujet sur RuTracker",
     "topic_qr_hint": "Scannez avec votre téléphone pour lire la description et les commentaires.",
     "install_size": "Taille d'installation",
@@ -645,6 +646,11 @@
     "retry_note": "\nLes jeux non terminés restent sélectionnés pour une nouvelle tentative."
   },
   "storage": {
+    "preliminary": "Estimation : choisir les fichiers",
+    "choose_files_size": "Calculé après sélection des fichiers",
+    "additional_bytes": "Espace supplémentaire {}",
+    "selected_sizes": "Téléchargement {} · Installation {} · Libre {}",
+    "nsz_fallback": " · Taille NSZ inconnue : réserve 3×",
     "legend_used": "Utilisé",
     "legend_install": "Cette installation",
     "legend_free": "Libre",

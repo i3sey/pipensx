@@ -149,7 +149,6 @@ public:
         content->setPadding(24, 40, 24, 40);
         buildLeftColumn(content);
         buildRightColumn(content);
-        installBytes_ = entry_.size;
         scheduleSizeMeterRefresh();
 
         frame_ = new DetailFrame(content);
@@ -327,8 +326,7 @@ private:
         }
         left->addView(actions);
 
-        // How much of the card this release eats. Seeded from the catalog size
-        // and refined to the exact figure once the torrent metadata resolves.
+        // The release size cannot predict the selected update or NSZ footprint.
         sizeMeter_ = new StorageMeter(true);
         sizeMeter_->setHeader(storageMeterHeader(
             settings_ ? installTargetFor(settings_->get().installLocation)
@@ -491,6 +489,11 @@ private:
                                        presentation_.imageFormat));
         auto* table = new brls::Box(brls::Axis::COLUMN);
         table->setMarginTop(8);
+        addFactRow(table, tr("pipensx/detail/release_download_size"),
+                   entry_.size ? formatBytes(entry_.size)
+                               : tr("pipensx/common/unknown"));
+        addFactRow(table, tr("pipensx/detail/install_size"),
+                   tr("pipensx/storage/choose_files_size"));
         addFactRow(table, tr("pipensx/detail/fact_install_state"),
                    installed_ && installed_->contains(titleId_)
                        ? tr("pipensx/detail/install_state_installed")
@@ -761,9 +764,6 @@ private:
         }
     }
 
-    // Repaint the install-size bar against the current free space. installBytes_
-    // starts as the catalog-declared size and becomes exact once the torrent
-    // metadata has been read (see finishImport).
     pipensx::install::InstallStorageTarget currentInstallTarget() const {
         return settings_
             ? installTargetFor(settings_->get().installLocation)
@@ -802,15 +802,8 @@ private:
                     storageMeterTarget_ = target;
                     storageMeterTargetValid_ = true;
                     if (storage.available) {
-                        const uint64_t margin =
-                            target == pipensx::install::InstallStorageTarget::Nand
-                                ? pipensx::install::kNandSafetyMarginBytes
-                                : 0;
-                        sizeMeter_->setGameEstimate(
-                            storage.totalBytes, storage.freeBytes,
-                            installBytes_,
-                            storage.freeBytes < installBytes_ + margin,
-                            sizeExact_);
+                        sizeMeter_->setGamePending(
+                            storage.totalBytes, storage.freeBytes);
                     } else {
                         sizeMeter_->setUnavailable();
                     }
@@ -1534,15 +1527,6 @@ private:
             return;
         }
 
-        std::vector<uint8_t> actions = smartInstallMask(preview);
-        const auto sized = pipensx::estimateInstallSpace(
-            preview, actions, TransferMode::StreamInstall);
-        if (!preview.files.empty() && !sized.overflow) {
-            installBytes_ = sized.requiredBytes;
-            sizeExact_ = true;
-            scheduleSizeMeterRefresh();
-        }
-
         // Picker path: the per-file picker owns the temp file and unlinks it
         // on cancel. Each row chooses Skip, Download, or Install directly.
         if (forcePicker) {
@@ -1800,15 +1784,6 @@ private:
         return true;
     }
 
-    std::vector<uint8_t> smartInstallMask(
-        const TorrentPreview& preview) const {
-        const bool titleInstalled = installed_ && installed_->contains(titleId_);
-        return selectSmartInstallFiles(preview, titleInstalled,
-                                       installedVersionForTitle(),
-                                       latestVersionForEntry(), titleId_,
-                                       installedDlcIds());
-    }
-
     CatalogEntry entry_;
     CatalogPresentation presentation_;
     std::string lastFailure_;
@@ -1833,8 +1808,6 @@ private:
     brls::Button* favorite_ = nullptr;
     StorageMeter* sizeMeter_ = nullptr;
     brls::Label* statusLabel_ = nullptr;
-    uint64_t installBytes_ = 0;
-    bool sizeExact_ = false;
     int storageTick_ = 0;
     bool storageQueryInFlight_ = false;
     bool storageRefreshPending_ = false;

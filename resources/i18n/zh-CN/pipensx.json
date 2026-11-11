@@ -187,6 +187,7 @@
     "unchecked": "未检查"
   },
   "detail": {
+    "release_download_size": "下载（完整资源）",
     "topic_action": "RuTracker 帖子",
     "topic_qr_hint": "用手机扫描，查看资源描述和评论。",
     "install_size": "安装大小",
@@ -645,6 +646,11 @@
     "retry_note": "\n未完成的游戏会保持选中以供重试。"
   },
   "storage": {
+    "preliminary": "初步信息：请选择文件",
+    "choose_files_size": "选择文件后计算",
+    "additional_bytes": "额外空间 {}",
+    "selected_sizes": "下载 {} · 安装大小 {} · 可用 {}",
+    "nsz_fallback": " · NSZ 大小未知：预留 3 倍空间",
     "legend_used": "已用",
     "legend_install": "本次安装",
     "legend_free": "可用",

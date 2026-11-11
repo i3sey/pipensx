@@ -5,15 +5,12 @@
 // "this install" chunk (accent, red when it will not fit), and the remaining
 // free space. Used three ways:
 //   * settings breakdown   -> setStorage(total, free)   (no install chunk)
-//   * game page            -> setGameEstimate(...)      (catalog size, then the
-//                                                        exact size after the
-//                                                        torrent metadata lands)
+//   * game page            -> setGamePending(...)       (selection not known)
 //   * pre-install screens  -> setEstimate(total, free, install, insufficient)
-// All math is done by the caller via pipensx::install_space; this is draw-only.
+// Space requirements come from pipensx::install_space.
 //
-// The root box clips to its bounds and every text row is single-line, so the
-// widget can never grow past the column it was given — the sidebar footer sits
-// in a ~242px (56px collapsed) column and used to spill out of the frame.
+// Narrow sidebar captions stay single-line; the file picker wraps its totals.
+// Clip to the column so long translations cannot spill into adjacent content.
 
 #include <algorithm>
 #include <cstdint>
@@ -22,6 +19,7 @@
 
 #include <borealis.hpp>
 
+#include "app/install_space.hpp"
 #include "ui/common/ui_helpers.hpp"
 #include "ui/i18n.hpp"
 #include "ui/theme.hpp"
@@ -137,33 +135,47 @@ public:
         caption_->setText(tr("pipensx/storage/free", formatBytesShort(free)));
     }
 
-    // Game page: what this one release will take out of the card. `exact` is
-    // false while the number is still the catalog-declared size.
-    void setGameEstimate(uint64_t total, uint64_t free, uint64_t installBytes,
-                         bool insufficient, bool exact) {
+    void setGamePending(uint64_t total, uint64_t free) {
         if (total == 0) {
             setUnavailable();
             return;
         }
-        bar_->setData(total, free, installBytes, insufficient);
-        installDot_->setInsufficient(insufficient);
-        value_->setText(installBytes == 0 ? tr("pipensx/common/unknown")
-            : tr("pipensx/storage/install_bytes",
-                 (exact ? std::string() : std::string("≈")) +
-                     formatBytes(installBytes)));
-        if (insufficient) {
-            const uint64_t shortfall =
-                installBytes > free ? installBytes - free : 0;
-            caption_->setText(tr("pipensx/storage/need_more",
-                                 formatBytes(shortfall)));
-        } else if (installBytes == 0) {
-            caption_->setText(tr("pipensx/storage/free",
-                                 formatBytesShort(free)));
-        } else {
-            const uint64_t left = free >= installBytes ? free - installBytes : 0;
-            caption_->setText(tr("pipensx/storage/left_after",
-                                 formatBytesShort(left)));
+        bar_->setData(total, free, 0, false);
+        installDot_->setInsufficient(false);
+        refreshHeader();
+        value_->setText(tr("pipensx/storage/preliminary"));
+        caption_->setText(tr("pipensx/storage/free", formatBytesShort(free)));
+    }
+
+    void setSelectionEstimate(uint64_t total, uint64_t free,
+                              const InstallSpaceEstimate& estimate,
+                              install::InstallStorageTarget target,
+                              const InstallSpaceCheck& check) {
+        if (total == 0) {
+            setUnavailable();
+            return;
         }
+        const uint64_t required = requiredBytesOnInstallTarget(estimate, target);
+        const bool insufficient =
+            check.status == InstallSpaceCheckStatus::Insufficient;
+        const std::string approximate =
+            estimate.certainty == SpaceEstimateCertainty::Exact ? "" : "≈";
+        bar_->setData(total, free, required, insufficient);
+        installDot_->setInsufficient(insufficient);
+        refreshHeader();
+        value_->setText(tr("pipensx/storage/additional_bytes",
+                           approximate + formatBytes(required)));
+        caption_->setSingleLine(false);
+        std::string text = tr("pipensx/storage/selected_sizes",
+            formatBytes(estimate.selectedBytes),
+            approximate + formatBytes(estimate.packageBytes),
+            formatBytesShort(free));
+        if (estimate.certainty == SpaceEstimateCertainty::CompressedUnknown)
+            text += tr("pipensx/storage/nsz_fallback");
+        if (insufficient)
+            text += tr("pipensx/storage/caption_need",
+                       formatBytes(check.shortfallBytes));
+        caption_->setText(text);
     }
 
     // Pre-install: overlay how much this install will take on top of used space.

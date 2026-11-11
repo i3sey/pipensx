@@ -9,6 +9,35 @@ using namespace pipensx;
 
 int main() {
     {
+        constexpr uint64_t gib = 1ULL << 30;
+        TorrentPreview preview;
+        preview.files = {
+            {"base (10 GB).nsz", 6 * gib, true, true, false},
+            {"update (2 GB).nsz", gib, true, true, false},
+            {"dlc.nsp", gib, true, false, false},
+        };
+        const auto estimate = estimateInstallSpace(preview, {
+            static_cast<uint8_t>(FileAction::Skip),
+            static_cast<uint8_t>(FileAction::Install),
+            static_cast<uint8_t>(FileAction::Skip),
+        }, TransferMode::StreamInstall);
+        assert(estimate.selectedBytes == gib);
+        assert(estimate.packageBytes == 2 * gib);
+        assert(estimate.certainty == SpaceEstimateCertainty::Conservative);
+        assert(requiredBytesOnInstallTarget(estimate,
+            install::InstallStorageTarget::SdCard) == 3 * gib);
+        assert(requiredBytesOnInstallTarget(estimate,
+            install::InstallStorageTarget::Nand) == 2 * gib);
+
+        const auto download = estimateInstallSpace(preview, {},
+                                                   TransferMode::DownloadOnly);
+        assert(download.selectedBytes == 8 * gib);
+        assert(download.packageBytes == 0);
+        assert(requiredBytesOnInstallTarget(download,
+            install::InstallStorageTarget::SdCard) == 8 * gib);
+    }
+
+    {
         TorrentPreview preview;
         preview.files = {
             {"game.nsp", 1024, true, false, false},

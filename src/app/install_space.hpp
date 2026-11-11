@@ -29,6 +29,13 @@ struct InstallSpaceEstimate {
     bool overflow = false;
 };
 
+inline uint64_t requiredBytesOnInstallTarget(
+    const InstallSpaceEstimate& estimate, install::InstallStorageTarget target) {
+    // Download caches stay on SD even when packages are installed to NAND.
+    return target == install::InstallStorageTarget::SdCard
+        ? estimate.requiredBytes : estimate.packageBytes;
+}
+
 struct StorageSpaceSnapshot {
     uint64_t totalBytes = 0;
     uint64_t freeBytes = 0;

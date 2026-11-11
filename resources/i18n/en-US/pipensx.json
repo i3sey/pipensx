@@ -187,6 +187,7 @@
     "unchecked": "Unchecked"
   },
   "detail": {
+    "release_download_size": "Download (whole release)",
     "topic_action": "RuTracker topic",
     "topic_qr_hint": "Scan with your phone to read the release details and comments.",
     "install_size": "Install size",
@@ -645,6 +646,11 @@
     "retry_note": "\nUnfinished games stay selected for retry."
   },
   "storage": {
+    "preliminary": "Preliminary: choose files",
+    "choose_files_size": "Calculated after file selection",
+    "additional_bytes": "Additional space {}",
+    "selected_sizes": "Download {} · Installed size {} · Free {}",
+    "nsz_fallback": " · Expanded NSZ size unknown: 3× estimate",
     "legend_used": "Used",
     "legend_install": "This install",
     "legend_free": "Free",

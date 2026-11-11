@@ -612,7 +612,6 @@ public:
 
         meter_ = new StorageMeter();
         meter_->setHeader(storageMeterHeader(manager_->installTarget()));
-        meter_->setLegendVisible(true);
         meter_->setMarginBottom(10);
         content->addView(meter_);
 
@@ -1082,11 +1081,9 @@ public:
             installs > 0 ? packageStorage_ : downloadStorage_;
         meter_->setHeader(storageMeterHeader(meterTarget));
         if (storageReady_ && meterStorage.available)
-            meter_->setEstimate(
-                meterStorage.totalBytes, meterStorage.freeBytes,
-                installs > 0 ? estimate.packageBytes : estimate.downloadBytes,
-                check.status == InstallSpaceCheckStatus::Insufficient,
-                estimate.certainty == SpaceEstimateCertainty::CompressedUnknown);
+            meter_->setSelectionEstimate(
+                meterStorage.totalBytes, meterStorage.freeBytes, estimate,
+                meterTarget, check);
         else
             meter_->setUnavailable();
 
