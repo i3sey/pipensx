@@ -75,7 +75,7 @@ public:
         body_->setMarginBottom(20);
         card_->addView(body_);
 
-        action_ = new brls::Button();
+        action_ = new theme::Button();
         action_->setStyle(&brls::BUTTONSTYLE_PRIMARY);
         action_->setWidth(240);
         action_->setHeight(44);

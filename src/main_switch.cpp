@@ -665,7 +665,7 @@ int main(int argc, char** argv) {
             borealisLocaleFor(settings.get().language);
         if (!brls::Application::init())
             throw std::runtime_error("Borealis Application::init failed");
-        pipensx::ui::theme::registerColors();
+        pipensx::ui::theme::registerColors(settings.get().theme, settings.get().themeAccent);
         pipensx::ui::installSidebarStyle();
 
         startupStage("Borealis createWindow");
@@ -674,9 +674,15 @@ int main(int argc, char** argv) {
         // which createWindow constructs. Apply the saved theme only after
         // that context exists, but before constructing themed views.
         startupStage("Borealis apply theme");
-        if (settings.get().theme == pipensx::AppTheme::Dark)
+        if (settings.get().theme == pipensx::AppTheme::Dark ||
+            settings.get().theme == pipensx::AppTheme::LiquidGlass ||
+            settings.get().theme == pipensx::AppTheme::Terminal ||
+            settings.get().theme == pipensx::AppTheme::MaterialYouDark)
             brls::Application::getPlatform()->setThemeVariant(brls::ThemeVariant::DARK);
-        else if (settings.get().theme == pipensx::AppTheme::Light)
+        else if (settings.get().theme == pipensx::AppTheme::Light ||
+                 settings.get().theme == pipensx::AppTheme::MaterialYou ||
+                 settings.get().theme == pipensx::AppTheme::TerminalLight ||
+                 settings.get().theme == pipensx::AppTheme::LiquidGlassLight)
             brls::Application::getPlatform()->setThemeVariant(brls::ThemeVariant::LIGHT);
         brls::Application::setGlobalQuit(false);
 

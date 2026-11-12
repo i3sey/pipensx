@@ -24,7 +24,40 @@ enum class InstallLocation {
     SystemMemory,
 };
 
-enum class AppTheme { System, Dark, Light };
+enum class AppTheme { System, Dark, Light, LiquidGlass, Terminal, MaterialYou,
+                      TerminalLight, MaterialYouDark, LiquidGlassLight };
+
+inline bool isGlassTheme(AppTheme theme) {
+    return theme == AppTheme::LiquidGlass || theme == AppTheme::LiquidGlassLight;
+}
+
+inline bool isTerminalTheme(AppTheme theme) {
+    return theme == AppTheme::Terminal || theme == AppTheme::TerminalLight;
+}
+
+inline bool isMaterialTheme(AppTheme theme) {
+    return theme == AppTheme::MaterialYou || theme == AppTheme::MaterialYouDark;
+}
+
+inline bool isSupportedThemeAccent(const std::string& accent) {
+    return accent == "default" || accent == "green" || accent == "blue" ||
+           accent == "purple" || accent == "amber" || accent == "rose";
+}
+
+inline const char* appThemeName(AppTheme theme) {
+    switch (theme) {
+        case AppTheme::System: return "system";
+        case AppTheme::Dark: return "dark";
+        case AppTheme::Light: return "light";
+        case AppTheme::LiquidGlass: return "liquid_glass";
+        case AppTheme::LiquidGlassLight: return "liquid_glass_light";
+        case AppTheme::Terminal: return "terminal";
+        case AppTheme::MaterialYou: return "material_you";
+        case AppTheme::TerminalLight: return "terminal_light";
+        case AppTheme::MaterialYouDark: return "material_you_dark";
+    }
+    return "invalid";
+}
 
 inline constexpr uint32_t kScreenOnMinutes[] = {0, 15, 20, 30, 60};
 
@@ -41,6 +74,7 @@ struct AppSettingsData {
     // change only takes effect on the next launch.
     std::string language = "auto";
     AppTheme theme = AppTheme::Dark;
+    std::string themeAccent = "default";
     CatalogFilter catalogFilter = CatalogFilter::Games;
     // HTTPS URL to a catalog JSON. Empty = Langegen switch-games
     // catalog. Validated at parse time; a hand-edited

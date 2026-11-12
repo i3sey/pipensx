@@ -635,7 +635,8 @@ fileDrop($("torrent-drop"), $("torrent-file"), () => {});
 const settingsGroups = [
   ["web.console", [
     ["language", "settings.language", "select", [["auto", "settings.auto"], ...Object.keys(languages).map(value => [value === "en" ? "en-US" : value, languages[value], true])]],
-    ["theme", "settings.theme", "select", [["auto", "settings.auto"], ["dark", "settings.dark"], ["light", "settings.light"]]],
+    ["theme", "settings.theme", "select", [["auto", "settings.auto"], ["dark", "settings.dark"], ["light", "settings.light"], ["liquid_glass", "Liquid Glass · Dark", true], ["liquid_glass_light", "Liquid Glass · Light", true], ["terminal", "theme.terminalDark"], ["material_you", "theme.materialLight"], ["terminal_light", "theme.terminalLight"], ["material_you_dark", "theme.materialDark"]]],
+    ["themeAccent", "theme.accent", "select", [["default", "theme.default"], ["green", "theme.green"], ["blue", "theme.blue"], ["purple", "theme.purple"], ["amber", "theme.amber"], ["rose", "theme.rose"]]],
     ["confirmExit", "web.confirmExit", "checkbox"], ["warnOnActiveDownload", "web.warnExit", "checkbox"], ["screenSaverEnabled", "web.saver", "checkbox"]
   ]],
   ["settings.downloads", [

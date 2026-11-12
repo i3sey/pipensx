@@ -292,6 +292,8 @@ public:
           onSelected_(std::move(onSelected)) {
         setFocusable(true);
         setHeight(56.0f);
+        setCornerRadius(theme::navigationRadius());
+        setHighlightCornerRadius(theme::navigationRadius());
         setAlignItems(brls::AlignItems::CENTER);
         setBackgroundColor(theme::sidebar());
 
@@ -328,7 +330,7 @@ public:
         label_->setTextColor(active ? theme::textPrimary()
                                     : theme::textSecondary());
         setBackgroundColor(active ? theme::sidebarActive()
-                                  : theme::sidebar());
+                                  : theme::isCustom() ? brls::TRANSPARENT : theme::sidebar());
     }
 
     void onFocusGained() override {
@@ -410,7 +412,7 @@ class SettingsPanel : public brls::Box {
 public:
     SettingsPanel() : brls::Box(brls::Axis::COLUMN) {
         setGrow(1);
-        content_ = new brls::Box(brls::Axis::COLUMN);
+        content_ = new theme::SettingsContent();
         content_->setPadding(24, 34, 24, 34);
         scroll_ = new brls::ScrollingFrame();
         scroll_->setGrow(1);
@@ -468,7 +470,13 @@ public:
         theme_->init(tr("pipensx/settings/theme"),
             {tr("pipensx/settings/theme_system"),
              tr("pipensx/settings/theme_dark"),
-             tr("pipensx/settings/theme_light")},
+             tr("pipensx/settings/theme_light"),
+             tr("pipensx/settings/theme_liquid_glass") + " / " + tr("pipensx/settings/theme_dark"),
+             tr("pipensx/settings/theme_terminal") + " / " + tr("pipensx/settings/theme_dark"),
+             tr("pipensx/settings/theme_material_you") + " / " + tr("pipensx/settings/theme_light"),
+             tr("pipensx/settings/theme_terminal") + " / " + tr("pipensx/settings/theme_light"),
+             tr("pipensx/settings/theme_material_you") + " / " + tr("pipensx/settings/theme_dark"),
+             tr("pipensx/settings/theme_liquid_glass") + " / " + tr("pipensx/settings/theme_light")},
             static_cast<int>(settings_->get().theme),
             [this](int selected) {
                 AppSettingsData values = settings_->get();
@@ -478,9 +486,29 @@ public:
                     theme_->setSelection(static_cast<int>(previous), true);
                     return;
                 }
+                accent_->setVisibility(isTerminalTheme(values.theme) || isMaterialTheme(values.theme)
+                    ? brls::Visibility::VISIBLE : brls::Visibility::GONE);
                 brls::Application::notify(tr("pipensx/settings/theme_restart"));
             });
         content_->addView(theme_);
+        accent_ = new brls::SelectorCell();
+        accent_->init(tr("pipensx/settings/theme_accent"),
+            {tr("pipensx/settings/accent_default"), tr("pipensx/settings/accent_green"),
+             tr("pipensx/settings/accent_blue"), tr("pipensx/settings/accent_purple"),
+             tr("pipensx/settings/accent_amber"), tr("pipensx/settings/accent_rose")},
+            accentIndex(settings_->get().themeAccent), [this](int selected) {
+                auto values = settings_->get();
+                const auto previous = values.themeAccent;
+                values.themeAccent = kAccentValues[selected];
+                if (!persistSettings(settings_, values, "theme_accent")) {
+                    accent_->setSelection(accentIndex(previous), true);
+                    return;
+                }
+                brls::Application::notify(tr("pipensx/settings/theme_restart"));
+            });
+        accent_->setVisibility(isTerminalTheme(settings_->get().theme) || isMaterialTheme(settings_->get().theme)
+            ? brls::Visibility::VISIBLE : brls::Visibility::GONE);
+        content_->addView(accent_);
         addNote(content_, tr("pipensx/settings/theme_restart"));
 
         showHomeTab_ = new brls::BooleanCell();
@@ -552,6 +580,9 @@ public:
         const AppSettingsData& values = settings_->get();
         language_->setSelection(languageIndex(values.language), true);
         theme_->setSelection(static_cast<int>(values.theme), true);
+        accent_->setSelection(accentIndex(values.themeAccent), true);
+        accent_->setVisibility(isTerminalTheme(values.theme) || isMaterialTheme(values.theme)
+            ? brls::Visibility::VISIBLE : brls::Visibility::GONE);
         showHomeTab_->setOn(values.showHomeTab, false);
         checkForUpdates_->setOn(values.checkForUpdatesOnLaunch, false);
         confirmExit_->setOn(values.confirmExit, false);
@@ -560,6 +591,12 @@ public:
     }
 
 private:
+    inline static constexpr const char* kAccentValues[] = {"default", "green", "blue", "purple", "amber", "rose"};
+    static int accentIndex(const std::string& value) {
+        for (size_t i = 0; i < std::size(kAccentValues); ++i)
+            if (value == kAccentValues[i]) return static_cast<int>(i);
+        return 0;
+    }
     // Settings-selector row for a stored language value; falls back to the
     // "auto" row so a value from a newer build cannot leave the cell blank.
     static int languageIndex(const std::string& value) {
@@ -574,6 +611,7 @@ private:
     std::function<void(bool)> onShowHomeTab_;
     brls::SelectorCell* language_ = nullptr;
     brls::SelectorCell* theme_ = nullptr;
+    brls::SelectorCell* accent_ = nullptr;
     brls::BooleanCell* showHomeTab_ = nullptr;
     brls::BooleanCell* checkForUpdates_ = nullptr;
     brls::BooleanCell* confirmExit_ = nullptr;

@@ -88,12 +88,7 @@ bool readUnsigned(const Json& root, const char* key, uint64_t& value,
 constexpr int kSettingsVersion = 5;
 
 const char* themeName(AppTheme theme) {
-    switch (theme) {
-        case AppTheme::System: return "system";
-        case AppTheme::Dark: return "dark";
-        case AppTheme::Light: return "light";
-    }
-    return "invalid";
+    return appThemeName(theme);
 }
 
 bool parseSettings(const std::string& text, AppSettingsData& values,
@@ -147,6 +142,7 @@ bool parseSettings(const std::string& text, AppSettingsData& values,
                   values.keepScreenOnDuringTransfers, error) ||
         !readUnsigned(root, "screen_on_minutes", screenOnMinutes, error) ||
         !readString(root, "theme", theme, error) ||
+        !readString(root, "theme_accent", values.themeAccent, error) ||
         !readBool(root, "extended_telemetry", values.extendedTelemetry,
                   error) ||
         !readBool(root, "check_for_updates_on_launch",
@@ -186,7 +182,17 @@ bool parseSettings(const std::string& text, AppSettingsData& values,
     if (theme == "system") values.theme = AppTheme::System;
     else if (theme == "dark") values.theme = AppTheme::Dark;
     else if (theme == "light") values.theme = AppTheme::Light;
-    else { error = "Setting 'theme' must be system, dark or light."; return false; }
+    else if (theme == "liquid_glass_light") values.theme = AppTheme::LiquidGlassLight;
+    else if (theme == "liquid_glass") values.theme = AppTheme::LiquidGlass;
+    else if (theme == "terminal") values.theme = AppTheme::Terminal;
+    else if (theme == "material_you") values.theme = AppTheme::MaterialYou;
+    else if (theme == "terminal_light") values.theme = AppTheme::TerminalLight;
+    else if (theme == "material_you_dark") values.theme = AppTheme::MaterialYouDark;
+    else { error = "Unsupported application theme."; return false; }
+    if (!isSupportedThemeAccent(values.themeAccent)) {
+        error = "Unsupported theme accent.";
+        return false;
+    }
     uint64_t maxActive = values.maxActiveDownloads;
     if (!readUnsigned(root, "max_active_downloads", maxActive, error))
         return false;
@@ -295,6 +301,7 @@ std::string serializeSettings(const AppSettingsData& values) {
     root["keep_screen_on_during_transfers"] = values.keepScreenOnDuringTransfers;
     root["screen_on_minutes"] = values.screenOnMinutes;
     root["theme"] = themeName(values.theme);
+    root["theme_accent"] = values.themeAccent;
     root["extended_telemetry"] = values.extendedTelemetry;
     root["check_for_updates_on_launch"] = values.checkForUpdatesOnLaunch;
     root["confirm_exit"] = values.confirmExit;
@@ -442,6 +449,7 @@ void applyProxySetting(const std::string& proxyUrl) {
 bool AppSettingsData::operator==(const AppSettingsData& other) const {
     return language == other.language &&
            theme == other.theme &&
+           themeAccent == other.themeAccent &&
            catalogFilter == other.catalogFilter &&
            catalogSourceUrl == other.catalogSourceUrl &&
            refreshCatalogOnLaunch == other.refreshCatalogOnLaunch &&
@@ -600,12 +608,15 @@ bool AppSettings::write(const AppSettingsData& values,
 
 bool AppSettings::update(const AppSettingsData& values, std::string& error) {
     AppSettingsData next = values;
+    if (!isSupportedThemeAccent(next.themeAccent)) {
+        error = "Unsupported theme accent.";
+        return false;
+    }
     if (!isSupportedScreenOnMinutes(next.screenOnMinutes)) {
         error = "Screen-on duration must be 0, 15, 20, 30 or 60 minutes.";
         return false;
     }
-    if (next.theme != AppTheme::System && next.theme != AppTheme::Dark &&
-        next.theme != AppTheme::Light) {
+    if (std::string(appThemeName(next.theme)) == "invalid") {
         error = "Unsupported application theme.";
         return false;
     }

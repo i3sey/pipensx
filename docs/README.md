@@ -19,6 +19,7 @@ build setup. [AGENTS.md](../AGENTS.md) contains repository instructions;
 | AutoRun dependency fixes | [Compatibility notes](autorun-compatibility.md) |
 | Torrent sharing and RAM cache | [Live sharing](LIVE_SEEDING.md) |
 | Client identity and build version | [Version resolution](CLIENT_VERSION.md) |
+| Native appearance palettes | [Themes](THEMES.md) |
 
 ## Plans and measurements
 

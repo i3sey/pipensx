@@ -237,12 +237,16 @@ const server = http.createServer((request, response) => {
   await page.waitForFunction(() => document.querySelectorAll("#library-list .task").length === 0);
   await page.locator('[data-page="settings"]').click();
   await page.waitForSelector("[data-setting]");
+  await page.locator("#setting-theme").selectOption("material_you_dark");
+  await page.locator("#setting-themeAccent").selectOption("rose");
   await page.locator("#setting-sleepAfterDownloads").check();
   await page.locator("#setting-blankScreenDuringTransfers").check();
   await page.locator("#clear-torboxApiKey").check();
   await page.locator("#settings-save").click();
   await page.waitForFunction(() => document.querySelector("#settings-status").textContent === "Settings saved");
   assert.equal(settings.sleepAfterDownloads, true);
+  assert.equal(settings.theme, "material_you_dark");
+  assert.equal(settings.themeAccent, "rose");
   assert.equal(settings.torboxApiKey, "");
   await page.locator("#browser-language").selectOption("ru");
   await page.locator("#browser-theme").selectOption("dark");

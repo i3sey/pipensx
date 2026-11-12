@@ -38,7 +38,7 @@ inline constexpr float kCoverHeight = 296.0f;
 inline constexpr float kCoverSize = kCoverWidth;
 // Icon inside the card uses the same rounding as the card itself so the
 // whole plate reads as one piece.
-inline constexpr float kIconRadius = theme::kRadiusMedium;
+inline float iconRadius() { return theme::kRadiusMedium; }
 // Inset + cover + name line (17px) + sub line (15px) + inner margins + padding.
 inline constexpr float kCardHeight = 348.0f;
 inline constexpr float kRowHeight = 364.0f;
@@ -93,6 +93,7 @@ public:
         // background (surface vs brls/background).
         setBackgroundColor(theme::surface());
         setCornerRadius(theme::kRadiusMedium);
+        setHighlightCornerRadius(theme::kRadiusMedium);
         setClipsToBounds(true);
 
         // Cover box doubles as the placeholder tile until art arrives.
@@ -101,7 +102,7 @@ public:
         cover_ = new brls::Box();
         cover_->setWidth(grid::kCoverWidth);
         cover_->setHeight(grid::kCoverHeight);
-        cover_->setCornerRadius(grid::kIconRadius);
+        cover_->setCornerRadius(grid::iconRadius());
         cover_->setBackgroundColor(theme::surface());
         cover_->setAlignSelf(brls::AlignSelf::CENTER);
         cover_->setMarginTop(grid::kCoverInset);
@@ -119,7 +120,7 @@ public:
         image_->setPositionType(brls::PositionType::ABSOLUTE);
         image_->setPositionTop(0);
         image_->setPositionLeft(0);
-        image_->setCornerRadius(grid::kIconRadius);
+        image_->setCornerRadius(grid::iconRadius());
         image_->setScalingType(brls::ImageScalingType::FIT);
         cover_->addView(image_);
 
@@ -313,6 +314,24 @@ public:
             onFocus_();
     }
 
+    void draw(NVGcontext* vg, float x, float y, float width, float height,
+              brls::Style style, brls::FrameContext* ctx) override {
+        if (theme::isCustom())
+            theme::drawPlate(vg, x, y, width, height, theme::kRadiusMedium, isFocused());
+        brls::Box::draw(vg, x, y, width, height, style, ctx);
+        if (isTerminalTheme(theme::activeTheme)) {
+            nvgBeginPath(vg);
+            nvgMoveTo(vg, x + 1, y + grid::kCoverInset + grid::kCoverHeight + 2);
+            nvgLineTo(vg, x + width - 1, y + grid::kCoverInset + grid::kCoverHeight + 2);
+            nvgStrokeWidth(vg, 1);
+            nvgStrokeColor(vg, theme::meterBorder());
+            nvgStroke(vg);
+        }
+        if (isTerminalTheme(theme::activeTheme) ||
+            (theme::activeTheme == AppTheme::LiquidGlass && isFocused()))
+            theme::drawControlFinish(vg, x, y, width, height, theme::kRadiusMedium, isFocused());
+    }
+
     void onFocusLost() override {
         brls::Box::onFocusLost();
         applyZoom(false);
@@ -328,7 +347,7 @@ private:
     // UI_PLAN F5: subtle cover zoom while the card is focused. The cover box
     // clips, so the art scales in place without shifting the layout.
     void applyZoom(bool focused) {
-        const float zoom = focused ? grid::kFocusZoom : 1.0f;
+        const float zoom = focused && !isTerminalTheme(theme::activeTheme) ? grid::kFocusZoom : 1.0f;
         const float width = grid::kCoverWidth * zoom;
         const float height = grid::kCoverHeight * zoom;
         image_->setDimensions(width, height);

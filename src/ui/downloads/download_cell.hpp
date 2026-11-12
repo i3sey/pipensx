@@ -28,12 +28,14 @@ public:
         setPadding(12, 16, 12, 16);
         setHeight(kHeight);
         setCornerRadius(theme::kRadiusLarge);
+        setHighlightCornerRadius(theme::kRadiusLarge);
+        if (theme::isCustom()) setLineBottom(0);
 
         thumb_ = new brls::Box();
         thumb_->setWidth(64);
         thumb_->setHeight(64);
         thumb_->setShrink(0);
-        thumb_->setCornerRadius(6);
+        thumb_->setCornerRadius(theme::kRadiusSmall);
         thumb_->setBackgroundColor(theme::surface());
         thumb_->setMarginRight(16);
         thumb_->setAlignItems(brls::AlignItems::CENTER);
@@ -48,7 +50,7 @@ public:
         image_->setPositionType(brls::PositionType::ABSOLUTE);
         image_->setPositionTop(0);
         image_->setPositionLeft(0);
-        image_->setCornerRadius(6);
+        image_->setCornerRadius(theme::kRadiusSmall);
         image_->setScalingType(brls::ImageScalingType::FILL);
         thumb_->addView(image_);
         addView(thumb_);
@@ -265,6 +267,13 @@ public:
     void onFocusLost() override {
         brls::RecyclerCell::onFocusLost();
         title_->setAnimated(false);
+    }
+
+    void draw(NVGcontext* vg, float x, float y, float width, float height,
+              brls::Style style, brls::FrameContext* ctx) override {
+        if (theme::isCustom())
+            theme::drawPlate(vg, x, y + 4, width, height - 8, theme::kRadiusLarge, isFocused());
+        brls::RecyclerCell::draw(vg, x, y, width, height, style, ctx);
     }
 
 private:

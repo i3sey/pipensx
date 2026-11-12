@@ -158,13 +158,13 @@ private:
 // Compact magnifier button for the O2 header. The icon is vector-drawn
 // (circle + handle) so it stays crisp and theme-aware without relying on
 // icon-font glyphs that the bundled fonts may not cover.
-class SearchIconButton : public brls::Button {
+class SearchIconButton : public theme::Button {
 public:
     void setIconColor(NVGcolor color) { iconColor_ = color; }
 
     void draw(NVGcontext* vg, float x, float y, float width, float height,
               brls::Style style, brls::FrameContext* ctx) override {
-        brls::Button::draw(vg, x, y, width, height, style, ctx);
+        theme::Button::draw(vg, x, y, width, height, style, ctx);
         // Glass centered slightly up-left so the handle stays inside.
         const float r = 6.5f;
         const float cx = x + width / 2.0f - 2.5f;
@@ -242,7 +242,7 @@ public:
         auto* filters = new brls::Box(brls::Axis::ROW);
         filters->setAlignItems(brls::AlignItems::CENTER);
         filters->setPadding(4, 4, 4, 4);
-        filters->setCornerRadius(10);
+        filters->setCornerRadius(theme::isCustom() ? theme::kRadiusLarge : 10);
         filters->setBackgroundColor(theme::panel());
         filters->setShrink(0.0f);
         filterFavorites_ = makeChip(tr("pipensx/catalog/filter_favorites"),
@@ -869,7 +869,7 @@ private:
 
     brls::Button* makeChip(const std::string& text,
                            std::function<void()> onClick) {
-        auto* chip = new brls::Button();
+        auto* chip = new theme::Button();
         chip->setStyle(&brls::BUTTONSTYLE_DEFAULT);
         chip->setHeight(40);
         chip->setFontSize(theme::kFontCaption);

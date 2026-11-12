@@ -20,7 +20,7 @@ const std::unordered_set<std::string> kAllowedKeys = {
     "language",
     "torrentingEnabled", "liveSeedingEnabled", "keepUncachedDebrid",
     "showCompletedDownloads", "blankScreenDuringTransfers", "sleepAfterDownloads",
-    "screenSaverEnabled", "confirmExit", "warnOnActiveDownload", "theme",
+    "screenSaverEnabled", "confirmExit", "warnOnActiveDownload", "theme", "themeAccent",
 };
 
 const char* streamSelectionJson(StreamSelection value) {
@@ -54,7 +54,8 @@ const char* debridProviderJson(DebridProviderKind value) {
 std::string companionSettingsJson(const AppSettingsData& values) {
     Json j;
     j["language"] = values.language;
-    j["theme"] = values.theme == AppTheme::System ? "auto" : values.theme == AppTheme::Light ? "light" : "dark";
+    j["theme"] = values.theme == AppTheme::System ? "auto" : appThemeName(values.theme);
+    j["themeAccent"] = values.themeAccent;
     j["torrentingEnabled"] = values.torrentingEnabled;
     j["liveSeedingEnabled"] = values.liveSeedingEnabled;
     j["keepUncachedDebrid"] = values.keepUncachedDebrid;
@@ -123,7 +124,21 @@ bool applyCompanionSettingsPatch(AppSettingsData& values,
         if (theme == "auto") values.theme = AppTheme::System;
         else if (theme == "dark") values.theme = AppTheme::Dark;
         else if (theme == "light") values.theme = AppTheme::Light;
+        else if (theme == "liquid_glass_light") values.theme = AppTheme::LiquidGlassLight;
+        else if (theme == "liquid_glass") values.theme = AppTheme::LiquidGlass;
+        else if (theme == "terminal") values.theme = AppTheme::Terminal;
+        else if (theme == "material_you") values.theme = AppTheme::MaterialYou;
+        else if (theme == "terminal_light") values.theme = AppTheme::TerminalLight;
+        else if (theme == "material_you_dark") values.theme = AppTheme::MaterialYouDark;
         else { error = "theme has an unknown value"; return false; }
+    }
+    if (root.contains("themeAccent")) {
+        if (!root["themeAccent"].is_string() ||
+            !isSupportedThemeAccent(root["themeAccent"].get<std::string>())) {
+            error = "themeAccent has an unsupported value";
+            return false;
+        }
+        values.themeAccent = root["themeAccent"].get<std::string>();
     }
 
     if (root.contains("maxActiveDownloads")) {

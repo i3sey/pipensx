@@ -613,11 +613,46 @@ void testDisplaySettingsMigrationAndRestart() {
     assert(restartedAgain.get() == chosen);
 }
 
+void testCustomThemesSurviveRestartAndCompanion() {
+    for (auto theme : {pipensx::AppTheme::System, pipensx::AppTheme::Dark,
+                       pipensx::AppTheme::Light, pipensx::AppTheme::LiquidGlass, pipensx::AppTheme::LiquidGlassLight,
+                       pipensx::AppTheme::Terminal, pipensx::AppTheme::MaterialYou,
+                       pipensx::AppTheme::TerminalLight, pipensx::AppTheme::MaterialYouDark}) {
+      for (const auto* accent : {"default", "green", "blue", "purple", "amber", "rose"}) {
+        cleanup();
+        AppSettings settings(SettingsPath, LegacyPath);
+        std::string error;
+        assert(settings.load(error));
+        auto chosen = settings.get();
+        chosen.theme = theme;
+        chosen.themeAccent = accent;
+        assert(settings.update(chosen, error));
+        AppSettings restarted(SettingsPath, LegacyPath);
+        assert(restarted.load(error));
+        assert(restarted.get() == chosen);
+        const std::string id = theme == pipensx::AppTheme::System ? "auto" : pipensx::appThemeName(theme);
+        const std::string field = "\"theme\":\"" + id + "\"";
+        assert(companionSettingsJson(restarted.get()).find(field) != std::string::npos);
+        AppSettingsData remote;
+        assert(applyCompanionSettingsPatch(remote, "{" + field + "}", error));
+        assert(remote.theme == theme);
+        assert(applyCompanionSettingsPatch(remote,
+            "{\"themeAccent\":\"" + std::string(accent) + "\"}", error));
+        assert(remote.themeAccent == accent);
+        assert(!applyCompanionSettingsPatch(remote, "{\"themeAccent\":\"invalid\"}", error));
+        assert(remote.themeAccent == accent);
+        assert(!applyCompanionSettingsPatch(remote, "{\"theme\":\"unknown\"}", error));
+        assert(remote.theme == theme);
+      }
+    }
+}
+
 void testInvalidDisplaySettingsDoNotReplaceCurrentValues() {
     for (const std::string& fields : {
              "\"screen_on_minutes\":16", "\"screen_on_minutes\":-1",
              "\"screen_on_minutes\":4294967316", "\"screen_on_minutes\":\"20\"",
              "\"theme\":\"purple\"", "\"theme\":true",
+             "\"theme_accent\":\"invalid\"", "\"theme_accent\":42",
              "\"blank_screen_during_transfers\":1",
              "\"sleep_after_downloads\":\"true\"",
              "\"keep_screen_on_during_transfers\":\"false\""}) {
@@ -639,6 +674,10 @@ void testInvalidDisplaySettingsDoNotReplaceCurrentValues() {
     assert(settings.get() == before);
     invalid = before;
     invalid.theme = static_cast<pipensx::AppTheme>(99);
+    assert(!settings.update(invalid, error));
+    assert(settings.get() == before);
+    invalid = before;
+    invalid.themeAccent = "invalid";
     assert(!settings.update(invalid, error));
     assert(settings.get() == before);
     AppSettings reloaded(SettingsPath, LegacyPath);
@@ -753,6 +792,7 @@ int main() {
     }
     cleanup();
     testDisplaySettingsMigrationAndRestart();
+    testCustomThemesSurviveRestartAndCompanion();
     testInvalidDisplaySettingsDoNotReplaceCurrentValues();
     testTransferScreenPolicy();
     testQueueSleepPolicy();

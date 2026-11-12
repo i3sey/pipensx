@@ -23,6 +23,9 @@
 #include "ui/common/ui_helpers.hpp"
 #include "ui/i18n.hpp"
 #include "ui/theme.hpp"
+#ifdef __SWITCH__
+#include <nanovg/dk_renderer.hpp>
+#endif
 
 namespace pipensx::ui {
 
@@ -97,7 +100,8 @@ public:
         setMinWidth(44.0f);
         setAlignItems(brls::AlignItems::CENTER);
         setJustifyContent(brls::JustifyContent::CENTER);
-        setCornerRadius(24.0f);
+        setCornerRadius(theme::navigationRadius());
+        setHighlightCornerRadius(theme::navigationRadius());
         setPadding(0, 8, 0, 8);
         setShrink(0.0f);
         iconWrap_ = new brls::Box();
@@ -147,6 +151,10 @@ public:
                                     : theme::textSecondary());
         setBackgroundColor(active ? theme::sidebarActive()
                                   : brls::TRANSPARENT);
+        if (isTerminalTheme(theme::activeTheme)) {
+            setLineColor(theme::accent());
+            setLineBottom(active ? 2 : 0);
+        }
         setPadding(0, active ? 16 : 8, 0, active ? 16 : 8);
     }
 
@@ -190,8 +198,8 @@ inline void NavIcon::draw(NVGcontext* vg, float x, float y, float width,
     nvgStrokeColor(vg, c);
     nvgFillColor(vg, c);
     nvgStrokeWidth(vg, 2.0f);
-    nvgLineCap(vg, NVG_ROUND);
-    nvgLineJoin(vg, NVG_ROUND);
+    nvgLineCap(vg, isTerminalTheme(theme::activeTheme) ? NVG_SQUARE : NVG_ROUND);
+    nvgLineJoin(vg, isTerminalTheme(theme::activeTheme) ? NVG_MITER : NVG_ROUND);
     const float s = 24.0f;
     const float gx = x + (width - s) / 2.0f;
     const float gy = y + (height - s) / 2.0f;
@@ -337,19 +345,43 @@ inline void NavIcon::drawHelp(NVGcontext* vg, float gx, float gy, float s) {
     nvgFill(vg);
 }
 
+class ThemeNavigationBar : public brls::Box {
+public:
+    ThemeNavigationBar() : brls::Box(brls::Axis::ROW) {}
+    ~ThemeNavigationBar() override {
+        if (backdropImage_ > 0)
+            nvgDeleteImage(brls::Application::getNVGContext(), backdropImage_);
+    }
+
+    void draw(NVGcontext* vg, float x, float y, float width, float height,
+              brls::Style style, brls::FrameContext* ctx) override {
+        if (isGlassTheme(theme::activeTheme)) {
+#ifdef __SWITCH__
+            if (backdropImage_ == 0)
+                backdropImage_ = nvgCreateImageRGBA(vg, 640, 360, NVG_IMAGE_BACKDROP, nullptr);
+#endif
+            theme::drawGlassNavigation(vg, backdropImage_, x + 10, y + 5, width - 20, height - 10);
+        }
+        brls::Box::draw(vg, x, y, width, height, style, ctx);
+    }
+private:
+    int backdropImage_ = 0;
+};
+
 class MainFrame : public brls::Box {
 public:
     MainFrame() : brls::Box(brls::Axis::COLUMN) {
         setGrow(1);
 
-        topbar_ = new brls::Box(brls::Axis::ROW);
+        topbar_ = new ThemeNavigationBar();
         topbar_->setHeight(kTopbarHeight);
         topbar_->setShrink(0.0f);
         topbar_->setAlignItems(brls::AlignItems::CENTER);
         topbar_->setPadding(0, 16, 0, 22);
-        topbar_->setBackgroundColor(theme::sidebar());
+        topbar_->setBackgroundColor(isGlassTheme(theme::activeTheme)
+            ? brls::TRANSPARENT : theme::sidebar());
         topbar_->setLineColor(theme::track());
-        topbar_->setLineBottom(1.0f);
+        topbar_->setLineBottom(isGlassTheme(theme::activeTheme) ? 0 : 1);
 
         auto* brand = new brls::Box(brls::Axis::ROW);
         brand->setFocusable(false);
@@ -526,6 +558,12 @@ public:
         alive_->store(false);
         for (int i = 0; i < kNavTabCount; ++i)
             dropDetachedTab(tabViews_[i]);
+    }
+
+    void draw(NVGcontext* vg, float x, float y, float width, float height,
+              brls::Style style, brls::FrameContext* ctx) override {
+        theme::drawBackdrop(vg, x, y, width, height);
+        brls::Box::draw(vg, x, y, width, height, style, ctx);
     }
 
 private:

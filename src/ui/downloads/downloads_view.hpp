@@ -70,7 +70,7 @@ public:
         heading->setFontSize(theme::kFontHeading);
         heading->setGrow(1);
         toolbar->addView(heading);
-        addButton_ = new brls::Button();
+        addButton_ = new theme::Button();
         auto* add = addButton_;
         add->setText(tr("pipensx/downloads/add_download"));
         add->setMarginRight(16);
@@ -79,7 +79,7 @@ public:
             return true;
         });
         toolbar->addView(add);
-        auto* actions = new brls::Button();
+        auto* actions = new theme::Button();
         actions->setText(tr("pipensx/downloads/manage"));
         actions->registerClickAction([this](brls::View*) {
             openManageMenu();
@@ -94,7 +94,7 @@ public:
         const char* keys[] = {"filter_all", "filter_active", "filter_queue",
                               "filter_finished", "filter_errors"};
         for (int i = 0; i < 5; ++i) {
-            auto* button = new brls::Button();
+            auto* button = new theme::Button();
             button->setFontSize(theme::kFontSmall);
             button->setHeight(40);
             button->setCornerRadius(theme::kRadiusSmall);
