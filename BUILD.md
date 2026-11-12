@@ -150,3 +150,6 @@ from `releases/<version>-notes.md`. A tag build requires `VERSION` to match the
 tag after removing an optional leading `v`. Manual builds do not publish a
 release. The GitHub draft-release workflow remains in
 `.github/workflows/switch-release.yml`.
+
+GitLab jobs use the project's default Linux runners. Switch builds keep LTO
+enabled and compile one job at a time to fit shared-runner memory limits.

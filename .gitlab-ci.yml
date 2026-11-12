@@ -31,8 +31,6 @@ workflow:
 test_pc:
   stage: test
   image: debian:bookworm-slim
-  tags:
-    - arch-local
   timeout: 20 minutes
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
@@ -49,8 +47,6 @@ test_pc:
 test_web:
   stage: test
   image: node:22-bookworm-slim
-  tags:
-    - arch-local
   timeout: 15 minutes
   variables:
     GIT_SUBMODULE_STRATEGY: none
@@ -81,8 +77,9 @@ mirror_langegen:
 build_switch:
   stage: build
   image: devkitpro/devkita64:latest
-  tags:
-    - arch-local
+  timeout: 60 minutes
+  variables:
+    BUILD_JOBS: "1"
   rules:
     - if: $CI_COMMIT_TAG
     - if: $CI_PIPELINE_SOURCE == "web"
@@ -128,8 +125,6 @@ build_switch:
 publish_release:
   stage: release
   image: registry.gitlab.com/gitlab-org/release-cli:latest
-  tags:
-    - arch-local
   rules:
     - if: $CI_COMMIT_TAG
   needs:
