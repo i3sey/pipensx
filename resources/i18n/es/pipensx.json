@@ -359,6 +359,7 @@
     "clear_files_question": "¿Borrar los archivos descargados de {0} entradas completadas y liberar {1}? {2} entradas en uso se conservarán, con sus archivos. Los juegos y ports instalados no se eliminan.",
     "clear_result": "Se quitaron {0} entradas. Se dejaron {1} porque están en uso.",
     "clear_files_result": "Se borraron los archivos de {0} entradas. Se dejaron {1} porque están en uso.",
+    "summary_uploaded": "Enviado: {}",
     "summary_counts": "{0} descargando · {1} en cola · {2} instalando",
     "summary_paused": "{0} en pausa",
     "summary_errors": "{0} errores",

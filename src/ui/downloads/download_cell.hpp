@@ -5,6 +5,7 @@
 
 #include <borealis.hpp>
 
+#include "app/catalog_presentation.hpp"
 #include "app/download_list_refresh.hpp"
 #include "app/download_manager.hpp"
 #include "app/switch_deploy.hpp"
@@ -18,29 +19,32 @@ namespace pipensx::ui {
 
 class DownloadCell : public brls::RecyclerCell {
 public:
+    static constexpr float kHeight = 104.0f;
+
     DownloadCell() {
         setFocusable(true);
         setAxis(brls::Axis::ROW);
         setAlignItems(brls::AlignItems::CENTER);
-        setPadding(16, 20, 16, 20);
-        setHeight(132);
+        setPadding(12, 16, 12, 16);
+        setHeight(kHeight);
         setCornerRadius(theme::kRadiusLarge);
 
         thumb_ = new brls::Box();
-        thumb_->setWidth(80);
-        thumb_->setHeight(80);
+        thumb_->setWidth(64);
+        thumb_->setHeight(64);
+        thumb_->setShrink(0);
         thumb_->setCornerRadius(6);
         thumb_->setBackgroundColor(theme::surface());
         thumb_->setMarginRight(16);
         thumb_->setAlignItems(brls::AlignItems::CENTER);
         thumb_->setJustifyContent(brls::JustifyContent::CENTER);
         placeholder_ = new brls::Label();
-        placeholder_->setFontSize(30);
+        placeholder_->setFontSize(24);
         placeholder_->setTextColor(theme::textSecondary());
         thumb_->addView(placeholder_);
         image_ = new AsyncRgbaImage();
-        image_->setWidth(80);
-        image_->setHeight(80);
+        image_->setWidth(64);
+        image_->setHeight(64);
         image_->setPositionType(brls::PositionType::ABSOLUTE);
         image_->setPositionTop(0);
         image_->setPositionLeft(0);
@@ -66,9 +70,10 @@ public:
         status_ = new brls::Label();
         status_->setSingleLine(true);
         status_->setAutoAnimate(false);
-        status_->setFontSize(17);
+        status_->setFontSize(theme::kFontCaption);
         status_->setTextColor(theme::accent());
         status_->setShrink(0);
+        status_->setMaxWidth(180);
         top->addView(title_);
         top->addView(status_);
 
@@ -77,8 +82,8 @@ public:
         meta_->setAutoAnimate(false);
         meta_->setFontSize(theme::kFontSmall);
         meta_->setTextColor(theme::textSecondary());
-        meta_->setMarginTop(8);
-        meta_->setMarginBottom(9);
+        meta_->setMarginTop(4);
+        meta_->setMarginBottom(4);
 
         progress_ = new ProgressBar();
         right->addView(top);
@@ -90,7 +95,8 @@ public:
 
     void setTask(const DownloadTask& task, GameMetadataService* service,
                  const SwitchDeploySnapshot* deploy = nullptr,
-                 const std::string& appRoot = {}) {
+                 const std::string& appRoot = {},
+                 CatalogService* catalog = nullptr) {
         updateActionHint(brls::BUTTON_A, tr("pipensx/downloads/details"));
         const uint64_t deployGen = deploy ? deploy->generation : 0;
         const uint64_t deployBytes = deploy && deploy->taskId == task.id
@@ -98,8 +104,10 @@ public:
         const DownloadRowPaint nextPaint = DownloadRowPaint::from(task);
         const bool sameTask = paintedId_ == task.id;
         if (sameTask && paintedStatus_ == task.status && painted_ == nextPaint &&
-            paintedDeployGen_ == deployGen && paintedDeployBytes_ == deployBytes)
+            paintedDeployGen_ == deployGen && paintedDeployBytes_ == deployBytes) {
+            refreshArtwork(task, service, appRoot, catalog);
             return;
+        }
 
         paintedId_ = task.id;
         paintedStatus_ = task.status;
@@ -206,12 +214,17 @@ public:
                               task.status == DownloadStatus::Installed;
         const bool deployed = deploy && deploy->taskId == task.id &&
                               deploy->phase == SwitchDeployPhase::Completed;
-        if (!deployActive && finished) {
+        const bool deployProblem = deploy && deploy->taskId == task.id &&
+            (deploy->phase == SwitchDeployPhase::Failed ||
+             deploy->phase == SwitchDeployPhase::Cancelled);
+        if (!deployActive && finished && !deployProblem) {
             meta = tr(deployed || task.status == DownloadStatus::Installed
                 ? "pipensx/downloads/result_installed"
                 : "pipensx/downloads/result_saved", formatBytes(wanted.second));
         }
         progress_->setVisibility(finished && !deployActive
+            ? brls::Visibility::GONE : brls::Visibility::VISIBLE);
+        status_->setVisibility(finished && !deployActive && !deployProblem
             ? brls::Visibility::GONE : brls::Visibility::VISIBLE);
         if (!deployActive && task.status == DownloadStatus::Error &&
             !task.error.empty())
@@ -219,22 +232,29 @@ public:
         if (!deployActive && (task.seeding || task.uploadedBytes || task.seedCacheBytes)) {
             meta += "   " + tr("pipensx/seeding/stats",
                 formatSpeed(task.uploadSpeedBytesPerSecond), formatBytes(task.uploadedBytes));
-            if (task.seeding) setTextIfChanged(status_, tr("pipensx/seeding/status"));
+            if (task.seeding && !deployProblem) {
+                setTextIfChanged(status_, tr("pipensx/seeding/status"));
+                status_->setVisibility(brls::Visibility::VISIBLE);
+            }
         }
         setTextIfChanged(meta_, meta);
 
-        if (!sameTask || !image_->hasArtwork()) {
-            std::string iconUrl;
-            if (service) {
-                const GameMetadata* found = service->findByInfoHash(task.id);
-                if (found)
-                    iconUrl = found->iconUrl;
-            }
-            if (iconUrl.empty() && !appRoot.empty())
-                iconUrl = deployedPortIconPath(appRoot, task.id);
-            setArtworkUrl(image_, service, iconUrl, currentIconUrl_, imageState_,
-                          GameMetadataService::kImageDimIcon);
-        }
+        refreshArtwork(task, service, appRoot, catalog);
+    }
+
+    void refreshArtwork(const DownloadTask& task, GameMetadataService* service,
+                        const std::string& appRoot,
+                        CatalogService* catalog) {
+        const GameMetadata* metadata = service
+            ? service->findByInfoHash(task.id) : nullptr;
+        const CatalogEntry* entry = catalog
+            ? catalog->findByInfoHash(task.id) : nullptr;
+        std::string iconUrl = entry ? resolveCatalogRow(*entry, metadata).iconUrl
+            : metadata ? metadata->iconUrl : std::string{};
+        if (iconUrl.empty() && !appRoot.empty())
+            iconUrl = deployedPortIconPath(appRoot, task.id);
+        setArtworkUrl(image_, service, iconUrl, currentIconUrl_, imageState_,
+                      GameMetadataService::kImageDimIcon);
     }
 
     void onFocusGained() override {

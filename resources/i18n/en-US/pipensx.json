@@ -360,6 +360,7 @@
     "clear_files_question": "Delete downloaded files for {0} completed entries and free {1}? {2} in-use entries will be left, including their files. Installed games and ports are not removed.",
     "clear_result": "Removed {0} entries. Left {1} because they are in use.",
     "clear_files_result": "Removed {0} entries and their downloaded files. Left {1} because they are in use.",
+    "summary_uploaded": "Uploaded: {}",
     "summary_counts": "{0} downloading · {1} queued · {2} installing",
     "summary_paused": "{0} paused",
     "summary_errors": "{0} errors",
@@ -442,8 +443,8 @@
     "filter_empty": "No downloads here",
     "filter_empty_body": "Choose another filter or add a download.",
     "details": "Details",
-    "result_installed": "Installed · {} saved",
-    "result_saved": "Downloaded · {} saved"
+    "result_installed": "Installed · {}",
+    "result_saved": "Saved · {}"
   },
   "files": {
     "title": "Downloaded files",

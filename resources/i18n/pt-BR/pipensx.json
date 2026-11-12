@@ -359,6 +359,7 @@
     "clear_files_question": "Apagar os arquivos baixados de {0} entradas concluídas e liberar {1}? {2} entradas em uso serão mantidas, com os arquivos. Jogos e ports instalados não são removidos.",
     "clear_result": "Removidas {0} entradas. {1} ficaram porque estão em uso.",
     "clear_files_result": "Arquivos removidos de {0} entradas. {1} ficaram porque estão em uso.",
+    "summary_uploaded": "Enviado: {}",
     "summary_counts": "{0} baixando · {1} na fila · {2} instalando",
     "summary_paused": "{0} pausados",
     "summary_errors": "{0} erros",
@@ -442,8 +443,8 @@
     "filter_empty": "Nenhum download aqui",
     "filter_empty_body": "Escolha outro filtro ou adicione um download.",
     "details": "Detalhes",
-    "result_installed": "Instalado · {} salvos",
-    "result_saved": "Baixado · {} salvos"
+    "result_installed": "Instalado · {}",
+    "result_saved": "Salvo · {}"
   },
   "files": {
     "title": "Arquivos baixados",

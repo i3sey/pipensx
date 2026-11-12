@@ -736,6 +736,8 @@ struct QueueSummary {
     uint32_t paused = 0;
     uint32_t completed = 0;
     uint32_t errors = 0;
+    uint64_t uploadedBytes = 0;
+    uint64_t uploadSpeedBps = 0;
     uint64_t downloadSpeedBps = 0;
     uint64_t installSpeedBps = 0;
     uint64_t totalRemainingBytes = 0;

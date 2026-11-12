@@ -232,8 +232,8 @@ public:
         });
         tabs->addSeparator();
         tabs->addNavTab(tr("pipensx/nav/downloads"), NavIconType::Downloads,
-                        [manager, metadata, settings, deploy] {
-            return new MainView(manager, metadata, settings, deploy);
+                        [manager, metadata, settings, deploy, catalog] {
+            return new MainView(manager, metadata, settings, deploy, catalog);
         });
         tabs->addNavTab(tr("pipensx/nav/installed"), NavIconType::Installed,
                         [installed, manager, metadata, settings, catalog,

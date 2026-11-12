@@ -359,6 +359,7 @@
     "clear_files_question": "删除 {0} 条已完成记录的下载文件并释放 {1}？{2} 条正在使用的记录及其文件会保留。已安装的游戏和移植不会被删除。",
     "clear_result": "已移除 {0} 条记录。因正在使用而保留 {1} 条。",
     "clear_files_result": "已删除 {0} 条记录的下载文件。因正在使用而保留 {1} 条。",
+    "summary_uploaded": "已上传：{}",
     "summary_counts": "{0} 下载中 · {1} 排队 · {2} 安装中",
     "summary_paused": "{0} 已暂停",
     "summary_errors": "{0} 错误",

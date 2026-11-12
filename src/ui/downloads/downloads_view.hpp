@@ -40,6 +40,7 @@ public:
     int numberOfSections(brls::RecyclerFrame*) override;
     int numberOfRows(brls::RecyclerFrame*, int section) override;
     std::string titleForHeader(brls::RecyclerFrame*, int section) override;
+    float heightForHeader(brls::RecyclerFrame*, int section) override;
     brls::RecyclerCell* cellForRow(brls::RecyclerFrame* recycler,
                                     brls::IndexPath index) override;
     void didSelectRowAt(brls::RecyclerFrame*, brls::IndexPath index) override;
@@ -57,15 +58,16 @@ private:
 class MainView : public brls::Box {
 public:
     MainView(DownloadManager* manager, GameMetadataService* metadata,
-             AppSettings* settings, SwitchDeployService* deploy = nullptr)
+             AppSettings* settings, SwitchDeployService* deploy = nullptr,
+             CatalogService* catalog = nullptr)
         : brls::Box(brls::Axis::COLUMN), manager_(manager), metadata_(metadata),
-          settings_(settings), deploy_(deploy) {
+          settings_(settings), deploy_(deploy), catalog_(catalog) {
         auto* toolbar = new brls::Box(brls::Axis::ROW);
-        toolbar->setPadding(20, 32, 12, 32);
+        toolbar->setPadding(16, 32, 8, 32);
         toolbar->setAlignItems(brls::AlignItems::CENTER);
         auto* heading = new brls::Label();
         heading->setText(tr("pipensx/downloads/workspace_title"));
-        heading->setFontSize(theme::kFontTitle);
+        heading->setFontSize(theme::kFontHeading);
         heading->setGrow(1);
         toolbar->addView(heading);
         addButton_ = new brls::Button();
@@ -86,35 +88,6 @@ public:
         toolbar->addView(actions);
         addView(toolbar);
 
-        auto* screenControls = new brls::Box(brls::Axis::ROW);
-        screenControls->setPadding(0, 32, 12, 32);
-        screenControls->setAlignItems(brls::AlignItems::CENTER);
-        screenButton_ = new brls::Button();
-        screenButton_->setFontSize(theme::kFontSmall);
-        screenButton_->setHeight(52);
-        screenButton_->setMarginRight(16);
-        screenButton_->registerClickAction([this](brls::View*) {
-            if (!settings_ || !(manager_->hasActiveTransfer() ||
-                               (deploy_ && deploy_->snapshot().active())))
-                return true;
-            auto values = settings_->get();
-            values.blankScreenDuringTransfers = !values.blankScreenDuringTransfers;
-            std::string error;
-            if (!settings_->update(values, error))
-                brls::Application::notify(error);
-            refresh();
-            return true;
-        });
-        screenControls->addView(screenButton_);
-        auto* screenHint = new brls::Label();
-        screenHint->setText(tr("pipensx/downloads/screen_mode_hint"));
-        screenHint->setFontSize(theme::kFontCaption);
-        screenHint->setTextColor(theme::textSecondary());
-        screenHint->setGrow(1);
-        screenHint->setSingleLine(false);
-        screenControls->addView(screenHint);
-        addView(screenControls);
-
         filters_ = new brls::Box(brls::Axis::ROW);
         auto* filters = filters_;
         filters->setPadding(0, 32, 12, 32);
@@ -123,12 +96,15 @@ public:
         for (int i = 0; i < 5; ++i) {
             auto* button = new brls::Button();
             button->setFontSize(theme::kFontSmall);
-            button->setGrow(1);
+            button->setHeight(40);
+            button->setCornerRadius(theme::kRadiusSmall);
             button->setMarginRight(i == 4 ? 0 : 12);
             button->registerClickAction([this, i](brls::View*) {
                 selectedFilter_ = i;
                 pendingReload_ = true;
                 refresh();
+                if (!tasks_.empty())
+                    brls::Application::giveFocus(recycler_);
                 return true;
             });
             filterButtons_.push_back(button);
@@ -147,7 +123,7 @@ public:
         recycler_ = new SmoothRecyclerFrame();
         recycler_->setGrow(1);
         recycler_->setPadding(6, 32, 6, 32);
-        recycler_->estimatedRowHeight = 132;
+        recycler_->estimatedRowHeight = DownloadCell::kHeight;
         recycler_->registerCell("Download", [] { return new DownloadCell(); });
         recycler_->registerCell("Message", [] { return new MessageCell(); });
         dataSource_ = new DownloadDataSource(this);
@@ -173,6 +149,12 @@ public:
             }
         });
         startRefreshing();
+    }
+
+    brls::View* getDefaultFocus() override {
+        if (recycler_ && !tasks_.empty())
+            return recycler_->getDefaultFocus();
+        return addButton_;
     }
 
     void willAppear(bool resetState) override {
@@ -394,6 +376,7 @@ public:
     const std::string& rootPath() const { return manager_->rootPath(); }
 
     GameMetadataService* metadataService() const { return metadata_; }
+    CatalogService* catalogService() const { return catalog_; }
     const SwitchDeploySnapshot& deploySnapshot() const {
         return deploySnapshot_;
     }
@@ -445,7 +428,10 @@ private:
                         : "pipensx/downloads/resume_all"),
             tr("pipensx/downloads/clear_completed",
                planClearCompleted(tasks, manager_->externalDeployTaskId()).clearable),
-            tr("pipensx/downloads/clear_files")};
+            tr("pipensx/downloads/clear_files"),
+            tr(settings_ && settings_->get().blankScreenDuringTransfers
+                ? "pipensx/downloads/screen_mode_on"
+                : "pipensx/downloads/screen_mode_off")};
         auto alive = alive_;
         auto* menu = new brls::Dropdown(tr("pipensx/downloads/manage"), labels,
             [this, alive, pausable](int selected) {
@@ -456,6 +442,14 @@ private:
                         if (pausable) pauseAll(); else resumeAll();
                     } else if (selected == 1) confirmClearEntries();
                     else if (selected == 2) confirmClearFiles();
+                    else if (selected == 3 && settings_) {
+                        auto values = settings_->get();
+                        values.blankScreenDuringTransfers = !values.blankScreenDuringTransfers;
+                        std::string error;
+                        if (!settings_->update(values, error))
+                            brls::Application::notify(error);
+                        refresh();
+                    }
                 });
             });
         brls::Application::pushActivity(new brls::Activity(menu));
@@ -582,12 +576,13 @@ private:
     }
 
     std::string summaryText(const std::vector<DownloadTask>& tasks) const {
-        if (tasks.empty())
-            return {};
         const pipensx::QueueSummary s = summarizeQueue(tasks, now_ms());
-        if (!s.downloading && !s.queued && !s.installing && !s.paused && !s.errors)
-            return {};
-        std::string text = tr("pipensx/downloads/summary_counts",
+        std::string text = tr("pipensx/downloads/summary_uploaded",
+                              formatBytes(s.uploadedBytes));
+        if (s.uploadSpeedBps)
+            text += "   ↑ " + formatSpeed(s.uploadSpeedBps);
+        if (s.downloading || s.queued || s.installing)
+            text += "   " + tr("pipensx/downloads/summary_counts",
                               s.downloading, s.queued, s.installing);
         if (s.paused)
             text += "   " + tr("pipensx/downloads/summary_paused", s.paused);
@@ -623,14 +618,6 @@ private:
                 (unsigned long long)durationUs, structural ? 1 : 0,
                 reload ? 1 : 0);
         };
-        const bool blank = settings_ && settings_->get().blankScreenDuringTransfers;
-        setTextIfChanged(screenButton_, tr(blank
-            ? "pipensx/downloads/screen_mode_on" : "pipensx/downloads/screen_mode_off"));
-        screenButton_->setStyle(blank ? &brls::BUTTONSTYLE_PRIMARY
-                                       : &brls::BUTTONSTYLE_DEFAULT);
-        screenButton_->setState(manager_->hasActiveTransfer() ||
-            (deploy_ && deploy_->snapshot().active())
-                ? brls::ButtonState::ENABLED : brls::ButtonState::DISABLED);
         auto next = manager_->snapshotUi();
         const SwitchDeploySnapshot deployState = deploy_ ? deploy_->snapshot()
                                                          : SwitchDeploySnapshot{};
@@ -677,7 +664,9 @@ private:
             button->setText(tr(filterKeys_[i].c_str()) + "  " +
                             std::to_string(filterCounts[i]));
             button->setStyle(static_cast<int>(i) == selectedFilter_
-                ? &brls::BUTTONSTYLE_PRIMARY : &brls::BUTTONSTYLE_DEFAULT);
+                ? &brls::BUTTONSTYLE_BORDERED : &brls::BUTTONSTYLE_BORDERLESS);
+            button->setTextColor(static_cast<int>(i) == selectedFilter_
+                ? theme::textPrimary() : theme::textSecondary());
         }
         filters_->setVisibility(filterCounts[0] > 0
             ? brls::Visibility::VISIBLE : brls::Visibility::GONE);
@@ -707,6 +696,10 @@ private:
                                        listed == DownloadListUpdate::Reload;
         const bool progressChanged = listed == DownloadListUpdate::Repaint;
         if (!structureChanged && !progressChanged) {
+            for (auto* cell : visibleCells<DownloadCell>(recycler_))
+                if (const DownloadTask* task =
+                        dataSource_->taskAt(cell->getIndexPath()))
+                    cell->refreshArtwork(*task, metadata_, rootPath(), catalog_);
             logRefresh(false, false);
             return;
         }
@@ -721,7 +714,7 @@ private:
             for (auto* cell : visibleCells<DownloadCell>(recycler_))
                 if (const DownloadTask* task =
                         dataSource_->taskAt(cell->getIndexPath()))
-                    cell->setTask(*task, metadata_, &deploySnapshot_, rootPath());
+                    cell->setTask(*task, metadata_, &deploySnapshot_, rootPath(), catalog_);
             logRefresh(false, false);
             return;
         }
@@ -785,9 +778,10 @@ private:
     GameMetadataService* metadata_;
     AppSettings* settings_;
     SwitchDeployService* deploy_;
+    CatalogService* catalog_;
     EmptyStateView* emptyState_ = nullptr;
     brls::Label* summary_ = nullptr;
-    brls::RecyclerFrame* recycler_;
+    brls::RecyclerFrame* recycler_ = nullptr;
     brls::Box* recyclerHost_ = nullptr;
     DownloadDataSource* dataSource_;
     brls::RepeatingTimer timer_;
@@ -802,7 +796,6 @@ private:
     std::shared_ptr<std::atomic<bool>> alive_ =
         std::make_shared<std::atomic<bool>>(true);
     bool clearInFlight_ = false;
-    brls::Button* screenButton_ = nullptr;
     brls::Button* addButton_ = nullptr;
     brls::Box* filters_ = nullptr;
     int selectedFilter_ = 0;

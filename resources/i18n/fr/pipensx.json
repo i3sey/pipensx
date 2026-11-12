@@ -359,6 +359,7 @@
     "clear_files_question": "Supprimer les fichiers téléchargés de {0} entrées terminées et libérer {1} ? {2} entrées occupées seront conservées, avec leurs fichiers. Les jeux et ports installés ne sont pas retirés.",
     "clear_result": "{0} entrées retirées. {1} laissées car elles sont occupées.",
     "clear_files_result": "Fichiers supprimés pour {0} entrées. {1} laissées car elles sont occupées.",
+    "summary_uploaded": "Envoyé : {}",
     "summary_counts": "{0} en téléchargement · {1} en file · {2} en installation",
     "summary_paused": "{0} en pause",
     "summary_errors": "{0} erreurs",
@@ -442,8 +443,8 @@
     "filter_empty": "Aucun téléchargement ici",
     "filter_empty_body": "Choisissez un autre filtre ou ajoutez un téléchargement.",
     "details": "Détails",
-    "result_installed": "Installé · {} conservés",
-    "result_saved": "Téléchargé · {} conservés"
+    "result_installed": "Installé · {}",
+    "result_saved": "Enregistré · {}"
   },
   "files": {
     "title": "Fichiers téléchargés",

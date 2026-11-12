@@ -99,7 +99,11 @@ int DownloadDataSource::numberOfRows(brls::RecyclerFrame*, int section) {
 
 std::string DownloadDataSource::titleForHeader(brls::RecyclerFrame*,
                                                 int section) {
-    return sections_[section].title;
+    return sections_.size() > 1 ? sections_[section].title : std::string{};
+}
+
+float DownloadDataSource::heightForHeader(brls::RecyclerFrame*, int) {
+    return sections_.size() > 1 ? 36.0f : 0.0f;
 }
 
 brls::RecyclerCell* DownloadDataSource::cellForRow(
@@ -111,7 +115,8 @@ brls::RecyclerCell* DownloadDataSource::cellForRow(
         recycler->dequeueReusableCell("Download"));
     if (const DownloadTask* task = taskAt(index))
         cell->setTask(*task, owner_->metadataService(),
-                      &owner_->deploySnapshot(), owner_->rootPath());
+                      &owner_->deploySnapshot(), owner_->rootPath(),
+                      owner_->catalogService());
     return cell;
 }
 

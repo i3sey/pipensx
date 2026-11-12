@@ -3,9 +3,9 @@
 // UI: Switch-style top navigation frame.
 //
 // Replaces brls::TabFrame. A 72px top bar carries the wordmark
-// and icon tabs (the active tab expands to show its label; L/R cycle
-// them). Content fills the rest. Tab views are created lazily and kept
-// alive across switches so a stream-install is not torn down mid-flight.
+// and icon tabs with a label on the active tab (L/R cycle them).
+// Tab views are created lazily
+// and kept alive so a stream-install is not torn down mid-flight.
 
 #include <atomic>
 #include <exception>
@@ -79,7 +79,7 @@ private:
     static void drawInstalled(NVGcontext* vg, float gx, float gy, float s);
     static void drawSettings(NVGcontext* vg, float gx, float gy, float s);
     static void drawAbout(NVGcontext* vg, float gx, float gy, float s);
-    static void drawPulse(NVGcontext* vg, float gx, float gy, float s);
+    static void drawHelp(NVGcontext* vg, float gx, float gy, float s);
 
     NavIconType type_;
     TopTab* owner_;
@@ -122,6 +122,7 @@ public:
         label_ = new brls::Label();
         label_->setText(label);
         label_->setFontSize(theme::kFontSmall);
+        label_->setSingleLine(true);
         label_->setMarginLeft(8);
         label_->setVisibility(brls::Visibility::GONE);
         addView(label_);
@@ -139,8 +140,7 @@ public:
 
     void setTabActive(bool active) {
         active_ = active;
-        // Active tab needs no focus frame: the accent pill is the indicator.
-        setHideHighlight(active);
+        setHideHighlight(false);
         label_->setVisibility(active ? brls::Visibility::VISIBLE
                                      : brls::Visibility::GONE);
         label_->setTextColor(active ? theme::accent()
@@ -203,7 +203,7 @@ inline void NavIcon::draw(NVGcontext* vg, float x, float y, float width,
         case NavIconType::Downloads: drawDownloads(vg, gx, gy, s); break;
         case NavIconType::Installed: drawInstalled(vg, gx, gy, s); break;
         case NavIconType::Settings:  drawSettings(vg, gx, gy, s); break;
-        case NavIconType::Help:      drawPulse(vg, gx, gy, s); break;
+        case NavIconType::Help:      drawHelp(vg, gx, gy, s); break;
         case NavIconType::About:     drawAbout(vg, gx, gy, s); break;
     }
 }
@@ -321,15 +321,20 @@ inline void NavIcon::drawAbout(NVGcontext* vg, float gx, float gy, float s) {
     nvgStroke(vg);
 }
 
-inline void NavIcon::drawPulse(NVGcontext* vg, float gx, float gy, float s) {
+inline void NavIcon::drawHelp(NVGcontext* vg, float gx, float gy, float s) {
+    const float cx = gx + s / 2.0f;
     nvgBeginPath(vg);
-    nvgMoveTo(vg, gx + 2.0f, gy + 15.0f);
-    nvgLineTo(vg, gx + 9.0f, gy + 15.0f);
-    nvgLineTo(vg, gx + 11.0f, gy + 7.0f);
-    nvgLineTo(vg, gx + 13.0f, gy + 19.0f);
-    nvgLineTo(vg, gx + 15.0f, gy + 15.0f);
-    nvgLineTo(vg, gx + s - 2.0f, gy + 15.0f);
+    nvgCircle(vg, cx, gy + s / 2.0f, s / 2.0f - 1.0f);
     nvgStroke(vg);
+    nvgBeginPath(vg);
+    nvgMoveTo(vg, cx - 3.0f, gy + 8.0f);
+    nvgBezierTo(vg, cx - 3.0f, gy + 3.0f, cx + 6.0f, gy + 4.0f,
+                cx + 3.0f, gy + 10.0f);
+    nvgLineTo(vg, cx, gy + 13.0f);
+    nvgStroke(vg);
+    nvgBeginPath(vg);
+    nvgCircle(vg, cx, gy + 17.0f, 1.0f);
+    nvgFill(vg);
 }
 
 class MainFrame : public brls::Box {

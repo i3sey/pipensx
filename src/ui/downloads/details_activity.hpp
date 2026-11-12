@@ -192,7 +192,9 @@ public:
         loadDeployAvailability();
         timer_.setCallback([this] { refresh(); });
         timer_.start(500);
-        brls::Application::giveFocus(pauseButton_);
+        brls::Application::giveFocus(
+            pauseButton_->getVisibility() == brls::Visibility::VISIBLE
+                ? pauseButton_ : detailsButton_);
     }
 
     ~DetailsActivity() override {
@@ -207,6 +209,7 @@ private:
         auto* label = new brls::Label();
         label->setWidth(brls::View::AUTO);
         label->setFontSize(size);
+        label->setShrink(0);
         label->setMarginBottom(4);
         box->addView(label);
         return label;
@@ -214,6 +217,7 @@ private:
 
     static brls::Box* addCard(brls::Box* parent, const std::string& title) {
         auto* card = new brls::Box(brls::Axis::COLUMN);
+        card->setShrink(0);
         card->setBackgroundColor(theme::surface());
         card->setCornerRadius(theme::kRadiusMedium);
         card->setPadding(12, 16, 12, 16);

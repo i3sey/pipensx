@@ -134,6 +134,22 @@ void testStreamingEtaDoesNotDoubleCountTraffic() {
     assert(streamOnly.etaSeconds == 6); // not 3 seconds
 }
 
+void testSummaryIncludesUploadFromFinishedAndPausedTasks() {
+    DownloadTask active = task(DownloadStatus::Downloading);
+    active.uploadedBytes = 100;
+    active.uploadSpeedBytesPerSecond = 20;
+    DownloadTask installed = task(DownloadStatus::Installed);
+    installed.uploadedBytes = 300;
+    installed.uploadSpeedBytesPerSecond = 10;
+    DownloadTask paused = task(DownloadStatus::Paused);
+    paused.uploadedBytes = 50;
+    const auto summary = pipensx::summarizeQueue({active, installed, paused}, 0);
+    assert(summary.uploadedBytes == 450);
+    assert(summary.uploadSpeedBps == 30);
+    const auto empty = pipensx::summarizeQueue({}, 0);
+    assert(empty.uploadedBytes == 0 && empty.uploadSpeedBps == 0);
+}
+
 void testMoveTask() {
     const std::string root = tempRoot() + "-move";
     removeAll(root);
@@ -694,6 +710,7 @@ void testInjectMissingFallbackTrackers() {
 
 int main() {
     testSummarizeQueueCounts();
+    testSummaryIncludesUploadFromFinishedAndPausedTasks();
     testSummarizeQueueSpeedAndEta();
     testSummarizeQueueNoThroughputNoEta();
     testStreamingEtaDoesNotDoubleCountTraffic();

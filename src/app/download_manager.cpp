@@ -2601,6 +2601,8 @@ QueueSummary summarizeQueue(const std::vector<DownloadTask>& tasks,
             }
             summary.totalRemainingBytes += remaining;
         }
+        summary.uploadedBytes += task.uploadedBytes;
+        summary.uploadSpeedBps += task.uploadSpeedBytesPerSecond;
         summary.downloadSpeedBps += task.speedBytesPerSecond;
         const uint64_t installSpeed = currentInstallSpeed(task, nowMs);
         summary.installSpeedBps += installSpeed;

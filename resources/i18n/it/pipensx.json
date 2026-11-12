@@ -360,6 +360,7 @@
     "clear_files_question": "Eliminare i file scaricati di {0} voci completate e liberare {1}? {2} voci in uso verranno lasciate, con i file. I giochi e i port installati non vengono rimossi.",
     "clear_result": "Rimosse {0} voci. Lasciate {1} perché sono in uso.",
     "clear_files_result": "File eliminati per {0} voci. Lasciate {1} perché sono in uso.",
+    "summary_uploaded": "Caricato: {}",
     "summary_counts": "{0} in download · {1} in coda · {2} in installazione",
     "summary_paused": "{0} in pausa",
     "summary_errors": "{0} errori",
