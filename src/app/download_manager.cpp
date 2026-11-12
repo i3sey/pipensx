@@ -3565,6 +3565,12 @@ void DownloadManager::runTask(RunnerSlot* slot, ClaimedTask claim) {
                 task->uploadedBytes = uploadedBeforeSession + upload.uploaded;
                 task->uploadSpeedBytesPerSecond = upload.upload_bps;
                 task->seedCacheBytes = upload.seed_cache_bytes;
+                task->peers = upload.num_peers;
+                task->dhtGood = upload.dht_good;
+                task->dhtDubious = upload.dht_dubious;
+                task->piecesDone = upload.num_pieces_done;
+                task->piecesTotal = upload.num_pieces;
+                task->piecesVerified = upload.num_pieces_verified;
                 if (now_ms() - lastCheckpointMs >= kResumeCheckpointMs &&
                     task->uploadedBytes != lastCheckpointBytes) {
                     lastCheckpointBytes = task->uploadedBytes;

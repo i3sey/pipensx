@@ -709,7 +709,7 @@ private:
             installSpeedItem_->setVisibility(brls::Visibility::GONE);
         }
         const bool direct = task->source == TaskSource::Torrent;
-        networkCard_->setVisibility(showDetails_ && direct && !finished
+        networkCard_->setVisibility(showDetails_ && direct
             ? brls::Visibility::VISIBLE : brls::Visibility::GONE);
         const auto detailVisibility = showDetails_ ? brls::Visibility::VISIBLE
                                                  : brls::Visibility::GONE;
