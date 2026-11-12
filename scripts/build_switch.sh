@@ -50,7 +50,7 @@ PIPENSX_ENABLE_LTO="${PIPENSX_ENABLE_LTO:-ON}"
     "-DPIPENSX_ENABLE_LTO=${PIPENSX_ENABLE_LTO}" \
     -DCMAKE_BUILD_TYPE=Release
 
-JOBS="${BUILD_JOBS:-$(nproc)}"
+JOBS="${BUILD_JOBS:-${CMAKE_BUILD_PARALLEL_LEVEL:-$(nproc)}}"
 if [[ "${JOBS}" == "0" ]]; then
     JOBS="$(nproc)"
 fi

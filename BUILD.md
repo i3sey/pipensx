@@ -142,7 +142,11 @@ submodule, push its commit to that mirror before pushing pipensx. Other
 submodules use the URLs in `.gitmodules`. Outside Gitea CI, borealis uses the
 GitLab mirror configured in `.gitmodules`.
 
-GitLab uses `.gitlab-ci.yml` for Secret Detection, SAST, and Pages on `main`.
-Tags and manual web/API pipelines also build the Switch application and publish
-releases with NRO and checksum assets through the GitLab Package Registry. The
-GitHub release workflow remains in `.github/workflows/switch-release.yml`.
+GitLab uses `.gitlab-ci.yml` for PC and browser tests, Secret Detection, SAST,
+and Pages on `main`. Tags and manual web/API pipelines also build the Switch
+application after the tests pass. Only tags publish a release through the
+GitLab Package Registry, with the NRO, its checksum, `SDOut.zip`, and the notes
+from `releases/<version>-notes.md`. A tag build requires `VERSION` to match the
+tag after removing an optional leading `v`. Manual builds do not publish a
+release. The GitHub draft-release workflow remains in
+`.github/workflows/switch-release.yml`.

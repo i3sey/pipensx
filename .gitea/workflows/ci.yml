@@ -126,8 +126,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential clang python3 libcurl4-openssl-dev libssl-dev \
-            libzstd-dev zlib1g-dev
+            build-essential clang libclang-rt-dev python3 libcurl4-openssl-dev libssl-dev \
+            libzstd-dev zlib1g-dev p7zip-full
 
       - name: PC tests under ASan+UBSan
         run: make -f Makefile.pc clean && make -f Makefile.pc test SANITIZE=1 -j2
