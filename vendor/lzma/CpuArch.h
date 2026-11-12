@@ -5,6 +5,7 @@ Igor Pavlov : Public domain */
 #define ZIP7_INC_CPU_ARCH_H
 
 #include "7zTypes.h"
+#include <string.h>
 
 EXTERN_C_BEGIN
 
@@ -467,15 +468,33 @@ problem-4 : performace:
 
 #ifdef MY_CPU_LE_UNALIGN
 
-#define GetUi16(p) (*(const UInt16 *)(const void *)(p))
-#define GetUi32(p) (*(const UInt32 *)(const void *)(p))
+static Z7_FORCE_INLINE UInt16 Z7_GetUi16(const void *p)
+{
+  UInt16 value;
+  memcpy(&value, p, sizeof(value));
+  return value;
+}
+static Z7_FORCE_INLINE UInt32 Z7_GetUi32(const void *p)
+{
+  UInt32 value;
+  memcpy(&value, p, sizeof(value));
+  return value;
+}
+#define GetUi16(p) Z7_GetUi16(p)
+#define GetUi32(p) Z7_GetUi32(p)
 #ifdef MY_CPU_LE_UNALIGN_64
-#define GetUi64(p) (*(const UInt64 *)(const void *)(p))
-#define SetUi64(p, v) { *(UInt64 *)(void *)(p) = (v); }
+static Z7_FORCE_INLINE UInt64 Z7_GetUi64(const void *p)
+{
+  UInt64 value;
+  memcpy(&value, p, sizeof(value));
+  return value;
+}
+#define GetUi64(p) Z7_GetUi64(p)
+#define SetUi64(p, v) { const UInt64 _vvv_ = (v); memcpy(p, &_vvv_, sizeof(_vvv_)); }
 #endif
 
-#define SetUi16(p, v) { *(UInt16 *)(void *)(p) = (v); }
-#define SetUi32(p, v) { *(UInt32 *)(void *)(p) = (v); }
+#define SetUi16(p, v) { const UInt16 _vvv_ = (v); memcpy(p, &_vvv_, sizeof(_vvv_)); }
+#define SetUi32(p, v) { const UInt32 _vvv_ = (v); memcpy(p, &_vvv_, sizeof(_vvv_)); }
 
 #else
 
@@ -517,17 +536,17 @@ problem-4 : performace:
 
 #if 0
 // Z7_BSWAP16 can be slow for x86-msvc
-#define GetBe16_to32(p)  (Z7_BSWAP16 (*(const UInt16 *)(const void *)(p)))
+#define GetBe16_to32(p)  (Z7_BSWAP16 (GetUi16(p)))
 #else
-#define GetBe16_to32(p)  (Z7_BSWAP32 (*(const UInt16 *)(const void *)(p)) >> 16)
+#define GetBe16_to32(p)  (Z7_BSWAP32 (GetUi16(p)) >> 16)
 #endif
 
-#define GetBe32(p)  Z7_BSWAP32 (*(const UInt32 *)(const void *)(p))
-#define SetBe32(p, v) { (*(UInt32 *)(void *)(p)) = Z7_BSWAP32(v); }
+#define GetBe32(p)  Z7_BSWAP32 (GetUi32(p))
+#define SetBe32(p, v) SetUi32(p, Z7_BSWAP32(v))
 
 #if defined(MY_CPU_LE_UNALIGN_64)
-#define GetBe64(p)  Z7_BSWAP64 (*(const UInt64 *)(const void *)(p))
-#define SetBe64(p, v) { (*(UInt64 *)(void *)(p)) = Z7_BSWAP64(v); }
+#define GetBe64(p)  Z7_BSWAP64 (GetUi64(p))
+#define SetBe64(p, v) SetUi64(p, Z7_BSWAP64(v))
 #endif
 
 #else
