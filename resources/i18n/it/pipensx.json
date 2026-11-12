@@ -650,6 +650,8 @@
     "retry_note": "\nGiochi non completati restano selezionati per riprovare."
   },
   "storage": {
+    "selection_totals": "Scaricare dalla rete: {}\nSpazio necessario: {}",
+    "selection_sd_download": "\nSu SD per i download: {}",
     "preliminary": "Stima: scegli i file",
     "choose_files_size": "Calcolato dopo la scelta dei file",
     "additional_bytes": "Spazio aggiuntivo {}",

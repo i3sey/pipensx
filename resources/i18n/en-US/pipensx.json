@@ -650,6 +650,8 @@
     "retry_note": "\nUnfinished games stay selected for retry."
   },
   "storage": {
+    "selection_totals": "Download from network: {}\nSpace needed: {}",
+    "selection_sd_download": "\nOn SD for downloads: {}",
     "preliminary": "Preliminary: choose files",
     "choose_files_size": "Calculated after file selection",
     "additional_bytes": "Additional space {}",

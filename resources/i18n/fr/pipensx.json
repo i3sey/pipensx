@@ -650,6 +650,8 @@
     "retry_note": "\nLes jeux non terminés restent sélectionnés pour une nouvelle tentative."
   },
   "storage": {
+    "selection_totals": "À télécharger : {}\nEspace nécessaire : {}",
+    "selection_sd_download": "\nSur SD pour les fichiers : {}",
     "preliminary": "Estimation : choisir les fichiers",
     "choose_files_size": "Calculé après sélection des fichiers",
     "additional_bytes": "Espace supplémentaire {}",

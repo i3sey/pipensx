@@ -650,6 +650,8 @@
     "retry_note": "\n未完成的游戏会保持选中以供重试。"
   },
   "storage": {
+    "selection_totals": "从网络下载：{}\n所需空间：{}",
+    "selection_sd_download": "\n下载所需 SD 空间：{}",
     "preliminary": "初步信息：请选择文件",
     "choose_files_size": "选择文件后计算",
     "additional_bytes": "额外空间 {}",

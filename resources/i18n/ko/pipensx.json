@@ -650,6 +650,8 @@
     "retry_note": "\n끝나지 않은 게임은 다시 시도할 수 있도록 선택된 상태로 남습니다."
   },
   "storage": {
+    "selection_totals": "네트워크 다운로드: {}\n필요 공간: {}",
+    "selection_sd_download": "\n다운로드용 SD 공간: {}",
     "preliminary": "예비 정보: 파일 선택",
     "choose_files_size": "파일 선택 후 계산",
     "additional_bytes": "추가 공간 {}",

@@ -650,6 +650,8 @@
     "retry_note": "\nНезавершённые игры останутся выбранными для повтора."
   },
   "storage": {
+    "selection_totals": "Скачать из сети: {}\nЗаймёт места: {}",
+    "selection_sd_download": "\nНа SD для загрузки: {}",
     "preliminary": "Оценка после выбора файлов",
     "choose_files_size": "Уточняется при выборе файлов",
     "additional_bytes": "Доп. место {}",

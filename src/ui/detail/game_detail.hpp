@@ -1073,14 +1073,28 @@ private:
             startDebridInstall(TransferMode::StreamInstall, forcePicker);
             return;
         }
+        std::string existingMetainfo;
         const DownloadTask* existing = currentTask();
         if (existing && !existing->metainfoPath.empty() &&
             ::access(existing->metainfoPath.c_str(), R_OK) == 0) {
+            existingMetainfo = existing->metainfoPath;
+        } else {
+            for (int s = 0; s < 10; ++s) {
+                std::string candidate = manager_->rootPath() + "/_catalog_tmp_" +
+                                        catalogLower(entry_.infoHash) + "_" +
+                                        std::to_string(s) + ".torrent";
+                if (::access(candidate.c_str(), R_OK) == 0) {
+                    existingMetainfo = candidate;
+                    break;
+                }
+            }
+        }
+        if (!existingMetainfo.empty()) {
             uint32_t serial = gCatalogTempSerial.fetch_add(1);
             std::string tmp = manager_->rootPath() + "/_catalog_tmp_" +
                               catalogLower(entry_.infoHash) + "_" +
                               std::to_string(serial) + ".torrent";
-            if (copyMetainfoFile(existing->metainfoPath, tmp)) {
+            if (copyMetainfoFile(existingMetainfo, tmp)) {
                 finishImport(tmp, forcePicker, {});
                 return;
             }

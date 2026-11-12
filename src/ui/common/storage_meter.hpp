@@ -159,17 +159,20 @@ public:
         const bool insufficient =
             check.status == InstallSpaceCheckStatus::Insufficient;
         const std::string approximate =
-            estimate.certainty == SpaceEstimateCertainty::Exact ? "" : "≈";
+            estimate.certainty == SpaceEstimateCertainty::CompressedUnknown
+                ? "≈" : "";
         bar_->setData(total, free, required, insufficient);
         installDot_->setInsufficient(insufficient);
         refreshHeader();
-        value_->setText(tr("pipensx/storage/additional_bytes",
-                           approximate + formatBytes(required)));
+        value_->setText(tr("pipensx/storage/free", formatBytes(free)));
         caption_->setSingleLine(false);
-        std::string text = tr("pipensx/storage/selected_sizes",
+        std::string text = tr("pipensx/storage/selection_totals",
             formatBytes(estimate.selectedBytes),
-            approximate + formatBytes(estimate.packageBytes),
-            formatBytesShort(free));
+            approximate + formatBytes(required));
+        if (target == install::InstallStorageTarget::Nand &&
+            estimate.downloadBytes > 0)
+            text += tr("pipensx/storage/selection_sd_download",
+                       formatBytes(estimate.downloadBytes));
         if (estimate.certainty == SpaceEstimateCertainty::CompressedUnknown)
             text += tr("pipensx/storage/nsz_fallback");
         if (insufficient)

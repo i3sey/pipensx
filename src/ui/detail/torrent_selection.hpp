@@ -78,7 +78,7 @@ class ThreadGuide : public brls::View {
 public:
     ThreadGuide() {
         setFocusable(false);
-        setHeight(82);
+        setHeight(72);
     }
 
     void setDepth(int depth) {
@@ -119,7 +119,7 @@ public:
         setAxis(brls::Axis::ROW);
         setAlignItems(brls::AlignItems::CENTER);
         setPadding(12, 20, 12, 20);
-        setHeight(82);
+        setHeight(72);
 
         // The base RecyclerCell registers BUTTON_A as "OK"; re-registering the
         // same button replaces it (View::registerAction), so this only changes
@@ -252,7 +252,7 @@ public:
         setAxis(brls::Axis::ROW);
         setAlignItems(brls::AlignItems::CENTER);
         setPadding(12, 20, 12, 20);
-        setHeight(82);
+        setHeight(72);
 
         registerAction(tr("pipensx/common/toggle"), brls::BUTTON_A,
                        [this](brls::View*) {
@@ -569,10 +569,16 @@ public:
         content->setBackgroundColor(theme::overlay());
         content->setCornerRadius(12);
 
+        auto* titleRow = new brls::Box(brls::Axis::ROW);
+        titleRow->setFocusable(false);
+        titleRow->setAlignItems(brls::AlignItems::CENTER);
+        titleRow->setJustifyContent(brls::JustifyContent::SPACE_BETWEEN);
+        titleRow->setMarginBottom(12);
+
         title_ = new brls::Label();
         title_->setFontSize(26);
         title_->setText(tr("pipensx/torrent/title"));
-        content->addView(title_);
+        titleRow->addView(title_);
 
         std::string format;
         for (const auto& file : preview_.files) {
@@ -583,17 +589,17 @@ public:
                 format += kind;
             }
         }
-        content->addView(new ReleaseChips(release, preview_.totalBytes,
-            format.empty() ? release.imageFormat : format));
+        auto* chips = new ReleaseChips(release, 0,
+            format.empty() ? release.imageFormat : format);
+        chips->setMarginBottom(0);
+        chips->setPaddingRight(0);
+        titleRow->addView(chips);
+        content->addView(titleRow);
 
-        // Counts on the left, icon key on the right. Sharing one row with the
-        // summary keeps the key free: the list is the scarce space on this
-        // screen, and a legend of its own would cost it another row.
         auto* summaryRow = new brls::Box(brls::Axis::ROW);
         summaryRow->setFocusable(false);
         summaryRow->setAlignItems(brls::AlignItems::CENTER);
-        summaryRow->setMarginTop(6);
-        summaryRow->setMarginBottom(10);
+        summaryRow->setMarginBottom(12);
 
         summary_ = new brls::Label();
         summary_->setSingleLine(true);
@@ -602,18 +608,29 @@ public:
         summary_->setTextColor(theme::textSecondary());
         summaryRow->addView(summary_);
 
-        addLegendEntry(summaryRow, ActionIconKind::Install,
-                       tr("pipensx/torrent/legend_install"));
-        addLegendEntry(summaryRow, ActionIconKind::Download,
-                       tr("pipensx/torrent/legend_download"));
-        addLegendEntry(summaryRow, ActionIconKind::Skip,
-                       tr("pipensx/torrent/legend_skip"));
-        content->addView(summaryRow);
+        auto* body = new brls::Box(brls::Axis::ROW);
+        body->setGrow(1);
+        body->setMinHeight(0);
+        content->addView(body);
 
-        meter_ = new StorageMeter();
+        auto* files = new brls::Box(brls::Axis::COLUMN);
+        files->setGrow(1);
+        files->setMinWidth(0);
+        body->addView(files);
+        files->addView(summaryRow);
+
+        auto* sidebar = new brls::Box(brls::Axis::COLUMN);
+        sidebar->setWidth(300);
+        sidebar->setShrink(0);
+        sidebar->setMarginLeft(28);
+        sidebar->setPaddingLeft(12);
+        sidebar->setJustifyContent(brls::JustifyContent::CENTER);
+        body->addView(sidebar);
+
+        meter_ = new StorageMeter(true);
         meter_->setHeader(storageMeterHeader(manager_->installTarget()));
-        meter_->setMarginBottom(10);
-        content->addView(meter_);
+        meter_->setMarginBottom(20);
+        sidebar->addView(meter_);
 
         portRoot_ = pipensx::candidatePortRoot(preview_);
         const bool portLayout =
@@ -627,7 +644,7 @@ public:
             portHint_->setMarginBottom(8);
             portHint_->setSingleLine(false);
             portHint_->setText(tr("pipensx/torrent/port_detected"));
-            content->addView(portHint_);
+            files->addView(portHint_);
         }
 
         conflictHint_ = new brls::Label();
@@ -637,12 +654,12 @@ public:
         conflictHint_->setSingleLine(false);
         conflictHint_->setText(tr("pipensx/torrent/overlapping_updates"));
         conflictHint_->setVisibility(brls::Visibility::GONE);
-        content->addView(conflictHint_);
+        files->addView(conflictHint_);
 
         recycler_ = new SmoothRecyclerFrame();
         recycler_->setGrow(1);
-        recycler_->setPadding(6, 0, 6, 0);
-        recycler_->estimatedRowHeight = 82;
+        recycler_->setPadding(8, 8, 8, 8);
+        recycler_->estimatedRowHeight = 72;
         recycler_->registerCell("FileSelect", [this] {
             return new TorrentSelectionCell(
                 [this] { return validationInFlight_; });
@@ -653,13 +670,12 @@ public:
         });
         dataSource_ = new TorrentSelectionDataSource(this);
         recycler_->setDataSource(dataSource_);
-        content->addView(recyclerHost(recycler_));
+        files->addView(recyclerHost(recycler_));
 
         auto* buttons = new brls::Box(brls::Axis::COLUMN);
         buttons->setMarginTop(12);
 
         auto* row = new brls::Box(brls::Axis::ROW);
-        row->setMarginBottom(8);
 
         selectPackages_ = new brls::Button();
         selectPackages_->setStyle(&brls::BUTTONSTYLE_DEFAULT);
@@ -737,16 +753,34 @@ public:
 
         installSelected_ = new brls::Button();
         installSelected_->setStyle(&brls::BUTTONSTYLE_PRIMARY);
-        installSelected_->setFontSize(21);
-        installSelected_->setHeight(54);
+        installSelected_->setFontSize(18);
+        installSelected_->setHeight(48);
         installSelected_->setText(tr("pipensx/common/continue"));
         installSelected_->registerClickAction([this](brls::View*) {
             confirmSelection();
             return true;
         });
-        buttons->addView(installSelected_);
+        sidebar->addView(installSelected_);
 
-        content->addView(buttons);
+        auto* legend = new brls::Box(brls::Axis::COLUMN);
+        legend->setFocusable(false);
+        legend->setMarginTop(24);
+        const std::pair<ActionIconKind, const char*> legendEntries[] = {
+            {ActionIconKind::Install, "pipensx/torrent/legend_install"},
+            {ActionIconKind::Download, "pipensx/torrent/legend_download"},
+            {ActionIconKind::Skip, "pipensx/torrent/legend_skip"},
+        };
+        for (const auto& entry : legendEntries) {
+            auto* legendRow = new brls::Box(brls::Axis::ROW);
+            legendRow->setFocusable(false);
+            legendRow->setAlignItems(brls::AlignItems::CENTER);
+            legendRow->setMarginBottom(8);
+            addLegendEntry(legendRow, entry.first, tr(entry.second));
+            legend->addView(legendRow);
+        }
+        sidebar->addView(legend);
+
+        files->addView(buttons);
         frame_ = new brls::AppletFrame(content);
         frame_->setTitle(preview_.name.empty()
                              ? tr("pipensx/torrent/frame_title")
@@ -789,7 +823,6 @@ public:
     static void addLegendEntry(brls::Box* row, ActionIconKind kind,
                                const std::string& text) {
         auto* icon = new ActionIcon(kind, 18.0f);
-        icon->setMarginLeft(16);
         icon->setMarginRight(6);
         row->addView(icon);
 
@@ -1087,19 +1120,12 @@ public:
         else
             meter_->setUnavailable();
 
-        const std::string destination =
-            installDestinationLabel(installs > 0 ? manager_->installTarget()
-                : pipensx::install::InstallStorageTarget::SdCard);
         if (selected == 0) {
             installSelected_->setText(tr("pipensx/common/continue"));
         } else if (installFiles > 0) {
-            installSelected_->setText(tr(
-                "pipensx/torrent/cta_install", installFiles, destination,
-                formatBytes(estimate.requiredBytes)));
+            installSelected_->setText(tr("pipensx/torrent/legend_install"));
         } else {
-            installSelected_->setText(tr(
-                "pipensx/torrent/cta_download", downloads,
-                formatBytes(estimate.requiredBytes)));
+            installSelected_->setText(tr("pipensx/torrent/legend_download"));
         }
         installSelected_->setState(!storageReady_ || validationInFlight_ ||
                                     selected == 0 || estimate.overflow ||
