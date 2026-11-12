@@ -784,7 +784,7 @@ fileDrop($("update-drop"), $("update-file"), () => {
   const file = $("update-file").files[0];
   $("update-file-info").textContent = file ? file.name + " · " + bytes(file.size) : "";
 });
-async function uploadNro(file) {
+async function uploadNro(file, checksum = "") {
   const header = new Uint8Array(await file.slice(0, 0x80).arrayBuffer());
   if (!/\.nro$/i.test(file.name) || header.length < 0x80 || String.fromCharCode(...header.slice(0x10, 0x14)) !== "NRO0")
     throw new Error(t("web.invalidNro"));
@@ -796,6 +796,7 @@ async function uploadNro(file) {
     const request = new XMLHttpRequest();
     request.open("POST", "/api/update/upload");
     request.setRequestHeader("Content-Type", "application/octet-stream");
+    if (checksum) request.setRequestHeader("X-Pipensx-Sha256", checksum);
     request.setRequestHeader("X-Pipensx-Pin", localStorage.getItem("pipensxPin"));
     request.timeout = 180000;
     request.upload.onprogress = event => {
@@ -814,6 +815,82 @@ async function uploadNro(file) {
     request.send(file);
   });
 }
+async function phoneFetch(url, limit) {
+  if (!url.startsWith("https://")) throw new Error(t("web.phoneFailed"));
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(180000), credentials: "omit" });
+    if (!response.ok || Number(response.headers.get("content-length")) > limit) throw new Error();
+    const reader = response.body.getReader(), chunks = [];
+    let size = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.length;
+      if (size > limit) { await reader.cancel(); throw new Error(); }
+      chunks.push(value);
+    }
+    return new Blob(chunks);
+  } catch (_) { throw new Error(t("web.phoneFailed")); }
+}
+async function sendCatalog(file, checksum = "") {
+  if (!file || !file.size || file.size > 48 * 1024 * 1024) throw new Error(t("web.catalogFile"));
+  await post("/api/auth/check");
+  $("catalog-transfer-status").textContent = t("web.loading");
+  const headers = { "Content-Type": "application/json" };
+  if (checksum) headers["X-Pipensx-Sha256"] = checksum;
+  await api("/api/catalog/upload", { method: "POST", headers, body: file });
+  await loadCatalog(true);
+  $("catalog-transfer-status").textContent = t("web.catalogDone");
+}
+$("catalog-upload").onclick = event => busy(event.currentTarget,
+  () => sendCatalog($("catalog-file").files[0]), $("catalog-transfer-status"));
+$("catalog-phone").onclick = event => busy(event.currentTarget, async () => {
+  const config = await api("/api/settings");
+  const language = config.language && config.language !== "auto" ? config.language : lang;
+  const names = { ru: "RU", en: "EN", "en-US": "EN", fr: "FR", es: "ES", it: "IT", "pt-BR": "PT_BR", "zh-CN": "ZH_Hans" };
+  const url = config.catalogSourceUrl || "https://raw.githubusercontent.com/Langegen/switch-game-collection/main/" +
+    (names[language] || "EN") + "_catalog.json";
+  $("catalog-transfer-status").textContent = t("web.loading");
+  let checksum = "";
+  if (url === "https://github.com/i3sey/pipensx-catalog/releases/latest/download/catalog.json") {
+    const manifest = JSON.parse(await (await phoneFetch(url.replace("catalog.json", "manifest.json"), 64 * 1024)).text());
+    checksum = manifest.catalog?.sha256 || "";
+    if (manifest.schemaVersion !== 2 || !/^[a-f0-9]{64}$/.test(checksum)) throw new Error(t("web.phoneFailed"));
+  }
+  await sendCatalog(await phoneFetch(url, 48 * 1024 * 1024), checksum);
+}, $("catalog-transfer-status"));
+const phoneUpdate = document.createElement("button");
+phoneUpdate.type = "button";
+phoneUpdate.dataset.i18n = "web.phoneUpdate";
+phoneUpdate.textContent = t("web.phoneUpdate");
+$("update-form").before(phoneUpdate);
+phoneUpdate.onclick = event => busy(event.currentTarget, async () => {
+  if (updateBusy || restarting) return;
+  updateBusy = true;
+  $("update-upload").disabled = $("update-discard").disabled = true;
+  renderUpdate();
+  try {
+    await post("/api/auth/check");
+    $("update-status").textContent = t("web.loading");
+    const release = JSON.parse(await (await phoneFetch("https://gitlab.com/api/v4/projects/88330126/releases/permalink/latest", 1024 * 1024)).text());
+    const links = release.assets?.links || [];
+    const asset = name => {
+      const entry = links.find(item => item.name === name);
+      const url = entry?.direct_asset_url || entry?.url || "";
+      if (!url.startsWith("https://gitlab.com/") && !url.startsWith("https://github.com/i3sey/pipensx/releases/download/"))
+        throw new Error(t("web.phoneFailed"));
+      return url;
+    };
+    const checksum = (await (await phoneFetch(asset("pipensx.nro.sha256"), 4096)).text()).trim().split(/\s+/)[0].toLowerCase();
+    if (!/^[a-f0-9]{64}$/.test(checksum)) throw new Error(t("web.phoneFailed"));
+    const nro = await phoneFetch(asset("pipensx.nro"), 64 * 1024 * 1024);
+    updateStatus = await uploadNro(new File([nro], "pipensx.nro"), checksum);
+  } finally {
+    updateBusy = false;
+    $("update-upload").disabled = $("update-discard").disabled = false;
+    renderUpdate();
+  }
+}, $("update-status"));
 $("update-form").onsubmit = event => {
   event.preventDefault();
   busy(event.submitter, async () => {
@@ -967,6 +1044,7 @@ async function start() {
   instanceId = info.instanceId;
   $("catalog-favorites").hidden = !features.favorites;
   $("catalog-fetch").hidden = !features.catalogRefresh;
+  $("catalog-transfer").hidden = !features.catalogUpload;
   $("update-section").hidden = !features.update;
   $("storage-section").hidden = !features.maintenance;
   const libraryLink = document.querySelector('[data-page="library"]');

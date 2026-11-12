@@ -11,6 +11,7 @@
 
 extern "C" {
 #include "../core/util.h"
+#include "../core/sha256.h"
 }
 
 #include <borealis/extern/nlohmann/json.hpp>
@@ -342,6 +343,11 @@ HttpResponse WebServer::handleLibrary(const HttpRequest& req) {
                 {"titleId", job.titleId}, {"state", job.state}, {"error", job.error}});
     }
     return HttpResponse::text(200, dumpJson(response));
+}
+
+void WebServer::setCatalogUploader(CatalogUploader uploader) {
+    std::lock_guard<std::mutex> lock(configMutex_);
+    catalogUploader_ = std::move(uploader);
 }
 
 HttpResponse WebServer::handleLibraryCommand(const HttpRequest& req,
@@ -721,7 +727,7 @@ HttpResponse WebServer::routeApi(const HttpRequest& req) {
                 j["features"] = {{"favorites", bool(favoritesHandler_)},
                     {"library", bool(libraryGetter_)}, {"ports", bool(portHandler_)},
                     {"update", bool(updateUploader_)}, {"catalogRefresh", bool(libraryAction_)},
-                    {"maintenance", bool(maintenanceHandler_)}};
+                    {"maintenance", bool(maintenanceHandler_)}, {"catalogUpload", bool(catalogUploader_)}};
             }
             return HttpResponse::text(200, dumpJson(j));
         }
@@ -795,6 +801,24 @@ HttpResponse WebServer::routeApi(const HttpRequest& req) {
     // PIN check (auth/check exists so the UI can validate a remembered PIN
     // explicitly).
     if (!authorized(req)) return jsonError(401, "pin");
+    if (req.method == "POST" && req.path == "/api/catalog/upload") {
+        if (req.body.empty() || req.body.size() > 48 * 1024 * 1024)
+            return jsonError(413, "catalog must be between 1 byte and 48 MiB");
+        const auto expected = req.header("x-pipensx-sha256");
+        if (!expected.empty()) {
+            uint8_t digest[32];
+            sha256(req.body.data(), req.body.size(), digest);
+            char hex[65];
+            for (size_t i = 0; i < 32; ++i) std::snprintf(hex + i * 2, 3, "%02x", digest[i]);
+            if (expected != hex) return jsonError(400, "catalog checksum mismatch");
+        }
+        CatalogUploader upload;
+        { std::lock_guard<std::mutex> lock(configMutex_); upload = catalogUploader_; }
+        if (!upload) return jsonError(501, "catalog upload unavailable");
+        std::string error;
+        if (!upload(req.body, error)) return jsonError(409, error);
+        return HttpResponse::text(200, "{}");
+    }
     if (req.method == "POST" && parts[0] == "favorites" && parts.size() == 1)
         return handleFavorites(req, true);
     if (req.method == "POST" && parts[0] == "maintenance" && parts.size() == 2)
@@ -1066,6 +1090,14 @@ HttpResponse WebServer::handleTaskFiles(const HttpRequest& req, const std::strin
 }
 
 HttpResponse WebServer::handleUpdateUpload(const HttpRequest& req) {
+    const std::string expected = req.header("x-pipensx-sha256");
+    if (!expected.empty()) {
+        uint8_t digest[32];
+        sha256(req.body.data(), req.body.size(), digest);
+        char hex[65];
+        for (size_t i = 0; i < 32; ++i) std::snprintf(hex + i * 2, 3, "%02x", digest[i]);
+        if (expected != hex) return jsonError(400, "update checksum mismatch");
+    }
     if (req.body.empty()) return jsonError(400, "empty NRO upload");
     if (req.body.size() > kMaxUpdateNroBytes)
         return jsonError(413, "NRO upload too large");

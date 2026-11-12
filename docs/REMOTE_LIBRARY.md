@@ -61,6 +61,21 @@ a saved key; Remove saved key explicitly clears it.
 
 ## Local NRO replacement and maintenance
 
+Catalog → Update through this device downloads the configured catalog URL
+in the browser and uploads the JSON to the console. With no custom URL, it
+uses the Langegen catalog for the selected language. A local JSON file can
+also be uploaded (up to 48 MiB). Import validates and saves the catalog before
+publishing the new snapshot; cached statistics and collections are retained.
+
+Maintenance → Download latest pipensx through this device fetches the stable
+release and its checksum through the browser. The console verifies SHA-256
+before staging the NRO. Use the existing Replace and restart action to apply it.
+
+These downloads use the phone or PC connection, including its VPN. The VPN must
+allow local network addresses to reach the console. Sources that deny browser
+requests through CORS require downloading the file separately and uploading it
+with the catalog or NRO file picker.
+
 Maintenance accepts a local NRO of an older, identical, or newer version.
 There is no version-order restriction on local uploads. The page checks the
 NRO header and size limit, validates the PIN before uploading, shows upload
@@ -101,6 +116,7 @@ Additional PIN-protected endpoints:
 - POST /api/preview/discard: release a preview token. Previews expire after
   ten minutes; at most four are retained per server.
 - POST /api/catalog/refresh: background catalog fetch; job state is in /api/library.
+- POST /api/catalog/upload: raw catalog JSON, requires the PIN and same origin.
 - GET /api/update, POST /api/update/upload, /apply, /discard: local NRO lifecycle.
 - GET /api/maintenance: last storage snapshot and job state.
 - POST /api/maintenance/&lt;action&gt;: scan, images, torrents, downloads,

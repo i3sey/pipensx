@@ -162,6 +162,8 @@ public:
                             HttpFetcher httpFetcher = {});
 
     bool load(std::string& error);
+    bool importJson(const std::string& body, CatalogSnapshot& snapshot,
+                    std::string& error);
 
     // Worker-thread safe startup path: read, parse and index the preferred
     // cache (or the bundled fallback) without touching the live UI snapshot.

@@ -382,6 +382,22 @@ int main() {
         assert(responseBody(resp).find("\"stagedReady\":true") !=
                std::string::npos);
         assert(updateStagedBytes == nro.size());
+        resp = request(port, "POST", "/api/update/upload", nro,
+            pinHeader + "X-Pipensx-Sha256: " + std::string(64, '0') + "\r\n");
+        assert(resp.find("400") != std::string::npos);
+
+        bool catalogUploaded = false;
+        server.setCatalogUploader([&](const std::string& body, std::string&) {
+            catalogUploaded = body == "[]";
+            return true;
+        });
+        resp = request(port, "POST", "/api/catalog/upload", "[]");
+        assert(resp.find("401") != std::string::npos);
+        assert(!catalogUploaded);
+        resp = request(port, "POST", "/api/catalog/upload", "[]", pinHeader);
+        assert(resp.find("200 OK") != std::string::npos);
+        assert(catalogUploaded);
+        server.setCatalogUploader({});
 
         resp = request(port, "POST", "/api/update/apply", "", pinHeader);
         assert(resp.find("202 Accepted") != std::string::npos);

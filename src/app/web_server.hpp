@@ -85,6 +85,8 @@ public:
                                              const std::string& titleId,
                                              std::string& error)>;
     void setLibraryHandlers(LibraryGetter getter, LibraryAction action);
+    using CatalogUploader = std::function<bool(const std::string&, std::string&)>;
+    void setCatalogUploader(CatalogUploader uploader);
     using PortHandler = std::function<bool(const std::string& action,
         const std::string& taskId, const std::string& body, std::string& json, std::string& error)>;
     void setPortHandler(PortHandler handler);
@@ -156,6 +158,7 @@ private:
     SettingsGetter settingsGetter_;
     SettingsPatcher settingsPatcher_;
     UpdateStatusGetter updateStatusGetter_;
+    CatalogUploader catalogUploader_;
     UpdateUploader updateUploader_;
     UpdateApplier updateApplier_;
     LibraryGetter libraryGetter_;

@@ -60,6 +60,7 @@ const server = http.createServer((request, response) => {
     if (name === "/api/catalog") return failCatalog ? fulfill({ error: "catalog unavailable" }, 503) : fulfill(catalog);
     if (name === "/api/catalog/description") return fulfill({ description: "Localized catalog description." });
     if (name === "/api/catalog/refresh") return fulfill({ jobId: "catalog-job" }, 202);
+    if (name === "/api/catalog/upload") return fulfill({});
     if (name === "/api/favorites") {
       if (request.method() === "POST") favorite = !favorite;
       return fulfill({ hashes: favorite ? [body?.infoHash || catalog[0].infoHash] : [] });
@@ -110,6 +111,20 @@ const server = http.createServer((request, response) => {
   const base = "http://127.0.0.1:" + server.address().port;
   await page.goto(base + "/?pin=1234");
   await page.waitForSelector(".task");
+  await page.route("https://raw.githubusercontent.com/**", route => route.fulfill({
+    contentType: "application/json", body: '[{"title":"Phone"}]'
+  }));
+  await page.evaluate(() => document.getElementById("catalog-phone").click());
+  await page.waitForFunction(() => document.getElementById("catalog-transfer-status").textContent === "Catalog updated.");
+  await page.evaluate(async () => {
+    await sendCatalog(new File(['[{"title":"Phone"}]'], "catalog.json"));
+  });
+  assert(calls.some(call => call.name === "/api/catalog/upload"));
+  const failedPhone = await page.evaluate(async () => {
+    try { await phoneFetch("http://example.invalid/catalog.json", 1024); return false; }
+    catch (error) { return error.message.includes("Download failed"); }
+  });
+  assert.equal(failedPhone, true);
   assert.equal(await page.locator("h1:visible").textContent(), "Downloads");
   const downloadTask = { ...state.tasks[0] };
   Object.assign(state.tasks[0], {
@@ -364,6 +379,21 @@ const server = http.createServer((request, response) => {
   assert.equal(await page.locator("#sidebar").evaluate(el => el.inert), true);
   await page.evaluate(() => { location.hash = "#maintenance"; });
   await page.waitForSelector("#view-maintenance:visible");
+  const phoneNro = Buffer.alloc(0x90);
+  phoneNro.write("NRO0", 0x10);
+  phoneNro.writeUInt32LE(0x80, 0x18);
+  await page.route("https://gitlab.com/api/v4/projects/88330126/releases/permalink/latest", route => route.fulfill({ json: {
+    tag_name: "vtest-2", assets: { links: [
+      { name: "pipensx.nro", url: "https://gitlab.com/phone-test/pipensx.nro" },
+      { name: "pipensx.nro.sha256", url: "https://gitlab.com/phone-test/pipensx.nro.sha256" }
+    ] }
+  } }));
+  await page.route("https://gitlab.com/phone-test/*", route => route.fulfill({ body:
+    route.request().url().endsWith(".sha256") ? require("node:crypto").createHash("sha256").update(phoneNro).digest("hex") : phoneNro
+  }));
+  const uploadsBeforePhone = calls.filter(call => call.name === "/api/update/upload").length;
+  await page.evaluate(async () => { await phoneUpdate.onclick({ currentTarget: phoneUpdate }); });
+  assert.equal(calls.filter(call => call.name === "/api/update/upload").length, uploadsBeforePhone + 1);
   await page.locator("#update-apply").click();
   await page.locator("#control-submit").click();
   await page.waitForFunction(() => document.querySelector("#connection-banner").textContent.includes("HOME"));

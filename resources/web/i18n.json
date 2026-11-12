@@ -336,7 +336,15 @@
     "web.cleaned": "Cleanup complete. The figures have been refreshed.",
     "web.jobTimeout": "The operation is still running. Refresh its status later.",
     "package.processing": "Current package: {0} processed. Packages already installed: {1}.",
-    "package.nszHint": "NSZ is unpacked during installation. Unpacked data can be larger than the download."
+    "package.nszHint": "NSZ is unpacked during installation. Unpacked data can be larger than the download.",
+    "web.phoneCatalog": "Update through this device",
+    "web.phoneHelp": "Downloads use this device’s connection. Allow local addresses in your VPN. If downloading fails, save the file in your browser and upload it here.",
+    "web.phoneDownload": "Download through this device",
+    "web.catalogFile": "Catalog JSON file (up to 48 MiB)",
+    "web.catalogUpload": "Upload catalog",
+    "web.catalogDone": "Catalog updated.",
+    "web.phoneUpdate": "Download latest pipensx through this device",
+    "web.phoneFailed": "Download failed. Check your VPN. If the source blocks browser access (CORS), download the file separately and upload it here."
   },
   "ru": {
     "control.pin": "Доступ к панели",
@@ -675,7 +683,15 @@
     "web.cleaned": "Очистка завершена. Данные обновлены.",
     "web.jobTimeout": "Операция ещё выполняется. Обновите состояние позже.",
     "package.processing": "Текущий пакет: обработано {0}. Уже установлено пакетов: {1}.",
-    "package.nszHint": "NSZ распаковывается при установке. Распакованный объём может быть больше скачанного."
+    "package.nszHint": "NSZ распаковывается при установке. Распакованный объём может быть больше скачанного.",
+    "web.phoneCatalog": "Обновить через это устройство",
+    "web.phoneHelp": "Файлы скачиваются через интернет этого устройства. Разрешите локальные адреса в VPN. Если скачивание не работает, сохраните файл в браузере и загрузите его здесь.",
+    "web.phoneDownload": "Скачать через это устройство",
+    "web.catalogFile": "JSON каталога (до 48 МиБ)",
+    "web.catalogUpload": "Загрузить каталог",
+    "web.catalogDone": "Каталог обновлён.",
+    "web.phoneUpdate": "Скачать последнюю версию pipensx через это устройство",
+    "web.phoneFailed": "Не удалось скачать. Проверьте VPN. Если источник блокирует доступ из браузера (CORS), скачайте файл отдельно и загрузите его здесь."
   },
   "pt-BR": {
     "control.continue": "Continuar",
@@ -1014,7 +1030,15 @@
     "web.cleaned": "Limpeza concluída. Os valores foram atualizados.",
     "web.jobTimeout": "A operação ainda está em andamento. Atualize o status mais tarde.",
     "package.processing": "Pacote atual: {0} processados. Pacotes já instalados: {1}.",
-    "package.nszHint": "O NSZ é descompactado durante a instalação. Os dados descompactados podem ser maiores que o download."
+    "package.nszHint": "O NSZ é descompactado durante a instalação. Os dados descompactados podem ser maiores que o download.",
+    "web.phoneCatalog": "Atualizar por este dispositivo",
+    "web.phoneHelp": "Os arquivos usam a conexão deste dispositivo. Permita endereços locais no VPN. Se o download falhar, salve o arquivo no navegador e envie aqui.",
+    "web.phoneDownload": "Baixar por este dispositivo",
+    "web.catalogFile": "Arquivo JSON do catálogo (até 48 MiB)",
+    "web.catalogUpload": "Enviar catálogo",
+    "web.catalogDone": "Catálogo atualizado.",
+    "web.phoneUpdate": "Baixar a versão mais recente do pipensx por este dispositivo",
+    "web.phoneFailed": "Falha no download. Verifique o VPN. Se a fonte bloquear o navegador (CORS), baixe o arquivo separadamente e envie aqui."
   },
   "fr": {
     "control.continue": "Continuer",
@@ -1353,7 +1377,15 @@
     "web.cleaned": "Nettoyage terminé. Les chiffres ont été actualisés.",
     "web.jobTimeout": "L’opération est toujours en cours. Actualisez son état plus tard.",
     "package.processing": "Paquet en cours : {0} traités. Paquets déjà installés : {1}.",
-    "package.nszHint": "Le NSZ est décompressé pendant l’installation. Les données décompressées peuvent dépasser le volume téléchargé."
+    "package.nszHint": "Le NSZ est décompressé pendant l’installation. Les données décompressées peuvent dépasser le volume téléchargé.",
+    "web.phoneCatalog": "Mettre à jour via cet appareil",
+    "web.phoneHelp": "Les fichiers utilisent la connexion de cet appareil. Autorisez les adresses locales dans votre VPN. En cas d’échec, enregistrez le fichier dans le navigateur et envoyez-le ici.",
+    "web.phoneDownload": "Télécharger via cet appareil",
+    "web.catalogFile": "Fichier JSON du catalogue (48 Mio maximum)",
+    "web.catalogUpload": "Envoyer le catalogue",
+    "web.catalogDone": "Catalogue mis à jour.",
+    "web.phoneUpdate": "Télécharger la dernière version de pipensx via cet appareil",
+    "web.phoneFailed": "Échec du téléchargement. Vérifiez le VPN. Si la source bloque l’accès du navigateur (CORS), téléchargez le fichier séparément puis envoyez-le ici."
   },
   "es": {
     "control.continue": "Continuar",
@@ -1692,7 +1724,15 @@
     "web.cleaned": "Limpieza completada. Se actualizaron las cifras.",
     "web.jobTimeout": "La operación sigue en curso. Actualiza su estado más tarde.",
     "package.processing": "Paquete actual: {0} procesados. Paquetes ya instalados: {1}.",
-    "package.nszHint": "NSZ se descomprime durante la instalación. Los datos descomprimidos pueden superar el tamaño de la descarga."
+    "package.nszHint": "NSZ se descomprime durante la instalación. Los datos descomprimidos pueden superar el tamaño de la descarga.",
+    "web.phoneCatalog": "Update through this device",
+    "web.phoneHelp": "Downloads use this device’s connection. Allow local addresses in your VPN. If downloading fails, save the file in your browser and upload it here.",
+    "web.phoneDownload": "Download through this device",
+    "web.catalogFile": "Catalog JSON file (up to 48 MiB)",
+    "web.catalogUpload": "Upload catalog",
+    "web.catalogDone": "Catalog updated.",
+    "web.phoneUpdate": "Download latest pipensx through this device",
+    "web.phoneFailed": "Download failed. Check your VPN. If the source blocks browser access (CORS), download the file separately and upload it here."
   },
   "it": {
     "control.continue": "Continua",
@@ -2031,7 +2071,15 @@
     "web.cleaned": "Pulizia completata. I dati sono stati aggiornati.",
     "web.jobTimeout": "L’operazione è ancora in corso. Aggiorna lo stato più tardi.",
     "package.processing": "Pacchetto attuale: {0} elaborati. Pacchetti già installati: {1}.",
-    "package.nszHint": "NSZ viene decompresso durante l’installazione. I dati decompressi possono superare la dimensione del download."
+    "package.nszHint": "NSZ viene decompresso durante l’installazione. I dati decompressi possono superare la dimensione del download.",
+    "web.phoneCatalog": "Update through this device",
+    "web.phoneHelp": "Downloads use this device’s connection. Allow local addresses in your VPN. If downloading fails, save the file in your browser and upload it here.",
+    "web.phoneDownload": "Download through this device",
+    "web.catalogFile": "Catalog JSON file (up to 48 MiB)",
+    "web.catalogUpload": "Upload catalog",
+    "web.catalogDone": "Catalog updated.",
+    "web.phoneUpdate": "Download latest pipensx through this device",
+    "web.phoneFailed": "Download failed. Check your VPN. If the source blocks browser access (CORS), download the file separately and upload it here."
   },
   "zh-CN": {
     "control.continue": "继续",
@@ -2370,7 +2418,15 @@
     "web.cleaned": "清理完成，数据已刷新。",
     "web.jobTimeout": "操作仍在进行，请稍后刷新状态。",
     "package.processing": "当前包：已处理 {0}。已安装的包：{1}。",
-    "package.nszHint": "NSZ 在安装时解压。解压后的数据量可能大于下载量。"
+    "package.nszHint": "NSZ 在安装时解压。解压后的数据量可能大于下载量。",
+    "web.phoneCatalog": "Update through this device",
+    "web.phoneHelp": "Downloads use this device’s connection. Allow local addresses in your VPN. If downloading fails, save the file in your browser and upload it here.",
+    "web.phoneDownload": "Download through this device",
+    "web.catalogFile": "Catalog JSON file (up to 48 MiB)",
+    "web.catalogUpload": "Upload catalog",
+    "web.catalogDone": "Catalog updated.",
+    "web.phoneUpdate": "Download latest pipensx through this device",
+    "web.phoneFailed": "Download failed. Check your VPN. If the source blocks browser access (CORS), download the file separately and upload it here."
   },
   "ko": {
     "control.continue": "계속",
@@ -2709,6 +2765,14 @@
     "web.cleaned": "정리가 완료되었습니다. 수치가 갱신되었습니다.",
     "web.jobTimeout": "작업이 진행 중입니다. 나중에 상태를 새로 고치세요.",
     "package.processing": "현재 패키지: {0} 처리됨. 이미 설치된 패키지: {1}개.",
-    "package.nszHint": "NSZ는 설치 중에 압축을 해제합니다. 압축 해제된 데이터는 다운로드한 용량보다 클 수 있습니다."
+    "package.nszHint": "NSZ는 설치 중에 압축을 해제합니다. 압축 해제된 데이터는 다운로드한 용량보다 클 수 있습니다.",
+    "web.phoneCatalog": "Update through this device",
+    "web.phoneHelp": "Downloads use this device’s connection. Allow local addresses in your VPN. If downloading fails, save the file in your browser and upload it here.",
+    "web.phoneDownload": "Download through this device",
+    "web.catalogFile": "Catalog JSON file (up to 48 MiB)",
+    "web.catalogUpload": "Upload catalog",
+    "web.catalogDone": "Catalog updated.",
+    "web.phoneUpdate": "Download latest pipensx through this device",
+    "web.phoneFailed": "Download failed. Check your VPN. If the source blocks browser access (CORS), download the file separately and upload it here."
   }
 }

@@ -3963,6 +3963,31 @@ static void testCatalogStatsCache() {
 }
 
 int main() {
+    {
+        char directory[] = "/tmp/pipensx-import-XXXXXX";
+        assert(mkdtemp(directory));
+        CatalogService catalog(directory, {}, [](const auto&, auto&, auto&, const auto&, const auto*, const auto&) {
+            assert(false && "catalog import must not access the network");
+            return false;
+        });
+        pipensx::CatalogSnapshot snapshot;
+        std::string error;
+        assert(!catalog.importJson("[]", snapshot, error));
+        error.clear();
+        assert(!catalog.importJson("invalid", snapshot, error));
+        error.clear();
+        const std::string body = R"([{"title":"Imported","magnet":"magnet:?xt=urn:btih:0123456789012345678901234567890123456789&tr=http%3A%2F%2Fbt3.t-ru.org%2Fann%3Fmagnet"}])";
+        assert(catalog.importJson(body, snapshot, error));
+        assert(snapshot.entries.size() == 1);
+        catalog.adopt(std::move(snapshot));
+        assert(catalog.findByInfoHash("0123456789012345678901234567890123456789"));
+        CatalogService restored(directory);
+        assert(restored.load(error));
+        assert(restored.entries().size() == 1);
+        unlink((std::string(directory) + "/catalog/catalog.json").c_str());
+        rmdir((std::string(directory) + "/catalog").c_str());
+        rmdir(directory);
+    }
     testCatalogStatsCache();
     testCatalogFuzzySearch();
     testCatalogSearchRankingAndDiffChips();

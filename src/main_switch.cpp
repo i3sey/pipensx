@@ -892,6 +892,24 @@ int main(int argc, char** argv) {
                 }
                 return ok;
             });
+        webServer.setCatalogUploader([&catalog, &settings](const std::string& body, std::string& error) {
+            if (!pipensx::tryBeginCatalogRefresh()) {
+                error = "A catalog refresh is already running.";
+                return false;
+            }
+            struct RefreshGuard { ~RefreshGuard() { pipensx::endCatalogRefresh(); } } guard;
+            pipensx::CatalogSnapshot snapshot;
+            if (!catalog.importJson(body, snapshot, error)) return false;
+            pipensx::RetiredCatalogSnapshot retired;
+            if (!runOnUiThread([&] {
+                    retired = catalog.adopt(std::move(snapshot));
+                    pipensx::recordCatalogRefreshSuccess(&settings, true, false, error);
+                })) {
+                error = "catalog publication timed out";
+                return false;
+            }
+            return error.empty();
+        });
         webServer.setUpdateHandlers(
             [&updater](bool& stagedReady, uint64_t& stagedBytes,
                        std::string& error) {

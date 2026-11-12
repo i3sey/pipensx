@@ -1395,6 +1395,26 @@ bool CatalogService::fetchResource(
     return false;
 }
 
+bool CatalogService::importJson(const std::string& body, CatalogSnapshot& snapshot,
+                                std::string& error) {
+    snapshot = {};
+    if (body.size() > kMaxCatalogBytes) {
+        error = "Catalog exceeds 48 MiB.";
+        return false;
+    }
+    if (!parseJson(body, snapshot.entries, error) || snapshot.entries.empty()) {
+        if (error.empty()) error = "Catalog is empty.";
+        return false;
+    }
+    attachStats(snapshot.entries, false);
+    attachCollections(snapshot.entries, false);
+    buildIndex(snapshot.entries, snapshot.infoHashIndex);
+    if (!writeAtomic(cachePath_, body, error, nullptr)) return false;
+    unlink(manifestPath_.c_str());
+    unlink((cachePath_ + ".sync").c_str());
+    return true;
+}
+
 bool CatalogService::fetchLatest(std::vector<CatalogEntry>& parsed,
                                  std::string& error,
                                  const std::string& sourceUrl,
