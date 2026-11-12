@@ -7,6 +7,10 @@
 #include <string.h>
 #include <unistd.h>
 
+/* Forwarders can reload their default NRO when a child returns. Ask libnx
+ * to exit the applet process so pipensx gets a fresh graphics/service stack. */
+u32 __nx_applet_exit_mode = 1;
+
 static const char *DefaultTarget = "sdmc:/switch/pipensx/pipensx.nro";
 static const char *LogPath = "sdmc:/switch/pipensx/pipensx-update.log";
 
@@ -27,11 +31,8 @@ int main(int argc, char **argv) {
                            strcmp(argv[1], "--finish-update") == 0;
     update_log("[helper] started requested=%d argc=%d nextload=%d\n",
                requested ? 1 : 0, argc, envHasNextLoad() ? 1 : 0);
-    /* Never re-launch pipensx. Relaunching the full app inside the same
-     * hbloader session re-initializes the graphics/applet/service stack a
-     * second time and crashes (black screen then fatal). Every path below
-     * returns with no nextload set, so the loader drops to HOME and the user
-     * relaunches a fresh process manually. */
+    /* No nextload: __nx_applet_exit_mode exits to HOME instead of returning
+     * to a forwarder that could reload pipensx in this process. */
     if (!requested)
         return 0;
 
