@@ -321,12 +321,48 @@ void testServer() {
     printf("server ok\n");
 }
 
+void testIdleKeepAliveReclaimed() {
+    HttpServer server(smallOptions());
+    std::string error;
+    assert(server.start(0, [](const HttpRequest& req) {
+        auto response = HttpResponse::text(200, "ready");
+        if (req.path == "/events") {
+            response.contentType = "text/event-stream";
+            response.sse = true;
+        }
+        return response;
+    }, error));
+
+    int events = clientConnect(server.boundPort());
+    sendAll(events, "GET /events HTTP/1.1\r\n\r\n");
+    assert(readUntil(events, "ready").find("200 OK") != std::string::npos);
+
+    int idle = clientConnect(server.boundPort());
+    std::string carry;
+    sendAll(idle, "GET / HTTP/1.1\r\n\r\n");
+    assert(readResponse(idle, carry).find("200 OK") != std::string::npos);
+
+    int next = clientConnect(server.boundPort());
+    carry.clear();
+    sendAll(next, "GET / HTTP/1.1\r\nConnection: close\r\n\r\n");
+    assert(readResponse(next, carry).find("200 OK") != std::string::npos);
+    assert(server.sseClientCount() == 1);
+    char byte;
+    assert(recv(idle, &byte, 1, 0) == 0);
+
+    close(next);
+    close(idle);
+    close(events);
+    server.stop();
+}
+
 }  // namespace
 
 int main() {
     signal(SIGPIPE, SIG_IGN);
     testParser();
     testServer();
+    testIdleKeepAliveReclaimed();
     printf("test_http_server: all ok\n");
     return 0;
 }

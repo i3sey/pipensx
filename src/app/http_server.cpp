@@ -203,6 +203,7 @@ struct HttpServer::Conn {
     std::string sseBuf;
     uint64_t lastActivity = 0;
     bool dead = false;
+    bool servedRequest = false;
 
     bool wantsWrite() const {
         return outHeadOff < outHead.size() ||
@@ -277,9 +278,25 @@ void HttpServer::acceptPending() {
         int fd = net_accept(listenFd_, nullptr);
         if (fd < 0) break;
         if (conns_.size() >= options_.maxConnections) {
-            net_send(fd, (const uint8_t*)kCanned503, sizeof(kCanned503) - 1);
-            net_close(fd);
-            continue;
+            auto reusable = conns_.end();
+            for (auto it = conns_.begin(); it != conns_.end(); ++it) {
+                const auto& c = **it;
+                if (c.dead) { reusable = it; break; }
+                if (c.isSse || !c.servedRequest || c.state != Conn::ReadHeaders ||
+                    !c.inbuf.empty() || c.wantsWrite())
+                    continue;
+                if (reusable == conns_.end() ||
+                    c.lastActivity < (*reusable)->lastActivity)
+                    reusable = it;
+            }
+            if (reusable == conns_.end()) {
+                net_send(fd, (const uint8_t*)kCanned503, sizeof(kCanned503) - 1);
+                net_close(fd);
+                continue;
+            }
+            if ((*reusable)->isSse) sseClients_.fetch_sub(1);
+            net_close((*reusable)->fd);
+            conns_.erase(reusable);
         }
         auto c = std::make_unique<Conn>();
         c->fd = fd;
@@ -492,6 +509,7 @@ void HttpServer::pumpWrite(Conn& c) {
         return;
     }
     c.state = Conn::ReadHeaders;
+    c.servedRequest = true;
     c.req = HttpRequest{};
     c.outHead.clear();
     c.outHeadOff = 0;
@@ -527,6 +545,19 @@ void HttpServer::loopMain() {
         uint64_t now = nowMs();
 
         if (r > 0) {
+            const size_t polled = pfds.size() - connBase;
+            for (size_t i = 0; i < polled; ++i) {
+                Conn& c = *conns_[i];
+                short rev = pfds[connBase + i].revents;
+                if (rev & (POLLERR | POLLNVAL)) {
+                    c.dead = true;
+                    continue;
+                }
+                if (rev & POLLOUT) pumpWrite(c);
+                if (c.dead) continue;
+                if ((rev & (POLLIN | POLLHUP)) || !c.inbuf.empty())
+                    handleReadable(c);
+            }
             if (listenerIdx != (size_t)-1) {
                 short rev = pfds[listenerIdx].revents;
                 if (rev & (POLLERR | POLLNVAL | POLLHUP)) {
@@ -537,23 +568,6 @@ void HttpServer::loopMain() {
                 } else if (rev & POLLIN) {
                     acceptPending();
                 }
-            }
-            // acceptPending() above may have appended to conns_; those
-            // entries have no pollfd this round, so stop at what was polled.
-            size_t polled = pfds.size() - connBase;
-            for (size_t i = 0; i < polled; ++i) {
-                Conn& c = *conns_[i];
-                short rev = pfds[connBase + i].revents;
-                if (rev & (POLLERR | POLLNVAL)) {
-                    c.dead = true;
-                    continue;
-                }
-                if (rev & POLLOUT) pumpWrite(c);
-                if (c.dead) continue;
-                // !inbuf.empty(): a response finished draining and pipelined
-                // requests are still buffered, with no new bytes to wake us.
-                if ((rev & (POLLIN | POLLHUP)) || !c.inbuf.empty())
-                    handleReadable(c);
             }
         }
 
