@@ -4,6 +4,10 @@
 
 namespace pipensx {
 
+inline constexpr char kCatalogStatsUrl[] =
+    "https://raw.githubusercontent.com/Langegen/switch-games/main/"
+    "switch_games_stats.json";
+
 inline constexpr char kCatalogCollectionBaseUrl[] =
     "https://raw.githubusercontent.com/Langegen/switch-game-collection/main/";
 

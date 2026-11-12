@@ -2603,6 +2603,7 @@ void testLangegenCatalogFallbacks() {
             [&](const std::string& url, std::string& data, std::string& error,
                 const std::string& original, const std::atomic<bool>*,
                 const CatalogService::ProgressCallback&) {
+                if (url == pipensx::kCatalogStatsUrl) { error = "offline"; return false; }
                 requests.push_back(url);
                 assert(CatalogService::isTrustedSource(url, original));
                 if (mode == "cancel") {
@@ -3775,6 +3776,7 @@ void testCatalogDiffCacheProvenance() {
         CatalogService service(root, {}, [&](const std::string& url, std::string& data,
                 std::string& error, const std::string&, const std::atomic<bool>*,
                 const CatalogService::ProgressCallback&) {
+            if (url == pipensx::kCatalogStatsUrl) { error = "offline"; return false; }
             requests.push_back(url);
             if (url == pipensx::kCatalogDiffUrl && mode != "failure") { data = diff; return true; }
             if (url == source || url == english || url == "https://example.com/catalog.json") {
@@ -3904,7 +3906,64 @@ static void testCollections() {
     rmdir(root.c_str());
 }
 
+static void testCatalogStatsCache() {
+    char temporary[] = "/tmp/pipensx-stats-XXXXXX";
+    const char* directory = mkdtemp(temporary);
+    assert(directory);
+    const std::string root = directory;
+    std::string stats = R"({"42":{"seeds":73,"leeches":15},"43":{"seeds":0,"leeches":0},"44":{"seeds":-1,"leeches":3},"45":{"seeds":4294967295,"leeches":1},"46":{"seeds":"5","leeches":2},"47":{"seeds":3}})";
+    bool offline = false;
+    int requests = 0;
+    CatalogService service(root, {}, [&](const std::string& url,
+            std::string& body, std::string& error, const std::string&,
+            const std::atomic<bool>*, const CatalogService::ProgressCallback&) {
+        if (url == pipensx::kCatalogStatsUrl) {
+            ++requests;
+            if (offline) { error = "offline"; return false; }
+            body = stats;
+            return true;
+        }
+        if (url != "https://example.com/catalog.json") return false;
+        nlohmann::json catalog = nlohmann::json::array();
+        for (unsigned topic = 42; topic <= 48; ++topic) {
+            char hash[41];
+            std::snprintf(hash, sizeof(hash), "%040u", topic);
+            catalog.push_back({{"title", "Game"}, {"topic_id", std::to_string(topic)},
+                {"magnet", std::string("magnet:?xt=urn:btih:") + hash +
+                    "&tr=http://bt.t-ru.org/ann?magnet"}});
+        }
+        body = catalog.dump();
+        return true;
+    });
+    std::vector<CatalogEntry> entries;
+    std::string error;
+    auto check = [&](const std::vector<CatalogEntry>& values) {
+        assert(values.size() == 7);
+        for (const auto& entry : values) {
+            assert(entry.hasPeerCount == (entry.topicId == 42 || entry.topicId == 43));
+            assert(entry.peerCount == (entry.topicId == 42 ? 88u : 0u));
+        }
+    };
+    assert(service.fetchLatest(entries, error, "https://example.com/catalog.json"));
+    check(entries);
+    stats = "broken";
+    assert(service.fetchLatest(entries, error, "https://example.com/catalog.json"));
+    check(entries);
+    offline = true;
+    pipensx::CatalogSnapshot snapshot;
+    assert(service.fetchLatest(snapshot, error, "https://example.com/catalog.json"));
+    check(snapshot.entries);
+    const int beforeLoad = requests;
+    CatalogService restarted(root);
+    assert(restarted.load(error));
+    check(restarted.entries());
+    assert(requests == beforeLoad);
+    const int cleanup = std::system(("rm -rf " + root).c_str());
+    assert(cleanup == 0);
+}
+
 int main() {
+    testCatalogStatsCache();
     testCatalogFuzzySearch();
     testCatalogSearchRankingAndDiffChips();
     runCatalogSearchBenchmarkIfRequested();

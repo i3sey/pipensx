@@ -55,6 +55,7 @@ struct GridCardInfo {
     std::string infoHash;
     std::string title;
     std::string sub;
+    std::string peers;
     std::vector<std::string> diffChips;
     bool subIsBadge = false;
     std::string iconUrl;
@@ -70,7 +71,8 @@ inline bool sameGridCardInfo(const GridCardInfo& left,
                              const GridCardInfo& right) {
     return left.entryIndex == right.entryIndex &&
            left.infoHash == right.infoHash && left.title == right.title &&
-           left.sub == right.sub && left.subIsBadge == right.subIsBadge &&
+           left.sub == right.sub && left.peers == right.peers &&
+           left.subIsBadge == right.subIsBadge &&
            left.diffChips == right.diffChips &&
            left.iconUrl == right.iconUrl &&
            left.iconPreserveAspect == right.iconPreserveAspect &&
@@ -182,16 +184,31 @@ public:
         name_->setMarginRight(theme::kSpacingUnit);
         addView(name_);
 
+        auto* metadata = new brls::Box(brls::Axis::ROW);
+        metadata->setMarginTop(2);
+        metadata->setMarginLeft(theme::kSpacingUnit);
+        metadata->setMarginRight(theme::kSpacingUnit);
+        metadata->setAlignItems(brls::AlignItems::CENTER);
         sub_ = new brls::Label();
         sub_->setSingleLine(true);
         sub_->setAutoAnimate(false);
         sub_->setFontSize(theme::kFontCaption);
-        sub_->setMarginTop(2);
-        sub_->setMarginLeft(theme::kSpacingUnit);
-        sub_->setMarginRight(theme::kSpacingUnit);
+        sub_->setGrow(1);
+        sub_->setShrink(1);
+        sub_->setMinWidth(0);
         sub_->setMarginBottom(0);
         sub_->setTextColor(theme::textSecondary());
-        addView(sub_);
+        metadata->addView(sub_);
+        peers_ = new brls::Label();
+        peers_->setSingleLine(true);
+        peers_->setAutoAnimate(false);
+        peers_->setFontSize(theme::kFontCaption);
+        peers_->setTextColor(theme::textSecondary());
+        peers_->setShrink(0);
+        peers_->setMarginLeft(8);
+        peers_->setVisibility(brls::Visibility::GONE);
+        metadata->addView(peers_);
+        addView(metadata);
 
         registerAction("", brls::BUTTON_A, [this](brls::View*) {
             if (onActivate_)
@@ -227,6 +244,9 @@ public:
             placeholder_->setText(placeholder);
         if (sub_->getFullText() != info.sub)
             sub_->setText(info.sub);
+        setTextIfChanged(peers_, info.peers);
+        peers_->setVisibility(info.peers.empty()
+            ? brls::Visibility::GONE : brls::Visibility::VISIBLE);
         if (!hasCard_ || painted_.diffChips != info.diffChips) {
             diffChips_->clearViews();
             for (const auto& text : info.diffChips) {
@@ -364,6 +384,7 @@ private:
     brls::Label* favorite_;
     brls::Label* name_;
     brls::Label* sub_;
+    brls::Label* peers_;
     brls::Box* diffChips_;
     std::string currentIconUrl_;
     std::shared_ptr<ImageRequestState> imageState_ =

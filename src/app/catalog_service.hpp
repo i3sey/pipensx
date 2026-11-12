@@ -267,6 +267,12 @@ public:
                                   std::string& error);
 
 private:
+    bool fetchCatalog(std::vector<CatalogEntry>& parsed, std::string& error,
+                      const std::string& sourceUrl,
+                      const std::atomic<bool>* cancelled,
+                      ProgressCallback progress);
+    void attachStats(std::vector<CatalogEntry>& entries, bool refresh,
+                     const std::atomic<bool>* cancelled = nullptr) const;
     bool fetchResource(const std::string& sourceUrl, std::string& body,
                        std::string& error, const std::atomic<bool>* cancelled,
                        const ProgressCallback& progress,

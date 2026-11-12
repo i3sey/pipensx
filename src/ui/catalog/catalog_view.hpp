@@ -112,6 +112,8 @@ private:
             ? badge
             : size ? formatBytes(size)
                    : tr("pipensx/catalog/unknown_size");
+        if (entry && (entry->hasPeerCount || entry->peerCount > 0))
+            info.peers = std::to_string(entry->peerCount) + " ↑";
         if (entry && !entry->posterUrl.empty()) {
             info.iconUrl = entry->posterUrl;
             info.iconPreserveAspect = true;

@@ -975,12 +975,14 @@ bool CatalogService::prepareInitialSnapshot(CatalogSnapshot& snapshot,
                                             std::string& error) const {
     std::string cacheError;
     if (loadFileSnapshot(cachePath_, kCachedCatalogLabel, snapshot, cacheError)) {
+        attachStats(snapshot.entries, false);
         attachCollections(snapshot.entries, false);
         return true;
     }
     if (!bundledPath_.empty() && access(bundledPath_.c_str(), R_OK) == 0) {
         if (loadFileSnapshot(bundledPath_, kBundledCatalogLabel, snapshot,
                              error)) {
+            attachStats(snapshot.entries, false);
             attachCollections(snapshot.entries, false);
             return true;
         }
@@ -1394,6 +1396,67 @@ bool CatalogService::fetchResource(
 }
 
 bool CatalogService::fetchLatest(std::vector<CatalogEntry>& parsed,
+                                 std::string& error,
+                                 const std::string& sourceUrl,
+                                 const std::atomic<bool>* cancelled,
+                                 ProgressCallback progress) {
+    if (!fetchCatalog(parsed, error, sourceUrl, cancelled, progress))
+        return false;
+    attachStats(parsed, true, cancelled);
+    if (failIfCancelled(cancelled, error)) {
+        parsed.clear();
+        return false;
+    }
+    return true;
+}
+
+void CatalogService::attachStats(std::vector<CatalogEntry>& entries,
+                                bool refresh,
+                                const std::atomic<bool>* cancelled) const {
+    if (entries.empty() || cancellationRequested(cancelled)) return;
+    const std::string path = catalogRoot_ + "/switch_games_stats.json";
+    constexpr size_t maxStatsBytes = 8 * 1024 * 1024;
+    auto parse = [&](const std::string& body) {
+        if (body.empty() || body.size() > maxStatsBytes)
+            return nlohmann::json();
+        auto value = nlohmann::json::parse(body, nullptr, false);
+        return value.is_object() && value.size() <= kMaxCatalogEntries
+            ? value : nlohmann::json();
+    };
+    std::string body, error;
+    nlohmann::json stats;
+    if (refresh && httpFetcher_(kCatalogStatsUrl, body, error,
+                               kCatalogStatsUrl, cancelled, {})) {
+        stats = parse(body);
+        if (stats.is_object() && !stats.empty())
+            writeAtomic(path, body, error, cancelled);
+    }
+    if (cancellationRequested(cancelled)) return;
+    if (!stats.is_object() || stats.empty()) {
+        if (!readFile(path, body, error)) return;
+        stats = parse(body);
+    }
+    if (!stats.is_object()) return;
+    for (auto& entry : entries) {
+        if (cancellationRequested(cancelled)) return;
+        if (!entry.topicId) continue;
+        const auto it = stats.find(std::to_string(entry.topicId));
+        if (it == stats.end() || !it->is_object()) continue;
+        const auto seeds = it->find("seeds");
+        const auto leeches = it->find("leeches");
+        if (seeds == it->end() || leeches == it->end() ||
+            !seeds->is_number_unsigned() || !leeches->is_number_unsigned())
+            continue;
+        const uint64_t seedCount = seeds->get<uint64_t>();
+        const uint64_t leechCount = leeches->get<uint64_t>();
+        if (seedCount > UINT32_MAX || leechCount > UINT32_MAX - seedCount)
+            continue;
+        entry.peerCount = static_cast<uint32_t>(seedCount + leechCount);
+        entry.hasPeerCount = true;
+    }
+}
+
+bool CatalogService::fetchCatalog(std::vector<CatalogEntry>& parsed,
                                  std::string& error,
                                  const std::string& sourceUrl,
                                  const std::atomic<bool>* cancelled,
