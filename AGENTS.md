@@ -57,10 +57,16 @@ installation. C11 core, C++ app services, Borealis UI.
 | libnx calls, PC shims, install backend, `src/install/`, `src/platform/`, `src/main_switch.cpp` | [.agents/skills/libnx/SKILL.md](.agents/skills/libnx/SKILL.md) |
 | Debrid providers or persisted settings/download-state versions | [.agents/skills/debrid/SKILL.md](.agents/skills/debrid/SKILL.md) |
 | QR bug report or Switch crash/update/download/install report | [.agents/skills/bug-report/SKILL.md](.agents/skills/bug-report/SKILL.md) |
-| Screenshots or controller input on a physical Switch | [.agents/skills/switch-visual-test/SKILL.md](.agents/skills/switch-visual-test/SKILL.md) |
+| Physical Switch tests, deployment, screenshots, input or console files/logs | [.agents/skills/switch-gemini/SKILL.md](.agents/skills/switch-gemini/SKILL.md): Codex delegates to Gemini through `agyx`; Gemini uses [switch-visual-test](.agents/skills/switch-visual-test/SKILL.md) directly |
 | GitHub issues, labels or PRs | [docs/agents/issue-tracker.md](docs/agents/issue-tracker.md) |
 
 ## Keep context small
+
+- Before each physical Switch work session, explicitly ask the user to approve
+  the concrete scenario and wait for approval, as required by
+  [switch-gemini](.agents/skills/switch-gemini/SKILL.md). Gemini performs the
+  approved console work and updates the current screenshot gallery at
+  <http://192.168.1.148:8766/>.
 
 - Never read `pipensx.log` whole; filter by tag, error or task ID.
 - Do not load catalog dumps, binaries, build outputs or image collections as

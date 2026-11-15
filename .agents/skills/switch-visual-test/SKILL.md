@@ -5,6 +5,15 @@ description: Test an application on a physical Nintendo Switch using sys-botbase
 
 # Physical Switch visual testing & deployment
 
+For Codex: delegate physical-console work through
+[switch-gemini](../switch-gemini/SKILL.md) before executing this workflow.
+For Gemini acting as the delegated console executor: follow this workflow
+directly; do not invoke the delegation skill or start another agent.
+Before console access, require the handoff to contain the user's explicit
+approval for this session and its action scope; otherwise return BLOCKED to
+Codex. After the session, update the existing screenshot gallery following the
+gallery instructions in [switch-gemini](../switch-gemini/SKILL.md).
+
 From the repository root, the client is `.agents/skills/switch-visual-test/scripts/switch_bot.py`. Use Python 3 (standard library only). Read screenshots with the available image-viewing/reading tool.
 
 ## Connection & Defaults
