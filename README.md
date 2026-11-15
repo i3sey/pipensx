@@ -47,10 +47,13 @@ The public build intentionally starts without a bundled catalog. On first use,
 the Catalog view refreshes from the trusted Langegen source and then uses its
 on-SD cache.
 
-If you wish to use an alternative catalog source, open **Settings → Catalog →
-Catalog source** and select **Custom URL**. You can enter any custom HTTPS JSON
-URL or return to **Default (Langegen)** at any time. Updating the catalog
-includes its cover URLs without a separate artwork update.
+Open **Settings → Catalog → Catalog source** to choose GitHub (global),
+GitLab (global), or GitVerse (Russia, marked with the Russian flag). Built-in
+mirrors follow the catalog language. If the selected mirror fails or returns
+invalid JSON, the app tries the other mirrors and retains the cached catalog
+if all fail. The selected preference stays unchanged. **Custom URL** accepts
+an HTTPS JSON URL and uses only that source. Updating the catalog includes its
+cover URLs without a separate artwork update.
 
 ## Quick start
 

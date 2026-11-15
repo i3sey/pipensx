@@ -1177,6 +1177,28 @@ private:
 
 // --- Catalog: refresh behaviour, source URL, manual refresh ---------------
 
+class CatalogMirrorCell : public brls::SelectorCell {
+public:
+    CatalogMirrorCell() { title->setMarginLeft(34); }
+
+    void draw(NVGcontext* vg, float x, float y, float width, float height,
+              brls::Style style, brls::FrameContext* ctx) override {
+        brls::SelectorCell::draw(vg, x, y, width, height, style, ctx);
+        if (getSelection() != 2) return;
+        for (int stripe = 0; stripe < 3; ++stripe) {
+            nvgBeginPath(vg);
+            nvgRect(vg, x + 18, y + height / 2 - 9 + stripe * 6, 27, 6);
+            nvgFillColor(vg, theme::kRussianFlagColors[stripe]);
+            nvgFill(vg);
+        }
+        nvgBeginPath(vg);
+        nvgRect(vg, x + 18, y + height / 2 - 9, 27, 18);
+        nvgStrokeColor(vg, theme::textSecondary());
+        nvgStrokeWidth(vg, 1);
+        nvgStroke(vg);
+    }
+};
+
 class CatalogPanel : public SettingsPanel {
 public:
     CatalogPanel(AppSettings* settings, CatalogService* catalog,
@@ -1199,9 +1221,11 @@ public:
             });
         content_->addView(refreshCatalog_);
 
-        catalogPreset_ = new brls::SelectorCell();
+        catalogPreset_ = new CatalogMirrorCell();
         catalogPreset_->init(tr("pipensx/settings/catalog_source"),
-            {tr("pipensx/settings/catalog_source_default"),
+            {tr("pipensx/settings/catalog_mirror_github"),
+             tr("pipensx/settings/catalog_mirror_gitlab"),
+             tr("pipensx/settings/catalog_mirror_gitverse"),
              tr("pipensx/settings/catalog_source_custom")},
             catalogPresetIndex(), [this](int selected) {
                 if (refreshInFlight_) {
@@ -1209,13 +1233,14 @@ public:
                     brls::Application::notify(tr("pipensx/catalog/updating_catalog"));
                     return;
                 }
-                if (selected == 1) {
+                if (selected == 3) {
                     refreshCatalogSourceDetail();
                     editCatalogSource();
                     return;
                 }
                 AppSettingsData values = settings_->get();
-                values.catalogSourceUrl = "";
+                values.catalogSourceUrl = selected == 1 ? kCatalogGitLabBaseUrl :
+                    selected == 2 ? kCatalogGitVerseBaseUrl : "";
                 if (!persistSettings(settings_, values, "catalog_source_url")) {
                     refreshCatalogSourceDetail();
                     return;
@@ -1224,6 +1249,7 @@ public:
                 refreshCatalogNow();
             });
         content_->addView(catalogPreset_);
+        addNote(content_, tr("pipensx/settings/catalog_mirror_fallback"));
 
         catalogSource_ = actionCell(tr("pipensx/settings/catalog_source_custom"), "",
             [this] { editCatalogSource(); });
@@ -1304,7 +1330,9 @@ private:
         const auto& url = settings_->get().catalogSourceUrl;
         if (url.empty())
             return 0;
-        return 1;
+        if (url == kCatalogGitLabBaseUrl) return 1;
+        if (url == kCatalogGitVerseBaseUrl) return 2;
+        return 3;
     }
 
     void refreshCatalogSourceDetail() {
@@ -1313,7 +1341,7 @@ private:
             brls::Application::getLocale());
         const int index = catalogPresetIndex();
         catalogPreset_->setSelection(index, true);
-        const bool isCustom = (index == 1);
+        const bool isCustom = (index == 3);
         catalogSource_->setVisibility(isCustom ? brls::Visibility::VISIBLE
                                                : brls::Visibility::GONE);
         if (isCustom)

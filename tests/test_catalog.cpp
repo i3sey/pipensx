@@ -2590,22 +2590,43 @@ void testLangegenCatalogFallbacks() {
 
     for (const std::string mode : {"raw", "api", "invalid-raw", "mirror",
                                    "corrupt", "size", "manifest", "cancel",
-                                   "custom", "diff", "diff-api", "invalid-diff"}) {
+                                   "custom", "diff", "diff-api", "invalid-diff",
+                                   "gitlab", "gitverse", "preferred", "invalid-gitlab",
+                                   "preferred-fail", "empty-gitlab"}) {
         char temporary[] = "/tmp/pipensx-fallback-test-XXXXXX";
         const char* directory = mkdtemp(temporary);
         assert(directory);
         const std::string root = directory;
         std::vector<std::string> requests;
         std::atomic<bool> cancelled{false};
+        const std::string gitlab = std::string(pipensx::kCatalogGitLabBaseUrl) + "FR_catalog.json";
+        const std::string gitverse = std::string(pipensx::kCatalogGitVerseBaseUrl) + "FR_catalog.json";
         const std::string requestedSource = mode == "custom"
-            ? "https://example.com/custom/catalog.json" : source;
+            ? "https://example.com/custom/catalog.json" :
+              mode == "preferred" ? gitverse :
+              mode == "preferred-fail" ? gitlab : source;
         CatalogService service(root, {},
             [&](const std::string& url, std::string& data, std::string& error,
                 const std::string& original, const std::atomic<bool>*,
                 const CatalogService::ProgressCallback&) {
-                if (url == pipensx::kCatalogStatsUrl) { error = "offline"; return false; }
+                if (url.find("switch_games_stats.json") != std::string::npos) { error = "offline"; return false; }
                 requests.push_back(url);
                 assert(CatalogService::isTrustedSource(url, original));
+                if ((url == gitlab && mode == "gitlab") ||
+                    (url == gitverse && (mode == "gitverse" || mode == "preferred" ||
+                                          mode == "invalid-gitlab" || mode == "preferred-fail" ||
+                                          mode == "empty-gitlab"))) {
+                    data = body;
+                    return true;
+                }
+                if (url == gitlab && mode == "invalid-gitlab") {
+                    data = "<html>not a catalog</html>";
+                    return true;
+                }
+                if (url == gitlab && mode == "empty-gitlab") {
+                    data = "[]";
+                    return true;
+                }
                 if (mode == "cancel") {
                     cancelled.store(true);
                     error = "cancelled in transfer";
@@ -2670,7 +2691,9 @@ void testLangegenCatalogFallbacks() {
         const bool ok = service.fetchLatest(parsed, error, requestedSource, &cancelled);
         const bool expected = mode == "raw" || mode == "api" ||
             mode == "invalid-raw" || mode == "mirror" || mode == "diff" ||
-            mode == "diff-api" || mode == "invalid-diff";
+            mode == "diff-api" || mode == "invalid-diff" || mode == "gitlab" ||
+            mode == "gitverse" || mode == "preferred" || mode == "invalid-gitlab" ||
+            mode == "preferred-fail" || mode == "empty-gitlab";
         assert(ok == expected);
         if (ok) {
             assert(error.empty());
@@ -2679,25 +2702,27 @@ void testLangegenCatalogFallbacks() {
         } else {
             assert(!error.empty());
             assert(parsed.empty());
+            if (mode != "custom" && mode != "cancel")
+                assert(error.rfind("All catalog mirrors failed.", 0) == 0);
         }
         if (mode == "raw" || mode == "custom" || mode == "cancel")
             assert(requests.size() == 1);
         if (mode == "api" || mode == "invalid-raw") {
-            assert(requests.size() == 2);
-            assert(requests[1] == api);
+            assert(requests.size() == 4);
+            assert(requests[3] == api);
         }
         if (mode == "diff-api") {
             assert(requests.size() == 2);
             assert(requests[1] == pipensx::langegenCatalogApiUrl("catalog_diff.json"));
         }
         if (mode == "mirror") {
-            assert(requests == std::vector<std::string>({source, api,
+            assert(requests == std::vector<std::string>({source, gitlab, gitverse, api,
                 pipensx::kCatalogMirrorManifestUrl, mirrorUrl}));
         }
         if (mode == "manifest")
-            assert(requests.size() == 3);
+            assert(requests.size() == 5);
         if (mode == "diff") {
-            assert(requests.size() == 6);
+            assert(requests.size() == 8);
             assert(requests[0] == pipensx::kCatalogDiffUrl);
             assert(requests[1] == pipensx::langegenCatalogApiUrl("catalog_diff.json"));
             assert(requests.back() == mirrorUrl);
@@ -2707,6 +2732,13 @@ void testLangegenCatalogFallbacks() {
             const std::string retained((std::istreambuf_iterator<char>(cached)), {});
             assert(retained == body);
         }
+        if (mode == "gitlab" || mode == "gitverse" || mode == "preferred" ||
+            mode == "invalid-gitlab" || mode == "preferred-fail" || mode == "empty-gitlab") {
+            assert(requests.back() == (mode == "gitlab" ? gitlab : gitverse));
+            assert(requests.size() == (mode == "preferred" ? 1u :
+                                      mode == "gitlab" || mode == "preferred-fail" ? 2u : 3u));
+            assert(access((root + "/catalog/catalog.json.sync").c_str(), F_OK) != 0);
+        }
         unlink((root + "/catalog/catalog.json").c_str());
         unlink((root + "/catalog/catalog.json.sync").c_str());
         rmdir((root + "/catalog").c_str());
@@ -2714,6 +2746,14 @@ void testLangegenCatalogFallbacks() {
     }
 
     assert(CatalogService::isTrustedSource(api, source));
+    for (const char* base : {pipensx::kCatalogGitLabBaseUrl,
+                            pipensx::kCatalogGitVerseBaseUrl}) {
+        const std::string mirror = std::string(base) + "FR_catalog.json";
+        assert(CatalogService::isTrustedSource(mirror, source));
+        assert(CatalogService::isTrustedSource(source, mirror));
+        assert(!CatalogService::isTrustedSource(mirror + "?redirect=evil", source));
+        assert(!CatalogService::isTrustedSource(std::string(base) + "RU_catalog.json", source));
+    }
     assert(CatalogService::isTrustedSource(mirrorUrl, source));
     for (const std::string bad : {
             "http://api.github.com/repos/Langegen/switch-game-collection/contents/FR_catalog.json?ref=main",
@@ -3776,7 +3816,7 @@ void testCatalogDiffCacheProvenance() {
         CatalogService service(root, {}, [&](const std::string& url, std::string& data,
                 std::string& error, const std::string&, const std::atomic<bool>*,
                 const CatalogService::ProgressCallback&) {
-            if (url == pipensx::kCatalogStatsUrl) { error = "offline"; return false; }
+            if (url.find("switch_games_stats.json") != std::string::npos) { error = "offline"; return false; }
             requests.push_back(url);
             if (url == pipensx::kCatalogDiffUrl && mode != "failure") { data = diff; return true; }
             if (url == source || url == english || url == "https://example.com/catalog.json") {
@@ -3906,6 +3946,54 @@ static void testCollections() {
     rmdir(root.c_str());
 }
 
+static void testAuxiliaryMirrors() {
+    for (const char* preferred : {pipensx::kCatalogCollectionBaseUrl,
+                                  pipensx::kCatalogGitLabBaseUrl,
+                                  pipensx::kCatalogGitVerseBaseUrl}) {
+        char temporary[] = "/tmp/pipensx-aux-mirrors-XXXXXX";
+        const char* directory = mkdtemp(temporary);
+        assert(directory);
+        const std::string root = directory;
+        const std::string source = std::string(preferred) + "FR_catalog.json";
+        std::vector<std::string> requests;
+        CatalogService service(root, {}, [&](const std::string& url, std::string& body,
+                std::string& error, const std::string& original,
+                const std::atomic<bool>*, const CatalogService::ProgressCallback&) {
+            assert(CatalogService::isTrustedSource(url, original));
+            if (url == source) {
+                body = R"([{"title":"Game","topic_id":"42","title_id":"0100AAAA00000000","magnet":"magnet:?xt=urn:btih:1111111111111111111111111111111111111111&tr=http://bt.t-ru.org/ann?magnet"}])";
+                return true;
+            }
+            requests.push_back(url);
+            if (url == std::string(pipensx::kCatalogGitVerseBaseUrl) + "switch_games_stats.json") {
+                body = R"({"42":{"seeds":4,"leeches":2}})";
+                return true;
+            }
+            if (url == std::string(pipensx::kCatalogGitVerseBaseUrl) + "top_100.json") {
+                body = R"([{"title_id":"0100AAAA00000000","metacritic":90}])";
+                return true;
+            }
+            if (url.rfind(pipensx::kCatalogGitLabBaseUrl, 0) == 0) {
+                body = "<html>error</html>";
+                return true;
+            }
+            error = "offline";
+            return false;
+        });
+        pipensx::CatalogSnapshot snapshot;
+        std::string error;
+        assert(service.fetchLatest(snapshot, error, source));
+        assert(snapshot.entries.size() == 1);
+        assert(snapshot.entries[0].hasPeerCount && snapshot.entries[0].peerCount == 6);
+        assert(snapshot.entries[0].metacritic == 90);
+        assert(snapshot.entries[0].collections == std::vector<std::string>{"top_100"});
+        const std::string expectedFirst = preferred == pipensx::kCatalogCollectionBaseUrl
+            ? pipensx::kCatalogStatsUrl : std::string(preferred) + "switch_games_stats.json";
+        assert(requests.front() == expectedFirst);
+        assert(std::system(("rm -rf " + root).c_str()) == 0);
+    }
+}
+
 static void testCatalogStatsCache() {
     char temporary[] = "/tmp/pipensx-stats-XXXXXX";
     const char* directory = mkdtemp(temporary);
@@ -3989,6 +4077,7 @@ int main() {
         rmdir(directory);
     }
     testCatalogStatsCache();
+    testAuxiliaryMirrors();
     testCatalogFuzzySearch();
     testCatalogSearchRankingAndDiffChips();
     runCatalogSearchBenchmarkIfRequested();

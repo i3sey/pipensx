@@ -848,8 +848,11 @@ $("catalog-phone").onclick = event => busy(event.currentTarget, async () => {
   const config = await api("/api/settings");
   const language = config.language && config.language !== "auto" ? config.language : lang;
   const names = { ru: "RU", en: "EN", "en-US": "EN", fr: "FR", es: "ES", it: "IT", "pt-BR": "PT_BR", "zh-CN": "ZH_Hans" };
-  const url = config.catalogSourceUrl || "https://raw.githubusercontent.com/Langegen/switch-game-collection/main/" +
-    (names[language] || "EN") + "_catalog.json";
+  const mirrorBases = ["https://gitlab.com/i3sey/catalog-data/-/raw/main/",
+    "https://gitverse.ru/api/repos/i3sey/catalog-data/raw/branch/main/"];
+  const filename = (names[language] || "EN") + "_catalog.json";
+  const url = mirrorBases.includes(config.catalogSourceUrl) ? config.catalogSourceUrl + filename :
+    config.catalogSourceUrl || "https://raw.githubusercontent.com/Langegen/switch-game-collection/main/" + filename;
   $("catalog-transfer-status").textContent = t("web.loading");
   let checksum = "";
   if (url === "https://github.com/i3sey/pipensx-catalog/releases/latest/download/catalog.json") {

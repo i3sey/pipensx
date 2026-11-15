@@ -1,6 +1,8 @@
 #pragma once
 
 #include <string>
+#include <algorithm>
+#include <vector>
 
 namespace pipensx {
 
@@ -10,6 +12,42 @@ inline constexpr char kCatalogStatsUrl[] =
 
 inline constexpr char kCatalogCollectionBaseUrl[] =
     "https://raw.githubusercontent.com/Langegen/switch-game-collection/main/";
+
+inline constexpr char kCatalogGitLabBaseUrl[] =
+    "https://gitlab.com/i3sey/catalog-data/-/raw/main/";
+inline constexpr char kCatalogGitVerseBaseUrl[] =
+    "https://gitverse.ru/api/repos/i3sey/catalog-data/raw/branch/main/";
+
+inline std::vector<std::string> catalogAuxiliaryUrls(
+    const std::string& file, const std::string& sourceUrl) {
+    const std::string upstream = file == "switch_games_stats.json"
+        ? kCatalogStatsUrl : std::string(kCatalogCollectionBaseUrl) + file;
+    std::vector<std::string> urls;
+    for (const char* base : {kCatalogGitLabBaseUrl, kCatalogGitVerseBaseUrl})
+        if (sourceUrl.rfind(base, 0) == 0)
+            urls.push_back(std::string(base) + file);
+    urls.push_back(upstream);
+    for (const char* base : {kCatalogGitLabBaseUrl, kCatalogGitVerseBaseUrl}) {
+        const std::string url = std::string(base) + file;
+        if (std::find(urls.begin(), urls.end(), url) == urls.end())
+            urls.push_back(url);
+    }
+    return urls;
+}
+
+inline std::string catalogMirrorFile(const std::string& url) {
+    for (const char* base : {kCatalogCollectionBaseUrl, kCatalogGitLabBaseUrl,
+                            kCatalogGitVerseBaseUrl}) {
+        if (url.rfind(base, 0) != 0) continue;
+        const std::string file = url.substr(std::string(base).size());
+        for (const char* allowed : {"RU_catalog.json", "EN_catalog.json",
+                 "ES_catalog.json", "FR_catalog.json", "DE_catalog.json",
+                 "IT_catalog.json", "PT_BR_catalog.json", "ZH_Hans_catalog.json",
+                 "catalog_diff.json"})
+            if (file == allowed) return file;
+    }
+    return {};
+}
 
 inline constexpr char kDefaultCatalogUrl[] =
     "https://raw.githubusercontent.com/Langegen/switch-game-collection/main/"

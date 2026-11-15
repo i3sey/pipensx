@@ -60,6 +60,7 @@
     "more": "더 보기"
   },
   "catalog": {
+    "mirrors_unavailable": "모든 카탈로그 미러를 사용할 수 없습니다. 연결을 확인하고 다시 시도하세요.",
     "sort_latest": "최신순",
     "sort_popular": "인기순",
     "sort_alpha": "가나다순",
@@ -741,6 +742,10 @@
     "auto_refresh": "매일 자동 새로고침",
     "catalog_source": "카탈로그 출처",
     "catalog_source_custom": "사용자 지정 URL",
+    "catalog_mirror_github": "GitHub (글로벌)",
+    "catalog_mirror_gitlab": "GitLab (글로벌)",
+    "catalog_mirror_gitverse": "GitVerse (러시아)",
+    "catalog_mirror_fallback": "기본 미러에 연결할 수 없으면 다른 미러를 자동으로 시도합니다. 사용자 지정 URL은 지정한 소스만 사용합니다.",
     "catalog_source_default": "기본값 (Langegen)",
     "catalog_source_detail": "카탈로그 JSON 파일의 HTTPS URL — 비워 두면 내장 출처를 사용합니다",
     "catalog_source_invalid": "카탈로그 JSON 파일의 https:// 주소를 입력하세요.",

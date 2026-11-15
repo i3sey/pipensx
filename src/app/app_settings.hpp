@@ -76,8 +76,8 @@ struct AppSettingsData {
     AppTheme theme = AppTheme::Dark;
     std::string themeAccent = "default";
     CatalogFilter catalogFilter = CatalogFilter::Games;
-    // HTTPS URL to a catalog JSON. Empty = Langegen switch-games
-    // catalog. Validated at parse time; a hand-edited
+    // HTTPS catalog URL, or a built-in mirror base to follow the UI language.
+    // Empty selects GitHub. Validated at parse time; a hand-edited
     // settings.json cannot smuggle a non-HTTPS or credential-bearing URL.
     std::string catalogSourceUrl;
     bool refreshCatalogOnLaunch = false;
@@ -183,7 +183,7 @@ bool isValidProxyUrl(const std::string& value);
 // and in the UI.
 bool isValidCatalogSourceUrl(const std::string& value);
 
-// User override or the default Langegen switch-game-collection catalog URL.
+// Custom URL, a localized built-in mirror base, or the default GitHub catalog.
 std::string effectiveCatalogSourceUrl(const std::string& custom,
                                       const std::string& language = "auto",
                                       const std::string& appLocale = "en-US");

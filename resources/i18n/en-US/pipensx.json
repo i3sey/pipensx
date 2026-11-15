@@ -60,6 +60,7 @@
     "more": "More"
   },
   "catalog": {
+    "mirrors_unavailable": "All catalog mirrors are unavailable. Check your connection and try again.",
     "sort_latest": "Latest",
     "sort_popular": "Popular",
     "sort_alpha": "A-Z",
@@ -740,6 +741,10 @@
     "show_home_note": "Featured spotlight on its own tab. Off by default.",
     "auto_refresh": "Auto-refresh daily",
     "catalog_source": "Catalog source",
+    "catalog_mirror_github": "GitHub (Global)",
+    "catalog_mirror_gitlab": "GitLab (Global)",
+    "catalog_mirror_gitverse": "GitVerse (Russia)",
+    "catalog_mirror_fallback": "If a built-in mirror fails, another is tried automatically. Custom URLs use only the specified source.",
     "catalog_source_custom": "Custom URL",
     "catalog_source_default": "Default (Langegen)",
     "catalog_source_detail": "HTTPS URL to a catalog JSON file — leave empty for the built-in source",

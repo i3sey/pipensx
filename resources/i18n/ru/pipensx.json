@@ -60,6 +60,7 @@
     "more": "Ещё"
   },
   "catalog": {
+    "mirrors_unavailable": "Все зеркала каталога недоступны. Проверьте подключение и повторите попытку.",
     "sort_latest": "Новые",
     "sort_popular": "Популярные",
     "sort_alpha": "А-Я",
@@ -740,6 +741,10 @@
     "show_home_note": "Подборка на отдельной вкладке. По умолчанию скрыта.",
     "auto_refresh": "Обновлять раз в сутки",
     "catalog_source": "Источник каталога",
+    "catalog_mirror_github": "GitHub (глобальный)",
+    "catalog_mirror_gitlab": "GitLab (глобальный)",
+    "catalog_mirror_gitverse": "GitVerse (РФ)",
+    "catalog_mirror_fallback": "Если встроенное зеркало недоступно, приложение попробует другое. Для своего URL используется только указанный источник.",
     "catalog_source_custom": "Свой URL",
     "catalog_source_default": "По умолчанию (Langegen)",
     "catalog_source_detail": "HTTPS-ссылка на JSON каталога — оставьте пустым для встроенного источника",

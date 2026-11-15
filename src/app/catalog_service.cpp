@@ -942,7 +942,8 @@ void joinCatalogCollection(std::vector<CatalogEntry>& entries,
 
 void CatalogService::attachCollections(std::vector<CatalogEntry>& entries,
                                        bool refresh,
-                                       const std::atomic<bool>* cancelled) const {
+                                       const std::atomic<bool>* cancelled,
+                                       const std::string& sourceUrl) const {
     const std::string directory = catalogRoot_ + "/collections";
     if (refresh) makeDirectories(directory);
     for (const auto& name : catalogCollectionNames()) {
@@ -952,12 +953,19 @@ void CatalogService::attachCollections(std::vector<CatalogEntry>& entries,
         std::vector<CatalogCollectionItem> items;
         bool loaded = false;
         if (refresh) {
-            const std::string url = std::string(kCatalogCollectionBaseUrl) + name + ".json";
-            if (httpFetcher_(url, body, error, url, cancelled, {}) &&
-                parseCatalogCollection(body, items)) {
-                loaded = true;
-                writeAtomic(path, body, error, cancelled);
-            } else {
+            for (const auto& url : catalogAuxiliaryUrls(name + ".json", sourceUrl)) {
+                if (cancellationRequested(cancelled)) return;
+                body.clear();
+                error.clear();
+                if (httpFetcher_(url, body, error, url, cancelled, {}) &&
+                    parseCatalogCollection(body, items)) {
+                    if (cancellationRequested(cancelled)) return;
+                    loaded = true;
+                    writeAtomic(path, body, error, cancelled);
+                    break;
+                }
+            }
+            if (!loaded) {
                 log_msg("[catalog] collection %s unavailable: %s\n", name.c_str(), error.c_str());
                 // Avoid repeating connection timeouts for every file while offline.
                 if (!error.empty()) refresh = false;
@@ -1013,8 +1021,11 @@ bool CatalogService::load(std::string& error) {
 
 bool CatalogService::isTrustedSource(const std::string& url,
                                      const std::string& sourceUrl) {
-    const std::string file = langegenCatalogFile(sourceUrl);
+    const std::string file = catalogMirrorFile(sourceUrl);
     if (!file.empty()) {
+        for (const char* base : {kCatalogCollectionBaseUrl, kCatalogGitLabBaseUrl,
+                                kCatalogGitVerseBaseUrl})
+            if (url == std::string(base) + file) return true;
         if (url == sourceUrl || url == langegenCatalogApiUrl(file) ||
             url == kCatalogMirrorManifestUrl)
             return true;
@@ -1313,9 +1324,16 @@ bool CatalogService::fetchResource(
     const std::string& sourceUrl, std::string& body, std::string& error,
     const std::atomic<bool>* cancelled, const ProgressCallback& progress,
     const std::function<bool(const std::string&, std::string&)>& validate,
-    bool allowMirror) {
-    const std::string file = langegenCatalogFile(sourceUrl);
+    bool allowMirror, std::string* fetchedFrom) {
+    const std::string file = catalogMirrorFile(sourceUrl);
     std::vector<std::string> urls{sourceUrl};
+    if (!file.empty() && allowMirror) {
+        for (const char* base : {kCatalogGitLabBaseUrl, kCatalogGitVerseBaseUrl,
+                                kCatalogCollectionBaseUrl}) {
+            const std::string candidate = std::string(base) + file;
+            if (candidate != sourceUrl) urls.push_back(candidate);
+        }
+    }
     if (!file.empty())
         urls.push_back(langegenCatalogApiUrl(file));
     std::string failures;
@@ -1330,6 +1348,7 @@ bool CatalogService::fetchResource(
             if (failIfCancelled(cancelled, error))
                 return false;
             error.clear();
+            if (fetchedFrom) *fetchedFrom = url;
             return true;
         }
         if (failIfCancelled(cancelled, error))
@@ -1382,6 +1401,7 @@ bool CatalogService::fetchResource(
                         return false;
                     log_msg("[catalog] using GitLab mirror: %s\n", file.c_str());
                     error.clear();
+                    if (fetchedFrom) *fetchedFrom = url;
                     return true;
                 }
             }
@@ -1391,7 +1411,8 @@ bool CatalogService::fetchResource(
         failures += " GitLab mirror: " + error;
     }
     body.clear();
-    error = std::move(failures);
+    error = !file.empty() && allowMirror
+        ? "All catalog mirrors failed. " + failures : std::move(failures);
     return false;
 }
 
@@ -1422,7 +1443,7 @@ bool CatalogService::fetchLatest(std::vector<CatalogEntry>& parsed,
                                  ProgressCallback progress) {
     if (!fetchCatalog(parsed, error, sourceUrl, cancelled, progress))
         return false;
-    attachStats(parsed, true, cancelled);
+    attachStats(parsed, true, cancelled, sourceUrl);
     if (failIfCancelled(cancelled, error)) {
         parsed.clear();
         return false;
@@ -1432,7 +1453,8 @@ bool CatalogService::fetchLatest(std::vector<CatalogEntry>& parsed,
 
 void CatalogService::attachStats(std::vector<CatalogEntry>& entries,
                                 bool refresh,
-                                const std::atomic<bool>* cancelled) const {
+                                const std::atomic<bool>* cancelled,
+                                const std::string& sourceUrl) const {
     if (entries.empty() || cancellationRequested(cancelled)) return;
     const std::string path = catalogRoot_ + "/switch_games_stats.json";
     constexpr size_t maxStatsBytes = 8 * 1024 * 1024;
@@ -1445,11 +1467,16 @@ void CatalogService::attachStats(std::vector<CatalogEntry>& entries,
     };
     std::string body, error;
     nlohmann::json stats;
-    if (refresh && httpFetcher_(kCatalogStatsUrl, body, error,
-                               kCatalogStatsUrl, cancelled, {})) {
+    if (refresh) for (const auto& url : catalogAuxiliaryUrls("switch_games_stats.json", sourceUrl)) {
+        if (cancellationRequested(cancelled)) return;
+        body.clear();
+        error.clear();
+        if (!httpFetcher_(url, body, error, url, cancelled, {})) continue;
         stats = parse(body);
-        if (stats.is_object() && !stats.empty())
+        if (stats.is_object() && !stats.empty()) {
             writeAtomic(path, body, error, cancelled);
+            break;
+        }
     }
     if (cancellationRequested(cancelled)) return;
     if (!stats.is_object() || stats.empty()) {
@@ -1547,11 +1574,16 @@ bool CatalogService::fetchCatalog(std::vector<CatalogEntry>& parsed,
         }
     }
 
-    std::string catalogBody;
+    std::string catalogBody, fetchedFrom;
     if (!fetchResource(sourceUrl, catalogBody, error, cancelled, progress,
             [&](const std::string& body, std::string& parseError) {
-                return parseJson(body, parsed, parseError, cancelled);
-            })) {
+                if (!parseJson(body, parsed, parseError, cancelled)) return false;
+                if (parsed.empty()) {
+                    parseError = "Catalog is empty.";
+                    return false;
+                }
+                return true;
+            }, true, &fetchedFrom)) {
         parsed.clear();
         return false;
     }
@@ -1562,7 +1594,9 @@ bool CatalogService::fetchCatalog(std::vector<CatalogEntry>& parsed,
     unlink(metadataPath.c_str());
     if (!writeAtomic(cachePath_, catalogBody, error, cancelled))
         return false;
-    if (!langegenCatalogFile(sourceUrl).empty() && fetchStartedAt > 0) {
+    if (!langegenCatalogFile(sourceUrl).empty() && fetchStartedAt > 0 &&
+        fetchedFrom.rfind(kCatalogGitLabBaseUrl, 0) != 0 &&
+        fetchedFrom.rfind(kCatalogGitVerseBaseUrl, 0) != 0) {
         std::string language = "ru";
         const std::string file = langegenCatalogFile(sourceUrl);
         if (file == "EN_catalog.json") language = "en";
@@ -1678,7 +1712,7 @@ bool CatalogService::fetchLatest(CatalogSnapshot& snapshot,
         snapshot = {};
         return false;
     }
-    attachCollections(snapshot.entries, true, cancelled);
+    attachCollections(snapshot.entries, true, cancelled, sourceUrl);
     buildIndex(snapshot.entries, snapshot.infoHashIndex);
     if (failIfCancelled(cancelled, error)) {
         snapshot = {};

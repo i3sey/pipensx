@@ -274,14 +274,17 @@ private:
                       const std::atomic<bool>* cancelled,
                       ProgressCallback progress);
     void attachStats(std::vector<CatalogEntry>& entries, bool refresh,
-                     const std::atomic<bool>* cancelled = nullptr) const;
+                     const std::atomic<bool>* cancelled = nullptr,
+                     const std::string& sourceUrl = {}) const;
     bool fetchResource(const std::string& sourceUrl, std::string& body,
                        std::string& error, const std::atomic<bool>* cancelled,
                        const ProgressCallback& progress,
                        const std::function<bool(const std::string&, std::string&)>& validate,
-                       bool allowMirror = true);
+                       bool allowMirror = true,
+                       std::string* fetchedFrom = nullptr);
     void attachCollections(std::vector<CatalogEntry>& entries, bool refresh,
-                           const std::atomic<bool>* cancelled = nullptr) const;
+                           const std::atomic<bool>* cancelled = nullptr,
+                           const std::string& sourceUrl = {}) const;
     HttpFetcher httpFetcher_;
     bool loadFileSnapshot(const std::string& path, const std::string& label,
                           CatalogSnapshot& snapshot,

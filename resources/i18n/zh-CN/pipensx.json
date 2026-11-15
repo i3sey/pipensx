@@ -60,6 +60,7 @@
     "more": "更多"
   },
   "catalog": {
+    "mirrors_unavailable": "所有目录镜像均不可用。请检查网络连接后重试。",
     "sort_latest": "最新",
     "sort_popular": "热门",
     "sort_alpha": "A-Z",
@@ -741,6 +742,10 @@
     "auto_refresh": "每日自动刷新",
     "catalog_source": "目录来源",
     "catalog_source_custom": "自定义 URL",
+    "catalog_mirror_github": "GitHub（全球）",
+    "catalog_mirror_gitlab": "GitLab（全球）",
+    "catalog_mirror_gitverse": "GitVerse（俄罗斯）",
+    "catalog_mirror_fallback": "内置镜像不可用时会自动尝试其他镜像。自定义 URL 仅使用指定来源。",
     "catalog_source_default": "默认（Langegen）",
     "catalog_source_detail": "指向目录 JSON 文件的 HTTPS 地址 — 留空以使用内置来源",
     "catalog_source_invalid": "请输入指向目录 JSON 文件的 https:// 地址。",

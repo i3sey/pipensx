@@ -60,6 +60,7 @@
     "more": "Mais"
   },
   "catalog": {
+    "mirrors_unavailable": "Todos os espelhos do catálogo estão indisponíveis. Verifique sua conexão e tente novamente.",
     "sort_latest": "Recentes",
     "sort_popular": "Populares",
     "sort_alpha": "A-Z",
@@ -740,6 +741,10 @@
     "show_home_note": "Destaques numa aba própria. Desligada por padrão.",
     "auto_refresh": "Atualização automática diária",
     "catalog_source": "Fonte do catálogo",
+    "catalog_mirror_github": "GitHub (Global)",
+    "catalog_mirror_gitlab": "GitLab (Global)",
+    "catalog_mirror_gitverse": "GitVerse (Rússia)",
+    "catalog_mirror_fallback": "Se um espelho integrado falhar, outro será tentado automaticamente. URLs personalizadas usam apenas a fonte indicada.",
     "catalog_source_custom": "URL personalizada",
     "catalog_source_default": "Padrão (Langegen)",
     "catalog_source_detail": "URL HTTPS para um JSON de catálogo — deixe vazio para a fonte integrada",

@@ -33,6 +33,9 @@ inline constexpr float kFontCaption = 15.0f;
 inline constexpr float kSpacingUnit = 8.0f;
 
 // --- Colors -------------------------------------------------------------
+inline const NVGcolor kRussianFlagColors[] = {
+    nvgRGB(255, 255, 255), nvgRGB(0, 57, 166), nvgRGB(213, 43, 30)};
+
 // The token table is the single source of truth. registerColors() publishes
 // it into both Borealis themes so XML can reference "pipensx/*"; the C++
 // accessors below read the table directly — resolving through the theme's

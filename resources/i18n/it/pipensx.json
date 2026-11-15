@@ -60,6 +60,7 @@
     "more": "Altro"
   },
   "catalog": {
+    "mirrors_unavailable": "Tutti i mirror del catalogo non sono disponibili. Controlla la connessione e riprova.",
     "sort_latest": "Ultimi",
     "sort_popular": "Popolari",
     "sort_alpha": "A-Z",
@@ -741,6 +742,10 @@
     "auto_refresh": "Aggiornamento automatico giornaliero",
     "catalog_source": "Sorgente catalogo",
     "catalog_source_custom": "URL personalizzato",
+    "catalog_mirror_github": "GitHub (Globale)",
+    "catalog_mirror_gitlab": "GitLab (Globale)",
+    "catalog_mirror_gitverse": "GitVerse (Russia)",
+    "catalog_mirror_fallback": "Se un mirror integrato non risponde, ne viene provato un altro. Gli URL personalizzati usano solo la fonte indicata.",
     "catalog_source_default": "Predefinito (Langegen)",
     "catalog_source_detail": "URL HTTPS a un file JSON catalogo — lascia vuoto per la sorgente integrata",
     "catalog_source_invalid": "Inserisci un URL https:// a un file JSON catalogo.",

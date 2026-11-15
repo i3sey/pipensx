@@ -544,6 +544,14 @@ void testCatalogLanguageSelection() {
         {"auto", "EN_catalog.json", "en"},
     };
     for (const auto& item : cases) {
+        for (const char* mirror : {pipensx::kCatalogGitLabBaseUrl,
+                                   pipensx::kCatalogGitVerseBaseUrl}) {
+            assert(isValidCatalogSourceUrl(mirror));
+            assert(effectiveCatalogSourceUrl(mirror, "auto", item.locale) ==
+                   std::string(mirror) + item.filename);
+            assert(effectiveCatalogSourceUrl(mirror, "ru", item.locale) ==
+                   std::string(mirror) + "RU_catalog.json");
+        }
         const std::string expected =
             std::string(pipensx::kCatalogCollectionBaseUrl) + item.filename;
         assert(effectiveCatalogSourceUrl("", "auto", item.locale) == expected);

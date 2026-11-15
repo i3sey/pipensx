@@ -384,6 +384,11 @@ bool isValidCatalogSourceUrl(const std::string& value) {
 std::string effectiveCatalogSourceUrl(const std::string& custom,
                                       const std::string& language,
                                       const std::string& appLocale) {
+    if (custom == kCatalogGitLabBaseUrl || custom == kCatalogGitVerseBaseUrl) {
+        const std::string localized = catalogSourceUrlForLanguage(
+            language.empty() || language == "auto" ? appLocale : language);
+        return custom + langegenCatalogFile(localized);
+    }
     if (!custom.empty())
         return custom;
     return catalogSourceUrlForLanguage(

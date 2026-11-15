@@ -37,6 +37,8 @@ inline std::string catalogLower(std::string value) {
 inline std::string formatCatalogRefreshError(const std::string& error) {
     if (isSslCertificateErrorMessage(error))
         return tr("pipensx/debrid/ssl_cert_hint");
+    if (error.rfind("All catalog mirrors failed.", 0) == 0)
+        return tr("pipensx/catalog/mirrors_unavailable");
     return error;
 }
 
