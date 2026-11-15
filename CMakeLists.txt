@@ -167,6 +167,7 @@ set(APP_SERVICE_SOURCES
     src/app/catalog_batch_installer.cpp
     src/app/catalog_refresh.cpp
     src/app/catalog_service.cpp
+    src/app/homebrew_catalog.cpp
     src/app/catalog_presentation.cpp
     src/app/catalog_descriptions.cpp
     src/app/install_benchmark.cpp
@@ -211,6 +212,7 @@ set(APP_SERVICE_SOURCES
 )
 
 set(UI_SOURCES
+    src/ui/homebrew/homebrew_view.cpp
     src/ui/catalog/batch_install.cpp
     src/ui/catalog/catalog_view.cpp
     src/ui/detail/torrent_selection.cpp

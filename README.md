@@ -55,6 +55,11 @@ if all fail. The selected preference stays unchanged. **Custom URL** accepts
 an HTTPS JSON URL and uses only that source. Updating the catalog includes its
 cover URLs without a separate artwork update.
 
+The **Homebrew** tab has a separate app catalog with search, descriptions and
+direct NRO/ZIP installation. Downloads are checked against their SHA-256 before
+files are written to the SD card. See [Homebrew catalog](docs/HOMEBREW.md) for
+file replacement rules and system-module handling.
+
 ## Quick start
 
 Development uses Gitea at `git@192.168.1.146:i3sey/pipensx.git` as the primary

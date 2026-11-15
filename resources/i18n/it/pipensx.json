@@ -27,7 +27,8 @@
     "updates": "Aggiornamenti",
     "settings": "Impostazioni",
     "help": "Aiuto",
-    "about": "Info"
+    "about": "Info",
+    "homebrew": "Homebrew"
   },
   "common": {
     "ok": "OK",
@@ -1063,5 +1064,31 @@
     "peers_unknown": "Peer: dati assenti",
     "few_peers": "Pochi peer",
     "available": "Peer disponibili"
+  },
+  "homebrew": {
+    "refresh": "Aggiorna",
+    "loading": "Caricamento catalogo homebrew…",
+    "installed_version": "Installato: {}",
+    "system_module": "Questo pacchetto modifica i file di Atmosphère. Riavvia la console dopo l’installazione.",
+    "install": "Installa",
+    "reinstall": "Reinstalla / aggiorna",
+    "files": "File sulla SD",
+    "file_policy": "I file da sostituire vengono aggiornati. Quelli da conservare vengono creati solo se mancanti; le impostazioni esistenti restano intatte.",
+    "preserve_file": "Conserva",
+    "replace_file": "Sostituisci",
+    "changelog": "Modifiche",
+    "confirm": "Installare {} {}? I file elencati in questa pagina verranno scritti sulla scheda SD.",
+    "downloading": "Download: {}%",
+    "installing": "Verifica e installazione…",
+    "installed": "{} installato. I file sono pronti sulla scheda SD.",
+    "installed_restart": "{} installato. Riavvia la console per caricare i moduli di sistema.",
+    "cancelling": "Annullamento…",
+    "cancelled": "Installazione annullata.",
+    "install_failed": "Installazione non riuscita: {}",
+    "count": "{} applicazioni",
+    "no_results": "Nessuna applicazione trovata. Cancella la ricerca o aggiorna il catalogo.",
+    "cached_error": "Catalogo salvato visualizzato. Aggiornamento non riuscito: {}",
+    "load_failed": "Impossibile caricare il catalogo homebrew: {}",
+    "dependencies": "Gli overlay richiedono {}. Installali separatamente se mancanti."
   }
 }

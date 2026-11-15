@@ -51,6 +51,7 @@ extern "C" {
 #include <unistd.h>
 
 #include "ui/catalog/catalog_view.hpp"
+#include "ui/homebrew/homebrew_view.hpp"
 #include "ui/common/async_image.hpp"
 #include "ui/common/burn_in_saver.hpp"
 #include "ui/common/ui_helpers.hpp"
@@ -214,6 +215,10 @@ public:
                                        tabs->focusTab(NavIconType::Catalog);
                                    },
                                    [this] { refreshUpdateBadge(); });
+        });
+        tabs->addNavTab(tr("pipensx/nav/homebrew"), NavIconType::Homebrew,
+                        [manager, settings, metadata] {
+            return new pipensx::ui::HomebrewView(manager->rootPath(), "sdmc:", settings, metadata);
         });
         tabs->addNavTab(tr("pipensx/nav/autorun"), NavIconType::AutoRun,
                         [this, manager, catalog, metadata, installed,

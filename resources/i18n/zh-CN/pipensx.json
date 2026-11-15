@@ -27,7 +27,8 @@
     "updates": "更新",
     "settings": "设置",
     "help": "帮助",
-    "about": "关于"
+    "about": "关于",
+    "homebrew": "自制软件"
   },
   "common": {
     "ok": "确定",
@@ -1063,5 +1064,31 @@
     "peers_unknown": "节点：未知",
     "few_peers": "节点较少",
     "available": "有可用节点"
+  },
+  "homebrew": {
+    "refresh": "刷新",
+    "loading": "正在加载自制软件目录…",
+    "installed_version": "已安装：{}",
+    "system_module": "此软件包会修改 Atmosphère 文件。安装后请重启主机。",
+    "install": "安装",
+    "reinstall": "重新安装 / 更新",
+    "files": "SD 卡文件",
+    "file_policy": "替换文件将更新。保留文件仅在缺失时创建，现有配置保持不变。",
+    "preserve_file": "保留",
+    "replace_file": "替换",
+    "changelog": "更新内容",
+    "confirm": "安装 {} {}？本页列出的文件将写入 SD 卡。",
+    "downloading": "下载中：{}%",
+    "installing": "正在验证并安装…",
+    "installed": "{} 已安装。文件已写入 SD 卡。",
+    "installed_restart": "{} 已安装。请重启主机以加载系统模块。",
+    "cancelling": "正在取消…",
+    "cancelled": "安装已取消。",
+    "install_failed": "安装失败：{}",
+    "count": "{} 个应用",
+    "no_results": "没有匹配的应用。请清空搜索或刷新目录。",
+    "cached_error": "正在显示缓存目录。刷新失败：{}",
+    "load_failed": "无法加载自制软件目录：{}",
+    "dependencies": "悬浮层需要 {}。如未安装，请单独安装。"
   }
 }

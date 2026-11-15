@@ -27,7 +27,8 @@
     "updates": "Updates",
     "settings": "Settings",
     "help": "Help",
-    "about": "About"
+    "about": "About",
+    "homebrew": "Homebrew"
   },
   "common": {
     "ok": "OK",
@@ -1063,5 +1064,31 @@
     "peers_unknown": "Peers: unknown",
     "few_peers": "Few peers",
     "available": "Peers available"
+  },
+  "homebrew": {
+    "refresh": "Refresh",
+    "loading": "Loading homebrew catalog…",
+    "installed_version": "Installed: {}",
+    "system_module": "This package changes Atmosphère files. Restart the console after installing.",
+    "install": "Install",
+    "reinstall": "Reinstall / update",
+    "files": "Files on SD",
+    "file_policy": "Replace files are updated. Preserve files are created only when missing; your existing configuration stays intact.",
+    "preserve_file": "Preserve",
+    "replace_file": "Replace",
+    "changelog": "Changes",
+    "confirm": "Install {} {}? The files listed on this page will be written to the SD card.",
+    "downloading": "Downloading: {}%",
+    "installing": "Verifying and installing…",
+    "installed": "{} installed. Its files are ready on the SD card.",
+    "installed_restart": "{} installed. Restart the console to load its system modules.",
+    "cancelling": "Cancelling…",
+    "cancelled": "Installation cancelled.",
+    "install_failed": "Installation failed: {}",
+    "count": "{} apps",
+    "no_results": "No apps match your search. Clear the search or refresh the catalog.",
+    "cached_error": "Showing cached catalog. Refresh failed: {}",
+    "load_failed": "Unable to load homebrew catalog: {}",
+    "dependencies": "Overlays require {}. Install these separately if they are missing."
   }
 }

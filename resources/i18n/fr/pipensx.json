@@ -27,7 +27,8 @@
     "updates": "Mises à jour",
     "settings": "Paramètres",
     "help": "Aide",
-    "about": "À propos"
+    "about": "À propos",
+    "homebrew": "Homebrew"
   },
   "common": {
     "ok": "OK",
@@ -1063,5 +1064,31 @@
     "peers_unknown": "Pairs : inconnus",
     "few_peers": "Peu de pairs",
     "available": "Pairs disponibles"
+  },
+  "homebrew": {
+    "refresh": "Actualiser",
+    "loading": "Chargement du catalogue homebrew…",
+    "installed_version": "Installé : {}",
+    "system_module": "Ce paquet modifie des fichiers Atmosphère. Redémarrez la console après installation.",
+    "install": "Installer",
+    "reinstall": "Réinstaller / mettre à jour",
+    "files": "Fichiers sur la carte SD",
+    "file_policy": "Les fichiers à remplacer seront mis à jour. Les fichiers à conserver seront créés uniquement si absents ; vos réglages seront conservés.",
+    "preserve_file": "Conserver",
+    "replace_file": "Remplacer",
+    "changelog": "Modifications",
+    "confirm": "Installer {} {} ? Les fichiers indiqués sur cette page seront écrits sur la carte SD.",
+    "downloading": "Téléchargement : {} %",
+    "installing": "Vérification et installation…",
+    "installed": "{} installé. Ses fichiers sont prêts sur la carte SD.",
+    "installed_restart": "{} installé. Redémarrez la console pour charger ses modules système.",
+    "cancelling": "Annulation…",
+    "cancelled": "Installation annulée.",
+    "install_failed": "Échec de l’installation : {}",
+    "count": "{} applications",
+    "no_results": "Aucune application trouvée. Effacez la recherche ou actualisez le catalogue.",
+    "cached_error": "Catalogue en cache affiché. Échec de l’actualisation : {}",
+    "load_failed": "Impossible de charger le catalogue homebrew : {}",
+    "dependencies": "Les overlays nécessitent {}. Installez-les séparément s’ils sont absents."
   }
 }
