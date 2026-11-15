@@ -27,6 +27,9 @@ build setup. [AGENTS.md](../AGENTS.md) contains repository instructions;
 Read these only for work in the relevant area. Plans describe intended behavior;
 check source and tests to establish what has shipped.
 
+- [Retro GBA](plans/RETRO_GBA.md): first-platform implementation plan for
+  emulator installation, ROM preparation, library and HOME forwarders.
+
 - [Product roadmap](product-roadmap.md): proposal based on the September 30,
   2026 code snapshot, with links to earlier audits.
 - [Live seeding](seeding-ram-research.md): approved target architecture and
