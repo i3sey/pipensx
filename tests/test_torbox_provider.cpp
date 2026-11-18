@@ -63,6 +63,36 @@ int main() {
     assert(dead.phase == DebridInfo::Phase::Failed);
     assert(dead.rawState == "failed");
 
+    TorboxTransport hashTransport =
+        [](const TorboxHttpRequest&, TorboxHttpResponse& resp, std::string&) {
+            resp.status = 200;
+            resp.body = R"json({
+                "success": true,
+                "data": [{
+                    "id": 77,
+                    "hash": "0123456789abcdef0123456789abcdef01234567",
+                    "name": "Cached Title",
+                    "size": 4096,
+                    "progress": 1.0,
+                    "download_state": "cached",
+                    "download_finished": true,
+                    "download_present": true,
+                    "files": [{"id": 5, "name": "game.nsp", "size": 4096}]
+                }]
+            })json";
+            return true;
+        };
+    TorboxProvider hashProvider("key", hashTransport);
+    std::string matchedId;
+    DebridInfo matched;
+    assert(hashProvider.findByHash(
+        "0123456789ABCDEF0123456789ABCDEF01234567", matchedId, matched, err));
+    assert(matchedId == "77");
+    assert(matched.phase == DebridInfo::Phase::Ready);
+    assert(matched.files.size() == 1);
+    assert(!hashProvider.findByHash(
+        "ffffffffffffffffffffffffffffffffffffffff", matchedId, matched, err));
+
     std::puts("torbox provider ok");
     return 0;
 }

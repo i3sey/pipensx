@@ -51,17 +51,27 @@ public:
                         std::string& error);
     bool fetchInfo(uint64_t torboxId, TorboxTorrentInfo& info,
                    std::string& error);
+    bool fetchList(std::vector<TorboxTorrentInfo>& items, std::string& error);
+    bool findByHash(const std::string& infoHashHex, TorboxTorrentInfo& info,
+                    std::string& error);
     bool requestDownloadLink(uint64_t torboxId, uint64_t fileId,
                              std::string& url, std::string& error);
     bool remove(uint64_t torboxId, std::string& error);
     const std::string& apiKey() const;
 
     // Pure parsers (unit-tested directly):
+    static bool isFailedState(const std::string& state);
     static bool parseSuccess(const std::string& json, std::string& error);
     static bool parseCreate(const std::string& json, uint64_t& torboxId,
                             std::string& error);
     static bool parseInfo(const std::string& json, uint64_t torboxId,
                           TorboxTorrentInfo& info, std::string& error);
+    static bool parseList(const std::string& json,
+                          std::vector<TorboxTorrentInfo>& items,
+                          std::string& error);
+    static bool parseFindByHash(const std::string& json,
+                                const std::string& infoHashHex,
+                                TorboxTorrentInfo& info, std::string& error);
     static bool parseDownloadLink(const std::string& json, std::string& url,
                                   std::string& error);
 

@@ -27,6 +27,7 @@
 #include "app/installed_title_service.hpp"
 #include "ui/catalog/catalog_grid.hpp"
 #include "ui/catalog/catalog_helpers.hpp"
+#include "ui/debrid_ui.hpp"
 #include "ui/i18n.hpp"
 #include "ui/common/message_cells.hpp"
 #include "ui/common/ui_helpers.hpp"
@@ -39,7 +40,10 @@ class CatalogView;
 
 class CatalogDataSource : public brls::RecyclerDataSource {
 public:
-    explicit CatalogDataSource(CatalogView* owner) : owner_(owner) {}
+    explicit CatalogDataSource(CatalogView* owner,
+                               DownloadManager* manager = nullptr,
+                               AppSettings* settings = nullptr)
+        : owner_(owner), manager_(manager), settings_(settings) {}
 
     void setEntries(std::shared_ptr<CatalogBrowseResult> result,
                     GameMetadataService* metadata) {
@@ -103,8 +107,20 @@ private:
         info.title = row < result_->titles.size() && !result_->titles[row].empty()
             ? result_->titles[row]
             : (entry ? entry->title : std::string());
-        const std::string badge =
+        std::string badge =
             row < result_->badges.size() ? result_->badges[row] : std::string();
+        if (badge.empty() && entry && manager_ && settings_ &&
+            debridModeActive(settings_) && !entry->infoHash.empty()) {
+            if (auto pending = manager_->pendingDebrid().find(
+                    settings_->get().debridProvider, entry->infoHash)) {
+                const char* providerName =
+                    debridProviderName(pending->provider);
+                badge = pending->ready
+                    ? tr("pipensx/debrid/card_cached_ready", providerName)
+                    : tr("pipensx/debrid/card_caching_pct", providerName,
+                         percentOf(static_cast<float>(pending->progress)));
+            }
+        }
         info.subIsBadge = !badge.empty();
         if (row < result_->diffChips.size()) info.diffChips = result_->diffChips[row];
         const uint64_t size = entry ? entry->size : 0;
@@ -152,6 +168,8 @@ private:
     }
 
     CatalogView* owner_;
+    DownloadManager* manager_ = nullptr;
+    AppSettings* settings_ = nullptr;
     std::shared_ptr<CatalogBrowseResult> result_ =
         std::make_shared<CatalogBrowseResult>();
     GameMetadataService* metadata_ = nullptr;
@@ -217,7 +235,7 @@ public:
         });
         recycler_->registerCell("Message",
             [] { return new TextMessageCell(); });
-        dataSource_ = new CatalogDataSource(this);
+        dataSource_ = new CatalogDataSource(this, manager_, settings_);
         recycler_->setDataSource(dataSource_);
 
         header_ = new brls::Box(brls::Axis::ROW);
@@ -369,6 +387,8 @@ public:
             });
         }
         observedSettingsGeneration_ = settings_ ? settings_->generation() : 0;
+        observedPendingDebridGeneration_ =
+            manager_ ? manager_->pendingDebrid().generation() : 0;
         timer_.setCallback([this] { refreshLiveState(); });
         timer_.start(1000);
         scheduleStorageRefresh();
@@ -378,6 +398,7 @@ public:
     void willAppear(bool resetState) override {
         brls::Box::willAppear(resetState);
         updateAutorunBanner();
+        syncPendingDebridChanges();
         timer_.start(1000);
         if (deferredBrowse_ && !activityStackHasOverlay()) {
             auto ready = std::move(deferredBrowse_);
@@ -1456,12 +1477,17 @@ private:
             return;
         }
         syncFavoriteChanges();
+        syncPendingDebridChanges();
         if (settings_ && settings_->generation() !=
                              observedSettingsGeneration_) {
             observedSettingsGeneration_ = settings_->generation();
             // Settings do not participate in catalogue ordering. Storage
             // refresh below handles the only filter input they can affect.
             updateHeader();
+            if (dataSource_ && recycler_) {
+                for (auto* cell : visibleCells<brls::RecyclerCell>(recycler_))
+                    dataSource_->repaintCell(cell);
+            }
         }
         const auto tasks = manager_->snapshotUi();
         std::unordered_map<std::string, DownloadStatus> nextTasks;
@@ -1969,8 +1995,20 @@ private:
     bool fitsOnly_ = false;
     PlayerFilter playerFilter_ = PlayerFilter::Any;
     std::unordered_set<std::string> genreFilters_;
+    void syncPendingDebridChanges() {
+        if (!manager_ || !dataSource_ || !recycler_)
+            return;
+        const uint64_t gen = manager_->pendingDebrid().generation();
+        if (gen == observedPendingDebridGeneration_)
+            return;
+        observedPendingDebridGeneration_ = gen;
+        for (auto* cell : visibleCells<brls::RecyclerCell>(recycler_))
+            dataSource_->repaintCell(cell);
+    }
+
     brls::RepeatingTimer timer_;
     uint64_t observedSettingsGeneration_ = 0;
+    uint64_t observedPendingDebridGeneration_ = 0;
     std::shared_ptr<const std::vector<CatalogEntry>> observedCatalog_;
     uint64_t observedMetadataGeneration_ = 0;
     uint64_t observedFavoritesGeneration_ = 0;

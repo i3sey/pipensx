@@ -8,6 +8,7 @@ extern "C" {
 #include <atomic>
 #include <cassert>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <memory>
 #include <string>
@@ -444,6 +445,124 @@ void testDirectAndProviders(const std::string& root) {
     }
 }
 
+void testPendingDebridRetainAndReuse() {
+    struct State {
+        int creates = 0;
+        int removes = 0;
+        bool readyNow = false;
+        std::atomic<bool>* cancelOnFetch = nullptr;
+    };
+    class RetainReuseProvider final : public DebridProvider {
+    public:
+        explicit RetainReuseProvider(std::shared_ptr<State> state)
+            : state_(std::move(state)) {}
+
+        bool validate(std::string&) override { return true; }
+        bool createFromMagnet(const std::string&, std::string& id,
+                              std::string&) override {
+            ++state_->creates;
+            id = "tx-501";
+            return true;
+        }
+        bool createFromFile(const std::string&, std::string&,
+                            std::string&) override {
+            return false;
+        }
+        bool fetchInfo(const std::string& id, DebridInfo& info,
+                       std::string&) override {
+            assert(id == "tx-501");
+            info = DebridInfo{};
+            info.name = "Cached Game";
+            if (!state_->readyNow) {
+                info.phase = DebridInfo::Phase::Downloading;
+                info.progress = 0.40;
+                if (state_->cancelOnFetch)
+                    state_->cancelOnFetch->store(true);
+                return true;
+            }
+            info.phase = DebridInfo::Phase::Ready;
+            info.progress = 1.0;
+            info.bytes = 4096;
+            info.files.push_back({"1", "game.nsp", 4096});
+            return true;
+        }
+        bool selectFiles(const std::string&, const std::vector<std::string>&,
+                         std::string&) override {
+            return true;
+        }
+        bool resolveDownloadUrl(const std::string&, const DebridInfo&, size_t,
+                                const DebridFile&, std::string&,
+                                std::string&) override {
+            return false;
+        }
+        bool remove(const std::string&, std::string&) override {
+            ++state_->removes;
+            return true;
+        }
+        const char* name() const override { return "torbox"; }
+
+    private:
+        std::shared_ptr<State> state_;
+    };
+
+    char tmp[] = "/tmp/pipensx-add-pending-XXXXXX";
+    assert(mkdtemp(tmp));
+    const std::string root(tmp);
+
+    {
+        DownloadManager manager(root, false);
+        manager.setTorrentingEnabled(false);
+        manager.setActiveDebridProvider(DebridProviderKind::TorBox);
+        manager.setTorboxApiKey("secret");
+        manager.setKeepUncachedDebrid(true);
+
+        auto state = std::make_shared<State>();
+        ReleaseAdder adder(
+            manager,
+            [state](DebridProviderKind, const std::string&) {
+                return std::unique_ptr<DebridProvider>(
+                    new RetainReuseProvider(state));
+            });
+
+        const std::string hash = "1234567890abcdef1234567890abcdef12345678";
+        AddRequest req;
+        req.input = AddInputKind::Catalog;
+        req.title = "Cached Game";
+        req.infoHashHex = hash;
+        req.magnetUri = "magnet:?xt=urn:btih:" + hash;
+        req.requestedMode = TransferMode::DownloadOnly;
+        req.selection = StreamSelection::AllFiles;
+
+        std::atomic<bool> cancelled{false};
+        state->cancelOnFetch = &cancelled;
+        const AddOutcome first = adder.addViaDebrid(req, cancelled);
+        assert(!first.ok);
+        assert(!first.refused);
+        assert(first.error.find("kept") != std::string::npos);
+        assert(state->creates == 1);
+        assert(state->removes == 0);
+
+        auto pending =
+            manager.pendingDebrid().find(DebridProviderKind::TorBox, hash);
+        assert(pending.has_value());
+        assert(pending->debridId == "tx-501");
+        assert(!pending->ready);
+        assert(pending->progress > 0.39 && pending->progress < 0.41);
+
+        state->cancelOnFetch = nullptr;
+        state->readyNow = true;
+        std::atomic<bool> cancelledSecond{false};
+        const AddOutcome second = adder.addViaDebrid(req, cancelledSecond);
+        assert(second.ok);
+        assert(state->creates == 1);
+        assert(!manager.pendingDebrid()
+                    .find(DebridProviderKind::TorBox, hash)
+                    .has_value());
+    }
+
+    assert(std::system(("rm -rf " + root).c_str()) == 0);
+}
+
 }  // namespace
 
 int main() {
@@ -451,6 +570,7 @@ int main() {
     assert(mkdtemp(dir));
     testCapabilitiesAndRefusal();
     testDirectAndProviders(dir);
+    testPendingDebridRetainAndReuse();
     std::puts("add release tests passed");
     return 0;
 }

@@ -46,6 +46,7 @@
 #include "ui/detail/torrent_selection.hpp"
 #include "ui/debrid_ui.hpp"
 #include "ui/downloads/details_activity.hpp"
+#include "ui/pending_debrid_view.hpp"
 #include "ui/theme.hpp"
 
 namespace pipensx::ui {
@@ -197,9 +198,39 @@ public:
                 return true;
             });
         }
+        observedPendingGeneration_ =
+            manager_ ? manager_->pendingDebrid().generation() : 0;
+        lastTimerTickMs_ = now_ms();
         refreshButtons();
+        if (!currentTask() && currentPendingDebrid().has_value())
+            refreshPendingDebridStatus(false);
         timer_.setCallback([this] {
+            const uint64_t nowMs = now_ms();
+            const bool resumedFromBackground =
+                lastTimerTickMs_ != 0 && nowMs > lastTimerTickMs_ &&
+                (nowMs - lastTimerTickMs_) > 3000;
+            lastTimerTickMs_ = nowMs;
+            if (manager_) {
+                const uint64_t gen = manager_->pendingDebrid().generation();
+                if (gen != observedPendingGeneration_) {
+                    observedPendingGeneration_ = gen;
+                    refreshButtons();
+                }
+            }
             refreshButtons();
+            if (!busy_ && !currentTask()) {
+                if (auto pending = currentPendingDebrid()) {
+                    if (resumedFromBackground) {
+                        pendingPollTick_ = 0;
+                        refreshPendingDebridStatus(false);
+                    } else if (!pending->ready && ++pendingPollTick_ >= 10) {
+                        pendingPollTick_ = 0;
+                        refreshPendingDebridStatus(false);
+                    }
+                } else {
+                    pendingPollTick_ = 0;
+                }
+            }
             // nsGetStorageSize is a real syscall — re-read it every ~2s, not on
             // every 500ms button tick. Same cadence as the sidebar footer.
             if (++storageTick_ >= 4) {
@@ -920,6 +951,39 @@ private:
                 setTextIfChanged(statusLabel_,
                                  tr("pipensx/downloads/status_completed_saved"));
         } else {
+            if (auto pending = currentPendingDebrid()) {
+                const char* providerName =
+                    debridProviderName(pending->provider);
+                if (pending->ready) {
+                    setTextIfChanged(primary_,
+                                     tr("pipensx/debrid/continue_cached"));
+                    primary_->setProgress(-1.0f);
+                    setTextIfChanged(
+                        statusLabel_,
+                        !operationMessage_.empty()
+                            ? operationMessage_
+                            : tr("pipensx/debrid/cached_ready_status",
+                                 providerName));
+                } else {
+                    const float frac = std::clamp(
+                        static_cast<float>(pending->progress), 0.0f, 1.0f);
+                    const int pct = percentOf(frac);
+                    setTextIfChanged(
+                        primary_,
+                        tr("pipensx/debrid/caching_button", pct));
+                    primary_->setProgress(frac);
+                    setTextIfChanged(
+                        statusLabel_,
+                        !operationMessage_.empty()
+                            ? operationMessage_
+                            : tr("pipensx/debrid/caching_status",
+                                 providerName, pct));
+                }
+                primary_->setState(brls::ButtonState::ENABLED);
+                setTextIfChanged(secondary_, tr("pipensx/torrent/frame_title"));
+                secondary_->setState(brls::ButtonState::ENABLED);
+                return;
+            }
             setTextIfChanged(primary_, tr(installed_ && installed_->contains(titleId_)
                 ? "pipensx/detail/install_extras" : "pipensx/common/install"));
             primary_->setProgress(-1.0f);
@@ -1044,6 +1108,10 @@ private:
                 dialog->open();
                 return;
             }
+        }
+        if (auto pending = currentPendingDebrid(); pending && !pending->ready) {
+            refreshPendingDebridStatus(true);
+            return;
         }
         // One-tap install: resolve, then queue silently (picker only on Select files).
         startInstall(false);
@@ -1197,6 +1265,9 @@ private:
         DebridProviderKind providerKind = DebridProviderKind::TorBox;
         std::string debridKey;
         std::string debridId;
+        bool reusedExisting = false;
+        DebridInfo debridInfo;
+        std::string title;
     };
 
     static std::string portLayoutStatus(const TorrentPreview& preview) {
@@ -1217,7 +1288,8 @@ private:
         auto host = std::make_shared<PortInstallDialogHost>();
         auto alive = alive_;
         auto cancelled = cancelled_;
-        const bool layoutOk = torrentPortLayoutDetected(pending->preview);
+        DownloadManager* manager = manager_;
+        const bool keepUncached = settings_ && settings_->get().keepUncachedDebrid;
         *host = openPortInstallDialog(
             [this, alive, pending] {
                 if (!alive->load())
@@ -1227,14 +1299,17 @@ private:
             [this, alive, pending] {
                 if (alive->load()) finishPortImport(*pending, false);
             },
-            [this, alive, cancelled, pending] {
+            [this, alive, cancelled, pending, manager, keepUncached] {
                 cancelled->store(true);
                 if (!pending->torrentPath.empty())
                     ::unlink(pending->torrentPath.c_str());
-                if (pending->debridMode && !pending->debridId.empty())
-                    removeDebridTransferAsync(pending->providerKind,
-                                              pending->debridKey,
-                                              pending->debridId);
+                if (pending->debridMode && !pending->debridId.empty()) {
+                    retainOrRemoveDebridTransfer(
+                        manager, keepUncached, pending->reusedExisting,
+                        pending->providerKind, pending->debridKey,
+                        pending->debridId, pending->debrid.infoHash,
+                        pending->title, pending->debridInfo);
+                }
                 if (alive->load()) {
                     setBusy(false);
                     refreshButtons();
@@ -1263,10 +1338,15 @@ private:
             pending.debrid.mode = automatic ? TransferMode::PortInstall : TransferMode::DownloadOnly;
             if (!automatic) pending.debrid.packageCount = 0;
             ok = manager_->importDebrid(pending.debrid, id, err);
-            if (!ok && !pending.debridId.empty())
-                removeDebridTransferAsync(pending.providerKind,
-                                          pending.debridKey,
-                                          pending.debridId);
+            if (!ok && !pending.debridId.empty()) {
+                retainOrRemoveDebridTransfer(
+                    manager_,
+                    settings_ && settings_->get().keepUncachedDebrid,
+                    pending.reusedExisting, pending.providerKind,
+                    pending.debridKey, pending.debridId,
+                    pending.debrid.infoHash, pending.title,
+                    pending.debridInfo);
+            }
         } else {
             ok = manager_->importTorrentActions(pending.torrentPath, mask, id,
                                                 err, pending.peers);
@@ -1298,6 +1378,122 @@ private:
         refreshButtons();
     }
 
+    std::optional<PendingDebridEntry> currentPendingDebrid() const {
+        if (!manager_ || !debridModeActive(settings_))
+            return std::nullopt;
+        return manager_->pendingDebrid().find(
+            settings_->get().debridProvider, catalogLower(entry_.infoHash));
+    }
+
+    void refreshPendingDebridStatus(bool continueIfReady) {
+        const auto pending = currentPendingDebrid();
+        if (!pending) {
+            if (continueIfReady)
+                startDebridInstall(TransferMode::StreamInstall, false);
+            return;
+        }
+        if (pendingQueryInFlight_) {
+            if (continueIfReady) {
+                pendingContinueRequested_ = true;
+                statusLabel_->setText(tr("pipensx/debrid/validating"));
+            }
+            return;
+        }
+        const AppSettingsData values = settings_->get();
+        const DebridProviderKind providerKind = pending->provider;
+        const std::string key = debridKeyFor(values, providerKind);
+        if (key.empty()) {
+            if (continueIfReady)
+                ensureDebridLinked(settings_, manager_);
+            return;
+        }
+        pendingQueryInFlight_ = true;
+        pendingContinueRequested_ = continueIfReady;
+        if (continueIfReady)
+            statusLabel_->setText(tr("pipensx/debrid/validating"));
+
+        auto alive = alive_;
+        const std::string hash = catalogLower(entry_.infoHash);
+        const PendingDebridEntry snapshot = *pending;
+        DownloadManager* manager = manager_;
+        brls::async([this, alive, manager, providerKind, key, hash, snapshot] {
+            DebridInfo info;
+            std::string err;
+            const bool ok = makeDebridProvider(providerKind, key)
+                                ->fetchInfo(snapshot.debridId, info, err);
+            brls::sync([this, alive, manager, providerKind, key, hash, snapshot,
+                        ok, info = std::move(info),
+                        err = std::move(err)]() mutable {
+                if (!alive->load())
+                    return;
+                pendingQueryInFlight_ = false;
+                const bool shouldContinue = pendingContinueRequested_;
+                pendingContinueRequested_ = false;
+                if (ok) {
+                    if (info.phase == DebridInfo::Phase::Failed) {
+                        std::string ignored;
+                        manager->pendingDebrid().remove(
+                            providerKind, hash, ignored);
+                        removeDebridTransferAsync(
+                            providerKind, key, snapshot.debridId);
+                        observedPendingGeneration_ =
+                            manager->pendingDebrid().generation();
+                        operationMessage_ =
+                            tr("pipensx/debrid/magnet_unavailable");
+                        refreshButtons();
+                        if (shouldContinue)
+                            brls::Application::notify(operationMessage_);
+                        return;
+                    }
+                    PendingDebridEntry updated = snapshot;
+                    if (!info.name.empty())
+                        updated.title = info.name;
+                    updated.progress = info.progress;
+                    updated.ready = info.phase == DebridInfo::Phase::Ready &&
+                                    !info.files.empty();
+                    std::string ignored;
+                    manager->pendingDebrid().upsert(updated, ignored);
+                    observedPendingGeneration_ =
+                        manager->pendingDebrid().generation();
+                    if (shouldContinue && updated.ready) {
+                        operationMessage_.clear();
+                        refreshButtons();
+                        startDebridInstall(TransferMode::StreamInstall, false);
+                        return;
+                    }
+                    operationMessage_.clear();
+                    refreshButtons();
+                    if (shouldContinue) {
+                        brls::Application::notify(
+                            tr("pipensx/debrid/caching_status",
+                               debridProviderName(providerKind),
+                               percentOf(static_cast<float>(
+                                   updated.progress))));
+                    }
+                    return;
+                }
+                if (isDebridNotFoundError(err)) {
+                    std::string ignored;
+                    manager->pendingDebrid().remove(
+                        providerKind, hash, ignored);
+                    observedPendingGeneration_ =
+                        manager->pendingDebrid().generation();
+                    refreshButtons();
+                    if (shouldContinue)
+                        startDebridInstall(TransferMode::StreamInstall, false);
+                    return;
+                }
+                if (shouldContinue) {
+                    const std::string formatted =
+                        formatDebridValidateError(err);
+                    operationMessage_ = formatted;
+                    refreshButtons();
+                    brls::Application::notify(formatted);
+                }
+            });
+        });
+    }
+
     void startDebridInstall(TransferMode mode, bool forcePicker = false) {
         if (busy_ || !ensureDebridLinked(settings_, manager_))
             return;
@@ -1306,27 +1502,37 @@ private:
         primary_->setState(brls::ButtonState::DISABLED);
         secondary_->setState(brls::ButtonState::DISABLED);
         primary_->setText(tr("pipensx/debrid/submitting"));
-        statusLabel_->setText(tr("pipensx/debrid/sending_magnet"));
+        statusLabel_->setText(tr("pipensx/debrid/sending_magnet") +
+                              tr("pipensx/detail/cancel_hint"));
 
         auto alive = alive_;
         auto cancelled = cancelled_;
         const AppSettingsData values = settings_->get();
         const DebridProviderKind providerKind = values.debridProvider;
         const bool keepUncached = values.keepUncachedDebrid;
+        const std::string hash = catalogLower(entry_.infoHash);
+        const auto existingPending =
+            manager_->pendingDebrid().find(providerKind, hash);
+        const std::string existingDebridId =
+            existingPending ? existingPending->debridId : std::string();
         log_msg("[debrid-intent] source=switch phase=install-click hash=%s provider=%d\n",
                 entry_.infoHash.c_str(), static_cast<int>(providerKind));
         const std::string key = activeDebridKey(values);
         const CatalogEntry entry = entry_;
+        const std::string title = presentation_.title;
+        DownloadManager* manager = manager_;
         const std::string root = manager_->rootPath();
         const uint32_t serial = gCatalogTempSerial.fetch_add(1);
-        brls::async([this, alive, cancelled, providerKind, key, entry, mode,
-                     forcePicker, root, serial, keepUncached] {
+        brls::async([this, alive, cancelled, manager, providerKind, key, entry,
+                     hash, title, mode, forcePicker, root, serial, keepUncached,
+                     existingDebridId] {
             auto provider = makeDebridProvider(providerKind, key);
             std::string debridId;
             std::string error;
             DebridInfo info;
+            bool reusedExisting = false;
             const std::string tmp =
-                root + "/_debrid_tmp_" + catalogLower(entry.infoHash) + "_" +
+                root + "/_debrid_tmp_" + hash + "_" +
                 std::to_string(serial) + ".torrent";
             const auto deadline = std::chrono::steady_clock::now() +
                                   std::chrono::seconds(60);
@@ -1346,22 +1552,39 @@ private:
                 }
                 brls::sync([this, alive, text] {
                     if (alive->load() && busy_)
-                        statusLabel_->setText(text);
+                        statusLabel_->setText(
+                            text + tr("pipensx/detail/cancel_hint"));
                 });
             };
             const bool ok = createDebridWithMetainfoFallback(
-                *provider, entry.magnetUri, catalogLower(entry.infoHash),
-                entry.infoDict, tmp, *cancelled, deadline, debridId, info,
-                error, onStage, keepUncached);
+                *provider, entry.magnetUri, hash, entry.infoDict, tmp,
+                *cancelled, deadline, debridId, info, error, onStage,
+                keepUncached, existingDebridId, &reusedExisting);
             log_msg("[DEBUG-debrid-picker] create ok=%d id=%s files=%u\n",
                     ok ? 1 : 0, debridId.c_str(),
                     static_cast<unsigned>(info.files.size()));
-            brls::sync([this, alive, cancelled, ok, error, debridId, info,
-                        entry, providerKind, key, mode, forcePicker, keepUncached] {
+            brls::sync([this, alive, cancelled, manager, ok, error, debridId,
+                        info, entry, hash, title, providerKind, key, mode,
+                        forcePicker, keepUncached, reusedExisting,
+                        hadExisting = !existingDebridId.empty()] {
+                auto makeAbandon = [manager, keepUncached, reusedExisting,
+                                    providerKind, key, debridId, hash, title,
+                                    info]() {
+                    retainOrRemoveDebridTransfer(
+                        manager, keepUncached, reusedExisting, providerKind,
+                        key, debridId, hash, title, info);
+                };
                 if (!alive->load() || cancelled->load()) {
-                    if (!debridId.empty())
-                        removeDebridTransferAsync(providerKind, key, debridId);
+                    const bool retained = retainOrRemoveDebridTransfer(
+                        manager, keepUncached, reusedExisting, providerKind,
+                        key, debridId, hash, title, info);
+                    if (retained && !reusedExisting) {
+                        brls::Application::notify(
+                            tr("pipensx/debrid/kept_on_exit",
+                               debridProviderName(providerKind)));
+                    }
                     if (alive->load()) {
+                        operationMessage_.clear();
                         setBusy(false);
                         refreshButtons();
                     }
@@ -1369,18 +1592,30 @@ private:
                 }
                 setBusy(false);
                 if (!ok) {
-                    const bool retained = keepUncached && !debridId.empty();
-                    if (!retained && !debridId.empty())
-                        removeDebridTransferAsync(providerKind, key, debridId);
-                    operationMessage_ = retained
-                        ? tr("pipensx/debrid/kept_for_caching")
-                        : (error.empty() ? tr("pipensx/debrid/magnet_unavailable") : error);
-                    refreshButtons();
-                    brls::Application::notify(operationMessage_);
+                    const bool retained = retainOrRemoveDebridTransfer(
+                        manager, keepUncached, reusedExisting, providerKind,
+                        key, debridId, hash, title, info);
+                    if (!retained && hadExisting && isDebridNotFoundError(error)) {
+                        std::string ignored;
+                        manager->pendingDebrid().remove(
+                            providerKind, hash, ignored);
+                    }
+                    if (retained) {
+                        operationMessage_.clear();
+                        refreshButtons();
+                        brls::Application::notify(
+                            tr("pipensx/debrid/kept_on_exit",
+                               debridProviderName(providerKind)));
+                    } else {
+                        operationMessage_ = error.empty()
+                            ? tr("pipensx/debrid/magnet_unavailable") : error;
+                        refreshButtons();
+                        brls::Application::notify(operationMessage_);
+                    }
                     return;
                 }
                 DebridImport import;
-                import.infoHash = catalogLower(entry.infoHash);
+                import.infoHash = hash;
                 import.name = info.name.empty() ? entry.title : info.name;
                 import.totalBytes = info.bytes ? info.bytes : entry.size;
                 import.provider = providerKind;
@@ -1397,15 +1632,13 @@ private:
                     brls::Application::pushActivity(new TorrentSelectionActivity(
                         manager_, "", std::move(layoutPreview),
                         TransferMode::StreamInstall, selection, {}, import,
-                        [providerKind, key, debridId] {
-                            removeDebridTransferAsync(providerKind, key, debridId);
-                        }, deploy_, entry));
+                        makeAbandon, deploy_, entry));
                     log_msg("[DEBUG-debrid-picker] push complete id=%s\n",
                             debridId.c_str());
                     return;
                 }
                 auto queueResolved = [this, alive, import, layoutPreview, entry,
-                                      providerKind, key, debridId]() mutable {
+                                      title, info, makeAbandon]() mutable {
                 const OneTapPlan plan =
                     planCatalogOneTap(layoutPreview, oneTapContext());
                 if (plan.mode == TransferMode::AutoRunInstall) {
@@ -1417,7 +1650,7 @@ private:
                     std::string id;
                     std::string importError;
                     if (!manager_->importDebrid(import, id, importError)) {
-                        removeDebridTransferAsync(providerKind, key, debridId);
+                        makeAbandon();
                         operationMessage_ = importError;
                         brls::Application::notify(importError);
                     } else {
@@ -1440,16 +1673,17 @@ private:
                 if (plan.outcome == OneTapOutcome::QueuePort) {
                     auto pending = std::make_shared<PortImportPending>();
                     pending->debridMode = true;
-                    pending->providerKind = providerKind;
-                    pending->debridKey = key;
-                    pending->debridId = debridId;
+                    pending->providerKind = import.provider;
+                    pending->debridKey = activeDebridKey(settings_->get());
+                    pending->debridId = import.debridId;
+                    pending->reusedExisting = false;
+                    pending->debridInfo = info;
+                    pending->title = title;
                     pending->preview = std::move(layoutPreview);
                     pending->debrid = import;
                     pending->debrid.infoHash = catalogLower(entry.infoHash);
                     pending->debrid.name = pending->preview.name;
                     pending->debrid.totalBytes = pending->preview.totalBytes;
-                    pending->debrid.provider = providerKind;
-                    pending->debrid.debridId = debridId;
                     beginResolvedPortInstall(pending);
                     return;
                 }
@@ -1460,10 +1694,7 @@ private:
                     brls::Application::pushActivity(new TorrentSelectionActivity(
                         manager_, "", std::move(layoutPreview),
                         plan.chooserMode, settings_->get().streamSelection, {},
-                        import,
-                        [providerKind, key, debridId] {
-                            removeDebridTransferAsync(providerKind, key, debridId);
-                        }, deploy_, entry));
+                        import, makeAbandon, deploy_, entry));
                     return;
                 }
                 import.fileSelection = plan.fileSelection;
@@ -1473,7 +1704,7 @@ private:
                 std::string id;
                 std::string importError;
                 if (!manager_->importDebrid(import, id, importError)) {
-                    removeDebridTransferAsync(providerKind, key, debridId);
+                    makeAbandon();
                     operationMessage_ = importError;
                     brls::Application::notify(importError);
                 } else {
@@ -1487,16 +1718,12 @@ private:
                 if (!cardOneTapUsesPortInstall(layoutPreview) &&
                     !entry.isAutorun() && torrentHasInstallableExtras(layoutPreview)) {
                     showExtrasChoice(std::move(queueResolved),
-                        [this, import, layoutPreview, providerKind, key, debridId, entry]() mutable {
+                        [this, import, layoutPreview, entry, makeAbandon]() mutable {
                             brls::Application::pushActivity(new TorrentSelectionActivity(
                                 manager_, "", std::move(layoutPreview), TransferMode::StreamInstall,
                                 settings_->get().streamSelection, {}, import,
-                                [providerKind, key, debridId] {
-                                    removeDebridTransferAsync(providerKind, key, debridId);
-                                }, deploy_, entry));
-                        }, [providerKind, key, debridId] {
-                            removeDebridTransferAsync(providerKind, key, debridId);
-                        });
+                                makeAbandon, deploy_, entry));
+                        }, makeAbandon);
                 } else {
                     queueResolved();
                 }
@@ -1834,6 +2061,11 @@ private:
     std::vector<DownloadTask> cache_;
     bool busy_ = false;
     bool autoInstall_ = false;
+    bool pendingQueryInFlight_ = false;
+    bool pendingContinueRequested_ = false;
+    int pendingPollTick_ = 0;
+    uint64_t observedPendingGeneration_ = 0;
+    uint64_t lastTimerTickMs_ = 0;
 };
 
 }  // namespace pipensx::ui

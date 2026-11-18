@@ -191,10 +191,12 @@ later; applet mode requires 15.0.0 or later. If sleep is unavailable or the requ
 fails, pipensx reports the failure and keeps running.
 
 In **Settings → Source**, enable **Keep uncached torrents in debrid**
-to leave pending magnets in your provider account when metadata resolution
-times out. Add the release again later to download it. Cloud caching and any
-required file selection follow the provider's rules. Cancelling preparation
-still removes its transfer; the option is off by default.
+to retain unfinished transfers in your provider account when metadata resolution
+times out or you cancel or exit preparation. Pending entries reuse the saved
+transfer ID or match an existing TorBox transfer by info-hash on return, prune
+automatically after 7 days, and can be inspected or removed from **Settings →
+Source → Pending cloud caches**. Cloud caching and any required file selection
+follow the provider's rules; the option is off by default.
 
 Runtime behavior such as sleep/wake, long installs, and `/switch` file copying
 must ultimately be validated on physical Switch hardware.

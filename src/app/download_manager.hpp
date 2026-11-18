@@ -1,6 +1,7 @@
 #pragma once
 
 #include "debrid_provider.hpp"
+#include "pending_debrid.hpp"
 #include "recovery_account.hpp"
 
 #include <atomic>
@@ -440,6 +441,9 @@ public:
     void setKeepUncachedDebrid(bool enabled) { keepUncachedDebrid_.store(enabled); }
     bool keepUncachedDebrid() const { return keepUncachedDebrid_.load(); }
     std::string activeDebridCredential() const;
+    PendingDebridStore& pendingDebrid() { return pendingDebrid_; }
+    const PendingDebridStore& pendingDebrid() const { return pendingDebrid_; }
+    void pruneExpiredPendingDebrid();
     // `error` is a taskActionReasonName() code when the command is refused.
     bool pause(const std::string& taskId, std::string& error);
     bool pause(const std::string& taskId) {
@@ -640,6 +644,8 @@ private:
     void removeFromDebridAsync(DebridProviderKind provider,
                                const std::string& apiKey,
                                const std::string& debridId);
+    void flushDeferredPendingCleanups(DebridProviderKind kind,
+                                      const std::string& apiKey);
     void debridCleanupMain();
     void shutdownDebridCleanup();
     std::string apiKeyFor(DebridProviderKind provider) const;
@@ -653,6 +659,8 @@ private:
     std::string autorunWineRoot_;
     std::string autorunGamesRoot_;
     std::string statePath_;
+    PendingDebridStore pendingDebrid_;
+    std::vector<PendingDebridEntry> deferredExpiredCleanups_;
     std::string torboxApiKey_;
     std::string torrserverUrl_;
     std::string realdebridApiKey_;

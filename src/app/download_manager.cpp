@@ -32,6 +32,7 @@ extern "C" {
 #include <condition_variable>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <deque>
 #include <dirent.h>
 #include <fstream>
@@ -520,13 +521,15 @@ DownloadManager::DownloadManager(std::string rootPath, bool startWorker)
       downloadRoot_(rootPath_ + "/downloads"),
       autorunWineRoot_(defaultAutorunWineRoot(rootPath_)),
       autorunGamesRoot_(defaultAutorunGamesRoot(rootPath_)),
-      statePath_(rootPath_ + "/queue.bencode") {
+      statePath_(rootPath_ + "/queue.bencode"),
+      pendingDebrid_(rootPath_) {
     makeDirectories(rootPath_);
     makeDirectories(torrentRoot_);
     makeDirectories(downloadRoot_);
     // B-dismissed update-file choosers leave orphaned resolve temp files.
     sweepTempTorrents(rootPath_, "_update_tmp_");
     load();
+    pruneExpiredPendingDebrid();
     reportInterruptedInstalls();
     persistenceWorkerStarted_ = true;
     persistenceWorker_ =
@@ -1234,6 +1237,9 @@ bool DownloadManager::importDebrid(const DebridImport& import,
         taskId = existing->id;
         std::string persistError;
         persistState(lock, persistError);
+        lock.unlock();
+        std::string pendingError;
+        pendingDebrid_.remove(import.provider, import.infoHash, pendingError);
         return true;
     }
 
@@ -1313,27 +1319,83 @@ bool DownloadManager::importDebrid(const DebridImport& import,
         }
     }
     condition_.notify_all();
+    lock.unlock();
+    std::string pendingError;
+    pendingDebrid_.remove(import.provider, import.infoHash, pendingError);
     return true;
 }
 
+void DownloadManager::pruneExpiredPendingDebrid() {
+    const auto expired =
+        pendingDebrid_.pruneExpired(static_cast<int64_t>(std::time(nullptr)));
+    if (expired.empty())
+        return;
+    std::vector<DebridCleanup> readyCleanups;
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        for (const PendingDebridEntry& entry : expired) {
+            const std::string key = apiKeyFor(entry.provider);
+            if (!key.empty())
+                readyCleanups.push_back({entry.provider, key, entry.debridId});
+            else
+                deferredExpiredCleanups_.push_back(entry);
+        }
+    }
+    for (const DebridCleanup& cleanup : readyCleanups)
+        removeFromDebridAsync(cleanup.provider, cleanup.apiKey, cleanup.debridId);
+}
+
+void DownloadManager::flushDeferredPendingCleanups(DebridProviderKind kind,
+                                                   const std::string& apiKey) {
+    if (apiKey.empty())
+        return;
+    std::vector<std::string> ids;
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        auto it = deferredExpiredCleanups_.begin();
+        while (it != deferredExpiredCleanups_.end()) {
+            if (it->provider == kind) {
+                ids.push_back(it->debridId);
+                it = deferredExpiredCleanups_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    for (const std::string& id : ids)
+        removeFromDebridAsync(kind, apiKey, id);
+}
+
 void DownloadManager::setTorboxApiKey(const std::string& key) {
-    std::unique_lock<std::mutex> lock(mutex_);
-    torboxApiKey_ = key;
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        torboxApiKey_ = key;
+    }
+    flushDeferredPendingCleanups(DebridProviderKind::TorBox, key);
 }
 
 void DownloadManager::setTorrserverUrl(const std::string& url) {
-    std::unique_lock<std::mutex> lock(mutex_);
-    torrserverUrl_ = url;
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        torrserverUrl_ = url;
+    }
+    flushDeferredPendingCleanups(DebridProviderKind::TorrServer, url);
 }
 
 void DownloadManager::setRealdebridApiKey(const std::string& key) {
-    std::unique_lock<std::mutex> lock(mutex_);
-    realdebridApiKey_ = key;
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        realdebridApiKey_ = key;
+    }
+    flushDeferredPendingCleanups(DebridProviderKind::RealDebrid, key);
 }
 
 void DownloadManager::setAlldebridApiKey(const std::string& key) {
-    std::unique_lock<std::mutex> lock(mutex_);
-    alldebridApiKey_ = key;
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        alldebridApiKey_ = key;
+    }
+    flushDeferredPendingCleanups(DebridProviderKind::AllDebrid, key);
 }
 
 std::string DownloadManager::apiKeyFor(DebridProviderKind provider) const {

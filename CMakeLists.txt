@@ -199,6 +199,7 @@ set(APP_SERVICE_SOURCES
     src/app/torbox_client.cpp
     src/app/torbox_pairing_server.cpp
     src/app/torbox_provider.cpp
+    src/app/pending_debrid.cpp
     src/app/torrserver_provider.cpp
     src/app/realdebrid_client.cpp
     src/app/realdebrid_provider.cpp

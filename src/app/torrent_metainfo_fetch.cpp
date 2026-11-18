@@ -3,6 +3,7 @@
 
 #include "curl_https.hpp"
 #include "magnet_resolver.hpp"
+#include "pending_debrid.hpp"
 
 #include <curl/curl.h>
 
@@ -307,14 +308,17 @@ bool createDebridWithMetainfoFallback(
     std::chrono::steady_clock::time_point deadline, std::string& debridId,
     DebridInfo& info, std::string& error,
     const std::function<void(DebridCreateStage)>& onStage,
-    bool keepUncached) {
+    bool keepUncached, const std::string& existingDebridId,
+    bool* reusedExistingOut) {
     debridId.clear();
     info = DebridInfo{};
     error.clear();
+    if (reusedExistingOut)
+        *reusedExistingOut = false;
 
     auto cleanupTmp = [&]() { unlink(tmpTorrentPath.c_str()); };
     auto retainPending = [&]() {
-        if (!keepUncached || debridId.empty() || cancelled.load() ||
+        if (!keepUncached || debridId.empty() ||
             info.phase == DebridInfo::Phase::Failed)
             return false;
         error = "Torrent kept in the debrid service for caching. Try adding it again later.";
@@ -323,16 +327,128 @@ bool createDebridWithMetainfoFallback(
     };
 
     if (cancelled.load()) {
+        if (keepUncached && !existingDebridId.empty()) {
+            debridId = existingDebridId;
+            if (reusedExistingOut)
+                *reusedExistingOut = true;
+            error = "Torrent kept in the debrid service for caching. Try adding it again later.";
+            cleanupTmp();
+            return false;
+        }
         error = "Cancelled.";
         cleanupTmp();
         return false;
     }
 
+    auto tryExistingTransfer = [&](const std::string& candidateId,
+                                   bool preloadedInfo) -> int {
+        // Returns: 1 = ready to proceed, 0 = handled & abort, -1 = stale/fallthrough.
+        debridId = candidateId;
+        if (reusedExistingOut)
+            *reusedExistingOut = true;
+        if (!preloadedInfo) {
+            std::string fetchErr;
+            if (!provider.fetchInfo(candidateId, info, fetchErr)) {
+                if (isDebridNotFoundError(fetchErr)) {
+                    debridId.clear();
+                    if (reusedExistingOut)
+                        *reusedExistingOut = false;
+                    info = DebridInfo{};
+                    return -1;
+                }
+                error = fetchErr;
+                if (!keepUncached) {
+                    debridId.clear();
+                    if (reusedExistingOut)
+                        *reusedExistingOut = false;
+                }
+                cleanupTmp();
+                return 0;
+            }
+        }
+        if (info.phase == DebridInfo::Phase::Failed) {
+            std::string ignored;
+            provider.remove(candidateId, ignored);
+            debridId.clear();
+            if (reusedExistingOut)
+                *reusedExistingOut = false;
+            info = DebridInfo{};
+            return -1;
+        }
+        if (debridFilesReady(info)) {
+            cleanupTmp();
+            return 1;
+        }
+        if (!cancelled.load() &&
+            pollUntilFiles(provider, debridId, cancelled, deadline, info,
+                           error)) {
+            cleanupTmp();
+            return 1;
+        }
+        if (retainPending())
+            return 0;
+        if (info.phase == DebridInfo::Phase::Failed) {
+            std::string ignored;
+            provider.remove(debridId, ignored);
+            debridId.clear();
+            if (reusedExistingOut)
+                *reusedExistingOut = false;
+            info = DebridInfo{};
+            if (cancelled.load()) {
+                error = "Cancelled.";
+                cleanupTmp();
+                return 0;
+            }
+            return -1;
+        }
+        std::string ignored;
+        provider.remove(debridId, ignored);
+        debridId.clear();
+        if (reusedExistingOut)
+            *reusedExistingOut = false;
+        if (cancelled.load()) {
+            error = "Cancelled.";
+            cleanupTmp();
+            return 0;
+        }
+        info = DebridInfo{};
+        return -1;
+    };
+
+    if (!existingDebridId.empty()) {
+        if (onStage)
+            onStage(DebridCreateStage::SendingMagnet);
+        const int outcome = tryExistingTransfer(existingDebridId, false);
+        if (outcome == 1)
+            return true;
+        if (outcome == 0)
+            return false;
+    }
+
+    if (keepUncached && debridId.empty() && !cancelled.load()) {
+        if (onStage)
+            onStage(DebridCreateStage::SendingMagnet);
+        std::string foundId;
+        DebridInfo foundInfo;
+        std::string findErr;
+        if (provider.findByHash(infoHashHex, foundId, foundInfo, findErr) &&
+            !foundId.empty() &&
+            foundInfo.phase != DebridInfo::Phase::Failed) {
+            info = std::move(foundInfo);
+            const int outcome = tryExistingTransfer(foundId, true);
+            if (outcome == 1)
+                return true;
+            if (outcome == 0)
+                return false;
+        }
+    }
+
     if (onStage)
         onStage(DebridCreateStage::SendingMagnet);
     bool ok = provider.createFromMagnet(magnetUri, debridId, error);
-    if (ok && !cancelled.load()) {
-        if (pollUntilFiles(provider, debridId, cancelled, deadline, info,
+    if (ok) {
+        if (!cancelled.load() &&
+            pollUntilFiles(provider, debridId, cancelled, deadline, info,
                            error)) {
             cleanupTmp();
             return true;
@@ -375,23 +491,24 @@ bool createDebridWithMetainfoFallback(
         onStage(DebridCreateStage::UploadingTorrent);
     ok = provider.createFromFile(tmpTorrentPath, debridId, error);
     cleanupTmp();
-    if (!ok || cancelled.load()) {
+    if (!ok) {
         if (!debridId.empty()) {
             std::string ignored;
             provider.remove(debridId, ignored);
             debridId.clear();
         }
-        if (cancelled.load())
-            error = "Cancelled.";
         return false;
     }
-    if (!pollUntilFiles(provider, debridId, cancelled, fileDeadline, info,
+    if (cancelled.load() ||
+        !pollUntilFiles(provider, debridId, cancelled, fileDeadline, info,
                         error)) {
         if (retainPending())
             return false;
         std::string ignored;
         provider.remove(debridId, ignored);
         debridId.clear();
+        if (cancelled.load())
+            error = "Cancelled.";
         return false;
     }
     return true;

@@ -63,6 +63,7 @@ extern "C" {
 #include "ui/downloads/downloads_view.hpp"
 #include "ui/downloads/task_files_activity.hpp"
 #include "ui/installed/installed_view.hpp"
+#include "ui/pending_debrid_view.hpp"
 #include "ui/settings/about_view.hpp"
 #include "ui/settings/help_view.hpp"
 #include "ui/settings/settings_view.hpp"
@@ -784,6 +785,7 @@ int main(int argc, char** argv) {
         manager.setKeepUncachedDebrid(settings.get().keepUncachedDebrid);
         manager.setTorrentingEnabled(settings.get().torrentingEnabled);
         manager.setLiveSeedingEnabled(settings.get().liveSeedingEnabled);
+        pipensx::ui::refreshPendingDebridAsync(&settings, &manager);
         metadata.setImageNetwork(
             manager.hasActiveTransfer()
                 ? GameMetadataService::ImageNetwork::Throttled
@@ -1723,6 +1725,8 @@ int main(int argc, char** argv) {
                 displayNowMs);
             const bool resumed = resumeSignal.resumed;
             resumeSignal.resumed = false;
+            if (resumed)
+                pipensx::ui::refreshPendingDebridAsync(&settings, &manager);
             if (hasInput || resumed) lastInputMs = displayNowMs;
             if (saverOpen && ((hasInput && !wakeInputGuard.blocking()) || resumed)) {
                 wakeInputGuard.begin(displayNowMs);

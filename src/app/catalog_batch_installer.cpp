@@ -3,6 +3,7 @@
 #include "download_manager.hpp"
 #include "game_update_install.hpp"
 #include "nx_file_types.hpp"
+#include "pending_debrid.hpp"
 #include "torrent_metainfo_fetch.hpp"
 
 extern "C" {
@@ -378,6 +379,29 @@ BatchPreparation CatalogBatchInstaller::prepareUpdatesViaDebrid(
         return result;
     }
     BatchPreparation result;
+    DebridProviderKind providerKind = DebridProviderKind::TorBox;
+    const bool hasProviderKind =
+        parsePendingProviderKey(provider.name(), providerKind);
+    std::unique_ptr<PendingDebridStore> pendingStore;
+    if (keepUncached && hasProviderKind)
+        pendingStore = std::make_unique<PendingDebridStore>(rootPath_);
+    auto savePending = [&](const std::string& hash, const std::string& id,
+                           const std::string& fallbackTitle,
+                           const DebridInfo& info) {
+        if (!pendingStore || id.empty() || hash.empty() ||
+            info.phase == DebridInfo::Phase::Failed)
+            return;
+        PendingDebridEntry rec;
+        rec.infoHash = hash;
+        rec.debridId = id;
+        rec.provider = providerKind;
+        rec.title = !info.name.empty() ? info.name : fallbackTitle;
+        rec.progress = info.progress;
+        rec.ready = info.phase == DebridInfo::Phase::Ready &&
+                    !info.files.empty();
+        std::string ignored;
+        pendingStore->upsert(rec, ignored);
+    };
     for (size_t index = 0; index < targets.size(); ++index) {
         const UpdateQueueTarget& target = targets[index];
         if (cancelled.load()) {
@@ -397,12 +421,26 @@ BatchPreparation CatalogBatchInstaller::prepareUpdatesViaDebrid(
         const auto deadline =
             std::chrono::steady_clock::now() +
             std::chrono::milliseconds(timing.resolveWindowMs);
+        std::string existingId;
+        if (pendingStore) {
+            if (auto found = pendingStore->find(providerKind, hash))
+                existingId = found->debridId;
+        }
         std::string id;
         DebridInfo info;
         std::string err;
+        bool reused = false;
         if (!createDebridWithMetainfoFallback(
                 provider, magnet, hash, target.entry.infoDict, tmp, cancelled,
-                deadline, id, info, err, {}, keepUncached)) {
+                deadline, id, info, err, {}, keepUncached, existingId,
+                &reused)) {
+            if (!id.empty()) {
+                savePending(hash, id, target.entry.title, info);
+            } else if (pendingStore && !existingId.empty() &&
+                       isDebridNotFoundError(err)) {
+                std::string ignored;
+                pendingStore->remove(providerKind, hash, ignored);
+            }
             if (cancelled.load()) {
                 result.cancelled_ = true;
                 return result;
@@ -426,8 +464,10 @@ BatchPreparation CatalogBatchInstaller::prepareUpdatesViaDebrid(
             preview, oneTap.titleInstalled, oneTap.installedVersion,
             oneTap.latestVersion, oneTap.titleId, oneTap.installedDlcIds);
         if (countInstalledPackages(preview, mask) == 0) {
-            std::string ignored;
-            provider.remove(id, ignored);
+            if (!reused) {
+                std::string ignored;
+                provider.remove(id, ignored);
+            }
             result.failures_.push_back(
                 {target.entry, updateNothingSelectedError()});
             continue;
@@ -517,6 +557,29 @@ BatchPreparation CatalogBatchInstaller::prepareViaDebrid(
         return result;
     }
     BatchPreparation result;
+    DebridProviderKind providerKind = DebridProviderKind::TorBox;
+    const bool hasProviderKind =
+        parsePendingProviderKey(provider.name(), providerKind);
+    std::unique_ptr<PendingDebridStore> pendingStore;
+    if (keepUncached && hasProviderKind)
+        pendingStore = std::make_unique<PendingDebridStore>(rootPath_);
+    auto savePending = [&](const std::string& hash, const std::string& id,
+                           const std::string& fallbackTitle,
+                           const DebridInfo& info) {
+        if (!pendingStore || id.empty() || hash.empty() ||
+            info.phase == DebridInfo::Phase::Failed)
+            return;
+        PendingDebridEntry rec;
+        rec.infoHash = hash;
+        rec.debridId = id;
+        rec.provider = providerKind;
+        rec.title = !info.name.empty() ? info.name : fallbackTitle;
+        rec.progress = info.progress;
+        rec.ready = info.phase == DebridInfo::Phase::Ready &&
+                    !info.files.empty();
+        std::string ignored;
+        pendingStore->upsert(rec, ignored);
+    };
 
     struct Pending {
         CatalogEntry entry;
@@ -524,11 +587,19 @@ BatchPreparation CatalogBatchInstaller::prepareViaDebrid(
         DebridInfo info;
         bool ready = false;
         bool haveInfo = false;
+        bool reused = false;
     };
     std::vector<Pending> pending;
 
     auto removeAll = [&]() {
         for (const Pending& p : pending) {
+            if (keepUncached && !p.id.empty() &&
+                p.info.phase != DebridInfo::Phase::Failed &&
+                (p.info.phase != DebridInfo::Phase::Ready || p.reused)) {
+                savePending(lowerAscii(p.entry.infoHash), p.id, p.entry.title,
+                            p.info);
+                continue;
+            }
             std::string ignored;
             provider.remove(p.id, ignored);
         }
@@ -546,12 +617,26 @@ BatchPreparation CatalogBatchInstaller::prepareViaDebrid(
         const auto deadline =
             std::chrono::steady_clock::now() +
             std::chrono::milliseconds(timing.resolveWindowMs);
+        std::string existingId;
+        if (pendingStore) {
+            if (auto found = pendingStore->find(providerKind, hash))
+                existingId = found->debridId;
+        }
         std::string id;
         DebridInfo info;
         std::string err;
+        bool reused = false;
         if (!createDebridWithMetainfoFallback(
                 provider, entry.magnetUri, hash, entry.infoDict, tmp, cancelled,
-                deadline, id, info, err, {}, keepUncached)) {
+                deadline, id, info, err, {}, keepUncached, existingId,
+                &reused)) {
+            if (!id.empty()) {
+                savePending(hash, id, entry.title, info);
+            } else if (pendingStore && !existingId.empty() &&
+                       isDebridNotFoundError(err)) {
+                std::string ignored;
+                pendingStore->remove(providerKind, hash, ignored);
+            }
             if (cancelled.load()) {
                 result.cancelled_ = true;
                 removeAll();
@@ -567,6 +652,7 @@ BatchPreparation CatalogBatchInstaller::prepareViaDebrid(
         p.info = std::move(info);
         p.ready = true;
         p.haveInfo = true;
+        p.reused = reused;
         pending.push_back(std::move(p));
     }
 
@@ -574,6 +660,9 @@ BatchPreparation CatalogBatchInstaller::prepareViaDebrid(
         if (p.haveInfo && p.info.phase == DebridInfo::Phase::Failed) {
             std::string ignored;
             provider.remove(p.id, ignored);
+            if (pendingStore)
+                pendingStore->remove(providerKind, lowerAscii(p.entry.infoHash),
+                                     ignored);
             result.failures_.push_back({p.entry, kMagnetUnavailableError});
             continue;
         }
@@ -587,7 +676,10 @@ BatchPreparation CatalogBatchInstaller::prepareViaDebrid(
             if (space.packageFiles == 0 &&
                 mode != TransferMode::PortInstall) {
                 if (selection == StreamSelection::PackagesOnly) {
-                    std::string ignored; provider.remove(p.id, ignored);
+                    if (!p.reused) {
+                        std::string ignored;
+                        provider.remove(p.id, ignored);
+                    }
                     result.failures_.push_back(
                         {p.entry, "No package files match the current "
                                   "Settings selection."});
@@ -597,7 +689,10 @@ BatchPreparation CatalogBatchInstaller::prepareViaDebrid(
                 space = estimateInstallSpace(preview, mask, mode);
             }
             if (space.selectedFiles == 0 || space.overflow) {
-                std::string ignored; provider.remove(p.id, ignored);
+                if (!p.reused) {
+                    std::string ignored;
+                    provider.remove(p.id, ignored);
+                }
                 result.failures_.push_back(
                     {p.entry, space.overflow ? "Selected size is too large."
                                              : "No files were selected."});

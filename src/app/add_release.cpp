@@ -526,6 +526,10 @@ AddOutcome ReleaseAdder::addViaDebrid(
         outcome.error = error;
         return outcome;
     }
+    const auto existingPending =
+        manager_.pendingDebrid().find(choice.provider, hash);
+    const std::string existingDebridId =
+        existingPending ? existingPending->debridId : std::string();
     const std::string tmp =
         manager_.rootPath() + "/_add_" + hash + "_" +
         std::to_string(gAddSerial.fetch_add(1)) + ".torrent";
@@ -533,12 +537,37 @@ AddOutcome ReleaseAdder::addViaDebrid(
         std::chrono::steady_clock::now() + std::chrono::seconds(60);
     std::string debridId;
     DebridInfo info;
+    bool reusedExisting = false;
     AddRequest hashed = request;
     hashed.infoHashHex = hash;
+    auto savePending = [&]() {
+        PendingDebridEntry pending;
+        pending.infoHash = hash;
+        pending.debridId = debridId;
+        pending.provider = choice.provider;
+        pending.title = !info.name.empty() ? info.name : hashed.title;
+        pending.progress = info.progress;
+        pending.ready = info.phase == DebridInfo::Phase::Ready &&
+                        !info.files.empty();
+        std::string ignored;
+        manager_.pendingDebrid().upsert(pending, ignored);
+    };
     if (!createDebridWithMetainfoFallback(
             *provider, hashed.magnetUri, hash, hashed.infoDict, tmp, cancelled,
             deadline, debridId, info, error, onStage,
-            manager_.keepUncachedDebrid())) {
+            manager_.keepUncachedDebrid(), existingDebridId,
+            &reusedExisting)) {
+        if (!debridId.empty()) {
+            savePending();
+            outcome.error = error.empty()
+                ? "Torrent kept in the debrid service for caching. Try adding it again later."
+                : error;
+            return outcome;
+        }
+        if (existingPending && isDebridNotFoundError(error)) {
+            std::string ignored;
+            manager_.pendingDebrid().remove(choice.provider, hash, ignored);
+        }
         outcome.error = cancelled.load()
                             ? "Cancelled."
                             : (error.empty() ? "Unable to resolve torrent metadata."
@@ -546,7 +575,14 @@ AddOutcome ReleaseAdder::addViaDebrid(
         return outcome;
     }
     if (cancelled.load()) {
-        if (!debridId.empty()) {
+        const bool retain = !debridId.empty() &&
+            info.phase != DebridInfo::Phase::Failed &&
+            ((manager_.keepUncachedDebrid() &&
+              info.phase != DebridInfo::Phase::Ready) ||
+             reusedExisting);
+        if (retain) {
+            savePending();
+        } else if (!debridId.empty()) {
             std::string ignored;
             provider->remove(debridId, ignored);
         }
@@ -582,26 +618,92 @@ AddOutcome ReleaseAdder::addTorrentFile(const AddRequest& request,
         outcome.error = error;
         return outcome;
     }
+    const std::string hash = lowerAscii(local.infoHash);
+    const std::string displayTitle = request.title.empty() ? local.name : request.title;
+    const auto existingPending = hash.size() == 40
+        ? manager_.pendingDebrid().find(choice.provider, hash)
+        : std::nullopt;
     std::string debridId;
-    if (!provider->createFromFile(torrentPath, debridId, error)) {
-        outcome.error = error.empty() ? "Import failed." : error;
-        return outcome;
+    DebridInfo info;
+    bool reusedExisting = false;
+    bool filesReady = false;
+
+    if (existingPending && !cancelled.load()) {
+        std::string fetchErr;
+        if (provider->fetchInfo(existingPending->debridId, info, fetchErr)) {
+            if (info.phase == DebridInfo::Phase::Failed) {
+                std::string ignored;
+                provider->remove(existingPending->debridId, ignored);
+                manager_.pendingDebrid().remove(choice.provider, hash, ignored);
+                info = DebridInfo{};
+            } else {
+                debridId = existingPending->debridId;
+                reusedExisting = true;
+                filesReady = !info.files.empty();
+            }
+        } else if (isDebridNotFoundError(fetchErr)) {
+            std::string ignored;
+            manager_.pendingDebrid().remove(choice.provider, hash, ignored);
+        } else {
+            outcome.error = fetchErr.empty() ? "Unable to reach debrid service."
+                                             : fetchErr;
+            return outcome;
+        }
+    }
+    if (debridId.empty() && manager_.keepUncachedDebrid() &&
+        hash.size() == 40 && !cancelled.load()) {
+        std::string foundId;
+        DebridInfo foundInfo;
+        std::string findErr;
+        if (provider->findByHash(hash, foundId, foundInfo, findErr) &&
+            !foundId.empty() &&
+            foundInfo.phase != DebridInfo::Phase::Failed) {
+            debridId = std::move(foundId);
+            info = std::move(foundInfo);
+            reusedExisting = true;
+            filesReady = !info.files.empty();
+        }
+    }
+    if (debridId.empty()) {
+        if (cancelled.load()) {
+            outcome.error = "Cancelled.";
+            return outcome;
+        }
+        if (!provider->createFromFile(torrentPath, debridId, error)) {
+            outcome.error = error.empty() ? "Import failed." : error;
+            return outcome;
+        }
     }
     const auto deadline =
         std::chrono::steady_clock::now() + std::chrono::seconds(60);
-    DebridInfo info;
-    if (!pollDebridUntilFiles(*provider, debridId, cancelled, deadline, info,
-                              error) ||
-        cancelled.load()) {
-        const bool retained = manager_.keepUncachedDebrid() &&
-            !cancelled.load() && info.phase != DebridInfo::Phase::Failed;
-        if (!retained) {
+    if (!filesReady && !cancelled.load()) {
+        filesReady = pollDebridUntilFiles(*provider, debridId, cancelled,
+                                          deadline, info, error);
+    }
+    if (!filesReady || cancelled.load()) {
+        const bool retained = !debridId.empty() &&
+            info.phase != DebridInfo::Phase::Failed &&
+            (manager_.keepUncachedDebrid() || reusedExisting);
+        if (retained) {
+            PendingDebridEntry pending;
+            pending.infoHash = hash;
+            pending.debridId = debridId;
+            pending.provider = choice.provider;
+            pending.title = !info.name.empty() ? info.name : displayTitle;
+            pending.progress = info.progress;
+            pending.ready = info.phase == DebridInfo::Phase::Ready &&
+                            !info.files.empty();
             std::string ignored;
-            provider->remove(debridId, ignored);
-        } else {
+            manager_.pendingDebrid().upsert(pending, ignored);
             error = "Torrent kept in the debrid service for caching. Try adding it again later.";
+        } else {
+            std::string ignored;
+            if (!debridId.empty())
+                provider->remove(debridId, ignored);
+            if (existingPending && isDebridNotFoundError(error))
+                manager_.pendingDebrid().remove(choice.provider, hash, ignored);
         }
-        outcome.error = cancelled.load()
+        outcome.error = (cancelled.load() && !retained)
                             ? "Cancelled."
                             : (error.empty() ? "Unable to resolve torrent metadata."
                                              : error);
@@ -609,8 +711,8 @@ AddOutcome ReleaseAdder::addTorrentFile(const AddRequest& request,
     }
     AddRequest hashed = request;
     hashed.input = AddInputKind::TorrentFile;
-    hashed.infoHashHex = lowerAscii(local.infoHash);
-    hashed.title = request.title.empty() ? local.name : request.title;
+    hashed.infoHashHex = hash;
+    hashed.title = displayTitle;
     return importDebridPlan(hashed, choice, *provider, debridId, info);
 }
 

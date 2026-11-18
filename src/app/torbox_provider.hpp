@@ -18,6 +18,8 @@ public:
                         std::string& e) override;
     bool fetchInfo(const std::string& id, DebridInfo& out,
                    std::string& e) override;
+    bool findByHash(const std::string& infoHashHex, std::string& id,
+                    DebridInfo& out, std::string& e) override;
     bool selectFiles(const std::string&, const std::vector<std::string>&,
                      std::string&) override {
         return true;

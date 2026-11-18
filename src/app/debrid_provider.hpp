@@ -37,6 +37,11 @@ public:
                                 std::string& id, std::string& error) = 0;
     virtual bool fetchInfo(const std::string& id, DebridInfo& info,
                            std::string& error) = 0;
+    virtual bool findByHash(const std::string& /*infoHashHex*/,
+                            std::string& /*id*/, DebridInfo& /*info*/,
+                            std::string& /*error*/) {
+        return false;
+    }
     virtual bool selectFiles(const std::string& id,
                              const std::vector<std::string>& fileIds,
                              std::string& error) = 0;

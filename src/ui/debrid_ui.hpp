@@ -27,14 +27,19 @@
 
 namespace pipensx::ui {
 
-inline const std::string& activeDebridKey(const AppSettingsData& values) {
-    if (values.debridProvider == DebridProviderKind::TorrServer)
+inline const std::string& debridKeyFor(const AppSettingsData& values,
+                                        DebridProviderKind kind) {
+    if (kind == DebridProviderKind::TorrServer)
         return values.torrserverUrl;
-    if (values.debridProvider == DebridProviderKind::RealDebrid)
+    if (kind == DebridProviderKind::RealDebrid)
         return values.realdebridApiKey;
-    if (values.debridProvider == DebridProviderKind::AllDebrid)
+    if (kind == DebridProviderKind::AllDebrid)
         return values.alldebridApiKey;
     return values.torboxApiKey;
+}
+
+inline const std::string& activeDebridKey(const AppSettingsData& values) {
+    return debridKeyFor(values, values.debridProvider);
 }
 
 inline std::unique_ptr<DebridProvider> makeDebridProvider(

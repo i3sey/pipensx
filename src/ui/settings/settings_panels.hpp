@@ -33,6 +33,7 @@
 #include "ui/common/web_qr.hpp"
 #include "ui/debrid_ui.hpp"
 #include "ui/i18n.hpp"
+#include "ui/pending_debrid_view.hpp"
 #include "ui/settings/settings_cells.hpp"
 #include "ui/theme.hpp"
 
@@ -788,7 +789,8 @@ class SourcePanel : public SettingsPanel {
 public:
     SourcePanel(AppSettings* settings, DownloadManager* manager,
                 std::function<void()> onChangeSource)
-        : settings_(settings), onChangeSource_(std::move(onChangeSource)) {
+        : settings_(settings), manager_(manager),
+          onChangeSource_(std::move(onChangeSource)) {
         addSection(content_, tr("pipensx/settings/section_debrid"));
         // The source picker lives in the first-run chooser; Settings only
         // links to it so the two never drift apart (or duplicate each other).
@@ -805,7 +807,7 @@ public:
         keepUncached_ = new brls::BooleanCell();
         keepUncached_->setId("settings-keep-uncached-debrid");
         keepUncached_->init(tr("pipensx/settings/keep_uncached_debrid"),
-            settings_->get().keepUncachedDebrid, [this, manager](bool enabled) {
+            settings_->get().keepUncachedDebrid, [this](bool enabled) {
                 auto values = settings_->get();
                 const bool previous = values.keepUncachedDebrid;
                 values.keepUncachedDebrid = enabled;
@@ -813,11 +815,20 @@ public:
                     keepUncached_->setOn(previous, false);
                     return;
                 }
-                if (manager)
-                    manager->setKeepUncachedDebrid(enabled);
+                if (manager_)
+                    manager_->setKeepUncachedDebrid(enabled);
             });
         content_->addView(keepUncached_);
         addNote(content_, tr("pipensx/settings/keep_uncached_debrid_hint"));
+
+        pendingCaches_ = actionCell(
+            tr("pipensx/settings/pending_debrid_title"), "", [this] {
+                PendingDebridView::push(settings_, manager_, [this] {
+                    refreshDetail();
+                });
+            });
+        pendingCaches_->setId("settings-pending-debrid");
+        content_->addView(pendingCaches_);
 
         addSection(content_, tr("pipensx/settings/source_current"));
         statusValue_ = addStatusRow(content_,
@@ -827,6 +838,16 @@ public:
         torrentingValue_ =
             addStatusRow(content_,
                          tr("pipensx/settings/source_torrenting"));
+        refreshDetail();
+    }
+
+    void onShown() override {
+        refreshDetail();
+    }
+
+    void applyValues() override {
+        if (keepUncached_ && settings_)
+            keepUncached_->setOn(settings_->get().keepUncachedDebrid, false);
         refreshDetail();
     }
 
@@ -842,6 +863,14 @@ public:
                 activeDebridKey(values).empty()
                     ? tr("pipensx/settings/debrid_not_linked", provider)
                     : tr("pipensx/settings/debrid_linked", provider));
+        }
+        if (pendingCaches_) {
+            const size_t pendingCount =
+                manager_ ? manager_->pendingDebrid().size() : 0;
+            pendingCaches_->setDetailText(
+                pendingCount == 0
+                    ? tr("pipensx/settings/pending_debrid_none")
+                    : tr("pipensx/settings/pending_debrid_count", pendingCount));
         }
         const bool configured = values.torrentingEnabled ||
                                 !activeDebridKey(values).empty();
@@ -892,9 +921,11 @@ private:
     }
 
     AppSettings* settings_;
+    DownloadManager* manager_ = nullptr;
     std::function<void()> onChangeSource_;
     brls::DetailCell* downloadSource_ = nullptr;
     brls::BooleanCell* keepUncached_ = nullptr;
+    brls::DetailCell* pendingCaches_ = nullptr;
     brls::Label* statusValue_ = nullptr;
     brls::Label* providerValue_ = nullptr;
     brls::Label* torrentingValue_ = nullptr;

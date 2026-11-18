@@ -74,8 +74,10 @@ bool pollDebridUntilFiles(DebridProvider& provider, const std::string& id,
 
 // createFromMagnet + poll; on failure, ensureTorrentFile + createFromFile.
 // tmpTorrentPath is unlinked before return. onStage may be null.
-// With keepUncached, false + nonempty debridId means retained in the account.
-// Cancellation and terminal provider failures still clean up normally.
+// With keepUncached, false + nonempty debridId means retained in the account
+// (including on cancellation) unless the provider reported a terminal failure.
+// When existingDebridId or an account hash match is found, reuses it instead
+// of creating a duplicate transfer.
 bool createDebridWithMetainfoFallback(
     DebridProvider& provider, const std::string& magnetUri,
     const std::string& infoHashHex, const std::vector<uint8_t>& infoDict,
@@ -83,6 +85,7 @@ bool createDebridWithMetainfoFallback(
     std::chrono::steady_clock::time_point deadline, std::string& debridId,
     DebridInfo& info, std::string& error,
     const std::function<void(DebridCreateStage)>& onStage = {},
-    bool keepUncached = false);
+    bool keepUncached = false, const std::string& existingDebridId = {},
+    bool* reusedExistingOut = nullptr);
 
 } // namespace pipensx

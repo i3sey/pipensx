@@ -4,6 +4,10 @@
 
 #include <borealis/extern/nlohmann/json.hpp>
 
+#include <algorithm>
+#include <cctype>
+#include <tuple>
+
 #include <curl/curl.h>
 
 extern "C" {
@@ -118,6 +122,25 @@ bool checkSuccess(const Json& root, std::string& error) {
     return false;
 }
 
+std::string lowerAscii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char c) {
+                       return static_cast<char>(std::tolower(c));
+                   });
+    return value;
+}
+
+bool isHex40(const std::string& hash) {
+    if (hash.size() != 40)
+        return false;
+    for (unsigned char c : hash) {
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+              (c >= 'A' && c <= 'F')))
+            return false;
+    }
+    return true;
+}
+
 bool readInfoObject(const Json& item, TorboxTorrentInfo& info,
                     std::string& error) {
     if (!item.is_object() || !item.contains("id") ||
@@ -128,7 +151,7 @@ bool readInfoObject(const Json& item, TorboxTorrentInfo& info,
     info = TorboxTorrentInfo{};
     info.id = item["id"].get<uint64_t>();
     info.hash = (item.contains("hash") && item["hash"].is_string())
-                    ? item["hash"].get<std::string>() : "";
+                    ? lowerAscii(item["hash"].get<std::string>()) : "";
     info.name = (item.contains("name") && item["name"].is_string())
                     ? item["name"].get<std::string>() : "";
     info.size = (item.contains("size") && item["size"].is_number())
@@ -181,6 +204,18 @@ bool finishParse(bool ok, long status, std::string& error) {
     return ok;
 }
 
+bool sendRequest(const TorboxTransport& transport,
+                 const TorboxHttpRequest& request,
+                 TorboxHttpResponse& response, std::string& error) {
+    if (!transport(request, response, error))
+        return false;
+    if (response.status == 401 || response.status == 403) {
+        error = "TorBox key rejected - relink in Settings.";
+        return false;
+    }
+    return true;
+}
+
 } // namespace
 
 TorboxClient::TorboxClient(std::string apiKey, TorboxTransport transport)
@@ -188,6 +223,14 @@ TorboxClient::TorboxClient(std::string apiKey, TorboxTransport transport)
       transport_(transport ? std::move(transport) : curlTransport) {}
 
 const std::string& TorboxClient::apiKey() const { return apiKey_; }
+
+bool TorboxClient::isFailedState(const std::string& state) {
+    const std::string lower = lowerAscii(state);
+    return lower.find("failed") != std::string::npos ||
+           lower.find("error") != std::string::npos ||
+           lower.find("expired") != std::string::npos ||
+           lower == "deleted";
+}
 
 bool TorboxClient::parseSuccess(const std::string& json, std::string& error) {
     Json root;
@@ -236,6 +279,71 @@ bool TorboxClient::parseInfo(const std::string& json, uint64_t torboxId,
     return false;
 }
 
+bool TorboxClient::parseList(const std::string& json,
+                             std::vector<TorboxTorrentInfo>& items,
+                             std::string& error) {
+    items.clear();
+    Json root;
+    if (!rootObject(json, root, error) || !checkSuccess(root, error))
+        return false;
+    if (!root.contains("data") || root["data"].is_null())
+        return true;
+    const Json& data = root["data"];
+    if (data.is_object()) {
+        TorboxTorrentInfo item;
+        if (!readInfoObject(data, item, error))
+            return false;
+        items.push_back(std::move(item));
+        return true;
+    }
+    if (data.is_array()) {
+        for (const Json& entry : data) {
+            TorboxTorrentInfo item;
+            std::string itemError;
+            if (readInfoObject(entry, item, itemError))
+                items.push_back(std::move(item));
+        }
+        return true;
+    }
+    error = "TorBox returned invalid torrent list data.";
+    return false;
+}
+
+bool TorboxClient::parseFindByHash(const std::string& json,
+                                   const std::string& infoHashHex,
+                                   TorboxTorrentInfo& info,
+                                   std::string& error) {
+    const std::string needle = lowerAscii(infoHashHex);
+    if (!isHex40(needle)) {
+        error = "Invalid torrent info hash.";
+        return false;
+    }
+    std::vector<TorboxTorrentInfo> items;
+    if (!parseList(json, items, error))
+        return false;
+    bool found = false;
+    auto rank = [](const TorboxTorrentInfo& item) {
+        return std::tuple<bool, bool, double, uint64_t>(
+            item.ready && !item.files.empty(),
+            !item.files.empty(),
+            item.progress,
+            item.id);
+    };
+    for (const TorboxTorrentInfo& candidate : items) {
+        if (candidate.hash != needle || isFailedState(candidate.state))
+            continue;
+        if (!found || rank(candidate) > rank(info)) {
+            info = candidate;
+            found = true;
+        }
+    }
+    if (!found) {
+        error = "TorBox torrent not found.";
+        return false;
+    }
+    return true;
+}
+
 bool TorboxClient::parseDownloadLink(const std::string& json,
                                      std::string& url, std::string& error) {
     Json root;
@@ -255,12 +363,8 @@ bool TorboxClient::validateKey(std::string& error) {
     request.url = std::string(kBaseUrl) + "/user/me";
     request.apiKey = apiKey_;
     TorboxHttpResponse response;
-    if (!transport_(request, response, error))
+    if (!sendRequest(transport_, request, response, error))
         return false;
-    if (response.status == 401 || response.status == 403) {
-        error = "TorBox key rejected - relink in Settings.";
-        return false;
-    }
     return finishParse(parseSuccess(response.body, error),
                        response.status, error);
 }
@@ -273,12 +377,8 @@ bool TorboxClient::createFromMagnet(const std::string& magnet,
     request.apiKey = apiKey_;
     request.magnet = magnet;
     TorboxHttpResponse response;
-    if (!transport_(request, response, error))
+    if (!sendRequest(transport_, request, response, error))
         return false;
-    if (response.status == 401 || response.status == 403) {
-        error = "TorBox key rejected - relink in Settings.";
-        return false;
-    }
     return finishParse(parseCreate(response.body, torboxId, error),
                        response.status, error);
 }
@@ -291,12 +391,8 @@ bool TorboxClient::createFromFile(const std::string& torrentPath,
     request.apiKey = apiKey_;
     request.uploadFilePath = torrentPath;
     TorboxHttpResponse response;
-    if (!transport_(request, response, error))
+    if (!sendRequest(transport_, request, response, error))
         return false;
-    if (response.status == 401 || response.status == 403) {
-        error = "TorBox key rejected - relink in Settings.";
-        return false;
-    }
     return finishParse(parseCreate(response.body, torboxId, error),
                        response.status, error);
 }
@@ -309,13 +405,39 @@ bool TorboxClient::fetchInfo(uint64_t torboxId, TorboxTorrentInfo& info,
         "/torrents/mylist?bypass_cache=true&id=" + std::to_string(torboxId);
     request.apiKey = apiKey_;
     TorboxHttpResponse response;
-    if (!transport_(request, response, error))
+    if (!sendRequest(transport_, request, response, error))
         return false;
-    if (response.status == 401 || response.status == 403) {
-        error = "TorBox key rejected - relink in Settings.";
+    return finishParse(parseInfo(response.body, torboxId, info, error),
+                       response.status, error);
+}
+
+bool TorboxClient::fetchList(std::vector<TorboxTorrentInfo>& items,
+                             std::string& error) {
+    TorboxHttpRequest request;
+    request.method = "GET";
+    request.url = std::string(kBaseUrl) + "/torrents/mylist?bypass_cache=true";
+    request.apiKey = apiKey_;
+    TorboxHttpResponse response;
+    if (!sendRequest(transport_, request, response, error))
+        return false;
+    return finishParse(parseList(response.body, items, error),
+                       response.status, error);
+}
+
+bool TorboxClient::findByHash(const std::string& infoHashHex,
+                              TorboxTorrentInfo& info, std::string& error) {
+    if (!isHex40(infoHashHex)) {
+        error = "Invalid torrent info hash.";
         return false;
     }
-    return finishParse(parseInfo(response.body, torboxId, info, error),
+    TorboxHttpRequest request;
+    request.method = "GET";
+    request.url = std::string(kBaseUrl) + "/torrents/mylist?bypass_cache=true";
+    request.apiKey = apiKey_;
+    TorboxHttpResponse response;
+    if (!sendRequest(transport_, request, response, error))
+        return false;
+    return finishParse(parseFindByHash(response.body, infoHashHex, info, error),
                        response.status, error);
 }
 
@@ -331,12 +453,8 @@ bool TorboxClient::requestDownloadLink(uint64_t torboxId, uint64_t fileId,
         "&file_id=" + std::to_string(fileId);
     request.apiKey = apiKey_;
     TorboxHttpResponse response;
-    if (!transport_(request, response, error))
+    if (!sendRequest(transport_, request, response, error))
         return false;
-    if (response.status == 401 || response.status == 403) {
-        error = "TorBox key rejected - relink in Settings.";
-        return false;
-    }
     return finishParse(parseDownloadLink(response.body, url, error),
                        response.status, error);
 }
@@ -349,12 +467,8 @@ bool TorboxClient::remove(uint64_t torboxId, std::string& error) {
     request.body = std::string("{\"torrent_id\":") +
         std::to_string(torboxId) + ",\"operation\":\"delete\"}";
     TorboxHttpResponse response;
-    if (!transport_(request, response, error))
+    if (!sendRequest(transport_, request, response, error))
         return false;
-    if (response.status == 401 || response.status == 403) {
-        error = "TorBox key rejected - relink in Settings.";
-        return false;
-    }
     return finishParse(parseSuccess(response.body, error),
                        response.status, error);
 }

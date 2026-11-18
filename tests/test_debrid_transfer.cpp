@@ -2726,6 +2726,152 @@ void testSplitDownloadOffsetBehaviors() {
     std::puts("testSplitDownloadOffsetBehaviors ok");
 }
 
+void testTorboxRetainAndResumeFromAccountHash() {
+    const std::string root = "/tmp/pipensx-torbox-retain-resume-test";
+    system(("rm -rf " + root).c_str());
+    mkdir(root.c_str(), 0755);
+    const std::string data = root + "/data";
+    mkdir(data.c_str(), 0755);
+
+    const std::string hash = "aabbccddaabbccddaabbccddaabbccddaabbccdd";
+    const std::string content = "retained-torbox-payload";
+
+    // Phase 1: keepUncached retains an uncached transfer when stopped; no
+    // delete/controltorrent removal request is issued.
+    int createCalls = 0;
+    int removeCalls = 0;
+    bool cancelled = false;
+    TorboxTransport retainTransport =
+        [&](const TorboxHttpRequest& req, TorboxHttpResponse& resp, std::string&) {
+            resp.status = 200;
+            if (req.url.find("controltorrent") != std::string::npos) {
+                ++removeCalls;
+                resp.body = "{\"success\":true}";
+                return true;
+            }
+            if (req.url.find("createtorrent") != std::string::npos) {
+                ++createCalls;
+                resp.body = "{\"success\":true,\"data\":{\"torrent_id\":55}}";
+                return true;
+            }
+            if (req.url.find("id=55") != std::string::npos) {
+                cancelled = true;
+                resp.body = "{\"success\":true,\"data\":{\"id\":55,"
+                            "\"name\":\"Retained\",\"size\":1024,"
+                            "\"progress\":0.35,"
+                            "\"download_state\":\"downloading\","
+                            "\"download_finished\":false,"
+                            "\"download_present\":false,\"files\":[]}}";
+                return true;
+            }
+            if (req.url.find("mylist") != std::string::npos) {
+                resp.body = "{\"success\":true,\"data\":[]}";
+                return true;
+            }
+            resp.body = "{\"success\":false,\"detail\":\"unexpected\"}";
+            return true;
+        };
+    {
+        TorboxProvider provider("k", retainTransport);
+        DebridTransfer transfer(provider, memoryFetcher(content));
+        DebridTaskSpec spec;
+        spec.taskId = hash;
+        spec.magnet = "magnet:?xt=urn:btih:" + hash;
+        spec.keepUncached = true;
+        spec.dataPath = data;
+        spec.workingRoot = root;
+        spec.mode = TransferMode::DownloadOnly;
+
+        std::string debridId;
+        std::string error;
+        DebridRunResult res = transfer.run(
+            spec, [&] { return cancelled; }, [](const DebridProgress&) {},
+            debridId, error);
+        assert(res == DebridRunResult::Stopped);
+        assert(debridId == "55");
+        assert(createCalls == 1);
+        assert(removeCalls == 0);
+    }
+
+    // Phase 2: empty debridId with keepUncached=true resumes directly from the
+    // account's info-hash match without creating a duplicate torrent.
+    int resumeCreateCalls = 0;
+    TorboxTransport resumeTransport =
+        [&](const TorboxHttpRequest& req, TorboxHttpResponse& resp, std::string&) {
+            resp.status = 200;
+            if (req.url.find("createtorrent") != std::string::npos) {
+                ++resumeCreateCalls;
+                resp.body = "{\"success\":true,\"data\":{\"torrent_id\":999}}";
+                return true;
+            }
+            if (req.url.find("requestdl") != std::string::npos) {
+                resp.body = "{\"success\":true,\"data\":\"https://x/dl\"}";
+                return true;
+            }
+            if (req.url.find("controltorrent") != std::string::npos) {
+                resp.body = "{\"success\":true}";
+                return true;
+            }
+            if (req.url.find("id=55") != std::string::npos) {
+                resp.body = "{\"success\":true,\"data\":{\"id\":55,"
+                            "\"hash\":\"" + hash + "\","
+                            "\"name\":\"Retained\","
+                            "\"size\":" + std::to_string(content.size()) + ","
+                            "\"progress\":1.0,"
+                            "\"download_state\":\"cached\","
+                            "\"download_finished\":true,"
+                            "\"download_present\":true,"
+                            "\"files\":[{\"id\":7,\"name\":\"Retained/file.bin\","
+                            "\"size\":" + std::to_string(content.size()) + "}]}}";
+                return true;
+            }
+            if (req.url.find("mylist") != std::string::npos) {
+                resp.body = "{\"success\":true,\"data\":[{\"id\":55,"
+                            "\"hash\":\"" + hash + "\","
+                            "\"name\":\"Retained\","
+                            "\"size\":" + std::to_string(content.size()) + ","
+                            "\"progress\":1.0,"
+                            "\"download_state\":\"cached\","
+                            "\"download_finished\":true,"
+                            "\"download_present\":true,"
+                            "\"files\":[{\"id\":7,\"name\":\"Retained/file.bin\","
+                            "\"size\":" + std::to_string(content.size()) + "}]}]}";
+                return true;
+            }
+            resp.body = "{\"success\":false,\"detail\":\"unexpected\"}";
+            return true;
+        };
+    {
+        TorboxProvider provider("k", resumeTransport);
+        DebridTransfer transfer(provider, memoryFetcher(content));
+        DebridTaskSpec spec;
+        spec.taskId = hash;
+        spec.debridId.clear();
+        spec.magnet = "magnet:?xt=urn:btih:" + hash;
+        spec.keepUncached = true;
+        spec.dataPath = data;
+        spec.workingRoot = root;
+        spec.mode = TransferMode::DownloadOnly;
+
+        std::string debridId;
+        std::string error;
+        DebridRunResult res = transfer.run(
+            spec, [] { return false; }, [](const DebridProgress&) {},
+            debridId, error);
+        assert(res == DebridRunResult::Finished);
+        assert(debridId == "55");
+        assert(resumeCreateCalls == 0);
+
+        std::ifstream check(data + "/file.bin", std::ios::binary);
+        std::string written((std::istreambuf_iterator<char>(check)),
+                            std::istreambuf_iterator<char>());
+        assert(written == content);
+    }
+
+    system(("rm -rf " + root).c_str());
+    std::puts("testTorboxRetainAndResumeFromAccountHash ok");
+}
+
 } // namespace
 
 int main() {
@@ -2803,6 +2949,7 @@ int main() {
     testSplitResumeSaveAndOverwriteCycle();
     testSplitResumeTmpCrashRecovery();
     testSplitDownloadOffsetBehaviors();
+    testTorboxRetainAndResumeFromAccountHash();
     std::printf("test_debrid_transfer ok\n");
     curl_global_cleanup();
     return 0;

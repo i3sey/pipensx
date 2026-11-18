@@ -231,6 +231,113 @@ void testMalformedFieldsNoThrow() {
 
 } // namespace
 
+static void testListAndFindByHash() {
+    assert(TorboxClient::isFailedState("failed"));
+    assert(TorboxClient::isFailedState("ERROR"));
+    assert(TorboxClient::isFailedState("expired"));
+    assert(TorboxClient::isFailedState("deleted"));
+    assert(!TorboxClient::isFailedState("stalled (no seeds)"));
+    assert(!TorboxClient::isFailedState("downloading"));
+    assert(!TorboxClient::isFailedState("cached"));
+
+    const std::string listJson = R"json({
+        "success": true,
+        "data": [
+            {
+                "id": 10,
+                "hash": "AABBCCDDAABBCCDDAABBCCDDAABBCCDDAABBCCDD",
+                "name": "Failed Copy",
+                "size": 100,
+                "progress": 0.9,
+                "download_state": "failed",
+                "download_finished": true,
+                "download_present": true,
+                "files": [{"id": 1, "name": "a.nsp", "size": 100}]
+            },
+            {
+                "id": 11,
+                "hash": "AABBCCDDAABBCCDDAABBCCDDAABBCCDDAABBCCDD",
+                "name": "Downloading Copy",
+                "size": 100,
+                "progress": 0.5,
+                "download_state": "downloading",
+                "download_finished": false,
+                "download_present": false,
+                "files": []
+            },
+            {
+                "id": 12,
+                "hash": "aabbccddaabbccddaabbccddaabbccddaabbccdd",
+                "name": "Ready Copy",
+                "size": 200,
+                "progress": 1.0,
+                "download_state": "cached",
+                "download_finished": true,
+                "download_present": true,
+                "files": [{"id": 2, "name": "b.nsp", "size": 200}]
+            },
+            {
+                "id": 13,
+                "hash": "1111111111111111111111111111111111111111",
+                "name": "Other Game",
+                "size": 300,
+                "progress": 0.25,
+                "download_state": "downloading",
+                "download_finished": false,
+                "download_present": false,
+                "files": []
+            }
+        ]
+    })json";
+
+    std::vector<TorboxTorrentInfo> items;
+    std::string err;
+    assert(TorboxClient::parseList(listJson, items, err));
+    assert(items.size() == 4);
+    assert(items[0].hash == "aabbccddaabbccddaabbccddaabbccddaabbccdd");
+
+    TorboxTorrentInfo best;
+    assert(TorboxClient::parseFindByHash(
+        listJson, "AABBCCDDAABBCCDDAABBCCDDAABBCCDDAABBCCDD", best, err));
+    assert(best.id == 12);
+    assert(best.ready);
+    assert(best.files.size() == 1);
+
+    // When only a non-failed active item exists, pick highest progress/id.
+    TorboxTorrentInfo active;
+    assert(TorboxClient::parseFindByHash(
+        listJson, "1111111111111111111111111111111111111111", active, err));
+    assert(active.id == 13);
+    assert(!active.ready);
+
+    // Short / invalid hash must return false without hitting transport.
+    int calls = 0;
+    TorboxClient client("secret",
+                        [&](const pipensx::TorboxHttpRequest& req,
+                            pipensx::TorboxHttpResponse& resp, std::string&) {
+                            ++calls;
+                            assert(req.url.find("bypass_cache=true") !=
+                                   std::string::npos);
+                            resp.status = 200;
+                            resp.body = listJson;
+                            return true;
+                        });
+    TorboxTorrentInfo skipped;
+    assert(!client.findByHash("hash", skipped, err));
+    assert(calls == 0);
+
+    TorboxTorrentInfo fetched;
+    assert(client.findByHash(
+        "AABBCCDDAABBCCDDAABBCCDDAABBCCDDAABBCCDD", fetched, err));
+    assert(calls == 1);
+    assert(fetched.id == 12);
+
+    std::vector<TorboxTorrentInfo> listed;
+    assert(client.fetchList(listed, err));
+    assert(calls == 2);
+    assert(listed.size() == 4);
+}
+
 int main() {
     testParseCreate();
     testParseInfo();
@@ -238,6 +345,7 @@ int main() {
     testRequestDownloadLinkSendsToken();
     testTransportInjection();
     testMalformedFieldsNoThrow();
+    testListAndFindByHash();
     std::printf("test_torbox_client ok\n");
     return 0;
 }

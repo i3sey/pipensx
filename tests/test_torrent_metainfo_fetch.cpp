@@ -245,14 +245,14 @@ static void testKeepUncached() {
     const std::string path = std::string(dir) + "/out.torrent";
     const std::string magnet = std::string("magnet:?xt=urn:btih:") + kHash +
         "&tr=http://bt.t-ru.org/ann?magnet";
-    for (int scenario = 0; scenario < 5; ++scenario) {
+    for (int scenario = 0; scenario < 6; ++scenario) {
         std::atomic<bool> cancelled{false};
         PendingProvider provider;
         provider.cancelled = &cancelled;
-        provider.cancelOnPoll = scenario == 2;
+        provider.cancelOnPoll = scenario == 2 || scenario == 5;
         provider.failed = scenario == 3;
         provider.ready = scenario == 4;
-        const bool keep = scenario != 0;
+        const bool keep = scenario != 0 && scenario != 5;
         std::string id, error;
         DebridInfo info;
         std::ofstream(path) << "temporary data";
@@ -263,7 +263,7 @@ static void testKeepUncached() {
         assert(ok == provider.ready);
         assert(provider.magnets == 1);
         assert(access(path.c_str(), F_OK) != 0);
-        if (scenario == 1) {
+        if (scenario == 1 || scenario == 2) {
             assert(id == "pending");
             assert(provider.removals == 0 && provider.uploads == 0);
             assert(error.find("kept") != std::string::npos);
@@ -279,8 +279,134 @@ static void testKeepUncached() {
     rmdir(dir);
 }
 
+static void testReuseSavedAndAccountHash() {
+    class ReuseProvider final : public DebridProvider {
+    public:
+        bool validate(std::string&) override { return true; }
+        bool createFromMagnet(const std::string&, std::string& id,
+                              std::string&) override {
+            ++creates;
+            id = "fresh-created";
+            return true;
+        }
+        bool createFromFile(const std::string&, std::string& id,
+                            std::string&) override {
+            ++uploads;
+            id = "fresh-upload";
+            return true;
+        }
+        bool fetchInfo(const std::string& id, DebridInfo& info,
+                       std::string& error) override {
+            if (id == "gone-11") {
+                error = "TorBox torrent not found.";
+                return false;
+            }
+            if (id == "caching-13") {
+                info = DebridInfo{};
+                info.phase = DebridInfo::Phase::Downloading;
+                info.progress = 0.45;
+                if (cancelOnFetch)
+                    *cancelOnFetch = true;
+                return true;
+            }
+            info = DebridInfo{};
+            info.phase = DebridInfo::Phase::Ready;
+            info.name = "Existing";
+            info.files.push_back({"1", "game.nsp", 4096});
+            return true;
+        }
+        bool findByHash(const std::string&, std::string& id,
+                        DebridInfo& info, std::string&) override {
+            if (!hasHashMatch)
+                return false;
+            id = "hash-12";
+            info = DebridInfo{};
+            info.phase = DebridInfo::Phase::Ready;
+            info.name = "Hash Matched";
+            info.files.push_back({"1", "game.nsp", 4096});
+            return true;
+        }
+        bool selectFiles(const std::string&, const std::vector<std::string>&,
+                         std::string&) override {
+            return true;
+        }
+        bool resolveDownloadUrl(const std::string&, const DebridInfo&, size_t,
+                                const DebridFile&, std::string&,
+                                std::string&) override {
+            return false;
+        }
+        bool remove(const std::string&, std::string&) override {
+            ++removals;
+            return true;
+        }
+        const char* name() const override { return "reuse"; }
+
+        int creates = 0;
+        int uploads = 0;
+        int removals = 0;
+        bool hasHashMatch = false;
+        std::atomic<bool>* cancelOnFetch = nullptr;
+    };
+
+    const std::string magnet = std::string("magnet:?xt=urn:btih:") + kHash;
+    const std::string tmp = "/tmp/pipensx-reuse-unused.torrent";
+
+    // 1. Saved existingDebridId ready: reuses without creating a new transfer.
+    {
+        ReuseProvider provider;
+        std::atomic<bool> cancelled{false};
+        std::string id, error;
+        DebridInfo info;
+        bool reused = false;
+        assert(createDebridWithMetainfoFallback(
+            provider, magnet, kHash, {}, tmp, cancelled,
+            std::chrono::steady_clock::now() + std::chrono::seconds(5),
+            id, info, error, {}, true, "saved-10", &reused));
+        assert(id == "saved-10");
+        assert(reused);
+        assert(provider.creates == 0 && provider.uploads == 0);
+    }
+
+    // 2. Stale saved ID ("not found") falls back to provider.findByHash match.
+    {
+        ReuseProvider provider;
+        provider.hasHashMatch = true;
+        std::atomic<bool> cancelled{false};
+        std::string id, error;
+        DebridInfo info;
+        bool reused = false;
+        assert(createDebridWithMetainfoFallback(
+            provider, magnet, kHash, {}, tmp, cancelled,
+            std::chrono::steady_clock::now() + std::chrono::seconds(5),
+            id, info, error, {}, true, "gone-11", &reused));
+        assert(id == "hash-12");
+        assert(reused);
+        assert(provider.creates == 0 && provider.uploads == 0);
+    }
+
+    // 3. Unfinished saved transfer retained without removal on cancel.
+    {
+        ReuseProvider provider;
+        std::atomic<bool> cancelled{false};
+        provider.cancelOnFetch = &cancelled;
+        std::string id, error;
+        DebridInfo info;
+        bool reused = false;
+        assert(!createDebridWithMetainfoFallback(
+            provider, magnet, kHash, {}, tmp, cancelled,
+            std::chrono::steady_clock::now() + std::chrono::seconds(5),
+            id, info, error, {}, true, "caching-13", &reused));
+        assert(cancelled.load());
+        assert(id == "caching-13");
+        assert(reused);
+        assert(provider.removals == 0);
+        assert(provider.creates == 0);
+    }
+}
+
 int main() {
     testKeepUncached();
+    testReuseSavedAndAccountHash();
     testItorrentsUrl();
     testWriteFromInfoDict();
     testRejectBadBody();

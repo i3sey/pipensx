@@ -964,6 +964,29 @@ Step ensureCreated(RunContext& ctx) {
                 ctx.spec.taskId.c_str(), ctx.debridId.c_str());
         return Step::Ok;
     }
+    auto isHex40 = [](const std::string& hash) {
+        if (hash.size() != 40)
+            return false;
+        for (unsigned char c : hash) {
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+                  (c >= 'A' && c <= 'F')))
+                return false;
+        }
+        return true;
+    };
+    if (ctx.spec.keepUncached && isHex40(ctx.spec.taskId)) {
+        std::string foundId;
+        DebridInfo foundInfo;
+        std::string findErr;
+        if (ctx.provider.findByHash(ctx.spec.taskId, foundId, foundInfo,
+                                    findErr) &&
+            !foundId.empty() && foundInfo.phase != DebridInfo::Phase::Failed) {
+            ctx.debridId = std::move(foundId);
+            log_msg("[debrid] task %s reusing account transfer id=%s by hash\n",
+                    ctx.spec.taskId.c_str(), ctx.debridId.c_str());
+            return Step::Ok;
+        }
+    }
     bool ok;
     if (!ctx.spec.magnet.empty()) {
         ctx.magnetCreated = true;
