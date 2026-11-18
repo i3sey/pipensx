@@ -185,6 +185,7 @@ set(APP_SERVICE_SOURCES
     src/app/game_update_install.cpp
     src/app/game_update_service.cpp
     src/app/installed_title_service.cpp
+    src/app/archive_service.cpp
     src/app/nacp_language.cpp
     src/app/storage_manager.cpp
     src/app/install_space.cpp

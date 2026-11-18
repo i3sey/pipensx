@@ -509,6 +509,17 @@ public:
         }
     }
 
+    void selectTab(NavIconType icon, bool focusContent = false) {
+        for (size_t i = 0; i < tabs_.size(); ++i) {
+            if (tabs_[i].icon == icon) {
+                selectTab(static_cast<int>(i), focusContent);
+                if (!focusContent)
+                    focusTab(static_cast<int>(i));
+                return;
+            }
+        }
+    }
+
     TopTab* navItem(int position) {
         if (position < 0 || position >= static_cast<int>(tabs_.size()))
             return nullptr;

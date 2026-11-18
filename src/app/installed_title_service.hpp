@@ -29,6 +29,9 @@ struct InstalledTitle {
     // non-empty (LayeredFS romfs/exefs/cheats). An update can silently break
     // such a title when the mod targets the old version.
     bool hasLayeredFsMods = false;
+    // True when installed content is an archive restore stub built with the
+    // "pnxarch" NACP category. Archived stubs are omitted from titleIds()/contains().
+    bool isArchived = false;
 };
 
 class InstalledTitleService {
@@ -40,7 +43,13 @@ public:
     bool uninstall(const std::string& titleId, std::string& error,
                    std::string& refreshError);
     bool contains(const std::string& titleId) const;
+    bool isArchived(const std::string& titleId) const;
+    bool containsInstalledOrArchived(const std::string& titleId) const;
     bool containsDlc(const std::string& titleId) const;
+    void invalidateCachedIcon(const std::string& titleId);
+    bool readControlIcon(const std::string& titleId,
+                         std::vector<uint8_t>& jpegOut,
+                         std::string& error) const;
 
     std::vector<InstalledTitle> titles() const;
     // Normalized title-id snapshot copied under one lock for bulk lookups.
@@ -95,6 +104,7 @@ private:
     mutable std::mutex mutex_;
     std::vector<InstalledTitle> titles_;
     std::unordered_set<std::string> titleIds_;
+    std::unordered_set<std::string> archivedTitleIds_;
     std::unordered_set<std::string> dlcTitleIds_;
     uint64_t generation_ = 0;
 };

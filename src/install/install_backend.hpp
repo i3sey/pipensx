@@ -87,8 +87,32 @@ public:
     virtual uint64_t freeSpaceBytes() const { return 0; }
 };
 
+struct TitleStorageFootprint {
+    uint64_t totalBytes = 0;
+    uint64_t reclaimableBytes = 0;
+    uint64_t controlBytes = 0;
+    uint32_t metaRecordCount = 0;
+    uint32_t contentCount = 0;
+    bool hasSdContent = false;
+    bool hasNandContent = false;
+    bool found = false;
+};
+
 std::unique_ptr<InstallBackend> createInstallBackend(
     const std::string& workingRoot,
     InstallStorageTarget target = InstallStorageTarget::SdCard);
+
+// Query NCM storage footprint (base + patch + DLC) for an installed title.
+bool inspectInstalledTitleFootprint(const std::string& workingRoot,
+                                    uint64_t applicationId,
+                                    TitleStorageFootprint& out,
+                                    std::string& error);
+
+// Remove registered NCM content and metadata for applicationId across SD and
+// NAND without modifying SaveData or installed tickets.
+bool removeTitleContentPreservingSaves(const std::string& workingRoot,
+                                       uint64_t applicationId,
+                                       uint64_t* freedBytes,
+                                       std::string& error);
 
 } // namespace pipensx::install

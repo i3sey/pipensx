@@ -5,6 +5,7 @@
 #include <cctype>
 #include <cerrno>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 #include <sys/stat.h>
@@ -36,6 +37,43 @@ std::string safeName(const std::string& value) {
         result.push_back(std::isalnum(c) || c == '.' || c == '-' ||
                          c == '_' ? static_cast<char>(c) : '_');
     return result.empty() ? "package" : result;
+}
+
+std::string hexTitleId(uint64_t titleId) {
+    char buf[17];
+    std::snprintf(buf, sizeof(buf), "%016llX",
+                  static_cast<unsigned long long>(titleId));
+    return buf;
+}
+
+std::string simTitlePath(const std::string& workingRoot,
+                         uint64_t applicationId) {
+    return workingRoot + "/install-sim/titles/" +
+           hexTitleId(applicationId) + ".sim";
+}
+
+bool writeSimTitleRecord(const std::string& workingRoot,
+                         uint64_t applicationId,
+                         uint64_t totalBytes,
+                         uint64_t controlBytes,
+                         uint32_t contentCount,
+                         uint32_t metaCount) {
+    const std::string dir = workingRoot + "/install-sim/titles";
+    if (!makeDirectories(dir))
+        return false;
+    const std::string path = simTitlePath(workingRoot, applicationId);
+    std::FILE* f = std::fopen(path.c_str(), "wb");
+    if (!f)
+        return false;
+    std::fprintf(f,
+                 "total_bytes=%llu\ncontrol_bytes=%llu\ncontent_count=%u\n"
+                 "meta_count=%u\nsd=1\nnand=0\n",
+                 static_cast<unsigned long long>(totalBytes),
+                 static_cast<unsigned long long>(controlBytes),
+                 contentCount, metaCount);
+    const bool ok = std::fflush(f) == 0;
+    std::fclose(f);
+    return ok;
 }
 
 uint64_t titleIdInName(const std::string& value) {
@@ -189,7 +227,13 @@ public:
             error_ = "PC package is incomplete.";
             return false;
         }
-        if (benchmarkMode_) cleanBenchmarkFiles();
+        if (benchmarkMode_) {
+            cleanBenchmarkFiles();
+        } else if (packageApplicationId_ != 0 && !root_.empty()) {
+            const uint64_t controlGuess = std::min<uint64_t>(installed_, 262144);
+            writeSimTitleRecord(root_, packageApplicationId_, installed_,
+                                controlGuess, 3, 1);
+        }
         active_ = false;
         directory_.clear();
         return true;
@@ -353,6 +397,78 @@ std::unique_ptr<InstallBackend> createInstallBackend(
     // (ncm) concern, so it is accepted for signature parity and ignored.
     (void)target;
     return std::make_unique<PcInstallBackend>(workingRoot);
+}
+
+bool inspectInstalledTitleFootprint(const std::string& workingRoot,
+                                    uint64_t applicationId,
+                                    TitleStorageFootprint& out,
+                                    std::string& error) {
+    out = TitleStorageFootprint {};
+    error.clear();
+    if (applicationId == 0) {
+        error = "Invalid application ID.";
+        return false;
+    }
+    if (workingRoot.empty())
+        return true;
+
+    std::FILE* f = std::fopen(simTitlePath(workingRoot, applicationId).c_str(), "rb");
+    if (!f)
+        return true;
+
+    out.found = true;
+    out.metaRecordCount = 1;
+    out.hasSdContent = true;
+    char line[256];
+    while (std::fgets(line, sizeof(line), f)) {
+        char* eq = std::strchr(line, '=');
+        if (!eq)
+            continue;
+        *eq = '\0';
+        const char* val = eq + 1;
+        if (std::strcmp(line, "total_bytes") == 0)
+            out.totalBytes = std::strtoull(val, nullptr, 10);
+        else if (std::strcmp(line, "control_bytes") == 0)
+            out.controlBytes = std::strtoull(val, nullptr, 10);
+        else if (std::strcmp(line, "content_count") == 0)
+            out.contentCount = static_cast<uint32_t>(std::strtoul(val, nullptr, 10));
+        else if (std::strcmp(line, "meta_count") == 0)
+            out.metaRecordCount = static_cast<uint32_t>(std::strtoul(val, nullptr, 10));
+        else if (std::strcmp(line, "sd") == 0)
+            out.hasSdContent = std::atoi(val) != 0;
+        else if (std::strcmp(line, "nand") == 0)
+            out.hasNandContent = std::atoi(val) != 0;
+    }
+    std::fclose(f);
+    out.reclaimableBytes = out.totalBytes;
+    return true;
+}
+
+bool removeTitleContentPreservingSaves(const std::string& workingRoot,
+                                       uint64_t applicationId,
+                                       uint64_t* freedBytes,
+                                       std::string& error) {
+    if (freedBytes)
+        *freedBytes = 0;
+    error.clear();
+    if (applicationId == 0) {
+        error = "Invalid application ID.";
+        return false;
+    }
+    TitleStorageFootprint footprint;
+    if (!inspectInstalledTitleFootprint(workingRoot, applicationId, footprint, error))
+        return false;
+    if (!footprint.found)
+        return true;
+
+    const std::string path = simTitlePath(workingRoot, applicationId);
+    if (unlink(path.c_str()) != 0 && errno != ENOENT) {
+        error = "Unable to remove simulated title record.";
+        return false;
+    }
+    if (freedBytes)
+        *freedBytes = footprint.totalBytes;
+    return true;
 }
 
 } // namespace pipensx::install

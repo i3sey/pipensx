@@ -689,6 +689,46 @@ int main() {
         // torrent resolver/provider, even though the UI snapshot offered it.
         assert(waitFor([&] { return request(port, "GET", "/api/tasks").find("installed base could not be verified") != std::string::npos; }));
         assert(resolveCalls->load() == resolverBefore);
+
+        // Archive confirmation, archived update block (409), and restore (200/202).
+        auto archivedState = std::make_shared<std::atomic<bool>>(false);
+        server.setLibraryHandlers(
+            [archivedState](std::string& json, std::string&) {
+                json = nlohmann::json({{"titles", {
+                    {{"titleId", "0100000000001000"},
+                     {"name", "Fixture"},
+                     {"isArchived", archivedState->load()},
+                     {"canArchive", !archivedState->load()},
+                     {"archiveBlockReason", archivedState->load() ? "already_archived" : ""},
+                     {"installedBytes", 4000000},
+                     {"freedBytes", 2000000},
+                     {"updateState", archivedState->load() ? "not_checked" : "update_available"}}
+                }}}).dump();
+                return true;
+            },
+            [archivedState](const std::string& action, const std::string& id, std::string&) {
+                if (action == "archive" && id == "0100000000001000") {
+                    archivedState->store(true);
+                    return true;
+                }
+                return false;
+            });
+        server.setLibraryRestoreHandler(
+            [&torrentHash](const std::string& id, RestoreStartResult& out, std::string& err) {
+                (void)err;
+                assert(id == "0100000000001000");
+                out.titleId = id;
+                out.queuedImmediately = true;
+                out.taskId = torrentHash;
+                return true;
+            });
+        assert(request(port, "POST", "/api/library/0100000000001000/archive", "{}", pinHeader).find("400") != std::string::npos);
+        assert(request(port, "POST", "/api/library/0100000000001000/archive", "{\"confirm\":true}", pinHeader).find("202") != std::string::npos);
+        assert(waitFor([&] { return archivedState->load(); }));
+        assert(request(port, "POST", "/api/library/0100000000001000/update", "{}", pinHeader).find("409") != std::string::npos);
+        const auto restoreResp = request(port, "POST", "/api/library/0100000000001000/restore", "{}", pinHeader);
+        assert(restoreResp.find("200 OK") != std::string::npos);
+        assert(responseBody(restoreResp).find(torrentHash) != std::string::npos);
     }
 
     // catalog gzip + ETag + add-by-hash 404 for unknown entries

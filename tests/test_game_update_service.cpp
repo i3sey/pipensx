@@ -405,6 +405,23 @@ void testResultsGenerationBumpsOnRecheck() {
     reset();
 }
 
+void testArchivedTitlesAreSkipped() {
+    FakeSource source;
+    source.set("0100000000000001", {"131072"});
+    source.set("0100000000000002", {"131072"});
+    GameUpdateService service(&source, StatePath);
+    InstalledTitle active = title("0100000000000001", "65536");
+    InstalledTitle archived = title("0100000000000002", "0");
+    archived.isArchived = true;
+    std::string saveError;
+    service.checkAll({active, archived}, 1, 1, saveError);
+    assert(service.find("0100000000000001") != nullptr);
+    assert(service.find("0100000000000001")->state == GameUpdateState::UpdateAvailable);
+    assert(service.find("0100000000000002") == nullptr);
+    assert(service.availableCount({active, archived}) == 1);
+    reset();
+}
+
 } // namespace
 
 int main() {
@@ -423,6 +440,7 @@ int main() {
     testStaleFalseBeforeAnyCheck();
     testSaveLoadRoundTrip();
     testResultsGenerationBumpsOnRecheck();
+    testArchivedTitlesAreSkipped();
     testIgnoredPersistsAndSkipsAvailableCount();
     testLoadMissingFileIsEmpty();
     testLoadCorruptFileFails();

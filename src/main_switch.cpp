@@ -1,4 +1,5 @@
 #include "app/app_settings.hpp"
+#include "app/archive_service.hpp"
 #include "app/catalog_service.hpp"
 #include "app/catalog_refresh.hpp"
 #include "app/companion_settings.hpp"
@@ -74,7 +75,10 @@ extern "C" {
 #include "ui/detail/autorun_post_install_dialog.hpp"
 
 using pipensx::AppSettings;
+using pipensx::ArchiveInspection;
+using pipensx::ArchiveService;
 using pipensx::AutorunService;
+using pipensx::GameUpdateResult;
 using pipensx::CatalogService;
 using pipensx::CatalogSnapshot;
 using pipensx::CatalogEntry;
@@ -171,12 +175,16 @@ public:
                  WebServer* webServer, SwitchDeployService* deploy,
                  GameUpdateService* gameUpdates,
                  PortUninstallService* portUninstall,
-                 AutorunService* autorun = nullptr)
+                 AutorunService* autorun = nullptr,
+                 ArchiveService* archive = nullptr,
+                 InstalledView::RestoreStartedCallback onRestoreStarted = {})
         : manager_(manager), catalog_(catalog), metadata_(metadata),
           installed_(installed), settings_(settings), updater_(updater),
           favorites_(favorites), webServer_(webServer),
           deploy_(deploy), gameUpdates_(gameUpdates),
-          portUninstall_(portUninstall), autorun_(autorun) {
+          portUninstall_(portUninstall), autorun_(autorun),
+          archive_(archive),
+          onRestoreStarted_(std::move(onRestoreStarted)) {
         auto* tabs = new pipensx::ui::MainFrame();
         using pipensx::ui::NavIconType;
         using pipensx::CatalogSection;
@@ -244,11 +252,14 @@ public:
         tabs->addNavTab(tr("pipensx/nav/installed"), NavIconType::Installed,
                         [installed, manager, metadata, settings, catalog,
                          gameUpdates, tabs, favorites, deploy,
-                         portUninstall = portUninstall_] {
+                         portUninstall = portUninstall_,
+                         archive = archive_,
+                         onRestoreStarted = onRestoreStarted_] {
             auto* view = new InstalledView(installed, manager, metadata,
                                            settings, catalog, gameUpdates,
                                            true, favorites, deploy,
-                                           portUninstall);
+                                           portUninstall, archive,
+                                           onRestoreStarted);
             view->setOnUpdateCount([tabs](size_t count) {
                 tabs->setUpdateCountBadge(count);
             });
@@ -454,6 +465,11 @@ public:
             }, /*hidden=*/true);
     }
 
+    void focusDownloadsTab() {
+        if (tabs_)
+            tabs_->selectTab(pipensx::ui::NavIconType::Downloads, true);
+    }
+
 private:
     DownloadManager* manager_;
     CatalogService* catalog_;
@@ -467,6 +483,8 @@ private:
     GameUpdateService* gameUpdates_;
     PortUninstallService* portUninstall_ = nullptr;
     AutorunService* autorun_ = nullptr;
+    ArchiveService* archive_ = nullptr;
+    InstalledView::RestoreStartedCallback onRestoreStarted_;
     pipensx::ui::MainFrame* tabs_ = nullptr;
     brls::AppletFrame* frame_;
     bool installedRefreshInFlight_ = false;
@@ -494,6 +512,20 @@ int main(int argc, char** argv) {
     char activeNroPath[FS_MAX_PATH] = {0};
     nro_canonical_path(argc > 0 ? argv[0] : nullptr, activeNroPath,
                        sizeof(activeNroPath));
+
+    std::string startupRestoreTitleId;
+    for (int i = 1; i < argc; ++i) {
+        if (!argv[i])
+            continue;
+        const std::string arg = argv[i];
+        if (arg == "--restore-archive" && i + 1 < argc && argv[i + 1]) {
+            startupRestoreTitleId =
+                pipensx::normalizeArchiveTitleId(argv[++i]);
+        } else if (arg.rfind("--restore-archive=", 0) == 0) {
+            startupRestoreTitleId =
+                pipensx::normalizeArchiveTitleId(arg.substr(18));
+        }
+    }
 
     char launchSource[FS_MAX_PATH] = {0};
     if (argc > 0 &&
@@ -537,8 +569,10 @@ int main(int argc, char** argv) {
                     diagnostic_error("startup", "nro_relocation_restart",
                                      "next-load unsupported");
                 } else {
-                    const std::string arguments =
+                    std::string arguments =
                         std::string("\"") + InstalledNroPath + "\"";
+                    if (!startupRestoreTitleId.empty())
+                        arguments += " --restore-archive " + startupRestoreTitleId;
                     const Result restart = envSetNextLoad(
                         InstalledNroPath, arguments.c_str());
                     if (R_SUCCEEDED(restart)) {
@@ -774,6 +808,15 @@ int main(int argc, char** argv) {
         PortUninstallService portUninstall(manager, "sdmc:/switch/pipensx",
                                            "sdmc:/switch");
         AutorunService autorun("sdmc:");
+        ArchiveService archive(
+            "sdmc:/switch/pipensx", &installed, &manager, &catalog, &metadata,
+            &settings,
+            [&portUninstall](const std::string& tid) {
+                pipensx::PortUninstallPlan plan;
+                return portUninstall.plan(tid, {}, plan);
+            },
+            activeNroPath[0] ? std::string(activeNroPath)
+                             : std::string(InstalledNroPath));
         manager.setInstallTarget(
             installTargetFor(settings.get().installLocation));
         manager.setMaxActiveDownloads(settings.get().maxActiveDownloads);
@@ -1042,56 +1085,71 @@ int main(int argc, char** argv) {
             diagnostic_error("game_updates", "load", "error=%s",
                              gameUpdatesError.c_str());
         webServer.setLibraryHandlers(
-            [&installed, &metadata, &catalog, &gameUpdates, &portUninstall](std::string& json,
-                                                          std::string& error) {
+            [&installed, &metadata, &catalog, &gameUpdates, &portUninstall, &archive](
+                std::string& json, std::string& error) {
                 if (!runOnUiThread([&] {
+                    const auto titles = installed.titles();
+                    const auto archiveMap = archive.inspectLibrary(titles);
                     nlohmann::json rows = nlohmann::json::array();
-                    for (const auto& title : installed.titles()) {
-                        const auto result = gameUpdates.inspect(title.titleId, title.version);
-                        std::vector<const GameMetadata*> matches;
-                        metadata.findByTitleId(title.titleId, matches);
+                    for (const auto& title : titles) {
+                        const auto archIt = archiveMap.find(title.titleId);
+                        const ArchiveInspection insp = archIt != archiveMap.end()
+                            ? archIt->second : ArchiveInspection{};
+                        const auto result = title.isArchived
+                            ? GameUpdateResult{}
+                            : gameUpdates.inspect(title.titleId, title.version);
                         const CatalogEntry* bundle = nullptr;
-                        for (const auto& candidate : catalog.entries()) {
-                            for (const auto& item : candidate.titles) {
+                        if (!title.isArchived) {
+                            std::vector<const GameMetadata*> matches;
+                            metadata.findByTitleId(title.titleId, matches);
+                            for (const auto& candidate : catalog.entries()) {
+                                for (const auto& item : candidate.titles) {
+                                    uint64_t candidateId = 0;
+                                    if (!result.foundVersion.empty() &&
+                                        item.updateVersion == result.foundVersion &&
+                                        InstalledTitleService::parseTitleId(item.titleId, candidateId) &&
+                                        candidateId == title.applicationId) {
+                                        bundle = &candidate;
+                                        break;
+                                    }
+                                }
+                                if (bundle) break;
+                            }
+                            if (!bundle) if (const auto* exact = GameMetadataService::preferVersionMatch(
+                                    matches, result.foundVersion))
+                                bundle = catalog.findByInfoHash(exact->infoHash);
+                            if (!bundle) for (const auto* match : matches) {
+                                if (!match) continue;
+                                const auto* candidate = catalog.findByInfoHash(match->infoHash);
+                                if (candidate && (!bundle || candidate->publishedAt > bundle->publishedAt))
+                                    bundle = candidate;
+                            }
+                            // Same direct-id fallback as the native Installed view.
+                            if (!bundle) for (const auto& candidate : catalog.entries()) {
                                 uint64_t candidateId = 0;
-                                if (!result.foundVersion.empty() &&
-                                    item.updateVersion == result.foundVersion &&
-                                    InstalledTitleService::parseTitleId(item.titleId, candidateId) &&
-                                    candidateId == title.applicationId) {
+                                bool matchesId = InstalledTitleService::parseTitleId(candidate.titleId, candidateId) &&
+                                                 candidateId == title.applicationId;
+                                for (const auto& item : candidate.titles) {
+                                    if (InstalledTitleService::parseTitleId(item.titleId, candidateId) &&
+                                        candidateId == title.applicationId) {
+                                        matchesId = true;
+                                        break;
+                                    }
+                                }
+                                if (matchesId && (!bundle || candidate.publishedAt > bundle->publishedAt))
                                     bundle = &candidate;
-                                    break;
-                                }
                             }
-                            if (bundle) break;
-                        }
-                        if (!bundle) if (const auto* exact = GameMetadataService::preferVersionMatch(
-                                matches, result.foundVersion))
-                            bundle = catalog.findByInfoHash(exact->infoHash);
-                        if (!bundle) for (const auto* match : matches) {
-                            if (!match) continue;
-                            const auto* candidate = catalog.findByInfoHash(match->infoHash);
-                            if (candidate && (!bundle || candidate->publishedAt > bundle->publishedAt))
-                                bundle = candidate;
-                        }
-                        // Same direct-id fallback as the native Installed view.
-                        if (!bundle) for (const auto& candidate : catalog.entries()) {
-                            uint64_t candidateId = 0;
-                            bool matchesId = InstalledTitleService::parseTitleId(candidate.titleId, candidateId) &&
-                                             candidateId == title.applicationId;
-                            for (const auto& item : candidate.titles) {
-                                if (InstalledTitleService::parseTitleId(item.titleId, candidateId) &&
-                                    candidateId == title.applicationId) {
-                                    matchesId = true;
-                                    break;
-                                }
-                            }
-                            if (matchesId && (!bundle || candidate.publishedAt > bundle->publishedAt))
-                                bundle = &candidate;
                         }
                         pipensx::PortUninstallPlan portPlan;
-                        const bool isPort = portUninstall.plan(title.titleId, {}, portPlan);
+                        const bool isPort = !title.isArchived &&
+                            portUninstall.plan(title.titleId, {}, portPlan);
                         rows.push_back({{"titleId", title.titleId}, {"name", title.name},
                             {"isPort", isPort},
+                            {"isArchived", title.isArchived},
+                            {"canArchive", insp.canArchive},
+                            {"archiveBlockReason", pipensx::archiveBlockReasonCode(insp.blockReason)},
+                            {"installedBytes", insp.installedBytes},
+                            {"freedBytes", insp.estimatedFreedBytes},
                             {"deployedFiles", portPlan.switchFiles.size() + portPlan.sdRootFiles.size()},
                             {"deployedBytes", portPlan.switchBytes + portPlan.sdRootBytes},
                             {"wholeFolders", portPlan.wholeFolders},
@@ -1099,18 +1157,20 @@ int main(int argc, char** argv) {
                             {"publisher", title.publisher}, {"version", title.version},
                             {"displayVersion", title.displayVersion},
                             {"latestVersion", result.foundVersion},
-                            {"updateState", GameUpdateService::stateName(result.state)},
+                            {"updateState", title.isArchived ? std::string("not_checked")
+                                                             : GameUpdateService::stateName(result.state)},
                             {"updateHash", bundle ? bundle->infoHash : std::string()},
                             {"hasLayeredFsMods", title.hasLayeredFsMods},
-                            {"dlcCount", installed.dlcCountForBase(title.titleId)}});
+                            {"dlcCount", title.isArchived ? size_t{0}
+                                                          : installed.dlcCountForBase(title.titleId)}});
                     }
                     json = nlohmann::json({{"titles", rows},
                         {"generation", installed.generation()}}).dump();
                 })) { error = "installed library timed out"; return false; }
                 return true;
             },
-            [&installed, &manager, &portUninstall, &catalog, &settings](const std::string& action,
-                                   const std::string& titleId, std::string& error) {
+            [&installed, &manager, &portUninstall, &catalog, &settings, &archive](
+                const std::string& action, const std::string& titleId, std::string& error) {
                 if (action == "catalog-refresh") {
                     if (!pipensx::tryBeginCatalogRefresh()) {
                         error = "A catalog refresh is already running.";
@@ -1140,9 +1200,15 @@ int main(int argc, char** argv) {
                     return fetched && adopted && error.empty();
                 }
                 if (action == "refresh") return installed.refresh(error);
-                if (action != "uninstall" || !installed.contains(titleId)) {
+                if (action == "archive") {
+                    pipensx::ArchiveActionResult res;
+                    return archive.archiveTitle(titleId, res, error);
+                }
+                if (action != "uninstall" || !installed.containsInstalledOrArchived(titleId)) {
                     error = "Installed game not found."; return false;
                 }
+                if (installed.isArchived(titleId))
+                    return archive.removeArchivedStub(titleId, error);
                 pipensx::PortUninstallPlan portPlan;
                 if (portUninstall.plan(titleId, {}, portPlan)) {
                     pipensx::PortUninstallReport report;
@@ -1161,6 +1227,13 @@ int main(int argc, char** argv) {
                 if (ok && !refreshError.empty()) error = refreshError;
                 return ok && refreshError.empty();
             });
+        webServer.setLibraryRestoreHandler(
+            [&archive](const std::string& tid,
+                       pipensx::RestoreStartResult& out,
+                       std::string& err) {
+                std::atomic<bool> cancelled{false};
+                return archive.restoreTitle(tid, cancelled, out, err, false);
+            });
 
         // Keep the catalogue tab from starting a redundant network refresh
         // against the intentionally empty startup snapshots. The lease is
@@ -1168,12 +1241,72 @@ int main(int argc, char** argv) {
         const bool initialCatalogLease =
             pipensx::tryBeginCatalogRefresh();
 
+        struct PendingArchiveRestore {
+            std::string titleId;
+            std::string taskId;
+            bool prompted = false;
+            bool refreshInFlight = false;
+            bool launchDialogOpen = false;
+            std::shared_ptr<std::atomic<bool>> cancelled;
+        };
+        PendingArchiveRestore pendingArchiveRestore;
+        std::atomic<bool> uiAlive{true};
+        std::thread archiveRestoreWorker;
+        auto joinArchiveWorker = [&]() {
+            if (pendingArchiveRestore.cancelled)
+                pendingArchiveRestore.cancelled->store(true);
+            if (archiveRestoreWorker.joinable())
+                archiveRestoreWorker.join();
+        };
+
         startupStage("MainActivity construction");
-        auto* activity = new MainActivity(&manager, &catalog, &metadata,
-                                           &installed, &settings, &updater,
-                                           &favorites, &webServer,
-                                           &deploy, &gameUpdates,
-                                           &portUninstall, &autorun);
+        MainActivity* activity = nullptr;
+        auto startUiArchiveRestore = [&](const std::string& rawTitleId) {
+            const std::string normId = pipensx::normalizeArchiveTitleId(rawTitleId);
+            if (normId.empty()) {
+                brls::Application::notify(tr("pipensx/installed/restore_failed",
+                                             std::string("Invalid title ID")));
+                return;
+            }
+            joinArchiveWorker();
+            pendingArchiveRestore = PendingArchiveRestore{};
+            pendingArchiveRestore.titleId = normId;
+            pendingArchiveRestore.cancelled = std::make_shared<std::atomic<bool>>(false);
+            if (activity)
+                activity->focusDownloadsTab();
+            brls::Application::notify(tr("pipensx/installed/restore_starting"));
+            auto cancelFlag = pendingArchiveRestore.cancelled;
+            archiveRestoreWorker = std::thread(
+                [&archive, &pendingArchiveRestore, &uiAlive, normId, cancelFlag] {
+                    pipensx::RestoreStartResult res;
+                    std::string err;
+                    const bool ok = archive.restoreTitle(
+                        normId, *cancelFlag, res, err, true);
+                    if (!uiAlive.load() || cancelFlag->load())
+                        return;
+                    brls::sync([&pendingArchiveRestore, &uiAlive, cancelFlag, ok, res, err] {
+                        if (!uiAlive.load() || cancelFlag->load())
+                            return;
+                        if (!ok) {
+                            pendingArchiveRestore.titleId.clear();
+                            pendingArchiveRestore.taskId.clear();
+                            auto* dialog = new brls::Dialog(tr(
+                                "pipensx/installed/restore_failed", err));
+                            dialog->addButton(tr("pipensx/common/ok"), [] {});
+                            dialog->open();
+                            return;
+                        }
+                        pendingArchiveRestore.taskId = res.taskId;
+                    });
+                });
+        };
+
+        activity = new MainActivity(&manager, &catalog, &metadata,
+                                    &installed, &settings, &updater,
+                                    &favorites, &webServer,
+                                    &deploy, &gameUpdates,
+                                    &portUninstall, &autorun, &archive,
+                                    startUiArchiveRestore);
 
         startupStage("push MainActivity");
         brls::Application::pushActivity(activity);
@@ -1788,10 +1921,91 @@ int main(int argc, char** argv) {
                     log_msg("[saver] screen off failed; keeping warning\n");
                 }
             }
+            if (!pendingArchiveRestore.titleId.empty() &&
+                !pendingArchiveRestore.taskId.empty() &&
+                !pendingArchiveRestore.prompted &&
+                !pendingArchiveRestore.refreshInFlight) {
+                const auto taskOpt =
+                    manager.snapshotUi(pendingArchiveRestore.taskId);
+                if (!taskOpt ||
+                    taskOpt->status == pipensx::DownloadStatus::Error ||
+                    taskOpt->status == pipensx::DownloadStatus::Removing) {
+                    pendingArchiveRestore.titleId.clear();
+                    pendingArchiveRestore.taskId.clear();
+                } else if (taskOpt->status ==
+                           pipensx::DownloadStatus::Installed) {
+                    pendingArchiveRestore.refreshInFlight = true;
+                    const std::string targetTitleId = pendingArchiveRestore.titleId;
+                    const std::string taskName = taskOpt->name;
+                    brls::async([&installed, &pendingArchiveRestore, &uiAlive,
+                                 &settings, &saverOpen, &backlightOff,
+                                 targetTitleId, taskName] {
+                        std::string ignoreErr;
+                        installed.refresh(ignoreErr);
+                        if (!uiAlive.load())
+                            return;
+                        brls::sync([&installed, &pendingArchiveRestore, &uiAlive,
+                                    &settings, &saverOpen, &backlightOff,
+                                    targetTitleId, taskName] {
+                            if (!uiAlive.load())
+                                return;
+                            pendingArchiveRestore.refreshInFlight = false;
+                            if (!installed.contains(targetTitleId))
+                                return;
+                            pendingArchiveRestore.prompted = true;
+                            std::string displayName = taskName;
+                            for (const auto& t : installed.titles()) {
+                                if (t.titleId == targetTitleId && !t.name.empty()) {
+                                    displayName = t.name;
+                                    break;
+                                }
+                            }
+                            if (settings.get().sleepAfterDownloads ||
+                                saverOpen || backlightOff) {
+                                pendingArchiveRestore.titleId.clear();
+                                pendingArchiveRestore.taskId.clear();
+                                return;
+                            }
+                            pendingArchiveRestore.launchDialogOpen = true;
+                            auto* dialog = new brls::Dialog(tr(
+                                "pipensx/installed/restore_ready_body",
+                                displayName));
+                            dialog->addButton(
+                                tr("pipensx/installed/launch_game"),
+                                [&pendingArchiveRestore, targetTitleId] {
+                                    pendingArchiveRestore.launchDialogOpen = false;
+                                    pendingArchiveRestore.titleId.clear();
+                                    pendingArchiveRestore.taskId.clear();
+                                    uint64_t appId = 0;
+                                    if (InstalledTitleService::parseTitleId(
+                                            targetTitleId, appId)) {
+                                        const Result rc =
+                                            appletRequestLaunchApplication(
+                                                appId, nullptr);
+                                        if (R_FAILED(rc)) {
+                                            brls::Application::notify(tr(
+                                                "pipensx/installed/launch_failed"));
+                                        }
+                                    }
+                                });
+                            dialog->addButton(
+                                tr("pipensx/installed/stay_in_app"),
+                                [&pendingArchiveRestore] {
+                                    pendingArchiveRestore.launchDialogOpen = false;
+                                    pendingArchiveRestore.titleId.clear();
+                                    pendingArchiveRestore.taskId.clear();
+                                });
+                            dialog->open();
+                        });
+                    });
+                }
+            }
+
             if (queueSleepRequested) {
                 queueSleepRequested = false;
                 // Recheck after UI callbacks: a new task may have been added.
                 if (settings.get().sleepAfterDownloads &&
+                    !pendingArchiveRestore.launchDialogOpen &&
                     !manager.hasActiveTransfer() && !deploy.snapshot().active() &&
                     !webServer.benchmarkActive()) {
                     performance.setActive(false);
@@ -1822,6 +2036,10 @@ int main(int argc, char** argv) {
             if (firstFrame) {
                 startupStage("main loop running");
                 deploy.scheduleDeployOfferPoll();
+                if (!startupRestoreTitleId.empty() && !updatePendingFinish &&
+                    settings.get().firstRunCompleted) {
+                    startUiArchiveRestore(startupRestoreTitleId);
+                }
                 if (updatePendingConfirmation) {
                     std::string error;
                     if (!launchUpdater.confirmInstalled(error))
@@ -1838,6 +2056,8 @@ int main(int argc, char** argv) {
         }
 
         startupStage("manager shutdown");
+        uiAlive.store(false);
+        joinArchiveWorker();
         if (initialDataLoader.thread.joinable())
             initialDataLoader.thread.join();
         // Stop the watchdog first: nothing below pumps the heartbeat, and a

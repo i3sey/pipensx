@@ -344,7 +344,18 @@
     "web.catalogUpload": "Upload catalog",
     "web.catalogDone": "Catalog updated.",
     "web.phoneUpdate": "Download latest pipensx through this device",
-    "web.phoneFailed": "Download failed. Check your VPN. If the source blocks browser access (CORS), download the file separately and upload it here."
+    "web.phoneFailed": "Download failed. Check your VPN. If the source blocks browser access (CORS), download the file separately and upload it here.",
+    "library.filterArchived": "Archived",
+    "library.archived": "Archived",
+    "library.archivedStatus": "Archived shortcut (saves kept)",
+    "library.freedSize": "Freed ~{0}",
+    "library.archive": "Archive",
+    "library.archiveAsk": "Archive {0}? Installed: {1}, estimated space freed: ~{2}. Game content is replaced with a restore shortcut while saves remain untouched.",
+    "library.archiveNoSource": "No catalog/task source",
+    "library.restore": "Restore",
+    "library.restoreQueued": "Restore queued. Follow progress in Downloads.",
+    "library.removeShortcut": "Remove shortcut",
+    "library.removeShortcutAsk": "Remove the archived shortcut for {0} ({1})? Save data stays untouched."
   },
   "ru": {
     "control.pin": "Доступ к панели",
@@ -691,7 +702,18 @@
     "web.catalogUpload": "Загрузить каталог",
     "web.catalogDone": "Каталог обновлён.",
     "web.phoneUpdate": "Скачать последнюю версию pipensx через это устройство",
-    "web.phoneFailed": "Не удалось скачать. Проверьте VPN. Если источник блокирует доступ из браузера (CORS), скачайте файл отдельно и загрузите его здесь."
+    "web.phoneFailed": "Не удалось скачать. Проверьте VPN. Если источник блокирует доступ из браузера (CORS), скачайте файл отдельно и загрузите его здесь.",
+    "library.filterArchived": "В архиве",
+    "library.archived": "В архиве",
+    "library.archivedStatus": "Архивный ярлык (сохранения на месте)",
+    "library.freedSize": "Освободится ~{0}",
+    "library.archive": "Архивировать",
+    "library.archiveAsk": "Архивировать {0}? Занято: {1}, освободится: ~{2}. Контент будет удалён и заменён ярлыком, сохранения останутся.",
+    "library.archiveNoSource": "Нет источника в каталоге",
+    "library.restore": "Восстановить",
+    "library.restoreQueued": "Восстановление поставлено в очередь. Следите в Загрузках.",
+    "library.removeShortcut": "Удалить ярлык",
+    "library.removeShortcutAsk": "Удалить архивный ярлык {0} ({1})? Сохранения останутся нетронутыми."
   },
   "pt-BR": {
     "control.continue": "Continuar",
@@ -1038,7 +1060,18 @@
     "web.catalogUpload": "Enviar catálogo",
     "web.catalogDone": "Catálogo atualizado.",
     "web.phoneUpdate": "Baixar a versão mais recente do pipensx por este dispositivo",
-    "web.phoneFailed": "Falha no download. Verifique o VPN. Se a fonte bloquear o navegador (CORS), baixe o arquivo separadamente e envie aqui."
+    "web.phoneFailed": "Falha no download. Verifique o VPN. Se a fonte bloquear o navegador (CORS), baixe o arquivo separadamente e envie aqui.",
+    "library.filterArchived": "Arquivados",
+    "library.archived": "Arquivado",
+    "library.archivedStatus": "Atalho arquivado (dados mantidos)",
+    "library.freedSize": "Libera ~{0}",
+    "library.archive": "Arquivar",
+    "library.archiveAsk": "Arquivar {0}? Instalado: {1}, espaço liberado estimado: ~{2}. Os arquivos serão substituídos por um atalho, mantendo os dados salvos.",
+    "library.archiveNoSource": "Sem fonte no catálogo",
+    "library.restore": "Restaurar",
+    "library.restoreQueued": "Restauração na fila. Acompanhe em Downloads.",
+    "library.removeShortcut": "Remover atalho",
+    "library.removeShortcutAsk": "Remover o atalho arquivado de {0} ({1})? Os dados salvos continuam intactos."
   },
   "fr": {
     "control.continue": "Continuer",
@@ -1385,7 +1418,18 @@
     "web.catalogUpload": "Envoyer le catalogue",
     "web.catalogDone": "Catalogue mis à jour.",
     "web.phoneUpdate": "Télécharger la dernière version de pipensx via cet appareil",
-    "web.phoneFailed": "Échec du téléchargement. Vérifiez le VPN. Si la source bloque l’accès du navigateur (CORS), téléchargez le fichier séparément puis envoyez-le ici."
+    "web.phoneFailed": "Échec du téléchargement. Vérifiez le VPN. Si la source bloque l’accès du navigateur (CORS), téléchargez le fichier séparément puis envoyez-le ici.",
+    "library.filterArchived": "Archivés",
+    "library.archived": "Archivé",
+    "library.archivedStatus": "Raccourci archivé (sauvegardes conservées)",
+    "library.freedSize": "Libère ~{0}",
+    "library.archive": "Archiver",
+    "library.archiveAsk": "Archiver {0} ? Installé : {1}, espace libéré estimé : ~{2}. Le jeu est remplacé par un raccourci tout en gardant les sauvegardes.",
+    "library.archiveNoSource": "Aucune source catalogue",
+    "library.restore": "Restaurer",
+    "library.restoreQueued": "Restauration ajoutée. Suivez dans Téléchargements.",
+    "library.removeShortcut": "Supprimer raccourci",
+    "library.removeShortcutAsk": "Supprimer le raccourci archivé de {0} ({1}) ? Les sauvegardes restent intactes."
   },
   "es": {
     "control.continue": "Continuar",
@@ -1732,7 +1776,18 @@
     "web.catalogUpload": "Upload catalog",
     "web.catalogDone": "Catalog updated.",
     "web.phoneUpdate": "Download latest pipensx through this device",
-    "web.phoneFailed": "Download failed. Check your VPN. If the source blocks browser access (CORS), download the file separately and upload it here."
+    "web.phoneFailed": "Download failed. Check your VPN. If the source blocks browser access (CORS), download the file separately and upload it here.",
+    "library.filterArchived": "Archivados",
+    "library.archived": "Archivado",
+    "library.archivedStatus": "Acceso archivado (partidas conservadas)",
+    "library.freedSize": "Libera ~{0}",
+    "library.archive": "Archivar",
+    "library.archiveAsk": "¿Archivar {0}? Instalado: {1}, espacio liberado estimado: ~{2}. El contenido se reemplaza por un acceso conservando las partidas.",
+    "library.archiveNoSource": "Sin fuente en catálogo",
+    "library.restore": "Restaurar",
+    "library.restoreQueued": "Restauración en cola. Sigue el progreso en Descargas.",
+    "library.removeShortcut": "Eliminar acceso",
+    "library.removeShortcutAsk": "¿Eliminar el acceso archivado de {0} ({1})? Las partidas guardadas no se borran."
   },
   "it": {
     "control.continue": "Continua",
@@ -2079,7 +2134,18 @@
     "web.catalogUpload": "Upload catalog",
     "web.catalogDone": "Catalog updated.",
     "web.phoneUpdate": "Download latest pipensx through this device",
-    "web.phoneFailed": "Download failed. Check your VPN. If the source blocks browser access (CORS), download the file separately and upload it here."
+    "web.phoneFailed": "Download failed. Check your VPN. If the source blocks browser access (CORS), download the file separately and upload it here.",
+    "library.filterArchived": "Archiviati",
+    "library.archived": "Archiviato",
+    "library.archivedStatus": "Scorciatoia archiviata (salvataggi intatti)",
+    "library.freedSize": "Libera ~{0}",
+    "library.archive": "Archivia",
+    "library.archiveAsk": "Archiviare {0}? Installato: {1}, spazio liberato stimato: ~{2}. Il contenuto viene sostituito con una scorciatoia mantenendo i salvataggi.",
+    "library.archiveNoSource": "Nessuna fonte catalogo",
+    "library.restore": "Ripristina",
+    "library.restoreQueued": "Ripristino in coda. Segui in Download.",
+    "library.removeShortcut": "Rimuovi scorciatoia",
+    "library.removeShortcutAsk": "Rimuovere la scorciatoia archiviata per {0} ({1})? I salvataggi restano intatti."
   },
   "zh-CN": {
     "control.continue": "继续",
@@ -2426,7 +2492,18 @@
     "web.catalogUpload": "Upload catalog",
     "web.catalogDone": "Catalog updated.",
     "web.phoneUpdate": "Download latest pipensx through this device",
-    "web.phoneFailed": "Download failed. Check your VPN. If the source blocks browser access (CORS), download the file separately and upload it here."
+    "web.phoneFailed": "Download failed. Check your VPN. If the source blocks browser access (CORS), download the file separately and upload it here.",
+    "library.filterArchived": "已归档",
+    "library.archived": "已归档",
+    "library.archivedStatus": "归档快捷方式（已保留存档）",
+    "library.freedSize": "可释放 ~{0}",
+    "library.archive": "归档",
+    "library.archiveAsk": "要归档 {0} 吗？当前占用：{1}，预计释放：~{2}。游戏数据将替换为恢复快捷方式，存档保持不变。",
+    "library.archiveNoSource": "无目录来源",
+    "library.restore": "恢复",
+    "library.restoreQueued": "恢复任务已加入队列，请在下载页查看。",
+    "library.removeShortcut": "删除快捷方式",
+    "library.removeShortcutAsk": "删除 {0} ({1}) 的归档快捷方式？存档数据不会受到影响。"
   },
   "ko": {
     "control.continue": "계속",
@@ -2773,6 +2850,17 @@
     "web.catalogUpload": "Upload catalog",
     "web.catalogDone": "Catalog updated.",
     "web.phoneUpdate": "Download latest pipensx through this device",
-    "web.phoneFailed": "Download failed. Check your VPN. If the source blocks browser access (CORS), download the file separately and upload it here."
+    "web.phoneFailed": "Download failed. Check your VPN. If the source blocks browser access (CORS), download the file separately and upload it here.",
+    "library.filterArchived": "보관됨",
+    "library.archived": "보관됨",
+    "library.archivedStatus": "보관 바로가기(저장 데이터 유지)",
+    "library.freedSize": "약 {0} 확보",
+    "library.archive": "보관",
+    "library.archiveAsk": "{0}을(를) 보관할까요? 설치됨: {1}, 예상 확보: ~{2}. 게임 파일이 바로가기로 대체되며 저장 데이터는 유지됩니다.",
+    "library.archiveNoSource": "카탈로그 소스 없음",
+    "library.restore": "복원",
+    "library.restoreQueued": "복원 작업이 대기열에 추가되었습니다.",
+    "library.removeShortcut": "바로가기 제거",
+    "library.removeShortcutAsk": "{0}({1})의 보관 바로가기를 제거할까요? 저장 데이터는 유지됩니다."
   }
 }

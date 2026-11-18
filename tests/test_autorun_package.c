@@ -50,27 +50,37 @@ static const u8 *section_pfs(const u8 *nca, int section)
         h->fs_header[section].hash_data.hierarchical_sha256_data.pfs0_layer.offset;
 }
 
-static void check_launch(const u8 *program, const char *nro, const char *args)
+static const u8 *romfs_file_data(const u8 *nca, int section, const char *filename, size_t *size)
 {
-    const struct nca_header *h = (const void *)program;
-    assert(h->fs_header[1].fs_type == NCA_FS_ROMFS);
-    const u8 *base = program + h->fs_table[1].media_start_offset * 0x200ull +
-        h->fs_header[1].hash_data.integrity_meta_info.info_level_hash.levels[5].logical_offset;
+    const struct nca_header *h = (const void *)nca;
+    assert(h->fs_header[section].fs_type == NCA_FS_ROMFS);
+    const u8 *base = nca + h->fs_table[section].media_start_offset * 0x200ull +
+        h->fs_header[section].hash_data.integrity_meta_info.info_level_hash.levels[5].logical_offset;
     const romfs_header *romfs = (const void *)base;
     const romfs_dir *root = (const void *)(base + romfs->dirTableOff);
-    int found = 0;
+    const size_t want_len = strlen(filename);
     for (u32 off = root->childFile; off != UINT32_MAX;) {
         const u8 *at = base + romfs->fileTableOff + off;
         romfs_file file;
         memcpy(&file, at, sizeof(file));
         const char *name = (const char *)(at + sizeof(file));
-        const char *expected = file.nameLen == 11 && !memcmp(name, "nextNroPath", 11) ? nro : args;
-        assert(file.dataSize == strlen(expected));
-        assert(!memcmp(base + romfs->fileDataOff + file.dataOff, expected, file.dataSize));
-        ++found;
+        if (file.nameLen == want_len && !memcmp(name, filename, want_len)) {
+            *size = (size_t)file.dataSize;
+            return base + romfs->fileDataOff + file.dataOff;
+        }
         off = file.sibling;
     }
-    assert(found == 2);
+    assert(!"missing RomFS member");
+    return NULL;
+}
+
+static void check_launch(const u8 *program, const char *nro, const char *args)
+{
+    size_t size = 0;
+    const u8 *got_nro = romfs_file_data(program, 1, "nextNroPath", &size);
+    assert(size == strlen(nro) && !memcmp(got_nro, nro, size));
+    const u8 *got_args = romfs_file_data(program, 1, "nextArgv", &size);
+    assert(size == strlen(args) && !memcmp(got_args, args, size));
 }
 
 int main(void)
@@ -138,6 +148,39 @@ int main(void)
         }
     }
     free(package);
+    crypto_result = 0;
+    const char *arch_nro = "sdmc:/switch/pipensx/pipensx.nro";
+    const char *arch_args = "--restore-archive 0100BEEFAA6E0000";
+    assert(!pipensxBuildArchiveForwarder(tid, "FTL", "Subset Games", "1.6.14",
+        arch_nro, arch_args, main, sizeof(main), npdm, sizeof(npdm), icon, sizeof(icon),
+        &package, &size));
+    const struct pfs0_header *apfs = package;
+    assert(apfs->total_files == 3);
+    const struct pfs0_entry *aentries = (const void *)(apfs + 1);
+    const char *anames = (const void *)(aentries + 3);
+    const u8 *adata = (const void *)(anames + apfs->string_table_size);
+    check_launch(adata + aentries[0].data_offset, arch_nro, arch_args);
+    size_t nacp_size = 0;
+    const u8 *nacp_bytes = romfs_file_data(adata + aentries[1].data_offset, 0, "control.nacp", &nacp_size);
+    assert(nacp_size == sizeof(NacpStruct));
+    NacpStruct arch_nacp;
+    memcpy(&arch_nacp, nacp_bytes, sizeof(arch_nacp));
+    const NacpLanguageEntry *arch_titles = (const NacpLanguageEntry *)&arch_nacp;
+    assert(strcmp(arch_titles[0].name, "FTL") == 0);
+    assert(strcmp(arch_titles[0].author, "Subset Games") == 0);
+    assert(strcmp(arch_nacp.display_version, "1.6.14") == 0);
+    assert(!memcmp(&arch_nacp.application_error_code_category, "pnxarch", 7));
+    assert(arch_nacp.user_account_save_data_size == 0);
+    assert(arch_nacp.device_save_data_size == 0);
+    size_t icon_len = 0;
+    const u8 *got_icon = romfs_file_data(adata + aentries[1].data_offset, 0, "icon_AmericanEnglish.dat", &icon_len);
+    assert(icon_len == sizeof(icon) && !memcmp(got_icon, icon, sizeof(icon)));
+    free(package);
+    assert(pipensxBuildArchiveForwarder(tid, "FTL", "Subset Games", "1.6.14",
+        arch_nro, arch_args, main, sizeof(main), npdm, sizeof(npdm), NULL, 0,
+        &package, &size) != 0);
+    assert(!package && !size);
+
     crypto_result = 0x1234;
     assert(pipensxBuildForwarder(tid, "FTL", nro, args, main, sizeof(main),
         npdm, sizeof(npdm), icon, sizeof(icon), &package, &size) == 0x1234);

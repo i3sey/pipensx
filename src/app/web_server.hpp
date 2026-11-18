@@ -12,6 +12,7 @@
 #include <thread>
 
 #include "app_settings.hpp"
+#include "archive_service.hpp"
 #include "catalog_service.hpp"
 #include "download_manager.hpp"
 #include "http_server.hpp"
@@ -84,7 +85,10 @@ public:
     using LibraryAction = std::function<bool(const std::string& action,
                                              const std::string& titleId,
                                              std::string& error)>;
+    using LibraryRestoreHandler = std::function<bool(
+        const std::string& titleId, RestoreStartResult& out, std::string& error)>;
     void setLibraryHandlers(LibraryGetter getter, LibraryAction action);
+    void setLibraryRestoreHandler(LibraryRestoreHandler handler);
     using CatalogUploader = std::function<bool(const std::string&, std::string&)>;
     void setCatalogUploader(CatalogUploader uploader);
     using PortHandler = std::function<bool(const std::string& action,
@@ -163,6 +167,7 @@ private:
     UpdateApplier updateApplier_;
     LibraryGetter libraryGetter_;
     LibraryAction libraryAction_;
+    LibraryRestoreHandler libraryRestoreHandler_;
     PortHandler portHandler_;
     FavoritesHandler favoritesHandler_;
     MaintenanceHandler maintenanceHandler_;

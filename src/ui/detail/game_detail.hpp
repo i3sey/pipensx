@@ -984,15 +984,22 @@ private:
                 secondary_->setState(brls::ButtonState::ENABLED);
                 return;
             }
-            setTextIfChanged(primary_, tr(installed_ && installed_->contains(titleId_)
-                ? "pipensx/detail/install_extras" : "pipensx/common/install"));
+            const bool isArchived = installed_ && installed_->isArchived(titleId_);
+            const bool isInstalled = installed_ && installed_->contains(titleId_);
+            setTextIfChanged(primary_, tr(isArchived
+                ? "pipensx/installed/restore_action"
+                : (isInstalled ? "pipensx/detail/install_extras"
+                               : "pipensx/common/install")));
             primary_->setProgress(-1.0f);
             primary_->setState(brls::ButtonState::ENABLED);
             setTextIfChanged(secondary_, tr("pipensx/torrent/frame_title"));
             secondary_->setState(brls::ButtonState::ENABLED);
             if (!operationMessage_.empty())
                 setTextIfChanged(statusLabel_, operationMessage_);
-            else if (installed_ && installed_->contains(titleId_)) {
+            else if (isArchived)
+                setTextIfChanged(statusLabel_,
+                                 tr("pipensx/installed/archived_detail_hint"));
+            else if (isInstalled) {
                 // B6: an installed title with LayeredFS mods keeps a
                 // standing warning — the update may have been what broke
                 // the launch, and the fix is the mods folder, not a

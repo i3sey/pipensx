@@ -725,9 +725,11 @@ static void nacp_defaults( NacpStruct *nacp )
 /* What makes a NACP this forwarder's, applied to the NRO's own: the fields
  * sphaira's patch_nacp sets, and no others -- the rest are nacptool's, which
  * is what the forwarders that work on a console carry. */
-static void nacp_build( NacpStruct *nacp, const char *name, const char *author, u64 tid )
+static void nacp_build( NacpStruct *nacp, const char *name, const char *author,
+    const char *display_version, const char *error_category, u64 tid )
 {
     unsigned int i;
+    size_t cat_len;
 
     /* The sixteen names and authors are the first thing in a NACP, whatever
      * libnx has called the field around them from one version to the next. */
@@ -738,6 +740,8 @@ static void nacp_build( NacpStruct *nacp, const char *name, const char *author, 
         snprintf( titles[i].name, sizeof(titles[i].name), "%s", name );
         snprintf( titles[i].author, sizeof(titles[i].author), "%s", author );
     }
+    if (display_version && *display_version)
+        snprintf( nacp->display_version, sizeof(nacp->display_version), "%s", display_version );
     /* The one field changed that sphaira leaves alone. The home menu takes the
      * console's own language when the NACP says it is supported, and then asks
      * for that language's icon. nacptool leaves Portuguese out, so a console
@@ -756,7 +760,10 @@ static void nacp_build( NacpStruct *nacp, const char *name, const char *author, 
     nacp->data_loss_confirmation = 0;
     nacp->required_network_service_license_on_launch = 0;
     nacp->application_error_code_category = 0;
-    memcpy( &nacp->application_error_code_category, "autorun", 7 );
+    cat_len = strlen( error_category );
+    if (cat_len > sizeof(nacp->application_error_code_category))
+        cat_len = sizeof(nacp->application_error_code_category);
+    memcpy( &nacp->application_error_code_category, error_category, cat_len );
     nacp->presence_group_id = tid;
     nacp->save_data_owner_id = tid;
     nacp->pseudo_device_id_seed = tid;
@@ -777,8 +784,9 @@ static void nacp_build( NacpStruct *nacp, const char *name, const char *author, 
 }
 
 
-uint32_t pipensxBuildForwarder(uint64_t tid, const char *name, const char *nro,
-    const char *args, const void *main_input, size_t main_size,
+uint32_t pipensxBuildForwarderEx(uint64_t tid, const char *name,
+    const char *author, const char *display_version, const char *error_category,
+    const char *nro, const char *args, const void *main_input, size_t main_size,
     const void *npdm_input, size_t npdm_size, const void *icon, size_t icon_size,
     void **output, size_t *output_size)
 {
@@ -795,11 +803,17 @@ uint32_t pipensxBuildForwarder(uint64_t tid, const char *name, const char *nro,
     u8 header_kek[0x20], header_key[0x20];
     const NcmContentType types[2] = { NcmContentType_Program, NcmContentType_Control };
     const NcmStorageId storage_id = NcmStorageId_SdCard;
+    const char *eff_author = (author && *author) ? author : "AutoRun / pipensx";
+    const char *eff_version = (display_version && *display_version) ? display_version : "1.0.0";
+    const char *eff_category = (error_category && *error_category) ? error_category : "autorun";
     Result rc = 0;
     int i;
+    if (!output || !output_size)
+        return MAKERESULT(Module_Libnx, LibnxError_BadInput);
     *output = NULL;
     *output_size = 0;
-    if (!main_input || !main_size || !npdm_input || !npdm_size || !icon || !icon_size)
+    if (!name || !*name || !nro || !*nro || !args ||
+        !main_input || !main_size || !npdm_input || !npdm_size || !icon || !icon_size)
         return MAKERESULT(Module_Libnx, LibnxError_BadInput);
     if (R_FAILED(rc = splCryptoInitialize())) return rc;
     if (R_SUCCEEDED(rc = splCryptoGenerateAesKek(HEADER_KEK_SRC, 0, 0, header_kek)) &&
@@ -829,7 +843,7 @@ uint32_t pipensxBuildForwarder(uint64_t tid, const char *name, const char *nro,
 
     /* A fresh NACP: no save ownership or account requirements from the game. */
     nacp_defaults( nacp );
-    nacp_build( nacp, name, "AutoRun / pipensx", tid );
+    nacp_build( nacp, name, eff_author, eff_version, eff_category, tid );
     romfs[0] = (struct file_entry){ "/control.nacp", nacp, sizeof(*nacp) };
     romfs[1] = (struct file_entry){ "/icon_AmericanEnglish.dat", icon, icon_size };
     memset( header, 0, sizeof(*header) );
@@ -899,4 +913,26 @@ done:
     memset(header_key, 0, sizeof(header_key));
     memset(header_kek, 0, sizeof(header_kek));
     return rc;
+}
+
+uint32_t pipensxBuildForwarder(uint64_t tid, const char *name, const char *nro,
+    const char *args, const void *main_input, size_t main_size,
+    const void *npdm_input, size_t npdm_size, const void *icon, size_t icon_size,
+    void **output, size_t *output_size)
+{
+    return pipensxBuildForwarderEx(tid, name, "AutoRun / pipensx", "1.0.0", "autorun",
+        nro, args, main_input, main_size, npdm_input, npdm_size,
+        icon, icon_size, output, output_size);
+}
+
+uint32_t pipensxBuildArchiveForwarder(uint64_t tid, const char *name,
+    const char *author, const char *display_version,
+    const char *nro, const char *args, const void *main_input, size_t main_size,
+    const void *npdm_input, size_t npdm_size, const void *icon, size_t icon_size,
+    void **output, size_t *output_size)
+{
+    const char *eff_author = (author && *author) ? author : "pipensx Archive";
+    return pipensxBuildForwarderEx(tid, name, eff_author, display_version, "pnxarch",
+        nro, args, main_input, main_size, npdm_input, npdm_size,
+        icon, icon_size, output, output_size);
 }

@@ -12,6 +12,7 @@
 #include "ui/common/smooth_recycler.hpp"
 
 #include "app/app_settings.hpp"
+#include "app/archive_service.hpp"
 #include "app/catalog_batch_installer.hpp"
 #include "app/catalog_service.hpp"
 #include "app/download_manager.hpp"
@@ -27,6 +28,10 @@
 #include "ui/detail/game_detail.hpp"
 #include "ui/i18n.hpp"
 #include "ui/theme.hpp"
+
+extern "C" {
+#include "core/util.h"
+}
 
 namespace pipensx::ui {
 
@@ -137,7 +142,16 @@ public:
         currentFoundVersion_ = result ? result->foundVersion : std::string();
         updateSubtitle();
         const bool available =
-            !ignored && state == GameUpdateState::UpdateAvailable;
+            !storedTitle_.isArchived && !ignored &&
+            state == GameUpdateState::UpdateAvailable;
+        if (storedTitle_.isArchived) {
+            updateActionHint(brls::BUTTON_A, tr("pipensx/installed/restore_action"));
+            mark_->setVisibility(brls::Visibility::GONE);
+            chip_->setText(tr("pipensx/installed/archived_chip"));
+            chip_->setTextColor(theme::textSecondary());
+            chip_->setVisibility(brls::Visibility::VISIBLE);
+            return;
+        }
         updateActionHint(brls::BUTTON_A,
                          available ? tr("pipensx/installed/update_action")
                                    : tr("pipensx/installed/actions"));
@@ -190,7 +204,9 @@ private:
             subtitle = publisher_ + " · ";
         const std::string installedVersion =
             formatInstalledVersionLabel(version_, displayVersion_);
-        if (!installedVersion.empty()) {
+        if (storedTitle_.isArchived) {
+            subtitle += tr("pipensx/installed/archived_chip");
+        } else if (!installedVersion.empty()) {
             subtitle += installedVersion;
             if (!ignored_ &&
                 currentState_ == GameUpdateState::UpdateAvailable &&
@@ -377,17 +393,22 @@ inline void setAncestorActionHidden(brls::View* start,
 
 class InstalledView : public brls::Box {
 public:
+    using RestoreStartedCallback = std::function<void(const std::string& titleId)>;
+
     InstalledView(InstalledTitleService* installed, DownloadManager* manager,
                   GameMetadataService* metadata, AppSettings* settings,
                   CatalogService* catalog, GameUpdateService* updates,
                   bool checkOnEntry = true,
                   FavoritesService* favorites = nullptr,
                   SwitchDeployService* deploy = nullptr,
-                  PortUninstallService* portUninstall = nullptr)
+                  PortUninstallService* portUninstall = nullptr,
+                  ArchiveService* archive = nullptr,
+                  RestoreStartedCallback onRestoreStarted = {})
         : brls::Box(brls::Axis::COLUMN), installed_(installed),
           manager_(manager), metadata_(metadata), settings_(settings),
           catalog_(catalog), updates_(updates), favorites_(favorites),
-          deploy_(deploy), portUninstall_(portUninstall),
+          deploy_(deploy), portUninstall_(portUninstall), archive_(archive),
+          onRestoreStarted_(std::move(onRestoreStarted)),
           checkOnEntry_(checkOnEntry),
           alive_(std::make_shared<std::atomic<bool>>(true)) {
         auto* toolbar = new brls::Box(brls::Axis::ROW);
@@ -442,6 +463,10 @@ public:
         dataSource_->setResults(&updates_->results());
         dataSource_->setUpdates(updates_);
         dataSource_->setPrimaryAction([this](InstalledTitle title) {
+            if (title.isArchived) {
+                startRestore(title);
+                return;
+            }
             const bool ignored = updates_->isIgnored(title.titleId);
             auto it = updates_->results().find(title.titleId);
             if (!ignored && it != updates_->results().end() &&
@@ -517,34 +542,57 @@ private:
             labels.push_back(label);
             actions->push_back(std::move(action));
         };
-        const bool ignored = updates_->isIgnored(title.titleId);
-        auto result = updates_->results().find(title.titleId);
-        if (!ignored && result != updates_->results().end() &&
-            result->second.state == GameUpdateState::UpdateAvailable) {
-            add(tr("pipensx/installed/update_action"),
-                [this, title, version = result->second.foundVersion] {
-                    installUpdate(title.titleId, version);
+        if (title.isArchived) {
+            add(tr("pipensx/installed/restore_action"), [this, title] {
+                startRestore(title);
+            });
+            add(tr("pipensx/installed/open_in_catalog"), [this, title] {
+                openInCatalog(title.titleId, {}, title.name);
+            });
+            add(tr("pipensx/installed/remove_stub_action"), [this, title] {
+                confirmRemoveArchivedStub(title);
+            });
+        } else {
+            const bool ignored = updates_->isIgnored(title.titleId);
+            auto result = updates_->results().find(title.titleId);
+            if (!ignored && result != updates_->results().end() &&
+                result->second.state == GameUpdateState::UpdateAvailable) {
+                add(tr("pipensx/installed/update_action"),
+                    [this, title, version = result->second.foundVersion] {
+                        installUpdate(title.titleId, version);
+                    });
+            }
+            add(tr("pipensx/installed/open_in_catalog"), [this, title] {
+                openInCatalog(title.titleId, title.version, title.name);
+            });
+            if (title.hasLayeredFsMods) {
+                add(tr("pipensx/installed/mods_info_action"), [] {
+                    auto* dialog = new brls::Dialog(
+                        tr("pipensx/installed/mods_info"));
+                    dialog->addButton(tr("pipensx/common/ok"), [] {});
+                    dialog->open();
                 });
-        }
-        add(tr("pipensx/installed/open_in_catalog"), [this, title] {
-            openInCatalog(title.titleId, title.version, title.name);
-        });
-        if (title.hasLayeredFsMods) {
-            add(tr("pipensx/installed/mods_info_action"), [] {
-                auto* dialog = new brls::Dialog(
-                    tr("pipensx/installed/mods_info"));
-                dialog->addButton(tr("pipensx/common/ok"), [] {});
-                dialog->open();
+            }
+            add(tr(ignored ? "pipensx/installed/unignore_updates"
+                           : "pipensx/installed/ignore_updates"), [this, title] {
+                selectedTitle_ = title;
+                toggleIgnoreSelectedTitle();
+            });
+            if (archive_) {
+                const ArchiveInspection insp =
+                    archive_->inspectArchive(title.titleId);
+                add(tr("pipensx/installed/archive_action"), [this, title, insp] {
+                    if (insp.canArchive) {
+                        confirmArchive(title, insp);
+                    } else {
+                        showArchiveUnavailable(title, insp);
+                    }
+                });
+            }
+            add(tr("pipensx/installed/uninstall_action"), [this, title] {
+                confirmUninstall(title);
             });
         }
-        add(tr(ignored ? "pipensx/installed/unignore_updates"
-                       : "pipensx/installed/ignore_updates"), [this, title] {
-            selectedTitle_ = title;
-            toggleIgnoreSelectedTitle();
-        });
-        add(tr("pipensx/installed/uninstall_action"), [this, title] {
-            confirmUninstall(title);
-        });
         auto alive = alive_;
         auto* menu = new brls::Dropdown(title.name, labels,
             [actions, alive](int index) {
@@ -1106,6 +1154,129 @@ private:
         });
     }
 
+    void startRestore(const InstalledTitle& title) {
+        if (refreshing_ || uninstallInFlight_ || archiveInFlight_) {
+            brls::Application::notify(tr("pipensx/installed/busy"));
+            return;
+        }
+        if (onRestoreStarted_) {
+            onRestoreStarted_(title.titleId);
+            return;
+        }
+        openInCatalog(title.titleId, {}, title.name);
+    }
+
+    void showArchiveUnavailable(const InstalledTitle& title,
+                                const ArchiveInspection& insp) {
+        std::string message;
+        if (insp.blockReason == ArchiveBlockReason::HomebrewOrForwarder)
+            message = tr("pipensx/installed/archive_port_blocked_body", title.name);
+        else if (insp.blockReason == ArchiveBlockReason::ActiveInstallBusy)
+            message = tr("pipensx/installed/busy");
+        else
+            message = tr("pipensx/installed/archive_no_source_body", title.name);
+        auto* dialog = new brls::Dialog(message);
+        dialog->addButton(tr("pipensx/common/ok"), [] {});
+        dialog->open();
+    }
+
+    void confirmArchive(InstalledTitle title, const ArchiveInspection& insp) {
+        if (refreshing_ || uninstallInFlight_ || archiveInFlight_)
+            return;
+        if (hasActiveStreamInstall()) {
+            brls::Application::notify(tr("pipensx/installed/busy"));
+            return;
+        }
+        char totalBuf[32] {};
+        char freedBuf[32] {};
+        fmt_bytes(totalBuf, sizeof(totalBuf), insp.installedBytes);
+        fmt_bytes(freedBuf, sizeof(freedBuf), insp.estimatedFreedBytes);
+        auto* dialog = new brls::Dialog(tr(
+            "pipensx/installed/archive_confirm_body",
+            title.name, std::string(totalBuf), std::string(freedBuf)));
+        dialog->addButton(tr("pipensx/installed/archive_action"),
+                          [this, title = std::move(title)] {
+            beginArchive(title);
+        });
+        dialog->addButton(tr("pipensx/common/cancel"), [] {});
+        dialog->open();
+    }
+
+    void beginArchive(const InstalledTitle& title) {
+        if (!archive_ || archiveInFlight_)
+            return;
+        archiveInFlight_ = true;
+        status_->setText(tr("pipensx/installed/archiving", title.name));
+        auto alive = alive_;
+        ArchiveService* archive = archive_;
+        const std::string titleId = title.titleId;
+        const std::string name = title.name;
+        brls::async([this, alive, archive, titleId, name] {
+            ArchiveActionResult res;
+            std::string error;
+            const bool ok = archive->archiveTitle(titleId, res, error);
+            brls::sync([this, alive, ok, res, error, name] {
+                if (!alive->load())
+                    return;
+                archiveInFlight_ = false;
+                if (!ok) {
+                    status_->setText(error);
+                    brls::Application::notify(error);
+                    return;
+                }
+                char freedBuf[32] {};
+                fmt_bytes(freedBuf, sizeof(freedBuf), res.freedBytes);
+                brls::Application::notify(tr(
+                    "pipensx/installed/archive_done", name, std::string(freedBuf)));
+                checkAllTitles();
+            });
+        });
+    }
+
+    void confirmRemoveArchivedStub(InstalledTitle title) {
+        if (refreshing_ || uninstallInFlight_ || archiveInFlight_)
+            return;
+        if (hasActiveStreamInstall()) {
+            brls::Application::notify(tr("pipensx/installed/busy"));
+            return;
+        }
+        auto* dialog = new brls::Dialog(
+            tr("pipensx/installed/remove_stub_confirm", title.name));
+        dialog->addButton(tr("pipensx/installed/remove_stub_action"),
+                          [this, title = std::move(title)] {
+            beginRemoveArchivedStub(title);
+        });
+        dialog->addButton(tr("pipensx/common/cancel"), [] {});
+        dialog->open();
+    }
+
+    void beginRemoveArchivedStub(const InstalledTitle& title) {
+        if (!archive_ || uninstallInFlight_)
+            return;
+        uninstallInFlight_ = true;
+        status_->setText(tr("pipensx/installed/removing_stub", title.name));
+        auto alive = alive_;
+        ArchiveService* archive = archive_;
+        const std::string titleId = title.titleId;
+        brls::async([this, alive, archive, titleId] {
+            std::string error;
+            const bool ok = archive->removeArchivedStub(titleId, error);
+            brls::sync([this, alive, ok, error] {
+                if (!alive->load())
+                    return;
+                uninstallInFlight_ = false;
+                if (!ok) {
+                    status_->setText(error);
+                    brls::Application::notify(error);
+                    return;
+                }
+                brls::Application::notify(
+                    tr("pipensx/installed/remove_stub_done"));
+                checkAllTitles();
+            });
+        });
+    }
+
     void beginUninstall(const InstalledTitle& title) {
         if (uninstallInFlight_)
             return;
@@ -1283,6 +1454,8 @@ private:
     FavoritesService* favorites_ = nullptr;
     SwitchDeployService* deploy_ = nullptr;
     PortUninstallService* portUninstall_ = nullptr;
+    ArchiveService* archive_ = nullptr;
+    RestoreStartedCallback onRestoreStarted_;
     bool checkOnEntry_ = true;
     std::function<void(size_t)> onUpdateCount_;
     brls::Button* updatesButton_ = nullptr;
@@ -1295,6 +1468,7 @@ private:
     std::shared_ptr<std::atomic<bool>> alive_;
     bool refreshing_ = false;
     bool uninstallInFlight_ = false;
+    bool archiveInFlight_ = false;
     bool updateAllInFlight_ = false;
     bool pendingReload_ = false;
     std::string pendingFocusedTitleId_;

@@ -240,6 +240,124 @@ uint64_t baseApplicationId(uint64_t id, NcmContentMetaType type) {
     return id;
 }
 
+std::string resultError(const char* message, Result rc) {
+    char text[160];
+    std::snprintf(text, sizeof(text), "%s (0x%08x).", message, rc);
+    return text;
+}
+
+struct NcmStoragePair {
+    NcmStorageId id {};
+    NcmContentStorage storage {};
+    NcmContentMetaDatabase database {};
+    bool storageOpen = false;
+    bool dbOpen = false;
+
+    ~NcmStoragePair() { close(); }
+
+    bool open(NcmStorageId targetId, std::string& error) {
+        close();
+        id = targetId;
+        Result rc = ncmOpenContentStorage(&storage, targetId);
+        if (R_FAILED(rc)) {
+            error = resultError("Unable to open content storage", rc);
+            return false;
+        }
+        storageOpen = true;
+        rc = ncmOpenContentMetaDatabase(&database, targetId);
+        if (R_FAILED(rc)) {
+            ncmContentStorageClose(&storage);
+            storageOpen = false;
+            error = resultError("Unable to open content meta database", rc);
+            return false;
+        }
+        dbOpen = true;
+        return true;
+    }
+
+    void close() {
+        if (dbOpen) {
+            ncmContentMetaDatabaseClose(&database);
+            dbOpen = false;
+        }
+        if (storageOpen) {
+            ncmContentStorageClose(&storage);
+            storageOpen = false;
+        }
+    }
+};
+
+bool listMetaContentInfos(NcmContentMetaDatabase& db,
+                          const NcmContentMetaKey& key,
+                          std::vector<NcmContentInfo>& out,
+                          std::string& error) {
+    out.clear();
+    s32 start = 0;
+    std::array<NcmContentInfo, 64> page {};
+    for (;;) {
+        s32 written = 0;
+        const Result rc = ncmContentMetaDatabaseListContentInfo(
+            &db, &written, page.data(), static_cast<s32>(page.size()),
+            &key, start);
+        if (R_FAILED(rc)) {
+            error = resultError("Unable to list content metadata entries", rc);
+            return false;
+        }
+        if (written <= 0)
+            break;
+        for (s32 i = 0; i < written; ++i)
+            out.push_back(page[i]);
+        start += written;
+        if (written < static_cast<s32>(page.size()))
+            break;
+    }
+    return true;
+}
+
+bool deleteOrphanedContents(NcmContentMetaDatabase& db,
+                            NcmContentStorage& storage,
+                            const std::vector<NcmContentId>& candidateIds,
+                            uint64_t* deletedBytes,
+                            std::string& error) {
+    std::vector<NcmContentId> unique;
+    unique.reserve(candidateIds.size());
+    for (const auto& id : candidateIds) {
+        if (!containsContentId(unique, id))
+            unique.push_back(id);
+    }
+    size_t offset = 0;
+    while (offset < unique.size()) {
+        const s32 count = static_cast<s32>(
+            std::min<size_t>(256, unique.size() - offset));
+        std::array<bool, 256> orphaned {};
+        const Result rc = ncmContentMetaDatabaseLookupOrphanContent(
+            &db, orphaned.data(), unique.data() + offset, count);
+        if (R_FAILED(rc)) {
+            error = resultError("Unable to check orphaned content", rc);
+            return false;
+        }
+        for (s32 i = 0; i < count; ++i) {
+            if (!orphaned[i])
+                continue;
+            const NcmContentId& contentId = unique[offset + static_cast<size_t>(i)];
+            s64 contentSize = 0;
+            if (deletedBytes &&
+                R_SUCCEEDED(ncmContentStorageGetSizeFromContentId(
+                    &storage, &contentSize, &contentId)) &&
+                contentSize > 0) {
+                *deletedBytes += static_cast<uint64_t>(contentSize);
+            }
+            const Result delRc = ncmContentStorageDelete(&storage, &contentId);
+            if (R_FAILED(delRc)) {
+                log_msg("[install] cleanup warning: delete NCA failed rc=0x%08x\n",
+                        delRc);
+            }
+        }
+        offset += static_cast<size_t>(count);
+    }
+    return true;
+}
+
 struct Content {
     std::string name;
     NcmContentId id {};
@@ -840,15 +958,29 @@ public:
             errorResult("Unable to query installed title metadata", rc);
             return false;
         }
+        std::vector<NcmContentId> displacedContentIds;
         if (exists) {
-            alreadyInstalled = true;
-            discardPlaceholders();
-            finishSuccess();
-            telemetry_log("ncm", taskId_.c_str(),
-                "event=package_commit target=%s already_installed=1 commit_us=%llu",
-                targetName_, (unsigned long long)(commitStartedUs
-                    ? now_us() - commitStartedUs : 0));
-            return true;
+            NcmContentId existingMetaId {};
+            const Result metaIdRc = ncmContentMetaDatabaseGetContentIdByType(
+                &database_, &existingMetaId, &key, NcmContentType_Meta);
+            if (R_SUCCEEDED(metaIdRc) &&
+                std::memcmp(existingMetaId.c, metaContent->id.c,
+                            sizeof(existingMetaId.c)) == 0) {
+                alreadyInstalled = true;
+                discardPlaceholders();
+                finishSuccess();
+                telemetry_log("ncm", taskId_.c_str(),
+                    "event=package_commit target=%s already_installed=1 commit_us=%llu",
+                    targetName_, (unsigned long long)(commitStartedUs
+                        ? now_us() - commitStartedUs : 0));
+                return true;
+            }
+            std::vector<NcmContentInfo> oldInfos;
+            std::string ignoreErr;
+            if (listMetaContentInfos(database_, key, oldInfos, ignoreErr)) {
+                for (const auto& info : oldInfos)
+                    displacedContentIds.push_back(info.content_id);
+            }
         }
 
         for (const auto& packaged : meta.contents) {
@@ -1071,6 +1203,48 @@ public:
                 }
             } else {
                 log_msg("[install] ticket already present, skipping import\n");
+            }
+        }
+
+        if (!displacedContentIds.empty()) {
+            std::string cleanErr;
+            if (!deleteOrphanedContents(database_, storage_,
+                                        displacedContentIds, nullptr, cleanErr)) {
+                log_msg("[install] warning removing displaced NCAs: %s\n",
+                        cleanErr.c_str());
+            }
+        }
+        for (const auto& prev : previousRecords_) {
+            if (prev.meta_key.id != key.id ||
+                prev.meta_key.version != key.version ||
+                prev.meta_key.type != key.type ||
+                prev.storage_id == static_cast<uint8_t>(storageId_)) {
+                continue;
+            }
+            NcmStoragePair other;
+            std::string cleanErr;
+            if (!other.open(static_cast<NcmStorageId>(prev.storage_id), cleanErr)) {
+                log_msg("[install] warning opening displaced storage %u: %s\n",
+                        prev.storage_id, cleanErr.c_str());
+                continue;
+            }
+            std::vector<NcmContentInfo> oldInfos;
+            if (listMetaContentInfos(other.database, prev.meta_key, oldInfos, cleanErr)) {
+                std::vector<NcmContentId> oldIds;
+                oldIds.reserve(oldInfos.size());
+                for (const auto& info : oldInfos)
+                    oldIds.push_back(info.content_id);
+                bool hasOld = false;
+                if (R_SUCCEEDED(ncmContentMetaDatabaseHas(
+                        &other.database, &hasOld, &prev.meta_key)) &&
+                    hasOld) {
+                    if (R_SUCCEEDED(ncmContentMetaDatabaseRemove(
+                            &other.database, &prev.meta_key)) &&
+                        R_SUCCEEDED(ncmContentMetaDatabaseCommit(&other.database))) {
+                        deleteOrphanedContents(other.database, other.storage,
+                                               oldIds, nullptr, cleanErr);
+                    }
+                }
             }
         }
 
@@ -1730,6 +1904,220 @@ private:
 std::unique_ptr<InstallBackend> createInstallBackend(
     const std::string& workingRoot, InstallStorageTarget target) {
     return std::make_unique<SwitchInstallBackend>(workingRoot, target);
+}
+
+namespace {
+
+int storageSlotIndex(uint8_t storageId) {
+    if (storageId == NcmStorageId_SdCard)
+        return 0;
+    if (storageId == NcmStorageId_BuiltInUser)
+        return 1;
+    return -1;
+}
+
+NcmStorageId slotStorageId(int slot) {
+    return slot == 0 ? NcmStorageId_SdCard : NcmStorageId_BuiltInUser;
+}
+
+bool queryApplicationContentMetaKeys(uint64_t applicationId,
+                                     bool& found,
+                                     std::vector<NsExtContentStorageMetaKey>& records,
+                                     std::string& error) {
+    found = false;
+    records.clear();
+    std::vector<NsApplicationRecord> applications;
+    if (!loadApplicationRecordPages(applications,
+            [&](size_t offset, std::vector<NsApplicationRecord>& page,
+                size_t& written) {
+                s32 outCount = 0;
+                const Result listRc = nsListApplicationRecord(
+                    page.data(), static_cast<s32>(page.size()),
+                    static_cast<s32>(offset), &outCount);
+                if (R_FAILED(listRc)) {
+                    error = resultError("Unable to list installed applications", listRc);
+                    return false;
+                }
+                if (outCount < 0) {
+                    error = "Application record count is invalid.";
+                    return false;
+                }
+                written = static_cast<size_t>(outCount);
+                return true;
+            })) {
+        if (error.empty())
+            error = "Application listing is incomplete.";
+        return false;
+    }
+    found = std::any_of(applications.begin(), applications.end(),
+        [applicationId](const NsApplicationRecord& rec) {
+            return rec.application_id == applicationId;
+        });
+    if (!found)
+        return true;
+
+    if (!loadApplicationRecordPages(records,
+            [&](size_t offset, std::vector<NsExtContentStorageMetaKey>& page,
+                size_t& written) {
+                u32 outCount = 0;
+                const Result listRc = nsextListApplicationRecordContentMeta(
+                    offset, applicationId, page.data(), page.size(), &outCount);
+                if (R_FAILED(listRc)) {
+                    error = resultError("Unable to read application content metadata", listRc);
+                    return false;
+                }
+                written = outCount;
+                return true;
+            })) {
+        if (error.empty())
+            error = "Application content metadata listing is incomplete.";
+        return false;
+    }
+    return true;
+}
+
+} // namespace
+
+bool inspectInstalledTitleFootprint(const std::string& workingRoot,
+                                    uint64_t applicationId,
+                                    TitleStorageFootprint& out,
+                                    std::string& error) {
+    (void)workingRoot;
+    out = TitleStorageFootprint {};
+    error.clear();
+    if (applicationId == 0) {
+        error = "Invalid application ID.";
+        return false;
+    }
+    bool found = false;
+    std::vector<NsExtContentStorageMetaKey> records;
+    if (!queryApplicationContentMetaKeys(applicationId, found, records, error))
+        return false;
+    if (!found || records.empty())
+        return true;
+
+    out.found = true;
+    out.metaRecordCount = static_cast<uint32_t>(records.size());
+
+    std::array<NcmStoragePair, 2> storages;
+    std::array<std::vector<NcmContentId>, 2> seenIds;
+    for (const auto& record : records) {
+        const int slot = storageSlotIndex(record.storage_id);
+        if (slot < 0)
+            continue;
+        if (slot == 0)
+            out.hasSdContent = true;
+        else
+            out.hasNandContent = true;
+
+        if (!storages[slot].dbOpen &&
+            !storages[slot].open(slotStorageId(slot), error)) {
+            return false;
+        }
+        std::vector<NcmContentInfo> infos;
+        if (!listMetaContentInfos(storages[slot].database, record.meta_key,
+                                  infos, error)) {
+            return false;
+        }
+        for (const auto& info : infos) {
+            if (containsContentId(seenIds[slot], info.content_id))
+                continue;
+            seenIds[slot].push_back(info.content_id);
+            uint64_t bytes = 0;
+            ncmContentInfoSizeToU64(&info, &bytes);
+            out.totalBytes += bytes;
+            if (info.content_type == NcmContentType_Control)
+                out.controlBytes += bytes;
+            ++out.contentCount;
+        }
+    }
+    out.reclaimableBytes = out.totalBytes;
+    return true;
+}
+
+bool removeTitleContentPreservingSaves(const std::string& workingRoot,
+                                       uint64_t applicationId,
+                                       uint64_t* freedBytes,
+                                       std::string& error) {
+    (void)workingRoot;
+    if (freedBytes)
+        *freedBytes = 0;
+    error.clear();
+    if (applicationId == 0) {
+        error = "Invalid application ID.";
+        return false;
+    }
+
+    bool found = false;
+    std::vector<NsExtContentStorageMetaKey> records;
+    if (!queryApplicationContentMetaKeys(applicationId, found, records, error))
+        return false;
+    if (!found)
+        return true;
+
+    std::array<NcmStoragePair, 2> storages;
+    std::array<std::vector<NcmContentMetaKey>, 2> keysBySlot;
+    std::array<std::vector<NcmContentId>, 2> candidatesBySlot;
+
+    for (const auto& record : records) {
+        const int slot = storageSlotIndex(record.storage_id);
+        if (slot < 0)
+            continue;
+        if (!storages[slot].dbOpen &&
+            !storages[slot].open(slotStorageId(slot), error)) {
+            return false;
+        }
+        keysBySlot[slot].push_back(record.meta_key);
+        std::vector<NcmContentInfo> infos;
+        if (!listMetaContentInfos(storages[slot].database, record.meta_key,
+                                  infos, error)) {
+            return false;
+        }
+        for (const auto& info : infos)
+            candidatesBySlot[slot].push_back(info.content_id);
+    }
+
+    const Result delRecRc = nsextDeleteApplicationRecord(applicationId);
+    if (R_FAILED(delRecRc)) {
+        error = resultError("Unable to remove application record", delRecRc);
+        return false;
+    }
+
+    uint64_t removed = 0;
+    for (int slot = 0; slot < 2; ++slot) {
+        if (keysBySlot[slot].empty())
+            continue;
+        for (const auto& key : keysBySlot[slot]) {
+            bool has = false;
+            Result rc = ncmContentMetaDatabaseHas(&storages[slot].database, &has, &key);
+            if (R_FAILED(rc)) {
+                error = resultError("Unable to verify title metadata", rc);
+                return false;
+            }
+            if (has) {
+                rc = ncmContentMetaDatabaseRemove(&storages[slot].database, &key);
+                if (R_FAILED(rc)) {
+                    error = resultError("Unable to remove title metadata", rc);
+                    return false;
+                }
+            }
+        }
+        const Result commitRc = ncmContentMetaDatabaseCommit(&storages[slot].database);
+        if (R_FAILED(commitRc)) {
+            error = resultError("Unable to commit title metadata removal", commitRc);
+            return false;
+        }
+        if (!deleteOrphanedContents(storages[slot].database,
+                                    storages[slot].storage,
+                                    candidatesBySlot[slot],
+                                    &removed, error)) {
+            return false;
+        }
+    }
+
+    if (freedBytes)
+        *freedBytes = removed;
+    return true;
 }
 
 } // namespace pipensx::install

@@ -524,21 +524,42 @@ function renderLibrary() {
   if (!library) return;
   const query = $("library-search").value.trim().toLowerCase(), filter = $("library-filter").value;
   const rows = library.titles.filter(row => (row.name + " " + row.titleId).toLowerCase().includes(query) &&
-    (filter === "all" || (filter === "ports" ? row.isPort : row.updateState === "update_available")));
+    (filter === "all" || (filter === "archived" ? row.isArchived :
+      (filter === "ports" ? row.isPort : !row.isArchived && row.updateState === "update_available"))));
   const busyIds = new Set((library.jobs || []).filter(job => ["queued", "working"].includes(job.state)).map(job => job.titleId));
   $("library-status").textContent = t("library.count", rows.length, library.titles.length);
-  $("library-list").innerHTML = rows.length ? rows.map(row => '<article class="task"><div class="task-heading"><h2>' + esc(row.name || row.titleId) +
-    '</h2><span class="task-state">' + esc(t(row.isPort ? "catalog.ports" : "catalog.games")) + '</span></div><p class="muted">' +
-    esc(row.titleId) + " · " + esc(row.displayVersion || row.version || t("library.unknown")) +
-    '</p><p>' + esc(t("library." + row.updateState)) + (row.latestVersion ? " · " + esc(row.latestVersion) : "") + '</p><p class="muted">' +
-    esc(t("library.dlc", row.dlcCount || 0)) + (row.hasLayeredFsMods ? " · " + esc(t("library.mods")) : "") + '</p><div class="task-actions">' +
-    (row.updateState === "update_available" && row.updateHash ? '<button data-library="' + esc(row.titleId) + '" data-library-action="update"' +
-      (busyIds.has(row.titleId) ? " disabled" : "") + ">" + esc(t("library.update")) + "</button>" : "") +
-    '<button class="danger" data-library="' + esc(row.titleId) + '" data-library-action="uninstall"' + (busyIds.has(row.titleId) ? " disabled" : "") + ">" + esc(t("library.uninstall")) + "</button></div></article>").join("") :
-    '<p class="empty">' + esc(t("library.empty")) + "</p>";
+  $("library-list").innerHTML = rows.length ? rows.map(row => {
+    const busyRow = busyIds.has(row.titleId);
+    const kindLabel = t(row.isArchived ? "library.archived" : (row.isPort ? "catalog.ports" : "catalog.games"));
+    const statusLine = row.isArchived
+      ? esc(t("library.archivedStatus")) + (row.freedBytes ? " · " + esc(t("library.freedSize", bytes(row.freedBytes))) : "")
+      : esc(t("library." + row.updateState)) + (row.latestVersion ? " · " + esc(row.latestVersion) : "") +
+        (row.canArchive && row.freedBytes ? " · " + esc(t("library.freedSize", bytes(row.freedBytes))) : "");
+    const metaParts = [];
+    if (!row.isArchived) {
+      metaParts.push(esc(t("library.dlc", row.dlcCount || 0)));
+      if (row.hasLayeredFsMods) metaParts.push(esc(t("library.mods")));
+      if (!row.isPort && !row.canArchive && row.archiveBlockReason === "no_source")
+        metaParts.push(esc(t("library.archiveNoSource")));
+    }
+    const actions = row.isArchived
+      ? '<button class="primary" data-library="' + esc(row.titleId) + '" data-library-action="restore"' + (busyRow ? " disabled" : "") + ">" + esc(t("library.restore")) + "</button>" +
+        '<button class="danger" data-library="' + esc(row.titleId) + '" data-library-action="uninstall"' + (busyRow ? " disabled" : "") + ">" + esc(t("library.removeShortcut")) + "</button>"
+      : (row.updateState === "update_available" && row.updateHash ? '<button data-library="' + esc(row.titleId) + '" data-library-action="update"' +
+          (busyRow ? " disabled" : "") + ">" + esc(t("library.update")) + "</button>" : "") +
+        (row.canArchive ? '<button data-library="' + esc(row.titleId) + '" data-library-action="archive"' +
+          (busyRow ? " disabled" : "") + ">" + esc(t("library.archive")) + "</button>" : "") +
+        '<button class="danger" data-library="' + esc(row.titleId) + '" data-library-action="uninstall"' + (busyRow ? " disabled" : "") + ">" + esc(t("library.uninstall")) + "</button>";
+    return '<article class="task"><div class="task-heading"><h2>' + esc(row.name || row.titleId) +
+      '</h2><span class="task-state">' + esc(kindLabel) + '</span></div><p class="muted">' +
+      esc(row.titleId) + " · " + esc(row.displayVersion || row.version || t("library.unknown")) +
+      "</p><p>" + statusLine + '</p>' +
+      (metaParts.length ? '<p class="muted">' + metaParts.join(" · ") + "</p>" : "") +
+      '<div class="task-actions">' + actions + "</div></article>";
+  }).join("") : '<p class="empty">' + esc(t("library.empty")) + "</p>";
   $("library-jobs").innerHTML = (library.jobs || []).slice(-5).map(job => '<p class="' + (job.state === "error" ? "error" : "muted") + '">' +
     esc(t("library." + job.action)) + " · " + esc(t("library.job." + job.state)) + (job.error ? ": " + esc(job.error) : "") + "</p>").join("");
-  $("library-update-all").disabled = !library.titles.some(row => row.updateState === "update_available" && row.updateHash && !row.hasLayeredFsMods);
+  $("library-update-all").disabled = !library.titles.some(row => !row.isArchived && row.updateState === "update_available" && row.updateHash && !row.hasLayeredFsMods);
 }
 async function loadLibrary() {
   if (libraryBusy) return;
@@ -559,13 +580,33 @@ $("library-list").onclick = event => {
   if (!button) return;
   busy(button, async () => {
     const row = library.titles.find(item => item.titleId === button.dataset.library);
+    if (!row) return;
     const action = button.dataset.libraryAction;
-    let message = action === "uninstall" ? t("library.uninstallAsk", row.name, row.titleId) :
-      t("library.updateAsk", row.name, row.displayVersion || row.version, row.latestVersion || t("library.unknown"));
-    if (action === "uninstall" && row.isPort) message += "\n\n" + t("web.portRemoval", row.deployedFiles, bytes(row.deployedBytes)) +
-      ((row.wholeFolders || []).length ? "\n" + row.wholeFolders.join("\n") : "");
-    if (action === "update" && row.hasLayeredFsMods) message += "\n\n" + t("library.modsWarning");
-    if (!await ask(t("library." + action), message)) return;
+    if (action === "restore") {
+      await post("/api/library/" + encodeURIComponent(row.titleId) + "/restore", {});
+      toast(t("library.restoreQueued"));
+      location.hash = "#downloads";
+      return;
+    }
+    const titleLabel = row.name || row.titleId;
+    let promptTitle = t("library." + action);
+    let message = "";
+    if (action === "archive") {
+      message = t("library.archiveAsk", titleLabel, bytes(row.installedBytes || 0), bytes(row.freedBytes || row.installedBytes || 0));
+    } else if (action === "uninstall") {
+      if (row.isArchived) {
+        promptTitle = t("library.removeShortcut");
+        message = t("library.removeShortcutAsk", titleLabel, row.titleId);
+      } else {
+        message = t("library.uninstallAsk", titleLabel, row.titleId);
+        if (row.isPort) message += "\n\n" + t("web.portRemoval", row.deployedFiles, bytes(row.deployedBytes)) +
+          ((row.wholeFolders || []).length ? "\n" + row.wholeFolders.join("\n") : "");
+      }
+    } else {
+      message = t("library.updateAsk", titleLabel, row.displayVersion || row.version, row.latestVersion || t("library.unknown"));
+      if (row.hasLayeredFsMods) message += "\n\n" + t("library.modsWarning");
+    }
+    if (!await ask(promptTitle, message)) return;
     await post("/api/library/" + encodeURIComponent(row.titleId) + "/" + action, { confirm: true, acknowledgeMods: true });
     if (action === "update") toast(t("library.updateQueued"));
     await loadLibrary();

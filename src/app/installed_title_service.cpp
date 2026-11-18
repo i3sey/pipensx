@@ -37,10 +37,10 @@ std::string upperAscii(std::string value) {
     return value;
 }
 
-bool writeIconIfMissing(const std::string& path, const uint8_t* bytes,
-                        size_t size) {
+bool writeIconFile(const std::string& path, const uint8_t* bytes,
+                   size_t size, bool overwrite = false) {
     struct stat st {};
-    if (stat(path.c_str(), &st) == 0 && st.st_size > 0)
+    if (!overwrite && stat(path.c_str(), &st) == 0 && st.st_size > 0)
         return true;
     if (!bytes || size < 8)
         return false;
@@ -64,6 +64,48 @@ bool writeIconIfMissing(const std::string& path, const uint8_t* bytes,
         return true;
     unlink(temporary.c_str());
     return false;
+}
+
+bool readFileBytes(const std::string& path, std::vector<uint8_t>& out) {
+    out.clear();
+    std::FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f)
+        return false;
+    if (std::fseek(f, 0, SEEK_END) != 0) {
+        std::fclose(f);
+        return false;
+    }
+    const long end = std::ftell(f);
+    if (end <= 0 || end > 16 * 1024 * 1024 || std::fseek(f, 0, SEEK_SET) != 0) {
+        std::fclose(f);
+        return false;
+    }
+    out.resize(static_cast<size_t>(end));
+    const size_t read = std::fread(out.data(), 1, out.size(), f);
+    std::fclose(f);
+    if (read != out.size()) {
+        out.clear();
+        return false;
+    }
+    return true;
+}
+
+bool removeStaleArchiveFiles(const std::string& rootPath,
+                             const std::string& iconRoot,
+                             const std::string& upperId) {
+    const std::string archiveBase = rootPath + "/archives/" + upperId;
+    const std::string archIcon = iconRoot + "/" + upperId + "-arch.jpg";
+    struct stat st {};
+    const bool hadArchive =
+        stat((archiveBase + ".json").c_str(), &st) == 0 ||
+        stat(archIcon.c_str(), &st) == 0;
+    if (!hadArchive)
+        return false;
+    unlink((archiveBase + ".json").c_str());
+    unlink((archiveBase + ".jpg").c_str());
+    unlink((archiveBase + ".torrent").c_str());
+    unlink(archIcon.c_str());
+    return true;
 }
 
 } // namespace
@@ -132,6 +174,7 @@ bool InstalledTitleService::uninstall(const std::string& titleId,
             return false;
         }
     }
+    removeStaleArchiveFiles(rootPath_, iconRoot_, upperAscii(titleId));
     log_msg("[installed] uninstalled %s\n", titleId.c_str());
     telemetry_log("installed", titleId.c_str(), "event=uninstall");
     if (!refresh(refreshError))
@@ -146,9 +189,66 @@ bool InstalledTitleService::contains(const std::string& titleId) const {
     return !titleId.empty() && titleIds_.count(upperAscii(titleId)) != 0;
 }
 
+bool InstalledTitleService::isArchived(const std::string& titleId) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return !titleId.empty() && archivedTitleIds_.count(upperAscii(titleId)) != 0;
+}
+
+bool InstalledTitleService::containsInstalledOrArchived(
+    const std::string& titleId) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (titleId.empty())
+        return false;
+    const std::string upper = upperAscii(titleId);
+    return titleIds_.count(upper) != 0 || archivedTitleIds_.count(upper) != 0;
+}
+
 bool InstalledTitleService::containsDlc(const std::string& titleId) const {
     std::lock_guard<std::mutex> lock(mutex_);
     return !titleId.empty() && dlcTitleIds_.count(upperAscii(titleId)) != 0;
+}
+
+void InstalledTitleService::invalidateCachedIcon(const std::string& titleId) {
+    if (titleId.empty())
+        return;
+    const std::string upper = upperAscii(titleId);
+    unlink((iconRoot_ + "/" + upper + ".jpg").c_str());
+    unlink((iconRoot_ + "/" + upper + "-arch.jpg").c_str());
+}
+
+bool InstalledTitleService::readControlIcon(const std::string& titleId,
+                                            std::vector<uint8_t>& jpegOut,
+                                            std::string& error) const {
+    jpegOut.clear();
+    error.clear();
+    uint64_t applicationId = 0;
+    if (!parseTitleId(titleId, applicationId)) {
+        error = "Invalid title id.";
+        return false;
+    }
+    const std::string upper = formatTitleId(applicationId);
+#ifdef __SWITCH__
+    auto control = std::make_unique<NsApplicationControlData>();
+    std::memset(control.get(), 0, sizeof(*control));
+    u64 actualSize = 0;
+    const Result rc = nsGetApplicationControlData(
+        NsApplicationControlSource_Storage, applicationId,
+        control.get(), sizeof(*control), &actualSize);
+    if (R_SUCCEEDED(rc) && actualSize > sizeof(NacpStruct)) {
+        const size_t iconSize = std::min<size_t>(
+            static_cast<size_t>(actualSize - sizeof(NacpStruct)),
+            sizeof(control->icon));
+        if (iconSize >= 8) {
+            jpegOut.assign(control->icon, control->icon + iconSize);
+            return true;
+        }
+    }
+#endif
+    if (readFileBytes(rootPath_ + "/archives/" + upper + ".jpg", jpegOut) ||
+        readFileBytes(iconRoot_ + "/" + upper + ".jpg", jpegOut))
+        return true;
+    error = "Application icon is unavailable.";
+    return false;
 }
 
 std::vector<InstalledTitle> InstalledTitleService::titles() const {
@@ -189,11 +289,17 @@ uint64_t InstalledTitleService::generation() const {
 void InstalledTitleService::injectTitles(std::vector<InstalledTitle> titles) {
     std::lock_guard<std::mutex> lock(mutex_);
     std::unordered_set<std::string> ids;
+    std::unordered_set<std::string> archivedIds;
     ids.reserve(titles.size());
-    for (const InstalledTitle& title : titles)
-        ids.insert(upperAscii(title.titleId));
+    for (const InstalledTitle& title : titles) {
+        if (title.isArchived)
+            archivedIds.insert(upperAscii(title.titleId));
+        else
+            ids.insert(upperAscii(title.titleId));
+    }
     titles_ = std::move(titles);
     titleIds_ = std::move(ids);
+    archivedTitleIds_ = std::move(archivedIds);
     dlcTitleIds_.clear();
     ++generation_;
 }
@@ -371,6 +477,13 @@ bool InstalledTitleService::refresh(std::string& error) {
             NsApplicationControlSource_Storage, record.application_id,
             control.get(), sizeof(*control), &actualSize);
         if (R_SUCCEEDED(rc)) {
+#ifdef __SWITCH__
+            title.isArchived = std::memcmp(
+                &control->nacp.application_error_code_category,
+                "pnxarch", 7) == 0;
+#endif
+            title.iconPath = iconRoot_ + "/" + title.titleId +
+                (title.isArchived ? "-arch.jpg" : ".jpg");
             std::string name;
             std::string author;
             if (nacpReadLanguage(&control->nacp, sizeof(control->nacp),
@@ -385,8 +498,15 @@ bool InstalledTitleService::refresh(std::string& error) {
             size_t iconSize = actualSize > sizeof(NacpStruct)
                 ? static_cast<size_t>(actualSize - sizeof(NacpStruct)) : 0;
             iconSize = std::min(iconSize, sizeof(control->icon));
-            if (!writeIconIfMissing(title.iconPath, control->icon, iconSize))
+            bool overwriteIcon = false;
+            if (!title.isArchived) {
+                overwriteIcon = removeStaleArchiveFiles(
+                    rootPath_, iconRoot_, title.titleId);
+            }
+            if (!writeIconFile(title.iconPath, control->icon, iconSize,
+                               overwriteIcon)) {
                 title.iconPath.clear();
+            }
         } else {
             title.iconPath.clear();
             diagnostic_error("installed", title.titleId.c_str(),
@@ -405,14 +525,20 @@ bool InstalledTitleService::refresh(std::string& error) {
                          return left.name < right.name;
                      });
     std::unordered_set<std::string> ids;
+    std::unordered_set<std::string> archivedIds;
     ids.reserve(next.size());
-    for (const InstalledTitle& title : next)
-        ids.insert(title.titleId);
+    for (const InstalledTitle& title : next) {
+        if (title.isArchived)
+            archivedIds.insert(title.titleId);
+        else
+            ids.insert(title.titleId);
+    }
     const size_t count = next.size();
     {
         std::lock_guard<std::mutex> lock(mutex_);
         titles_ = std::move(next);
         titleIds_ = std::move(ids);
+        archivedTitleIds_ = std::move(archivedIds);
         dlcTitleIds_ = std::move(dlcIds);
         ++generation_;
     }

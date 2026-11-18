@@ -258,6 +258,11 @@ void WebServer::setLibraryHandlers(LibraryGetter getter, LibraryAction action) {
     libraryAction_ = std::move(action);
 }
 
+void WebServer::setLibraryRestoreHandler(LibraryRestoreHandler handler) {
+    std::lock_guard<std::mutex> lock(configMutex_);
+    libraryRestoreHandler_ = std::move(handler);
+}
+
 void WebServer::setPortHandler(PortHandler handler) {
     std::lock_guard<std::mutex> lock(configMutex_);
     portHandler_ = std::move(handler);
@@ -361,10 +366,47 @@ HttpResponse WebServer::handleLibraryCommand(const HttpRequest& req,
     if (!storageAction && action != "refresh" && action != "catalog-refresh" && (!InstalledTitleService::parseTitleId(requestedId, parsedId) || !parsedId))
         return jsonError(400, "invalid title id");
     const std::string titleId = storageAction || action == "refresh" || action == "catalog-refresh" ? "" : InstalledTitleService::formatTitleId(parsedId);
-    if ((action == "uninstall" || (storageAction && action != "storage-scan")) &&
+    if ((action == "uninstall" || action == "archive" ||
+         (storageAction && action != "storage-scan")) &&
         (!body.contains("confirm") || !body["confirm"].is_boolean() ||
                                   !body["confirm"].get<bool>()))
         return jsonError(400, "confirmation required");
+    if (action == "restore") {
+        LibraryRestoreHandler handler;
+        {
+            std::lock_guard<std::mutex> lock(configMutex_);
+            handler = libraryRestoreHandler_;
+        }
+        if (!handler)
+            return jsonError(503, "service unavailable");
+        RestoreStartResult res;
+        std::string error;
+        if (!handler(titleId, res, error))
+            return jsonError(409, error.empty() ? "unable to restore title" : error);
+        if (res.queuedImmediately) {
+            return HttpResponse::text(200, dumpJson({
+                {"ok", true},
+                {"titleId", res.titleId},
+                {"taskId", res.taskId},
+                {"reused", res.reusedExistingTask},
+            }));
+        }
+        if (res.needsAsyncMagnet) {
+            const std::string jobId = addQueue_.enqueue(
+                res.releaseTitle.empty() ? res.titleId : res.releaseTitle,
+                res.magnetUri, res.infoHash, res.infoDict,
+                TransferMode::StreamInstall, StreamSelection::AllFiles,
+                error, AddInputKind::Catalog, res.titleId, true);
+            if (jobId.empty())
+                return jsonError(409, error);
+            return HttpResponse::text(202, dumpJson({
+                {"ok", true},
+                {"titleId", res.titleId},
+                {"jobId", jobId},
+            }));
+        }
+        return jsonError(409, "no restore source available");
+    }
     if (action == "update") {
         LibraryGetter getter;
         { std::lock_guard<std::mutex> lock(configMutex_); getter = libraryGetter_; }
@@ -375,6 +417,8 @@ HttpResponse WebServer::handleLibraryCommand(const HttpRequest& req,
             !library["titles"].is_array()) return jsonError(500, "invalid library snapshot");
         std::string hash;
         for (const auto& row : library["titles"]) if (row.value("titleId", "") == titleId) {
+            if (row.value("isArchived", false))
+                return jsonError(409, "archived titles must be restored first");
             if (row.value("updateState", "") != "update_available")
                 return jsonError(409, "no verified update available");
             if (row.value("hasLayeredFsMods", false) &&
@@ -398,7 +442,9 @@ HttpResponse WebServer::handleLibraryCommand(const HttpRequest& req,
         if (jobId.empty()) return jsonError(409, error);
         return HttpResponse::text(202, dumpJson({{"jobId", jobId}}));
     }
-    if (!storageAction && action != "refresh" && action != "uninstall" && action != "catalog-refresh") return jsonError(404, "unknown library action");
+    if (!storageAction && action != "refresh" && action != "uninstall" &&
+        action != "archive" && action != "catalog-refresh")
+        return jsonError(404, "unknown library action");
     std::lock_guard<std::mutex> lock(configMutex_);
     if (!(storageAction ? bool(maintenanceHandler_) : bool(libraryAction_)) || libraryStopping_)
         return jsonError(503, "service unavailable");

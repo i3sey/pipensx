@@ -208,6 +208,18 @@ $(BUILD_DIR)/src/app/autorun_service.o: src/app/autorun_service.cpp src/app/auto
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
 
+$(BUILD_DIR)/src/app/installed_title_service.o: src/app/installed_title_service.cpp src/app/installed_title_service.hpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -Isrc/platform/pc -c -o $@ $<
+
+$(BUILD_DIR)/src/app/nacp_language.o: src/app/nacp_language.cpp src/app/nacp_language.hpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -Isrc/platform/pc -c -o $@ $<
+
+$(BUILD_DIR)/src/app/archive_service.o: src/app/archive_service.cpp src/app/archive_service.hpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
+
 $(BUILD_DIR)/src/app/port_archive.o: src/app/port_archive.cpp vendor/lzma/CpuArch.h vendor/lzma/7zTypes.h
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Isrc -Ivendor/lzma -c -o $@ $<
@@ -362,7 +374,7 @@ $(BUILD_DIR)/tests/test_web_server: tests/test_web_server.cpp \
 		$(BUILD_DIR)/src/install/install_backend_pc.o \
 		$(filter-out $(BUILD_DIR)/src/main_pc.o,$(OBJS)) $(UTP_OBJS)
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) \
+	$(CXX) $(CXXFLAGS) -Isrc -Isrc/platform/pc -o $@ $^ $(LDFLAGS) \
 		$(INSTALL_LDFLAGS) -lz -pthread
 
 $(BUILD_DIR)/tests/test_add_release: tests/test_add_release.cpp \
@@ -372,7 +384,7 @@ $(BUILD_DIR)/tests/test_add_release: tests/test_add_release.cpp \
 		$(BUILD_DIR)/src/app/magnet_resolver.o \
 		$(MANAGER_TEST_OBJS)
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) \
+	$(CXX) $(CXXFLAGS) -Isrc -Isrc/platform/pc -o $@ $^ $(LDFLAGS) \
 		$(INSTALL_LDFLAGS) -lz -pthread
 
 $(BUILD_DIR)/tests/test_catalog: tests/test_catalog.cpp \
@@ -469,6 +481,22 @@ $(BUILD_DIR)/tests/test_game_update_service: tests/test_game_update_service.cpp 
 		$(BUILD_DIR)/src/app/update_transaction.o src/core/sha256.c $(BUILD_DIR)/src/core/util.o
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
+
+$(BUILD_DIR)/tests/test_archive_service: tests/test_archive_service.cpp \
+		$(BUILD_DIR)/src/app/archive_service.o \
+		$(BUILD_DIR)/src/app/installed_title_service.o \
+		$(BUILD_DIR)/src/app/nacp_language.o \
+		$(BUILD_DIR)/src/app/add_release.o \
+		$(BUILD_DIR)/src/app/catalog_descriptions.o \
+		$(BUILD_DIR)/src/app/catalog_service.o \
+		$(BUILD_DIR)/src/app/catalog_refresh.o \
+		$(BUILD_DIR)/src/app/game_metadata_service.o \
+		$(BUILD_DIR)/src/app/snapshot_zstd.o \
+		src/app/app_settings.cpp src/app/game_update_install.cpp \
+		src/app/install_space.cpp \
+		$(MANAGER_TEST_OBJS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -Isrc/platform/pc -o $@ $^ $(LDFLAGS) $(INSTALL_LDFLAGS) -pthread
 
 $(BUILD_DIR)/tests/test_update_file_select: tests/test_update_file_select.cpp \
 		src/app/game_update_install.cpp
@@ -805,9 +833,13 @@ $(BUILD_DIR)/tests/test_torrent: tests/test_torrent.c src/core/torrent.c \
 webserver: $(BUILD_DIR)/tools/webserver
 
 $(BUILD_DIR)/tools/webserver: tools/web_server_main.cpp \
+		$(BUILD_DIR)/src/app/install_benchmark.o \
 		$(BUILD_DIR)/src/app/web_server.o $(BUILD_DIR)/src/app/companion_settings.o \
 		$(BUILD_DIR)/src/app/add_release.o $(BUILD_DIR)/src/app/web_add_queue.o \
 		$(BUILD_DIR)/src/app/http_server.o \
+		$(BUILD_DIR)/src/app/archive_service.o $(BUILD_DIR)/src/app/installed_title_service.o \
+		$(BUILD_DIR)/src/app/nacp_language.o $(BUILD_DIR)/src/app/autorun_service.o \
+		$(BUILD_DIR)/src/app/catalog_descriptions.o \
 		src/app/app_settings.cpp src/app/game_update_install.cpp \
 		$(BUILD_DIR)/src/app/catalog_service.o $(BUILD_DIR)/src/app/catalog_refresh.o \
 		$(BUILD_DIR)/src/app/snapshot_zstd.o \
@@ -827,7 +859,8 @@ $(BUILD_DIR)/tools/webserver: tools/web_server_main.cpp \
 		$(BUILD_DIR)/src/install/system_cleanup.o \
 		$(BUILD_DIR)/src/install/install_backend_pc.o \
 		$(filter-out $(BUILD_DIR)/src/main_pc.o,$(OBJS)) $(UTP_OBJS)
-	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) \
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -Isrc/platform/pc -o $@ $^ $(LDFLAGS) \
 		$(INSTALL_LDFLAGS) -lz -pthread
 
 # Optional libFuzzer targets (clang required):
