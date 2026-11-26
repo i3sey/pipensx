@@ -263,6 +263,9 @@ public:
         onSelectionChanged_ = std::move(callback);
     }
 
+    void setLoading(bool loading) { loading_ = loading; }
+    bool isLoading() const { return loading_; }
+
     const std::vector<InstalledTitle>& updateTitles() const { return updates_; }
     size_t titleCount() const { return updates_.size() + rest_.size(); }
 
@@ -307,6 +310,8 @@ public:
     }
 
     int numberOfRows(brls::RecyclerFrame*, int section) override {
+        if (titleCount() == 0 && loading_)
+            return 5;
         return static_cast<int>(sectionTitles(section).size());
     }
 
@@ -325,6 +330,8 @@ public:
 
     brls::RecyclerCell* cellForRow(brls::RecyclerFrame* recycler,
                                     brls::IndexPath index) override {
+        if (titleCount() == 0 && loading_)
+            return recycler->dequeueReusableCell("Skeleton");
         const std::vector<InstalledTitle>& titles = sectionTitles(index.section);
         const InstalledTitle& title = titles[static_cast<size_t>(index.row)];
         auto* cell = static_cast<InstalledCell*>(
@@ -371,6 +378,7 @@ private:
     const GameUpdateResults* results_ = nullptr;
     InstalledCell::PrimaryAction onPrimaryAction_;
     InstalledCell::SelectionChanged onSelectionChanged_;
+    bool loading_ = false;
 };
 
 inline void setAncestorActionHidden(brls::View* start,
@@ -402,6 +410,7 @@ public:
                   FavoritesService* favorites = nullptr,
                   SwitchDeployService* deploy = nullptr,
                   PortUninstallService* portUninstall = nullptr,
+                  bool portsOnly = false,
                   ArchiveService* archive = nullptr,
                   RestoreStartedCallback onRestoreStarted = {})
         : brls::Box(brls::Axis::COLUMN), installed_(installed),
@@ -409,7 +418,7 @@ public:
           catalog_(catalog), updates_(updates), favorites_(favorites),
           deploy_(deploy), portUninstall_(portUninstall), archive_(archive),
           onRestoreStarted_(std::move(onRestoreStarted)),
-          checkOnEntry_(checkOnEntry),
+          checkOnEntry_(checkOnEntry), portsOnly_(portsOnly),
           alive_(std::make_shared<std::atomic<bool>>(true)) {
         auto* toolbar = new brls::Box(brls::Axis::ROW);
         toolbar->setPadding(16, 32, 12, 32);
@@ -449,6 +458,7 @@ public:
         recycler_->setPadding(4, 24, 20, 4);
         recycler_->estimatedRowHeight = 92;
         recycler_->registerCell("Installed", [] { return new InstalledCell(); });
+        recycler_->registerCell("Skeleton", [] { return new SkeletonListRowCell(); });
         dataSource_ = new InstalledDataSource(metadata);
         recycler_->setDataSource(dataSource_);
         recyclerHost_ = recyclerHost(recycler_);
@@ -578,7 +588,7 @@ private:
                 selectedTitle_ = title;
                 toggleIgnoreSelectedTitle();
             });
-            if (archive_) {
+            if (!portsOnly_ && archive_) {
                 const ArchiveInspection insp =
                     archive_->inspectArchive(title.titleId);
                 add(tr("pipensx/installed/archive_action"), [this, title, insp] {
@@ -851,7 +861,7 @@ private:
                         reload();
                 });
             },
-            nullptr, favorites_, deploy_, autoInstall));
+            nullptr, favorites_, deploy_, autoInstall, portsOnly_, nullptr, portUninstall_, true));
     }
 
     void openInCatalog(const std::string& titleId,
@@ -1356,7 +1366,7 @@ private:
             text += "   " + tr("pipensx/installed/update_stale");
         status_->setText(text);
         if (onUpdateCount_)
-            onUpdateCount_(updateCount);
+            onUpdateCount_(allUpdateCount());
         if (ownsFocus) {
             if (empty) {
                 brls::Application::giveFocus(ensureEmptyState());
@@ -1367,6 +1377,65 @@ private:
         }
     }
 
+    size_t allUpdateCount() const {
+        size_t count = 0;
+        for (const auto& title : installed_->titles()) {
+            if (title.isArchived || title.publisher == "pipensx Retro")
+                continue;
+            const auto found = updates_->results().find(title.titleId);
+            if (!updates_->isIgnored(title.titleId) &&
+                found != updates_->results().end() &&
+                found->second.state == GameUpdateState::UpdateAvailable)
+                ++count;
+        }
+        return count;
+    }
+
+    const std::unordered_set<std::string>& portTitleIds() const {
+        const uint64_t gen = catalog_ ? catalog_->generation() : 0;
+        const uint64_t instGen = installed_ ? installed_->generation() : 0;
+        if (cachedPortCatalogGen_ == gen && cachedPortInstalledGen_ == instGen &&
+            cachedPortIdsValid_)
+            return cachedPortTitleIds_;
+        cachedPortTitleIds_.clear();
+        cachedPortCatalogGen_ = gen;
+        cachedPortInstalledGen_ = instGen;
+        cachedPortIdsValid_ = true;
+        if (catalog_) {
+            for (const auto& entry : catalog_->entries()) {
+                if (!catalogEntryIsPort(entry, nullptr))
+                    continue;
+                if (!entry.titleId.empty())
+                    cachedPortTitleIds_.insert(catalogLower(entry.titleId));
+                for (const auto& item : entry.titles) {
+                    if (!item.titleId.empty())
+                        cachedPortTitleIds_.insert(catalogLower(item.titleId));
+                }
+            }
+        }
+        if (portUninstall_) {
+            for (const auto& id : portUninstall_->deployedTitleIds()) {
+                if (!id.empty())
+                    cachedPortTitleIds_.insert(catalogLower(id));
+            }
+        }
+        return cachedPortTitleIds_;
+    }
+
+    std::vector<InstalledTitle> sectionTitles() const {
+        std::vector<InstalledTitle> titles;
+        const auto& portIds = portTitleIds();
+        for (const auto& title : installed_->titles()) {
+            if (title.publisher == "pipensx Retro")
+                continue;
+            const bool port = !title.isArchived &&
+                portIds.count(catalogLower(title.titleId)) != 0;
+            if (port == portsOnly_)
+                titles.push_back(title);
+        }
+        return titles;
+    }
+
     void flushPendingReload() {
         if (!pendingReload_ || activityStackHasOverlay())
             return;
@@ -1375,7 +1444,7 @@ private:
         const brls::IndexPath focusedIndex = pendingFocusedIndex_;
         pendingFocusedTitleId_.clear();
         pendingFocusedIndex_ = brls::IndexPath(0, 0);
-        dataSource_->setTitles(installed_->titles());
+        dataSource_->setTitles(sectionTitles());
         reloadRecycler(focusedTitleId, focusedIndex,
                        viewContains(this,
                                     brls::Application::getCurrentFocus()));
@@ -1405,7 +1474,7 @@ private:
             return;
         }
 
-        dataSource_->setTitles(installed_->titles());
+        dataSource_->setTitles(sectionTitles());
         pendingReload_ = false;
         pendingFocusedTitleId_.clear();
         pendingFocusedIndex_ = brls::IndexPath(0, 0);
@@ -1457,6 +1526,11 @@ private:
     ArchiveService* archive_ = nullptr;
     RestoreStartedCallback onRestoreStarted_;
     bool checkOnEntry_ = true;
+    bool portsOnly_ = false;
+    mutable std::unordered_set<std::string> cachedPortTitleIds_;
+    mutable uint64_t cachedPortCatalogGen_ = 0;
+    mutable uint64_t cachedPortInstalledGen_ = 0;
+    mutable bool cachedPortIdsValid_ = false;
     std::function<void(size_t)> onUpdateCount_;
     brls::Button* updatesButton_ = nullptr;
     InstalledTitle selectedTitle_;

@@ -8,6 +8,8 @@ brls::RecyclerCell* CatalogDataSource::cellForRow(
         return recycler->dequeueReusableCell("TopInset");
 
     if (!result_ || result_->indices.empty()) {
+        if (loading_)
+            return recycler->dequeueReusableCell("Skeleton");
         auto* cell = static_cast<TextMessageCell*>(
             recycler->dequeueReusableCell("Message"));
         cell->setMessage(message_);
@@ -64,7 +66,7 @@ void CatalogDataSource::repaintCell(brls::RecyclerCell* cell) {
 
 void CatalogDataSource::didSelectRowAt(brls::RecyclerFrame*,
                                        brls::IndexPath) {
-    if (!result_ || result_->indices.empty())
+    if ((!result_ || result_->indices.empty()) && !loading_)
         owner_->openSearchKeyboard();
 }
 

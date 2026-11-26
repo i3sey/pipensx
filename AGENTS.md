@@ -25,6 +25,10 @@ installation. C11 core, C++ app services, Borealis UI.
 - `src/core/`: portable torrent engine; `src/app/`: services and persisted state;
   `src/ui/`: Borealis; `src/install/` and `src/platform/`: platform boundaries.
   Browser companion assets live in `resources/web/`; `site/` is the public site.
+- Borealis UI tabs and sub-pages must be created lazily on first selection — do
+  not add startup warmup timers that pre-construct hidden views. Defer SD/network
+  loads and repeating timers to `willAppear()` (not view constructors) and stop
+  timers in `willDisappear()`.
 - Switch uses C++20; shared core/app code must also compile as C11/C++17 on PC.
   Source lists live in `CMakeLists.txt` and `Makefile.pc`; native tests are discovered as
   `tests/test_*.c` and `tests/test_*.cpp`, with link rules in `Makefile.pc`. Objects and binaries belong in `build-pc/`.
@@ -39,8 +43,8 @@ installation. C11 core, C++ app services, Borealis UI.
     -e DEVKITPRO=/opt/devkitpro -v "$PWD:$PWD" -w "$PWD" \
     devkitpro/devkita64:zstd make switch
   ```
-  Then upload and launch from the host using `switch_bot.py` (see the
-  `switch-visual-test` skill). `make bot-run` on the host attempts a host build.
+  Then upload and launch from the host using `switch_autopilot.py` (see the
+  `switch-autopilot` skill). `make bot-run` on the host attempts a host build.
 - `test_manager` uses live DHT/tracker traffic and runs last. Wait for the state
   required by the assertion; claim-time `Checking` does not prove a poll occurred.
 - Native locale changes: add keys to `en-US`, mirror `ru`, `pt-BR`, `fr`, and run
@@ -57,15 +61,16 @@ installation. C11 core, C++ app services, Borealis UI.
 | libnx calls, PC shims, install backend, `src/install/`, `src/platform/`, `src/main_switch.cpp` | [.agents/skills/libnx/SKILL.md](.agents/skills/libnx/SKILL.md) |
 | Debrid providers or persisted settings/download-state versions | [.agents/skills/debrid/SKILL.md](.agents/skills/debrid/SKILL.md) |
 | QR bug report or Switch crash/update/download/install report | [.agents/skills/bug-report/SKILL.md](.agents/skills/bug-report/SKILL.md) |
-| Physical Switch tests, deployment, screenshots, input or console files/logs | [.agents/skills/switch-gemini/SKILL.md](.agents/skills/switch-gemini/SKILL.md): Codex delegates to Gemini through `agyx`; Gemini uses [switch-visual-test](.agents/skills/switch-visual-test/SKILL.md) directly |
+| Physical Switch tests, deployment, screenshots, input or console files/logs | [.agents/skills/switch-gemini/SKILL.md](.agents/skills/switch-gemini/SKILL.md): Codex delegates to Gemini through `agyx`; Gemini uses [switch-autopilot](.agents/skills/switch-autopilot/SKILL.md) (and the `switch` MCP server) directly |
 | GitHub issues, labels or PRs | [docs/agents/issue-tracker.md](docs/agents/issue-tracker.md) |
 
 ## Keep context small
 
-- Before each physical Switch work session, explicitly ask the user to approve
-  the concrete scenario and wait for approval, as required by
-  [switch-gemini](.agents/skills/switch-gemini/SKILL.md). Gemini performs the
-  approved console work and updates the current screenshot gallery at
+- Ask for Switch access once per conversation session, unless already explicitly
+  approved. Approval covers subsequent task scenarios, retries and continuations
+  in that conversation; honor any limits or revocation. See
+  [switch-gemini](.agents/skills/switch-gemini/SKILL.md). The authorized executor
+  performs console work and updates the current screenshot gallery at
   <http://192.168.1.148:8766/>.
 
 - Never read `pipensx.log` whole; filter by tag, error or task ID.

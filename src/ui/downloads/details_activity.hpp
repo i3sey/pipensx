@@ -466,7 +466,7 @@ private:
     }
 
     void refreshDeploy(const DownloadTask& task) {
-        if (!deploy_) {
+        if (!deploy_ || (manager_ && isRetroDownloadTask(manager_->rootPath(), taskId_))) {
             setSwitchFilesVisible(false);
             return;
         }
@@ -555,8 +555,13 @@ private:
             deploy_ ? deploy_->snapshot() : SwitchDeploySnapshot{};
         const bool deploying =
             deployState.active() && deployState.taskId == taskId_;
+        const bool isRetro = manager_ && isRetroDownloadTask(manager_->rootPath(), taskId_);
+        const RetroAutoPrepareSnapshot retroPrep =
+            isRetro ? retroAutoPrepareSnapshot(taskId_) : RetroAutoPrepareSnapshot{};
+        const bool retroPreparing = isRetro &&
+            (retroPrep.active || task->status == DownloadStatus::Completed);
         const bool screenModeActive = downloadPowerActive(task->status) ||
-            deploying;
+            deploying || retroPrep.active;
         setTextIfChanged(screenMode_, tr(!screenModeActive
             ? "pipensx/downloads/screen_mode_idle"
             : settings_ && settings_->get().blankScreenDuringTransfers
@@ -578,6 +583,15 @@ private:
             setTextIfChanged(status_, tr("pipensx/downloads/status_line",
                                          tr(phaseKey)));
             status_->setTextColor(theme::accent());
+        } else if (retroPreparing) {
+            const char* retroPhaseKey = retroPrep.creatingForwarder
+                ? "pipensx/retro/home_working"
+                : retroPrep.installingEmulator
+                      ? "pipensx/retro/installing"
+                      : "pipensx/retro/preparing";
+            setTextIfChanged(status_, tr("pipensx/downloads/status_line",
+                                         tr(retroPhaseKey)));
+            status_->setTextColor(theme::accent());
         } else {
             setTextIfChanged(status_, tr("pipensx/downloads/status_line",
                                          taskStatusText(*task)));
@@ -594,6 +608,11 @@ private:
                 : 0.0f;
             doneBytes = deployState.bytesCopied;
             totalBytes = deployState.totalBytes;
+        } else if (retroPreparing && retroPrep.totalBytes > 0) {
+            progress = std::min(1.0f, static_cast<float>(retroPrep.doneBytes) /
+                                          static_cast<float>(retroPrep.totalBytes));
+            doneBytes = retroPrep.doneBytes;
+            totalBytes = retroPrep.totalBytes;
         } else if (fetching) {
             progress = std::clamp(static_cast<float>(task->fetchProgress),
                                   0.0f, 1.0f);
@@ -628,13 +647,13 @@ private:
             doneBytes = account.downloadedBytes;
             totalBytes = account.downloadTotalBytes;
         }
-        const bool finished = finishedDownloadStatus(task->status) && !deploying;
-        speedCard_->setVisibility(finished ? brls::Visibility::GONE
-                                           : brls::Visibility::VISIBLE);
+        const bool finished = finishedDownloadStatus(task->status) && !deploying && !retroPreparing;
+        speedCard_->setVisibility((finished || retroPreparing) ? brls::Visibility::GONE
+                                                               : brls::Visibility::VISIBLE);
         progressBar_->setVisibility(finished ? brls::Visibility::GONE
                                              : brls::Visibility::VISIBLE);
         progressBar_->setProgress(progress);
-        if (task && !deploying && !fetching &&
+        if (task && !deploying && !retroPreparing && !fetching &&
             (account.verifyingSaved || account.showInstalled))
             setTextIfChanged(progress_, recoveryAxesText(*task));
         else
@@ -642,7 +661,7 @@ private:
                                            percentOf(progress),
                                            formatBytes(doneBytes),
                                            formatBytes(totalBytes)));
-        const std::string recoveryText = !deploying
+        const std::string recoveryText = (!deploying && !retroPreparing)
             ? (showDetails_ ? recoveryNoticeText(*task) : recoveryWorkText(*task))
             : std::string();
         setTextIfChanged(recovery_, recoveryText);
@@ -745,7 +764,12 @@ private:
     void updateButtons(const DownloadTask& task) {
         const SwitchDeploySnapshot deploy = deploy_ ? deploy_->snapshot()
                                                      : SwitchDeploySnapshot{};
-        const bool leased = deploy.active() && deploy.taskId == taskId_;
+        const bool isRetro = manager_ && isRetroDownloadTask(manager_->rootPath(), task.id);
+        const RetroAutoPrepareSnapshot retroPrep =
+            isRetro ? retroAutoPrepareSnapshot(task.id) : RetroAutoPrepareSnapshot{};
+        const bool leased = (deploy.active() && deploy.taskId == taskId_) ||
+                            retroPrep.active ||
+                            (manager_ && manager_->externalDeployTaskId() == taskId_);
         const TaskCapabilities caps = taskCapabilities(task, leased);
         const bool resumable = task.status == DownloadStatus::Paused ||
                                task.status == DownloadStatus::Error;
@@ -764,12 +788,13 @@ private:
             !leased &&
             (task.status == DownloadStatus::Installing ||
              task.status == DownloadStatus::Committing);
-        const bool showSwitchFiles = deploy_ != nullptr &&
+        const bool showSwitchFiles = !isRetro && deploy_ != nullptr &&
             ((deploy.active() && deploy.taskId == taskId_) || copyAvailable_ ||
              installed_);
         setSwitchFilesVisible(showSwitchFiles);
         setButtonAvailable(filesButton_, showSwitchFiles);
         const bool showInstruction =
+            !isRetro &&
             task.status == DownloadStatus::Completed &&
             (task.mode == TransferMode::DownloadOnly ||
              task.mode == TransferMode::PortInstall) &&

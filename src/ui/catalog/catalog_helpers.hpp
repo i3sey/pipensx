@@ -383,17 +383,19 @@ public:
         addView(percentLabel_);
     }
 
-    void setProgress(float progress) {
-        if (progress < 0.0f) {
-            progressBar_->setVisibility(brls::Visibility::GONE);
-            percentLabel_->setVisibility(brls::Visibility::GONE);
-            return;
+    void setStage(std::string label, float fraction = -1.0f) {
+        phaseLabel_ = std::move(label);
+        label_->setText(phaseLabel_);
+        const bool measured = fraction >= 0.0f && fraction < 1.0f;
+        const auto visibility = measured ? brls::Visibility::VISIBLE
+                                         : brls::Visibility::GONE;
+        progressBar_->setVisibility(visibility);
+        percentLabel_->setVisibility(visibility);
+        if (measured) {
+            progressBar_->setProgress(fraction);
+            const int percent = std::min(99, static_cast<int>(fraction * 100.0f));
+            percentLabel_->setText(std::to_string(percent) + "%");
         }
-        progressBar_->setProgress(progress);
-        progressBar_->setVisibility(brls::Visibility::VISIBLE);
-        int percent = std::clamp(static_cast<int>(std::round(progress * 100.0f)), 0, 100);
-        percentLabel_->setText(std::to_string(percent) + "%");
-        percentLabel_->setVisibility(brls::Visibility::VISIBLE);
     }
 
     void update(bool busy, bool refreshInFlight, AppSettings* settings,
@@ -415,7 +417,8 @@ public:
         }
         switch (state.kind) {
             case CatalogFreshness::Kind::Updating:
-                label_->setText(tr("pipensx/catalog/freshness_updating"));
+                label_->setText(phaseLabel_.empty()
+                    ? tr("pipensx/catalog/freshness_updating") : phaseLabel_);
                 label_->setTextColor(theme::warning());
                 return;
             case CatalogFreshness::Kind::Never:
@@ -436,12 +439,14 @@ public:
     }
 
     void setBusy(bool busy) {
+        if (busy == busy_)
+            return;
+        busy_ = busy;
         if (busy) {
             busyDot_->setVisibility(brls::Visibility::VISIBLE);
             startBusyPulse(busyDot_);
-            progressBar_->setVisibility(brls::Visibility::VISIBLE);
-            percentLabel_->setVisibility(brls::Visibility::VISIBLE);
         } else {
+            phaseLabel_.clear();
             stopBusyPulse(busyDot_);
             busyDot_->setVisibility(brls::Visibility::GONE);
             progressBar_->setVisibility(brls::Visibility::GONE);
@@ -452,6 +457,8 @@ public:
     }
 
 private:
+    bool busy_ = false;
+    std::string phaseLabel_;
     brls::Label* busyDot_ = nullptr;
     brls::Label* label_ = nullptr;
     ProgressBar* progressBar_ = nullptr;

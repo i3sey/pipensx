@@ -181,6 +181,21 @@ int main(void)
         &package, &size) != 0);
     assert(!package && !size);
 
+    const char *retro_nro = "sdmc:/switch/mGBA/mGBA.nro";
+    const char *retro_args = "\"sdmc:/switch/mGBA/mGBA.nro\" \"sdmc:/roms/Проверка GBA.gba\"";
+    assert(!pipensxBuildForwarderEx(tid, "Проверка GBA", "pipensx Retro", NULL, NULL, retro_nro,
+        retro_args, main, sizeof(main), npdm, sizeof(npdm), icon, sizeof(icon), &package, &size));
+    pfs = package;
+    entries = (const void *)(pfs + 1);
+    names = (const void *)(entries + 3);
+    data = (const void *)(names + pfs->string_table_size);
+    check_launch(data + entries[0].data_offset, retro_nro, retro_args);
+    bool publisher_found = false;
+    for (size_t pos = 0; pos + sizeof("pipensx Retro") <= size; ++pos)
+        if (!memcmp((const u8 *)package + pos, "pipensx Retro", sizeof("pipensx Retro")))
+            publisher_found = true;
+    assert(publisher_found);
+    free(package);
     crypto_result = 0x1234;
     assert(pipensxBuildForwarder(tid, "FTL", nro, args, main, sizeof(main),
         npdm, sizeof(npdm), icon, sizeof(icon), &package, &size) == 0x1234);

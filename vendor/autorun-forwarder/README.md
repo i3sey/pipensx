@@ -10,3 +10,7 @@ InstallBackend transaction. The hbloader reads nextNroPath and nextArgv from
 RomFS and loads the runtime into an application process. No console keys are
 stored on disk. The host format test also adapts upstream
 `horizon-wine/tests/switch_shim.h` as `tests/autorun_switch/switch.h`. See LICENSE, COPYING.LIB, and hbl/LICENSE.md for licensing.
+
+`pipensxBuildForwarderEx` also accepts an explicit publisher for the Retro
+caller. The original entry point retains the AutoRun publisher. Both produce
+the same NSP structure and use the same loader assets.

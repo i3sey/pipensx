@@ -41,7 +41,11 @@ public:
                  std::function<void(bool)> onShowHomeTab = {},
                  std::string ipAddress = {})
         : brls::Box(brls::Axis::ROW), settings_(settings), manager_(manager),
+          catalog_(catalog), metadata_(metadata), installed_(installed),
+          updater_(updater), webServer_(webServer),
           onMetadataRefreshed_(std::move(onMetadataRefreshed)),
+          onShowHomeTab_(std::move(onShowHomeTab)),
+          ipAddress_(std::move(ipAddress)),
           alive_(std::make_shared<std::atomic<bool>>(true)) {
         setGrow(1);
         setAlignItems(brls::AlignItems::STRETCH);
@@ -68,34 +72,14 @@ public:
         addView(host_);
 
         panels_[static_cast<size_t>(SettingsSection::General)] =
-            new GeneralPanel(settings_, std::move(onShowHomeTab));
-        panels_[static_cast<size_t>(SettingsSection::Downloads)] =
-            new DownloadsPanel(settings_, manager_);
-        panels_[static_cast<size_t>(SettingsSection::Source)] =
-            source_ = new SourcePanel(settings_, manager_,
-                                     [this] { openDownloadSource(); });
-        panels_[static_cast<size_t>(SettingsSection::Network)] =
-            new NetworkPanel(settings_, manager_, webServer,
-                             std::move(ipAddress));
-        panels_[static_cast<size_t>(SettingsSection::Catalog)] =
-            new CatalogPanel(settings_, catalog, metadata, alive_,
-                             onMetadataRefreshed_);
-        panels_[static_cast<size_t>(SettingsSection::Storage)] =
-            new StoragePanel(manager, metadata, alive_);
-        panels_[static_cast<size_t>(SettingsSection::System)] =
-            new SystemPanel(settings_, manager, catalog, metadata,
-                            installed, updater, alive_,
-                            [this] { applyValues(); });
-
-        for (size_t i = 0; i < kSettingsSectionCount; ++i) {
-            host_->addView(panels_[i]);
-            panels_[i]->setVisibility(i == 0 ? brls::Visibility::VISIBLE
-                                             : brls::Visibility::GONE);
-        }
+            new GeneralPanel(settings_, onShowHomeTab_);
+        host_->addView(panels_[0]);
         sidebar_->setActive(SettingsSection::General);
+        scheduleWarmup();
     }
 
     ~SettingsView() override {
+        warmupTimer_.stop();
         alive_->store(false);
     }
 
@@ -115,12 +99,70 @@ public:
     }
 
 private:
+    SettingsPanel* ensurePanel(SettingsSection section) {
+        const size_t idx = static_cast<size_t>(section);
+        if (panels_[idx])
+            return panels_[idx];
+        SettingsPanel* created = nullptr;
+        switch (section) {
+            case SettingsSection::General:
+                created = new GeneralPanel(settings_, onShowHomeTab_);
+                break;
+            case SettingsSection::Downloads:
+                created = new DownloadsPanel(settings_, manager_);
+                break;
+            case SettingsSection::Source:
+                created = source_ = new SourcePanel(
+                    settings_, manager_, [this] { openDownloadSource(); });
+                break;
+            case SettingsSection::Network:
+                created = new NetworkPanel(settings_, manager_, webServer_,
+                                           ipAddress_);
+                break;
+            case SettingsSection::Catalog:
+                created = new CatalogPanel(settings_, catalog_, metadata_,
+                                           alive_, onMetadataRefreshed_);
+                break;
+            case SettingsSection::Storage:
+                created = new StoragePanel(manager_, metadata_, alive_);
+                break;
+            case SettingsSection::System:
+                created = new SystemPanel(settings_, manager_, catalog_,
+                                          metadata_, installed_, updater_,
+                                          alive_, [this] { applyValues(); });
+                break;
+        }
+        panels_[idx] = created;
+        created->setVisibility(section == activeSection_
+                                   ? brls::Visibility::VISIBLE
+                                   : brls::Visibility::GONE);
+        host_->addView(created);
+        return created;
+    }
+
+    void scheduleWarmup() {
+        warmupTimer_.setCallback([this] {
+            while (warmupCursor_ < kSettingsSectionCount) {
+                const size_t idx = warmupCursor_++;
+                if (!panels_[idx]) {
+                    ensurePanel(static_cast<SettingsSection>(idx));
+                    return;
+                }
+            }
+            warmupTimer_.stop();
+        });
+        warmupTimer_.start(60);
+    }
+
     void showSection(SettingsSection section) {
         if (section == activeSection_)
             return;
         activeSection_ = section;
         sidebar_->setActive(section);
+        ensurePanel(section);
         for (size_t i = 0; i < kSettingsSectionCount; ++i) {
+            if (!panels_[i])
+                continue;
             panels_[i]->setVisibility(
                 i == static_cast<size_t>(section)
                     ? brls::Visibility::VISIBLE
@@ -134,8 +176,10 @@ private:
     // factory reset (System panel) and after a first-run chooser round-trip.
     void applyValues() {
         const AppSettingsData& values = settings_->get();
-        for (size_t i = 0; i < kSettingsSectionCount; ++i)
-            panels_[i]->applyValues();
+        for (size_t i = 0; i < kSettingsSectionCount; ++i) {
+            if (panels_[i])
+                panels_[i]->applyValues();
+        }
         manager_->setTorrentingEnabled(values.torrentingEnabled);
         manager_->setLiveSeedingEnabled(values.liveSeedingEnabled);
         manager_->setTorboxApiKey(values.torboxApiKey);
@@ -144,7 +188,8 @@ private:
         manager_->setAlldebridApiKey(values.alldebridApiKey);
         manager_->setActiveDebridProvider(values.debridProvider);
         manager_->setKeepUncachedDebrid(values.keepUncachedDebrid);
-        source_->refreshDetail();
+        if (source_)
+            source_->refreshDetail();
     }
 
     // Opens the same chooser the app shows on first launch, then follows the
@@ -166,13 +211,22 @@ private:
 
     AppSettings* settings_;
     DownloadManager* manager_;
+    CatalogService* catalog_ = nullptr;
+    GameMetadataService* metadata_ = nullptr;
+    InstalledTitleService* installed_ = nullptr;
+    UpdateService* updater_ = nullptr;
+    WebServer* webServer_ = nullptr;
     std::function<void()> onMetadataRefreshed_;
+    std::function<void(bool)> onShowHomeTab_;
+    std::string ipAddress_;
     std::shared_ptr<std::atomic<bool>> alive_;
     SettingsSidebar* sidebar_ = nullptr;
     brls::Box* host_ = nullptr;
     SettingsPanel* panels_[kSettingsSectionCount] = {};
     SourcePanel* source_ = nullptr;
     SettingsSection activeSection_ = SettingsSection::General;
+    brls::RepeatingTimer warmupTimer_;
+    size_t warmupCursor_ = 1;
 };
 
 }  // namespace pipensx::ui

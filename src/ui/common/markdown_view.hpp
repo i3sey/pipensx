@@ -30,6 +30,14 @@ public:
     void draw(NVGcontext* vg, float x, float y, float width, float,
               brls::Style, brls::FrameContext*) override {
         layout(width);
+        float clipTop = y, clipBottom = y + height_;
+        for (brls::View* parent = getParent(); parent; parent = parent->getParent()) {
+            if (auto* scroll = dynamic_cast<brls::ScrollingFrame*>(parent)) {
+                clipTop = std::max(clipTop, scroll->getY());
+                clipBottom = std::min(clipBottom, scroll->getY() + scroll->getHeight());
+            }
+        }
+        if (clipBottom <= clipTop) return;
         nvgSave(vg);
         nvgIntersectScissor(vg, x, y, width, height_);
         nvgFontFaceId(vg, brls::Application::getDefaultFont());
@@ -44,7 +52,9 @@ public:
             nvgFillColor(vg, a(code ? theme::surface() : theme::textSecondary()));
             nvgFill(vg);
         }
+        const float lineHeight = fontSize() * 1.3f;
         for (const auto& run : runs_) {
+            if (y + run.y + lineHeight <= clipTop || y + run.y >= clipBottom) continue;
             nvgSave(vg);
             nvgTranslate(vg, x + run.x, y + run.y);
             if (run.style & markdown::Italic) nvgSkewX(vg, -0.12f);
@@ -119,7 +129,13 @@ private:
                     }
                     const auto part = word.substr(0, take);
                     size = nvgTextBounds(vg, 0, 0, part.c_str(), nullptr, nullptr);
-                    runs_.push_back({part, span.style, x, y, size});
+                    if (!runs_.empty() && runs_.back().y == y && runs_.back().style == span.style &&
+                        std::fabs(runs_.back().x + runs_.back().width - x) < 0.5f) {
+                        runs_.back().text += part;
+                        runs_.back().width += size;
+                    } else {
+                        runs_.push_back({part, span.style, x, y, size});
+                    }
                     x += size;
                     word.erase(0, take);
                     if (!word.empty()) { x = origin; y += lineHeight; }

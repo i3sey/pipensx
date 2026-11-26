@@ -137,6 +137,23 @@ public:
                       GameMetadataService::ImagePriority::Current);
     }
 
+    void setLoadingPlaceholder(const std::string& kicker,
+                               const std::string& titleText,
+                               const std::string& metaText,
+                               const std::string& bodyText) {
+        infoHash_.clear();
+        onActivate_ = nullptr;
+        currentUrl_.clear();
+        ++imageState_->generation;
+        imageState_->pending = false;
+        image_->resetArtwork();
+        setTextIfChanged(kicker_, kicker);
+        setTextIfChanged(title_, titleText);
+        setTextIfChanged(meta_, metaText);
+        setTextIfChanged(description_, bodyText);
+        setTextIfChanged(placeholder_, "···");
+    }
+
     void onFocusGained() override {
         brls::Box::onFocusGained();
         title_->setAnimated(true);
@@ -385,8 +402,23 @@ private:
     void presentSelection() {
         if (heroIndex_ >= static_cast<int>(slots_.size()))
             heroIndex_ = 0;
-        paint();
         const bool empty = slots_.empty();
+        const bool waitingForCatalog =
+            empty && (!catalog_ || catalog_->entries().empty()) &&
+            catalogRefreshInFlight();
+        if (waitingForCatalog) {
+            hero_->setLoadingPlaceholder(
+                tr("pipensx/catalog/featured"),
+                tr("pipensx/catalog/freshness_updating"),
+                tr("pipensx/catalog/refresh_preparing"),
+                tr("pipensx/catalog/empty_body"));
+            hero_->setVisibility(brls::Visibility::VISIBLE);
+            dots_->setVisibility(brls::Visibility::GONE);
+            if (emptyState_)
+                emptyState_->setVisibility(brls::Visibility::GONE);
+            return;
+        }
+        paint();
         hero_->setVisibility(empty ? brls::Visibility::GONE
                                    : brls::Visibility::VISIBLE);
         dots_->setVisibility(empty ? brls::Visibility::GONE

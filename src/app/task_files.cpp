@@ -10,12 +10,14 @@ extern "C" {
 }
 
 #include <algorithm>
+#include <cctype>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <dirent.h>
 #include <fstream>
 #include <map>
+#include <mutex>
 #include <set>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -277,10 +279,102 @@ bool taskReadyForSwitchDeploy(const DownloadTask& task) {
            task.mode == TransferMode::AutoRunInstall;
 }
 
+namespace {
+
+bool isAsciiSpace(char c) {
+    return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
+
+bool asciiEqCi(const char* a, const char* b, size_t len) {
+    for (size_t i = 0; i < len; ++i) {
+        if (std::tolower(static_cast<unsigned char>(a[i])) !=
+            std::tolower(static_cast<unsigned char>(b[i])))
+            return false;
+    }
+    return true;
+}
+
+bool jsonHasTaskIdField(const std::string& text, const std::string& taskId) {
+    for (const char* needle : {"\"task\"", "\"taskId\""}) {
+        const size_t nlen = std::strlen(needle);
+        size_t pos = 0;
+        while ((pos = text.find(needle, pos)) != std::string::npos) {
+            size_t cur = pos + nlen;
+            while (cur < text.size() && isAsciiSpace(text[cur]))
+                ++cur;
+            if (cur >= text.size() || text[cur] != ':') {
+                pos = cur;
+                continue;
+            }
+            ++cur;
+            while (cur < text.size() && isAsciiSpace(text[cur]))
+                ++cur;
+            if (cur < text.size() && text[cur] == '"' &&
+                cur + 1 + taskId.size() < text.size() &&
+                asciiEqCi(text.data() + cur + 1, taskId.data(), taskId.size()) &&
+                text[cur + 1 + taskId.size()] == '"')
+                return true;
+            pos = cur;
+        }
+    }
+    return false;
+}
+
+bool isRetroOperationFileName(const std::string& name) {
+    for (const char* suffix : {".json", ".json.previous"}) {
+        const size_t slen = std::strlen(suffix);
+        if (name.size() > slen && name.compare(name.size() - slen, slen, suffix) == 0)
+            return true;
+    }
+    return false;
+}
+
+} // namespace
+
+bool isRetroDownloadTask(const std::string& appRoot, const std::string& taskId) {
+    if (appRoot.empty() || taskId.empty() ||
+        !taskFilePathIsSafe(taskId) ||
+        taskId.find('/') != std::string::npos)
+        return false;
+    const std::string marker = appRoot + "/retro/by-task/" + taskId;
+    struct stat st {};
+    if (lstat(marker.c_str(), &st) == 0 && S_ISREG(st.st_mode))
+        return true;
+
+    const std::string opsDir = appRoot + "/retro/operations";
+    DIR* dir = opendir(opsDir.c_str());
+    if (!dir)
+        return false;
+    bool found = false;
+    while (struct dirent* ent = readdir(dir)) {
+        const std::string name = ent->d_name;
+        if (!isRetroOperationFileName(name))
+            continue;
+        const std::string path = opsDir + "/" + name;
+        struct stat fileSt {};
+        if (lstat(path.c_str(), &fileSt) != 0 || !S_ISREG(fileSt.st_mode) ||
+            fileSt.st_size <= 0 || fileSt.st_size > 256 * 1024)
+            continue;
+        std::ifstream in(path, std::ios::binary);
+        if (!in)
+            continue;
+        std::string content(static_cast<size_t>(fileSt.st_size), '\0');
+        in.read(&content[0], static_cast<std::streamsize>(content.size()));
+        if (in.gcount() > 0 && jsonHasTaskIdField(content, taskId)) {
+            found = true;
+            break;
+        }
+    }
+    closedir(dir);
+    return found;
+}
+
 bool taskHasPortOrArchiveFiles(const std::string& appRoot,
                                const DownloadTask& task) {
     if (task.mode == TransferMode::PortInstall)
         return true;
+    if (isRetroDownloadTask(appRoot, task.id))
+        return false;
     TaskFileManifest manifest;
     std::string error;
     if (loadTaskFileManifest(appRoot, task.id, manifest, error) &&
@@ -772,6 +866,50 @@ bool refreshTorrentManifestLocalPaths(const std::string& appRoot,
     }
     metainfo_free(&metainfo);
     return saveTaskFileManifest(appRoot, manifest, error);
+}
+
+namespace {
+std::mutex gRetroAutoPrepStateMutex;
+std::map<std::string, RetroAutoPrepareSnapshot> gRetroAutoPrepSnapshots;
+uint64_t gRetroAutoPrepGeneration = 0;
+} // namespace
+
+RetroAutoPrepareSnapshot retroAutoPrepareSnapshot(const std::string& taskId) {
+    if (taskId.empty())
+        return {};
+    std::lock_guard<std::mutex> lock(gRetroAutoPrepStateMutex);
+    const auto it = gRetroAutoPrepSnapshots.find(taskId);
+    if (it == gRetroAutoPrepSnapshots.end())
+        return {};
+    return it->second;
+}
+
+void setRetroAutoPrepareProgress(const std::string& taskId,
+                                 bool active,
+                                 uint64_t doneBytes,
+                                 uint64_t totalBytes,
+                                 size_t doneFiles,
+                                 size_t totalFiles,
+                                 bool installingEmulator,
+                                 bool creatingForwarder) {
+    if (taskId.empty())
+        return;
+    std::lock_guard<std::mutex> lock(gRetroAutoPrepStateMutex);
+    ++gRetroAutoPrepGeneration;
+    if (!active) {
+        gRetroAutoPrepSnapshots.erase(taskId);
+        return;
+    }
+    auto& s = gRetroAutoPrepSnapshots[taskId];
+    s.active = true;
+    s.taskId = taskId;
+    s.doneBytes = doneBytes;
+    s.totalBytes = totalBytes;
+    s.doneFiles = doneFiles;
+    s.totalFiles = totalFiles;
+    s.installingEmulator = installingEmulator;
+    s.creatingForwarder = creatingForwarder;
+    s.generation = gRetroAutoPrepGeneration;
 }
 
 } // namespace pipensx

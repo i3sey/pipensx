@@ -9,14 +9,21 @@
 #include <curl/curl.h>
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <dirent.h>
+#include <filesystem>
+#include <fstream>
+#include <limits>
 #include <set>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
+#include <system_error>
 #include <unistd.h>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace pipensx {
 namespace {
@@ -178,6 +185,9 @@ bool fetch(const std::string& url, uint64_t limit, const HomebrewCatalog::Sink& 
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_USERAGENT, PIPENSX_USER_AGENT);
     curlPinHttpsOnly(curl);
+    curlApplyTrustedSsl(curl);
+    CurlSocketTuning socketTuning;
+    curlTuneDownloadSocket(curl, &socketTuning);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 20L);
@@ -185,8 +195,6 @@ bool fetch(const std::string& url, uint64_t limit, const HomebrewCatalog::Sink& 
     curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1024L);
     curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 30L);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, receive);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &transfer);
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
@@ -552,6 +560,831 @@ bool HomebrewCatalog::install(const HomebrewPackage& package, const std::atomic<
     }
     if (!recover(error)) return false;
     error.clear();
+    return true;
+}
+
+namespace {
+
+namespace fs = std::filesystem;
+
+constexpr size_t kNoMatch = std::numeric_limits<size_t>::max();
+constexpr size_t kAmbiguous = std::numeric_limits<size_t>::max() - 1;
+
+struct NroMetadata {
+    std::string title;
+    std::string author;
+    std::string version;
+    uint64_t iconOffset = 0;
+    uint64_t iconSize = 0;
+};
+
+struct DiscoveredNro {
+    fs::path fullPath;
+    std::string relPath;
+    std::string stem;
+    std::string filename;
+    NroMetadata meta;
+};
+
+struct CatalogIndex {
+    std::unordered_map<std::string, size_t> byExactPath;
+    std::unordered_map<std::string, size_t> byTitleAndAuthor;
+    std::unordered_map<std::string, size_t> byTitle;
+    std::unordered_map<std::string, size_t> byNroBasename;
+};
+
+uint32_t readLe32(const uint8_t* p) {
+    return static_cast<uint32_t>(p[0]) |
+           (static_cast<uint32_t>(p[1]) << 8) |
+           (static_cast<uint32_t>(p[2]) << 16) |
+           (static_cast<uint32_t>(p[3]) << 24);
+}
+
+uint64_t readLe64(const uint8_t* p) {
+    return static_cast<uint64_t>(readLe32(p)) |
+           (static_cast<uint64_t>(readLe32(p + 4)) << 32);
+}
+
+std::string trimAscii(const std::string& s) {
+    size_t start = 0;
+    while (start < s.size() && std::isspace(static_cast<unsigned char>(s[start]))) {
+        ++start;
+    }
+    size_t end = s.size();
+    while (end > start && std::isspace(static_cast<unsigned char>(s[end - 1]))) {
+        --end;
+    }
+    return s.substr(start, end - start);
+}
+
+std::string extractBoundedString(const uint8_t* data, size_t maxLen) {
+    const void* nul = std::memchr(data, '\0', maxLen);
+    const size_t len = nul ? static_cast<size_t>(static_cast<const uint8_t*>(nul) - data) : maxLen;
+    return trimAscii(std::string(reinterpret_cast<const char*>(data), len));
+}
+
+bool readAt(std::ifstream& in, uint64_t offset, uint8_t* dst, size_t len, uint64_t fileSize) {
+    if (offset > fileSize || len > fileSize - offset) {
+        return false;
+    }
+    if (offset > static_cast<uint64_t>(std::numeric_limits<std::streamoff>::max())) {
+        return false;
+    }
+    in.clear();
+    in.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
+    if (!in) {
+        return false;
+    }
+    in.read(reinterpret_cast<char*>(dst), static_cast<std::streamsize>(len));
+    return in.good() && static_cast<size_t>(in.gcount()) == len;
+}
+
+NroMetadata parseNroMetadata(const fs::path& path) {
+    NroMetadata meta;
+    std::ifstream in(path, std::ios::binary);
+    if (!in.is_open()) {
+        return meta;
+    }
+
+    in.seekg(0, std::ios::end);
+    const std::streampos endPos = in.tellg();
+    if (endPos < 0) {
+        return meta;
+    }
+    const uint64_t fileSize = static_cast<uint64_t>(endPos);
+
+    constexpr size_t kNroHeaderMin = 0x20;
+    std::array<uint8_t, kNroHeaderMin> nroHdr{};
+    if (!readAt(in, 0, nroHdr.data(), nroHdr.size(), fileSize)) {
+        return meta;
+    }
+    if (nroHdr[0x10] != 'N' || nroHdr[0x11] != 'R' || nroHdr[0x12] != 'O' || nroHdr[0x13] != '0') {
+        return meta;
+    }
+
+    const uint64_t imageSize = readLe32(nroHdr.data() + 0x18);
+    if (imageSize < kNroHeaderMin || imageSize > fileSize) {
+        return meta;
+    }
+
+    constexpr size_t kAsetHeaderSize = 0x38;
+    std::array<uint8_t, kAsetHeaderSize> asetHdr{};
+    if (!readAt(in, imageSize, asetHdr.data(), asetHdr.size(), fileSize)) {
+        return meta;
+    }
+    if (asetHdr[0] != 'A' || asetHdr[1] != 'S' || asetHdr[2] != 'E' || asetHdr[3] != 'T') {
+        return meta;
+    }
+
+    constexpr uint64_t kMaxNroIconBytes = 2 * 1024 * 1024;
+    const uint64_t iconRel = readLe64(asetHdr.data() + 0x08);
+    const uint64_t iconSize = readLe64(asetHdr.data() + 0x10);
+    if (iconSize >= 8 && iconSize <= kMaxNroIconBytes &&
+        iconRel >= kAsetHeaderSize &&
+        iconRel <= fileSize - imageSize &&
+        iconSize <= fileSize - (imageSize + iconRel)) {
+        meta.iconOffset = imageSize + iconRel;
+        meta.iconSize = iconSize;
+    }
+
+    const uint64_t nacpRel = readLe64(asetHdr.data() + 0x18);
+    const uint64_t nacpSize = readLe64(asetHdr.data() + 0x20);
+    if (nacpSize == 0 || nacpRel > fileSize - imageSize) {
+        return meta;
+    }
+    const uint64_t nacpOffset = imageSize + nacpRel;
+    if (nacpSize > fileSize - nacpOffset) {
+        return meta;
+    }
+
+    constexpr size_t kSlotCount = 16;
+    constexpr size_t kSlotSize = 0x300;
+    constexpr size_t kNameLen = 0x200;
+    constexpr size_t kAuthorLen = 0x100;
+    std::array<uint8_t, kSlotSize> slot{};
+
+    for (size_t i = 0; i < kSlotCount && (meta.title.empty() || meta.author.empty()); ++i) {
+        const uint64_t slotRel = static_cast<uint64_t>(i) * kSlotSize;
+        if (slotRel >= nacpSize) {
+            break;
+        }
+        const size_t avail = static_cast<size_t>(std::min<uint64_t>(kSlotSize, nacpSize - slotRel));
+        if (!readAt(in, nacpOffset + slotRel, slot.data(), avail, fileSize)) {
+            break;
+        }
+        if (meta.title.empty()) {
+            meta.title = extractBoundedString(slot.data(), std::min(avail, kNameLen));
+        }
+        if (meta.author.empty() && avail > kNameLen) {
+            meta.author = extractBoundedString(slot.data() + kNameLen,
+                                               std::min(avail - kNameLen, kAuthorLen));
+        }
+    }
+
+    constexpr uint64_t kDisplayVersionOffset = 0x3060;
+    constexpr size_t kDisplayVersionLen = 16;
+    if (kDisplayVersionOffset < nacpSize) {
+        std::array<uint8_t, kDisplayVersionLen> verBuf{};
+        const size_t verAvail = static_cast<size_t>(
+            std::min<uint64_t>(kDisplayVersionLen, nacpSize - kDisplayVersionOffset));
+        if (readAt(in, nacpOffset + kDisplayVersionOffset, verBuf.data(), verAvail, fileSize)) {
+            meta.version = extractBoundedString(verBuf.data(), verAvail);
+        }
+    }
+
+    return meta;
+}
+
+std::string normalizeRelPathDisplay(const std::string& raw) {
+    std::string out;
+    out.reserve(raw.size());
+    bool prevSlash = false;
+    for (char ch : raw) {
+        const char c = (ch == '\\') ? '/' : ch;
+        if (c == '/') {
+            if (!out.empty() && !prevSlash) {
+                out.push_back('/');
+            }
+            prevSlash = true;
+        } else {
+            out.push_back(c);
+            prevSlash = false;
+        }
+    }
+    while (out.size() >= 2 && out[0] == '.' && out[1] == '/') {
+        out.erase(0, 2);
+        while (!out.empty() && out[0] == '/') {
+            out.erase(0, 1);
+        }
+    }
+    return out;
+}
+
+std::string normalizeRelPathKey(const std::string& raw) {
+    return lower(normalizeRelPathDisplay(raw));
+}
+
+std::string normalizeToken(const std::string& raw) {
+    const std::string lowered = lower(raw);
+    std::string out;
+    out.reserve(lowered.size());
+    for (unsigned char c : lowered) {
+        if ((c & 0x80u) != 0 || std::isalnum(c)) {
+            out.push_back(static_cast<char>(c));
+        }
+    }
+    return out;
+}
+
+bool isDistinctiveToken(const std::string& normToken) {
+    if (normToken.size() < 3) {
+        return false;
+    }
+    static const std::unordered_set<std::string> kGeneric = {
+        "main", "app", "switch", "homebrew", "boot", "loader", "menu",
+        "index", "default", "nro", "bin", "release", "debug", "test",
+        "game", "tool", "launcher", "installer", "updater", "demo", "sample"
+    };
+    return kGeneric.find(normToken) == kGeneric.end();
+}
+
+void insertUnique(std::unordered_map<std::string, size_t>& map, const std::string& key, size_t idx) {
+    if (key.empty()) {
+        return;
+    }
+    auto [it, inserted] = map.emplace(key, idx);
+    if (!inserted && it->second != idx) {
+        it->second = kAmbiguous;
+    }
+}
+
+CatalogIndex buildCatalogIndex(const std::vector<HomebrewPackage>& catalog) {
+    CatalogIndex index;
+    for (size_t i = 0; i < catalog.size(); ++i) {
+        const HomebrewPackage& pkg = catalog[i];
+        const std::string normAuthor = normalizeToken(pkg.author);
+
+        for (const std::string& label : {pkg.title, pkg.name}) {
+            const std::string normLabel = normalizeToken(label);
+            if (normLabel.empty()) {
+                continue;
+            }
+            insertUnique(index.byTitle, normLabel, i);
+            if (!normAuthor.empty()) {
+                insertUnique(index.byTitleAndAuthor, normLabel + '\0' + normAuthor, i);
+            }
+        }
+
+        for (const HomebrewFile& file : pkg.files) {
+            const std::string normPath = normalizeRelPathKey(file.path);
+            if (normPath.empty()) {
+                continue;
+            }
+            insertUnique(index.byExactPath, normPath, i);
+
+            const fs::path fp(normPath);
+            if (lower(fp.extension().string()) == ".nro") {
+                const std::string normStem = normalizeToken(fp.stem().string());
+                if (isDistinctiveToken(normStem)) {
+                    insertUnique(index.byNroBasename, normStem, i);
+                }
+            }
+        }
+    }
+    return index;
+}
+
+size_t matchCatalog(const CatalogIndex& index, const DiscoveredNro& disc) {
+    if (auto it = index.byExactPath.find(normalizeRelPathKey(disc.relPath));
+        it != index.byExactPath.end()) {
+        return it->second == kAmbiguous ? kNoMatch : it->second;
+    }
+
+    const std::string normTitle = normalizeToken(disc.meta.title);
+    const std::string normAuthor = normalizeToken(disc.meta.author);
+    if (!normTitle.empty()) {
+        if (!normAuthor.empty()) {
+            if (auto it = index.byTitleAndAuthor.find(normTitle + '\0' + normAuthor);
+                it != index.byTitleAndAuthor.end()) {
+                return it->second == kAmbiguous ? kNoMatch : it->second;
+            }
+        }
+        if (isDistinctiveToken(normTitle)) {
+            if (auto it = index.byTitle.find(normTitle); it != index.byTitle.end()) {
+                return it->second == kAmbiguous ? kNoMatch : it->second;
+            }
+        }
+    }
+
+    const std::string normStem = normalizeToken(disc.stem);
+    if (isDistinctiveToken(normStem)) {
+        if (auto it = index.byNroBasename.find(normStem); it != index.byNroBasename.end()) {
+            return it->second == kAmbiguous ? kNoMatch : it->second;
+        }
+    }
+
+    return kNoMatch;
+}
+
+bool enumerateNros(const fs::path& sdRoot, std::vector<DiscoveredNro>& out, std::string& error) {
+    const fs::path switchRoot = sdRoot / "switch";
+    std::error_code ec;
+    const fs::file_status rootStatus = fs::symlink_status(switchRoot, ec);
+    if (ec) {
+        if (ec == std::errc::no_such_file_or_directory) {
+            return true;
+        }
+        error = "Failed to inspect " + switchRoot.string() + ": " + ec.message();
+        return false;
+    }
+    if (fs::is_symlink(rootStatus) || !fs::is_directory(rootStatus)) {
+        return true;
+    }
+
+    std::vector<fs::path> pending;
+    pending.push_back(switchRoot);
+    bool isRoot = true;
+
+    while (!pending.empty()) {
+        const fs::path dir = std::move(pending.back());
+        pending.pop_back();
+
+        std::vector<fs::path> subdirs;
+        {
+            fs::directory_iterator it(dir, ec);
+            if (ec) {
+                if (isRoot) {
+                    error = "Failed to read " + dir.string() + ": " + ec.message();
+                    return false;
+                }
+                ec.clear();
+                continue;
+            }
+            isRoot = false;
+
+            const fs::directory_iterator end;
+            while (it != end) {
+                const fs::path entryPath = it->path();
+                std::error_code stEc;
+                const fs::file_status st = fs::symlink_status(entryPath, stEc);
+                if (!stEc && !fs::is_symlink(st)) {
+                    if (fs::is_directory(st)) {
+                        subdirs.push_back(entryPath);
+                    } else if (fs::is_regular_file(st) &&
+                               lower(entryPath.extension().string()) == ".nro") {
+                        const std::string relSub = entryPath.lexically_relative(switchRoot).generic_string();
+                        if (!relSub.empty()) {
+                            DiscoveredNro item;
+                            item.fullPath = entryPath;
+                            item.relPath = normalizeRelPathDisplay("switch/" + relSub);
+                            item.stem = entryPath.stem().string();
+                            item.filename = entryPath.filename().string();
+                            out.push_back(std::move(item));
+                        }
+                    }
+                }
+
+                std::error_code incEc;
+                it.increment(incEc);
+                if (incEc) {
+                    break;
+                }
+            }
+        }
+
+        for (auto& sub : subdirs) {
+            pending.push_back(std::move(sub));
+        }
+    }
+
+    return true;
+}
+
+bool isImageHeader(const uint8_t* data, size_t size) {
+    if (size >= 3 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF) {
+        return true;
+    }
+    return size >= 8 && data[0] == 0x89 && data[1] == 'P' && data[2] == 'N' && data[3] == 'G' &&
+           data[4] == 0x0D && data[5] == 0x0A && data[6] == 0x1A && data[7] == 0x0A;
+}
+
+std::string nroIconCachePath(const std::string& iconDir, const std::string& relPath) {
+    const std::string key = lower(relPath);
+    uint8_t digest[32]{};
+    sha256(key.data(), key.size(), digest);
+    static const char kHex[] = "0123456789abcdef";
+    std::string hex;
+    hex.reserve(32);
+    for (size_t i = 0; i < 16; ++i) {
+        hex.push_back(kHex[digest[i] >> 4]);
+        hex.push_back(kHex[digest[i] & 0x0F]);
+    }
+    return iconDir + "/" + hex + ".jpg";
+}
+
+bool writeBinaryAtomic(const std::string& path, const uint8_t* data, size_t size) {
+    const std::string tmp = path + ".tmp";
+    FILE* file = fopen(tmp.c_str(), "wb");
+    if (!file) {
+        return false;
+    }
+    bool ok = fwrite(data, 1, size, file) == size;
+    if (fflush(file) != 0) {
+        ok = false;
+    }
+    if (fclose(file) != 0) {
+        ok = false;
+    }
+    if (ok && rename(tmp.c_str(), path.c_str()) != 0) {
+        if ((unlink(path.c_str()) != 0 && errno != ENOENT) ||
+            rename(tmp.c_str(), path.c_str()) != 0) {
+            ok = false;
+        }
+    }
+    if (!ok) {
+        unlink(tmp.c_str());
+    }
+    return ok;
+}
+
+std::string extractNroIconToCache(const DiscoveredNro& disc, const std::string& iconDir) {
+    if (iconDir.empty() || disc.relPath.empty()) {
+        return {};
+    }
+    const std::string iconPath = nroIconCachePath(iconDir, disc.relPath);
+    if (disc.meta.iconSize == 0) {
+        unlink(iconPath.c_str());
+        return {};
+    }
+
+    struct stat nroSt{};
+    struct stat iconSt{};
+    if (stat(iconPath.c_str(), &iconSt) == 0 && S_ISREG(iconSt.st_mode) &&
+        iconSt.st_size == static_cast<off_t>(disc.meta.iconSize) &&
+        stat(disc.fullPath.c_str(), &nroSt) == 0 &&
+        iconSt.st_mtime >= nroSt.st_mtime) {
+        return iconPath;
+    }
+
+    std::ifstream in(disc.fullPath, std::ios::binary);
+    if (!in.is_open()) {
+        return {};
+    }
+    in.seekg(0, std::ios::end);
+    const std::streampos endPos = in.tellg();
+    if (endPos < 0) {
+        return {};
+    }
+    const uint64_t fileSize = static_cast<uint64_t>(endPos);
+    if (disc.meta.iconSize > std::numeric_limits<size_t>::max()) {
+        return {};
+    }
+    std::vector<uint8_t> bytes(static_cast<size_t>(disc.meta.iconSize));
+    if (!readAt(in, disc.meta.iconOffset, bytes.data(), bytes.size(), fileSize) ||
+        !isImageHeader(bytes.data(), bytes.size())) {
+        unlink(iconPath.c_str());
+        return {};
+    }
+    if (!directories(iconDir) || !writeBinaryAtomic(iconPath, bytes.data(), bytes.size())) {
+        return {};
+    }
+    return iconPath;
+}
+
+bool parseHomebrewVersion(const std::string& raw,
+                          std::vector<uint64_t>& parts,
+                          bool& prerelease) {
+    parts.clear();
+    prerelease = false;
+    std::string s = trimAscii(raw);
+    if (!s.empty() && (s.front() == 'v' || s.front() == 'V')) {
+        s.erase(s.begin());
+    }
+    if (s.empty()) {
+        return false;
+    }
+    const size_t sep = s.find_first_of("-+");
+    if (sep != std::string::npos) {
+        prerelease = (s[sep] == '-');
+        s.resize(sep);
+    }
+    if (s.empty()) {
+        return false;
+    }
+    size_t start = 0;
+    while (start <= s.size()) {
+        const size_t dot = s.find('.', start);
+        const std::string token = s.substr(start, dot == std::string::npos ? dot : dot - start);
+        if (token.empty() || !std::all_of(token.begin(), token.end(),
+                                          [](unsigned char c) { return std::isdigit(c); })) {
+            return false;
+        }
+        uint64_t value = 0;
+        for (unsigned char c : token) {
+            const uint64_t digit = static_cast<uint64_t>(c - '0');
+            if (value > (std::numeric_limits<uint64_t>::max() - digit) / 10) {
+                return false;
+            }
+            value = value * 10 + digit;
+        }
+        parts.push_back(value);
+        if (dot == std::string::npos) {
+            break;
+        }
+        start = dot + 1;
+    }
+    return !parts.empty();
+}
+
+} // namespace
+
+std::string homebrewMonogram(const std::string& title) {
+    size_t offset = 0;
+    while (offset < title.size() &&
+           std::isspace(static_cast<unsigned char>(title[offset]))) {
+        ++offset;
+    }
+    if (offset == title.size()) {
+        return "?";
+    }
+    const unsigned char lead = static_cast<unsigned char>(title[offset]);
+    if (lead < 0x80) {
+        return std::string(1, static_cast<char>(std::toupper(lead)));
+    }
+    if ((lead & 0xE0) == 0xC0 && offset + 1 < title.size()) {
+        const unsigned char b1 = static_cast<unsigned char>(title[offset + 1]);
+        if ((b1 & 0xC0) != 0x80) {
+            return "?";
+        }
+        uint32_t cp = (static_cast<uint32_t>(lead & 0x1F) << 6) | (b1 & 0x3F);
+        if ((cp >= 0x00E0 && cp <= 0x00F6) || (cp >= 0x00F8 && cp <= 0x00FE) ||
+            (cp >= 0x0430 && cp <= 0x044F)) {
+            cp -= 0x20;
+        } else if (cp == 0x0451 || cp == 0x0454 || cp == 0x0456 ||
+                   cp == 0x0457 || cp == 0x045E) {
+            cp -= 0x50;
+        }
+        return std::string{static_cast<char>(0xC0 | (cp >> 6)),
+                           static_cast<char>(0x80 | (cp & 0x3F))};
+    }
+    if ((lead & 0xF0) == 0xE0 && offset + 2 < title.size() &&
+        (static_cast<unsigned char>(title[offset + 1]) & 0xC0) == 0x80 &&
+        (static_cast<unsigned char>(title[offset + 2]) & 0xC0) == 0x80) {
+        return title.substr(offset, 3);
+    }
+    if ((lead & 0xF8) == 0xF0 && offset + 3 < title.size() &&
+        (static_cast<unsigned char>(title[offset + 1]) & 0xC0) == 0x80 &&
+        (static_cast<unsigned char>(title[offset + 2]) & 0xC0) == 0x80 &&
+        (static_cast<unsigned char>(title[offset + 3]) & 0xC0) == 0x80) {
+        return title.substr(offset, 4);
+    }
+    return "?";
+}
+
+bool isHomebrewUpdateAvailable(const std::string& installedVersion,
+                               const std::string& latestVersion) {
+    std::vector<uint64_t> installedParts;
+    std::vector<uint64_t> latestParts;
+    bool installedPre = false;
+    bool latestPre = false;
+    if (!parseHomebrewVersion(installedVersion, installedParts, installedPre) ||
+        !parseHomebrewVersion(latestVersion, latestParts, latestPre)) {
+        return false;
+    }
+    const size_t n = std::max(installedParts.size(), latestParts.size());
+    installedParts.resize(n, 0);
+    latestParts.resize(n, 0);
+    if (latestParts != installedParts) {
+        return latestParts > installedParts;
+    }
+    return installedPre && !latestPre;
+}
+
+bool HomebrewCatalog::loadInstalled(std::vector<HomebrewPackage>& packages,
+                                    const std::string& language,
+                                    std::string& error) const {
+    packages.clear();
+    error.clear();
+
+    std::vector<HomebrewPackage> catalog;
+    std::string loadError;
+    const bool hasCatalog = load(catalog, language, loadError);
+
+    std::vector<DiscoveredNro> discovered;
+    if (!enumerateNros(fs::path(sdRoot_), discovered, error)) {
+        return false;
+    }
+
+    std::sort(discovered.begin(), discovered.end(),
+              [](const DiscoveredNro& a, const DiscoveredNro& b) {
+                  const std::string la = lower(a.relPath);
+                  const std::string lb = lower(b.relPath);
+                  return la != lb ? la < lb : a.relPath < b.relPath;
+              });
+
+    const CatalogIndex index = hasCatalog ? buildCatalogIndex(catalog) : CatalogIndex{};
+    std::vector<bool> catalogMatched(catalog.size(), false);
+    const std::string nroIconDir = root_ + "/nro-icons";
+
+    packages.reserve(discovered.size());
+    for (DiscoveredNro& disc : discovered) {
+        disc.meta = parseNroMetadata(disc.fullPath);
+
+        const size_t matchIdx = hasCatalog ? matchCatalog(index, disc) : kNoMatch;
+        if (matchIdx != kNoMatch) {
+            catalogMatched[matchIdx] = true;
+            HomebrewPackage pkg = catalog[matchIdx];
+            pkg.installedPath = disc.relPath;
+            if (!disc.meta.version.empty()) {
+                pkg.installedVersion = disc.meta.version;
+            }
+            if (pkg.iconUrl.empty()) {
+                pkg.iconUrl = extractNroIconToCache(disc, nroIconDir);
+            }
+            packages.push_back(std::move(pkg));
+        } else {
+            HomebrewPackage pkg;
+            pkg.name = disc.relPath;
+            pkg.title = !disc.meta.title.empty()
+                            ? disc.meta.title
+                            : (!disc.stem.empty() ? disc.stem : disc.filename);
+            pkg.author = disc.meta.author;
+            pkg.version = disc.meta.version;
+            pkg.installedVersion = disc.meta.version;
+            pkg.installedPath = disc.relPath;
+            pkg.iconUrl = extractNroIconToCache(disc, nroIconDir);
+            packages.push_back(std::move(pkg));
+        }
+    }
+
+    if (hasCatalog) {
+        for (size_t i = 0; i < catalog.size(); ++i) {
+            if (!catalog[i].installedVersion.empty() && !catalogMatched[i]) {
+                packages.push_back(catalog[i]);
+            }
+        }
+    }
+
+    return true;
+}
+
+namespace {
+
+bool isHomebrewSaveOrConfig(const std::string& relPath) {
+    const std::string low = lower(relPath);
+    size_t pos = 0;
+    while (pos < low.size()) {
+        const size_t slash = low.find('/', pos);
+        const std::string seg = low.substr(pos, slash == std::string::npos ? slash : slash - pos);
+        if (slash != std::string::npos) {
+            if (seg == "save" || seg == "saves" || seg == "savedata" ||
+                seg == "config" || seg == "configs" || seg == "userdata" || seg == "profiles") {
+                return true;
+            }
+            pos = slash + 1;
+        } else {
+            break;
+        }
+    }
+    const size_t slash = low.find_last_of('/');
+    const size_t dot = low.find_last_of('.');
+    if (dot != std::string::npos && (slash == std::string::npos || dot > slash)) {
+        const std::string ext = low.substr(dot);
+        for (const char* keep : {".sav", ".srm", ".eep", ".fla", ".sra", ".save", ".state",
+                                 ".cfg", ".ini", ".json", ".toml", ".yaml", ".yml"}) {
+            if (ext == keep) return true;
+        }
+    }
+    return false;
+}
+
+void pruneEmptyHomebrewParents(const std::string& sdRoot, const std::string& fullFilePath) {
+    auto isProtectedDir = [&](const std::string& dir) {
+        if (dir.size() <= sdRoot.size() || dir.rfind(sdRoot, 0) != 0) return true;
+        std::string rel = dir.substr(sdRoot.size());
+        while (!rel.empty() && rel.front() == '/') rel.erase(0, 1);
+        const std::string low = lower(rel);
+        return low.empty() || low == "switch" || low == "config" ||
+               low == "atmosphere" || low == "atmosphere/contents";
+    };
+    std::string cur = fullFilePath;
+    while (true) {
+        const size_t slash = cur.find_last_of('/');
+        if (slash == std::string::npos) break;
+        cur.resize(slash);
+        if (isProtectedDir(cur)) break;
+        if (rmdir(cur.c_str()) != 0) break;
+    }
+}
+
+bool removeTreePreservingHomebrewSaves(const std::string& fullDir, const std::string& relDir,
+                                       bool& keptAny, size_t& removedFiles, unsigned depth = 0) {
+    if (depth > 16) return false;
+    DIR* d = opendir(fullDir.c_str());
+    if (!d) return errno == ENOENT;
+    bool ok = true;
+    bool childKept = false;
+    while (auto* ent = readdir(d)) {
+        const std::string name = ent->d_name;
+        if (name == "." || name == "..") continue;
+        const std::string childFull = fullDir + "/" + name;
+        const std::string childRel = relDir.empty() ? name : (relDir + "/" + name);
+        struct stat st{};
+        if (lstat(childFull.c_str(), &st) != 0) {
+            if (errno != ENOENT) ok = false;
+            continue;
+        }
+        if (S_ISLNK(st.st_mode)) {
+            childKept = true;
+            continue;
+        }
+        if (S_ISDIR(st.st_mode)) {
+            const std::string lowName = lower(name);
+            if (lowName == "save" || lowName == "saves" || lowName == "savedata" ||
+                lowName == "config" || lowName == "configs" || lowName == "userdata" ||
+                lowName == "profiles") {
+                childKept = true;
+                continue;
+            }
+            bool subKept = false;
+            if (!removeTreePreservingHomebrewSaves(childFull, childRel, subKept, removedFiles, depth + 1))
+                ok = false;
+            if (subKept) childKept = true;
+        } else if (S_ISREG(st.st_mode)) {
+            if (isHomebrewSaveOrConfig(childRel)) {
+                childKept = true;
+                continue;
+            }
+            if (unlink(childFull.c_str()) == 0) {
+                ++removedFiles;
+            } else if (errno != ENOENT) {
+                ok = false;
+            }
+        }
+    }
+    closedir(d);
+    if (childKept) {
+        keptAny = true;
+        return ok;
+    }
+    if (rmdir(fullDir.c_str()) != 0 && errno != ENOENT && errno != ENOTEMPTY)
+        ok = false;
+    return ok;
+}
+
+} // namespace
+
+bool HomebrewCatalog::uninstall(const HomebrewPackage& package, std::string& error) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    error.clear();
+
+    const std::string lowName = lower(package.name);
+    const std::string lowPath = lower(package.installedPath);
+    if (lowName == "pipensx" || lowPath == "switch/pipensx.nro" ||
+        lowPath.rfind("switch/pipensx/", 0) == 0) {
+        return fail(error, "Cannot uninstall pipensx from inside itself.");
+    }
+
+    size_t removedFiles = 0;
+    bool hadFailure = false;
+
+    auto unlinkRel = [&](const std::string& rel) {
+        if (!destinationAllowed(rel) || isHomebrewSaveOrConfig(rel))
+            return;
+        const std::string full = sdRoot_ + "/" + rel;
+        struct stat st{};
+        if (lstat(full.c_str(), &st) != 0) {
+            if (errno != ENOENT) hadFailure = true;
+            return;
+        }
+        if (S_ISREG(st.st_mode)) {
+            if (unlink(full.c_str()) == 0) {
+                ++removedFiles;
+                pruneEmptyHomebrewParents(sdRoot_, full);
+            } else if (errno != ENOENT) {
+                hadFailure = true;
+            }
+        }
+    };
+
+    if (!package.files.empty()) {
+        for (const auto& file : package.files) {
+            if (file.preserve) continue;
+            unlinkRel(file.path);
+        }
+        if (!package.installedPath.empty())
+            unlinkRel(package.installedPath);
+    } else if (!package.installedPath.empty()) {
+        if (!destinationAllowed(package.installedPath) ||
+            lowPath.rfind("switch/", 0) != 0 ||
+            lowPath.rfind("switch/.overlays/", 0) == 0 ||
+            lowPath.rfind("switch/.packages/", 0) == 0) {
+            return fail(error, "Unsupported homebrew path for removal.");
+        }
+        const std::string afterSwitch = package.installedPath.substr(7);
+        const size_t slash = afterSwitch.find('/');
+        if (slash == std::string::npos) {
+            unlinkRel(package.installedPath);
+        } else {
+            const std::string appDir = afterSwitch.substr(0, slash);
+            const std::string relDir = "switch/" + appDir;
+            const std::string fullDir = sdRoot_ + "/" + relDir;
+            bool keptAny = false;
+            if (!removeTreePreservingHomebrewSaves(fullDir, relDir, keptAny, removedFiles))
+                hadFailure = true;
+        }
+    } else {
+        return fail(error, "No installed homebrew files to remove.");
+    }
+
+    if (safeName(package.name)) {
+        const std::string receipt = root_ + "/installed/" + package.name + ".json";
+        unlink(receipt.c_str());
+        unlink((receipt + ".previous").c_str());
+    }
+
+    if (hadFailure)
+        return fail(error, "Some homebrew files could not be removed.");
     return true;
 }
 

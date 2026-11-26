@@ -88,6 +88,19 @@ std::vector<uint8_t> selectSmartInstallFiles(
     const std::string& titleId = {},
     const std::vector<std::string>& installedDlcIds = {});
 
+// Builds the per-file action mask to restore an archived game to its prior
+// state: always installs the base package for `titleId`; if
+// `targetUpdateVersion` is empty or "0", skips all updates (v0 base-only
+// restore); otherwise installs the exact [vN] patch if present, or falls back
+// to the highest-version patch in the torrent when the archived version is no
+// longer available. Installs only DLC packages whose AddOnContent title id is
+// listed in `targetDlcIds` (empty = no DLC).
+std::vector<uint8_t> selectArchiveRestoreFiles(
+    const TorrentPreview& preview,
+    const std::string& titleId,
+    const std::string& targetUpdateVersion,
+    const std::vector<std::string>& targetDlcIds = {});
+
 // Unknown skipped package IDs need a chooser instead of a partial one-tap
 // bundle installation. Identified duplicates/other titles remain skipped.
 bool smartInstallNeedsChooser(const TorrentPreview& preview,

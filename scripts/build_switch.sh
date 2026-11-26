@@ -28,7 +28,7 @@ for tool in "${REQUIRED_TOOLS[@]}"; do
     fi
 done
 
-for library in curl mbedtls mbedx509 mbedcrypto z miniupnpc; do
+for library in curl mbedtls mbedx509 mbedcrypto z miniupnpc archive bz2 lzma lz4 expat; do
     [[ -f "${DEVKITPRO}/portlibs/switch/lib/lib${library}.a" ]] ||
         { echo "Missing Switch library: lib${library}.a" >&2; exit 1; }
 done

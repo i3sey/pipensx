@@ -318,6 +318,7 @@ public:
                          std::string targetRoot);
 
     bool receiptExists(const std::string& taskId) const;
+    std::vector<std::string> deployedTitleIds() const;
 
     // Builds the removal breakdown for the dialog. Receipts are matched to
     // the title by the recorded title ids (v3) or the forwarder package name

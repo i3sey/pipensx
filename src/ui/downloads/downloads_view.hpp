@@ -192,9 +192,11 @@ public:
         const SwitchDeploySnapshot deployState = deploy_ ? deploy_->snapshot()
                                                          : SwitchDeploySnapshot{};
         const bool leased = deployState.active() && deployState.taskId == taskId;
+        const bool isRetro = isRetroDownloadTask(manager_->rootPath(), taskId);
         const bool needInspect =
-            !leased && (task.status == DownloadStatus::Completed ||
-                        task.status == DownloadStatus::Installed) &&
+            !isRetro && !leased &&
+            (task.status == DownloadStatus::Completed ||
+             task.status == DownloadStatus::Installed) &&
             deploy_ && taskReadyForSwitchDeploy(task);
         if (needInspect) {
             SwitchDeployService* deploy = deploy_;
@@ -206,16 +208,17 @@ public:
                             inspection = std::move(inspection)]() mutable {
                     if (!alive->load())
                         return;
-                    showRowMenu(taskId, task, leased, &inspection);
+                    showRowMenu(taskId, task, leased, false, &inspection);
                 });
             });
             return;
         }
-        showRowMenu(taskId, task, leased, nullptr);
+        showRowMenu(taskId, task, leased, isRetro, nullptr);
     }
 
     void showRowMenu(const std::string& taskId, const DownloadTask& task,
-                     bool leased, const SwitchDeployInspection* inspection) {
+                     bool leased, bool isRetro,
+                     const SwitchDeployInspection* inspection) {
         std::vector<std::string> labels;
         auto runners =
             std::make_shared<std::vector<std::function<void()>>>();
@@ -258,7 +261,7 @@ public:
                                                     deploy_));
             });
         }
-        if (task.status == DownloadStatus::Completed &&
+        if (!isRetro && task.status == DownloadStatus::Completed &&
             (task.mode == TransferMode::DownloadOnly ||
              task.mode == TransferMode::PortInstall) &&
             taskHasPortOrArchiveFiles(manager_->rootPath(), task)) {
@@ -619,10 +622,20 @@ private:
                 reload ? 1 : 0);
         };
         auto next = manager_->snapshotUi();
-        const SwitchDeploySnapshot deployState = deploy_ ? deploy_->snapshot()
-                                                         : SwitchDeploySnapshot{};
-        const std::string activeDeployTask = deployState.active()
+        SwitchDeploySnapshot deployState = deploy_ ? deploy_->snapshot()
+                                                   : SwitchDeploySnapshot{};
+        std::string activeDeployTask = deployState.active()
             ? deployState.taskId : std::string();
+        if (activeDeployTask.empty()) {
+            const std::string extTaskId = manager_->externalDeployTaskId();
+            if (!extTaskId.empty()) {
+                const auto retroSnap = retroAutoPrepareSnapshot(extTaskId);
+                if (retroSnap.active) {
+                    activeDeployTask = extTaskId;
+                    deployState.generation ^= (retroSnap.generation << 32);
+                }
+            }
+        }
         std::vector<size_t> filterCounts(filterButtons_.size());
         size_t lastVisibleFilter = 0;
         bool filterVisibilityChanged = false;

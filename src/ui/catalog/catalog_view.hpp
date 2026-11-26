@@ -30,6 +30,7 @@
 #include "ui/debrid_ui.hpp"
 #include "ui/i18n.hpp"
 #include "ui/common/message_cells.hpp"
+#include "ui/common/catalog_controls.hpp"
 #include "ui/common/ui_helpers.hpp"
 #include "ui/detail/game_detail.hpp"
 #include "ui/theme.hpp"
@@ -51,6 +52,8 @@ public:
                          : std::make_shared<CatalogBrowseResult>();
         metadata_ = metadata;
     }
+    void setLoading(bool loading) { loading_ = loading; }
+    bool isLoading() const { return loading_; }
     GridCardInfo cardInfo(int index) const { return makeInfo(index); }
     void setMessage(const std::string& message) { message_ = message; }
     const CatalogEntry* entryAt(int row) const {
@@ -79,7 +82,7 @@ public:
 
     int numberOfRows(brls::RecyclerFrame*, int) override {
         if (!result_ || result_->indices.empty())
-            return 2;
+            return loading_ ? 3 : 2;
         const int gridRows =
             (static_cast<int>(result_->indices.size()) + grid::kColumns - 1) /
             grid::kColumns;
@@ -89,7 +92,7 @@ public:
         if (index.row == 0)
             return grid::kTopInsetHeight;
         if (!result_ || result_->indices.empty())
-            return 100;
+            return loading_ ? grid::kRowHeight : 100;
         return grid::kRowHeight;
     }
     brls::RecyclerCell* cellForRow(brls::RecyclerFrame* recycler,
@@ -174,36 +177,7 @@ private:
         std::make_shared<CatalogBrowseResult>();
     GameMetadataService* metadata_ = nullptr;
     std::string message_;
-};
-// Compact magnifier button for the O2 header. The icon is vector-drawn
-// (circle + handle) so it stays crisp and theme-aware without relying on
-// icon-font glyphs that the bundled fonts may not cover.
-class SearchIconButton : public theme::Button {
-public:
-    void setIconColor(NVGcolor color) { iconColor_ = color; }
-
-    void draw(NVGcontext* vg, float x, float y, float width, float height,
-              brls::Style style, brls::FrameContext* ctx) override {
-        theme::Button::draw(vg, x, y, width, height, style, ctx);
-        // Glass centered slightly up-left so the handle stays inside.
-        const float r = 6.5f;
-        const float cx = x + width / 2.0f - 2.5f;
-        const float cy = y + height / 2.0f - 2.5f;
-        nvgStrokeColor(vg, iconColor_);
-        nvgStrokeWidth(vg, 2.0f);
-        nvgLineCap(vg, NVG_ROUND);
-        nvgBeginPath(vg);
-        nvgCircle(vg, cx, cy, r);
-        nvgStroke(vg);
-        const float k = 0.7071f; // 45° handle
-        nvgBeginPath(vg);
-        nvgMoveTo(vg, cx + r * k, cy + r * k);
-        nvgLineTo(vg, cx + r * k + 5.5f, cy + r * k + 5.5f);
-        nvgStroke(vg);
-    }
-
-private:
-    NVGcolor iconColor_ = theme::textPrimary();
+    bool loading_ = true;
 };
 class CatalogView : public brls::Box {
 public:
@@ -216,10 +190,12 @@ public:
                 CatalogSection section = CatalogSection::Games,
                 std::function<void()> openGames = {},
                 std::function<void()> onSourcesRefreshed = {},
-                AutorunService* autorun = nullptr)
+                AutorunService* autorun = nullptr,
+                PortUninstallService* portUninstall = nullptr)
         : brls::Box(brls::Axis::COLUMN), manager_(manager), catalog_(catalog),
           metadata_(metadata), installed_(installed), settings_(settings),
           favorites_(favorites), deploy_(deploy), autorun_(autorun),
+          portUninstall_(portUninstall),
           openDownloads_(std::move(openDownloads)),
           openGames_(std::move(openGames)),
           onSourcesRefreshed_(std::move(onSourcesRefreshed)), section_(section),
@@ -235,6 +211,8 @@ public:
         });
         recycler_->registerCell("Message",
             [] { return new TextMessageCell(); });
+        recycler_->registerCell("Skeleton",
+            [] { return new SkeletonGridRowCell(); });
         dataSource_ = new CatalogDataSource(this, manager_, settings_);
         recycler_->setDataSource(dataSource_);
 
@@ -511,7 +489,7 @@ public:
             std::move(onFailure), std::move(onChange), std::move(onClose),
             favorites_, deploy_, false,
             section_ == CatalogSection::Ports,
-            autorun_));
+            autorun_, portUninstall_));
     }
 
 private:
@@ -775,6 +753,13 @@ private:
         dataSource_->setEntries(result, metadata_);
         const bool catalogEmpty = result->catalog->empty();
         const bool filteredEmpty = !catalogEmpty && filtersDirty();
+        const bool empty = count == 0;
+        // Cache is still loading (startup holds the refresh lease). Show
+        // skeleton placeholder cards instead of an empty screen or error message.
+        const bool waitingForCatalog =
+            empty && catalogEmpty &&
+            (refreshInFlight_ || catalogRefreshInFlight());
+        dataSource_->setLoading(waitingForCatalog);
         dataSource_->setMessage(filteredEmpty
             ? tr("pipensx/catalog/filtered_empty_title")
             : tr("pipensx/catalog/empty_inline"));
@@ -786,12 +771,6 @@ private:
             for (auto* cell : visibleCells<brls::RecyclerCell>(recycler_))
                 dataSource_->repaintCell(cell);
         }
-        const bool empty = count == 0;
-        // Cache is still loading (startup holds the refresh lease). Don't flash
-        // "catalog empty, tap to update" over a snapshot that's about to appear.
-        const bool waitingForCatalog =
-            empty && catalogEmpty &&
-            (refreshInFlight_ || catalogRefreshInFlight());
         if (empty && !waitingForCatalog) {
             if (filteredEmpty) {
                 ensureEmptyState()->setContent(
@@ -818,8 +797,9 @@ private:
             ensureEmptyState()->setVisibility(brls::Visibility::VISIBLE);
         else if (emptyState_)
             emptyState_->setVisibility(brls::Visibility::GONE);
-        recyclerHost_->setVisibility(empty ? brls::Visibility::GONE
-                                           : brls::Visibility::VISIBLE);
+        recyclerHost_->setVisibility((empty && !waitingForCatalog)
+                                         ? brls::Visibility::GONE
+                                         : brls::Visibility::VISIBLE);
         if (focusInRecycler && structureChanged)
             restoreFocus(focusHash, focusShelf);
         if (preserveViewport && structureChanged) {
@@ -837,6 +817,10 @@ private:
             recycler_->setContentOffsetY(restoredOffset, false);
         }
 
+        if (applyingCatalog_ && result->catalog == catalog_->sharedEntries()) {
+            applyingCatalog_ = false;
+            setRefreshInFlight(refreshInFlight_);
+        }
         countText_ = query_.empty()
             ? tr("pipensx/catalog/count_releases", withThousands(count))
             : tr("pipensx/catalog/count_matches", withThousands(count));
@@ -879,7 +863,7 @@ private:
         // artwork can be due every boot (monotonic stamp) while today's
         // catalogue should stay green and usable.
         const bool catalogRefreshing =
-            fetchingCatalog_ ||
+            applyingCatalog_ || fetchingCatalog_ ||
             (followedExternalRefresh_ &&
              (refreshInFlight_ || catalogRefreshInFlight()));
         freshnessBadge_->update(catalogRefreshing, false, settings_, catalog_);
@@ -892,27 +876,7 @@ private:
 
     brls::Button* makeChip(const std::string& text,
                            std::function<void()> onClick) {
-        auto* chip = new theme::Button();
-        chip->setStyle(&brls::BUTTONSTYLE_DEFAULT);
-        chip->setHeight(40);
-        chip->setFontSize(theme::kFontCaption);
-        chip->setMarginLeft(8);
-        // Chips must never be squeezed below their text width: the default
-        // button side padding (25px) plus yoga shrinking clipped everything
-        // after "Popular". Keep intrinsic width, compact the padding, and
-        // let the search field absorb the shortage instead (it shrinks).
-        chip->setShrink(0.0f);
-        chip->setPaddingLeft(14);
-        chip->setPaddingRight(14);
-        chip->setText(text);
-        chip->registerAction("", brls::BUTTON_A,
-            [onClick = std::move(onClick)](brls::View*) {
-                onClick();
-                return true;
-            },
-            /*hidden=*/true);
-        chip->addGestureRecognizer(new brls::TapGestureRecognizer(chip));
-        return chip;
+        return catalogChip(text, std::move(onClick));
     }
 
     // Picking the sort that is already active flips its direction — a second
@@ -1337,10 +1301,12 @@ private:
         registerAction(canCancel ? tr("pipensx/common/stop")
                                  : tr("pipensx/common/search"),
                        brls::BUTTON_Y, [this](brls::View*) {
-            if (refreshCancellation_)
+            if (refreshCancellation_) {
                 refreshCancellation_->store(true, std::memory_order_relaxed);
-            else
+                freshnessBadge_->setStage(tr("pipensx/homebrew/cancelling"));
+            } else {
                 openSearchKeyboard();
+            }
             return true;
         }, /*hidden=*/false);
         if (updateHints)
@@ -1350,7 +1316,7 @@ private:
     void setRefreshInFlight(bool inFlight) {
         refreshInFlight_ = inFlight;
         freshnessBadge_->setBusy(
-            inFlight && (fetchingCatalog_ || followedExternalRefresh_));
+            applyingCatalog_ || (inFlight && (fetchingCatalog_ || followedExternalRefresh_)));
         updateFreshnessLabel();
     }
 
@@ -1698,7 +1664,6 @@ private:
             // Another tab/settings already owns the fetch. Follow it so the
             // badge stays orange instead of flipping to red "never/stale".
             followedExternalRefresh_ = true;
-            fetchingCatalog_ = fetchCatalog;
             setRefreshInFlight(true);
             return;
         }
@@ -1706,6 +1671,8 @@ private:
         registerRefreshAction(true);
         fetchingCatalog_ = fetchCatalog;
         setRefreshInFlight(true);
+        if (fetchCatalog)
+            freshnessBadge_->setStage(tr("pipensx/catalog/freshness_updating"));
         const std::string updating = fetchCatalog && fetchMetadata
             ? tr("pipensx/catalog/updating_both")
             : fetchCatalog ? tr("pipensx/catalog/updating_catalog")
@@ -1735,19 +1702,30 @@ private:
                 });
             }
             if (fetchCatalog) {
-                auto progressCb = [this, alive](float p) {
-                    brls::sync([this, alive, p] {
-                        if (alive->load()) {
-                            freshnessBadge_->setProgress(p);
-                        }
+                auto progressCb = [this, alive, cancelled](float p) {
+                    brls::sync([this, alive, cancelled, p] {
+                        if (!alive->load() || refreshCancellation_ != cancelled ||
+                            cancelled->load(std::memory_order_relaxed))
+                            return;
+                        freshnessBadge_->setStage(tr(p >= 1.0f
+                            ? "pipensx/catalog/refresh_preparing"
+                            : "pipensx/catalog/refresh_downloading"), p);
                     });
                 };
                 batch->catalogOk = catalog->fetchLatest(
                     batch->catalog, batch->catalogError, catalogSourceUrl,
                     cancelled.get(), progressCb);
             }
-            if (metadataFetch.joinable())
+            if (metadataFetch.joinable()) {
+                if (fetchCatalog) {
+                    brls::sync([this, alive, cancelled] {
+                        if (alive->load() && refreshCancellation_ == cancelled &&
+                            !cancelled->load(std::memory_order_relaxed))
+                            freshnessBadge_->setStage(tr("pipensx/catalog/updating_artwork"));
+                    });
+                }
                 metadataFetch.join();
+            }
             if (fetchCatalog) {
                 telemetry_log("catalog", "-",
                               "event=refresh ok=%d duration_ms=%llu entries=%zu",
@@ -1806,6 +1784,10 @@ private:
                     registerRefreshAction(true);
                 }
                 fetchingCatalog_ = false;
+                if (fetchCatalog && catalogOk && !wasCancelled) {
+                    applyingCatalog_ = true;
+                    freshnessBadge_->setStage(tr("pipensx/catalog/refresh_applying"));
+                }
                 setRefreshInFlight(false);
                 if (wasCancelled)
                     return;
@@ -1932,6 +1914,7 @@ private:
     FavoritesService* favorites_;
     SwitchDeployService* deploy_;
     AutorunService* autorun_ = nullptr;
+    PortUninstallService* portUninstall_ = nullptr;
     std::function<void()> openDownloads_;
     std::function<void()> openGames_;
     std::function<void()> onSourcesRefreshed_;
@@ -1982,6 +1965,7 @@ private:
     bool refreshInFlight_ = false;
     bool followedExternalRefresh_ = false;
     bool fetchingCatalog_ = false;
+    bool applyingCatalog_ = false;
     CatalogBrowseGenerationQueue browseQueue_;
     std::shared_ptr<std::atomic<uint64_t>> browseGenerationSignal_ =
         std::make_shared<std::atomic<uint64_t>>(0);

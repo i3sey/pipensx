@@ -37,6 +37,7 @@
 #include "ui/common/release_chips.hpp"
 #include "ui/common/detail_frame.hpp"
 #include "ui/common/description_text.hpp"
+#include "ui/common/detail_fact_row.hpp"
 #include "ui/common/detail_title.hpp"
 #include "ui/common/qr_view.hpp"
 #include "ui/common/stick_scrolling_frame.hpp"
@@ -120,16 +121,18 @@ public:
                         SwitchDeployService* deploy = nullptr,
                         bool autoInstall = false,
                         bool portInstall = false,
-                        AutorunService* autorun = nullptr)
+                        AutorunService* autorun = nullptr,
+                        PortUninstallService* portUninstall = nullptr,
+                        bool allowUninstall = false)
         : entry_(std::move(entry)), lastFailure_(std::move(lastFailure)),
           manager_(manager), metadata_(metadata), installed_(installed),
           settings_(settings), favorites_(favorites),
-          deploy_(deploy), autorun_(autorun),
+          deploy_(deploy), autorun_(autorun), portUninstall_(portUninstall),
           onFailure_(std::move(onFailure)), onChange_(std::move(onChange)),
           onClose_(std::move(onClose)),
           alive_(std::make_shared<std::atomic<bool>>(true)),
           cancelled_(std::make_shared<std::atomic<bool>>(false)),
-          autoInstall_(autoInstall) {
+          autoInstall_(autoInstall), allowUninstall_(allowUninstall) {
         // The catalog tab still passes portInstall. The Install action is
         // chosen after the file list resolves (cardOneTapUsesPortInstall).
         (void)portInstall;
@@ -332,6 +335,7 @@ private:
         secondary_->setFontSize(theme::kFontSmall);
         secondary_->setGrow(1);
         secondary_->setHeight(56);
+        secondary_->setPadding(0, 8, 0, 8);
         secondary_->setText(tr("pipensx/torrent/frame_title"));
         secondary_->registerClickAction([this](brls::View*) {
             onSecondary();
@@ -339,15 +343,30 @@ private:
         });
         actions->addView(secondary_);
 
+        uninstallBtn_ = new brls::Button();
+        uninstallBtn_->setStyle(&brls::BUTTONSTYLE_DEFAULT);
+        uninstallBtn_->setFontSize(theme::kFontSmall);
+        uninstallBtn_->setHeight(56);
+        uninstallBtn_->setPadding(0, 10, 0, 10);
+        uninstallBtn_->setMarginLeft(6);
+        uninstallBtn_->setShrink(0);
+        uninstallBtn_->setText(tr("pipensx/installed/uninstall_action"));
+        uninstallBtn_->setVisibility(brls::Visibility::GONE);
+        uninstallBtn_->registerClickAction([this](brls::View*) {
+            onUninstall();
+            return true;
+        });
+        actions->addView(uninstallBtn_);
+
         // Wishlist toggle: the same star the catalog grid puts on the card,
         // reachable without hunting for the ZR hotkey.
         if (favorites_) {
             favorite_ = new brls::Button();
             favorite_->setStyle(&brls::BUTTONSTYLE_DEFAULT);
             favorite_->setFontSize(theme::kFontHeading);
-            favorite_->setWidth(56);
+            favorite_->setWidth(52);
             favorite_->setHeight(56);
-            favorite_->setMarginLeft(8);
+            favorite_->setMarginLeft(6);
             favorite_->setText("★");
             favorite_->registerClickAction([this](brls::View*) {
                 onFavorite();
@@ -369,14 +388,15 @@ private:
         statusLabel_ = new brls::Label();
         statusLabel_->setFontSize(theme::kFontCaption);
         statusLabel_->setSingleLine(false);
+        statusLabel_->setVerticalAlign(brls::VerticalAlign::TOP);
         statusLabel_->setShrink(0);
         statusLabel_->setTextColor(theme::accent());
         statusLabel_->setText("");
         // Keep long errors/mod warnings readable without compressing the meter.
         auto* statusScroll = new brls::ScrollingFrame();
-        statusScroll->setScrollingBehavior(brls::ScrollingBehavior::CENTERED);
-        statusScroll->setHeight(48);
-        statusScroll->setShrink(0);
+        statusScroll->setScrollingBehavior(brls::ScrollingBehavior::NATURAL);
+        statusScroll->setGrow(1);
+        statusScroll->setMinHeight(48);
         statusScroll->setMarginTop(8);
         statusScroll->setContentView(statusLabel_);
         left->addView(statusScroll);
@@ -631,30 +651,8 @@ private:
 
     void addFactRow(brls::Box* table, const std::string& name,
                     const std::string& value) {
-        if (value.empty())
-            return;
-        auto* row = new brls::Box(brls::Axis::ROW);
-        row->setMarginTop(8);
-        auto* key = new brls::Label();
-        key->setFontSize(theme::kFontCaption);
-        key->setTextColor(theme::textSecondary());
-        key->setWidth(205);
-        key->setMarginRight(20);
-        key->setSingleLine(false);
-        key->setShrink(0);
-        key->setText(name);
-        row->addView(key);
-        auto* val = new brls::Label();
-        val->setFontSize(theme::kFontCaption);
-        val->setTextColor(theme::textSecondary());
-        val->setGrow(1);
-        val->setShrink(1);
-        val->setMinWidth(0);
-        val->setSingleLine(false);
-        val->setText(catalogLower(value) == "unknown"
+        detailFactRow(table, name, catalogLower(value) == "unknown"
                          ? tr("pipensx/common/unknown") : value);
-        row->addView(val);
-        table->addView(row);
     }
 
     void buildDescription(brls::Box* right) {
@@ -914,6 +912,8 @@ private:
         const bool deploying = task && deployState.active() &&
                                deployState.taskId == task->id;
         if (task) {
+            if (uninstallBtn_)
+                uninstallBtn_->setVisibility(brls::Visibility::GONE);
             operationMessage_.clear();
             // O5: the button is the status surface — it stays vivid (enabled)
             // and shows a progress fill instead of greying out. Paused/Error
@@ -952,6 +952,8 @@ private:
                                  tr("pipensx/downloads/status_completed_saved"));
         } else {
             if (auto pending = currentPendingDebrid()) {
+                if (uninstallBtn_)
+                    uninstallBtn_->setVisibility(brls::Visibility::GONE);
                 const char* providerName =
                     debridProviderName(pending->provider);
                 if (pending->ready) {
@@ -986,14 +988,27 @@ private:
             }
             const bool isArchived = installed_ && installed_->isArchived(titleId_);
             const bool isInstalled = installed_ && installed_->contains(titleId_);
+            const bool canRemove = canUninstallCurrent();
+            const bool showRemove = canRemove && !busy_ && !uninstallInFlight_;
+            if (uninstallBtn_) {
+                if (!showRemove && brls::Application::getCurrentFocus() == uninstallBtn_)
+                    brls::Application::giveFocus(primary_);
+                uninstallBtn_->setVisibility(showRemove ? brls::Visibility::VISIBLE
+                                                        : brls::Visibility::GONE);
+                uninstallBtn_->setState(uninstallInFlight_ ? brls::ButtonState::DISABLED
+                                                           : brls::ButtonState::ENABLED);
+            }
             setTextIfChanged(primary_, tr(isArchived
                 ? "pipensx/installed/restore_action"
                 : (isInstalled ? "pipensx/detail/install_extras"
                                : "pipensx/common/install")));
             primary_->setProgress(-1.0f);
-            primary_->setState(brls::ButtonState::ENABLED);
-            setTextIfChanged(secondary_, tr("pipensx/torrent/frame_title"));
-            secondary_->setState(brls::ButtonState::ENABLED);
+            primary_->setState(uninstallInFlight_ ? brls::ButtonState::DISABLED
+                                                  : brls::ButtonState::ENABLED);
+            setTextIfChanged(secondary_, tr(showRemove ? "pipensx/torrent/files_short"
+                                                       : "pipensx/torrent/frame_title"));
+            secondary_->setState(uninstallInFlight_ ? brls::ButtonState::DISABLED
+                                                    : brls::ButtonState::ENABLED);
             if (!operationMessage_.empty())
                 setTextIfChanged(statusLabel_, operationMessage_);
             else if (isArchived)
@@ -2032,6 +2047,200 @@ private:
         return true;
     }
 
+    std::string lowerInfoHash() const {
+        std::string h = entry_.infoHash;
+        std::transform(h.begin(), h.end(), h.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+        return h;
+    }
+
+    bool canUninstallCurrent() const {
+        if (!allowUninstall_)
+            return false;
+        const bool hasTitle = installed_ && !titleId_.empty() && installed_->contains(titleId_);
+        const std::string h = lowerInfoHash();
+        const bool hasPortReceipt = portUninstall_ && !h.empty() && portUninstall_->receiptExists(h);
+        return hasTitle || hasPortReceipt;
+    }
+
+    bool hasActiveStreamInstall() const {
+        if (!manager_) return false;
+        for (const DownloadTask& task : manager_->snapshotUi()) {
+            if (task.mode != TransferMode::StreamInstall) continue;
+            if (task.status == DownloadStatus::Queued ||
+                task.status == DownloadStatus::Checking ||
+                task.status == DownloadStatus::Fetching ||
+                task.status == DownloadStatus::Downloading ||
+                task.status == DownloadStatus::Installing ||
+                task.status == DownloadStatus::Committing ||
+                task.status == DownloadStatus::Verifying)
+                return true;
+        }
+        return false;
+    }
+
+    void onUninstall() {
+        if (busy_ || uninstallInFlight_ || !canUninstallCurrent())
+            return;
+        if (hasActiveStreamInstall() || (deploy_ && deploy_->snapshot().active())) {
+            brls::Application::notify(tr("pipensx/installed/busy"));
+            return;
+        }
+        const std::string displayTitle = !presentation_.title.empty()
+            ? presentation_.title : entry_.title;
+        const bool hasTitle = installed_ && !titleId_.empty() && installed_->contains(titleId_);
+        PortUninstallPlan portPlan;
+        bool hasPortPlan = false;
+        if (portUninstall_) {
+            std::vector<std::string> hashes;
+            const std::string ownHash = lowerInfoHash();
+            if (!ownHash.empty())
+                hashes.push_back(ownHash);
+            if (metadata_ && !titleId_.empty()) {
+                std::vector<const GameMetadata*> entries;
+                metadata_->findByTitleId(titleId_, entries);
+                for (const GameMetadata* meta : entries) {
+                    if (meta && !meta->infoHash.empty() && meta->infoHash != ownHash)
+                        hashes.push_back(meta->infoHash);
+                }
+            }
+            hasPortPlan = portUninstall_->plan(titleId_, hashes, portPlan);
+        }
+        if (hasPortPlan) {
+            auto* box = new brls::Box(brls::Axis::COLUMN);
+            box->setPadding(
+                brls::Application::getStyle()["brls/dialog/paddingTopBottom"],
+                brls::Application::getStyle()["brls/dialog/paddingLeftRight"],
+                brls::Application::getStyle()["brls/dialog/paddingTopBottom"],
+                brls::Application::getStyle()["brls/dialog/paddingLeftRight"]);
+            auto addLine = [box](const std::string& text, bool primary) {
+                auto* lbl = new brls::Label();
+                lbl->setFontSize(primary
+                    ? brls::Application::getStyle()["brls/dialog/fontSize"]
+                    : theme::kFontSmall);
+                lbl->setHorizontalAlign(brls::HorizontalAlign::CENTER);
+                lbl->setSingleLine(false);
+                if (!primary) {
+                    lbl->setTextColor(theme::textSecondary());
+                    lbl->setMarginTop(12);
+                }
+                lbl->setText(text);
+                box->addView(lbl);
+            };
+            addLine(tr("pipensx/installed/uninstall_confirm", displayTitle), true);
+            if (!portPlan.switchFiles.empty())
+                addLine(tr("pipensx/installed/uninstall_port_files",
+                           portPlan.switchFiles.size(), formatBytes(portPlan.switchBytes)), false);
+            if (!portPlan.sdRootFiles.empty())
+                addLine(tr("pipensx/installed/uninstall_layered_files",
+                           portPlan.sdRootFiles.size(), formatBytes(portPlan.sdRootBytes)), false);
+            for (const std::string& folder : portPlan.wholeFolders)
+                addLine(tr("pipensx/installed/uninstall_port_folder", folder), false);
+            if (portPlan.hasTask)
+                addLine(tr("pipensx/installed/uninstall_port_task"), false);
+            addLine(tr("pipensx/installed/uninstall_saves_preserved"), false);
+            auto* dialog = new brls::Dialog(box);
+            auto alive = alive_;
+            dialog->addButton(tr("pipensx/installed/uninstall_action"),
+                              [this, alive, displayTitle, hasTitle, portPlan = std::move(portPlan)] {
+                if (alive->load())
+                    beginPortUninstall(displayTitle, hasTitle, portPlan);
+            });
+            dialog->addButton(tr("pipensx/common/cancel"), [] {});
+            dialog->open();
+            return;
+        }
+        if (!hasTitle)
+            return;
+        auto* dialog = new brls::Dialog(tr("pipensx/installed/uninstall_confirm", displayTitle));
+        auto alive = alive_;
+        dialog->addButton(tr("pipensx/installed/uninstall_action"), [this, alive, displayTitle] {
+            if (alive->load())
+                beginTitleUninstall(displayTitle);
+        });
+        dialog->addButton(tr("pipensx/common/cancel"), [] {});
+        dialog->open();
+    }
+
+    void beginPortUninstall(const std::string& displayTitle, bool hasTitle,
+                            const PortUninstallPlan& plan) {
+        if (uninstallInFlight_ || !portUninstall_)
+            return;
+        uninstallInFlight_ = true;
+        operationMessage_ = tr("pipensx/installed/uninstall_port_working", displayTitle);
+        refreshButtons();
+        auto alive = alive_;
+        InstalledTitleService* installed = installed_;
+        PortUninstallService* service = portUninstall_;
+        const std::string titleId = titleId_;
+        brls::async([this, alive, installed, service, titleId, displayTitle, hasTitle, plan] {
+            PortUninstallReport report;
+            const bool ok = service->uninstallPort(
+                plan,
+                [installed, titleId, hasTitle](std::string& error) {
+                    if (!hasTitle || !installed || titleId.empty())
+                        return true;
+                    std::string refreshError;
+                    return installed->uninstall(titleId, error, refreshError);
+                },
+                report);
+            brls::sync([this, alive, ok, report, displayTitle] {
+                if (!alive->load())
+                    return;
+                uninstallInFlight_ = false;
+                if (ok) {
+                    operationMessage_.clear();
+                    brls::Application::notify(tr("pipensx/installed/uninstall_port_done", displayTitle));
+                    if (onChange_)
+                        onChange_();
+                    refreshButtons();
+                    return;
+                }
+                const std::string error = report.error.empty()
+                    ? tr("pipensx/installed/uninstall_port_failed")
+                    : report.error;
+                operationMessage_ = tr("pipensx/installed/uninstall_partial_short");
+                refreshButtons();
+                auto* dialog = new brls::Dialog(tr("pipensx/installed/uninstall_partial",
+                                                   report.filesRemoved, report.filesFailed, error));
+                dialog->addButton(tr("pipensx/common/ok"), [] {});
+                dialog->open();
+            });
+        });
+    }
+
+    void beginTitleUninstall(const std::string& displayTitle) {
+        if (uninstallInFlight_ || !installed_ || titleId_.empty())
+            return;
+        uninstallInFlight_ = true;
+        operationMessage_ = tr("pipensx/installed/uninstalling", displayTitle);
+        refreshButtons();
+        auto alive = alive_;
+        InstalledTitleService* installed = installed_;
+        const std::string titleId = titleId_;
+        brls::async([this, alive, installed, titleId, displayTitle] {
+            std::string error, refreshError;
+            const bool ok = installed->uninstall(titleId, error, refreshError);
+            brls::sync([this, alive, ok, error] {
+                if (!alive->load())
+                    return;
+                uninstallInFlight_ = false;
+                if (ok) {
+                    operationMessage_.clear();
+                    brls::Application::notify(tr("pipensx/installed/uninstall_done"));
+                    if (onChange_)
+                        onChange_();
+                } else {
+                    operationMessage_ = error.empty()
+                        ? tr("pipensx/installed/uninstall_port_failed")
+                        : error;
+                }
+                refreshButtons();
+            });
+        });
+    }
+
     CatalogEntry entry_;
     CatalogPresentation presentation_;
     std::string lastFailure_;
@@ -2042,6 +2251,7 @@ private:
     FavoritesService* favorites_ = nullptr;
     SwitchDeployService* deploy_ = nullptr;
     AutorunService* autorun_ = nullptr;
+    PortUninstallService* portUninstall_ = nullptr;
     std::string titleId_;
     std::string playersFact_;
     std::string operationMessage_;
@@ -2053,6 +2263,7 @@ private:
     brls::AppletFrame* frame_ = nullptr;
     InstallButton* primary_ = nullptr;
     brls::Button* secondary_ = nullptr;
+    brls::Button* uninstallBtn_ = nullptr;
     brls::Button* favorite_ = nullptr;
     StorageMeter* sizeMeter_ = nullptr;
     brls::Label* statusLabel_ = nullptr;
@@ -2067,12 +2278,14 @@ private:
     brls::RepeatingTimer timer_;
     std::vector<DownloadTask> cache_;
     bool busy_ = false;
+    bool uninstallInFlight_ = false;
     bool autoInstall_ = false;
     bool pendingQueryInFlight_ = false;
     bool pendingContinueRequested_ = false;
     int pendingPollTick_ = 0;
     uint64_t observedPendingGeneration_ = 0;
     uint64_t lastTimerTickMs_ = 0;
+    bool allowUninstall_ = false;
 };
 
 }  // namespace pipensx::ui

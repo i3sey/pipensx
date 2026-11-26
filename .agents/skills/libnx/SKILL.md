@@ -96,7 +96,23 @@ make test      # PC: compiles shared sources against the shim and install backen
 A missing shim stub only shows up in the second. Run both before calling a
 libnx change done.
 
-## 5. Constraints that live in prose, not headers
+## 5. Background threads on Horizon OS
+
+`std::thread` on Switch inherits the caller's preferred core (Core 0 — the
+Borealis UI thread) and default priority (`0x2C`). Horizon OS does not migrate
+threads off Core 0 automatically, so CPU- or IPC-heavy workers starve UI
+rendering and input.
+
+- Prefer `brls::async` for short background tasks (`brls::ThreadPool` already
+  moves workers off Core 0 at priority `0x3A`).
+- For dedicated `std::thread` workers (e.g., startup catalog/metadata parsing or
+  NACP title scans), move the thread off Core 0 via `svcGetThreadCoreMask` /
+  `svcSetThreadCoreMask` (to Core 1 or 2) and lower its priority via
+  `svcSetThreadPriority` (e.g., `0x34` for startup loaders, `0x3A` for
+  background scans; higher number = lower priority). See
+  `configureStartupWorkerThread()` in `src/main_switch.cpp`.
+
+## 6. Constraints that live in prose, not headers
 
 Applet RAM budget, tile override, sysmodule tradeoffs — written up in
 `docs/plans/ESHOP_APPLET_PLAN.md`, `docs/plans/SYSMODULE_PLAN.md` and

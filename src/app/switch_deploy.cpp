@@ -2957,6 +2957,11 @@ void SwitchDeployService::clearInspecting(const std::string& taskId) {
         const std::optional<DownloadTask> task = manager_.snapshot(taskId);
         if (!task || !taskReadyForSwitchDeploy(*task))
             return false;
+        if (isRetroDownloadTask(manager_.rootPath(), taskId)) {
+            std::lock_guard<std::mutex> lock(offerMutex_);
+            offerHandled_.insert(taskId);
+            return false;
+        }
         if (task->mode == TransferMode::AutoRunInstall) {
             const bool markerArmed = autoCopyArmed(taskId);
             if (receiptState(taskId) != SwitchDeployReceiptState::None) {
@@ -3253,6 +3258,33 @@ bool PortUninstallService::receiptExists(const std::string& taskId) const {
            S_ISREG(st.st_mode) && !S_ISLNK(st.st_mode);
 }
 
+std::vector<std::string> PortUninstallService::deployedTitleIds() const {
+    std::vector<std::string> out;
+    for (const std::string& taskId : listReceiptTaskIds(appRoot_)) {
+        std::vector<ReceiptFile> files;
+        std::vector<std::string> unpacked;
+        std::vector<std::string> titleIds;
+        if (!loadReceipt(appRoot_, taskId, files, unpacked, nullptr, &titleIds))
+            continue;
+        if (!titleIds.empty()) {
+            for (const std::string& id : titleIds)
+                if (!id.empty())
+                    out.push_back(id);
+            continue;
+        }
+        TaskFileManifest manifest;
+        std::string manifestError;
+        if (!loadTaskFileManifest(appRoot_, taskId, manifest, manifestError))
+            continue;
+        for (const TaskFileRecord& file : manifest.files)
+            if (file.package)
+                for (const std::string& id : titleIdsInPath(file.logicalPath))
+                    if (!id.empty())
+                        out.push_back(id);
+    }
+    return out;
+}
+
 bool PortUninstallService::plan(const std::string& titleId,
                                 const std::vector<std::string>& taskIds,
                                 PortUninstallPlan& result) const {
@@ -3511,7 +3543,68 @@ bool PortUninstallService::deleteDeployed(
             fail("Unable to remove /switch/" + folder + ".");
             continue;
         }
-        if (!removeTreeBestEffort(full)) {
+        auto isPortSaveName = [](const std::string& name, bool isDir) {
+            std::string low = name;
+            for (char& c : low)
+                if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + ('a' - 'A'));
+            if (isDir) {
+                return low == "save" || low == "saves" || low == "savedata" ||
+                       low == "profiles";
+            }
+            const size_t dot = low.find_last_of('.');
+            if (dot == std::string::npos) return false;
+            const std::string ext = low.substr(dot);
+            return ext == ".sav" || ext == ".srm" || ext == ".save" ||
+                   ext == ".eep" || ext == ".fla" || ext == ".sra" ||
+                   ext == ".state";
+        };
+        std::function<bool(const std::string&, bool&)> removePreservingSaves =
+            [&](const std::string& path, bool& keptAny) -> bool {
+            struct stat cur {};
+            if (lstat(path.c_str(), &cur) != 0)
+                return errno == ENOENT;
+            if (!S_ISDIR(cur.st_mode))
+                return ::unlink(path.c_str()) == 0 || errno == ENOENT;
+            DIR* d = opendir(path.c_str());
+            if (!d)
+                return errno == ENOENT;
+            bool dirOk = true;
+            bool childKept = false;
+            while (struct dirent* ent = readdir(d)) {
+                const std::string name = ent->d_name;
+                if (name == "." || name == "..")
+                    continue;
+                const std::string child = path + "/" + name;
+                struct stat cst {};
+                if (lstat(child.c_str(), &cst) != 0) {
+                    if (errno != ENOENT) dirOk = false;
+                    continue;
+                }
+                const bool isDir = S_ISDIR(cst.st_mode);
+                if (isPortSaveName(name, isDir)) {
+                    childKept = true;
+                    continue;
+                }
+                if (isDir) {
+                    bool subKept = false;
+                    if (!removePreservingSaves(child, subKept))
+                        dirOk = false;
+                    if (subKept)
+                        childKept = true;
+                } else {
+                    if (::unlink(child.c_str()) != 0 && errno != ENOENT)
+                        dirOk = false;
+                }
+            }
+            closedir(d);
+            if (childKept) {
+                keptAny = true;
+                return dirOk;
+            }
+            return dirOk && (::rmdir(path.c_str()) == 0 || errno == ENOENT);
+        };
+        bool keptSaves = false;
+        if (!removePreservingSaves(full, keptSaves)) {
             ++report.filesFailed;
             fail("Unable to remove /switch/" + folder + " entirely.");
         }

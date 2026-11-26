@@ -17,6 +17,7 @@
 #include "app/install_space.hpp"
 #include "app/nx_file_types.hpp"
 #include "app/port_selection.hpp"
+#include "app/retro_catalog.hpp"
 #include "app/switch_deploy.hpp"
 #include "ui/catalog/catalog_helpers.hpp"
 #include "ui/common/action_icon.hpp"
@@ -54,6 +55,19 @@ inline std::string fileKindLabel(const TorrentSelectionEntry& entry) {
             return tr("pipensx/torrent/kind_cartridge");
         if (entry.installable)
             return tr("pipensx/torrent/kind_extra");
+        const size_t dot = entry.path.find_last_of('.');
+        const size_t slash = entry.path.find_last_of("/\\");
+        if (dot != std::string::npos && (slash == std::string::npos || dot > slash)) {
+            std::string ext = entry.path.substr(dot);
+            for (char& c : ext)
+                if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+            for (const auto& console : retroConsoles()) {
+                for (const auto& supported : console.launchExtensions) {
+                    if (ext == supported)
+                        return console.shortBadge + " ROM";
+                }
+            }
+        }
         return tr("pipensx/torrent/kind_other");
     }
     if (entry.compressed)
@@ -518,6 +532,7 @@ public:
         return entries_;
     }
     int visibleRowCount() const;
+    bool hasFolders() const { return !groups_.empty(); }
     bool anyFolderCollapsed() const;
     bool toggleFolderAtVisibleRow(int row);
     void setAllFoldersExpanded(bool expanded);
@@ -556,13 +571,15 @@ public:
                              DebridImport debridImport = {},
                              std::function<void()> abandon = {},
                              SwitchDeployService* deploy = nullptr,
-                             const CatalogEntry& release = {})
+                             const CatalogEntry& release = {},
+                             std::function<bool(const std::vector<uint8_t>&, std::string&)> downloadOnlySubmit = {})
         : manager_(manager), deploy_(deploy), path_(std::move(path)),
           preview_(std::move(preview)), preferred_(preferred),
           initialSelection_(initialSelection),
           initialPeers_(std::move(initialPeers)),
           debridImport_(std::move(debridImport)), abandon_(std::move(abandon)),
-          alive_(std::make_shared<std::atomic<bool>>(true)) {
+          downloadOnlySubmit_(std::move(downloadOnlySubmit)), alive_(std::make_shared<std::atomic<bool>>(true)) {
+        if (downloadOnlySubmit_) { preferred_ = TransferMode::DownloadOnly; initialSelection_ = StreamSelection::AllFiles; }
         auto* content = new brls::Box(brls::Axis::COLUMN);
         content->setGrow(1);
         content->setPadding(18, 38, 18, 34);
@@ -589,11 +606,22 @@ public:
                 format += kind;
             }
         }
-        auto* chips = new ReleaseChips(release, 0,
-            format.empty() ? release.imageFormat : format);
-        chips->setMarginBottom(0);
-        chips->setPaddingRight(0);
-        titleRow->addView(chips);
+        if (downloadOnlySubmit_) {
+            auto* chips = new brls::Box(brls::Axis::ROW);
+            chips->setFocusable(false);
+            chips->setShrink(0);
+            if (!release.imageFormat.empty())
+                chips->addView(new StatusChip(release.imageFormat));
+            if (release.hasPeerCount || release.peerCount > 0)
+                chips->addView(new StatusChip(tr("pipensx/release_chips/peers", release.peerCount)));
+            titleRow->addView(chips);
+        } else {
+            auto* chips = new ReleaseChips(release, 0,
+                format.empty() ? release.imageFormat : format);
+            chips->setMarginBottom(0);
+            chips->setPaddingRight(0);
+            titleRow->addView(chips);
+        }
         content->addView(titleRow);
 
         auto* summaryRow = new brls::Box(brls::Axis::ROW);
@@ -634,9 +662,9 @@ public:
 
         portRoot_ = pipensx::candidatePortRoot(preview_);
         const bool portLayout =
-            pipensx::torrentPortLayoutDetected(preview_);
+            !downloadOnlySubmit_ && pipensx::torrentPortLayoutDetected(preview_);
         const bool extraLayout =
-            portLayout || pipensx::torrentHasInstallableExtras(preview_);
+            !downloadOnlySubmit_ && (portLayout || pipensx::torrentHasInstallableExtras(preview_));
         if (extraLayout) {
             portHint_ = new brls::Label();
             portHint_->setFontSize(theme::kFontCaption);
@@ -689,6 +717,7 @@ public:
             return true;
         });
         row->addView(selectPackages_);
+        if (downloadOnlySubmit_) selectPackages_->setVisibility(brls::Visibility::GONE);
 
         selectDownloadAll_ = new brls::Button();
         selectDownloadAll_->setStyle(&brls::BUTTONSTYLE_DEFAULT);
@@ -732,7 +761,7 @@ public:
             row->addView(selectPort_);
         }
 
-        if (pipensx::torrentHasExefsPatches(preview_)) {
+        if (!downloadOnlySubmit_ && pipensx::torrentHasExefsPatches(preview_)) {
             selectExefs_ = new brls::Button();
             selectExefs_->setStyle(&brls::BUTTONSTYLE_DEFAULT);
             selectExefs_->setFontSize(16);
@@ -771,6 +800,7 @@ public:
             {ActionIconKind::Skip, "pipensx/torrent/legend_skip"},
         };
         for (const auto& entry : legendEntries) {
+            if (downloadOnlySubmit_ && entry.first == ActionIconKind::Install) continue;
             auto* legendRow = new brls::Box(brls::Axis::ROW);
             legendRow->setFocusable(false);
             legendRow->setAlignItems(brls::AlignItems::CENTER);
@@ -804,6 +834,15 @@ public:
     }
 
     void onContentAvailable() override {
+        if (downloadOnlySubmit_) {
+            if (dataSource_->hasFolders()) {
+                registerAction(tr("pipensx/torrent/expand"), brls::BUTTON_Y,
+                    [this](brls::View*) { toggleFolderAtFocus(); return true; });
+            }
+            if (preview_.files.size() == 1 && installSelected_)
+                brls::Application::giveFocus(installSelected_);
+            return;
+        }
         registerAction(tr("pipensx/torrent/preset_packages"), brls::BUTTON_X,
                        [this](brls::View*) {
             applyPreset([this] { dataSource_->selectPackagesOnly(); });
@@ -811,11 +850,13 @@ public:
         });
         // Clear stays on the on-screen button; Y expands/collapses folders so
         // mod trees do not own the whole list.
-        registerAction(tr("pipensx/torrent/expand"), brls::BUTTON_Y,
-                       [this](brls::View*) {
-            toggleFolderAtFocus();
-            return true;
-        });
+        if (dataSource_->hasFolders()) {
+            registerAction(tr("pipensx/torrent/expand"), brls::BUTTON_Y,
+                           [this](brls::View*) {
+                toggleFolderAtFocus();
+                return true;
+            });
+        }
     }
 
     // One "<glyph> Label" pair of the icon key. Same glyphs the rows draw, so
@@ -836,6 +877,7 @@ public:
 
     bool selectedPortTransaction(const std::vector<uint8_t>& actions,
                                  size_t& packageCount) const {
+        if (downloadOnlySubmit_) { packageCount = 0; return false; }
         return pipensx::selectionIsPortTransaction(preview_, actions,
                                                    &packageCount);
     }
@@ -866,11 +908,13 @@ public:
             TorrentSelectionEntry entry;
             entry.path = file.path;
             entry.length = file.length;
-            entry.package = file.package;
+            entry.package = !downloadOnlySubmit_ && file.package;
             entry.compressed = file.compressed;
             entry.cartridge = file.cartridge;
-            entry.installable = installable[i];
-            if (!existingSelection.empty()) {
+            entry.installable = !downloadOnlySubmit_ && installable[i];
+            if (downloadOnlySubmit_) {
+                entry.action = FileAction::Download;
+            } else if (!existingSelection.empty()) {
                 entry.action = static_cast<FileAction>(existingSelection[i]);
             } else if (!portDefaults.empty()) {
                 entry.action = (portDefaults[i] != static_cast<uint8_t>(FileAction::Skip) && entry.installable)
@@ -1226,6 +1270,15 @@ public:
 
     void continueValidated(std::vector<uint8_t> actions, TransferMode mode,
                            size_t installs) {
+        if (downloadOnlySubmit_) {
+            std::string error;
+            if (!downloadOnlySubmit_(actions, error)) { brls::Application::notify(error); return; }
+            if (!path_.empty()) ::unlink(path_.c_str());
+            finished_ = true;
+            brls::Application::notify(tr("pipensx/torrent/added"));
+            brls::Application::popActivity();
+            return;
+        }
         size_t portPackages = 0;
         if (selectedPortTransaction(actions, portPackages)) {
             mode = TransferMode::PortInstall;
@@ -1279,6 +1332,7 @@ public:
     std::vector<uint8_t> initialPeers_;
     DebridImport debridImport_;
     std::function<void()> abandon_;
+    std::function<bool(const std::vector<uint8_t>&, std::string&)> downloadOnlySubmit_;
     std::shared_ptr<std::atomic<bool>> alive_;
     StorageSpaceSnapshot downloadStorage_;
     StorageSpaceSnapshot packageStorage_;

@@ -7,7 +7,7 @@
 
 set -eu
 
-PACKAGES="switch-dev switch-curl switch-mbedtls switch-zlib switch-miniupnpc"
+PACKAGES="switch-dev switch-curl switch-mbedtls switch-zlib switch-miniupnpc switch-libarchive"
 
 if dkp-pacman -Q --noconfirm ${PACKAGES}; then
     echo "Switch portlibs already installed."

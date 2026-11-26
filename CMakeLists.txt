@@ -167,6 +167,10 @@ set(APP_SERVICE_SOURCES
     src/app/catalog_batch_installer.cpp
     src/app/catalog_refresh.cpp
     src/app/catalog_service.cpp
+    src/app/retro_catalog.cpp
+    src/app/retro_emulator.cpp
+    src/app/retro_forwarder.cpp
+    src/app/retro_rom.cpp
     src/app/homebrew_catalog.cpp
     src/app/catalog_presentation.cpp
     src/app/catalog_descriptions.cpp
@@ -214,6 +218,8 @@ set(APP_SERVICE_SOURCES
 )
 
 set(UI_SOURCES
+    src/ui/retro/retro_view.cpp
+    src/ui/retro/retro_download_view.cpp
     src/ui/homebrew/homebrew_view.cpp
     src/ui/catalog/batch_install.cpp
     src/ui/catalog/catalog_view.cpp
@@ -344,6 +350,11 @@ target_compile_options(pipensx PRIVATE
 )
 target_link_libraries(pipensx PRIVATE
     borealis
+    archive
+    bz2
+    lzma
+    lz4
+    expat
     pipensx_zstd
     pipensx_lzma
     pipensx_utp

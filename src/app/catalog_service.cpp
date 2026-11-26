@@ -248,7 +248,7 @@ bool httpGet(const std::string& url, std::string& body, std::string& error,
             if (cancellationRequested(ctx->cancelled))
                 return 1;
             if (ctx->progress && dltotal > 0) {
-                float p = std::clamp(static_cast<float>(dlnow) / static_cast<float>(dltotal), 0.0f, 1.0f);
+                float p = std::clamp(static_cast<float>(dlnow) / static_cast<float>(dltotal), 0.0f, 0.99f);
                 uint64_t now = now_ms();
                 if (now - ctx->lastUpdateMs >= 80 || dlnow == dltotal) {
                     ctx->lastUpdateMs = now;
@@ -261,6 +261,8 @@ bool httpGet(const std::string& url, std::string& body, std::string& error,
     curlApplyTrustedSsl(curl);
     curlPinHttpsOnly(curl);
     curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
+    if (progress)
+        progress(-1.0f);
     CURLcode result = curl_easy_perform(curl);
     long status = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
@@ -301,6 +303,8 @@ bool httpGet(const std::string& url, std::string& body, std::string& error,
         }
     }
     body = std::move(buffer.data);
+    if (progress)
+        progress(1.0f);
     return true;
 }
 
@@ -1342,14 +1346,19 @@ bool CatalogService::fetchResource(
             return false;
         body.clear();
         if (progress)
-            progress(0.0f);
-        if (httpFetcher_(url, body, error, sourceUrl, cancelled, progress) &&
-            validate(body, error)) {
+            progress(-1.0f);
+        if (httpFetcher_(url, body, error, sourceUrl, cancelled, progress)) {
             if (failIfCancelled(cancelled, error))
                 return false;
-            error.clear();
-            if (fetchedFrom) *fetchedFrom = url;
-            return true;
+            if (progress)
+                progress(1.0f);
+            if (validate(body, error)) {
+                if (failIfCancelled(cancelled, error))
+                    return false;
+                error.clear();
+                if (fetchedFrom) *fetchedFrom = url;
+                return true;
+            }
         }
         if (failIfCancelled(cancelled, error))
             return false;
@@ -1359,6 +1368,8 @@ bool CatalogService::fetchResource(
         log_msg("[catalog] fetch failed: %s: %s\n", url.c_str(), error.c_str());
     }
     if (!file.empty() && allowMirror) {
+        if (progress)
+            progress(-1.0f);
         std::string manifestBody;
         bool ok = httpFetcher_(kCatalogMirrorManifestUrl, manifestBody, error,
                                sourceUrl, cancelled, {});
@@ -1392,17 +1403,20 @@ bool CatalogService::fetchResource(
             } else {
                 body.clear();
                 if (progress)
-                    progress(0.0f);
+                    progress(-1.0f);
                 if (httpFetcher_(url, body, error, sourceUrl, cancelled, progress) &&
-                    !failIfCancelled(cancelled, error) &&
-                    decompressZstd(body, kMaxCatalogBytes, error) &&
-                    verifyCatalogBody(body, expected, error) && validate(body, error)) {
-                    if (failIfCancelled(cancelled, error))
-                        return false;
-                    log_msg("[catalog] using GitLab mirror: %s\n", file.c_str());
-                    error.clear();
-                    if (fetchedFrom) *fetchedFrom = url;
-                    return true;
+                    !failIfCancelled(cancelled, error)) {
+                    if (progress)
+                        progress(1.0f);
+                    if (decompressZstd(body, kMaxCatalogBytes, error) &&
+                        verifyCatalogBody(body, expected, error) && validate(body, error)) {
+                        if (failIfCancelled(cancelled, error))
+                            return false;
+                        log_msg("[catalog] using GitLab mirror: %s\n", file.c_str());
+                        error.clear();
+                        if (fetchedFrom) *fetchedFrom = url;
+                        return true;
+                    }
                 }
             }
         }
@@ -1549,7 +1563,7 @@ bool CatalogService::fetchCatalog(std::vector<CatalogEntry>& parsed,
                 !cachedEntries.empty()) {
                 std::string diffBody, diffError;
                 int64_t generatedAt = 0;
-                if (fetchResource(kCatalogDiffUrl, diffBody, diffError, cancelled, {},
+                if (fetchResource(kCatalogDiffUrl, diffBody, diffError, cancelled, progress,
                         [&](const std::string& body, std::string& validationError) {
                             if (compatibleDiff(body, langKey, syncedAt, fetchStartedAt, generatedAt))
                                 return true;

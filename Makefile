@@ -18,8 +18,8 @@ help:
 	@echo "  make daemon   Build the pipensx daemon sysmodule (src/daemon/)"
 	@echo "  make audit    Scan the complete Git history with gitleaks"
 	@echo "  make deploy MTP_DIR='mtp://...' [DEPLOY_CLEAN=1]"
-	@echo "  make bot-deploy Upload build-switch/pipensx.nro to Switch via sys-botbase"
-	@echo "  make bot-run  Build, upload, and launch pipensx via sys-botbase"
+	@echo "  make bot-deploy Upload build-switch/pipensx.nro to Switch via sys-autopilot-plus"
+	@echo "  make bot-run  Build, upload, and launch pipensx via sys-autopilot-plus"
 	@echo "  make clean    Remove PC and Switch build outputs"
 
 pc:
@@ -62,10 +62,10 @@ deploy:
 	DEPLOY_CLEAN="$(DEPLOY_CLEAN)" scripts/deploy_switch.sh
 
 bot-deploy: switch
-	python3 .agents/skills/switch-visual-test/scripts/switch_bot.py upload "$(NRO_SRC)"
+	python3 .agents/skills/switch-autopilot/scripts/switch_autopilot.py upload "$(NRO_SRC)"
 
 bot-run: bot-deploy
-	python3 .agents/skills/switch-visual-test/scripts/switch_bot.py launch-pipensx
+	python3 .agents/skills/switch-autopilot/scripts/switch_autopilot.py launch-pipensx
 
 clean:
 	$(MAKE) -f Makefile.pc clean

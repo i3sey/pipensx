@@ -457,6 +457,126 @@ std::vector<uint8_t> selectSmartInstallFiles(
     return actions;
 }
 
+std::vector<uint8_t> selectArchiveRestoreFiles(
+    const TorrentPreview& preview,
+    const std::string& titleId,
+    const std::string& targetUpdateVersion,
+    const std::vector<std::string>& targetDlcIds) {
+    if (preview.files.empty())
+        return {};
+
+    std::vector<uint8_t> actions(
+        preview.files.size(), static_cast<uint8_t>(FileAction::Skip));
+
+    const std::string bundleTitleId = uniqueBundleTitleId(preview);
+    const std::string wantedTitleId = titleId.empty()
+        ? bundleTitleId
+        : normalizeNxBaseTitleId(titleId);
+    if (!titleId.empty() && wantedTitleId.empty())
+        return actions;
+
+    // 1. Base game package (always required when restoring an archived game).
+    {
+        std::vector<size_t> bases;
+        for (size_t i = 0; i < preview.files.size(); ++i) {
+            if (isBasePackageFile(preview.files[i], wantedTitleId) &&
+                !isDlcPackagePath(preview.files[i].path) &&
+                !hasPatchTitleId(preview.files[i].path))
+                bases.push_back(i);
+        }
+        // Single-title torrents whose base filename omits the title id.
+        if (bases.empty() && !wantedTitleId.empty() &&
+            bundleTitleId == wantedTitleId) {
+            for (size_t i = 0; i < preview.files.size(); ++i) {
+                if (preview.files[i].package &&
+                    titleIdsInPath(preview.files[i].path).empty() &&
+                    !isUpdateFile(preview.files[i].path) &&
+                    !isDlcPackagePath(preview.files[i].path) &&
+                    !isLikelyModPackage(preview.files[i].path))
+                    bases.push_back(i);
+            }
+        }
+        const size_t base = pickBestPackage(preview, bases);
+        if (base < actions.size())
+            actions[base] = static_cast<uint8_t>(FileAction::Install);
+    }
+
+    // 2. Patch package: only when the archived game had a non-zero update.
+    uint64_t wantedVersion = 0;
+    const bool wantPatch = parseDecimal(targetUpdateVersion, wantedVersion) &&
+                           wantedVersion > 0;
+    if (wantPatch) {
+        const std::vector<size_t> exact =
+            updateVersionMatches(preview, targetUpdateVersion, wantedTitleId);
+        if (!exact.empty()) {
+            const size_t picked = pickBestPackage(preview, exact);
+            if (picked < actions.size())
+                actions[picked] = static_cast<uint8_t>(FileAction::Install);
+        } else {
+            // Exact archived patch is no longer present: fall back to the
+            // newest available patch in this torrent.
+            std::vector<size_t> updates;
+            uint64_t highestTag = 0;
+            for (size_t i = 0; i < preview.files.size(); ++i) {
+                const auto& file = preview.files[i];
+                if (!file.package || isLikelyModPackage(file.path) ||
+                    isDlcPackagePath(file.path))
+                    continue;
+                const bool matches =
+                    pathHasBaseOrPatchTitleId(file.path, wantedTitleId);
+                const bool untaggedId = titleIdsInPath(file.path).empty() &&
+                    !wantedTitleId.empty() && bundleTitleId == wantedTitleId;
+                if ((!matches && !untaggedId) ||
+                    (!isUpdateFile(file.path) && !hasPatchTitleId(file.path)))
+                    continue;
+                updates.push_back(i);
+                uint64_t tag = 0;
+                if (fileVersionTag(file.path, tag))
+                    highestTag = std::max(highestTag, tag);
+            }
+            updates.erase(std::remove_if(updates.begin(), updates.end(),
+                [&](size_t i) {
+                    uint64_t tag = 0;
+                    const bool tagged = fileVersionTag(preview.files[i].path, tag);
+                    return highestTag > 0 ? (!tagged || tag != highestTag)
+                                          : (tagged && tag == 0);
+                }), updates.end());
+            if (highestTag == 0 && updates.size() > 1)
+                updates.clear();
+            const size_t picked = pickBestPackage(preview, updates);
+            if (picked < actions.size())
+                actions[picked] = static_cast<uint8_t>(FileAction::Install);
+        }
+    }
+
+    // 3. DLC packages: restore strictly the DLC title IDs that were installed.
+    if (!wantedTitleId.empty() && !targetDlcIds.empty()) {
+        const std::unordered_set<std::string> wantedDlc =
+            normalizedSet(targetDlcIds);
+        std::map<std::string, size_t> bestDlc;
+        for (size_t i = 0; i < preview.files.size(); ++i) {
+            if (!preview.files[i].package)
+                continue;
+            const std::string id =
+                addOnContentId(preview.files[i].path, wantedTitleId);
+            if (id.empty() || wantedDlc.count(id) == 0)
+                continue;
+            const auto found = bestDlc.find(id);
+            if (found == bestDlc.end()) {
+                bestDlc.emplace(id, i);
+                continue;
+            }
+            found->second = pickBestPackage(preview, {found->second, i});
+        }
+        for (const auto& entry : bestDlc) {
+            if (entry.second < actions.size())
+                actions[entry.second] = static_cast<uint8_t>(FileAction::Install);
+        }
+    }
+
+    return actions;
+}
+
 bool smartInstallNeedsChooser(const TorrentPreview& preview,
                               const std::vector<uint8_t>& actions) {
     // ID-free packages could be a patch or DLC. Do not silently queue only

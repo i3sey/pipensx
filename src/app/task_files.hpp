@@ -91,8 +91,31 @@ bool refreshTorrentManifestLocalPaths(const std::string& appRoot,
                                       std::string& error);
 
 bool taskReadyForSwitchDeploy(const DownloadTask& task);
+bool isRetroDownloadTask(const std::string& appRoot, const std::string& taskId);
 bool taskHasPortOrArchiveFiles(const std::string& appRoot,
                                const DownloadTask& task);
+
+struct RetroAutoPrepareSnapshot {
+    bool active = false;
+    std::string taskId;
+    uint64_t doneBytes = 0;
+    uint64_t totalBytes = 0;
+    size_t doneFiles = 0;
+    size_t totalFiles = 0;
+    bool installingEmulator = false;
+    bool creatingForwarder = false;
+    uint64_t generation = 0;
+};
+
+RetroAutoPrepareSnapshot retroAutoPrepareSnapshot(const std::string& taskId);
+void setRetroAutoPrepareProgress(const std::string& taskId,
+                                 bool active,
+                                 uint64_t doneBytes = 0,
+                                 uint64_t totalBytes = 0,
+                                 size_t doneFiles = 0,
+                                 size_t totalFiles = 0,
+                                 bool installingEmulator = false,
+                                 bool creatingForwarder = false);
 
 bool taskFilePathIsSafe(const std::string& path);
 bool taskFilePathIsValidUtf8(const std::string& path);

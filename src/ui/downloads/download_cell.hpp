@@ -100,9 +100,15 @@ public:
                  const std::string& appRoot = {},
                  CatalogService* catalog = nullptr) {
         updateActionHint(brls::BUTTON_A, tr("pipensx/downloads/details"));
-        const uint64_t deployGen = deploy ? deploy->generation : 0;
-        const uint64_t deployBytes = deploy && deploy->taskId == task.id
-            ? deploy->bytesCopied : 0;
+        const RetroAutoPrepareSnapshot retroPrep = retroAutoPrepareSnapshot(task.id);
+        const bool isRetro = retroPrep.active ||
+            (!appRoot.empty() && task.status == DownloadStatus::Completed &&
+             isRetroDownloadTask(appRoot, task.id));
+        const uint64_t deployGen = (deploy ? deploy->generation : 0) ^
+                                   (retroPrep.generation << 32);
+        const uint64_t deployBytes = (deploy && deploy->taskId == task.id)
+            ? deploy->bytesCopied
+            : (retroPrep.active ? retroPrep.doneBytes : 0);
         const DownloadRowPaint nextPaint = DownloadRowPaint::from(task);
         const bool sameTask = paintedId_ == task.id;
         if (sameTask && paintedStatus_ == task.status && painted_ == nextPaint &&
@@ -210,8 +216,32 @@ public:
                 setTextIfChanged(status_, tr("pipensx/deploy/cancelled"));
             }
         }
-        const bool deployActive = deploy && deploy->taskId == task.id &&
-                                  deploy->active();
+        const bool retroPrepActive = isRetro &&
+            (retroPrep.active || task.status == DownloadStatus::Completed);
+        if (retroPrepActive) {
+            const char* phaseKey = retroPrep.creatingForwarder
+                ? "pipensx/retro/home_working"
+                : retroPrep.installingEmulator
+                      ? "pipensx/retro/installing"
+                      : "pipensx/retro/preparing";
+            setTextIfChanged(status_, tr(phaseKey));
+            status_->setTextColor(theme::accent());
+            const float prepRatio = retroPrep.totalBytes
+                ? static_cast<float>(retroPrep.doneBytes) /
+                      static_cast<float>(retroPrep.totalBytes)
+                : 0.0f;
+            progress_->setProgress(prepRatio);
+            if (retroPrep.totalBytes > 0) {
+                meta = tr("pipensx/deploy/cell_progress",
+                          percentOf(prepRatio),
+                          retroPrep.doneFiles, retroPrep.totalFiles,
+                          formatBytes(retroPrep.doneBytes),
+                          formatBytes(retroPrep.totalBytes));
+            }
+        }
+        const bool deployActive = (deploy && deploy->taskId == task.id &&
+                                   deploy->active()) ||
+                                  retroPrepActive;
         const bool finished = task.status == DownloadStatus::Completed ||
                               task.status == DownloadStatus::Installed;
         const bool deployed = deploy && deploy->taskId == task.id &&

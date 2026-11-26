@@ -184,6 +184,21 @@ $(BUILD_DIR)/src/app/homebrew_catalog.o: src/app/homebrew_catalog.cpp src/app/ho
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
 
+$(BUILD_DIR)/src/app/retro_catalog.o: src/app/retro_catalog.cpp src/app/retro_catalog.hpp src/app/catalog_urls.hpp src/app/magnet_resolver.hpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
+
+$(BUILD_DIR)/tests/test_retro_catalog: tests/test_retro_catalog.cpp src/app/retro_catalog.hpp \
+		$(BUILD_DIR)/src/app/retro_catalog.o $(BUILD_DIR)/src/app/magnet_resolver.o \
+		$(BUILD_DIR)/src/app/torrent_metainfo_fetch.o $(BUILD_DIR)/src/app/pending_debrid.o \
+		$(BUILD_DIR)/src/core/tracker.o $(BUILD_DIR)/src/core/net.o \
+		$(BUILD_DIR)/src/core/dht.o $(BUILD_DIR)/vendor/dht/dht.o \
+		$(BUILD_DIR)/src/core/bencode.o $(BUILD_DIR)/src/core/metainfo.o \
+		$(BUILD_DIR)/src/core/sha1.o $(BUILD_DIR)/src/core/sha256.o \
+		$(BUILD_DIR)/src/core/mse.o $(BUILD_DIR)/src/core/peer_handoff.o $(BUILD_DIR)/src/core/util.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $(filter-out %.hpp,$^) $(LDFLAGS)
+
 $(BUILD_DIR)/tests/test_homebrew_catalog: tests/test_homebrew_catalog.cpp tests/zip_fixture.hpp $(BUILD_DIR)/src/app/homebrew_catalog.o $(BUILD_DIR)/src/app/remote_archive.o $(BUILD_DIR)/src/core/sha256.o
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $(filter-out tests/zip_fixture.hpp,$^) $(LDFLAGS) -lz -Wl,--wrap=rename
@@ -777,6 +792,46 @@ $(BUILD_DIR)/tests/test_autorun_deploy: tests/test_autorun_deploy.cpp \
 		$(MANAGER_TEST_OBJS)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) $(INSTALL_LDFLAGS) -lz -pthread
+
+$(BUILD_DIR)/src/app/retro_emulator.o: src/app/retro_emulator.cpp src/app/retro_emulator.hpp src/app/retro_catalog.hpp src/app/port_archive.hpp src/app/task_files.hpp src/app/curl_https.hpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
+
+$(BUILD_DIR)/tests/test_retro_emulator: tests/test_retro_emulator.cpp \
+		$(BUILD_DIR)/src/app/retro_emulator.o $(BUILD_DIR)/src/app/port_archive.o \
+		$(BUILD_DIR)/src/app/task_files.o $(LZMA_OBJS) \
+		$(BUILD_DIR)/src/core/bencode.o $(BUILD_DIR)/src/core/metainfo.o \
+		$(BUILD_DIR)/src/core/sha1.o $(BUILD_DIR)/src/core/sha256.o \
+		$(BUILD_DIR)/src/core/util.o $(BUILD_DIR)/src/platform/storage.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -larchive -lz
+
+$(BUILD_DIR)/src/app/retro_forwarder.o: src/app/retro_forwarder.cpp src/app/retro_forwarder.hpp src/app/retro_catalog.hpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
+
+$(BUILD_DIR)/tests/test_retro_forwarder: tests/test_retro_forwarder.cpp $(BUILD_DIR)/src/app/retro_forwarder.o $(BUILD_DIR)/src/core/sha256.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS)
+
+$(BUILD_DIR)/src/app/retro_rom.o: src/app/retro_rom.cpp src/app/retro_rom.hpp src/app/retro_emulator.hpp src/app/retro_catalog.hpp src/app/task_files.hpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -c -o $@ $<
+
+$(BUILD_DIR)/tests/test_retro_queue: tests/test_retro_queue.cpp \
+		$(BUILD_DIR)/src/app/retro_rom.o $(BUILD_DIR)/src/app/retro_emulator.o \
+		$(BUILD_DIR)/src/app/port_archive.o $(LZMA_OBJS) $(MANAGER_TEST_OBJS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) $(INSTALL_LDFLAGS) -larchive
+
+$(BUILD_DIR)/tests/test_retro_rom: tests/test_retro_rom.cpp \
+		$(BUILD_DIR)/src/app/retro_rom.o $(BUILD_DIR)/src/app/retro_emulator.o \
+		$(BUILD_DIR)/src/app/port_archive.o $(BUILD_DIR)/src/app/task_files.o $(LZMA_OBJS) \
+		$(BUILD_DIR)/src/core/bencode.o $(BUILD_DIR)/src/core/metainfo.o \
+		$(BUILD_DIR)/src/core/sha1.o $(BUILD_DIR)/src/core/sha256.o \
+		$(BUILD_DIR)/src/core/util.o $(BUILD_DIR)/src/platform/storage.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ $^ $(LDFLAGS) -larchive -lz -pthread
 
 $(BUILD_DIR)/tests/test_port_archive: tests/test_port_archive.cpp \
 		$(BUILD_DIR)/src/app/port_archive.o $(BUILD_DIR)/src/app/task_files.o \

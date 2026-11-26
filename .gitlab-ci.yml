@@ -37,7 +37,7 @@ test_pc:
       when: never
     - when: on_success
   before_script:
-    - apt-get update && apt-get install -y --no-install-recommends build-essential git python3 pkg-config ca-certificates libcurl4-openssl-dev libssl-dev libzstd-dev zlib1g-dev p7zip-full
+    - apt-get update && apt-get install -y --no-install-recommends build-essential git python3 pkg-config ca-certificates libcurl4-openssl-dev libssl-dev libzstd-dev zlib1g-dev libarchive-dev p7zip-full
   script:
     - python3 scripts/check_source_lists.py
     - python3 scripts/check_i18n.py

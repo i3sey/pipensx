@@ -996,7 +996,8 @@ bool DownloadManager::importTorrentActions(
                                     std::string& error,
                                     const std::vector<uint8_t>& initialPeers,
                                     TransferMode requestedMode,
-                                    const std::string& autorunFolder) {
+                                    const std::string& autorunFolder,
+                                    bool requireNewTask) {
     TorrentPreview preview;
     if (!previewTorrent(path, preview, error))
         return false;
@@ -1060,6 +1061,10 @@ bool DownloadManager::importTorrentActions(
 
     std::unique_lock<std::mutex> lock(mutex_);
     if (DownloadTask* existing = findLocked(preview.infoHash)) {
+        if (requireNewTask) {
+            error = "This torrent is already in the download manager.";
+            return false;
+        }
         // F3: the torrent is already queued — merge the selection instead of
         // losing the request (or the task's progress) outright.
         if (!mergeImportSelection(*existing, &preview, selection, mode, error))
@@ -1143,7 +1148,7 @@ bool DownloadManager::importTorrentActions(
 }
 
 bool DownloadManager::importDebrid(const DebridImport& import,
-                                    std::string& taskId, std::string& error) {
+                                    std::string& taskId, std::string& error, bool requireNewTask) {
     if (import.infoHash.size() != 40) {
         error = "Invalid torrent hash for the debrid task.";
         return false;
@@ -1206,6 +1211,10 @@ bool DownloadManager::importDebrid(const DebridImport& import,
     }
     std::unique_lock<std::mutex> lock(mutex_);
     if (DownloadTask* existing = findLocked(import.infoHash)) {
+        if (requireNewTask) {
+            error = "This torrent is already in the download manager.";
+            return false;
+        }
         // F3: merge the repeated debrid import into the task that already
         // owns this infoHash instead of refusing it.
         TorrentPreview mergePreview;

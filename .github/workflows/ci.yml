@@ -67,7 +67,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential ccache python3 libcurl4-openssl-dev libssl-dev \
-            libzstd-dev zlib1g-dev p7zip-full
+            libzstd-dev zlib1g-dev libarchive-dev p7zip-full
       - uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809
         with:
           path: .ccache/pc
@@ -103,7 +103,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential clang libclang-rt-dev python3 libcurl4-openssl-dev libssl-dev \
-            libzstd-dev zlib1g-dev p7zip-full
+            libzstd-dev zlib1g-dev libarchive-dev p7zip-full
 
       - name: PC tests under ASan+UBSan
         run: make -f Makefile.pc clean && make -f Makefile.pc test SANITIZE=1 -j2

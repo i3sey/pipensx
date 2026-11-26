@@ -408,7 +408,8 @@ public:
                               std::string& taskId, std::string& error,
                               const std::vector<uint8_t>& initialPeers = {},
                               TransferMode requestedMode = TransferMode::StreamInstall,
-                              const std::string& autorunFolder = {});
+                              const std::string& autorunFolder = {},
+                              bool requireNewTask = false);
     bool importTorrent(const std::string& path, TransferMode mode,
                        std::string& taskId, std::string& error,
                        const std::string& autorunFolder = {}) {
@@ -421,7 +422,7 @@ public:
         return importTorrent(path, TransferMode::DownloadOnly, taskId, error);
     }
     bool importDebrid(const DebridImport& import,
-                      std::string& taskId, std::string& error);
+                      std::string& taskId, std::string& error, bool requireNewTask = false);
     void setTorboxApiKey(const std::string& key);
     void setTorrserverUrl(const std::string& url);
     void setRealdebridApiKey(const std::string& key);

@@ -11,18 +11,25 @@ physical-console scenario, including inspecting screenshots, to `agyx` using
 `gemini-3.8-flash-high`. Host-only unit tests and code changes remain with Codex;
 Switch builds needed for deployment may be included in the delegated task.
 
-## Explicit permission before console work
+## One permission for the conversation session
 
-Before each console work session, ask the user explicitly for permission and
-wait for an affirmative answer. State the concrete scenario and intended actions
-(screenshots/navigation, upload/launch, or other changes). Explain that this
-confirmation is required by the user's standing instruction in this skill.
-Prepare code, builds and the handoff first so the user approves a concrete task.
-Do not contact the console or start its delegated executor before approval.
-An earlier session's approval, a general request to test, and agyx auto-approval
-do not replace this confirmation. One approval covers the stated scenario and
-its ordinary retries; ask again for a new session or additional actions outside
-that scope. Include the user's approval and scope in the handoff.
+Ask for Switch access once per conversation session, unless the user has already
+explicitly granted it in that conversation. Before asking, prepare the concrete
+build and test scenario and describe the intended console work. Do not contact
+the console before approval.
+
+An explicit session-wide approval covers the console work needed for the user's
+ongoing tasks: navigation, screenshots, relevant files/logs, deployment and
+relaunch, test setup, fixes and retests. Do not ask again for each scenario,
+handoff, build or task continuation in the same conversation. A pause, next day,
+context compaction or executor change does not start a new session. Honor any
+narrower limits or later revocation; session approval does not authorize unrelated
+changes or destructive actions outside the requested work. A new conversation
+needs its own approval. CLI auto-approval is not user approval.
+
+Carry the user's approval, its session-wide validity and any limits into every
+handoff and context summary. For an already authorized executor change, continue
+without requesting the same permission again.
 
 ## Handoff
 
@@ -35,9 +42,13 @@ Write a self-contained `task.txt` there containing:
   downloads or installations when relevant. CLI auto-approval does not expand
   the user's task scope.
 - An instruction to read root `AGENTS.md` and
-  `.agents/skills/switch-visual-test/SKILL.md`; read the libnx skill only if the
+  `.agents/skills/switch-autopilot/SKILL.md`; read the libnx skill only if the
   task needs its APIs or build guidance. Root instructions give the Docker
-  command for Switch builds; do not use host `make bot-run` to build.
+  command for Switch builds; do not use host `make bot-run` to build. Use
+  `sys-autopilot-plus` MCP tools for interactive UI/screenshots/process/logs
+  and `switch_autopilot.py` (HTTP REST) for binary uploads (`.nro`, NSP/XCI)
+  and saving gallery screenshots to disk — never pass binaries through MCP
+  `upload_file`.
 - An instruction that Gemini is the console executor: perform the task directly
   and do not delegate it back through this skill or recursively invoke agyx.
 - An instruction to leave source files unchanged, preserve existing work, avoid

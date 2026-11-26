@@ -30,7 +30,7 @@
 namespace pipensx::ui {
 
 enum class NavIconType {
-    Home, Catalog, Ports, AutoRun, Downloads, Installed, Settings, Help, About, Homebrew
+    Home, Catalog, Ports, AutoRun, Downloads, Installed, Settings, Help, About, Homebrew, Retro
 };
 
 inline const char* navTabTag(NavIconType icon) {
@@ -45,11 +45,12 @@ inline const char* navTabTag(NavIconType icon) {
         case NavIconType::Help: return "help";
         case NavIconType::About: return "about";
         case NavIconType::Homebrew: return "homebrew";
+        case NavIconType::Retro: return "retro";
     }
     return "unknown";
 }
 
-inline constexpr int kNavTabCount = 10;
+inline constexpr int kNavTabCount = 11;
 inline constexpr float kTopbarHeight = 72.0f;
 
 inline int navTabIndex(NavIconType icon) {
@@ -78,6 +79,7 @@ private:
     static void drawHome(NVGcontext* vg, float gx, float gy, float s);
     static void drawCatalog(NVGcontext* vg, float gx, float gy, float s);
     static void drawPorts(NVGcontext* vg, float gx, float gy, float s);
+    static void drawRetro(NVGcontext* vg, float gx, float gy, float s);
     static void drawHomebrew(NVGcontext* vg, float gx, float gy, float s);
     static void drawAutoRun(NVGcontext* vg, float gx, float gy, float s);
     static void drawDownloads(NVGcontext* vg, float gx, float gy, float s);
@@ -209,6 +211,7 @@ inline void NavIcon::draw(NVGcontext* vg, float x, float y, float width,
         case NavIconType::Home:      drawHome(vg, gx, gy, s); break;
         case NavIconType::Catalog:   drawCatalog(vg, gx, gy, s); break;
         case NavIconType::Ports:     drawPorts(vg, gx, gy, s); break;
+        case NavIconType::Retro:     drawRetro(vg, gx, gy, s); break;
         case NavIconType::Homebrew:  drawHomebrew(vg, gx, gy, s); break;
         case NavIconType::AutoRun:   drawAutoRun(vg, gx, gy, s); break;
         case NavIconType::Downloads: drawDownloads(vg, gx, gy, s); break;
@@ -257,6 +260,31 @@ inline void NavIcon::drawPorts(NVGcontext* vg, float gx, float gy, float s) {
     nvgBeginPath(vg);
     nvgMoveTo(vg, gx + 8.0f, gy + 2.0f);
     nvgLineTo(vg, gx + 8.0f, gy + s - 2.0f);
+    nvgStroke(vg);
+}
+
+inline void NavIcon::drawRetro(NVGcontext* vg, float gx, float gy, float s) {
+    const float cx = gx + s / 2.0f;
+    const float cy = gy + s / 2.0f;
+    const float h = 3.2f;
+    const float pad = 2.5f;
+    nvgBeginPath(vg);
+    nvgMoveTo(vg, cx - h, gy + pad);
+    nvgLineTo(vg, cx + h, gy + pad);
+    nvgLineTo(vg, cx + h, cy - h);
+    nvgLineTo(vg, gx + s - pad, cy - h);
+    nvgLineTo(vg, gx + s - pad, cy + h);
+    nvgLineTo(vg, cx + h, cy + h);
+    nvgLineTo(vg, cx + h, gy + s - pad);
+    nvgLineTo(vg, cx - h, gy + s - pad);
+    nvgLineTo(vg, cx - h, cy + h);
+    nvgLineTo(vg, gx + pad, cy + h);
+    nvgLineTo(vg, gx + pad, cy - h);
+    nvgLineTo(vg, cx - h, cy - h);
+    nvgClosePath(vg);
+    nvgStroke(vg);
+    nvgBeginPath(vg);
+    nvgCircle(vg, cx, cy, 1.8f);
     nvgStroke(vg);
 }
 

@@ -1,3 +1,4 @@
+#include "app/add_release.hpp"
 #include "app/app_settings.hpp"
 #include "app/archive_service.hpp"
 #include "app/catalog_service.hpp"
@@ -5,12 +6,15 @@
 #include "app/companion_settings.hpp"
 #include "app/download_manager.hpp"
 #include "app/game_metadata_service.hpp"
+#include "app/game_update_install.hpp"
 #include "app/game_update_service.hpp"
 #include "app/installed_title_service.hpp"
+#include "app/magnet_resolver.hpp"
 #include "app/nro_relocation.h"
 #include "app/stream_ram_budget.hpp"
 #include "app/storage_manager.hpp"
 #include "app/switch_deploy.hpp"
+#include "app/task_files.hpp"
 #include "install/system_cleanup.hpp"
 #include "app/update_service.hpp"
 #include "app/ui_thread_call.hpp"
@@ -53,6 +57,7 @@ extern "C" {
 
 #include "ui/catalog/catalog_view.hpp"
 #include "ui/homebrew/homebrew_view.hpp"
+#include "ui/retro/retro_view.hpp"
 #include "ui/common/async_image.hpp"
 #include "ui/common/burn_in_saver.hpp"
 #include "ui/common/ui_helpers.hpp"
@@ -64,6 +69,7 @@ extern "C" {
 #include "ui/downloads/downloads_view.hpp"
 #include "ui/downloads/task_files_activity.hpp"
 #include "ui/installed/installed_view.hpp"
+#include "ui/installed/my_games_view.hpp"
 #include "ui/pending_debrid_view.hpp"
 #include "ui/settings/about_view.hpp"
 #include "ui/settings/help_view.hpp"
@@ -146,6 +152,32 @@ struct ThreadJoiner {
     }
 };
 
+// Keep heavy startup background workers off the UI thread's core (core 0)
+// and below UI priority (0x2C) so Horizon OS does not starve rendering or
+// input while catalog/metadata parsing and installed-title IPC run.
+void configureStartupWorkerThread(int preferredCoreOrdinal, u32 priority) {
+    s32 preferredCore = -1;
+    u64 affinityMask = 0;
+    if (R_SUCCEEDED(svcGetThreadCoreMask(&preferredCore, &affinityMask,
+                                         CUR_THREAD_HANDLE))) {
+        s32 targetCore = -1;
+        int remaining = preferredCoreOrdinal;
+        for (s32 core = 0; core < 4; ++core) {
+            if ((affinityMask & (1ULL << core)) == 0)
+                continue;
+            targetCore = core;
+            if (remaining == 0)
+                break;
+            --remaining;
+        }
+        if (targetCore >= 0 && targetCore != preferredCore) {
+            svcSetThreadCoreMask(CUR_THREAD_HANDLE, targetCore,
+                                 static_cast<u32>(affinityMask));
+        }
+    }
+    svcSetThreadPriority(CUR_THREAD_HANDLE, priority);
+}
+
 const std::string& borealisLocaleFor(const std::string& language) {
     if (language == "ru")
         return brls::LOCALE_RU;
@@ -202,18 +234,19 @@ public:
         });
         tabs->addNavTab(tr("pipensx/nav/games"), NavIconType::Catalog,
                         [this, manager, catalog, metadata, installed,
-                         settings, favorites, deploy, tabs] {
+                         settings, favorites, deploy, portUninstall, tabs] {
             return new CatalogView(manager, catalog, metadata, installed,
                                    settings,
                                    [tabs] {
                                        tabs->focusTab(NavIconType::Downloads);
                                    },
                                    favorites, deploy, CatalogSection::Games, {},
-                                   [this] { refreshUpdateBadge(); });
+                                   [this] { refreshUpdateBadge(); },
+                                   nullptr, portUninstall);
         });
         tabs->addNavTab(tr("pipensx/nav/ports"), NavIconType::Ports,
                         [this, manager, catalog, metadata, installed,
-                         settings, favorites, deploy, tabs] {
+                         settings, favorites, deploy, portUninstall, tabs] {
             return new CatalogView(manager, catalog, metadata, installed,
                                    settings,
                                    [tabs] {
@@ -223,7 +256,12 @@ public:
                                    [tabs] {
                                        tabs->focusTab(NavIconType::Catalog);
                                    },
-                                   [this] { refreshUpdateBadge(); });
+                                   [this] { refreshUpdateBadge(); },
+                                   nullptr, portUninstall);
+        });
+        tabs->addNavTab(tr("pipensx/nav/retro"), NavIconType::Retro,
+                        [manager, settings, metadata] {
+            return new pipensx::ui::RetroView(manager->rootPath(), "sdmc:", settings, metadata, manager);
         });
         tabs->addNavTab(tr("pipensx/nav/homebrew"), NavIconType::Homebrew,
                         [manager, settings, metadata] {
@@ -231,7 +269,7 @@ public:
         });
         tabs->addNavTab(tr("pipensx/nav/autorun"), NavIconType::AutoRun,
                         [this, manager, catalog, metadata, installed,
-                         settings, favorites, deploy, autorun = autorun_, tabs] {
+                         settings, favorites, deploy, autorun = autorun_, portUninstall, tabs] {
             return new CatalogView(manager, catalog, metadata, installed,
                                    settings,
                                    [tabs] {
@@ -242,7 +280,7 @@ public:
                                        tabs->focusTab(NavIconType::Catalog);
                                    },
                                    [this] { refreshUpdateBadge(); },
-                                   autorun);
+                                   autorun, portUninstall);
         });
         tabs->addSeparator();
         tabs->addNavTab(tr("pipensx/nav/downloads"), NavIconType::Downloads,
@@ -255,15 +293,24 @@ public:
                          portUninstall = portUninstall_,
                          archive = archive_,
                          onRestoreStarted = onRestoreStarted_] {
-            auto* view = new InstalledView(installed, manager, metadata,
-                                           settings, catalog, gameUpdates,
-                                           true, favorites, deploy,
-                                           portUninstall, archive,
-                                           onRestoreStarted);
-            view->setOnUpdateCount([tabs](size_t count) {
-                tabs->setUpdateCountBadge(count);
+            return new MyGamesView([=](size_t section) -> brls::View* {
+                if (section == 2)
+                    return new HomebrewView(manager->rootPath(), "sdmc:", settings, metadata, true);
+                if (section == 3)
+                    return retroLibraryView(
+                        std::make_shared<pipensx::RetroRomStore>(manager->rootPath(), "sdmc:"),
+                        std::make_shared<pipensx::RetroEmulatorInstaller>("sdmc:"), manager,
+                        metadata, settings);
+                auto* view = new InstalledView(installed, manager, metadata,
+                                               settings, catalog, gameUpdates,
+                                               true, favorites, deploy,
+                                               portUninstall, section == 1,
+                                               archive, onRestoreStarted);
+                view->setOnUpdateCount([tabs](size_t count) {
+                    tabs->setUpdateCountBadge(count);
+                });
+                return view;
             });
-            return view;
         }, true);
         tabs->addNavTab(tr("pipensx/nav/settings"), NavIconType::Settings,
                         [this, settings, manager, catalog, metadata,
@@ -357,6 +404,11 @@ public:
                 refreshUpdateBadge();
             });
         });
+    }
+
+    void focusDownloadsTab() {
+        if (tabs_)
+            tabs_->focusTab(pipensx::ui::NavIconType::Downloads);
     }
 
     brls::View* createContentView() override {
@@ -463,11 +515,6 @@ public:
                 pipensx::ui::showWebQrDialog(url, values.webServerPin);
                 return true;
             }, /*hidden=*/true);
-    }
-
-    void focusDownloadsTab() {
-        if (tabs_)
-            tabs_->selectTab(pipensx::ui::NavIconType::Downloads, true);
     }
 
 private:
@@ -764,7 +811,9 @@ int main(int argc, char** argv) {
         // work; the main loop publishes the completed snapshots later.
         ThreadJoiner initialDataLoader{std::thread([&catalog, &metadata,
                                                     initialData] {
+            configureStartupWorkerThread(1, 0x34);
             std::thread metadataThread([&metadata, initialData] {
+                configureStartupWorkerThread(2, 0x34);
                 initialData->metadataOk = metadata.prepareInitialSnapshot(
                     initialData->metadata, initialData->metadataError);
             });
@@ -792,6 +841,7 @@ int main(int argc, char** argv) {
         std::atomic<bool> installedScanDone{false};
         ThreadJoiner installedScanner{std::thread([&installed,
                                                    &installedScanDone] {
+            configureStartupWorkerThread(2, 0x3A);
             std::string installedError;
             if (!installed.refresh(installedError))
                 diagnostic_error("installed", "startup", "error=%s",
@@ -1092,6 +1142,8 @@ int main(int argc, char** argv) {
                     const auto archiveMap = archive.inspectLibrary(titles);
                     nlohmann::json rows = nlohmann::json::array();
                     for (const auto& title : titles) {
+                        if (title.publisher == "pipensx Retro")
+                            continue;
                         const auto archIt = archiveMap.find(title.titleId);
                         const ArchiveInspection insp = archIt != archiveMap.end()
                             ? archIt->second : ArchiveInspection{};
@@ -1209,6 +1261,12 @@ int main(int argc, char** argv) {
                 }
                 if (installed.isArchived(titleId))
                     return archive.removeArchivedStub(titleId, error);
+                for (const auto& title : installed.titles()) {
+                    if (title.titleId == titleId && title.publisher == "pipensx Retro") {
+                        error = "Retro HOME shortcuts are managed in Retro Library.";
+                        return false;
+                    }
+                }
                 pipensx::PortUninstallPlan portPlan;
                 if (portUninstall.plan(titleId, {}, portPlan)) {
                     pipensx::PortUninstallReport report;
@@ -1514,6 +1572,7 @@ int main(int argc, char** argv) {
         // requiring the Downloads tab to stay open. The map only tracks tasks
         // observed after startup, so pre-existing rows never re-notify.
         std::unordered_map<std::string, pipensx::DownloadStatus> lastTaskStatus;
+        bool taskStatusSeeded = false;
         uint64_t lastDownloadScanMs = now_ms();
         uint64_t lastPerfMs = 0;
         pipensx::SwitchDeploySnapshot deployState{};
@@ -1698,18 +1757,33 @@ int main(int argc, char** argv) {
                         notice->open();
                     }
                     seen.insert(task.id);
-                    auto previous = lastTaskStatus.find(task.id);
-                    if (previous == lastTaskStatus.end()) {
+                    if (!taskStatusSeeded) {
                         lastTaskStatus[task.id] = task.status;
+                        if (task.status == pipensx::DownloadStatus::Completed &&
+                            pipensx::isRetroDownloadTask(manager.rootPath(), task.id)) {
+                            pipensx::ui::autoPrepareCompletedRetroTask(&manager, &metadata, task.id);
+                        }
                         continue;
                     }
-                    const pipensx::DownloadStatus prevStatus = previous->second;
-                    if (prevStatus == task.status)
-                        continue;
-                    lastTaskStatus[task.id] = task.status;
+                    auto previous = lastTaskStatus.find(task.id);
+                    pipensx::DownloadStatus prevStatus = pipensx::DownloadStatus::Downloading;
+                    if (previous == lastTaskStatus.end()) {
+                        lastTaskStatus[task.id] = task.status;
+                        if (task.status != pipensx::DownloadStatus::Completed &&
+                            task.status != pipensx::DownloadStatus::Installed &&
+                            task.status != pipensx::DownloadStatus::Error)
+                            continue;
+                    } else {
+                        prevStatus = previous->second;
+                        if (prevStatus == task.status)
+                            continue;
+                        lastTaskStatus[task.id] = task.status;
+                    }
                     if (task.status == pipensx::DownloadStatus::Completed) {
-                        if (task.mode == pipensx::TransferMode::DownloadOnly &&
-                            pipensx::taskHasPortOrArchiveFiles(manager.rootPath(), task)) {
+                        if (pipensx::isRetroDownloadTask(manager.rootPath(), task.id)) {
+                            pipensx::ui::autoPrepareCompletedRetroTask(&manager, &metadata, task.id);
+                        } else if (task.mode == pipensx::TransferMode::DownloadOnly &&
+                                   pipensx::taskHasPortOrArchiveFiles(manager.rootPath(), task)) {
                             pipensx::ui::openPortNoticeDialog();
                         } else {
                             brls::Application::notify(
@@ -1738,6 +1812,10 @@ int main(int argc, char** argv) {
                     else
                         ++it;
                 }
+                if (!taskStatusSeeded) {
+                    pipensx::ui::syncExistingRetroLibrary(&manager, &metadata);
+                }
+                taskStatusSeeded = true;
             }
 
             const uint64_t deployPollNowMs = now_ms();

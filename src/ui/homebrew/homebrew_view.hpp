@@ -15,7 +15,7 @@ class HomebrewDataSource;
 class HomebrewView : public brls::Box {
 public:
     HomebrewView(std::string appRoot, std::string sdRoot, AppSettings* settings,
-                 GameMetadataService* metadata);
+                 GameMetadataService* metadata, bool installedOnly = false);
     ~HomebrewView() override;
     void willAppear(bool resetState) override;
 
@@ -31,8 +31,9 @@ private:
     std::vector<HomebrewPackage> packages_;
     std::string query_;
     bool busy_ = false, initialized_ = false;
+    bool installedOnly_ = false;
     brls::Label* status_;
-    theme::Button* refresh_;
+    theme::Button *search_ = nullptr, *reset_ = nullptr;
     SmoothRecyclerFrame* recycler_;
     HomebrewDataSource* data_;
 };

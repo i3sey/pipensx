@@ -41,7 +41,7 @@ On Debian or Ubuntu:
 sudo apt-get update
 sudo apt-get install -y \
   build-essential python3 libcurl4-openssl-dev libssl-dev \
-  libzstd-dev zlib1g-dev
+  libzstd-dev zlib1g-dev libarchive-dev
 ```
 
 Build the portable command-line client or run the complete test suite:
@@ -63,13 +63,13 @@ Requirements:
 
 - devkitPro with devkitA64 and libnx
 - CMake 3.13 or newer
-- `switch-curl`, `switch-mbedtls`, `switch-zlib`, and `switch-miniupnpc`
+- `switch-curl`, `switch-mbedtls`, `switch-zlib`, `switch-miniupnpc`, and `switch-libarchive`
 
 Install them with devkitPro pacman:
 
 ```bash
 sudo dkp-pacman -S switch-dev switch-curl switch-mbedtls \
-  switch-zlib switch-miniupnpc
+  switch-zlib switch-miniupnpc switch-libarchive
 ```
 
 Build the release NRO:

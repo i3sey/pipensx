@@ -29,17 +29,14 @@ namespace grid {
 
 inline constexpr int kColumns = 6;
 inline constexpr float kCardWidth = 190.0f;
-// Icon is slightly smaller than the plate so the substrate frames it.
-inline constexpr float kCoverInset = 4.0f;
-inline constexpr float kCoverWidth = 182.0f;  // kCardWidth - 2 * kCoverInset
-// Catalogue covers are Nintendo box-art images (~393x640, ~1:1.628 aspect ratio).
-// Height matches the vertical box-art aspect ratio for kCoverWidth.
-inline constexpr float kCoverHeight = 296.0f;
+inline constexpr float kCoverInset = 0.0f;
+inline constexpr float kCoverWidth = kCardWidth;
+// Cover box fits vertical Switch/retro box art cleanly while leaving room for
+// a two-line title and metadata row inside kCardHeight.
+inline constexpr float kCoverHeight = 274.0f;
 inline constexpr float kCoverSize = kCoverWidth;
-// Icon inside the card uses the same rounding as the card itself so the
-// whole plate reads as one piece.
 inline float iconRadius() { return theme::kRadiusMedium; }
-// Inset + cover + name line (17px) + sub line (15px) + inner margins + padding.
+// Cover (274) + gap (8) + 2-line title (38) + gap (2) + metadata (18) + pad (8).
 inline constexpr float kCardHeight = 348.0f;
 inline constexpr float kRowHeight = 364.0f;
 inline constexpr float kTopInsetHeight = 8.0f;
@@ -82,6 +79,83 @@ inline bool sameGridCardInfo(const GridCardInfo& left,
            left.favorite == right.favorite;
 }
 
+class TwoLineTitle : public brls::View {
+public:
+    TwoLineTitle() {
+        setFocusable(false);
+        setHeight(38.0f);
+    }
+
+    void setText(const std::string& text) {
+        if (text_ == text)
+            return;
+        text_ = text;
+        invalidate();
+    }
+
+    const std::string& getFullText() const { return text_; }
+
+    void setFontSize(float size) { fontSize_ = size; }
+    void setTextColor(NVGcolor color) { textColor_ = color; }
+
+    void draw(NVGcontext* vg, float x, float y, float width, float height,
+              brls::Style, brls::FrameContext*) override {
+        if (text_.empty() || width <= 4.0f)
+            return;
+        nvgSave(vg);
+        nvgIntersectScissor(vg, x, y, width, height);
+        nvgFontSize(vg, fontSize_);
+        nvgFontFaceId(vg, brls::Application::getDefaultFont());
+        nvgTextLineHeight(vg, kLineHeight);
+        nvgTextAlign(vg, NVG_ALIGN_LEFT | NVG_ALIGN_TOP);
+        nvgFillColor(vg, a(textColor_));
+
+        NVGtextRow rows[3];
+        const int nrows = nvgTextBreakLines(
+            vg, text_.c_str(), nullptr, width, rows, 3);
+        const float lineStep = fontSize_ * kLineHeight;
+        if (nrows >= 1)
+            nvgText(vg, x, y, rows[0].start, rows[0].end);
+        if (nrows >= 2) {
+            const float y2 = y + lineStep;
+            const char* tail = rows[1].end;
+            while (*tail == ' ' || *tail == '\t' || *tail == '\n' || *tail == '\r')
+                ++tail;
+            const bool truncated = (nrows > 2) || (*tail != '\0');
+            if (!truncated) {
+                nvgText(vg, x, y2, rows[1].start, rows[1].end);
+            } else {
+                std::string line(rows[1].start, rows[1].end);
+                while (!line.empty() &&
+                       (line.back() == ' ' || line.back() == '\t' ||
+                        line.back() == '\n' || line.back() == '\r'))
+                    line.pop_back();
+                static constexpr const char* kEllipsis = "\xE2\x80\xA6";
+                float bounds[4] = {};
+                nvgTextBounds(vg, 0, 0, (line + kEllipsis).c_str(), nullptr, bounds);
+                while (!line.empty() && (bounds[2] - bounds[0]) > width) {
+                    do {
+                        line.pop_back();
+                    } while (!line.empty() &&
+                             (static_cast<unsigned char>(line.back()) & 0xC0) == 0x80);
+                    while (!line.empty() && line.back() == ' ')
+                        line.pop_back();
+                    nvgTextBounds(vg, 0, 0, (line + kEllipsis).c_str(), nullptr, bounds);
+                }
+                line += kEllipsis;
+                nvgText(vg, x, y2, line.c_str(), nullptr);
+            }
+        }
+        nvgRestore(vg);
+    }
+
+private:
+    static constexpr float kLineHeight = 1.15f;
+    std::string text_;
+    float fontSize_ = 16.0f;
+    NVGcolor textColor_ = theme::textPrimary();
+};
+
 class GameCard : public brls::Box {
 public:
     using Activate = std::function<void(int)>;
@@ -98,14 +172,13 @@ public:
         setHighlightCornerRadius(theme::kRadiusMedium);
         setClipsToBounds(true);
 
-        // Cover box doubles as the placeholder tile until art arrives.
-        // Same rounding as the card so the icon sits as a rounded plate
-        // inside the substrate.
+        // Cover box sits flush with the card edges and stays transparent so
+        // only the single card substrate is visible behind any aspect ratio.
         cover_ = new brls::Box();
         cover_->setWidth(grid::kCoverWidth);
         cover_->setHeight(grid::kCoverHeight);
         cover_->setCornerRadius(grid::iconRadius());
-        cover_->setBackgroundColor(theme::surface());
+        cover_->setBackgroundColor(brls::TRANSPARENT);
         cover_->setAlignSelf(brls::AlignSelf::CENTER);
         cover_->setMarginTop(grid::kCoverInset);
         cover_->setAlignItems(brls::AlignItems::CENTER);
@@ -174,20 +247,18 @@ public:
 
         addView(cover_);
 
-        name_ = new brls::Label();
-        name_->setSingleLine(true);
-        // Keep ellipsis at rest and marquee only the focused card title.
-        name_->setAutoAnimate(false);
-        name_->setFontSize(theme::kFontSmall);
-        name_->setMarginTop(6);
-        name_->setMarginLeft(theme::kSpacingUnit);
-        name_->setMarginRight(theme::kSpacingUnit);
+        name_ = new TwoLineTitle();
+        name_->setFontSize(16.0f);
+        name_->setTextColor(theme::textPrimary());
+        name_->setMarginTop(8);
+        name_->setMarginLeft(10);
+        name_->setMarginRight(10);
         addView(name_);
 
         auto* metadata = new brls::Box(brls::Axis::ROW);
         metadata->setMarginTop(2);
-        metadata->setMarginLeft(theme::kSpacingUnit);
-        metadata->setMarginRight(theme::kSpacingUnit);
+        metadata->setMarginLeft(10);
+        metadata->setMarginRight(10);
         metadata->setAlignItems(brls::AlignItems::CENTER);
         sub_ = new brls::Label();
         sub_->setSingleLine(true);
@@ -329,7 +400,6 @@ public:
     void onFocusGained() override {
         brls::Box::onFocusGained();
         applyZoom(true);
-        name_->setAnimated(true);
         if (onFocus_)
             onFocus_();
     }
@@ -355,7 +425,6 @@ public:
     void onFocusLost() override {
         brls::Box::onFocusLost();
         applyZoom(false);
-        name_->setAnimated(false);
     }
 
     int entryIndex() const { return entryIndex_; }
@@ -382,7 +451,7 @@ private:
     brls::Label* mark_;
     brls::Box* favoriteBox_;
     brls::Label* favorite_;
-    brls::Label* name_;
+    TwoLineTitle* name_;
     brls::Label* sub_;
     brls::Label* peers_;
     brls::Box* diffChips_;

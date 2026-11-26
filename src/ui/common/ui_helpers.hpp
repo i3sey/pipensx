@@ -501,13 +501,34 @@ inline std::string placeholderLetter(const std::string& title) {
         ++offset;
     if (offset == title.size())
         return "?";
-    unsigned char lead = static_cast<unsigned char>(title[offset]);
-    size_t length = lead < 0x80 ? 1 : lead < 0xe0 ? 2 : lead < 0xf0 ? 3 : 4;
-    length = std::min(length, title.size() - offset);
-    std::string letter = title.substr(offset, length);
-    if (length == 1)
-        letter[0] = static_cast<char>(std::toupper(lead));
-    return letter;
+    const unsigned char lead = static_cast<unsigned char>(title[offset]);
+    if (lead < 0x80)
+        return std::string(1, static_cast<char>(std::toupper(lead)));
+    if ((lead & 0xE0) == 0xC0 && offset + 1 < title.size()) {
+        const unsigned char b1 = static_cast<unsigned char>(title[offset + 1]);
+        if ((b1 & 0xC0) != 0x80)
+            return "?";
+        uint32_t cp = (static_cast<uint32_t>(lead & 0x1F) << 6) | (b1 & 0x3F);
+        if ((cp >= 0x00E0 && cp <= 0x00F6) || (cp >= 0x00F8 && cp <= 0x00FE) ||
+            (cp >= 0x0430 && cp <= 0x044F)) {
+            cp -= 0x20;
+        } else if (cp == 0x0451 || cp == 0x0454 || cp == 0x0456 ||
+                   cp == 0x0457 || cp == 0x045E) {
+            cp -= 0x50;
+        }
+        return std::string{static_cast<char>(0xC0 | (cp >> 6)),
+                           static_cast<char>(0x80 | (cp & 0x3F))};
+    }
+    if ((lead & 0xF0) == 0xE0 && offset + 2 < title.size() &&
+        (static_cast<unsigned char>(title[offset + 1]) & 0xC0) == 0x80 &&
+        (static_cast<unsigned char>(title[offset + 2]) & 0xC0) == 0x80)
+        return title.substr(offset, 3);
+    if ((lead & 0xF8) == 0xF0 && offset + 3 < title.size() &&
+        (static_cast<unsigned char>(title[offset + 1]) & 0xC0) == 0x80 &&
+        (static_cast<unsigned char>(title[offset + 2]) & 0xC0) == 0x80 &&
+        (static_cast<unsigned char>(title[offset + 3]) & 0xC0) == 0x80)
+        return title.substr(offset, 4);
+    return "?";
 }
 
 inline std::string taskActionReasonText(const std::string& reason) {

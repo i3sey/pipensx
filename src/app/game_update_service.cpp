@@ -228,7 +228,7 @@ void GameUpdateService::checkAll(const std::vector<InstalledTitle>& titles,
     GameUpdateResults next;
     size_t updates = 0;
     for (const InstalledTitle& title : titles) {
-        if (title.isArchived)
+        if (title.isArchived || title.publisher == "pipensx Retro")
             continue;
         GameUpdateResult result = compute(title.titleId, title.version);
         result.checkedAt = checkedAt;
@@ -274,7 +274,8 @@ size_t GameUpdateService::availableCount(
     const std::vector<InstalledTitle>& titles) const {
     size_t count = 0;
     for (const InstalledTitle& title : titles) {
-        if (title.isArchived || ignored_.count(title.titleId))
+        if (title.isArchived || title.publisher == "pipensx Retro" ||
+            ignored_.count(title.titleId))
             continue;
         auto it = results_.find(title.titleId);
         if (it != results_.end() &&

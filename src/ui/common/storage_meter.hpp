@@ -29,7 +29,7 @@ namespace pipensx::ui {
 class StorageMeter : public brls::Box {
 public:
     explicit StorageMeter(bool stackedHeader = false)
-        : brls::Box(brls::Axis::COLUMN) {
+        : brls::Box(brls::Axis::COLUMN), stackedHeader_(stackedHeader) {
         setFocusable(false);
         // Hard guarantee against overflow: View::frame() scissors children to
         // this rect when clipsToBounds is set.
@@ -49,7 +49,7 @@ public:
         title_->setSingleLine(true);
         title_->setShrink(0);
         title_->setFontSize(theme::kFontCaption);
-        title_->setTextColor(theme::textTertiary());
+        title_->setTextColor(theme::textSecondary());
         head_->addView(title_);
 
         value_ = new brls::Label();
@@ -193,6 +193,7 @@ public:
         refreshHeader();
         value_->setText(tr("pipensx/storage/install_bytes",
                            formatBytes(installBytes)));
+        caption_->setSingleLine(!stackedHeader_);
         const uint64_t used = total >= free ? total - free : 0;
         std::string text = tr("pipensx/storage/caption", formatBytes(used),
                               formatBytes(installBytes), formatBytes(free));
@@ -443,6 +444,7 @@ private:
     brls::Box* legend_ = nullptr;
     LegendDot* installDot_ = nullptr;
     std::string headerTitle_;
+    bool stackedHeader_ = false;
     bool hasHeader_ = false;
     bool hasLegend_ = false;
     bool compact_ = false;

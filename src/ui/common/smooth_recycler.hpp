@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cmath>
 #include <borealis.hpp>
+#include "ui/theme.hpp"
 
 namespace pipensx::ui {
 
@@ -11,6 +12,9 @@ namespace pipensx::ui {
 // follows new targets without overshoot, independently of artwork readiness.
 class SmoothRecyclerFrame : public brls::RecyclerFrame {
 public:
+    SmoothRecyclerFrame() {
+        setScrollingIndicatorVisible(false);
+    }
     void onChildFocusGained(brls::View* child, brls::View* focused) override {
         brls::RecyclerFrame::onChildFocusGained(child, focused);
         if (brls::Application::getInputType() != brls::InputType::GAMEPAD ||
@@ -56,6 +60,36 @@ public:
         }
         lastTick_ = now;
         brls::RecyclerFrame::draw(vg, x, y, width, height, style, ctx);
+
+        const float contentHeight = getContentHeight();
+        const float viewHeight = getScrollingAreaHeight();
+        if (contentHeight > viewHeight + 1.0f && viewHeight > 24.0f) {
+            constexpr float kBarWidth = 6.0f;
+            constexpr float kBarRadius = kBarWidth * 0.5f;
+            constexpr float kTrackInsetY = 10.0f;
+            constexpr float kMinThumbHeight = 44.0f;
+            const float trackX = x + width - 14.0f - kBarWidth * 0.5f;
+            const float trackY = getScrollingAreaTopBoundary() + kTrackInsetY;
+            const float trackH = std::max(1.0f, viewHeight - 2.0f * kTrackInsetY);
+
+            nvgBeginPath(vg);
+            nvgRoundedRect(vg, trackX, trackY, kBarWidth, trackH, kBarRadius);
+            nvgFillColor(vg, a(theme::track()));
+            nvgFill(vg);
+
+            const float maxOffset = std::max(1.0f, contentHeight - viewHeight);
+            const float progress = std::clamp(getContentOffsetY() / maxOffset, 0.0f, 1.0f);
+            const float thumbH = std::clamp(viewHeight / contentHeight * trackH,
+                                            std::min(kMinThumbHeight, trackH), trackH);
+            const float thumbY = trackY + progress * (trackH - thumbH);
+
+            NVGcolor thumbColor = theme::textSecondary();
+            thumbColor.a *= 0.7f;
+            nvgBeginPath(vg);
+            nvgRoundedRect(vg, trackX, thumbY, kBarWidth, thumbH, kBarRadius);
+            nvgFillColor(vg, a(thumbColor));
+            nvgFill(vg);
+        }
     }
 
 private:

@@ -6,6 +6,7 @@
 #include <cassert>
 #include <cerrno>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -46,6 +47,132 @@ static std::string read(const std::string& path) {
     return {std::istreambuf_iterator<char>(input), {}};
 }
 
+static void writeFixture(const std::string& path, const std::string& data) {
+    std::filesystem::create_directories(std::filesystem::path(path).parent_path());
+    std::ofstream out(path, std::ios::binary);
+    out.write(data.data(), data.size());
+    assert(out.good());
+}
+
+static std::string makeSyntheticNro(const std::string& title,
+                                    const std::string& author,
+                                    const std::string& version,
+                                    const std::string& iconBytes = {}) {
+    constexpr size_t kNroSize = 0x80;
+    constexpr size_t kAsetHeader = 0x38;
+    constexpr size_t kNacpSize = 0x4000;
+    const size_t iconOffset = kAsetHeader + kNacpSize;
+    std::string buf(kNroSize + iconOffset + iconBytes.size(), '\0');
+    buf.replace(0x10, 4, "NRO0");
+    buf[0x18] = static_cast<char>(kNroSize);
+    buf.replace(kNroSize, 4, "ASET");
+    if (!iconBytes.empty()) {
+        const uint64_t rel = iconOffset;
+        const uint64_t sz = iconBytes.size();
+        for (int i = 0; i < 8; ++i) {
+            buf[kNroSize + 0x08 + i] = static_cast<char>((rel >> (8 * i)) & 0xFF);
+            buf[kNroSize + 0x10 + i] = static_cast<char>((sz >> (8 * i)) & 0xFF);
+        }
+        buf.replace(kNroSize + iconOffset, iconBytes.size(), iconBytes);
+    }
+    buf[kNroSize + 0x18] = kAsetHeader;
+    buf[kNroSize + 0x21] = kNacpSize >> 8;
+    const size_t nacp = kNroSize + kAsetHeader;
+    buf.replace(nacp, title.size(), title);
+    buf.replace(nacp + 0x200, author.size(), author);
+    buf.replace(nacp + 0x3060, version.size(), version);
+    return buf;
+}
+
+static const HomebrewPackage* findByInstalledPath(const std::vector<HomebrewPackage>& pkgs,
+                                                  const std::string& relPath) {
+    for (const auto& pkg : pkgs) {
+        if (pkg.installedPath == relPath) return &pkg;
+    }
+    return nullptr;
+}
+
+static void testNroDiscovery(const std::string& root) {
+    const std::string sdRoot = root + "/sdroot";
+    const std::string appRoot = root + "/approot";
+    const std::string jpegV1 = "\xFF\xD8\xFF\xE0" "FAKEJPEG1";
+    const std::string jpegV2 = "\xFF\xD8\xFF\xE0" "FAKEJPEG_UPDATED";
+
+    writeFixture(sdRoot + "/switch/raw/plain.nro", "not an nro");
+    writeFixture(sdRoot + "/switch/deep/sub/local_tool.NRO",
+              makeSyntheticNro("Local Tool", "Indie Dev", "3.4.5", jpegV1));
+    writeFixture(sdRoot + "/switch/custom/moved_app.NRO",
+              makeSyntheticNro("Test App", "Developer", "0.9", jpegV1));
+    writeFixture(sdRoot + "/switch/ambig/dup.nro",
+              makeSyntheticNro("Ambiguous App", "Unknown", "1.0", "NOT_AN_IMAGE"));
+    assert(symlink((sdRoot + "/switch/deep/sub/local_tool.NRO").c_str(),
+                   (sdRoot + "/switch/linked.nro").c_str()) == 0);
+    assert(symlink((sdRoot + "/switch/deep").c_str(),
+                   (sdRoot + "/switch/linked_dir").c_str()) == 0);
+
+    HomebrewCatalog catalog(appRoot, sdRoot);
+    std::vector<HomebrewPackage> installed;
+    std::string error;
+    assert(catalog.loadInstalled(installed, "en", error));
+    assert(installed.size() == 4);
+    for (const auto& package : installed) assert(package.downloadUrl.empty());
+    const auto* local = findByInstalledPath(installed, "switch/deep/sub/local_tool.NRO");
+    assert(local && local->title == "Local Tool" && local->author == "Indie Dev");
+    assert(local->installedVersion == "3.4.5");
+    assert(!local->iconUrl.empty() && read(local->iconUrl) == jpegV1);
+    const auto* raw = findByInstalledPath(installed, "switch/raw/plain.nro");
+    assert(raw && !raw->title.empty() && raw->installedVersion.empty() && raw->iconUrl.empty());
+    const auto* invalidImg = findByInstalledPath(installed, "switch/ambig/dup.nro");
+    assert(invalidImg && invalidImg->iconUrl.empty());
+
+    // Updating the NRO icon on disk refreshes the cached icon even when destination exists.
+    writeFixture(sdRoot + "/switch/deep/sub/local_tool.NRO",
+                 makeSyntheticNro("Local Tool", "Indie Dev", "3.4.6", jpegV2));
+    assert(catalog.loadInstalled(installed, "en", error));
+    local = findByInstalledPath(installed, "switch/deep/sub/local_tool.NRO");
+    assert(local && local->installedVersion == "3.4.6");
+    assert(!local->iconUrl.empty() && read(local->iconUrl) == jpegV2);
+
+    Json cache = manifest("test NRO payload");
+    for (const std::string id : {"ambig-a", "ambig-b"}) {
+        auto entry = cache["packages"][0];
+        entry["name"] = id;
+        entry["title"] = "Ambiguous App";
+        entry["author"] = "Unknown";
+        entry["files"] = Json::array({"U: switch/" + id + "/app.nro"});
+        cache["packages"].push_back(std::move(entry));
+    }
+    writeFixture(appRoot + "/homebrew/catalog.json", cache.dump());
+    assert(catalog.loadInstalled(installed, "en", error));
+    assert(installed.size() == 4);
+    const auto* matched = findByInstalledPath(installed, "switch/custom/moved_app.NRO");
+    assert(matched && matched->name == "test-app" && matched->version == "1.2");
+    assert(matched->installedVersion == "0.9" && matched->downloadUrl == "https://example.com/app");
+    assert(matched->iconUrl == std::string(kCatalogGitLabBaseUrl) + "homebrew/icons/test-app.jpg");
+    const auto* ambiguous = findByInstalledPath(installed, "switch/ambig/dup.nro");
+    assert(ambiguous && ambiguous->downloadUrl.empty() && ambiguous->title == "Ambiguous App");
+
+    // Monogram normalization and update version comparison.
+    assert(homebrewMonogram("mGBA") == "M");
+    assert(homebrewMonogram("  daybreak") == "D");
+    assert(homebrewMonogram("тест") == "Т");
+    assert(homebrewMonogram("ёжик") == "Ё");
+    assert(homebrewMonogram("") == "?");
+    assert(homebrewMonogram("   ") == "?");
+
+    assert(isHomebrewUpdateAvailable("1.5.4", "1.5.5"));
+    assert(isHomebrewUpdateAvailable("v2.9.0", "2.10.0"));
+    assert(isHomebrewUpdateAvailable("921", "925"));
+    assert(isHomebrewUpdateAvailable("1.0.0-rc1", "1.0.0"));
+    assert(!isHomebrewUpdateAvailable("1.5.4", "1.5.4"));
+    assert(!isHomebrewUpdateAvailable("v1.5.4", "1.5.4"));
+    assert(!isHomebrewUpdateAvailable("2.23.3", "2.23.2"));
+    assert(!isHomebrewUpdateAvailable("921", "921"));
+    assert(!isHomebrewUpdateAvailable("1.0", "1.0.0"));
+    assert(!isHomebrewUpdateAvailable("", "1.0.0"));
+    assert(!isHomebrewUpdateAvailable("nightly", "1.0.0"));
+}
+
 int main(int argc, char** argv) {
     const std::string payload = "test NRO payload";
     const Json good = manifest(payload);
@@ -75,6 +202,7 @@ int main(int argc, char** argv) {
     char temporary[] = "/tmp/pipensx-homebrew-XXXXXX";
     assert(mkdtemp(temporary));
     const std::string root = temporary;
+    testNroDiscovery(root);
     assert(mkdir((root + "/sd").c_str(), 0777) == 0);
     std::string metadata = good.dump(), download = payload;
     bool offline = false, cancelOnProgress = false;
@@ -171,6 +299,47 @@ int main(int argc, char** argv) {
     assert(unlink(target.c_str()) == 0);
     assert(service.load(packages, "en", error));
     assert(packages[0].installedVersion.empty());
+
+    // Uninstall catalog package: deletes NRO & receipt, preserves preserve=true config and saves.
+    writeFixture(root + "/sd/switch/test-app/test.nro", "app binary");
+    writeFixture(root + "/sd/config/test-app/config.ini", "keep me");
+    writeFixture(root + "/app/homebrew/installed/test-app.json",
+                 Json({{"version", "1.2"}, {"sha256", "abc"}}).dump());
+    HomebrewPackage catPkg = packages[0];
+    catPkg.installedVersion = "1.2";
+    catPkg.files = {{"switch/test-app/test.nro", false}, {"config/test-app/config.ini", true}};
+    assert(service.uninstall(catPkg, error));
+    assert(access((root + "/sd/switch/test-app/test.nro").c_str(), F_OK) != 0);
+    assert(read(root + "/sd/config/test-app/config.ini") == "keep me");
+    assert(access((root + "/app/homebrew/installed/test-app.json").c_str(), F_OK) != 0);
+
+    // Uninstall local folder app: removes NRO & assets, preserves saves & ini configs.
+    writeFixture(root + "/sd/switch/my-tool/tool.nro", "local nro");
+    writeFixture(root + "/sd/switch/my-tool/assets/data.bin", "asset");
+    writeFixture(root + "/sd/switch/my-tool/saves/slot1.sav", "SAVE_DATA");
+    writeFixture(root + "/sd/switch/my-tool/settings.ini", "INI_DATA");
+    HomebrewPackage localFolder;
+    localFolder.name = "switch/my-tool/tool.nro";
+    localFolder.installedPath = "switch/my-tool/tool.nro";
+    assert(service.uninstall(localFolder, error));
+    assert(access((root + "/sd/switch/my-tool/tool.nro").c_str(), F_OK) != 0);
+    assert(access((root + "/sd/switch/my-tool/assets/data.bin").c_str(), F_OK) != 0);
+    assert(read(root + "/sd/switch/my-tool/saves/slot1.sav") == "SAVE_DATA");
+    assert(read(root + "/sd/switch/my-tool/settings.ini") == "INI_DATA");
+
+    // Uninstall standalone top-level NRO in switch/
+    writeFixture(root + "/sd/switch/solo.nro", "solo nro");
+    HomebrewPackage localSolo;
+    localSolo.name = "switch/solo.nro";
+    localSolo.installedPath = "switch/solo.nro";
+    assert(service.uninstall(localSolo, error));
+    assert(access((root + "/sd/switch/solo.nro").c_str(), F_OK) != 0);
+
+    // Self-protection: refuse to uninstall pipensx itself.
+    HomebrewPackage selfPkg;
+    selfPkg.name = "pipensx";
+    selfPkg.installedPath = "switch/pipensx/pipensx.nro";
+    assert(!service.uninstall(selfPkg, error));
 
     if (argc > 1) {
         assert(HomebrewCatalog::parse(read(argv[1]), "ru", kCatalogGitLabBaseUrl, packages, error));
