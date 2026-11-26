@@ -5,7 +5,7 @@
 Clone with the pinned submodules, or initialize them in an existing checkout:
 
 ```bash
-git clone --recurse-submodules https://gitlab.com/pipensx-group/pipensx.git
+git clone --recurse-submodules https://github.com/i3sey/pipensx.git
 cd pipensx
 # Existing clone only:
 git submodule update --init --recursive
@@ -15,22 +15,20 @@ Run `make` to list the supported top-level targets.
 
 ### Development remotes
 
-Gitea is the primary repository. For development with access to the local Gitea
-server, configure a fresh GitLab clone as follows:
+GitHub (`origin`) is the primary repository and hosts CI, issues, pull requests,
+and releases. GitLab and local Gitea are maintained as backup mirrors:
 
 ```bash
-git remote rename origin gitlab
-git remote add origin git@192.168.1.146:i3sey/pipensx.git
-git fetch origin
+git remote add gitlab https://gitlab.com/pipensx-group/pipensx.git
+git remote add gitea git@192.168.1.146:i3sey/pipensx.git
 git branch --set-upstream-to=origin/main main
 git config remote.pushDefault origin
 git config push.default simple
 ```
 
-Create development branches from `main` and push them with
-`git push -u origin <branch>`. Gitea pushes branches and tags to GitLab on each
-push and every eight hours. Make changes on Gitea so the next mirror update can
-copy them to GitLab. Repository mirroring does not copy issues or release assets.
+Create development branches from `main` and push them to GitHub with
+`git push -u origin <branch>`. Sync `main` and release tags to `gitlab` and
+`gitea` as backups. Repository mirroring does not copy issues or release assets.
 Keep access tokens out of remote URLs; use SSH or a Git credential helper.
 
 ## PC client and tests
@@ -133,23 +131,14 @@ ASan/UBSan and fuzz smoke run weekly on Monday and on manual `ci` dispatch.
 Manual and weekly runs also check all builds and scan the complete Git history;
 ordinary pushes scan only the new commits (unknown bases fall back to full checks).
 
-GitHub uses `.github/workflows/ci.yml`; Gitea uses `.gitea/workflows/ci.yml`.
-Keep their check selection and build steps aligned. The Gitea 1.22 workflow uses
-v3 cache/artifact actions and the private `i3sey/borealis` dependency mirror,
-pinned to the same submodule commit. `SUBMODULE_READ_TOKEN` is a repository
-Actions secret with read-only repository access. When updating the borealis
-submodule, push its commit to that mirror before pushing pipensx. Other
-submodules use the URLs in `.gitmodules`. Outside Gitea CI, borealis uses the
-GitLab mirror configured in `.gitmodules`.
+GitHub Actions is the primary CI and release pipeline:
+`.github/workflows/ci.yml` runs validation, PC tests, and Switch builds, and
+`.github/workflows/switch-release.yml` builds and publishes releases on tags or
+manual dispatch.
 
-GitLab uses `.gitlab-ci.yml` for PC and browser tests, Secret Detection, SAST,
-and Pages on `main`. Tags and manual web/API pipelines also build the Switch
-application after the tests pass. Only tags publish a release through the
-GitLab Package Registry, with the NRO, its checksum, `SDOut.zip`, and the notes
-from `releases/<version>-notes.md`. A tag build requires `VERSION` to match the
-tag after removing an optional leading `v`. Manual builds do not publish a
-release. The GitHub draft-release workflow remains in
-`.github/workflows/switch-release.yml`.
-
-GitLab jobs use the project's default Linux runners. Switch builds keep LTO
-enabled and compile one job at a time to fit shared-runner memory limits.
+Backup mirror pipelines live in `.gitlab-ci.yml` (GitLab) and
+`.gitea/workflows/ci.yml` (Gitea). The Gitea 1.22 workflow uses v3
+cache/artifact actions and the private `i3sey/borealis` dependency mirror,
+pinned to the same submodule commit (`SUBMODULE_READ_TOKEN` is a repository
+Actions secret with read-only access). Outside Gitea CI, borealis uses the URL
+configured in `.gitmodules`.

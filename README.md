@@ -1,13 +1,13 @@
 # pipensx
 
-[![Pipeline Status](https://gitlab.com/pipensx-group/pipensx/badges/main/pipeline.svg)](https://gitlab.com/pipensx-group/pipensx/-/pipelines)
+[![CI](https://github.com/i3sey/pipensx/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/i3sey/pipensx/actions/workflows/ci.yml)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
-[![Latest Release](https://gitlab.com/pipensx-group/pipensx/-/badges/release.svg)](https://gitlab.com/pipensx-group/pipensx/-/releases)
+[![Latest Release](https://img.shields.io/github/v/release/i3sey/pipensx)](https://github.com/i3sey/pipensx/releases/latest)
 
 Native BitTorrent download manager and streaming package installer for
 Nintendo Switch homebrew.
 
-DOWNLOAD LATEST - [pipensx.nro](https://gitlab.com/pipensx-group/pipensx/-/releases/permalink/latest/downloads/pipensx.nro)
+DOWNLOAD LATEST - [pipensx.nro](https://github.com/i3sey/pipensx/releases/latest/download/pipensx.nro)
 
 <img src="resources/screen_catalog.jpg" width="400"> <img src="resources/screen_detail.jpg" width="400">
 <br><br>
@@ -62,16 +62,16 @@ file replacement rules and system-module handling.
 
 ## Quick start
 
-Development uses Gitea at `git@192.168.1.146:i3sey/pipensx.git` as the primary
-repository. Gitea mirrors branches and tags to
-[GitLab](https://gitlab.com/pipensx-group/pipensx) on push and every eight hours.
-GitLab hosts releases and the GitLab CI pipeline. Push development changes to
-Gitea; see [BUILD.md](BUILD.md#development-remotes) for remote setup.
+[GitHub](https://github.com/i3sey/pipensx) is the primary repository hosting
+development, CI, issues, pull requests, and releases.
+[GitLab](https://gitlab.com/pipensx-group/pipensx) and local Gitea
+(`git@192.168.1.146:i3sey/pipensx.git`) are maintained as backup mirrors. See
+[BUILD.md](BUILD.md#development-remotes) for remote setup.
 
 Clone the pinned submodules:
 
 ```bash
-git clone --recurse-submodules https://gitlab.com/pipensx-group/pipensx.git
+git clone --recurse-submodules https://github.com/i3sey/pipensx.git
 cd pipensx
 ```
 
@@ -94,7 +94,7 @@ metadata input, and deployment helpers.
 
 ## Install on Nintendo Switch
 
-Download the latest [pipensx.nro](https://gitlab.com/pipensx-group/pipensx/-/releases/permalink/latest/downloads/pipensx.nro) and copy it to:
+Download the latest [pipensx.nro](https://github.com/i3sey/pipensx/releases/latest/download/pipensx.nro) and copy it to:
 
 ```text
 SD:/switch/pipensx/pipensx.nro
